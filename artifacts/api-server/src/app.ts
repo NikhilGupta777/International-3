@@ -34,8 +34,8 @@ app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
 
-// In production, serve the built frontend static files
-if (process.env["NODE_ENV"] === "production") {
+// Serve built frontend static files whenever they exist (production always, dev when built)
+if (true) {
   const __dirname = fileURLToPath(new URL(".", import.meta.url));
 
   // STATIC_DIR env var allows overriding the path (useful in Docker)

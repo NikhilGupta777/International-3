@@ -8,10 +8,13 @@ deploymentTarget = "autoscale"
 [[services]]
 localPort = 8080
 name = "API Server"
-paths = ["/api"]
+paths = ["/api", "/"]
 
 [services.development]
-run = "pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run dev"
+run = "pnpm --filter @workspace/api-server run dev"
+
+[services.development.env]
+SERVE_STATIC = "true"
 
 [services.production]
 

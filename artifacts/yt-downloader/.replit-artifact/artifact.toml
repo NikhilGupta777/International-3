@@ -12,10 +12,10 @@ kind = "web"
   [[services]]
   name = "web"
   paths = [ "/" ]
-  localPort = 5173
+  localPort = 3000
 
   [services.development]
-  run = "pnpm install --frozen-lockfile && pnpm --filter @workspace/yt-downloader run dev"
+  run = "pnpm --filter @workspace/yt-downloader run dev"
 
   [services.production]
   build = [ "pnpm", "--filter", "@workspace/yt-downloader", "run", "build" ]
@@ -27,6 +27,5 @@ kind = "web"
   to = "/index.html"
 
   [services.env]
-  PORT = "5173"
+  PORT = "3000"
   BASE_PATH = "/"
-  
