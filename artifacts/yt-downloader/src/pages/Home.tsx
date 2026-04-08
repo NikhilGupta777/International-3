@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Lock, Captions
+  Download, Loader2, Sparkles, Captions
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -14,10 +14,9 @@ import { cn, formatBytes, formatDuration, formatViews } from "@/lib/utils";
 import { ActiveDownload } from "@/components/ActiveDownload";
 import { BestClips, type BestClipsHandle } from "@/components/BestClips";
 import { BhavishyaClips } from "@/components/BhavishyaClips";
-import { BhagwatVideos } from "@/components/BhagwatVideos";
 import { GetSubtitles } from "@/components/GetSubtitles";
 
-type Mode = "download" | "clips" | "bhagwat" | "subtitles";
+type Mode = "download" | "clips" | "subtitles";
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
   if (
@@ -133,12 +132,11 @@ export default function Home() {
 
   const showVideoInfo = mode === "download" && video && !jobId;
   const showClips = mode === "clips" && submittedUrl;
-  const showBhagwat = mode === "bhagwat";
   const showSubtitles = mode === "subtitles";
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
-  const showSearch = mode !== "bhagwat" && mode !== "subtitles";
+  const showSearch = mode !== "subtitles";
 
   return (
     <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
@@ -163,7 +161,7 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           className={cn(
             "w-full flex flex-col items-center transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            (showVideoInfo || showClips || showBhagwat || showSubtitles) ? "pt-12 mb-8" : "pt-[25vh]"
+            (showVideoInfo || showClips || showSubtitles) ? "pt-12 mb-8" : "pt-[25vh]"
           )}
         >
           {/* Logo */}
@@ -210,18 +208,6 @@ export default function Home() {
               <Badge className="bg-violet-500/20 text-violet-300 border-violet-500/30 text-[10px] px-1.5 py-0">
                 AI
               </Badge>
-            </button>
-            <button
-              onClick={() => { setMode("bhagwat"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200",
-                mode === "bhagwat"
-                  ? "bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-[0_0_20px_rgba(217,119,6,0.35)]"
-                  : "text-white/50 hover:text-white/80"
-              )}
-            >
-              <Lock className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-              Bhagwat
             </button>
             <button
               onClick={() => { setMode("subtitles"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
@@ -420,19 +406,6 @@ export default function Home() {
               >
                 <BestClips ref={bestClipsRef} url={url} />
                 <BhavishyaClips url={url} />
-              </motion.div>
-            )}
-
-          {/* ── Bhagwat Videos Mode ── */}
-            {mode === "bhagwat" && (
-              <motion.div
-                key="bhagwat-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-              >
-                <BhagwatVideos />
               </motion.div>
             )}
 
