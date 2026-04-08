@@ -44,6 +44,11 @@ Thumbs.db
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
 
+# Build artifacts / deployment bundles
+deploy-bundle.tgz
+*.tgz
+*.tar.gz
+
 # Replit
 .cache/
 .local/
