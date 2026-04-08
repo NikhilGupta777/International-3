@@ -1,0 +1,14 @@
+packages:
+  "framer-motion": "For premium layout transitions and micro-interactions"
+  "clsx": "For class name merging in UI components"
+  "tailwind-merge": "For tailwind class resolution in UI components"
+  "class-variance-authority": "For UI component variants"
+
+images:
+  - path: "artifacts/yt-downloader/public/images/dark-glow-bg.png"
+    description: "Abstract premium dark background with very subtle, soft deep red and dark purple glowing gradient meshes, highly minimal, 8k resolution, suitable for a sleek dark mode website background"
+    aspect_ratio: "16:9"
+
+notes:
+  - "Using generated hooks from @workspace/api-client-react"
+  - "Assuming shadcn toast exists at @/hooks/use-toast"

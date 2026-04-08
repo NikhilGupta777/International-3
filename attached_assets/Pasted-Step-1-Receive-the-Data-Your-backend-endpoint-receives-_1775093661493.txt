@@ -1,0 +1,57 @@
+Step 1: Receive the Data
+
+Your backend endpoint receives two things from your frontend:
+
+    The video link (e.g., a YouTube URL).
+
+    The raw text of the SRT or VTT file.
+
+Step 2: Extract the Audio (The Crucial Step)
+
+Since you might be automating this for a YouTube channel like Kalki Avatar Official, you will need a library to handle YouTube links.
+
+    Use a tool like yt-dlp (Python) or ytdl-core (Node.js) to download only the audio track (like an MP3 or M4A) to your server's temporary storage.
+
+    Why audio only? It downloads in seconds, uploads to Gemini instantly, saves your API bandwidth, and Gemini only needs the audio to correct a transcript anyway!
+
+Step 3: Upload to the Gemini File API
+
+Before you send your text prompt, you must upload that extracted audio file to Google's servers using the Gemini File API.
+
+    Your backend uses the genai.upload_file() method.
+
+    This returns a unique file_uri (e.g., https://generativelanguage.googleapis.com/v1beta/files/xyz123).
+
+Step 4: Send the Prompt and Data
+
+Now you send everything to your chosen model (like Gemini 2.5 Flash). You pass the file_uri, the raw SRT/VTT text, and a very strict system prompt.
+
+If your content includes specialized terminology—like complex Sanskrit words, references from the Bhavishya Malika, or specific terms related to Sanatan Dharma—your prompt must explicitly tell the model how to handle them.
+
+Here is the system prompt you should use:
+
+    "You are an expert video transcript editor. I am providing an audio file and its corresponding rough SRT/VTT transcript.
+
+        Listen to the audio and read the transcript.
+
+        Correct all spelling, grammar, and punctuation errors.
+
+        Pay special attention to complex spiritual terminology, Indian regional names, and religious scriptures. Ensure they are spelled correctly based on the audio.
+
+        CRITICAL: You must return the output in the EXACT same SRT/VTT timestamp format provided. Do not alter the timestamps or the sequence. Only fix the text."
+
+Step 5: Return and Cleanup
+
+    Gemini returns the perfectly formatted, corrected SRT/VTT text.
+
+    Your backend sends this corrected text back to your user/frontend.
+
+    Important: Call genai.delete_file() in your backend to delete the temporary audio file from Google's servers so you don't hit your storage limits on the free tier. Finally, delete the temporary audio file from your own server.
+
+Summary of the Tech Stack:
+
+    Video/Audio Downloader: yt-dlp (Python)
+
+    AI SDK: Official Google GenAI SDK (google-genai for Python/Node)
+
+    Model: gemini-2.5-flash (Fastest for the 5-10 minute audio files you are processing).

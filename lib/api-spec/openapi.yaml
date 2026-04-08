@@ -1,0 +1,295 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: YouTube Downloader API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: youtube
+    description: YouTube download operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /youtube/info:
+    post:
+      operationId: getVideoInfo
+      tags: [youtube]
+      summary: Get video info
+      description: Fetches metadata and available formats for a YouTube video
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VideoInfoRequest"
+      responses:
+        "200":
+          description: Video info with available formats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VideoInfo"
+        "400":
+          description: Invalid URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to fetch video info
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /youtube/download:
+    post:
+      operationId: downloadVideo
+      tags: [youtube]
+      summary: Start a download job
+      description: Queues a video download job and returns a job ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DownloadRequest"
+      responses:
+        "200":
+          description: Download job started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadJob"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Download failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /youtube/progress/{jobId}:
+    get:
+      operationId: getDownloadProgress
+      tags: [youtube]
+      summary: Get download progress
+      description: Returns progress and status for a download job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Download progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DownloadProgress"
+        "404":
+          description: Job not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /youtube/file/{jobId}:
+    get:
+      operationId: getDownloadFile
+      tags: [youtube]
+      summary: Get the finished download file
+      description: Streams the downloaded file to the client
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: File stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    VideoInfoRequest:
+      type: object
+      properties:
+        url:
+          type: string
+          description: YouTube video URL
+      required:
+        - url
+    VideoFormat:
+      type: object
+      properties:
+        formatId:
+          type: string
+        ext:
+          type: string
+        resolution:
+          type: string
+        fps:
+          type: number
+          nullable: true
+        filesize:
+          type: number
+          nullable: true
+        vcodec:
+          type: string
+          nullable: true
+        acodec:
+          type: string
+          nullable: true
+        quality:
+          type: string
+        label:
+          type: string
+        hasVideo:
+          type: boolean
+        hasAudio:
+          type: boolean
+      required:
+        - formatId
+        - ext
+        - resolution
+        - quality
+        - label
+        - hasVideo
+        - hasAudio
+    VideoInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        duration:
+          type: number
+          nullable: true
+        thumbnail:
+          type: string
+          nullable: true
+        uploader:
+          type: string
+          nullable: true
+        viewCount:
+          type: number
+          nullable: true
+        uploadDate:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        formats:
+          type: array
+          items:
+            $ref: "#/components/schemas/VideoFormat"
+      required:
+        - id
+        - title
+        - formats
+    DownloadRequest:
+      type: object
+      properties:
+        url:
+          type: string
+        formatId:
+          type: string
+          description: Format ID from VideoFormat.formatId. Use "best" for best quality with merge.
+        audioOnly:
+          type: boolean
+          description: Download audio only (MP3)
+      required:
+        - url
+        - formatId
+    DownloadJob:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+          enum: [pending, downloading, merging, done, error]
+        message:
+          type: string
+          nullable: true
+      required:
+        - jobId
+        - status
+    DownloadProgress:
+      type: object
+      properties:
+        jobId:
+          type: string
+        status:
+          type: string
+          enum: [pending, downloading, merging, done, error]
+        percent:
+          type: number
+          nullable: true
+        speed:
+          type: string
+          nullable: true
+        eta:
+          type: string
+          nullable: true
+        filename:
+          type: string
+          nullable: true
+        filesize:
+          type: number
+          nullable: true
+        message:
+          type: string
+          nullable: true
+      required:
+        - jobId
+        - status
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+          nullable: true
+      required:
+        - error

@@ -1,0 +1,58 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      NODE_ENV: production
+      DATABASE_URL: postgresql://ytgrabber:ytgrabber@db:5432/ytgrabber
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      BHAGWAT_PASSWORD: ${BHAGWAT_PASSWORD}
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
+      # ── YouTube bot-detection bypass options (AWS/datacenter IPs are blocked by YouTube) ──
+      # OPTION 1 (easiest): Export cookies from a YouTube-logged-in Chrome browser using the
+      # "Get cookies.txt LOCALLY" extension, then base64-encode: base64 -w 0 cookies.txt
+      # Paste the result here. No file upload needed, just set and restart.
+      YTDLP_COOKIES_BASE64: ${YTDLP_COOKIES_BASE64:-}
+      # OPTION 2: Route yt-dlp through a residential/non-datacenter proxy
+      # e.g. YTDLP_PROXY=socks5://user:pass@host:port
+      YTDLP_PROXY: ${YTDLP_PROXY:-}
+      # OPTION 3: Static YouTube po_token + visitor_data (last resort; usually video-bound)
+      YTDLP_PO_TOKEN: ${YTDLP_PO_TOKEN:-}
+      YTDLP_VISITOR_DATA: ${YTDLP_VISITOR_DATA:-}
+      # OPTION 4 (recommended on AWS): bgutil dynamic PO-token provider sidecar
+      YTDLP_POT_PROVIDER_URL: ${YTDLP_POT_PROVIDER_URL:-http://bgutil-provider:4416}
+    depends_on:
+      db:
+        condition: service_healthy
+      bgutil-provider:
+        condition: service_started
+    restart: unless-stopped
+    # Allow large uploads and long-running downloads
+    stop_grace_period: 2m
+
+  bgutil-provider:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    init: true
+    expose:
+      - "4416"
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ytgrabber
+      POSTGRES_USER: ytgrabber
+      POSTGRES_PASSWORD: ytgrabber
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ytgrabber"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
