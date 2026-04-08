@@ -295,14 +295,8 @@ const GEMINI_TEXT_MODELS = [
 ] as const;
 
 function getGenAI(): GoogleGenAI | null {
-  // Prefer Replit AI integration proxy first
-  if (process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) {
-    return new GoogleGenAI({
-      apiKey: process.env.AI_INTEGRATIONS_GEMINI_API_KEY,
-      httpOptions: { baseUrl: process.env.AI_INTEGRATIONS_GEMINI_BASE_URL, timeout: GEMINI_TIMEOUT_MS },
-    });
-  }
-  // Fall back to direct API key if Replit integration is not configured
+  // Always use direct API key — subtitles use Gemini Files API which is not
+  // supported through the Replit AI integration proxy.
   const directKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (directKey) {
     return new GoogleGenAI({ apiKey: directKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
