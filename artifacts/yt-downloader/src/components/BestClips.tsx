@@ -429,14 +429,14 @@ export const BestClips = forwardRef(function BestClips(
     });
 
     try {
-      const startRes = await fetch(`${BASE}/api/youtube/download-clip`, {
+      const startRes = await fetch(`${BASE}/api/youtube/clip-cut`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url: url.trim(),
-          startSec: clip.startSec,
-          endSec: clip.endSec,
-          title: clip.title,
+          startTime: clip.startSec,
+          endTime: clip.endSec,
+          quality: "best",
         }),
       });
       const startData = await startRes.json();
