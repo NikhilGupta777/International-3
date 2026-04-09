@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Scissors,
@@ -9,10 +9,25 @@ import {
   AlertCircle,
   X,
   Download,
+  History,
+  Trash2,
+  Film,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import {
+  type ClipHistoryEntry,
+  type ActiveClipJob,
+  loadClipHistory,
+  saveToClipHistory,
+  deleteFromClipHistory,
+  clearClipHistory,
+  saveActiveClipJobs,
+  loadActiveClipJobs,
+  formatClipRelativeTime,
+  formatFilesize,
+} from "@/lib/clip-history";
 
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -57,6 +72,10 @@ type JobStatus = "pending" | "downloading" | "merging" | "done" | "error";
 interface ActiveJob {
   jobId: string;
   label: string;
+  url: string;
+  quality: string;
+  startSecs: number;
+  endSecs: number;
   status: JobStatus;
   percent: number;
   speed: string | null;
@@ -66,6 +85,7 @@ interface ActiveJob {
   message: string | null;
   downloaded: boolean;
   startedAt: number;
+  reconnected?: boolean;
 }
 
 export function ClipCutter() {
@@ -75,6 +95,7 @@ export function ClipCutter() {
   const [quality, setQuality] = useState("best");
   const [submitting, setSubmitting] = useState(false);
   const [jobs, setJobs] = useState<ActiveJob[]>([]);
+  const [history, setHistory] = useState<ClipHistoryEntry[]>(() => loadClipHistory());
   const { toast } = useToast();
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const jobsRef = useRef<ActiveJob[]>([]);
@@ -87,6 +108,50 @@ export function ClipCutter() {
       ? endSecs - startSecs
       : null;
 
+  // Persist active jobs to localStorage whenever the jobs list changes
+  const persistActiveJobs = useCallback((current: ActiveJob[]) => {
+    const active = current
+      .filter((j) => j.status !== "done" && j.status !== "error")
+      .map((j): ActiveClipJob => ({
+        jobId: j.jobId,
+        label: j.label,
+        url: j.url,
+        quality: j.quality,
+        startSecs: j.startSecs,
+        endSecs: j.endSecs,
+        startedAt: j.startedAt,
+      }));
+    saveActiveClipJobs(active);
+  }, []);
+
+  // On mount: restore any jobs that were running when user navigated away
+  useEffect(() => {
+    const saved = loadActiveClipJobs();
+    if (saved.length === 0) return;
+
+    const restored: ActiveJob[] = saved.map((s) => ({
+      jobId: s.jobId,
+      label: s.label,
+      url: s.url,
+      quality: s.quality,
+      startSecs: s.startSecs,
+      endSecs: s.endSecs,
+      status: "pending" as JobStatus,
+      percent: 0,
+      speed: null,
+      eta: null,
+      filename: null,
+      filesize: null,
+      message: "Reconnecting…",
+      downloaded: true, // don't auto-trigger download again on reconnect
+      startedAt: s.startedAt,
+      reconnected: true,
+    }));
+
+    setJobs(restored);
+  }, []);
+
+  // Polling loop — runs continuously, picks up all active jobs
   useEffect(() => {
     if (pollRef.current) return;
 
@@ -95,22 +160,37 @@ export function ClipCutter() {
       const active = current.filter(
         (j) => j.status !== "done" && j.status !== "error",
       );
-
       if (active.length === 0) return;
 
       await Promise.all(
         active.map(async (job) => {
           try {
-            const res = await fetch(
-              `${BASE_URL}/api/youtube/progress/${job.jobId}`,
-            );
+            const res = await fetch(`${BASE_URL}/api/youtube/progress/${job.jobId}`);
+
+            // 404 means server restarted and the job is gone
+            if (res.status === 404) {
+              setJobs((prev) => {
+                const updated = prev.map((j) =>
+                  j.jobId !== job.jobId ? j : {
+                    ...j,
+                    status: "error" as JobStatus,
+                    message: "Server restarted — job was lost. Please retry.",
+                  },
+                );
+                persistActiveJobs(updated);
+                return updated;
+              });
+              return;
+            }
+
             if (!res.ok) return;
             const data = await res.json();
 
-            setJobs((prev) =>
-              prev.map((j) => {
+            setJobs((prev) => {
+              const updated = prev.map((j) => {
                 if (j.jobId !== job.jobId) return j;
-                const updated: ActiveJob = {
+
+                const updatedJob: ActiveJob = {
                   ...j,
                   status: data.status as JobStatus,
                   percent: data.percent ?? j.percent,
@@ -122,7 +202,7 @@ export function ClipCutter() {
                 };
 
                 if (data.status === "done" && !j.downloaded) {
-                  updated.downloaded = true;
+                  updatedJob.downloaded = true;
                   const link = document.createElement("a");
                   link.href = `${BASE_URL}/api/youtube/file/${j.jobId}`;
                   link.download = data.filename ?? "clip.mp4";
@@ -131,9 +211,28 @@ export function ClipCutter() {
                   document.body.removeChild(link);
                 }
 
-                return updated;
-              }),
-            );
+                // Save to history when done
+                if (data.status === "done") {
+                  const entry: ClipHistoryEntry = {
+                    jobId: j.jobId,
+                    createdAt: Date.now(),
+                    label: j.label,
+                    url: j.url,
+                    quality: j.quality,
+                    filename: data.filename ?? j.filename ?? "clip.mp4",
+                    filesize: data.filesize ?? j.filesize,
+                    durationSecs: j.endSecs - j.startSecs,
+                  };
+                  saveToClipHistory(entry);
+                  setHistory(loadClipHistory());
+                }
+
+                return updatedJob;
+              });
+
+              persistActiveJobs(updated);
+              return updated;
+            });
           } catch {}
         }),
       );
@@ -145,7 +244,7 @@ export function ClipCutter() {
         pollRef.current = null;
       }
     };
-  }, []);
+  }, [persistActiveJobs]);
 
   const handleCut = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -195,6 +294,10 @@ export function ClipCutter() {
       const newJob: ActiveJob = {
         jobId: data.jobId,
         label,
+        url: url.trim(),
+        quality,
+        startSecs,
+        endSecs,
         status: "pending",
         percent: 0,
         speed: null,
@@ -206,7 +309,11 @@ export function ClipCutter() {
         startedAt: Date.now(),
       };
 
-      setJobs((prev) => [newJob, ...prev]);
+      setJobs((prev) => {
+        const updated = [newJob, ...prev];
+        persistActiveJobs(updated);
+        return updated;
+      });
       setStartTime("");
       setEndTime("");
     } catch (err) {
@@ -221,7 +328,11 @@ export function ClipCutter() {
   };
 
   const removeJob = (jobId: string) => {
-    setJobs((prev) => prev.filter((j) => j.jobId !== jobId));
+    setJobs((prev) => {
+      const updated = prev.filter((j) => j.jobId !== jobId);
+      persistActiveJobs(updated);
+      return updated;
+    });
   };
 
   return (
@@ -359,11 +470,77 @@ export function ClipCutter() {
         </Button>
       </motion.form>
 
-      {/* Inline download cards — one per active/completed job */}
+      {/* Active / in-progress job cards */}
       <AnimatePresence initial={false}>
         {jobs.map((job) => (
           <ClipJobCard key={job.jobId} job={job} onRemove={removeJob} />
         ))}
+      </AnimatePresence>
+
+      {/* ── History panel ──────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {history.length > 0 && (
+          <motion.div
+            key="clip-history"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="flex flex-col gap-3"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-white/40">
+                <History className="w-4 h-4" />
+                <span className="text-xs font-semibold uppercase tracking-wider">
+                  Clip history · saved on this device
+                </span>
+              </div>
+              <button
+                onClick={() => { clearClipHistory(); setHistory([]); }}
+                className="flex items-center gap-1 text-xs text-white/25 hover:text-red-400 transition-colors"
+              >
+                <Trash2 className="w-3 h-3" /> Clear all
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              {history.map((entry) => (
+                <motion.div
+                  key={entry.jobId}
+                  layout
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  className="glass-panel rounded-xl px-4 py-3 flex items-center gap-3"
+                >
+                  <Film className="w-4 h-4 text-orange-400/70 shrink-0" />
+
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white/70 text-sm font-medium font-mono truncate">
+                      {entry.label}
+                    </p>
+                    <p className="text-white/30 text-xs mt-0.5 truncate">
+                      {entry.quality === "best" ? "Best quality" : `${entry.quality}p`}
+                      {" · "}{formatDuration(entry.durationSecs)}
+                      {entry.filesize ? ` · ${formatFilesize(entry.filesize)}` : ""}
+                      {" · "}{formatClipRelativeTime(entry.createdAt)}
+                    </p>
+                    <p className="text-white/20 text-xs truncate" title={entry.url}>
+                      {entry.url}
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={() => setHistory(deleteFromClipHistory(entry.jobId))}
+                    title="Remove from history"
+                    className="p-1.5 rounded-lg hover:bg-red-500/15 text-white/20 hover:text-red-400 transition-colors shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </motion.div>
+              ))}
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );
@@ -503,17 +680,19 @@ function ClipJobCard({
           </div>
           <div className="flex justify-between text-[11px] text-white/40">
             <span>
-              {job.status === "merging"
-                ? "Merging…"
-                : isConnecting
-                  ? elapsed < 15
-                    ? "Solving challenge…"
-                    : elapsed < 40
-                      ? "Fetching video…"
-                      : "Downloading…"
-                  : job.speed
-                    ? job.speed
-                    : "Downloading…"}
+              {job.reconnected && job.status === "pending"
+                ? "Reconnecting…"
+                : job.status === "merging"
+                  ? "Merging…"
+                  : isConnecting
+                    ? elapsed < 15
+                      ? "Solving challenge…"
+                      : elapsed < 40
+                        ? "Fetching video…"
+                        : "Downloading…"
+                    : job.speed
+                      ? job.speed
+                      : "Downloading…"}
             </span>
             <span className="font-mono">
               {job.status === "downloading" && job.percent > 0
