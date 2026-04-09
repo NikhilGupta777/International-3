@@ -10,7 +10,6 @@ import {
   readFileSync,
   writeFileSync,
   readdirSync,
-  rmdirSync,
 } from "fs";
 import { join, dirname } from "path";
 import { tmpdir } from "os";
@@ -673,6 +672,10 @@ const SUBS_YTDLP_ARGS = [
   "--retries", "3",
   "--extractor-retries", "3",
   "--socket-timeout", "30",
+  // JavaScript challenge solving — required since yt-dlp 2026.03.17
+  "--js-runtimes", "node",
+  "--js-runtimes", "bun",
+  "--remote-components", "ejs:github",
   "--add-headers",
   [
     "Accept-Language:en-US,en;q=0.9",

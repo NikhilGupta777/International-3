@@ -276,7 +276,7 @@ export default function Home() {
                 className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-3 text-white placeholder:text-white/30 text-base sm:text-lg min-w-0"
                 autoFocus
               />
-              {mode !== "clips" && <Button 
+              <Button 
                 type="submit" 
                 size="lg"
                 disabled={isSearchPending || !url.trim()}
@@ -292,7 +292,7 @@ export default function Home() {
                     {buttonPlaceholder} <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
                   </span>
                 )}
-              </Button>}
+              </Button>
             </div>
           </motion.form>
         </motion.div>
