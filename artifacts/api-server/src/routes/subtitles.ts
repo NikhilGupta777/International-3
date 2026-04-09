@@ -1284,6 +1284,7 @@ router.post(
       filename: srtFilename,
       createdAt: Date.now(),
       translateTo: translateLang,
+      progressPct: 5,
     });
 
     res.json({ jobId });
