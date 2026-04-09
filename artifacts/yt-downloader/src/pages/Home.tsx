@@ -17,6 +17,7 @@ import { BhavishyaClips } from "@/components/BhavishyaClips";
 import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
 import { GlobalHistoryPanel } from "@/components/GlobalHistoryPanel";
+import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import {
   saveActiveDownload,
   loadActiveDownload,
@@ -478,6 +479,8 @@ export default function Home() {
 
         </div>
       </main>
+
+      <FloatingActivityPanel onSwitchTab={setMode} />
     </div>
   );
 }
