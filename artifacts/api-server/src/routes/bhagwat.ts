@@ -847,7 +847,7 @@ if (HAS_DYNAMIC_POT_PROVIDER) {
 
 // YouTube block detection — broad pattern to catch all YouTube error variants in 2025/2026.
 function isBhagwatYtBlocked(msg: string): boolean {
-  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401/i.test(msg);
+  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401|not made this video available|not available in your country|geo.*restrict|requested format is not available/i.test(msg);
 }
 
 // Fallback player clients ordered by reliability on AWS/datacenter IPs.

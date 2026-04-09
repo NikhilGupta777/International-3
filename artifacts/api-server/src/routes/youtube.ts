@@ -291,9 +291,36 @@ function isYouTubeUrl(url: string): boolean {
 }
 
 function isYouTubeBlockedError(message: string): boolean {
-  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401|requested format is not available|format.*not available/i.test(
+  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401|requested format is not available|format.*not available|not made this video available|not available in your country|geo.*restrict/i.test(
     message,
   );
+}
+
+function getUserFriendlyYtError(message: string): string {
+  if (/not made this video available|not available in your country|geo.*restrict|available in.*india|available in.*[a-z]+\./i.test(message)) {
+    const countryMatch = message.match(/available in ([^.\n]+)/i);
+    const country = countryMatch ? countryMatch[1].trim() : "certain countries";
+    return `This video is geo-restricted (only available in ${country}) and cannot be accessed from our servers. Try a different video.`;
+  }
+  if (/sign in to confirm|confirm.*not a bot|bot.*detect/i.test(message)) {
+    return "YouTube is blocking server access to this video. Try again later or try a different video.";
+  }
+  if (/age.*restrict|sign.*in.*your age/i.test(message)) {
+    return "This video is age-restricted and requires sign-in to access.";
+  }
+  if (/private video|video is private/i.test(message)) {
+    return "This video is private and cannot be accessed.";
+  }
+  if (/video.*unavailable|this video is unavailable/i.test(message)) {
+    return "This video is unavailable or has been removed.";
+  }
+  if (/http error 429|too many requests|rate.?limit/i.test(message)) {
+    return "YouTube is rate-limiting our server. Please wait a moment and try again.";
+  }
+  if (/requested format is not available|format.*not available/i.test(message)) {
+    return "Could not find a compatible video format. Please try again.";
+  }
+  return "Failed to fetch video information";
 }
 
 function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
@@ -915,7 +942,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : "Unknown error";
     res
       .status(500)
-      .json({ error: "Failed to fetch video information", details: message });
+      .json({ error: getUserFriendlyYtError(message), details: message });
   }
 });
 
@@ -2214,10 +2241,13 @@ async function runClipAnalysis(
       // immediately rather than proceeding to Gemini with no data — that would
       // silently return 0 clips, which is confusing.
       const isBlocked =
-        /sign.in|bot|blocked|403|not available|This video is not available|This video has been/i.test(ytErr);
-      const errMsg = isBlocked
-        ? "YouTube is blocking server access to this video. Try a video from a different channel, or try again later."
-        : "Could not load video info. Check the URL and try again.";
+        /sign.in|bot|blocked|403|not available|This video is not available|This video has been|not made this video available|not available in your country|geo.*restrict/i.test(ytErr);
+      const isGeo = /not made this video available|not available in your country|geo.*restrict|available in.*india|available in.*[a-z]+\./i.test(ytErr);
+      const errMsg = isGeo
+        ? (() => { const m = ytErr.match(/available in ([^.\n]+)/i); const c = m ? m[1].trim() : "certain countries"; return `This video is geo-restricted (only available in ${c}) and cannot be accessed from our servers.`; })()
+        : isBlocked
+          ? "YouTube is blocking server access to this video. Try a video from a different channel, or try again later."
+          : "Could not load video info. Check the URL and try again.";
       job.status = "error";
       job.error = errMsg;
       emit("error", { message: errMsg });
