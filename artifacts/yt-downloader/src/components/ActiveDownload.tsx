@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Download, Loader2, CheckCircle2, AlertCircle, Clock, TimerOff } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
 
-const EXPIRY_SECONDS = 5 * 60; // 5 minutes
+const EXPIRY_SECONDS = 2 * 60 * 60; // 2 hours
 
 interface ActiveDownloadProps {
   jobId: string;
@@ -133,7 +133,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
 
         <p className="text-white/60 mb-6 max-w-md break-all text-sm sm:text-base">
           {isExpired
-            ? "The 5-minute window has passed. Start a new download to get the file."
+            ? "The 2-hour window has passed. Start a new download to get the file."
             : progress?.filename || "Preparing your file, please wait..."}
         </p>
 
