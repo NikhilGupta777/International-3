@@ -169,6 +169,9 @@ interface DownloadJob {
   formatId: string;
   audioOnly: boolean;
   ext: string;
+  clipStart?: number;
+  clipEnd?: number;
+  clipQuality?: string;
 }
 
 const jobs = new Map<string, DownloadJob>();
@@ -1010,6 +1013,169 @@ router.post("/youtube/download", async (req: Request, res: Response) => {
     if (j) {
       j.status = "error";
       j.message = err instanceof Error ? err.message : "Download failed";
+    }
+  });
+});
+
+/** Convert a time in seconds to yt-dlp section timestamp (HH:MM:SS.mmm) */
+function secsToTimestamp(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(Math.floor(s)).padStart(2, "0")}`;
+}
+
+/** Map a quality preset label to a yt-dlp format string */
+function qualityToFormat(quality: string): string {
+  const h = quality.replace(/p$/, "");
+  if (h === "best" || !h) return "bestvideo+bestaudio/best";
+  return `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]`;
+}
+
+async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
+  const jobRef = jobs.get(jobId)!;
+  const { clipStart = 0, clipEnd, clipQuality = "best" } = jobRef;
+
+  const section = `*${secsToTimestamp(clipStart)}-${secsToTimestamp(clipEnd ?? clipStart + 60)}`;
+  const fmt = qualityToFormat(clipQuality);
+  const outputPath = join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
+
+  jobRef.ext = "mp4";
+  jobRef.status = "downloading";
+  jobRef.message = "Cutting clip...";
+
+  const cmdArgs: string[] = [
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--progress",
+    "-f", fmt,
+    "--merge-output-format", "mp4",
+    "--download-sections", section,
+    "--force-keyframes-at-cuts",
+    "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "-o", outputPath,
+    job.url,
+  ];
+
+  const cookieArgs = getYtdlpCookieArgs();
+  const isYt = isYouTubeUrl(job.url);
+  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const attemptPlans: string[][] = [];
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  attemptPlans.push(defaultYoutubeArgs);
+  const downloadFallbacks: string[][] = getYouTubeFallbacks();
+
+  const attempted = new Set<string>();
+  let lastErr: Error | null = null;
+
+  for (const extra of attemptPlans) {
+    const key = extra.join("\u0001");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try {
+      await spawnDownloadOnce(extra, cmdArgs, jobRef);
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut failed");
+      if (!isYt || !isYouTubeBlockedError(lastErr.message)) throw lastErr;
+    }
+  }
+
+  if (lastErr && isYt) {
+    jobRef.message = "Retrying with alternate client...";
+    for (const fallback of downloadFallbacks) {
+      const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
+      for (const extra of plans) {
+        const key = extra.join("\u0001");
+        if (attempted.has(key)) continue;
+        attempted.add(key);
+        try {
+          await spawnDownloadOnce(extra, cmdArgs, jobRef);
+          lastErr = null;
+          break;
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut fallback failed");
+        }
+      }
+      if (!lastErr) break;
+    }
+  }
+
+  if (lastErr) throw lastErr;
+
+  const possibleExts = ["mp4", "mkv", "webm"];
+  let finalPath: string | null = null;
+  for (const e of possibleExts) {
+    const p = join(DOWNLOAD_DIR, `${jobId}.${e}`);
+    if (existsSync(p)) { finalPath = p; jobRef.ext = e; break; }
+  }
+  if (!finalPath && jobRef.filePath && existsSync(jobRef.filePath)) finalPath = jobRef.filePath;
+  if (!finalPath) throw new Error("Clip file not found on disk");
+
+  const stats = statSync(finalPath);
+  jobRef.filesize = stats.size;
+  jobRef.filePath = finalPath;
+  jobRef.filename = finalPath.split("/").pop() ?? `clip.${jobRef.ext}`;
+  jobRef.status = "done";
+  jobRef.percent = 100;
+  jobRef.speed = null;
+  jobRef.eta = null;
+  jobRef.message = null;
+  scheduleAutoDelete(jobId, jobRef);
+}
+
+router.post("/youtube/clip-cut", async (req: Request, res: Response) => {
+  const { url, startTime, endTime, quality } = req.body as {
+    url: string;
+    startTime: number;
+    endTime: number;
+    quality?: string;
+  };
+
+  if (!url) { res.status(400).json({ error: "url is required" }); return; }
+  if (typeof startTime !== "number" || typeof endTime !== "number") {
+    res.status(400).json({ error: "startTime and endTime (in seconds) are required" });
+    return;
+  }
+  if (endTime <= startTime) {
+    res.status(400).json({ error: "endTime must be greater than startTime" });
+    return;
+  }
+  if (endTime - startTime > 3600) {
+    res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
+    return;
+  }
+
+  const jobId = randomUUID();
+  const job: DownloadJob = {
+    status: "pending",
+    percent: 0,
+    speed: null,
+    eta: null,
+    filename: null,
+    filesize: null,
+    message: "Starting clip cut...",
+    filePath: null,
+    url,
+    formatId: "clip",
+    audioOnly: false,
+    ext: "mp4",
+    clipStart: startTime,
+    clipEnd: endTime,
+    clipQuality: quality ?? "best",
+  };
+
+  jobs.set(jobId, job);
+  res.json({ jobId, status: "pending", message: "Clip cut started" });
+
+  processClipCut(jobId, job).catch((err) => {
+    req.log.error({ err, jobId }, "Clip cut job failed");
+    const j = jobs.get(jobId);
+    if (j) {
+      j.status = "error";
+      j.message = err instanceof Error ? err.message : "Clip cut failed";
     }
   });
 });
