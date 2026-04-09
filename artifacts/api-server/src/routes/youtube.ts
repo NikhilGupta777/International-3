@@ -200,8 +200,6 @@ const BASE_YTDLP_ARGS: string[] = [
   // Sleep between requests to avoid rate-limit bans
   "--sleep-requests", "1",
   "--sleep-interval", "2",
-  "--remote-components", "ejs:github",
-  "--js-runtimes", "deno",
 ];
 
 // Inject proxy if configured (essential for AWS/cloud IPs blocked by YouTube)
@@ -245,13 +243,20 @@ function getYouTubeFallbacks(): string[][] {
       ["--extractor-args", "youtube:player_client=android_vr"],
     ];
   }
-  return [
+  const hasCookies = existsSync(YTDLP_COOKIES_FILE);
+  const fallbacks: string[][] = [
     ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
     ["--extractor-args", "youtube:player_client=tv_embedded"],
     ["--extractor-args", "youtube:player_client=android_vr"],
     ["--extractor-args", "youtube:player_client=mweb"],
     ["--extractor-args", "youtube:player_client=ios"],
   ];
+  // web client gets the most complete format list; works with cookies even on server IPs
+  if (hasCookies) {
+    fallbacks.push(["--extractor-args", "youtube:player_client=web,web_embedded"]);
+    fallbacks.push(["--extractor-args", "youtube:player_client=web"]);
+  }
+  return fallbacks;
 }
 
 function getYtdlpCookieArgs(): string[] {
@@ -286,7 +291,7 @@ function isYouTubeUrl(url: string): boolean {
 }
 
 function isYouTubeBlockedError(message: string): boolean {
-  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401/i.test(
+  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401|requested format is not available|format.*not available/i.test(
     message,
   );
 }
@@ -607,8 +612,6 @@ const SUBS_YTDLP_ARGS = [
   ].join(";"),
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "--remote-components", "ejs:github",
-  "--js-runtimes", "deno",
 ];
 
 // Run yt-dlp for subtitle-only fetches (uses mweb/android — tv_embedded breaks subs)

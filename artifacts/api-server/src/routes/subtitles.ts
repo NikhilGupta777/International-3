@@ -72,8 +72,6 @@ const YTDLP_BASE_ARGS: string[] = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "--sleep-requests", "1",
   "--sleep-interval",  "2",
-  "--remote-components", "ejs:github",
-  "--js-runtimes", "deno",
 ];
 
 if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
