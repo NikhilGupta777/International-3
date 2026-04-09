@@ -554,42 +554,66 @@ Now listen to the full audio from 00:00:00 to ${durationSrt} and return the full
 
 function buildTranslationPrompt(correctedSrt: string, fromLanguage: string, toLanguage: string): string {
   const fromNote = fromLanguage === "auto" ? "its original language" : fromLanguage;
-  return `You are a professional human subtitle translator specialising in spoken-word content. I will give you an SRT subtitle file in ${fromNote}. Translate it into ${toLanguage}.
+  return `You are a simultaneous interpreter — not a translator. A translator converts words; an interpreter understands what a human being is saying and renders that meaning naturally in another language. That is your job here.
 
-━━━ THE MOST IMPORTANT RULE ━━━
-Translate MEANING, not words.
+I will give you an SRT subtitle file of spoken speech in ${fromNote}. Your task is to render it in ${toLanguage} the way a skilled live interpreter would.
 
-Subtitles are split into tiny chunks of 3–6 words each. A single entry might just be "ना", or "तो", or "right?", or "And fight". You MUST read the surrounding entries (before AND after) to understand what the speaker is actually saying, then translate the MEANING of the whole utterance — not just the isolated words in that one entry.
+━━━ STEP 1: READ THE ENTIRE SRT FIRST ━━━
+Before you write a single translated word, silently read the ENTIRE SRT from the first entry to the last. Understand:
+- What is the speaker talking about overall?
+- What is their argument or message?
+- What is their emotional tone — calm, passionate, angry, explanatory?
+- Which words are particles/fillers and which carry real meaning?
 
-NEVER do word-for-word literal translation. A word like "ना" (na) can mean:
-- "isn't it?" / "right?" (seeking agreement) — e.g. "अच्छा है ना" → "That's good, right?"
-- "if not" / "if she doesn't" — e.g. "ना करे तो" → "If she doesn't agree, then"
-- an emphatic particle with no standalone translation — absorb it into the surrounding entry's meaning
-It is NEVER simply "No" or "Na" on its own unless the speaker is clearly saying "No" as a standalone answer.
+Only after you have that full picture should you begin translating.
 
-Apply this same contextual thinking to ALL particles, filler words, and connectors: हाँ, तो, बस, ही, भी, लेकिन, क्योंकि, इसीलिए, right, okay, so, and, but, etc. — translate their FUNCTION in context, not their dictionary entry.
+━━━ STEP 2: TRANSLATE MEANING, NOT WORDS ━━━
+Subtitles are split into tiny 3–6 word chunks. A single entry might just say "ना", "तो", "right?", or "And fight". You now know the full speech, so translate what the speaker MEANS in that moment — not the isolated words on that line.
 
-━━━ STRUCTURAL RULES (do not break these) ━━━
-1. Keep EVERY timestamp EXACTLY as-is — do NOT change any HH:MM:SS,mmm value
+CONCRETE EXAMPLES of bad vs good translation:
+
+Example A — particle "ना":
+Source entries: "क्यों एकत्रीकरण होंगे / सब भारत के साथ मिलकर / ना / लड़ाई करेंगे"
+BAD:  "ना" → "No"   ← literal, meaningless in isolation
+GOOD: "ना" → "instead of"  ← because in context the speaker is contrasting unity vs fighting
+
+Example B — connector "इसीलिए":
+Source: "इसीलिए एकत्रीकरण होंगे"
+BAD:  "So togetherness will happen"  ← robotic, literal
+GOOD: "That's exactly why unity matters"  ← captures the speaker's point and energy
+
+Example C — Hinglish code-switch "And fight":
+Source: "ना / लड़ाई करेंगे / And fight"
+BAD:  "No / Will fight / And fight"  ← three literal entries, redundant and choppy
+GOOD: treat the whole utterance as one idea and render it naturally: "...or fight against it" / "and go to war" — whatever fits the flow
+
+Example D — emphasis particle "ही":
+Source: "यही कारण है"
+BAD:  "This is the reason itself"
+GOOD: "This is the very reason" or "That's the whole point"
+
+━━━ STRUCTURAL RULES — never break these ━━━
+1. Keep EVERY timestamp EXACTLY as-is — never change any HH:MM:SS,mmm value
 2. Keep EVERY entry number EXACTLY as-is
-3. Keep the exact SRT structure (number → timestamp → translated text → blank line)
+3. Keep the exact SRT structure: number → timestamp → translated text → blank line
 4. Translate ONLY the subtitle text — nothing else
 5. DO NOT add or remove entries — output entry count must equal input entry count exactly
 6. Each subtitle: 1–2 lines, max ~42 characters per line — split naturally at phrase boundaries
 7. Return ONLY the translated SRT — no explanations, no markdown fences, no extra text
 
-━━━ TRANSLATION QUALITY RULES ━━━
-- Sound like a human interpreter, not a dictionary
-- Preserve the speaker's tone: conversational, passionate, formal — match it in ${toLanguage}
-- Keep names of people, places, organisations, and proper nouns unchanged (or standard ${toLanguage} spelling)
-- If a short entry is a particle/filler that carries no meaning on its own, write the most natural ${toLanguage} equivalent that fits the surrounding context — even if it changes the exact wording
-- Mixed-language speech (e.g. Hinglish) is common — translate the full meaning, merging code-switched parts naturally
+━━━ QUALITY RULES ━━━
+- Sound like a human interpreter speaking live, not a dictionary or machine
+- Mirror the speaker's energy: if they are urgent and punchy, your ${toLanguage} should feel urgent and punchy
+- Particles and fillers (ना, तो, बस, ही, भी, हाँ, okay, right, so, and, but) — translate their FUNCTION in the sentence, never their dictionary meaning in isolation
+- Mixed Hindi-English (Hinglish) is common — merge code-switched fragments into a single natural ${toLanguage} thought
+- Keep names, places, organisations, and proper nouns unchanged (or standard ${toLanguage} spelling)
 
 Here is the SRT to translate:
 ---
 ${correctedSrt}
 ---
 
+Remember: read it all first, understand the speaker, then translate.
 Now return the fully translated SRT in ${toLanguage}:`;
 }
 
