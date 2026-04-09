@@ -554,19 +554,36 @@ Now listen to the full audio from 00:00:00 to ${durationSrt} and return the full
 
 function buildTranslationPrompt(correctedSrt: string, fromLanguage: string, toLanguage: string): string {
   const fromNote = fromLanguage === "auto" ? "its original language" : fromLanguage;
-  return `You are a professional subtitle translator. I will give you an SRT subtitle file written in ${fromNote}. Translate the subtitle text into ${toLanguage}.
+  return `You are a professional human subtitle translator specialising in spoken-word content. I will give you an SRT subtitle file in ${fromNote}. Translate it into ${toLanguage}.
 
-CRITICAL RULES:
-1. Keep EVERY timestamp line EXACTLY as-is — do NOT change any HH:MM:SS,mmm timestamps
-2. Keep EVERY entry number EXACTLY as-is — the number of entries in your output MUST equal the number of entries in the input
-3. Keep the exact same SRT structure (number, timestamp, translated text, blank line)
-4. Translate ONLY the subtitle text lines — nothing else
-5. Produce natural, fluent ${toLanguage} — not a word-for-word literal translation
-6. Preserve the meaning, tone, and context of the original speech
-7. Keep names of people, places, and proper nouns as they are (or use the standard ${toLanguage} spelling)
-8. Each subtitle must fit on 1-2 lines, max ~42 characters per line — split long translations naturally at phrase boundaries
-9. Return ONLY the translated SRT — no explanations, no markdown fences, no extra text
-10. DO NOT add or remove entries — the output entry count must match the input exactly
+━━━ THE MOST IMPORTANT RULE ━━━
+Translate MEANING, not words.
+
+Subtitles are split into tiny chunks of 3–6 words each. A single entry might just be "ना", or "तो", or "right?", or "And fight". You MUST read the surrounding entries (before AND after) to understand what the speaker is actually saying, then translate the MEANING of the whole utterance — not just the isolated words in that one entry.
+
+NEVER do word-for-word literal translation. A word like "ना" (na) can mean:
+- "isn't it?" / "right?" (seeking agreement) — e.g. "अच्छा है ना" → "That's good, right?"
+- "if not" / "if she doesn't" — e.g. "ना करे तो" → "If she doesn't agree, then"
+- an emphatic particle with no standalone translation — absorb it into the surrounding entry's meaning
+It is NEVER simply "No" or "Na" on its own unless the speaker is clearly saying "No" as a standalone answer.
+
+Apply this same contextual thinking to ALL particles, filler words, and connectors: हाँ, तो, बस, ही, भी, लेकिन, क्योंकि, इसीलिए, right, okay, so, and, but, etc. — translate their FUNCTION in context, not their dictionary entry.
+
+━━━ STRUCTURAL RULES (do not break these) ━━━
+1. Keep EVERY timestamp EXACTLY as-is — do NOT change any HH:MM:SS,mmm value
+2. Keep EVERY entry number EXACTLY as-is
+3. Keep the exact SRT structure (number → timestamp → translated text → blank line)
+4. Translate ONLY the subtitle text — nothing else
+5. DO NOT add or remove entries — output entry count must equal input entry count exactly
+6. Each subtitle: 1–2 lines, max ~42 characters per line — split naturally at phrase boundaries
+7. Return ONLY the translated SRT — no explanations, no markdown fences, no extra text
+
+━━━ TRANSLATION QUALITY RULES ━━━
+- Sound like a human interpreter, not a dictionary
+- Preserve the speaker's tone: conversational, passionate, formal — match it in ${toLanguage}
+- Keep names of people, places, organisations, and proper nouns unchanged (or standard ${toLanguage} spelling)
+- If a short entry is a particle/filler that carries no meaning on its own, write the most natural ${toLanguage} equivalent that fits the surrounding context — even if it changes the exact wording
+- Mixed-language speech (e.g. Hinglish) is common — translate the full meaning, merging code-switched parts naturally
 
 Here is the SRT to translate:
 ---
@@ -578,22 +595,37 @@ Now return the fully translated SRT in ${toLanguage}:`;
 
 function buildTranslationVerifyPrompt(originalSrt: string, translatedSrt: string, fromLanguage: string, toLanguage: string): string {
   const fromNote = fromLanguage === "auto" ? "the original language" : fromLanguage;
-  return `You are an expert bilingual subtitle proofreader. I will give you two SRT files: the ORIGINAL (in ${fromNote}) and a TRANSLATED version (in ${toLanguage}). Your task is to verify the translation and fix any errors.
+  return `You are an expert bilingual subtitle proofreader and translation editor. I will give you two SRT files: the ORIGINAL (in ${fromNote}) and a TRANSLATED version (in ${toLanguage}). Fix every translation error you find.
 
-Check every entry for:
-- Mistranslations (wrong meaning)
-- Missing content (original says something that is absent in the translation)
-- Added content (translation says something not in the original)
-- Unnatural or awkward ${toLanguage} phrasing
-- Names/proper nouns that were incorrectly changed
-- Timestamp or entry number changes (they must be identical to the original)
-- Line length: each subtitle line must be max ~42 characters — split longer lines at phrase boundaries
+━━━ YOUR PRIMARY JOB: FIX LITERAL TRANSLATIONS ━━━
+The most common error to look for: the translator did word-for-word mapping instead of understanding meaning.
 
-RULES:
-- Keep ALL timestamps exactly as they appear in the original SRT — do NOT change them
-- Keep ALL entry numbers exactly as they appear in the original SRT
-- The number of entries in your output MUST be exactly the same as the input
-- Fix ONLY the translation text — nothing else
+Because subtitles are in tiny 3–6 word chunks, isolated particles or connectors often get translated literally when they shouldn't. Examples of bad vs good:
+
+BAD (literal):  entry says "ना" → translated as "No"
+GOOD (contextual): "ना" in context means "isn't it?" or "if not" — fix based on surrounding entries
+
+BAD (literal):  entry says "तो" → translated as "So"
+GOOD (contextual): translate based on how it functions in the sentence flow
+
+BAD: entry says "And fight" → translated as "And fight" (just copied)
+GOOD: understand what the speaker means across that whole utterance and give the natural ${toLanguage} meaning
+
+For EVERY short entry (1–4 words), check: does this translation read naturally in ${toLanguage} given what the surrounding entries say? If not, fix it to express the speaker's actual meaning.
+
+━━━ OTHER ERRORS TO FIX ━━━
+- Mistranslations (wrong meaning conveyed)
+- Unnatural or robotic ${toLanguage} phrasing — rewrite to sound like a human
+- Missing meaning (original says something absent from the translation)
+- Added meaning (translation says something not in the original)
+- Names/proper nouns incorrectly changed
+- Lines longer than ~42 characters — split at natural phrase boundaries
+
+━━━ STRUCTURAL RULES — DO NOT CHANGE THESE ━━━
+- Keep ALL timestamps EXACTLY as they appear — do NOT change any HH:MM:SS,mmm value
+- Keep ALL entry numbers EXACTLY as they appear
+- Output entry count MUST equal input entry count exactly
+- Fix ONLY the translation text — do not touch numbers or timestamps
 - Return ONLY the corrected translated SRT — no explanations, no markdown fences
 
 ORIGINAL SRT (${fromNote}):
@@ -601,12 +633,12 @@ ORIGINAL SRT (${fromNote}):
 ${originalSrt}
 ---
 
-TRANSLATED SRT (${toLanguage}) to verify and fix:
+TRANSLATED SRT (${toLanguage}) — verify and fix:
 ---
 ${translatedSrt}
 ---
 
-Return the fully verified and corrected ${toLanguage} SRT:`;
+Return the fully corrected ${toLanguage} SRT:`;
 }
 
 // ── Normalize SRT timestamps ─────────────────────────────────────────────────
