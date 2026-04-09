@@ -58,9 +58,8 @@ function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
 const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
 const PYTHON_BIN =
   process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
-// Write cookie file to tmpdir for reliability across all environments (workspace may be read-only in production).
 const YTDLP_COOKIES_FILE =
-  process.env.YTDLP_COOKIES_FILE ?? join(tmpdir(), ".yt-cookies.txt");
+  process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
 
 // Optional HTTP/SOCKS proxy for yt-dlp (critical for cloud/datacenter IPs blocked by YouTube).
 // Set YTDLP_PROXY=socks5://user:pass@host:port  or  http://host:port
