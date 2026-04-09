@@ -24,7 +24,12 @@ import {
 } from "@/lib/clip-history";
 import {
   loadActiveDownload,
+  loadCompletedDownloads,
+  deleteCompletedDownload,
+  clearCompletedDownloads,
+  isDownloadExpired,
   type ActiveDownloadRecord,
+  type CompletedDownloadRecord,
 } from "@/lib/download-history";
 import {
   loadBestClipsHistory,
@@ -39,13 +44,15 @@ type TabMode = "download" | "clips" | "subtitles" | "clipcutter";
 type AnyEntry =
   | { kind: "subtitle"; data: SubtitleHistoryEntry }
   | { kind: "clip"; data: ClipHistoryEntry }
-  | { kind: "bestclips"; data: BestClipsHistoryEntry };
+  | { kind: "bestclips"; data: BestClipsHistoryEntry }
+  | { kind: "download"; data: CompletedDownloadRecord };
 
 function loadAll(): AnyEntry[] {
   const subs = loadSubtitleHistory().map((d): AnyEntry => ({ kind: "subtitle", data: d }));
   const clips = loadClipHistory().map((d): AnyEntry => ({ kind: "clip", data: d }));
   const best = loadBestClipsHistory().map((d): AnyEntry => ({ kind: "bestclips", data: d }));
-  return [...subs, ...clips, ...best].sort((a, b) => {
+  const dls = loadCompletedDownloads().map((d): AnyEntry => ({ kind: "download", data: d }));
+  return [...subs, ...clips, ...best, ...dls].sort((a, b) => {
     const ta = a.data.createdAt;
     const tb = b.data.createdAt;
     return tb - ta;
@@ -301,7 +308,7 @@ function ClipRow({
         </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
-        <a href={`${BASE}/api/youtube/download/${entry.jobId}`} title="Re-download"
+        <a href={`${BASE}/api/youtube/file/${entry.jobId}`} title="Re-download"
           className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
           <Download className="w-3.5 h-3.5" />
         </a>
@@ -392,6 +399,59 @@ function BestClipsRow({
   );
 }
 
+function DownloadRow({
+  entry,
+  onDelete,
+}: {
+  entry: CompletedDownloadRecord;
+  onDelete: (jobId: string) => void;
+}) {
+  const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+  const expired = isDownloadExpired(entry);
+
+  return (
+    <div className="glass-panel rounded-xl border border-white/5 p-3 flex items-center gap-3">
+      <div className="shrink-0 w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
+        <Film className="w-4 h-4 text-blue-400" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-white/90 truncate max-w-[200px]">{entry.filename}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${expired ? "bg-orange-500/10 text-orange-300 border-orange-500/20" : "bg-blue-500/15 text-blue-300 border-blue-500/20"}`}>
+            {expired ? "Expired" : "Video"}
+          </span>
+          {entry.filesize && (
+            <span className="text-[10px] text-white/30">{formatFilesize(entry.filesize)}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-white/40">
+          {entry.url && (
+            <a href={entry.url} target="_blank" rel="noopener noreferrer"
+              className="truncate max-w-[160px] hover:text-white/70 transition-colors">
+              {shortUrl(entry.url)}
+            </a>
+          )}
+          {entry.url && <span>·</span>}
+          <Clock className="w-3 h-3" />
+          <span>{relativeTime(entry.createdAt)}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        {!expired && (
+          <a href={`${BASE}/api/youtube/file/${entry.jobId}`} title="Re-download"
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
+            <Download className="w-3.5 h-3.5" />
+          </a>
+        )}
+        <button onClick={() => onDelete(entry.jobId)} title="Delete"
+          className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
@@ -414,11 +474,13 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
   const handleDeleteSubtitle = (id: string) => { deleteSubtitle(id); refresh(); };
   const handleDeleteClip = (jobId: string) => { deleteFromClipHistory(jobId); refresh(); };
   const handleDeleteBestClips = (id: string) => { deleteFromBestClipsHistory(id); refresh(); };
+  const handleDeleteDownload = (jobId: string) => { deleteCompletedDownload(jobId); refresh(); };
 
   const handleClearAll = () => {
     loadSubtitleHistory().forEach((e) => deleteSubtitle(e.id));
     loadClipHistory().forEach((e) => deleteFromClipHistory(e.jobId));
     loadBestClipsHistory().forEach((e) => deleteFromBestClipsHistory(e.id));
+    clearCompletedDownloads();
     refresh();
     toast({ title: "History cleared", description: "All recent activity has been removed." });
   };
@@ -529,6 +591,15 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
                           key={`clip-${entry.data.jobId}`}
                           entry={entry.data}
                           onDelete={handleDeleteClip}
+                        />
+                      );
+                    }
+                    if (entry.kind === "download") {
+                      return (
+                        <DownloadRow
+                          key={`dl-${entry.data.jobId}`}
+                          entry={entry.data}
+                          onDelete={handleDeleteDownload}
                         />
                       );
                     }

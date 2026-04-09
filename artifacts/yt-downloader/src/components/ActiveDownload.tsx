@@ -5,6 +5,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Download, Loader2, CheckCircle2, AlertCircle, Clock, TimerOff } from "lucide-react";
 import { cn, formatBytes } from "@/lib/utils";
+import { loadActiveDownload, saveCompletedDownload } from "@/lib/download-history";
 
 const EXPIRY_SECONDS = 2 * 60 * 60; // 2 hours
 
@@ -36,6 +37,8 @@ export function ActiveDownload({ jobId, onReset, onExpired }: ActiveDownloadProp
   const status = (progress?.status as string) || "pending";
   const percent = progress?.percent || 0;
 
+  const savedCompletedRef = useRef(false);
+
   const markExpired = () => {
     setFileExpired(true);
     if (!onExpiredCalledRef.current) {
@@ -48,6 +51,18 @@ export function ActiveDownload({ jobId, onReset, onExpired }: ActiveDownloadProp
     if (status === "done" && !countdownStarted.current) {
       countdownStarted.current = true;
       setSecondsLeft(EXPIRY_SECONDS);
+
+      if (!savedCompletedRef.current && progress?.filename) {
+        savedCompletedRef.current = true;
+        const activeDl = loadActiveDownload();
+        saveCompletedDownload({
+          jobId,
+          url: activeDl?.url ?? "",
+          filename: progress.filename,
+          filesize: progress.filesize ?? null,
+          createdAt: Date.now(),
+        });
+      }
       intervalRef.current = setInterval(() => {
         setSecondsLeft((prev) => {
           if (prev === null || prev <= 1) {

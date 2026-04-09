@@ -24,7 +24,12 @@ import {
 } from "@/lib/clip-history";
 import {
   loadActiveDownload,
+  loadCompletedDownloads,
+  deleteCompletedDownload,
+  clearCompletedDownloads,
+  isDownloadExpired,
   type ActiveDownloadRecord,
+  type CompletedDownloadRecord,
 } from "@/lib/download-history";
 import {
   loadBestClipsHistory,
@@ -37,7 +42,8 @@ type TabMode = "download" | "clips" | "subtitles" | "clipcutter";
 type AnyEntry =
   | { kind: "subtitle"; data: SubtitleHistoryEntry }
   | { kind: "clip"; data: ClipHistoryEntry }
-  | { kind: "bestclips"; data: BestClipsHistoryEntry };
+  | { kind: "bestclips"; data: BestClipsHistoryEntry }
+  | { kind: "download"; data: CompletedDownloadRecord };
 
 interface ActiveEntry {
   kind: "subtitle" | "clipcutter" | "download";
@@ -72,7 +78,8 @@ function loadAllCompleted(): AnyEntry[] {
   const subs = loadSubtitleHistory().map((d): AnyEntry => ({ kind: "subtitle", data: d }));
   const clips = loadClipHistory().map((d): AnyEntry => ({ kind: "clip", data: d }));
   const best = loadBestClipsHistory().map((d): AnyEntry => ({ kind: "bestclips", data: d }));
-  return [...subs, ...clips, ...best].sort((a, b) => b.data.createdAt - a.data.createdAt);
+  const dls = loadCompletedDownloads().map((d): AnyEntry => ({ kind: "download", data: d }));
+  return [...subs, ...clips, ...best, ...dls].sort((a, b) => b.data.createdAt - a.data.createdAt);
 }
 
 function loadAllActive(): ActiveEntry[] {
@@ -149,6 +156,7 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
   const handleDelete = (entry: AnyEntry) => {
     if (entry.kind === "subtitle") deleteSubtitle(entry.data.id);
     else if (entry.kind === "clip") deleteFromClipHistory(entry.data.jobId);
+    else if (entry.kind === "download") deleteCompletedDownload(entry.data.jobId);
     else deleteFromBestClipsHistory(entry.data.id);
     refresh();
   };
@@ -157,6 +165,7 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
     loadSubtitleHistory().forEach((e) => deleteSubtitle(e.id));
     loadClipHistory().forEach((e) => deleteFromClipHistory(e.jobId));
     loadBestClipsHistory().forEach((e) => deleteFromBestClipsHistory(e.id));
+    clearCompletedDownloads();
     refresh();
     toast({ title: "History cleared" });
   };
@@ -382,7 +391,7 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
                               </div>
                               <div className="flex items-center gap-0.5 shrink-0">
                                 <a
-                                  href={`${BASE}/api/youtube/download/${d.jobId}`}
+                                  href={`${BASE}/api/youtube/file/${d.jobId}`}
                                   className="p-1.5 rounded-lg text-white/30 hover:text-white hover:bg-white/10 transition-colors"
                                   title="Download clip"
                                 >
@@ -460,6 +469,44 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
                                   </motion.div>
                                 )}
                               </AnimatePresence>
+                            </div>
+                          );
+                        }
+
+                        if (entry.kind === "download") {
+                          const d = entry.data;
+                          const expired = isDownloadExpired(d);
+                          return (
+                            <div key={key} className="rounded-xl border border-white/5 bg-white/3 flex items-center gap-2.5 px-3 py-2.5">
+                              <Film className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-white/85 truncate">{d.filename}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-white/35">
+                                  <span className={expired ? "text-orange-400/70 font-medium" : "text-blue-400/70 font-medium"}>
+                                    {expired ? "Expired" : "Download"}
+                                  </span>
+                                  {d.filesize && <><span>·</span><span>{formatFilesize(d.filesize)}</span></>}
+                                  <span>·</span>
+                                  <span>{relativeTime(d.createdAt)}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-0.5 shrink-0">
+                                {!expired && (
+                                  <a
+                                    href={`${BASE}/api/youtube/file/${d.jobId}`}
+                                    className="p-1.5 rounded-lg text-white/30 hover:text-white hover:bg-white/10 transition-colors"
+                                    title="Re-download"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                  </a>
+                                )}
+                                <button
+                                  onClick={() => handleDelete(entry)}
+                                  className="p-1.5 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
                             </div>
                           );
                         }
