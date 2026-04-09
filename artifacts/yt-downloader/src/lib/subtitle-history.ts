@@ -52,6 +52,40 @@ export function clearHistory(): void {
   } catch {}
 }
 
+// ── Active job persistence ────────────────────────────────────────────────────
+// Saves the currently-running job to localStorage so that if the user navigates
+// away and comes back, the component can reconnect and resume polling.
+
+const ACTIVE_JOB_KEY = "ytgrabber_active_srt_job";
+
+export interface ActiveJobRecord {
+  jobId: string;
+  mode: "url" | "file";
+  url?: string;
+  inputFilename?: string;
+  language: string;
+  translateTo: string;
+  startedAt: number;
+}
+
+export function saveActiveJob(record: ActiveJobRecord): void {
+  try { localStorage.setItem(ACTIVE_JOB_KEY, JSON.stringify(record)); } catch {}
+}
+
+export function loadActiveJob(): ActiveJobRecord | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_JOB_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as ActiveJobRecord;
+  } catch { return null; }
+}
+
+export function clearActiveJob(): void {
+  try { localStorage.removeItem(ACTIVE_JOB_KEY); } catch {}
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
 export function formatRelativeTime(ts: number): string {
   const diff = Date.now() - ts;
   const mins = Math.floor(diff / 60000);

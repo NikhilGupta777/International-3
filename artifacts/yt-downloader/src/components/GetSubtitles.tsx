@@ -11,11 +11,15 @@ import { useToast } from "@/hooks/use-toast";
 import { LANGUAGES, TRANSLATE_LANGUAGES } from "@/lib/subtitle-languages";
 import {
   type SubtitleHistoryEntry,
+  type ActiveJobRecord,
   loadHistory,
   saveToHistory,
   deleteFromHistory,
   clearHistory,
   formatRelativeTime,
+  saveActiveJob,
+  loadActiveJob,
+  clearActiveJob,
 } from "@/lib/subtitle-history";
 
 const BASE = () => (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
@@ -125,6 +129,32 @@ export function GetSubtitles() {
     ? [...jobStepBase, ...TRANSLATE_STEPS, "done"]
     : [...jobStepBase, "done"];
 
+  // ── Reconnect to an active job on mount ────────────────────────────────────
+  // If the user navigated away while a job was running, resume polling on return.
+  useEffect(() => {
+    const active = loadActiveJob();
+    if (!active) return;
+
+    // Restore refs so the done-handler can save the correct history entry
+    jobInputModeRef.current = active.mode;
+    jobTranslateToRef.current = active.translateTo;
+    lastUrlRef.current = active.url ?? "";
+    lastLangRef.current = active.language;
+    lastTranslateRef.current = active.translateTo;
+    lastModeRef.current = active.mode;
+
+    // Restore visible state
+    setJobId(active.jobId);
+    setJobStartedAt(active.startedAt);
+    setLoading(true);
+    setJobStatus("generating");
+    setJobMessage("Reconnecting to background job…");
+    if (active.url) setUrl(active.url);
+
+    pollStatus(active.jobId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Click-outside handler for both dropdowns
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
@@ -158,6 +188,17 @@ export function GetSubtitles() {
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`${BASE()}/api/subtitles/status/${id}`);
+
+        // 404 means the server restarted and the in-memory job is gone
+        if (res.status === 404) {
+          stopPolling();
+          setLoading(false);
+          setJobStatus("error");
+          setJobError("The server was restarted and the job was lost. Please try again.");
+          clearActiveJob();
+          return;
+        }
+
         const data = await res.json();
 
         if (data.durationSecs != null) setDurationSecs(data.durationSecs);
@@ -195,14 +236,17 @@ export function GetSubtitles() {
           };
           saveToHistory(entry);
           setHistory(loadHistory());
+          clearActiveJob();
         } else if (data.status === "error") {
           stopPolling();
           setLoading(false);
           setJobError(data.error ?? "Unknown error");
+          clearActiveJob();
           toast({ title: "Failed", description: data.error, variant: "destructive" });
         } else if (data.status === "cancelled") {
           stopPolling();
           setLoading(false);
+          clearActiveJob();
         }
       } catch {
         // keep polling on transient network errors
@@ -259,9 +303,21 @@ export function GetSubtitles() {
 
       setJobId(data.jobId);
 
+      // Persist active job so the user can reconnect after navigating away
+      saveActiveJob({
+        jobId: data.jobId,
+        mode,
+        url: mode === "url" ? urlVal : undefined,
+        inputFilename: mode === "file" ? fileVal?.name : undefined,
+        language: lang,
+        translateTo: trans,
+        startedAt: Date.now(),
+      });
+
       // If cancel was clicked while the initial fetch was in-flight, cancel the server job now
       if (pendingCancelRef.current) {
         try { await fetch(`${BASE()}/api/subtitles/cancel/${data.jobId}`, { method: "POST" }); } catch {}
+        clearActiveJob();
         return; // UI already shows "cancelled" from handleCancel
       }
 
@@ -299,6 +355,7 @@ export function GetSubtitles() {
   const handleCancel = async () => {
     pendingCancelRef.current = true;
     stopPolling();
+    clearActiveJob();
     setJobStatus("cancelled");
     setJobMessage("Cancelled by user");
     setLoading(false);
@@ -351,6 +408,7 @@ export function GetSubtitles() {
 
   const reset = () => {
     stopPolling();
+    clearActiveJob();
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     setJobId(null); setJobStatus(null); setJobMessage(""); setJobError("");
     setSrtContent(null); setOriginalSrt(null); setOriginalFilename(null);
