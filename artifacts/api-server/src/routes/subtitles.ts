@@ -300,6 +300,20 @@ function getGenAI(): GoogleGenAI | null {
   return null;
 }
 
+// Returns all configured personal API key clients in order.
+// Reads GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4.
+function getAllPersonalGenAIClients(): GoogleGenAI[] {
+  const keyEnvs = [
+    process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3,
+    process.env.GEMINI_API_KEY_4,
+  ];
+  return keyEnvs
+    .filter((k): k is string => !!k)
+    .map((apiKey) => new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } }));
+}
+
 function getReplitGenAI(): GoogleGenAI | null {
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const apiKey  = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
@@ -309,13 +323,48 @@ function getReplitGenAI(): GoogleGenAI | null {
   return null;
 }
 
-// All passes: try Replit first with the specified model.
-// If Replit is unavailable or fails for any reason, fall back to the personal
-// key with gemini-2.5-flash. The personal key is also the upload key, so it
-// can always access the uploaded fileUri if the Replit proxy cannot.
+// Passes 1 & 2 (audio-dependent): use personal keys only with key rotation.
+// Tries each configured key in order with gemini-2.5-flash.
+// Rotates to the next key on 429 rate limit. Throws if all keys are exhausted.
+async function generateWithKeyRotation(
+  requestFactory: (model: string) => any,
+  label: string,
+): Promise<string> {
+  const clients = getAllPersonalGenAIClients();
+  if (clients.length === 0) {
+    throw new Error("No Gemini API key configured — add GEMINI_API_KEY");
+  }
+
+  const model = "gemini-2.5-flash";
+  let lastErr: unknown;
+
+  for (let i = 0; i < clients.length; i++) {
+    const keyLabel = i === 0 ? "key 1" : `key ${i + 1}`;
+    try {
+      const result = await clients[i].models.generateContent(requestFactory(model));
+      logger.info({ model, keyLabel, label }, `${label} completed via personal ${keyLabel}`);
+      return result.text?.trim() ?? "";
+    } catch (err) {
+      lastErr = err;
+      const msg = err instanceof Error ? err.message : String(err ?? "");
+      const isQuota = /resource_exhausted|quota|429|rate.?limit/i.test(msg);
+      if (isQuota && i < clients.length - 1) {
+        logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited — trying next key`);
+      } else if (isQuota) {
+        logger.warn({ model, keyLabel, label }, `${label} all keys rate limited`);
+      } else {
+        logger.warn({ err, model, keyLabel, label }, `${label} ${keyLabel} failed (non-quota error)`);
+        throw err;
+      }
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed on all keys`);
+}
+
+// Passes 3 & 4 (text-only): try Replit integration first, fall back to personal key rotation.
 async function generateWithReplitFirst(
   replitModel: string,
-  personalGenAI: GoogleGenAI,
   requestFactory: (model: string) => any,
   label: string,
 ): Promise<string> {
@@ -329,28 +378,12 @@ async function generateWithReplitFirst(
     } catch (err) {
       logger.warn(
         { err, model: replitModel, label },
-        `${label} Replit failed — falling back to personal key with gemini-2.5-flash`,
+        `${label} Replit failed — falling back to personal key rotation`,
       );
     }
   }
 
-  // Personal key fallback — try in order until one succeeds
-  const personalModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"];
-  let lastPersonalErr: unknown;
-  for (const model of personalModels) {
-    try {
-      const result = await personalGenAI.models.generateContent(requestFactory(model));
-      logger.info({ model, label }, `${label} completed via personal key`);
-      return result.text?.trim() ?? "";
-    } catch (err) {
-      lastPersonalErr = err;
-      const msg = err instanceof Error ? err.message : String(err ?? "");
-      const isQuota = /resource_exhausted|quota|429|503|unavailable|overloaded|rate.?limit/i.test(msg);
-      logger.warn({ err, model, label }, `${label} personal key model failed${isQuota ? " (quota) — trying next" : ""}`);
-      if (!isQuota) throw err;
-    }
-  }
-  throw lastPersonalErr instanceof Error ? lastPersonalErr : new Error(`${label} failed on all models`);
+  return generateWithKeyRotation(requestFactory, label);
 }
 
 function buildSrtPrompt(language: string, durationSrt: string): string {
@@ -891,9 +924,7 @@ async function processAudio(
     job.status = "generating";
     job.message = "AI is transcribing audio...";
 
-    const rawSrt = await generateWithReplitFirst(
-      "gemini-2.5-flash",
-      genAI,
+    const rawSrt = await generateWithKeyRotation(
       (model) => ({
         model,
         contents: [
@@ -925,9 +956,7 @@ async function processAudio(
     job.status = "correcting";
     job.message = "AI is auto-correcting errors...";
 
-    const correctedSrt = await generateWithReplitFirst(
-      "gemini-3.1-pro-preview",
-      genAI,
+    const correctedSrt = await generateWithKeyRotation(
       (model) => ({
         model,
         contents: [
@@ -977,7 +1006,6 @@ async function processAudio(
 
       const translatedRaw = await generateWithReplitFirst(
         "gemini-3.1-pro-preview",
-        genAI,
         (model) => ({
           model,
           contents: [
@@ -1006,7 +1034,6 @@ async function processAudio(
 
       const verifiedRaw = await generateWithReplitFirst(
         "gemini-3.1-pro-preview",
-        genAI,
         (model) => ({
           model,
           contents: [
