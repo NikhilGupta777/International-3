@@ -397,7 +397,7 @@ function BestClipsRow({
 export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
   const [entries, setEntries] = useState<AnyEntry[]>(() => loadAll());
   const [activeEntries, setActiveEntries] = useState<ActiveEntry[]>(() => loadActiveEntries());
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const { toast } = useToast();
 
   const refresh = useCallback(() => {
