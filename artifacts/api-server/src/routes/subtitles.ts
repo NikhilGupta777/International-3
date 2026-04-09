@@ -234,6 +234,7 @@ interface SrtJob {
   filename: string;
   originalFilename?: string;
   createdAt: number;
+  completedAt?: number;  // set when job reaches a terminal state (done/error/cancelled)
   translateTo?: string;
   cancelled?: boolean;
   durationSecs?: number;
@@ -241,11 +242,25 @@ interface SrtJob {
 }
 const jobs = new Map<string, SrtJob>();
 
-// Clean up jobs older than 30 min
+// ── Job cleanup rules ─────────────────────────────────────────────────────────
+// • Completed jobs (done/error/cancelled): kept for 2 hours after they FINISH,
+//   giving users a generous window to return and retrieve their results.
+// • Stuck / still-running jobs: cleaned up after 60 minutes from creation
+//   (generous enough to cover the longest subtitle job).
+const COMPLETED_JOB_TTL_MS = 2 * 60 * 60 * 1000;   // 2 hours after completion
+const RUNNING_JOB_TTL_MS   = 60 * 60 * 1000;         // 1 hour from creation
+
 setInterval(() => {
-  const cutoff = Date.now() - 30 * 60 * 1000;
+  const now = Date.now();
   for (const [id, job] of jobs) {
-    if (job.createdAt < cutoff) jobs.delete(id);
+    const isTerminal = job.status === "done" || job.status === "error" || job.status === "cancelled";
+    if (isTerminal && job.completedAt) {
+      // Keep completed jobs for 2 hours after they finished
+      if (now - job.completedAt > COMPLETED_JOB_TTL_MS) jobs.delete(id);
+    } else {
+      // Clean up jobs that have been running for more than 1 hour (stuck or very slow)
+      if (now - job.createdAt > RUNNING_JOB_TTL_MS) jobs.delete(id);
+    }
   }
 }, 5 * 60 * 1000);
 
@@ -877,6 +892,7 @@ async function processAudio(
   const clients = getAllPersonalGenAIClients();
   if (clients.length === 0) {
     job.status = "error";
+    job.completedAt = Date.now();
     job.error = "No Gemini API key configured for audio processing — add GEMINI_API_KEY to your secrets. The Replit AI integration does not support audio file uploads.";
     return;
   }
@@ -1127,6 +1143,11 @@ async function processAudio(
       job.error = err.message || "Failed to generate subtitles";
     }
   } finally {
+    // Stamp completedAt on any terminal state so the cleanup interval uses
+    // the 2-hour-after-completion TTL instead of the 30-min-from-creation one.
+    const isTerminal = job.status === "done" || job.status === "error" || job.status === "cancelled";
+    if (isTerminal && !job.completedAt) job.completedAt = Date.now();
+
     if (preprocessCleanup) {
       try { preprocessCleanup(); } catch {}
     }
@@ -1250,6 +1271,7 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
       logger.error({ err }, "SRT YouTube download error");
       if (job.status !== "cancelled") {
         job.status = "error";
+        job.completedAt = Date.now();
         job.error = err.message || "Failed to download audio";
       }
       try { rmSync(audioDir, { recursive: true }); } catch {}
@@ -1327,6 +1349,7 @@ router.post("/subtitles/cancel/:jobId", (req: Request, res: Response) => {
   }
   job.cancelled = true;
   job.status = "cancelled";
+  job.completedAt = Date.now();
   job.message = "Cancelled by user";
   res.json({ ok: true });
 });
