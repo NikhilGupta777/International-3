@@ -97,6 +97,8 @@ Express 5 API server. Routes live in `src/routes/` and use `@workspace/api-zod` 
 
 **Important setup**: Python 3 and yt-dlp are managed via `uv` (see `pyproject.toml`). Run `uv sync` from the workspace root to install deps into `.pythonlibs`. The `pnpm install` postinstall hook does this automatically.
 
+**yt-dlp JS challenge solving (EJS — critical since yt-dlp 2026.03.17)**: YouTube now requires JavaScript challenge solving (EJS) for the `web`/`web_embedded`/`mweb` clients to work. yt-dlp 2026.03.17 ships the EJS system but defaults to Deno as the only enabled JS runtime. Since Deno is not installed in this environment, all three route files (`youtube.ts`, `bhagwat.ts`, `subtitles.ts`) pass `--js-runtimes node --js-runtimes bun --remote-components ejs:github` in their base args to enable Node.js (20.20.0) and Bun (1.3.6) — both installed in Nix — and allow fetching the latest solver script from GitHub (cached on first run). Without these flags, yt-dlp reports `JS runtimes: none` and all HTTPS formats fail with signature/n-challenge errors.
+
 **Production deployment**: The API server artifact.toml build step runs `pnpm install --frozen-lockfile` (which triggers `uv sync` via postinstall) before bundling with esbuild. Environment vars `UV_PROJECT_ENVIRONMENT=/home/runner/workspace/.pythonlibs`, `UV_PYTHON_PREFERENCE=only-system`, and `UV_PYTHON_DOWNLOADS=never` ensure Python deps go to the correct location. The PYTHONPATH in spawn calls (`youtube.ts`, `bhagwat.ts`) is set dynamically from `process.env.REPL_HOME ?? process.cwd()` so it works in both dev and production.
 
 ### `lib/db` (`@workspace/db`)

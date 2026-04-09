@@ -762,6 +762,9 @@ const YTDLP_BASE_ARGS: string[] = [
   "--fragment-retries", "5",
   "--extractor-retries", "5",
   "--socket-timeout", "30",
+  "--js-runtimes", "node",
+  "--js-runtimes", "bun",
+  "--remote-components", "ejs:github",
   "--add-headers",
   [
     "Accept-Language:en-US,en;q=0.9",
@@ -827,6 +830,9 @@ const YTDLP_SUBS_ARGS: string[] = [
   "--retries", "5",
   "--extractor-retries", "5",
   "--socket-timeout", "30",
+  "--js-runtimes", "node",
+  "--js-runtimes", "bun",
+  "--remote-components", "ejs:github",
   "--add-headers",
   [
     "Accept-Language:en-US,en;q=0.9",

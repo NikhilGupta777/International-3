@@ -186,6 +186,14 @@ const BASE_YTDLP_ARGS: string[] = [
   "--extractor-retries", "5",
   // Prevent infinite hangs on slow/broken connections
   "--socket-timeout", "30",
+  // Enable JavaScript challenge solving via Node.js (yt-dlp 2026.03.17+ requires EJS
+  // to decode YouTube signatures; default only enables Deno which is not installed here).
+  // bun is added as a lower-priority fallback since it is also installed in this env.
+  "--js-runtimes", "node",
+  "--js-runtimes", "bun",
+  // Allow yt-dlp to fetch the latest EJS challenge solver script from GitHub.
+  // The script is cached on first download; subsequent runs use the cache.
+  "--remote-components", "ejs:github",
   // Browser-like headers to avoid bot detection
   "--add-headers",
   [
