@@ -1,30 +1,40 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   History, Captions, Scissors, Sparkles, Trash2, Download,
-  Copy, ChevronDown, ChevronUp, Clock, X, ExternalLink
+  Copy, ChevronDown, ChevronUp, Clock, X, ExternalLink,
+  Loader2, ArrowRight, Film,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 import {
   loadHistory as loadSubtitleHistory,
+  loadActiveJob,
   deleteFromHistory as deleteSubtitle,
   type SubtitleHistoryEntry,
 } from "@/lib/subtitle-history";
 import {
   loadClipHistory,
+  loadActiveClipJobs,
   deleteFromClipHistory,
   formatFilesize,
   type ClipHistoryEntry,
+  type ActiveClipJob,
 } from "@/lib/clip-history";
+import {
+  loadActiveDownload,
+  type ActiveDownloadRecord,
+} from "@/lib/download-history";
 import {
   loadBestClipsHistory,
   deleteFromBestClipsHistory,
   type BestClipsHistoryEntry,
 } from "@/lib/best-clips-history";
+
+type TabMode = "download" | "clips" | "subtitles" | "clipcutter";
+
+// ── Unified completed-entry type ─────────────────────────────────────────────
 
 type AnyEntry =
   | { kind: "subtitle"; data: SubtitleHistoryEntry }
@@ -36,10 +46,74 @@ function loadAll(): AnyEntry[] {
   const clips = loadClipHistory().map((d): AnyEntry => ({ kind: "clip", data: d }));
   const best = loadBestClipsHistory().map((d): AnyEntry => ({ kind: "bestclips", data: d }));
   return [...subs, ...clips, ...best].sort((a, b) => {
-    const ta = a.kind === "subtitle" ? a.data.createdAt : a.kind === "clip" ? a.data.createdAt : a.data.createdAt;
-    const tb = b.kind === "subtitle" ? b.data.createdAt : b.kind === "clip" ? b.data.createdAt : b.data.createdAt;
+    const ta = a.data.createdAt;
+    const tb = b.data.createdAt;
     return tb - ta;
   });
+}
+
+// ── Active / in-progress entries ─────────────────────────────────────────────
+
+interface ActiveEntry {
+  kind: "subtitle" | "clipcutter" | "download";
+  label: string;
+  sub: string;
+  tab: TabMode;
+  startedAt: number;
+}
+
+function loadActiveEntries(): ActiveEntry[] {
+  const result: ActiveEntry[] = [];
+
+  const activeSub = loadActiveJob();
+  if (activeSub) {
+    result.push({
+      kind: "subtitle",
+      label: "Generating subtitles…",
+      sub: activeSub.mode === "url"
+        ? activeSub.url ? shortUrl(activeSub.url) : "YouTube video"
+        : activeSub.inputFilename ?? "uploaded file",
+      tab: "subtitles",
+      startedAt: activeSub.startedAt,
+    });
+  }
+
+  const activeClips = loadActiveClipJobs();
+  for (const c of activeClips) {
+    result.push({
+      kind: "clipcutter",
+      label: `Cutting clip ${c.label}`,
+      sub: shortUrl(c.url),
+      tab: "clipcutter",
+      startedAt: c.startedAt,
+    });
+  }
+
+  const activeDl = loadActiveDownload();
+  if (activeDl) {
+    result.push({
+      kind: "download",
+      label: "Downloading video…",
+      sub: shortUrl(activeDl.url),
+      tab: "download",
+      startedAt: activeDl.savedAt,
+    });
+  }
+
+  return result.sort((a, b) => b.startedAt - a.startedAt);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function shortUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const v = u.searchParams.get("v");
+    if (v) return `youtube.com/watch?v=${v}`;
+    return u.hostname + u.pathname.slice(0, 28);
+  } catch {
+    return url.slice(0, 40);
+  }
 }
 
 function relativeTime(ts: number): string {
@@ -54,17 +128,6 @@ function relativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-function shortUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    const v = u.searchParams.get("v");
-    if (v) return `youtube.com/watch?v=${v}`;
-    return u.hostname + u.pathname.slice(0, 28);
-  } catch {
-    return url.slice(0, 40);
-  }
-}
-
 function downloadSrt(filename: string, srt: string) {
   const blob = new Blob([srt], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -73,6 +136,54 @@ function downloadSrt(filename: string, srt: string) {
   document.body.appendChild(a); a.click();
   document.body.removeChild(a); URL.revokeObjectURL(url);
 }
+
+// ── In-progress row ───────────────────────────────────────────────────────────
+
+function ActiveRow({
+  entry,
+  onView,
+}: {
+  entry: ActiveEntry;
+  onView: (tab: TabMode) => void;
+}) {
+  const icon =
+    entry.kind === "subtitle" ? <Captions className="w-4 h-4 text-red-400" /> :
+    entry.kind === "clipcutter" ? <Scissors className="w-4 h-4 text-purple-400" /> :
+    <Film className="w-4 h-4 text-blue-400" />;
+
+  const ringColor =
+    entry.kind === "subtitle" ? "bg-primary/20" :
+    entry.kind === "clipcutter" ? "bg-purple-500/20" :
+    "bg-blue-500/20";
+
+  return (
+    <div className="glass-panel rounded-xl border border-white/10 border-l-2 border-l-amber-400/60 p-3 flex items-center gap-3">
+      <div className={cn("shrink-0 w-8 h-8 rounded-lg flex items-center justify-center", ringColor)}>
+        {icon}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <Loader2 className="w-3 h-3 text-amber-400 animate-spin shrink-0" />
+          <span className="text-xs font-semibold text-white/90">{entry.label}</span>
+        </div>
+        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-white/40">
+          <span className="truncate max-w-[200px]">{entry.sub}</span>
+          <span>·</span>
+          <Clock className="w-3 h-3" />
+          <span>Started {relativeTime(entry.startedAt)}</span>
+        </div>
+      </div>
+      <button
+        onClick={() => onView(entry.tab)}
+        className="shrink-0 flex items-center gap-1 text-[11px] font-medium text-amber-400/80 hover:text-amber-300 bg-amber-400/10 hover:bg-amber-400/20 rounded-lg px-2.5 py-1.5 transition-colors"
+      >
+        View <ArrowRight className="w-3 h-3" />
+      </button>
+    </div>
+  );
+}
+
+// ── Completed rows ────────────────────────────────────────────────────────────
 
 function SubtitleRow({
   entry,
@@ -101,13 +212,13 @@ function SubtitleRow({
             <span className="text-xs font-semibold text-white/90 truncate max-w-[200px]">
               {entry.srtFilename}
             </span>
-            <Badge className="text-[10px] px-1.5 py-0 bg-primary/15 text-red-300 border-primary/20">
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/15 text-red-300 border border-primary/20 font-medium">
               Subtitles
-            </Badge>
+            </span>
             {entry.translateTo && entry.translateTo !== "none" && (
-              <Badge className="text-[10px] px-1.5 py-0 bg-blue-500/15 text-blue-300 border-blue-500/20">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/20 font-medium">
                 → {entry.translateTo.toUpperCase()}
-              </Badge>
+              </span>
             )}
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-[11px] text-white/40">
@@ -125,45 +236,28 @@ function SubtitleRow({
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={copySrt}
-            title="Copy SRT"
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-          >
+          <button onClick={copySrt} title="Copy SRT"
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
             <Copy className="w-3.5 h-3.5" />
           </button>
-          <button
-            onClick={() => downloadSrt(entry.srtFilename, entry.srt)}
-            title="Download SRT"
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-          >
+          <button onClick={() => downloadSrt(entry.srtFilename, entry.srt)} title="Download SRT"
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
             <Download className="w-3.5 h-3.5" />
           </button>
-          <button
-            onClick={() => setExpanded((e) => !e)}
-            title={expanded ? "Collapse" : "Preview"}
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-          >
+          <button onClick={() => setExpanded((e) => !e)} title={expanded ? "Collapse" : "Preview"}
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
             {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
-          <button
-            onClick={() => onDelete(entry.id)}
-            title="Delete"
-            className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-          >
+          <button onClick={() => onDelete(entry.id)} title="Delete"
+            className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
       <AnimatePresence>
         {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden"
-          >
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
             <pre className="text-[10px] text-white/50 font-mono bg-black/20 px-4 py-3 overflow-auto max-h-40 leading-relaxed border-t border-white/5">
               {entry.srt.slice(0, 800)}{entry.srt.length > 800 ? "\n…" : ""}
             </pre>
@@ -191,9 +285,9 @@ function ClipRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-semibold text-white/90">{entry.label}</span>
-          <Badge className="text-[10px] px-1.5 py-0 bg-purple-500/15 text-purple-300 border-purple-500/20">
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/20 font-medium">
             Clip Cut
-          </Badge>
+          </span>
           <span className="text-[10px] text-white/40 font-medium uppercase">{entry.quality}</span>
           {entry.filesize && (
             <span className="text-[10px] text-white/30">{formatFilesize(entry.filesize)}</span>
@@ -207,18 +301,12 @@ function ClipRow({
         </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
-        <a
-          href={`${BASE}/api/youtube/download/${entry.jobId}`}
-          title="Re-download"
-          className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-        >
+        <a href={`${BASE}/api/youtube/download/${entry.jobId}`} title="Re-download"
+          className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
           <Download className="w-3.5 h-3.5" />
         </a>
-        <button
-          onClick={() => onDelete(entry.jobId)}
-          title="Delete"
-          className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-        >
+        <button onClick={() => onDelete(entry.jobId)} title="Delete"
+          className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors">
           <X className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -244,22 +332,18 @@ function BestClipsRow({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-white/90">{entry.clipCount} clips found</span>
-            <Badge className="text-[10px] px-1.5 py-0 bg-amber-500/15 text-amber-300 border-amber-500/20">
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/20 font-medium">
               Best Clips AI
-            </Badge>
+            </span>
             {!entry.hasTranscript && (
-              <Badge className="text-[10px] px-1.5 py-0 bg-white/5 text-white/40 border-white/10">
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-white/5 text-white/40 border border-white/10 font-medium">
                 no transcript
-              </Badge>
+              </span>
             )}
           </div>
           <div className="flex items-center gap-2 mt-0.5 text-[11px] text-white/40">
-            <a
-              href={entry.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="truncate max-w-[180px] hover:text-white/70 transition-colors"
-            >
+            <a href={entry.url} target="_blank" rel="noopener noreferrer"
+              className="truncate max-w-[180px] hover:text-white/70 transition-colors">
               {shortUrl(entry.url)}
             </a>
             <span>·</span>
@@ -268,40 +352,24 @@ function BestClipsRow({
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={() => setExpanded((e) => !e)}
-            title={expanded ? "Collapse" : "View clips"}
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-          >
+          <button onClick={() => setExpanded((e) => !e)} title={expanded ? "Collapse" : "View clips"}
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
             {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
-          <a
-            href={entry.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open on YouTube"
-            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-          >
+          <a href={entry.url} target="_blank" rel="noopener noreferrer" title="Open on YouTube"
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
-          <button
-            onClick={() => onDelete(entry.id)}
-            title="Delete"
-            className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors"
-          >
+          <button onClick={() => onDelete(entry.id)} title="Delete"
+            className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
       <AnimatePresence>
         {expanded && (
-          <motion.div
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="overflow-hidden border-t border-white/5"
-          >
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden border-t border-white/5">
             <div className="px-4 py-3 space-y-2 max-h-60 overflow-auto">
               {entry.clips.map((clip, i) => (
                 <div key={i} className="flex items-start gap-3 text-xs">
@@ -324,25 +392,28 @@ function BestClipsRow({
   );
 }
 
-export function GlobalHistoryPanel() {
+// ── Main panel ────────────────────────────────────────────────────────────────
+
+export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
   const [entries, setEntries] = useState<AnyEntry[]>(() => loadAll());
+  const [activeEntries, setActiveEntries] = useState<ActiveEntry[]>(() => loadActiveEntries());
   const [open, setOpen] = useState(false);
   const { toast } = useToast();
 
-  const refresh = useCallback(() => setEntries(loadAll()), []);
+  const refresh = useCallback(() => {
+    setEntries(loadAll());
+    setActiveEntries(loadActiveEntries());
+  }, []);
 
-  const handleDeleteSubtitle = (id: string) => {
-    deleteSubtitle(id);
-    refresh();
-  };
-  const handleDeleteClip = (jobId: string) => {
-    deleteFromClipHistory(jobId);
-    refresh();
-  };
-  const handleDeleteBestClips = (id: string) => {
-    deleteFromBestClipsHistory(id);
-    refresh();
-  };
+  // Poll every 4s to pick up newly completed jobs and drop finished active ones
+  useEffect(() => {
+    const id = setInterval(refresh, 4000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const handleDeleteSubtitle = (id: string) => { deleteSubtitle(id); refresh(); };
+  const handleDeleteClip = (jobId: string) => { deleteFromClipHistory(jobId); refresh(); };
+  const handleDeleteBestClips = (id: string) => { deleteFromBestClipsHistory(id); refresh(); };
 
   const handleClearAll = () => {
     loadSubtitleHistory().forEach((e) => deleteSubtitle(e.id));
@@ -352,7 +423,8 @@ export function GlobalHistoryPanel() {
     toast({ title: "History cleared", description: "All recent activity has been removed." });
   };
 
-  if (entries.length === 0 && !open) return null;
+  const totalCount = entries.length + activeEntries.length;
+  if (totalCount === 0 && !open) return null;
 
   return (
     <div className="mt-8">
@@ -365,9 +437,15 @@ export function GlobalHistoryPanel() {
           <span className="text-sm font-semibold text-white/50 group-hover:text-white/80 transition-colors">
             Recent Activity
           </span>
-          {entries.length > 0 && (
+          {totalCount > 0 && (
             <span className="text-[10px] bg-white/10 text-white/50 rounded-full px-2 py-0.5 font-medium">
-              {entries.length}
+              {totalCount}
+            </span>
+          )}
+          {activeEntries.length > 0 && (
+            <span className="flex items-center gap-1 text-[10px] bg-amber-400/15 text-amber-300 rounded-full px-2 py-0.5 font-medium border border-amber-400/20">
+              <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              {activeEntries.length} running
             </span>
           )}
         </div>
@@ -378,7 +456,7 @@ export function GlobalHistoryPanel() {
               className="flex items-center gap-1 text-[11px] text-white/30 hover:text-red-400 transition-colors px-2 py-1 rounded-lg hover:bg-red-500/10"
             >
               <Trash2 className="w-3 h-3" />
-              Clear all
+              Clear history
             </button>
           )}
           <ChevronDown
@@ -400,37 +478,66 @@ export function GlobalHistoryPanel() {
             className="overflow-hidden"
           >
             <div className="mt-3 space-y-2 pb-4">
-              {entries.length === 0 ? (
-                <p className="text-center text-white/30 text-sm py-8">No activity yet — results from all tabs will appear here.</p>
-              ) : (
-                entries.map((entry) => {
-                  if (entry.kind === "subtitle") {
-                    return (
-                      <SubtitleRow
-                        key={`sub-${entry.data.id}`}
-                        entry={entry.data}
-                        onDelete={handleDeleteSubtitle}
-                      />
-                    );
-                  }
-                  if (entry.kind === "clip") {
-                    return (
-                      <ClipRow
-                        key={`clip-${entry.data.jobId}`}
-                        entry={entry.data}
-                        onDelete={handleDeleteClip}
-                      />
-                    );
-                  }
-                  return (
-                    <BestClipsRow
-                      key={`best-${entry.data.id}`}
-                      entry={entry.data}
-                      onDelete={handleDeleteBestClips}
+              {/* In-progress section */}
+              {activeEntries.length > 0 && (
+                <>
+                  <p className="text-[10px] font-semibold text-white/30 uppercase tracking-wider px-1 pb-1">
+                    Processing in background
+                  </p>
+                  {activeEntries.map((e, i) => (
+                    <ActiveRow
+                      key={`active-${e.kind}-${i}`}
+                      entry={e}
+                      onView={onSwitchTab}
                     />
-                  );
-                })
+                  ))}
+                  {entries.length > 0 && (
+                    <div className="h-px bg-white/5 my-3" />
+                  )}
+                </>
               )}
+
+              {/* Completed section */}
+              {entries.length === 0 && activeEntries.length === 0 ? (
+                <p className="text-center text-white/30 text-sm py-8">
+                  No activity yet — results from all tabs will appear here.
+                </p>
+              ) : entries.length > 0 ? (
+                <>
+                  {activeEntries.length > 0 && (
+                    <p className="text-[10px] font-semibold text-white/30 uppercase tracking-wider px-1 pb-1">
+                      Completed
+                    </p>
+                  )}
+                  {entries.map((entry) => {
+                    if (entry.kind === "subtitle") {
+                      return (
+                        <SubtitleRow
+                          key={`sub-${entry.data.id}`}
+                          entry={entry.data}
+                          onDelete={handleDeleteSubtitle}
+                        />
+                      );
+                    }
+                    if (entry.kind === "clip") {
+                      return (
+                        <ClipRow
+                          key={`clip-${entry.data.jobId}`}
+                          entry={entry.data}
+                          onDelete={handleDeleteClip}
+                        />
+                      );
+                    }
+                    return (
+                      <BestClipsRow
+                        key={`best-${entry.data.id}`}
+                        entry={entry.data}
+                        onDelete={handleDeleteBestClips}
+                      />
+                    );
+                  })}
+                </>
+              ) : null}
             </div>
           </motion.div>
         )}

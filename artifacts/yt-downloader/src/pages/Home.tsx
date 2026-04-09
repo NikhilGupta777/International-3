@@ -474,7 +474,7 @@ export default function Home() {
 
           </AnimatePresence>
 
-          <GlobalHistoryPanel />
+          <GlobalHistoryPanel onSwitchTab={setMode} />
 
         </div>
       </main>
