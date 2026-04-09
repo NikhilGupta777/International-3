@@ -237,6 +237,7 @@ interface SrtJob {
   translateTo?: string;
   cancelled?: boolean;
   durationSecs?: number;
+  progressPct?: number;
 }
 const jobs = new Map<string, SrtJob>();
 
@@ -247,6 +248,23 @@ setInterval(() => {
     if (job.createdAt < cutoff) jobs.delete(id);
   }
 }, 5 * 60 * 1000);
+
+// ── WAV cache for URL retries ────────────────────────────────────────────────
+// Caches preprocessed 16kHz WAV files by YouTube URL so retries skip the
+// download and re-preprocessing steps entirely.
+interface CachedWav { wavPath: string; mimeType: string; durationSecs: number; createdAt: number; }
+const urlWavCache = new Map<string, CachedWav>();
+const WAV_CACHE_DIR = join(DOWNLOAD_DIR, "wav-cache");
+
+setInterval(() => {
+  const cutoff = Date.now() - 90 * 60 * 1000; // 90-min TTL
+  for (const [url, entry] of urlWavCache) {
+    if (entry.createdAt < cutoff) {
+      try { rmSync(entry.wavPath); } catch {}
+      urlWavCache.delete(url);
+    }
+  }
+}, 20 * 60 * 1000);
 
 // Disk storage for uploaded files
 const uploadStorage = multer.diskStorage({
@@ -289,8 +307,8 @@ function isAiConfigured(): boolean {
   );
 }
 
-// 15-minute timeout — long audio files can take many minutes for Gemini to process
-const GEMINI_TIMEOUT_MS = 15 * 60 * 1000;
+// 5-minute per-key timeout — keeps key rotation fast; generous enough for large audio
+const GEMINI_TIMEOUT_MS = 5 * 60 * 1000;
 
 function getGenAI(): GoogleGenAI | null {
   const directKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -725,6 +743,35 @@ function filterOutOfBoundsEntries(srt: string, durationSecs: number): string {
   }).join("\n\n") + "\n";
 }
 
+// ── Strict timestamp format filter ───────────────────────────────────────────
+// Drops any entry whose timestamp line doesn't exactly match HH:MM:SS,mmm --> HH:MM:SS,mmm
+// or where start >= end. Runs AFTER normalizeSrtTimestamps so common format errors are
+// already corrected; this removes anything still malformed.
+function strictFilterMalformedTimestamps(srt: string): string {
+  const TS_RE = /^\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}$/;
+  const entries = srt.trim().split(/\n\n+/);
+  const valid: string[] = [];
+  for (const entry of entries) {
+    const lines = entry.trim().split("\n");
+    if (lines.length < 3) continue;
+    if (!/^\d+$/.test(lines[0].trim())) continue;
+    const tsLine = lines[1].trim();
+    if (!TS_RE.test(tsLine)) continue;
+    const parts = tsLine.match(/^(.+?)\s*-->\s*(.+)$/);
+    if (parts) {
+      const startMs = tsToMs(parts[1].trim());
+      const endMs = tsToMs(parts[2].trim());
+      if (startMs < 0 || endMs < 0 || startMs >= endMs) continue;
+    }
+    valid.push(entry.trim());
+  }
+  return valid.map((entry, i) => {
+    const lines = entry.split("\n");
+    lines[0] = String(i + 1);
+    return lines.join("\n");
+  }).join("\n\n") + "\n";
+}
+
 // ── Basic SRT validity check ──────────────────────────────────────────────────
 // Checks first AND last entry so truncated output (maxOutputTokens hit) is caught.
 function validateSrt(srt: string): boolean {
@@ -762,19 +809,20 @@ function stripFences(text: string): string {
 }
 
 // ── Preprocess audio with ffmpeg (16kHz mono WAV) ────────────────────────────
-function preprocessAudio(inputPath: string): Promise<{ path: string; cleanup: () => void }> {
-  const outputPath = inputPath + "_16k.wav";
+// outputPath: optional explicit destination (used for cached WAVs outside audioDir)
+function preprocessAudio(inputPath: string, outputPath?: string): Promise<{ path: string; cleanup: () => void }> {
+  const outPath = outputPath ?? (inputPath + "_16k.wav");
   return new Promise((resolve) => {
     const proc = spawn("ffmpeg", [
       "-y", "-i", inputPath,
       "-ac", "1",           // mono
       "-ar", "16000",       // 16 kHz
       "-c:a", "pcm_s16le",  // 16-bit PCM
-      outputPath,
+      outPath,
     ]);
     proc.on("close", (code) => {
       if (code === 0) {
-        resolve({ path: outputPath, cleanup: () => { try { rmSync(outputPath); } catch {} } });
+        resolve({ path: outPath, cleanup: () => { try { rmSync(outPath); } catch {} } });
       } else {
         // Fallback: use original if ffmpeg fails
         resolve({ path: inputPath, cleanup: () => {} });
@@ -819,6 +867,7 @@ async function processAudio(
   filename: string,
   translateTo?: string,
   cleanup?: () => void,
+  precomputedWav?: { path: string; mimeType: string; durationSecs: number },
 ) {
   const job = jobs.get(jobId);
   if (!job) return;
@@ -826,25 +875,36 @@ async function processAudio(
   const clients = getAllPersonalGenAIClients();
   if (clients.length === 0) {
     job.status = "error";
-    job.error = "Gemini API key not configured";
+    job.error = "No Gemini API key configured for audio processing — add GEMINI_API_KEY to your secrets. The Replit AI integration does not support audio file uploads.";
     return;
   }
 
   let preprocessCleanup: (() => void) | null = null;
 
   try {
-    // Preprocess audio to 16kHz mono WAV for smaller upload and better accuracy
-    const preprocessed = await preprocessAudio(audioPath);
-    preprocessCleanup = preprocessed.cleanup;
-    const processedPath = preprocessed.path;
+    let processedPath: string;
+    let mimeType: string;
+    let durationSecs: number;
 
-    const ext = processedPath.split(".").pop()!.toLowerCase();
-    const mimeType = audioMimeType(ext);
+    if (precomputedWav) {
+      // Retry path: use cached preprocessed WAV — skip download and re-preprocessing
+      processedPath = precomputedWav.path;
+      mimeType = precomputedWav.mimeType;
+      durationSecs = precomputedWav.durationSecs;
+    } else {
+      // First-time path: preprocess audio to 16kHz mono WAV
+      const preprocessed = await preprocessAudio(audioPath);
+      preprocessCleanup = preprocessed.cleanup;
+      processedPath = preprocessed.path;
+      const ext = processedPath.split(".").pop()!.toLowerCase();
+      mimeType = audioMimeType(ext);
+      durationSecs = await getAudioDuration(processedPath);
+    }
+
     const audioBuffer = readFileSync(processedPath);
     const audioBlob = new Blob([audioBuffer], { type: mimeType });
 
     // Measure exact audio duration so we can tell Gemini to stay within bounds
-    const durationSecs = await getAudioDuration(processedPath);
     const durationSrt = durationSecs > 0 ? secondsToSrtTime(durationSecs) : "99:59:59";
     job.durationSecs = durationSecs;
     logger.info({ durationSecs, durationSrt }, "Audio duration measured");
@@ -866,6 +926,7 @@ async function processAudio(
       try {
         // Upload with this key's client
         job.status = "uploading";
+        job.progressPct = 20;
         job.message = ki === 0 ? "Uploading audio to AI..." : `Uploading audio to AI (${keyLabel})...`;
 
         const uploadResult = await client.files.upload({
@@ -890,6 +951,7 @@ async function processAudio(
         // Pass 1: Transcription — try each model in turn on this key
         if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
         job.status = "generating";
+        job.progressPct = 40;
         job.message = "AI is transcribing audio...";
 
         let rawSrt = "";
@@ -918,6 +980,7 @@ async function processAudio(
         // Pass 2: Correction — same fileUri (same key), try each model in turn
         if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
         job.status = "correcting";
+        job.progressPct = 60;
         job.message = "AI is auto-correcting errors...";
 
         let correctedSrt = "";
@@ -942,7 +1005,10 @@ async function processAudio(
         }
 
         const rawFinal = (correctedSrt && correctedSrt.length > 10) ? stripFences(correctedSrt) : cleanedRaw;
-        correctedFinalSrt = filterOutOfBoundsEntries(cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)), durationSecs);
+        const normalized = normalizeSrtTimestamps(rawFinal);
+        const deduped = cleanupHallucinatedEntries(normalized);
+        const strictFiltered = strictFilterMalformedTimestamps(deduped);
+        correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
 
         break; // Both passes succeeded — exit key loop
 
@@ -981,6 +1047,7 @@ async function processAudio(
       job.originalSrt = correctedFinalSrt;
       job.originalFilename = filename.replace(/\.srt$/i, "-original.srt");
       job.status = "translating";
+      job.progressPct = 80;
       job.message = `Translating subtitles to ${translateTo}...`;
 
       const translatedRaw = await generateWithReplitFirst(
@@ -1009,6 +1076,7 @@ async function processAudio(
       // Step 5: Verify the translation (text-only, no audio needed)
       if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
       job.status = "verifying";
+      job.progressPct = 95;
       job.message = `Verifying ${translateTo} translation...`;
 
       const verifiedRaw = await generateWithReplitFirst(
@@ -1034,17 +1102,19 @@ async function processAudio(
       // Restore timestamps again after verification pass (same Gemini behaviour)
       const verifiedSrt = restoreTimestamps(correctedFinalSrt, verifiedClean);
 
-      const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt));
+      const finalSrt = strictFilterMalformedTimestamps(cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt)));
       if (!validateSrt(finalSrt)) {
         job.status = "error";
         job.error = "AI returned an invalid translated subtitle file — please try again";
         return;
       }
       job.status = "done";
+      job.progressPct = 100;
       job.message = "Subtitles ready!";
       job.srt = finalSrt;
     } else {
       job.status = "done";
+      job.progressPct = 100;
       job.message = "Subtitles ready!";
       job.srt = correctedFinalSrt;
     }
@@ -1079,7 +1149,7 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
   }
 
   const jobId = randomUUID();
-  const audioDir = join(DOWNLOAD_DIR, `srt-yt-${jobId}`);
+  const normalizedUrl = url.trim();
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
 
   jobs.set(jobId, {
@@ -1088,6 +1158,7 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
     filename: "subtitles.srt",
     createdAt: Date.now(),
     translateTo: translateLang,
+    progressPct: 5,
   });
 
   res.json({ jobId });
@@ -1095,22 +1166,30 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
   // Process in background
   (async () => {
     const job = jobs.get(jobId)!;
+
+    // ── Check WAV cache (retry path: skip download + preprocessing) ──────────
+    const cached = urlWavCache.get(normalizedUrl);
+    if (cached && existsSync(cached.wavPath)) {
+      logger.info({ normalizedUrl }, "WAV cache hit — skipping download and preprocessing");
+      job.status = "uploading";
+      job.progressPct = 20;
+      job.message = "Using cached audio — skipping re-download...";
+      await processAudio(jobId, normalizedUrl, language, job.filename, translateLang, () => {}, cached);
+      return;
+    }
+
+    // ── Cache miss: download from YouTube ────────────────────────────────────
+    const audioDir = join(DOWNLOAD_DIR, `srt-yt-${jobId}`);
     try {
       mkdirSync(audioDir, { recursive: true });
-      // Use video title in filename so the downloaded SRT has a meaningful name
       const audioPattern = join(audioDir, "%(title)s.%(ext)s");
       await runYtDlpAudio([
         "-f", "bestaudio/best",
         "--no-playlist", "--no-warnings",
-        "-o", audioPattern, url.trim(),
+        "-o", audioPattern, normalizedUrl,
       ], job);
 
-      // Bail out if cancelled during download
-      if (job.cancelled) {
-        job.status = "cancelled";
-        job.message = "Cancelled";
-        return;
-      }
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
 
       const audioFiles = existsSync(audioDir) ? readdirSync(audioDir) : [];
       const audioFile = audioFiles
@@ -1123,14 +1202,48 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
         return;
       }
 
-      // Use the actual video title for the SRT filename
+      // Use the video title for the SRT filename
       const rawFilename = audioFile.split("/").pop() ?? "";
       const videoTitle = rawFilename.replace(/\.[^.]+$/, "").replace(/[<>:"/\\|?*]/g, "-").trim() || "subtitles";
       job.filename = `${videoTitle}.srt`;
 
-      await processAudio(jobId, audioFile, language, job.filename, translateLang, () => {
+      // Preprocess here so we can cache the WAV separately from the audioDir
+      job.progressPct = 15;
+      mkdirSync(WAV_CACHE_DIR, { recursive: true });
+      const wavOutputPath = join(WAV_CACHE_DIR, `${jobId}_16k.wav`);
+      const preprocessed = await preprocessAudio(audioFile, wavOutputPath);
+
+      if (job.cancelled) {
+        preprocessed.cleanup();
+        job.status = "cancelled"; job.message = "Cancelled";
         try { rmSync(audioDir, { recursive: true }); } catch {}
+        return;
+      }
+
+      const ext = preprocessed.path.split(".").pop()!.toLowerCase();
+      const mimeType = audioMimeType(ext);
+      const durationSecs = await getAudioDuration(preprocessed.path);
+
+      // Cache WAV for retry — lives in wav-cache dir, cleaned up by TTL interval
+      urlWavCache.set(normalizedUrl, {
+        wavPath: preprocessed.path,
+        mimeType,
+        durationSecs,
+        createdAt: Date.now(),
       });
+
+      // Original audio dir is no longer needed — WAV is cached separately
+      try { rmSync(audioDir, { recursive: true }); } catch {}
+
+      await processAudio(
+        jobId,
+        audioFile,
+        language,
+        job.filename,
+        translateLang,
+        () => {}, // audioDir already cleaned up above
+        { path: preprocessed.path, mimeType, durationSecs },
+      );
     } catch (err: any) {
       logger.error({ err }, "SRT YouTube download error");
       if (job.status !== "cancelled") {
@@ -1237,14 +1350,16 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
       originalSrt: job.originalSrt ?? null,
       originalFilename: job.originalFilename ?? null,
       durationSecs: job.durationSecs ?? null,
+      progressPct: 100,
     });
   } else if (job.status === "error") {
-    res.json({ status: job.status, error: job.error, durationSecs: job.durationSecs ?? null });
+    res.json({ status: job.status, error: job.error, durationSecs: job.durationSecs ?? null, progressPct: job.progressPct ?? 0 });
   } else {
     res.json({
       status: job.status,
       message: job.message,
       durationSecs: job.durationSecs ?? null,
+      progressPct: job.progressPct ?? 0,
     });
   }
 });

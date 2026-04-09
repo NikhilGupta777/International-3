@@ -3,33 +3,22 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
   AlertCircle, Globe, X, FileAudio, FileVideo, ChevronDown,
-  Copy, Check, RefreshCw, StopCircle,
+  Copy, Check, RefreshCw, StopCircle, AlignLeft,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { LANGUAGES, TRANSLATE_LANGUAGES } from "@/lib/subtitle-languages";
 
 const BASE = () => (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 
-const LANGUAGES = [
-  { value: "auto",    label: "Auto-detect" },
-  { value: "Odia",    label: "Odia (ଓଡ଼ିଆ)" },
-  { value: "Hindi",   label: "Hindi (हिन्दी)" },
-  { value: "English", label: "English" },
-  { value: "Bengali", label: "Bengali (বাংলা)" },
-  { value: "Telugu",  label: "Telugu (తెలుగు)" },
-  { value: "Tamil",   label: "Tamil (தமிழ்)" },
-  { value: "Marathi", label: "Marathi (मराठी)" },
-  { value: "Punjabi", label: "Punjabi (ਪੰਜਾਬੀ)" },
-  { value: "Kannada", label: "Kannada (ಕನ್ನಡ)" },
-];
-
-const TRANSLATE_LANGUAGES = [
-  { value: "none",    label: "No translation" },
-  { value: "Hindi",   label: "Translate → Hindi (हिन्दी)" },
-  { value: "English", label: "Translate → English" },
-  { value: "Odia",    label: "Translate → Odia (ଓଡ଼ିଆ)" },
-];
+/** Strip SRT index numbers and timestamps — returns plain readable text */
+function srtToText(srt: string): string {
+  return srt.trim().split(/\n\n+/).map((block) => {
+    const lines = block.trim().split("\n");
+    return lines.slice(2).join(" ").trim();
+  }).filter(Boolean).join("\n");
+}
 
 type InputMode = "url" | "file";
 
@@ -86,8 +75,11 @@ export function GetSubtitles() {
   const [loading, setLoading] = useState(false);
   const [langOpen, setLangOpen] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
+  const [progressPct, setProgressPct] = useState(0);
   const [copied, setCopied] = useState(false);
   const [copiedOriginal, setCopiedOriginal] = useState(false);
+  const [copiedText, setCopiedText] = useState(false);
+  const [copiedTextOriginal, setCopiedTextOriginal] = useState(false);
   // Smooth 1-second tick so the countdown updates every second, not every poll
   const [tick, setTick] = useState(0);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
@@ -160,6 +152,7 @@ export function GetSubtitles() {
         const data = await res.json();
 
         if (data.durationSecs != null) setDurationSecs(data.durationSecs);
+        if (data.progressPct != null) setProgressPct(data.progressPct);
         setJobStatus(data.status);
         setJobMessage(data.message ?? STEP_LABELS[data.status] ?? "");
 
@@ -197,6 +190,7 @@ export function GetSubtitles() {
     setOriginalSrt(null);
     setOriginalFilename(null);
     setDurationSecs(null);
+    setProgressPct(5);
     setTick(0);
     const initialStatus = mode === "url" ? "audio" : "uploading";
     setJobStatus(initialStatus);
@@ -334,6 +328,7 @@ export function GetSubtitles() {
     setJobId(null); setJobStatus(null); setJobMessage(""); setJobError("");
     setSrtContent(null); setOriginalSrt(null); setOriginalFilename(null);
     setDurationSecs(null); setLoading(false); setJobStartedAt(null); setTick(0);
+    setProgressPct(0);
     lastGoodStepRef.current = null;
   };
 
@@ -625,6 +620,18 @@ export function GetSubtitles() {
             exit={{ opacity: 0, y: -8 }}
             className="glass-panel rounded-2xl p-5 flex flex-col gap-4"
           >
+            {/* Progress bar */}
+            {isRunning && (
+              <div className="w-full h-1.5 bg-white/8 rounded-full overflow-hidden">
+                <motion.div
+                  className="h-full bg-gradient-to-r from-teal-500 to-teal-400 rounded-full"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progressPct}%` }}
+                  transition={{ duration: 0.6, ease: "easeOut" }}
+                />
+              </div>
+            )}
+
             {/* Step indicators — uses job's frozen stepOrder + last known good step */}
             <div className="flex items-center gap-2">
               {jobStepOrder.map((step, i) => {
@@ -709,9 +716,28 @@ export function GetSubtitles() {
                     onClick={copyToClipboard}
                     variant="outline"
                     className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
+                    title="Copy full SRT with timestamps"
                   >
                     {copied ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
-                    {copied ? "Copied!" : "Copy"}
+                    {copied ? "Copied!" : "Copy SRT"}
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      if (!srtContent) return;
+                      try {
+                        await navigator.clipboard.writeText(srtToText(srtContent));
+                        setCopiedText(true);
+                        setTimeout(() => setCopiedText(false), 2000);
+                      } catch {
+                        toast({ title: "Copy failed", description: "Could not access clipboard", variant: "destructive" });
+                      }
+                    }}
+                    variant="outline"
+                    className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
+                    title="Copy plain text only (no timestamps)"
+                  >
+                    {copiedText ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <AlignLeft className="w-4 h-4 mr-1.5" />}
+                    {copiedText ? "Copied!" : "Copy text"}
                   </Button>
                 </div>
 
@@ -730,9 +756,28 @@ export function GetSubtitles() {
                       onClick={copyOriginalToClipboard}
                       variant="outline"
                       className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
+                      title="Copy full original SRT with timestamps"
                     >
                       {copiedOriginal ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
-                      {copiedOriginal ? "Copied!" : "Copy"}
+                      {copiedOriginal ? "Copied!" : "Copy SRT"}
+                    </Button>
+                    <Button
+                      onClick={async () => {
+                        if (!originalSrt) return;
+                        try {
+                          await navigator.clipboard.writeText(srtToText(originalSrt));
+                          setCopiedTextOriginal(true);
+                          setTimeout(() => setCopiedTextOriginal(false), 2000);
+                        } catch {
+                          toast({ title: "Copy failed", description: "Could not access clipboard", variant: "destructive" });
+                        }
+                      }}
+                      variant="outline"
+                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
+                      title="Copy plain text only (no timestamps)"
+                    >
+                      {copiedTextOriginal ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <AlignLeft className="w-4 h-4 mr-1.5" />}
+                      {copiedTextOriginal ? "Copied!" : "Copy text"}
                     </Button>
                   </div>
                 )}
