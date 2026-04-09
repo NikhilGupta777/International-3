@@ -326,6 +326,15 @@ function getReplitGenAI(): GoogleGenAI | null {
 // Passes 1 & 2 (audio-dependent): use personal keys only with key rotation.
 // Tries each configured key in order with gemini-2.5-flash.
 // Rotates to the next key on 429 rate limit. Throws if all keys are exhausted.
+// Models tried in order — gemini-2.5-flash is primary (as specified).
+// The remaining models are used only when ALL keys are rate-limited on the current model.
+const KEY_ROTATION_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-3.1-flash-lite-preview",
+  "gemini-1.5-flash",
+];
+
 async function generateWithKeyRotation(
   requestFactory: (model: string) => any,
   label: string,
@@ -335,31 +344,40 @@ async function generateWithKeyRotation(
     throw new Error("No Gemini API key configured — add GEMINI_API_KEY");
   }
 
-  const model = "gemini-2.5-flash";
   let lastErr: unknown;
 
-  for (let i = 0; i < clients.length; i++) {
-    const keyLabel = i === 0 ? "key 1" : `key ${i + 1}`;
-    try {
-      const result = await clients[i].models.generateContent(requestFactory(model));
-      logger.info({ model, keyLabel, label }, `${label} completed via personal ${keyLabel}`);
-      return result.text?.trim() ?? "";
-    } catch (err) {
-      lastErr = err;
-      const msg = err instanceof Error ? err.message : String(err ?? "");
-      const isQuota = /resource_exhausted|quota|429|rate.?limit/i.test(msg);
-      if (isQuota && i < clients.length - 1) {
-        logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited — trying next key`);
-      } else if (isQuota) {
-        logger.warn({ model, keyLabel, label }, `${label} all keys rate limited`);
-      } else {
-        logger.warn({ err, model, keyLabel, label }, `${label} ${keyLabel} failed (non-quota error)`);
-        throw err;
+  // Outer loop: model. Inner loop: key.
+  // All 4 keys are tried for each model before falling to the next model.
+  for (const model of KEY_ROTATION_MODELS) {
+    let allQuotaForModel = true;
+
+    for (let i = 0; i < clients.length; i++) {
+      const keyLabel = `key ${i + 1}`;
+      try {
+        const result = await clients[i].models.generateContent(requestFactory(model));
+        logger.info({ model, keyLabel, label }, `${label} completed via personal ${keyLabel}`);
+        return result.text?.trim() ?? "";
+      } catch (err) {
+        lastErr = err;
+        const msg = err instanceof Error ? err.message : String(err ?? "");
+        const isQuota = /resource_exhausted|quota|429|rate.?limit/i.test(msg);
+        if (isQuota) {
+          logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited on ${model} — trying next`);
+        } else {
+          // Non-quota error (e.g. network, invalid request) — stop immediately
+          allQuotaForModel = false;
+          logger.warn({ err, model, keyLabel, label }, `${label} ${keyLabel} failed (non-quota error)`);
+          throw err;
+        }
       }
+    }
+
+    if (allQuotaForModel) {
+      logger.warn({ model, label }, `${label} all keys rate limited on ${model} — trying next model`);
     }
   }
 
-  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed on all keys`);
+  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed on all keys and all models`);
 }
 
 // Passes 3 & 4 (text-only): try Replit integration first, fall back to personal key rotation.
