@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions
+  Download, Loader2, Sparkles, Captions, Scissors
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -15,8 +15,9 @@ import { ActiveDownload } from "@/components/ActiveDownload";
 import { BestClips, type BestClipsHandle } from "@/components/BestClips";
 import { BhavishyaClips } from "@/components/BhavishyaClips";
 import { GetSubtitles } from "@/components/GetSubtitles";
+import { ClipCutter } from "@/components/ClipCutter";
 
-type Mode = "download" | "clips" | "subtitles";
+type Mode = "download" | "clips" | "subtitles" | "clipcutter";
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
   if (
@@ -133,10 +134,11 @@ export default function Home() {
   const showVideoInfo = mode === "download" && video && !jobId;
   const showClips = mode === "clips" && submittedUrl;
   const showSubtitles = mode === "subtitles";
+  const showClipCutter = mode === "clipcutter";
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
-  const showSearch = mode !== "subtitles";
+  const showSearch = mode !== "subtitles" && mode !== "clipcutter";
 
   return (
     <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
@@ -161,7 +163,7 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           className={cn(
             "w-full flex flex-col items-center transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            (showVideoInfo || showClips || showSubtitles) ? "pt-12 mb-8" : "pt-[25vh]"
+            (showVideoInfo || showClips || showSubtitles || showClipCutter) ? "pt-12 mb-8" : "pt-[25vh]"
           )}
         >
           {/* Logo */}
@@ -220,6 +222,18 @@ export default function Home() {
             >
               <Captions className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
               Subtitles
+            </button>
+            <button
+              onClick={() => { setMode("clipcutter"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              className={cn(
+                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200",
+                mode === "clipcutter"
+                  ? "bg-gradient-to-r from-orange-600 to-amber-600 text-white shadow-[0_0_20px_rgba(249,115,22,0.35)]"
+                  : "text-white/50 hover:text-white/80"
+              )}
+            >
+              <Scissors className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+              Clip Cut
             </button>
           </motion.div>
 
@@ -419,6 +433,19 @@ export default function Home() {
                 transition={{ duration: 0.3 }}
               >
                 <GetSubtitles />
+              </motion.div>
+            )}
+
+          {/* ── Clip Cutter Mode ── */}
+            {showClipCutter && (
+              <motion.div
+                key="clipcutter-panel"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.3 }}
+              >
+                <ClipCutter />
               </motion.div>
             )}
 
