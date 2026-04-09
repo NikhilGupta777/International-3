@@ -65,6 +65,7 @@ interface ActiveJob {
   filesize: number | null;
   message: string | null;
   downloaded: boolean;
+  startedAt: number;
 }
 
 export function ClipCutter() {
@@ -202,6 +203,7 @@ export function ClipCutter() {
         filesize: null,
         message: null,
         downloaded: false,
+        startedAt: Date.now(),
       };
 
       setJobs((prev) => [newJob, ...prev]);
@@ -367,6 +369,24 @@ export function ClipCutter() {
   );
 }
 
+function useElapsed(startedAt: number, active: boolean) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [active, startedAt]);
+  return elapsed;
+}
+
+function fmtElapsed(s: number): string {
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 function ClipJobCard({
   job,
   onRemove,
@@ -380,6 +400,12 @@ function ClipJobCard({
     job.status === "pending" ||
     job.status === "downloading" ||
     job.status === "merging";
+
+  const isConnecting =
+    (job.status === "pending" || job.status === "downloading") &&
+    job.percent === 0;
+
+  const elapsed = useElapsed(job.startedAt, isProcessing);
 
   return (
     <motion.div
@@ -450,12 +476,21 @@ function ClipJobCard({
       {isProcessing && (
         <div className="relative z-10 flex flex-col gap-1.5">
           <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-            {job.status === "merging" ? (
+            {isConnecting || job.status === "merging" ? (
               <motion.div
-                className="h-full bg-orange-500/60 rounded-full"
-                animate={{ x: ["-100%", "100%"] }}
-                transition={{ repeat: Infinity, duration: 1.5, ease: "easeInOut" }}
-                style={{ width: "50%" }}
+                className={cn(
+                  "h-full rounded-full",
+                  isConnecting
+                    ? "bg-gradient-to-r from-transparent via-orange-400/70 to-transparent"
+                    : "bg-orange-500/60",
+                )}
+                animate={{ x: ["-100%", "200%"] }}
+                transition={{
+                  repeat: Infinity,
+                  duration: isConnecting ? 1.8 : 1.5,
+                  ease: "easeInOut",
+                }}
+                style={{ width: "45%" }}
               />
             ) : (
               <motion.div
@@ -469,19 +504,25 @@ function ClipJobCard({
           <div className="flex justify-between text-[11px] text-white/40">
             <span>
               {job.status === "merging"
-                ? "Processing…"
-                : job.status === "pending"
-                  ? "Starting…"
+                ? "Merging…"
+                : isConnecting
+                  ? elapsed < 15
+                    ? "Solving challenge…"
+                    : elapsed < 40
+                      ? "Fetching video…"
+                      : "Downloading…"
                   : job.speed
                     ? job.speed
-                    : "Connecting…"}
+                    : "Downloading…"}
             </span>
-            <span>
+            <span className="font-mono">
               {job.status === "downloading" && job.percent > 0
                 ? `${job.percent.toFixed(0)}%`
                 : job.eta
                   ? `ETA ${job.eta}`
-                  : ""}
+                  : isProcessing
+                    ? fmtElapsed(elapsed)
+                    : ""}
             </span>
           </div>
         </div>
