@@ -812,8 +812,10 @@ function stripFences(text: string): string {
 // outputPath: optional explicit destination (used for cached WAVs outside audioDir)
 function preprocessAudio(inputPath: string, outputPath?: string): Promise<{ path: string; cleanup: () => void }> {
   const outPath = outputPath ?? (inputPath + "_16k.wav");
+  // Prefer the bundled ffmpeg-static binary for portability; fall back to system ffmpeg.
+  const ffmpegBin = ffmpegStatic ?? "ffmpeg";
   return new Promise((resolve) => {
-    const proc = spawn("ffmpeg", [
+    const proc = spawn(ffmpegBin, [
       "-y", "-i", inputPath,
       "-ac", "1",           // mono
       "-ar", "16000",       // 16 kHz
