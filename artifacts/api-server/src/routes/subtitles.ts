@@ -331,8 +331,8 @@ function getReplitGenAI(): GoogleGenAI | null {
 const KEY_ROTATION_MODELS = [
   "gemini-2.5-flash",
   "gemini-3-flash-preview",
-  "gemini-3.1-flash-lite-preview",
   "gemini-1.5-flash",
+  "gemini-3.1-flash-lite-preview",
 ];
 
 async function generateWithKeyRotation(
