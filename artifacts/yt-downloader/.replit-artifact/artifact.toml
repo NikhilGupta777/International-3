@@ -12,7 +12,7 @@ kind = "web"
   [[services]]
   name = "web"
   paths = [ "/" ]
-  localPort = 3000
+  localPort = 5174
 
   [services.development]
   run = "pnpm --filter @workspace/yt-downloader run dev"
@@ -27,5 +27,5 @@ kind = "web"
   to = "/index.html"
 
   [services.env]
-  PORT = "3000"
+  PORT = "5174"
   BASE_PATH = "/"
