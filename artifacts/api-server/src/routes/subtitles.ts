@@ -881,14 +881,13 @@ async function processAudio(
   const job = jobs.get(jobId);
   if (!job) return;
 
-  const genAI = getGenAI();
-  if (!genAI) {
+  const clients = getAllPersonalGenAIClients();
+  if (clients.length === 0) {
     job.status = "error";
     job.error = "Gemini API key not configured";
     return;
   }
 
-  let geminiFileName: string | null = null;
   let preprocessCleanup: (() => void) | null = null;
 
   try {
@@ -908,104 +907,126 @@ async function processAudio(
     job.durationSecs = durationSecs;
     logger.info({ durationSecs, durationSrt }, "Audio duration measured");
 
-    // Step 1: Upload to Gemini Files API
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
-    job.status = "uploading";
-    job.message = "Uploading audio to AI...";
 
-    const uploadResult = await genAI.files.upload({
-      file: audioBlob,
-      config: { mimeType, displayName: filename },
-    });
-    geminiFileName = uploadResult.name!;
+    // ── Key-rotation loop for Passes 1 & 2 (audio-dependent) ─────────────────
+    // A fileUri is tied to the API key/project that uploaded it — a different key
+    // gets 403 on the same URI. So each key attempt uploads its own copy, runs both
+    // passes, then deletes the file. On quota (429) we move to the next key.
+    let correctedFinalSrt: string | null = null;
+    let lastKeyErr: unknown;
 
-    // Poll until ACTIVE (up to 3 min), checking for cancellation each iteration
-    let fileInfo: any = uploadResult;
-    let attempts = 0;
-    while (fileInfo.state === "PROCESSING" && attempts < 90) {
-      await new Promise((r) => setTimeout(r, 2000));
-      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
-      fileInfo = await genAI.files.get({ name: geminiFileName });
-      attempts++;
+    for (let ki = 0; ki < clients.length; ki++) {
+      const client = clients[ki];
+      const keyLabel = `key ${ki + 1}`;
+      let geminiFileName: string | null = null;
+
+      try {
+        // Upload with this key's client
+        job.status = "uploading";
+        job.message = ki === 0 ? "Uploading audio to AI..." : `Uploading audio to AI (${keyLabel})...`;
+
+        const uploadResult = await client.files.upload({
+          file: audioBlob,
+          config: { mimeType, displayName: filename },
+        });
+        geminiFileName = uploadResult.name!;
+
+        // Poll until ACTIVE (up to 3 min)
+        let fileInfo: any = uploadResult;
+        let attempts = 0;
+        while (fileInfo.state === "PROCESSING" && attempts < 90) {
+          await new Promise((r) => setTimeout(r, 2000));
+          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+          fileInfo = await client.files.get({ name: geminiFileName });
+          attempts++;
+        }
+        if (fileInfo.state !== "ACTIVE") throw new Error("Audio processing timed out — please try again");
+
+        const fileUri: string = fileInfo.uri;
+
+        // Pass 1: Transcription — try each model in turn on this key
+        if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+        job.status = "generating";
+        job.message = "AI is transcribing audio...";
+
+        let rawSrt = "";
+        let lastPass1Err: unknown;
+        for (const model of KEY_ROTATION_MODELS) {
+          try {
+            const result = await client.models.generateContent({
+              model,
+              contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildSrtPrompt(language, durationSrt) }] }],
+              config: { temperature: 0.1, maxOutputTokens: 65536 },
+            });
+            rawSrt = result.text?.trim() ?? "";
+            logger.info({ model, keyLabel }, "Initial subtitle transcription completed");
+            break;
+          } catch (err) {
+            lastPass1Err = err;
+            const msg = err instanceof Error ? err.message : String(err ?? "");
+            if (!/resource_exhausted|quota|429|rate.?limit/i.test(msg)) throw err;
+            logger.warn({ model, keyLabel }, `Transcription rate limited on ${model} — trying next model`);
+          }
+        }
+        if (!rawSrt) throw lastPass1Err instanceof Error ? lastPass1Err : new Error("All models rate limited on transcription");
+
+        const cleanedRaw = stripFences(rawSrt);
+
+        // Pass 2: Correction — same fileUri (same key), try each model in turn
+        if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+        job.status = "correcting";
+        job.message = "AI is auto-correcting errors...";
+
+        let correctedSrt = "";
+        for (const model of KEY_ROTATION_MODELS) {
+          try {
+            const result = await client.models.generateContent({
+              model,
+              contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
+              config: { temperature: 0.1, maxOutputTokens: 65536 },
+            });
+            correctedSrt = result.text?.trim() ?? "";
+            logger.info({ model, keyLabel }, "Subtitle correction completed");
+            break;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err ?? "");
+            if (!/resource_exhausted|quota|429|rate.?limit/i.test(msg)) {
+              logger.warn({ err, model, keyLabel }, "Correction failed (non-quota) — using Pass 1 output");
+              break;
+            }
+            logger.warn({ model, keyLabel }, `Correction rate limited on ${model} — trying next model`);
+          }
+        }
+
+        const rawFinal = (correctedSrt && correctedSrt.length > 10) ? stripFences(correctedSrt) : cleanedRaw;
+        correctedFinalSrt = splitOverfullEntries(
+          filterOutOfBoundsEntries(cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)), durationSecs),
+        );
+
+        break; // Both passes succeeded — exit key loop
+
+      } catch (err) {
+        lastKeyErr = err;
+        const msg = err instanceof Error ? err.message : String(err ?? "");
+        const isQuota = /resource_exhausted|quota|429|rate.?limit/i.test(msg);
+        if (isQuota && ki < clients.length - 1) {
+          logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
+        } else if (!isQuota) {
+          throw err;
+        }
+      } finally {
+        if (geminiFileName) {
+          try { await client.files.delete({ name: geminiFileName }); } catch {}
+        }
+      }
     }
 
-    if (fileInfo.state !== "ACTIVE") {
+    if (!correctedFinalSrt) {
       job.status = "error";
-      job.error = "Audio processing timed out — please try again";
+      job.error = lastKeyErr instanceof Error ? lastKeyErr.message : "All API keys exhausted — try again later";
       return;
     }
-
-    const fileUri: string = fileInfo.uri;
-
-    // Step 2: Generate raw SRT
-    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
-    job.status = "generating";
-    job.message = "AI is transcribing audio...";
-
-    const rawSrt = await generateWithKeyRotation(
-      (model) => ({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { fileData: { mimeType, fileUri } },
-              { text: buildSrtPrompt(language, durationSrt) },
-            ],
-          },
-        ],
-        config: {
-          temperature: 0.1,
-          maxOutputTokens: 65536,
-        },
-      }),
-      "Initial subtitle transcription",
-    );
-    if (!rawSrt) {
-      job.status = "error";
-      job.error = "AI returned an empty transcript — please try again";
-      return;
-    }
-
-    const cleanedRaw = stripFences(rawSrt);
-
-    // Step 3: Auto-correction pass — same audio + draft SRT → Gemini corrects mistakes
-    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
-    job.status = "correcting";
-    job.message = "AI is auto-correcting errors...";
-
-    const correctedSrt = await generateWithKeyRotation(
-      (model) => ({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { fileData: { mimeType, fileUri } },
-              { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) },
-            ],
-          },
-        ],
-        config: {
-          temperature: 0.1,
-          maxOutputTokens: 65536,
-        },
-      }),
-      "Subtitle correction pass",
-    );
-
-    // If the correction pass fails or returns garbage, fall back to the first pass
-    const rawFinal = (correctedSrt && correctedSrt.length > 10)
-      ? stripFences(correctedSrt)
-      : cleanedRaw;
-
-    // Normalize malformed timestamps, filter out-of-bounds entries, strip hallucinations, enforce word limit
-    const correctedFinalSrt = splitOverfullEntries(
-      filterOutOfBoundsEntries(
-        cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)),
-        durationSecs,
-      ),
-    );
 
     // Validate the SRT before proceeding
     if (!validateSrt(correctedFinalSrt)) {
@@ -1094,9 +1115,6 @@ async function processAudio(
       job.error = err.message || "Failed to generate subtitles";
     }
   } finally {
-    if (geminiFileName) {
-      try { await genAI.files.delete({ name: geminiFileName }); } catch {}
-    }
     if (preprocessCleanup) {
       try { preprocessCleanup(); } catch {}
     }

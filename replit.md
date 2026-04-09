@@ -7,7 +7,8 @@ When opening this project in a new Replit for the first time:
 1. **Dependencies install automatically** — the dev workflow commands run `pnpm install` before starting, which also installs Python/yt-dlp via the `postinstall` hook. No manual steps needed.
 
 2. **Required secrets** — set these in the Replit Secrets panel:
-   - `GEMINI_API_KEY` — required for the Bhagwat AI features (AI image generation, timeline analysis). Without it, AI features will show an error. Get it from [Google AI Studio](https://aistudio.google.com/app/apikey).
+   - `GEMINI_API_KEY` — primary Gemini key, required for Subtitles AI, Bhagwat AI, and image generation. Get from [Google AI Studio](https://aistudio.google.com/app/apikey).
+   - `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `GEMINI_API_KEY_4` — optional extra keys for rate-limit rotation. When the primary key's quota is exhausted, Subtitles Passes 1 & 2 automatically re-upload the audio file with the next key and retry. Each key manages its own upload/delete lifecycle so there are no 403 cross-key file access errors.
    - `DATABASE_URL` — required only if you use DB features (not used by current routes). Replit provides this automatically when you add a PostgreSQL database integration.
 
 3. **Bhagwat section password** — `bhagwatnarrationvideos@clips2026` (hardcoded server-side, can be changed via `BHAGWAT_PASSWORD` secret)
