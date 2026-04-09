@@ -3,12 +3,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
   AlertCircle, Globe, X, FileAudio, FileVideo, ChevronDown,
-  Copy, Check, RefreshCw, StopCircle, AlignLeft,
+  Copy, Check, RefreshCw, StopCircle, AlignLeft, History, Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { LANGUAGES, TRANSLATE_LANGUAGES } from "@/lib/subtitle-languages";
+import {
+  type SubtitleHistoryEntry,
+  loadHistory,
+  saveToHistory,
+  deleteFromHistory,
+  clearHistory,
+  formatRelativeTime,
+} from "@/lib/subtitle-history";
 
 const BASE = () => (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 
@@ -76,6 +84,7 @@ export function GetSubtitles() {
   const [langOpen, setLangOpen] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
   const [progressPct, setProgressPct] = useState(0);
+  const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => loadHistory());
   const [copied, setCopied] = useState(false);
   const [copiedOriginal, setCopiedOriginal] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
@@ -168,6 +177,24 @@ export function GetSubtitles() {
           setSrtFilename(data.filename ?? "subtitles.srt");
           setOriginalSrt(data.originalSrt ?? null);
           setOriginalFilename(data.originalFilename ?? null);
+
+          // Persist result to device history (localStorage)
+          const entry: SubtitleHistoryEntry = {
+            id,
+            createdAt: Date.now(),
+            mode: jobInputModeRef.current,
+            url: jobInputModeRef.current === "url" ? lastUrlRef.current : undefined,
+            inputFilename: jobInputModeRef.current === "file" ? (lastFileRef.current?.name) : undefined,
+            srtFilename: data.filename ?? "subtitles.srt",
+            language: lastLangRef.current,
+            translateTo: jobTranslateToRef.current,
+            srt: data.srt ?? "",
+            originalSrt: data.originalSrt ?? undefined,
+            originalFilename: data.originalFilename ?? undefined,
+            entryCount: (data.srt ?? "").trim().split(/\n\n+/).filter(Boolean).length,
+          };
+          saveToHistory(entry);
+          setHistory(loadHistory());
         } else if (data.status === "error") {
           stopPolling();
           setLoading(false);
@@ -843,6 +870,127 @@ export function GetSubtitles() {
                 </button>
               </div>
             )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── History panel ─────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {history.length > 0 && (
+          <motion.div
+            key="history-panel"
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            className="flex flex-col gap-3"
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-white/40">
+                <History className="w-4 h-4" />
+                <span className="text-xs font-semibold uppercase tracking-wider">History · saved on this device</span>
+              </div>
+              <button
+                onClick={() => { clearHistory(); setHistory([]); }}
+                className="flex items-center gap-1 text-xs text-white/25 hover:text-red-400 transition-colors"
+              >
+                <Trash2 className="w-3 h-3" /> Clear all
+              </button>
+            </div>
+
+            {/* Entry list */}
+            <div className="flex flex-col gap-2">
+              {history.map((entry) => {
+                const sourceLang = LANGUAGES.find((l) => l.value === entry.language)?.label ?? entry.language;
+                const targetLang = entry.translateTo !== "none"
+                  ? TRANSLATE_LANGUAGES.find((l) => l.value === entry.translateTo)?.label?.replace("Translate → ", "") ?? entry.translateTo
+                  : null;
+                return (
+                  <motion.div
+                    key={entry.id}
+                    layout
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 8 }}
+                    className="glass-panel rounded-xl px-4 py-3 flex items-start gap-3"
+                  >
+                    {/* Icon */}
+                    <div className="mt-0.5 shrink-0">
+                      {entry.mode === "url"
+                        ? <Youtube className="w-4 h-4 text-red-400/70" />
+                        : <FileAudio className="w-4 h-4 text-teal-400/70" />}
+                    </div>
+
+                    {/* Info */}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white/70 text-sm font-medium truncate" title={entry.url ?? entry.inputFilename}>
+                        {entry.srtFilename}
+                      </p>
+                      <p className="text-white/30 text-xs mt-0.5 truncate">
+                        {sourceLang}{targetLang ? ` → ${targetLang}` : ""} · {entry.entryCount} entries · {formatRelativeTime(entry.createdAt)}
+                      </p>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => {
+                          const blob = new Blob([entry.srt], { type: "text/plain;charset=utf-8" });
+                          const a = document.createElement("a");
+                          a.href = URL.createObjectURL(blob);
+                          a.download = entry.srtFilename;
+                          document.body.appendChild(a); a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(a.href);
+                        }}
+                        title="Download SRT"
+                        className="p-1.5 rounded-lg hover:bg-teal-500/15 text-white/30 hover:text-teal-400 transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(srtToText(entry.srt));
+                            toast({ title: "Copied!", description: "Plain text copied to clipboard" });
+                          } catch {
+                            toast({ title: "Copy failed", variant: "destructive" });
+                          }
+                        }}
+                        title="Copy plain text"
+                        className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors"
+                      >
+                        <AlignLeft className="w-3.5 h-3.5" />
+                      </button>
+                      {entry.originalSrt && (
+                        <button
+                          onClick={() => {
+                            const blob = new Blob([entry.originalSrt!], { type: "text/plain;charset=utf-8" });
+                            const a = document.createElement("a");
+                            a.href = URL.createObjectURL(blob);
+                            a.download = entry.originalFilename ?? "original.srt";
+                            document.body.appendChild(a); a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(a.href);
+                          }}
+                          title="Download original language SRT"
+                          className="p-1.5 rounded-lg hover:bg-violet-500/15 text-white/30 hover:text-violet-400 transition-colors"
+                        >
+                          <FileText className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setHistory(deleteFromHistory(entry.id))}
+                        title="Remove from history"
+                        className="p-1.5 rounded-lg hover:bg-red-500/15 text-white/20 hover:text-red-400 transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
