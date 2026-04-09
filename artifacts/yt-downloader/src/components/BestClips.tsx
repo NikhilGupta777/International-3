@@ -991,13 +991,22 @@ export const BestClips = forwardRef(function BestClips(
                             )}
                           />
                           {dl.status === "downloading" && (
-                            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
-                              <motion.div
-                                className="h-full bg-primary"
-                                initial={{ width: 0 }}
-                                animate={{ width: `${dl.percent}%` }}
-                                transition={{ duration: 0.4 }}
-                              />
+                            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5 overflow-hidden">
+                              {dl.percent === 0 ? (
+                                <motion.div
+                                  className="h-full bg-gradient-to-r from-transparent via-primary/70 to-transparent"
+                                  animate={{ x: ["-100%", "200%"] }}
+                                  transition={{ repeat: Infinity, duration: 1.8, ease: "easeInOut" }}
+                                  style={{ width: "45%" }}
+                                />
+                              ) : (
+                                <motion.div
+                                  className="h-full bg-primary"
+                                  initial={{ width: 0 }}
+                                  animate={{ width: `${dl.percent}%` }}
+                                  transition={{ duration: 0.4 }}
+                                />
+                              )}
                             </div>
                           )}
 
@@ -1028,21 +1037,29 @@ export const BestClips = forwardRef(function BestClips(
                                   </span>
                                 </div>
                                 {dl.status === "downloading" && (
-                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                  <div className="flex items-center justify-between gap-2 mt-1">
                                     <p className="text-primary/70 text-xs font-medium">
-                                      {dl.message}
+                                      {dl.percent === 0
+                                        ? (dl.elapsed ?? 0) < 15
+                                          ? "Solving challenge…"
+                                          : (dl.elapsed ?? 0) < 40
+                                            ? "Fetching video…"
+                                            : "Downloading…"
+                                        : dl.speed
+                                          ? dl.speed
+                                          : "Downloading…"}
                                     </p>
-                                    {dl.eta && (
-                                      <span className="flex items-center gap-0.5 text-white/50 text-xs font-mono">
-                                        <Timer className="w-2.5 h-2.5" />
-                                        {dl.eta} left
-                                      </span>
-                                    )}
-                                    {dl.speed && (
-                                      <span className="text-white/35 text-xs">
-                                        {dl.speed}
-                                      </span>
-                                    )}
+                                    <span className="text-white/35 text-xs font-mono shrink-0">
+                                      {dl.percent > 0
+                                        ? `${dl.percent.toFixed(0)}%`
+                                        : dl.eta
+                                          ? `ETA ${dl.eta}`
+                                          : dl.elapsed != null
+                                            ? dl.elapsed < 60
+                                              ? `${dl.elapsed}s`
+                                              : `${Math.floor(dl.elapsed / 60)}m ${dl.elapsed % 60}s`
+                                            : ""}
+                                    </span>
                                   </div>
                                 )}
                                 {dl.status === "error" && dl.message && (
