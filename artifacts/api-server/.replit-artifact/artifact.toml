@@ -19,7 +19,7 @@ SERVE_STATIC = "true"
 [services.production]
 
 [services.production.build]
-args = ["sh", "-c", "uv sync --quiet 2>/dev/null || true && pnpm --filter @workspace/api-server run build"]
+args = ["sh", "-c", "apt-get install -y ffmpeg 2>/dev/null || true && uv sync --quiet 2>/dev/null || true && pnpm --filter @workspace/api-server run build"]
 
 [services.production.build.env]
 NODE_ENV = "production"
