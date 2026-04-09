@@ -667,64 +667,6 @@ function cleanupHallucinatedEntries(srt: string): string {
     .join("\n\n") + "\n";
 }
 
-// ── Split overfull subtitle entries (> 6 words) ───────────────────────────────
-// Acts as a hard safety net after Gemini output — even if the model ignores the
-// word-limit instruction, every entry is guaranteed to have ≤ 6 words.
-function splitOverfullEntries(srt: string, maxWords = 6): string {
-  const entries = srt.trim().split(/\n\n+/);
-  const result: string[] = [];
-
-  for (const entry of entries) {
-    const lines = entry.trim().split("\n");
-    if (lines.length < 3) { result.push(entry.trim()); continue; }
-
-    const tsLine = lines[1].trim();
-    const text = lines.slice(2).join(" ").trim();
-    const words = text.split(/\s+/).filter(Boolean);
-
-    if (words.length <= maxWords) {
-      result.push(entry.trim());
-      continue;
-    }
-
-    // Parse start/end timestamps in ms
-    const tsParts = tsLine.match(/^(.+?)\s*-->\s*(.+)$/);
-    if (!tsParts) { result.push(entry.trim()); continue; }
-
-    const startMs = tsToMs(tsParts[1].trim());
-    const endMs = tsToMs(tsParts[2].trim());
-    if (startMs < 0 || endMs <= startMs) { result.push(entry.trim()); continue; }
-
-    const totalMs = endMs - startMs;
-    const totalWords = words.length;
-    const chunkCount = Math.ceil(totalWords / maxWords);
-
-    for (let i = 0; i < chunkCount; i++) {
-      const chunkWords = words.slice(i * maxWords, (i + 1) * maxWords);
-      const chunkStart = startMs + Math.round((i / chunkCount) * totalMs);
-      const chunkEnd   = startMs + Math.round(((i + 1) / chunkCount) * totalMs);
-
-      const fmtMs = (ms: number) => {
-        const hh = Math.floor(ms / 3600000);
-        const mm = Math.floor((ms % 3600000) / 60000);
-        const ss = Math.floor((ms % 60000) / 1000);
-        const msRem = ms % 1000;
-        return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")},${String(msRem).padStart(3,"0")}`;
-      };
-
-      result.push(`0\n${fmtMs(chunkStart)} --> ${fmtMs(chunkEnd)}\n${chunkWords.join(" ")}`);
-    }
-  }
-
-  // Re-number all entries sequentially
-  return result
-    .map((entry, i) => {
-      const lines = entry.split("\n");
-      lines[0] = String(i + 1);
-      return lines.join("\n");
-    })
-    .join("\n\n") + "\n";
-}
 
 // ── Restore timestamps from original SRT into translated SRT ─────────────────
 // Gemini sometimes reformats timestamps during translation. Since timestamps
@@ -1000,9 +942,7 @@ async function processAudio(
         }
 
         const rawFinal = (correctedSrt && correctedSrt.length > 10) ? stripFences(correctedSrt) : cleanedRaw;
-        correctedFinalSrt = splitOverfullEntries(
-          filterOutOfBoundsEntries(cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)), durationSecs),
-        );
+        correctedFinalSrt = filterOutOfBoundsEntries(cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)), durationSecs);
 
         break; // Both passes succeeded — exit key loop
 
@@ -1094,7 +1034,7 @@ async function processAudio(
       // Restore timestamps again after verification pass (same Gemini behaviour)
       const verifiedSrt = restoreTimestamps(correctedFinalSrt, verifiedClean);
 
-      const finalSrt = splitOverfullEntries(cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt)));
+      const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt));
       if (!validateSrt(finalSrt)) {
         job.status = "error";
         job.error = "AI returned an invalid translated subtitle file — please try again";

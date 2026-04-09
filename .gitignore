@@ -52,3 +52,12 @@ deploy-bundle.tgz
 # Replit
 .cache/
 .local/
+
+# Local Environment / Secrets
+.env
+.yt-cookies.txt
+ytgrabber-key-*.pem
+*.json
+*.log
+.pythonlibs/
+.venv/
