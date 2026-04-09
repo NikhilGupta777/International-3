@@ -186,53 +186,57 @@ export default function Home() {
             <button
               onClick={() => { setMode("download"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200",
+                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "download"
                   ? "bg-primary text-white shadow-[0_0_20px_rgba(229,9,20,0.3)]"
                   : "text-white/50 hover:text-white/80"
               )}
             >
-              <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-              Download
+              <Download className="w-3.5 h-3.5 shrink-0" />
+              <span className="sm:hidden">Get</span>
+              <span className="hidden sm:inline">Download</span>
             </button>
             <button
               onClick={() => { setMode("clips"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200",
+                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "clips"
                   ? "bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-[0_0_20px_rgba(139,92,246,0.4)]"
                   : "text-white/50 hover:text-white/80"
               )}
             >
-              <Sparkles className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-              Best Clips
-              <Badge className="bg-violet-500/20 text-violet-300 border-violet-500/30 text-[10px] px-1.5 py-0">
+              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+              <span className="sm:hidden">Clips</span>
+              <span className="hidden sm:inline">Best Clips</span>
+              <Badge className="hidden sm:inline-flex bg-violet-500/20 text-violet-300 border-violet-500/30 text-[10px] px-1.5 py-0">
                 AI
               </Badge>
             </button>
             <button
               onClick={() => { setMode("subtitles"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200",
+                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "subtitles"
                   ? "bg-gradient-to-r from-teal-600 to-cyan-600 text-white shadow-[0_0_20px_rgba(20,184,166,0.35)]"
                   : "text-white/50 hover:text-white/80"
               )}
             >
-              <Captions className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-              Subtitles
+              <Captions className="w-3.5 h-3.5 shrink-0" />
+              <span className="sm:hidden">Subs</span>
+              <span className="hidden sm:inline">Subtitles</span>
             </button>
             <button
               onClick={() => { setMode("clipcutter"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200",
+                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "clipcutter"
                   ? "bg-gradient-to-r from-orange-600 to-amber-600 text-white shadow-[0_0_20px_rgba(249,115,22,0.35)]"
                   : "text-white/50 hover:text-white/80"
               )}
             >
-              <Scissors className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-              Clip Cut
+              <Scissors className="w-3.5 h-3.5 shrink-0" />
+              <span className="sm:hidden">Cut</span>
+              <span className="hidden sm:inline">Clip Cut</span>
             </button>
           </motion.div>
 
