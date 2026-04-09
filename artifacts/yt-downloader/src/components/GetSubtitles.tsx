@@ -114,7 +114,8 @@ export function GetSubtitles() {
   const lastModeRef = useRef<InputMode>("url");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollIntervalMsRef = useRef(2500);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Refs for click-outside detection on dropdowns
@@ -180,12 +181,21 @@ export function GetSubtitles() {
   }, [loading]);
 
   const stopPolling = () => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
   };
 
   const pollStatus = useCallback((id: string) => {
     stopPolling();
-    pollRef.current = setInterval(async () => {
+    pollIntervalMsRef.current = 2500; // reset backoff for each new job
+
+    const scheduleNext = (fn: () => Promise<void>) => {
+      const interval = pollIntervalMsRef.current;
+      // Grow interval by 30% each poll, capped at 10 seconds
+      pollIntervalMsRef.current = Math.min(Math.round(interval * 1.3), 10_000);
+      pollRef.current = setTimeout(fn, interval);
+    };
+
+    const tick = async () => {
       try {
         const res = await fetch(`${BASE()}/api/subtitles/status/${id}`);
 
@@ -247,11 +257,17 @@ export function GetSubtitles() {
           stopPolling();
           setLoading(false);
           clearActiveJob();
+        } else {
+          // Still running — schedule next poll with backoff
+          scheduleNext(tick);
         }
       } catch {
-        // keep polling on transient network errors
+        // Transient network error — retry with backoff
+        scheduleNext(tick);
       }
-    }, 2500);
+    };
+
+    tick(); // kick off immediately
   }, [toast]);
 
   const startJob = async (mode: InputMode, urlVal: string, fileVal: File | null, lang: string, trans: string) => {

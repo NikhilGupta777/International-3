@@ -11,14 +11,16 @@ const EXPIRY_SECONDS = 2 * 60 * 60; // 2 hours
 interface ActiveDownloadProps {
   jobId: string;
   onReset: () => void;
+  onExpired?: () => void;
 }
 
-export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
+export function ActiveDownload({ jobId, onReset, onExpired }: ActiveDownloadProps) {
   const { toast } = useToast();
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const [fileExpired, setFileExpired] = useState(false);
   const countdownStarted = useRef(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const onExpiredCalledRef = useRef(false);
 
   const { data: progress } = useGetDownloadProgress(jobId, {
     query: {
@@ -34,6 +36,14 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
   const status = (progress?.status as string) || "pending";
   const percent = progress?.percent || 0;
 
+  const markExpired = () => {
+    setFileExpired(true);
+    if (!onExpiredCalledRef.current) {
+      onExpiredCalledRef.current = true;
+      onExpired?.();
+    }
+  };
+
   useEffect(() => {
     if (status === "done" && !countdownStarted.current) {
       countdownStarted.current = true;
@@ -42,7 +52,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
         setSecondsLeft((prev) => {
           if (prev === null || prev <= 1) {
             clearInterval(intervalRef.current!);
-            setFileExpired(true);
+            markExpired();
             return 0;
           }
           return prev - 1;
@@ -50,7 +60,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
       }, 1000);
     }
     if (status === "expired") {
-      setFileExpired(true);
+      markExpired();
       if (intervalRef.current) clearInterval(intervalRef.current);
     }
     if (status === "error") {
@@ -63,6 +73,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
   const isDone = status === "done" && !fileExpired;
@@ -71,12 +82,14 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
   const isProcessing = status === "pending" || status === "downloading" || status === "merging";
 
   const formatCountdown = (secs: number) => {
-    const m = Math.floor(secs / 60);
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
     const s = secs % 60;
+    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  const countdownUrgent = secondsLeft !== null && secondsLeft < 60;
+  const countdownUrgent = secondsLeft !== null && secondsLeft < 300; // last 5 minutes
 
   return (
     <motion.div
@@ -151,7 +164,7 @@ export function ActiveDownload({ jobId, onReset }: ActiveDownloadProps) {
           >
             <Clock className={cn("w-4 h-4 sm:w-5 sm:h-5 shrink-0", countdownUrgent ? "text-orange-400 animate-pulse" : "text-white/40")} />
             <span className="text-xs sm:text-sm font-medium">
-              Deletes in{" "}
+              File deletes in{" "}
               <span className={cn("font-bold tabular-nums", countdownUrgent ? "text-orange-300" : "text-white")}>
                 {formatCountdown(secondsLeft)}
               </span>

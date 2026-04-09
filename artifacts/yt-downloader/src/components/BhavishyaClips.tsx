@@ -194,28 +194,38 @@ export function BhavishyaClips({ url }: { url: string }) {
 
       const { jobId } = startData;
 
-      const poll = async () => {
+      let attempts = 0;
+      const MAX_ATTEMPTS = 200;
+
+      const poll = async (): Promise<void> => {
+        if (attempts++ >= MAX_ATTEMPTS) throw new Error("Download timed out");
+
         const prog = await fetch(`${BASE}/api/youtube/progress/${jobId}`).then(r => r.json());
-        if (prog.status === "downloading") {
-          setDownloadStates(prev => ({ ...prev, [key]: { status: "downloading", percent: prog.percent ?? 0, message: prog.message ?? "" } }));
-          setTimeout(poll, 1500);
-        } else if (prog.status === "done" && prog.downloadUrl) {
+
+        if (prog.status === "done") {
           setDownloadStates(prev => ({ ...prev, [key]: { status: "done", percent: 100, message: "Ready!" } }));
           const a = document.createElement("a");
-          a.href = `${BASE}${prog.downloadUrl}`;
+          a.href = `${BASE}/api/youtube/file/${jobId}`;
           a.download = `${clip.title.replace(/[^a-z0-9]/gi, "_")}.mp4`;
-          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
           toast({ title: "Clip downloaded!", description: clip.title });
-        } else if (prog.status === "error") {
-          throw new Error(prog.error ?? "Download failed");
-        } else {
-          setTimeout(poll, 1500);
+          return;
         }
+
+        if (prog.status === "error" || prog.status === "expired") {
+          throw new Error(prog.message ?? prog.error ?? "Download failed");
+        }
+
+        setDownloadStates(prev => ({ ...prev, [key]: { status: "downloading", percent: prog.percent ?? 0, message: prog.message ?? "" } }));
+        await new Promise(r => setTimeout(r, 1500));
+        return poll();
       };
+
       await poll();
     } catch (err) {
-      const key2 = clipKey(clip);
-      setDownloadStates(prev => ({ ...prev, [key2]: { status: "error", percent: 0, message: err instanceof Error ? err.message : "Error" } }));
+      setDownloadStates(prev => ({ ...prev, [key]: { status: "error", percent: 0, message: err instanceof Error ? err.message : "Error" } }));
       toast({ title: "Download failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
     }
   };
@@ -433,7 +443,6 @@ export function BhavishyaClips({ url }: { url: string }) {
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
-                      {/* Download button */}
                       {dl?.status === "done" ? (
                         <span className={cn("text-xs font-semibold flex items-center gap-1", preset?.accentColor ?? "text-amber-300")}>
                           <CheckCircle2 className="w-3.5 h-3.5" /> Done

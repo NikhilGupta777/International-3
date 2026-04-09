@@ -247,6 +247,24 @@ export const BestClips = forwardRef(function BestClips(
   const esRef = useRef<EventSource | null>(null);
   const { toast } = useToast();
 
+  const PERSIST_KEY = "ytgrabber_bestclips_results";
+
+  // Restore saved analysis results when URL matches
+  useEffect(() => {
+    if (!url.trim()) return;
+    try {
+      const raw = sessionStorage.getItem(PERSIST_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw) as { url: string; clips: BestClip[]; hasTranscript: boolean };
+      if (saved.url === url.trim() && saved.clips?.length > 0) {
+        setClips(saved.clips);
+        setHasTranscript(saved.hasTranscript ?? false);
+      }
+    } catch {}
+  // Only run when URL changes — not on every render
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url]);
+
   // Single always-running 1s ticker — updates analysis elapsed + all active download elapsed values
   useEffect(() => {
     const interval = setInterval(() => {
@@ -380,15 +398,24 @@ export const BestClips = forwardRef(function BestClips(
               }
             }
           } else if (msg.type === "done") {
-            setClips(msg.clips ?? []);
+            const resultClips: BestClip[] = msg.clips ?? [];
+            setClips(resultClips);
             setHasTranscript(msg.hasTranscript ?? false);
-            if (!msg.clips?.length) {
+            if (!resultClips.length) {
               const noTranscript = !msg.hasTranscript;
               setError(
                 noTranscript
                   ? "No clips found. This video has no transcript/subtitles, so the AI is working from title and description only — try a video with subtitles for better results."
                   : "No clips could be identified. The video content may not have clearly distinct highlight segments, or the AI response could not be parsed. Please try again.",
               );
+            } else {
+              try {
+                sessionStorage.setItem(PERSIST_KEY, JSON.stringify({
+                  url: url.trim(),
+                  clips: resultClips,
+                  hasTranscript: msg.hasTranscript ?? false,
+                }));
+              } catch {}
             }
             analysisStartRef.current = null;
             setIsLoading(false);

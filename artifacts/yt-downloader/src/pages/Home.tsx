@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
@@ -13,8 +13,14 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes, formatDuration, formatViews } from "@/lib/utils";
 import { ActiveDownload } from "@/components/ActiveDownload";
 import { BestClips, type BestClipsHandle } from "@/components/BestClips";
+import { BhavishyaClips } from "@/components/BhavishyaClips";
 import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
+import {
+  saveActiveDownload,
+  loadActiveDownload,
+  clearActiveDownload,
+} from "@/lib/download-history";
 
 type Mode = "download" | "clips" | "subtitles" | "clipcutter";
 
@@ -55,6 +61,16 @@ export default function Home() {
   const [playerFormatId, setPlayerFormatId] = useState<string | undefined>();
   const { toast } = useToast();
 
+  // Restore an active download job from localStorage on page load
+  useEffect(() => {
+    const saved = loadActiveDownload();
+    if (saved) {
+      setJobId(saved.jobId);
+      if (saved.url) setUrl(saved.url);
+      setMode("download");
+    }
+  }, []);
+
   const getInfo = useGetVideoInfo({
     mutation: {
       onSuccess: () => {
@@ -80,6 +96,7 @@ export default function Home() {
     mutation: {
       onSuccess: (data) => {
         setJobId(data.jobId);
+        saveActiveDownload({ jobId: data.jobId, url, savedAt: Date.now() });
       },
       onError: (error) => {
         toast({
@@ -284,12 +301,14 @@ export default function Home() {
           {/* Download Progress — always its own AnimatePresence so it overlays independently */}
           <AnimatePresence>
             {jobId && mode === "download" && (
-              <ActiveDownload 
-                jobId={jobId} 
+              <ActiveDownload
+                jobId={jobId}
                 onReset={() => {
+                  clearActiveDownload();
                   setJobId(null);
                   setActiveFormatId(null);
-                }} 
+                }}
+                onExpired={clearActiveDownload}
               />
             )}
           </AnimatePresence>
@@ -422,6 +441,7 @@ export default function Home() {
                 className="flex flex-col"
               >
                 <BestClips ref={bestClipsRef} url={url} />
+                {submittedUrl && <BhavishyaClips url={submittedUrl} />}
               </motion.div>
             )}
 
