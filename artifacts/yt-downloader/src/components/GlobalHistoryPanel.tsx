@@ -423,8 +423,12 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
     toast({ title: "History cleared", description: "All recent activity has been removed." });
   };
 
+  // Auto-open when there are active jobs so user notices them immediately
+  useEffect(() => {
+    if (activeEntries.length > 0) setOpen(true);
+  }, [activeEntries.length]);
+
   const totalCount = entries.length + activeEntries.length;
-  if (totalCount === 0 && !open) return null;
 
   return (
     <div className="mt-8">
