@@ -365,27 +365,39 @@ STRICT SRT FORMAT RULES:
 1. Each entry has exactly 3 parts, followed by a blank line:
    (a) A sequential number (1, 2, 3 ...)
    (b) A timestamp line: HH:MM:SS,mmm --> HH:MM:SS,mmm
-   (c) The spoken text — 1 to 2 lines, max ~42 characters per line
-2. Each subtitle should cover 3-7 seconds of audio
-3. Transcribe EVERY word spoken — do not skip, skip sections, or summarize anything
-4. If there is a quiet section or pause, keep listening — do not stop — transcribe what comes after
-5. For unclear words, make your best guess based on context and language
-6. Do NOT translate — keep the original spoken language
-7. Do NOT write non-speech annotations like [music], [background noise], [silence], [applause], [inaudible] etc. — only transcribe actual spoken words
-8. Return ONLY the SRT content — no explanations, no markdown fences, no extra text
+   (c) The spoken text — MAXIMUM 6 WORDS per entry (1 line only)
+2. WORD LIMIT IS MANDATORY: Each subtitle entry must contain NO MORE THAN 6 words. This is the most important rule.
+   - If 10 words are spoken in a stretch, split them into 2 entries of ~5 words each with proportional timestamps.
+   - If 15 words are spoken, split into 3 entries of 5 words each.
+   - Never pack more than 6 words into one entry under any circumstances.
+3. Each subtitle entry should cover 1-4 seconds of audio (shorter entries = better readability)
+4. Transcribe EVERY word spoken — do not skip, skip sections, or summarize anything
+5. If there is a quiet section or pause, keep listening — do not stop — transcribe what comes after
+6. For unclear words, make your best guess based on context and language
+7. Do NOT translate — keep the original spoken language
+8. Do NOT write non-speech annotations like [music], [background noise], [silence], [applause], [inaudible] etc. — only transcribe actual spoken words
+9. Return ONLY the SRT content — no explanations, no markdown fences, no extra text
 
-Example of CORRECT format (note all timestamps have HH:MM:SS,mmm):
+Example of CORRECT format — notice each entry has at most 6 words:
 1
-00:00:01,000 --> 00:00:04,500
-First line of speech here.
+00:00:01,000 --> 00:00:02,500
+Welcome to today's session.
 
 2
-00:01:04,600 --> 00:01:08,200
-Speech that starts at one minute four seconds.
+00:00:02,500 --> 00:00:04,200
+We will discuss several topics.
 
 3
-00:10:22,300 --> 00:10:26,100
-Speech near the ten-minute mark.
+00:00:04,200 --> 00:00:05,800
+Starting with the basics first.
+
+4
+00:01:04,600 --> 00:01:06,200
+Speech that starts at one
+
+5
+00:01:06,200 --> 00:01:08,000
+minute four seconds exactly here.
 
 Now transcribe the ENTIRE audio from beginning to end:`;
 }
@@ -421,10 +433,17 @@ Common errors to fix:
 - Timestamps that go BEYOND the audio duration
 - MISSING ENTRIES: speech that occurs after the last SRT entry — add them
 - Duplicate entries: two entries with nearly identical text for the same moment — keep only one
+- OVERFULL ENTRIES: any entry with more than 6 words MUST be split into shorter entries with proportional timestamps
+
+WORD LIMIT RULE (MANDATORY):
+- Each subtitle entry must contain NO MORE THAN 6 words
+- If an existing entry has 10 words, split it into 2 entries of ~5 words with proportional timestamps
+- If an existing entry has 12 words, split it into 2–3 entries of 4–6 words each
+- This applies to every single entry — check them all
 
 IMPORTANT RULES:
 - Keep the exact same SRT format (number, timestamp, text, blank line)
-- Re-number entries sequentially from 1 after adding missing entries
+- Re-number entries sequentially from 1 after adding/splitting entries
 - Do NOT add translation or explanations
 - Return ONLY the corrected and completed SRT content — no explanations, no markdown fences
 
@@ -576,6 +595,65 @@ function cleanupHallucinatedEntries(srt: string): string {
   }
   // Re-number the valid entries sequentially
   return valid
+    .map((entry, i) => {
+      const lines = entry.split("\n");
+      lines[0] = String(i + 1);
+      return lines.join("\n");
+    })
+    .join("\n\n") + "\n";
+}
+
+// ── Split overfull subtitle entries (> 6 words) ───────────────────────────────
+// Acts as a hard safety net after Gemini output — even if the model ignores the
+// word-limit instruction, every entry is guaranteed to have ≤ 6 words.
+function splitOverfullEntries(srt: string, maxWords = 6): string {
+  const entries = srt.trim().split(/\n\n+/);
+  const result: string[] = [];
+
+  for (const entry of entries) {
+    const lines = entry.trim().split("\n");
+    if (lines.length < 3) { result.push(entry.trim()); continue; }
+
+    const tsLine = lines[1].trim();
+    const text = lines.slice(2).join(" ").trim();
+    const words = text.split(/\s+/).filter(Boolean);
+
+    if (words.length <= maxWords) {
+      result.push(entry.trim());
+      continue;
+    }
+
+    // Parse start/end timestamps in ms
+    const tsParts = tsLine.match(/^(.+?)\s*-->\s*(.+)$/);
+    if (!tsParts) { result.push(entry.trim()); continue; }
+
+    const startMs = tsToMs(tsParts[1].trim());
+    const endMs = tsToMs(tsParts[2].trim());
+    if (startMs < 0 || endMs <= startMs) { result.push(entry.trim()); continue; }
+
+    const totalMs = endMs - startMs;
+    const totalWords = words.length;
+    const chunkCount = Math.ceil(totalWords / maxWords);
+
+    for (let i = 0; i < chunkCount; i++) {
+      const chunkWords = words.slice(i * maxWords, (i + 1) * maxWords);
+      const chunkStart = startMs + Math.round((i / chunkCount) * totalMs);
+      const chunkEnd   = startMs + Math.round(((i + 1) / chunkCount) * totalMs);
+
+      const fmtMs = (ms: number) => {
+        const hh = Math.floor(ms / 3600000);
+        const mm = Math.floor((ms % 3600000) / 60000);
+        const ss = Math.floor((ms % 60000) / 1000);
+        const msRem = ms % 1000;
+        return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}:${String(ss).padStart(2,"0")},${String(msRem).padStart(3,"0")}`;
+      };
+
+      result.push(`0\n${fmtMs(chunkStart)} --> ${fmtMs(chunkEnd)}\n${chunkWords.join(" ")}`);
+    }
+  }
+
+  // Re-number all entries sequentially
+  return result
     .map((entry, i) => {
       const lines = entry.split("\n");
       lines[0] = String(i + 1);
@@ -859,10 +937,12 @@ async function processAudio(
       ? stripFences(correctedSrt)
       : cleanedRaw;
 
-    // Normalize malformed timestamps, filter out-of-bounds entries, strip hallucinations
-    const correctedFinalSrt = filterOutOfBoundsEntries(
-      cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)),
-      durationSecs,
+    // Normalize malformed timestamps, filter out-of-bounds entries, strip hallucinations, enforce word limit
+    const correctedFinalSrt = splitOverfullEntries(
+      filterOutOfBoundsEntries(
+        cleanupHallucinatedEntries(normalizeSrtTimestamps(rawFinal)),
+        durationSecs,
+      ),
     );
 
     // Validate the SRT before proceeding
@@ -931,7 +1011,7 @@ async function processAudio(
       // Restore timestamps again after verification pass (same Gemini behaviour)
       const verifiedSrt = restoreTimestamps(correctedFinalSrt, verifiedClean);
 
-      const finalSrt = cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt));
+      const finalSrt = splitOverfullEntries(cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt)));
       if (!validateSrt(finalSrt)) {
         job.status = "error";
         job.error = "AI returned an invalid translated subtitle file — please try again";
