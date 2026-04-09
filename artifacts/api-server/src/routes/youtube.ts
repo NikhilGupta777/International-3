@@ -546,7 +546,10 @@ function mergeMetadataCandidates(candidates: any[]): any {
 }
 
 async function runYtDlpMetadata(url: string): Promise<any> {
+  const cached = getCachedMeta(url);
+  if (cached) return JSON.parse(cached);
   const raw = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+  setCachedMeta(url, raw);
   return JSON.parse(raw);
 }
 
@@ -1294,6 +1297,35 @@ function setCachedStreamUrl(key: string, cdnUrl: string): void {
   streamUrlCache.set(key, {
     cdnUrl,
     expiresAt: Date.now() + STREAM_CACHE_TTL_MS,
+  });
+}
+
+// ── Video metadata cache ──────────────────────────────────────────────────────
+// Caches raw yt-dlp --dump-json output for 5 minutes per video ID.
+// Eliminates redundant yt-dlp calls when /info and /clips hit the same URL.
+const META_CACHE_TTL_MS = 5 * 60 * 1000;
+const metaCache = new Map<string, { raw: string; expiresAt: number }>();
+
+function metaCacheKey(url: string): string {
+  const id = extractVideoId(url);
+  return id ?? url;
+}
+
+function getCachedMeta(url: string): string | null {
+  const key = metaCacheKey(url);
+  const entry = metaCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    metaCache.delete(key);
+    return null;
+  }
+  return entry.raw;
+}
+
+function setCachedMeta(url: string, raw: string): void {
+  metaCache.set(metaCacheKey(url), {
+    raw,
+    expiresAt: Date.now() + META_CACHE_TTL_MS,
   });
 }
 
@@ -2220,13 +2252,7 @@ async function runClipAnalysis(
     // ── Step 1: Video metadata ─────────────────────────────────────────────
     step("metadata", "running", "Fetching video info...");
     try {
-      const metaJson = await runYtDlp([
-        "--dump-json",
-        "--no-playlist",
-        "--no-warnings",
-        url,
-      ]);
-      const meta = JSON.parse(metaJson);
+      const meta = await runYtDlpMetadata(url);
       videoDuration = meta.duration ?? 0;
       videoTitle = meta.title ?? "";
       videoDescription = (meta.description ?? "").slice(0, 1000);
