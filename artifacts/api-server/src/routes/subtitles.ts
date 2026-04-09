@@ -291,15 +291,8 @@ function isAiConfigured(): boolean {
 
 // 15-minute timeout — long audio files can take many minutes for Gemini to process
 const GEMINI_TIMEOUT_MS = 15 * 60 * 1000;
-const GEMINI_TEXT_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-pro",
-] as const;
 
 function getGenAI(): GoogleGenAI | null {
-  // Always use direct API key — subtitles use Gemini Files API which is not
-  // supported through the Replit AI integration proxy.
   const directKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (directKey) {
     return new GoogleGenAI({ apiKey: directKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
@@ -316,51 +309,12 @@ function getReplitGenAI(): GoogleGenAI | null {
   return null;
 }
 
-// Best-to-lightest model order for text-only tasks via Replit integration
-const REPLIT_TEXT_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-] as const;
-
-function shouldRetryWithLighterGeminiModel(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err ?? "");
-  return /resource_exhausted|quota|429|503|unavailable|overloaded|high demand|rate.?limit/i.test(msg);
-}
-
-async function generateGeminiTextWithFallback(
-  genAI: GoogleGenAI,
-  requestFactory: (model: string) => any,
-  label: string,
-): Promise<string> {
-  let lastErr: unknown;
-
-  for (let i = 0; i < GEMINI_TEXT_MODELS.length; i++) {
-    const model = GEMINI_TEXT_MODELS[i];
-    try {
-      const result = await genAI.models.generateContent(requestFactory(model));
-      return result.text?.trim() ?? "";
-    } catch (err) {
-      lastErr = err;
-      const canRetry =
-        i < GEMINI_TEXT_MODELS.length - 1 &&
-        shouldRetryWithLighterGeminiModel(err);
-      logger.warn(
-        { err, model, label },
-        canRetry
-          ? `${label} failed, retrying with lighter Gemini model`
-          : `${label} failed`,
-      );
-      if (!canRetry) throw err;
-    }
-  }
-
-  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed`);
-}
-
-// For text-only passes (translation, verification): try Replit integration first
-// so the personal API key quota is preserved for audio-dependent passes (1 & 2).
-// Falls back to the personal key client if Replit is unavailable or fails.
-async function generateTextWithReplitFirst(
+// All passes: try Replit first with the specified model.
+// If Replit is unavailable or fails for any reason, fall back to the personal
+// key with gemini-2.5-flash. The personal key is also the upload key, so it
+// can always access the uploaded fileUri if the Replit proxy cannot.
+async function generateWithReplitFirst(
+  replitModel: string,
   personalGenAI: GoogleGenAI,
   requestFactory: (model: string) => any,
   label: string,
@@ -368,29 +322,35 @@ async function generateTextWithReplitFirst(
   const replitClient = getReplitGenAI();
 
   if (replitClient) {
-    let lastReplitErr: unknown;
-    for (let i = 0; i < REPLIT_TEXT_MODELS.length; i++) {
-      const model = REPLIT_TEXT_MODELS[i];
-      try {
-        const result = await replitClient.models.generateContent(requestFactory(model));
-        logger.info({ model, label }, `${label} completed via Replit integration`);
-        return result.text?.trim() ?? "";
-      } catch (err) {
-        lastReplitErr = err;
-        const canRetry = i < REPLIT_TEXT_MODELS.length - 1 && shouldRetryWithLighterGeminiModel(err);
-        logger.warn(
-          { err, model, label },
-          canRetry
-            ? `${label} Replit model failed, trying next Replit model`
-            : `${label} Replit integration failed, falling back to personal key`,
-        );
-        if (!canRetry) break;
-      }
+    try {
+      const result = await replitClient.models.generateContent(requestFactory(replitModel));
+      logger.info({ model: replitModel, label }, `${label} completed via Replit integration`);
+      return result.text?.trim() ?? "";
+    } catch (err) {
+      logger.warn(
+        { err, model: replitModel, label },
+        `${label} Replit failed — falling back to personal key with gemini-2.5-flash`,
+      );
     }
-    logger.warn({ err: lastReplitErr, label }, `${label} all Replit models failed — falling back to personal key`);
   }
 
-  return generateGeminiTextWithFallback(personalGenAI, requestFactory, label);
+  // Personal key fallback — try in order until one succeeds
+  const personalModels = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"];
+  let lastPersonalErr: unknown;
+  for (const model of personalModels) {
+    try {
+      const result = await personalGenAI.models.generateContent(requestFactory(model));
+      logger.info({ model, label }, `${label} completed via personal key`);
+      return result.text?.trim() ?? "";
+    } catch (err) {
+      lastPersonalErr = err;
+      const msg = err instanceof Error ? err.message : String(err ?? "");
+      const isQuota = /resource_exhausted|quota|429|503|unavailable|overloaded|rate.?limit/i.test(msg);
+      logger.warn({ err, model, label }, `${label} personal key model failed${isQuota ? " (quota) — trying next" : ""}`);
+      if (!isQuota) throw err;
+    }
+  }
+  throw lastPersonalErr instanceof Error ? lastPersonalErr : new Error(`${label} failed on all models`);
 }
 
 function buildSrtPrompt(language: string, durationSrt: string): string {
@@ -931,7 +891,8 @@ async function processAudio(
     job.status = "generating";
     job.message = "AI is transcribing audio...";
 
-    const rawSrt = await generateGeminiTextWithFallback(
+    const rawSrt = await generateWithReplitFirst(
+      "gemini-2.5-flash",
       genAI,
       (model) => ({
         model,
@@ -964,7 +925,8 @@ async function processAudio(
     job.status = "correcting";
     job.message = "AI is auto-correcting errors...";
 
-    const correctedSrt = await generateGeminiTextWithFallback(
+    const correctedSrt = await generateWithReplitFirst(
+      "gemini-3.1-pro-preview",
       genAI,
       (model) => ({
         model,
@@ -1013,7 +975,8 @@ async function processAudio(
       job.status = "translating";
       job.message = `Translating subtitles to ${translateTo}...`;
 
-      const translatedRaw = await generateTextWithReplitFirst(
+      const translatedRaw = await generateWithReplitFirst(
+        "gemini-3.1-pro-preview",
         genAI,
         (model) => ({
           model,
@@ -1041,7 +1004,8 @@ async function processAudio(
       job.status = "verifying";
       job.message = `Verifying ${translateTo} translation...`;
 
-      const verifiedRaw = await generateTextWithReplitFirst(
+      const verifiedRaw = await generateWithReplitFirst(
+        "gemini-3.1-pro-preview",
         genAI,
         (model) => ({
           model,
