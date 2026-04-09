@@ -307,6 +307,21 @@ function getGenAI(): GoogleGenAI | null {
   return null;
 }
 
+function getReplitGenAI(): GoogleGenAI | null {
+  const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
+  const apiKey  = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
+  if (baseUrl && apiKey) {
+    return new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl, timeout: GEMINI_TIMEOUT_MS } });
+  }
+  return null;
+}
+
+// Best-to-lightest model order for text-only tasks via Replit integration
+const REPLIT_TEXT_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+] as const;
+
 function shouldRetryWithLighterGeminiModel(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
   return /resource_exhausted|quota|429|503|unavailable|overloaded|high demand|rate.?limit/i.test(msg);
@@ -340,6 +355,42 @@ async function generateGeminiTextWithFallback(
   }
 
   throw lastErr instanceof Error ? lastErr : new Error(`${label} failed`);
+}
+
+// For text-only passes (translation, verification): try Replit integration first
+// so the personal API key quota is preserved for audio-dependent passes (1 & 2).
+// Falls back to the personal key client if Replit is unavailable or fails.
+async function generateTextWithReplitFirst(
+  personalGenAI: GoogleGenAI,
+  requestFactory: (model: string) => any,
+  label: string,
+): Promise<string> {
+  const replitClient = getReplitGenAI();
+
+  if (replitClient) {
+    let lastReplitErr: unknown;
+    for (let i = 0; i < REPLIT_TEXT_MODELS.length; i++) {
+      const model = REPLIT_TEXT_MODELS[i];
+      try {
+        const result = await replitClient.models.generateContent(requestFactory(model));
+        logger.info({ model, label }, `${label} completed via Replit integration`);
+        return result.text?.trim() ?? "";
+      } catch (err) {
+        lastReplitErr = err;
+        const canRetry = i < REPLIT_TEXT_MODELS.length - 1 && shouldRetryWithLighterGeminiModel(err);
+        logger.warn(
+          { err, model, label },
+          canRetry
+            ? `${label} Replit model failed, trying next Replit model`
+            : `${label} Replit integration failed, falling back to personal key`,
+        );
+        if (!canRetry) break;
+      }
+    }
+    logger.warn({ err: lastReplitErr, label }, `${label} all Replit models failed — falling back to personal key`);
+  }
+
+  return generateGeminiTextWithFallback(personalGenAI, requestFactory, label);
 }
 
 function buildSrtPrompt(language: string, durationSrt: string): string {
@@ -962,7 +1013,7 @@ async function processAudio(
       job.status = "translating";
       job.message = `Translating subtitles to ${translateTo}...`;
 
-      const translatedRaw = await generateGeminiTextWithFallback(
+      const translatedRaw = await generateTextWithReplitFirst(
         genAI,
         (model) => ({
           model,
@@ -990,7 +1041,7 @@ async function processAudio(
       job.status = "verifying";
       job.message = `Verifying ${translateTo} translation...`;
 
-      const verifiedRaw = await generateGeminiTextWithFallback(
+      const verifiedRaw = await generateTextWithReplitFirst(
         genAI,
         (model) => ({
           model,
