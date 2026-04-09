@@ -58,8 +58,9 @@ function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
 const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
 const PYTHON_BIN =
   process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+// Write cookie file to tmpdir for reliability across all environments (workspace may be read-only in production).
 const YTDLP_COOKIES_FILE =
-  process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
+  process.env.YTDLP_COOKIES_FILE ?? join(tmpdir(), ".yt-cookies.txt");
 
 // Optional HTTP/SOCKS proxy for yt-dlp (critical for cloud/datacenter IPs blocked by YouTube).
 // Set YTDLP_PROXY=socks5://user:pass@host:port  or  http://host:port
@@ -197,9 +198,6 @@ const BASE_YTDLP_ARGS: string[] = [
   // Full Chrome-like user agent
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  // Sleep between requests to avoid rate-limit bans
-  "--sleep-requests", "1",
-  "--sleep-interval", "2",
 ];
 
 // Inject proxy if configured (essential for AWS/cloud IPs blocked by YouTube)
@@ -227,6 +225,15 @@ function getDefaultYouTubeExtractorArgs(): string[] {
       `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
     ];
   }
+  // Browser cookies are tied to the web client session.
+  // Use web as primary when cookies are present — this authenticates properly and bypasses bot checks.
+  const hasCookies = existsSync(YTDLP_COOKIES_FILE);
+  if (hasCookies) {
+    return [
+      "--extractor-args",
+      "youtube:player_client=web,web_embedded,tv_embedded",
+    ];
+  }
   return [
     "--extractor-args",
     "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless",
@@ -244,19 +251,25 @@ function getYouTubeFallbacks(): string[][] {
     ];
   }
   const hasCookies = existsSync(YTDLP_COOKIES_FILE);
-  const fallbacks: string[][] = [
+  if (hasCookies) {
+    // Web-first fallback order when cookies are available (browser cookies authenticate with the web client).
+    return [
+      ["--extractor-args", "youtube:player_client=web"],
+      ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+      ["--extractor-args", "youtube:player_client=tv_embedded"],
+      ["--extractor-args", "youtube:player_client=android_vr"],
+      ["--extractor-args", "youtube:player_client=mweb"],
+      ["--extractor-args", "youtube:player_client=ios"],
+    ];
+  }
+  return [
     ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
     ["--extractor-args", "youtube:player_client=tv_embedded"],
     ["--extractor-args", "youtube:player_client=android_vr"],
     ["--extractor-args", "youtube:player_client=mweb"],
     ["--extractor-args", "youtube:player_client=ios"],
   ];
-  // web client gets the most complete format list; works with cookies even on server IPs
-  if (hasCookies) {
-    fallbacks.push(["--extractor-args", "youtube:player_client=web,web_embedded"]);
-    fallbacks.push(["--extractor-args", "youtube:player_client=web"]);
-  }
-  return fallbacks;
 }
 
 function getYtdlpCookieArgs(): string[] {
