@@ -168,15 +168,41 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
   };
 
   return (
-    <div className="fixed bottom-6 right-4 sm:right-6 z-50 flex flex-col items-end gap-3">
-      {/* Panel */}
+    <div className="fixed top-4 right-4 sm:right-6 z-50 flex flex-col items-end gap-2">
+      {/* Pill button */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "relative flex items-center gap-2 pl-3 pr-4 h-9 rounded-full shadow-[0_4px_20px_rgba(0,0,0,0.5)] transition-all duration-200",
+          open
+            ? "bg-white/15 border border-white/20"
+            : "bg-[#1a1a1f] border border-white/10 hover:border-white/25 hover:scale-[1.03]"
+        )}
+        title="Activity panel"
+      >
+        {hasActive && !open && (
+          <span className="absolute inset-0 rounded-full border-2 border-amber-400/50 animate-ping" />
+        )}
+        <Activity className={cn("w-4 h-4 transition-colors shrink-0", open ? "text-white/60" : "text-white/50")} />
+        <span className="text-sm font-medium text-white/70">Activity</span>
+        {totalCount > 0 && (
+          <span className={cn(
+            "min-w-[18px] h-[18px] rounded-full text-[10px] font-bold flex items-center justify-center px-1",
+            hasActive ? "bg-amber-400 text-black" : "bg-white/20 text-white/80"
+          )}>
+            {totalCount > 99 ? "99+" : totalCount}
+          </span>
+        )}
+      </button>
+
+      {/* Panel — opens downward */}
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0, y: 16, scale: 0.95 }}
+            initial={{ opacity: 0, y: -8, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 16, scale: 0.95 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
+            exit={{ opacity: 0, y: -8, scale: 0.97 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
             className="w-[340px] sm:w-[380px] max-h-[520px] flex flex-col rounded-2xl border border-white/10 bg-[#0d0d0f]/95 backdrop-blur-xl shadow-[0_8px_40px_rgba(0,0,0,0.6)] overflow-hidden"
           >
             {/* Header */}
@@ -449,37 +475,6 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
         )}
       </AnimatePresence>
 
-      {/* Floating button */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={cn(
-          "relative w-13 h-13 rounded-full shadow-[0_4px_24px_rgba(0,0,0,0.5)] flex items-center justify-center transition-all duration-200",
-          open
-            ? "bg-white/15 border border-white/20 scale-95"
-            : "bg-[#1a1a1f] border border-white/10 hover:border-white/25 hover:scale-105"
-        )}
-        style={{ width: 52, height: 52 }}
-        title="Activity panel"
-      >
-        {/* Pulsing ring when active jobs */}
-        {hasActive && !open && (
-          <span className="absolute inset-0 rounded-full border-2 border-amber-400/50 animate-ping" />
-        )}
-
-        <Activity className={cn("w-5 h-5 transition-colors", open ? "text-white/60" : "text-white/50")} />
-
-        {/* Badge */}
-        {totalCount > 0 && (
-          <span className={cn(
-            "absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full text-[10px] font-bold flex items-center justify-center px-1 shadow-lg",
-            hasActive
-              ? "bg-amber-400 text-black"
-              : "bg-white/20 text-white/80"
-          )}>
-            {totalCount > 99 ? "99+" : totalCount}
-          </span>
-        )}
-      </button>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { spawn } from "child_process";
+import { spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
 import {
   existsSync,
@@ -211,10 +211,19 @@ const BASE_YTDLP_ARGS: string[] = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
 
-// Point yt-dlp at the bundled ffmpeg binary (ffmpeg-static) so clip-cut works
-// in any environment (Nix, Docker, etc.) without requiring a system ffmpeg install.
-if (ffmpegStatic) {
-  BASE_YTDLP_ARGS.push("--ffmpeg-location", ffmpegStatic);
+// Resolve ffmpeg: prefer the system binary (NixOS/Replit has a full ffmpeg on PATH
+// that is more stable than the bundled ffmpeg-static which can segfault on NixOS).
+function findFfmpeg(): string | null {
+  try {
+    const p = execFileSync("which", ["ffmpeg"], { encoding: "utf8" }).trim();
+    if (p) { console.log(`[ffmpeg] Using system ffmpeg: ${p}`); return p; }
+  } catch {}
+  if (ffmpegStatic) { console.log(`[ffmpeg] Using ffmpeg-static: ${ffmpegStatic}`); return ffmpegStatic; }
+  return null;
+}
+const FFMPEG_PATH = findFfmpeg();
+if (FFMPEG_PATH) {
+  BASE_YTDLP_ARGS.push("--ffmpeg-location", FFMPEG_PATH);
 }
 
 // Inject proxy if configured (essential for AWS/cloud IPs blocked by YouTube)
