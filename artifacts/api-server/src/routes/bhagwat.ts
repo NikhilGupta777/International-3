@@ -20,6 +20,7 @@ import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
 import multer from "multer";
 import { AssemblyAI } from "assemblyai";
+import ffmpegStatic from "ffmpeg-static";
 
 const router: Router = Router();
 
@@ -778,6 +779,7 @@ const YTDLP_BASE_ARGS: string[] = [
   "--sleep-interval", "2",
 ];
 
+if (ffmpegStatic) YTDLP_BASE_ARGS.push("--ffmpeg-location", ffmpegStatic);
 if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
 
 if (HAS_DYNAMIC_POT_PROVIDER) {

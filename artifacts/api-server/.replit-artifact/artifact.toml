@@ -1,39 +1,40 @@
 kind = "api"
-previewPath = "/api" # TODO - should be excluded from preview in the first place
-title = "API Server"
-version = "1.0.0"
-id = "3B4_FFSkEVBkAeYMFRJ2e"
-deploymentTarget = "autoscale"
+  previewPath = "/api" # TODO - should be excluded from preview in the first place
+  title = "API Server"
+  version = "1.0.0"
+  id = "3B4_FFSkEVBkAeYMFRJ2e"
+  deploymentTarget = "autoscale"
 
-[[services]]
-localPort = 8080
-name = "API Server"
-paths = ["/api"]
+  [[services]]
+  localPort = 8080
+  name = "API Server"
+  paths = ["/api"]
 
-[services.development]
-run = "pnpm --filter @workspace/api-server run dev"
+  [services.development]
+  run = "pnpm --filter @workspace/api-server run dev"
 
-[services.development.env]
-SERVE_STATIC = "true"
+  [services.development.env]
+  SERVE_STATIC = "true"
 
-[services.production]
+  [services.production]
 
-[services.production.build]
-args = ["sh", "-c", "apt-get install -y ffmpeg 2>/dev/null || true && uv sync --quiet 2>/dev/null || true && pnpm --filter @workspace/api-server run build"]
+  [services.production.build]
+  args = ["sh", "-c", "pnpm install --frozen-lockfile && pnpm --filter @workspace/api-server run build"]
 
-[services.production.build.env]
-NODE_ENV = "production"
-UV_PROJECT_ENVIRONMENT = "/home/runner/workspace/.pythonlibs"
-UV_PYTHON_PREFERENCE = "only-system"
-UV_PYTHON_DOWNLOADS = "never"
+  [services.production.build.env]
+  NODE_ENV = "production"
+  UV_PROJECT_ENVIRONMENT = "/home/runner/workspace/.pythonlibs"
+  UV_PYTHON_PREFERENCE = "only-system"
+  UV_PYTHON_DOWNLOADS = "never"
 
-[services.production.run]
-# we don't run through pnpm to make startup faster in production
-args = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
+  [services.production.run]
+  # we don't run through pnpm to make startup faster in production
+  args = ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
 
-[services.production.run.env]
-PORT = "8080"
-NODE_ENV = "production"
+  [services.production.run.env]
+  PORT = "8080"
+  NODE_ENV = "production"
 
-[services.production.health.startup]
-path = "/api/healthz"
+  [services.production.health.startup]
+  path = "/api/healthz"
+  

@@ -8,6 +8,7 @@ import { join } from "path";
 import { spawn } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { logger } from "../lib/logger";
+import ffmpegStatic from "ffmpeg-static";
 
 const router = Router();
 
@@ -77,6 +78,7 @@ const YTDLP_BASE_ARGS: string[] = [
   "--sleep-interval",  "2",
 ];
 
+if (ffmpegStatic) YTDLP_BASE_ARGS.push("--ffmpeg-location", ffmpegStatic);
 if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
 
 if (HAS_DYNAMIC_POT_PROVIDER) {

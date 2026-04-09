@@ -19,6 +19,7 @@ import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleGenAI } from "@google/genai";
+import ffmpegStatic from "ffmpeg-static";
 
 const router: IRouter = Router();
 
@@ -209,6 +210,12 @@ const BASE_YTDLP_ARGS: string[] = [
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
+
+// Point yt-dlp at the bundled ffmpeg binary (ffmpeg-static) so clip-cut works
+// in any environment (Nix, Docker, etc.) without requiring a system ffmpeg install.
+if (ffmpegStatic) {
+  BASE_YTDLP_ARGS.push("--ffmpeg-location", ffmpegStatic);
+}
 
 // Inject proxy if configured (essential for AWS/cloud IPs blocked by YouTube)
 if (YTDLP_PROXY) {
