@@ -37,6 +37,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { saveToBestClipsHistory } from "@/lib/best-clips-history";
 
 export interface BestClip {
   durationLabel: string;
@@ -416,6 +417,14 @@ export const BestClips = forwardRef(function BestClips(
                   hasTranscript: msg.hasTranscript ?? false,
                 }));
               } catch {}
+              saveToBestClipsHistory({
+                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                createdAt: Date.now(),
+                url: url.trim(),
+                clipCount: resultClips.length,
+                hasTranscript: msg.hasTranscript ?? false,
+                clips: resultClips,
+              });
             }
             analysisStartRef.current = null;
             setIsLoading(false);

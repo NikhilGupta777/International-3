@@ -16,6 +16,7 @@ import { BestClips, type BestClipsHandle } from "@/components/BestClips";
 import { BhavishyaClips } from "@/components/BhavishyaClips";
 import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
+import { GlobalHistoryPanel } from "@/components/GlobalHistoryPanel";
 import {
   saveActiveDownload,
   loadActiveDownload,
@@ -472,6 +473,8 @@ export default function Home() {
             )}
 
           </AnimatePresence>
+
+          <GlobalHistoryPanel />
 
         </div>
       </main>
