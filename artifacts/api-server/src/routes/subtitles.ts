@@ -74,6 +74,8 @@ const YTDLP_BASE_ARGS: string[] = [
   ].join(";"),
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "--sleep-requests", "1",
+  "--sleep-interval",  "2",
 ];
 
 if (ffmpegStatic) YTDLP_BASE_ARGS.push("--ffmpeg-location", ffmpegStatic);
@@ -361,9 +363,9 @@ function getReplitGenAI(): GoogleGenAI | null {
 // The remaining models are used only when ALL keys are rate-limited on the current model.
 const KEY_ROTATION_MODELS = [
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
+  "gemini-3-flash-preview",
   "gemini-1.5-flash",
-  "gemini-2.0-flash-lite",
+  "gemini-3.1-flash-lite-preview",
 ];
 
 async function generateWithKeyRotation(
@@ -1123,7 +1125,7 @@ async function processAudio(
       job.message = `Translating subtitles to ${translateTo}...`;
 
       const translatedRaw = await generateWithReplitFirst(
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
         (model) => ({
           model,
           contents: [
@@ -1152,7 +1154,7 @@ async function processAudio(
       job.message = `Verifying ${translateTo} translation...`;
 
       const verifiedRaw = await generateWithReplitFirst(
-        "gemini-2.5-pro",
+        "gemini-3.1-pro-preview",
         (model) => ({
           model,
           contents: [
