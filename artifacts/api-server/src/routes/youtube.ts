@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   unlinkSync,
+  rmdirSync,
   statSync,
   createReadStream,
   readFileSync,
