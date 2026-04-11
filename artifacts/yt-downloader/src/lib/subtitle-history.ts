@@ -57,6 +57,7 @@ export function clearHistory(): void {
 // away and comes back, the component can reconnect and resume polling.
 
 const ACTIVE_JOB_KEY = "ytgrabber_active_srt_job";
+const ACTIVE_JOB_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export interface ActiveJobRecord {
   jobId: string;
@@ -76,8 +77,26 @@ export function loadActiveJob(): ActiveJobRecord | null {
   try {
     const raw = localStorage.getItem(ACTIVE_JOB_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as ActiveJobRecord;
-  } catch { return null; }
+    const parsed = JSON.parse(raw) as Partial<ActiveJobRecord>;
+    if (
+      !parsed ||
+      typeof parsed.jobId !== "string" ||
+      (parsed.mode !== "url" && parsed.mode !== "file") ||
+      typeof parsed.language !== "string" ||
+      typeof parsed.translateTo !== "string" ||
+      typeof parsed.startedAt !== "number"
+    ) {
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+      return null;
+    }
+    if (Date.now() - parsed.startedAt > ACTIVE_JOB_MAX_AGE_MS) {
+      localStorage.removeItem(ACTIVE_JOB_KEY);
+      return null;
+    }
+    return parsed as ActiveJobRecord;
+  } catch {
+    return null;
+  }
 }
 
 export function clearActiveJob(): void {

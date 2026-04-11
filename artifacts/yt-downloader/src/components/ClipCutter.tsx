@@ -67,7 +67,13 @@ function secsToLabel(s: number): string {
   return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
-type JobStatus = "pending" | "downloading" | "merging" | "done" | "error";
+type JobStatus =
+  | "pending"
+  | "downloading"
+  | "merging"
+  | "done"
+  | "error"
+  | "cancelled";
 
 interface ActiveJob {
   jobId: string;
@@ -88,6 +94,16 @@ interface ActiveJob {
   reconnected?: boolean;
 }
 
+interface ProgressPayload {
+  status?: string;
+  percent?: number | null;
+  speed?: string | null;
+  eta?: string | null;
+  filename?: string | null;
+  filesize?: number | null;
+  message?: string | null;
+}
+
 export function ClipCutter() {
   const [url, setUrl] = useState("");
   const [startTime, setStartTime] = useState("");
@@ -97,7 +113,9 @@ export function ClipCutter() {
   const [jobs, setJobs] = useState<ActiveJob[]>([]);
   const [history, setHistory] = useState<ClipHistoryEntry[]>(() => loadClipHistory());
   const { toast } = useToast();
+  const streamRefs = useRef<Map<string, EventSource>>(new Map());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollInFlightRef = useRef(false);
   const jobsRef = useRef<ActiveJob[]>([]);
   jobsRef.current = jobs;
 
@@ -111,7 +129,12 @@ export function ClipCutter() {
   // Persist active jobs to localStorage whenever the jobs list changes
   const persistActiveJobs = useCallback((current: ActiveJob[]) => {
     const active = current
-      .filter((j) => j.status !== "done" && j.status !== "error")
+      .filter(
+        (j) =>
+          j.status !== "done" &&
+          j.status !== "error" &&
+          j.status !== "cancelled",
+      )
       .map((j): ActiveClipJob => ({
         jobId: j.jobId,
         label: j.label,
@@ -153,17 +176,23 @@ export function ClipCutter() {
 
   // Polling loop — runs continuously, picks up all active jobs
   useEffect(() => {
+    if (typeof EventSource !== "undefined") return;
     if (pollRef.current) return;
 
     pollRef.current = setInterval(async () => {
+      if (pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
+      try {
       const current = jobsRef.current;
-      const active = current.filter(
-        (j) => j.status !== "done" && j.status !== "error",
+        const active = current.filter(
+        (j) =>
+          j.status !== "done" &&
+          j.status !== "error" &&
+          j.status !== "cancelled",
       );
       if (active.length === 0) return;
 
-      await Promise.all(
-        active.map(async (job) => {
+      for (const job of active) {
           try {
             const res = await fetch(`${BASE_URL}/api/youtube/progress/${job.jobId}`);
 
@@ -180,10 +209,10 @@ export function ClipCutter() {
                 persistActiveJobs(updated);
                 return updated;
               });
-              return;
+              continue;
             }
 
-            if (!res.ok) return;
+            if (!res.ok) continue;
             const data = await res.json();
 
             setJobs((prev) => {
@@ -234,8 +263,10 @@ export function ClipCutter() {
               return updated;
             });
           } catch {}
-        }),
-      );
+        }
+      } finally {
+        pollInFlightRef.current = false;
+      }
     }, 1500);
 
     return () => {
@@ -245,6 +276,215 @@ export function ClipCutter() {
       }
     };
   }, [persistActiveJobs]);
+
+  const closeJobStream = useCallback((jobId: string) => {
+    const stream = streamRefs.current.get(jobId);
+    if (stream) {
+      stream.close();
+      streamRefs.current.delete(jobId);
+    }
+  }, []);
+
+  const triggerClipDownload = useCallback((jobId: string, filename: string) => {
+    const link = document.createElement("a");
+    link.href = `${BASE_URL}/api/youtube/file/${jobId}`;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, []);
+
+  const applyProgressUpdate = useCallback(
+    (jobId: string, data: ProgressPayload) => {
+      let shouldDownload = false;
+      let downloadName = "clip.mp4";
+      let historyEntry: ClipHistoryEntry | null = null;
+
+      setJobs((prev) => {
+        const updated = prev.map((j) => {
+          if (j.jobId !== jobId) return j;
+
+          const rawStatus = (data.status ?? j.status) as string;
+          const nextStatus: JobStatus =
+            rawStatus === "pending" ||
+            rawStatus === "downloading" ||
+            rawStatus === "merging" ||
+            rawStatus === "done" ||
+            rawStatus === "error" ||
+            rawStatus === "cancelled"
+              ? rawStatus
+              : "error";
+
+          const nextJob: ActiveJob = {
+            ...j,
+            status: nextStatus,
+            percent: typeof data.percent === "number" ? data.percent : j.percent,
+            speed: data.speed ?? null,
+            eta: data.eta ?? null,
+            filename: data.filename ?? j.filename,
+            filesize: data.filesize ?? j.filesize,
+            message:
+              rawStatus === "expired"
+                ? "File expired. Please run clip cut again."
+                : (data.message ?? null),
+            reconnected: false,
+          };
+
+          if (nextStatus === "done" && !j.downloaded) {
+            shouldDownload = true;
+            downloadName = data.filename ?? j.filename ?? "clip.mp4";
+            historyEntry = {
+              jobId: j.jobId,
+              createdAt: Date.now(),
+              label: j.label,
+              url: j.url,
+              quality: j.quality,
+              filename: downloadName,
+              filesize: data.filesize ?? j.filesize,
+              durationSecs: j.endSecs - j.startSecs,
+            };
+            nextJob.downloaded = true;
+          }
+
+          return nextJob;
+        });
+
+        persistActiveJobs(updated);
+        return updated;
+      });
+
+      if (historyEntry) {
+        saveToClipHistory(historyEntry);
+        setHistory(loadClipHistory());
+      }
+
+      if (shouldDownload) {
+        triggerClipDownload(jobId, downloadName);
+      }
+    },
+    [persistActiveJobs, triggerClipDownload],
+  );
+
+  const markJobLost = useCallback(
+    (jobId: string, message: string) => {
+      setJobs((prev) => {
+        const updated = prev.map((j) =>
+          j.jobId !== jobId
+            ? j
+            : {
+                ...j,
+                status: "error" as JobStatus,
+                message,
+              },
+        );
+        persistActiveJobs(updated);
+        return updated;
+      });
+    },
+    [persistActiveJobs],
+  );
+
+  const refreshJobOnce = useCallback(
+    async (jobId: string) => {
+      try {
+        const res = await fetch(`${BASE_URL}/api/youtube/progress/${jobId}`);
+        if (res.status === 404) {
+          markJobLost(jobId, "Server restarted - job was lost. Please retry.");
+          return;
+        }
+        if (!res.ok) {
+          throw new Error(`Progress request failed (${res.status})`);
+        }
+        const data = (await res.json()) as ProgressPayload;
+        applyProgressUpdate(jobId, data);
+      } catch {
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.jobId !== jobId || j.status === "done" || j.status === "error" || j.status === "cancelled"
+              ? j
+              : {
+                  ...j,
+                  message: "Connection issue - retrying...",
+                  reconnected: true,
+                },
+          ),
+        );
+      }
+    },
+    [applyProgressUpdate, markJobLost],
+  );
+
+  useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+
+    const activeJobs = jobs.filter(
+      (j) => j.status !== "done" && j.status !== "error" && j.status !== "cancelled",
+    );
+    const activeIds = new Set(activeJobs.map((j) => j.jobId));
+
+    for (const jobId of Array.from(streamRefs.current.keys())) {
+      if (!activeIds.has(jobId)) closeJobStream(jobId);
+    }
+
+    for (const job of activeJobs) {
+      if (streamRefs.current.has(job.jobId)) continue;
+
+      const stream = new EventSource(
+        `${BASE_URL}/api/youtube/progress/stream/${job.jobId}`,
+      );
+      streamRefs.current.set(job.jobId, stream);
+
+      stream.onmessage = (event) => {
+        let payload: ProgressPayload;
+        try {
+          payload = JSON.parse(event.data) as ProgressPayload;
+        } catch {
+          return;
+        }
+
+        applyProgressUpdate(job.jobId, payload);
+
+        const terminal = payload.status;
+        if (
+          terminal === "done" ||
+          terminal === "error" ||
+          terminal === "expired" ||
+          terminal === "cancelled"
+        ) {
+          closeJobStream(job.jobId);
+        }
+      };
+
+      stream.onerror = () => {
+        if (stream.readyState === EventSource.CLOSED) {
+          closeJobStream(job.jobId);
+          void refreshJobOnce(job.jobId);
+          return;
+        }
+
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.jobId !== job.jobId || j.status === "done" || j.status === "error" || j.status === "cancelled"
+              ? j
+              : {
+                  ...j,
+                  message: "Connection issue - reconnecting...",
+                  reconnected: true,
+                },
+          ),
+        );
+      };
+    }
+  }, [jobs, applyProgressUpdate, closeJobStream, refreshJobOnce]);
+
+  useEffect(() => {
+    return () => {
+      for (const stream of streamRefs.current.values()) {
+        stream.close();
+      }
+      streamRefs.current.clear();
+    };
+  }, []);
 
   const handleCut = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -328,11 +568,57 @@ export function ClipCutter() {
   };
 
   const removeJob = (jobId: string) => {
+    closeJobStream(jobId);
     setJobs((prev) => {
       const updated = prev.filter((j) => j.jobId !== jobId);
       persistActiveJobs(updated);
       return updated;
     });
+  };
+
+  const cancelJob = async (jobId: string) => {
+    setJobs((prev) =>
+      prev.map((j) =>
+        j.jobId !== jobId || j.status === "done" || j.status === "error" || j.status === "cancelled"
+          ? j
+          : {
+              ...j,
+              message: "Cancelling...",
+            },
+      ),
+    );
+
+    try {
+      const res = await fetch(`${BASE_URL}/api/youtube/cancel/${jobId}`, {
+        method: "POST",
+      });
+      const data = await res
+        .json()
+        .catch(() => ({} as { error?: string }));
+      if (!res.ok) {
+        throw new Error(data.error ?? "Failed to cancel clip");
+      }
+    } catch (err) {
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.jobId !== jobId || j.status === "done" || j.status === "error" || j.status === "cancelled"
+            ? j
+            : {
+                ...j,
+                message:
+                  err instanceof Error
+                    ? `Cancel failed: ${err.message}`
+                    : "Cancel failed. Retry in a moment.",
+              },
+        ),
+      );
+      toast({
+        title: "Cancel failed",
+        description:
+          err instanceof Error ? err.message : "Unable to cancel clip download",
+        variant: "destructive",
+      });
+    }
   };
 
   return (
@@ -473,7 +759,12 @@ export function ClipCutter() {
       {/* Active / in-progress job cards */}
       <AnimatePresence initial={false}>
         {jobs.map((job) => (
-          <ClipJobCard key={job.jobId} job={job} onRemove={removeJob} />
+          <ClipJobCard
+            key={job.jobId}
+            job={job}
+            onRemove={removeJob}
+            onCancel={cancelJob}
+          />
         ))}
       </AnimatePresence>
 
@@ -567,12 +858,15 @@ function fmtElapsed(s: number): string {
 function ClipJobCard({
   job,
   onRemove,
+  onCancel,
 }: {
   job: ActiveJob;
   onRemove: (id: string) => void;
+  onCancel: (id: string) => void;
 }) {
   const isDone = job.status === "done";
   const isError = job.status === "error";
+  const isCancelled = job.status === "cancelled";
   const isProcessing =
     job.status === "pending" ||
     job.status === "downloading" ||
@@ -581,6 +875,10 @@ function ClipJobCard({
   const isConnecting =
     (job.status === "pending" || job.status === "downloading") &&
     job.percent === 0;
+  const isCancelling = isProcessing && (job.message ?? "").toLowerCase().includes("cancel");
+  const queuePositionMatch = job.message?.match(/queued\s*\(#(\d+)\)/i);
+  const queuePosition = queuePositionMatch ? Number.parseInt(queuePositionMatch[1], 10) : null;
+  const isQueued = job.status === "pending" && (job.message ?? "").toLowerCase().includes("queued");
 
   const elapsed = useElapsed(job.startedAt, isProcessing);
 
@@ -595,6 +893,7 @@ function ClipJobCard({
         "glass-panel rounded-2xl px-5 py-4 flex flex-col gap-3 relative overflow-hidden border",
         isDone && "border-green-500/20",
         isError && "border-red-500/20",
+        isCancelled && "border-amber-500/20",
         isProcessing && "border-orange-500/15",
       )}
     >
@@ -604,6 +903,7 @@ function ClipJobCard({
           "absolute top-0 right-0 w-40 h-40 blur-[60px] rounded-full pointer-events-none opacity-20",
           isDone && "bg-green-500",
           isError && "bg-red-500",
+          isCancelled && "bg-amber-500",
           isProcessing && "bg-orange-500",
         )}
       />
@@ -614,12 +914,19 @@ function ClipJobCard({
             <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
           ) : isError ? (
             <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+          ) : isCancelled ? (
+            <X className="w-4 h-4 text-amber-400 shrink-0" />
           ) : (
             <Loader2 className="w-4 h-4 text-orange-400 animate-spin shrink-0" />
           )}
           <span className="text-sm font-semibold text-white font-mono truncate">
             {job.label}
           </span>
+          {isQueued && (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-amber-500/20 border border-amber-500/40 text-amber-300 shrink-0">
+              {queuePosition ? `Queued #${queuePosition}` : "Queued"}
+            </span>
+          )}
           {job.filename && (
             <span className="text-xs text-white/35 truncate hidden sm:block">
               {job.filename}
@@ -628,6 +935,22 @@ function ClipJobCard({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {isProcessing && (
+            <button
+              onClick={() => onCancel(job.jobId)}
+              disabled={isCancelling}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all",
+                "border-amber-500/40 text-amber-300",
+                isCancelling
+                  ? "bg-amber-500/10 opacity-70 cursor-not-allowed"
+                  : "bg-amber-500/15 hover:bg-amber-500/25",
+              )}
+            >
+              <X className="w-3 h-3" />
+              {isCancelling ? "Cancelling..." : "Cancel"}
+            </button>
+          )}
           {isDone && (
             <a
               href={`${BASE_URL}/api/youtube/file/${job.jobId}`}
@@ -638,7 +961,7 @@ function ClipJobCard({
               Save
             </a>
           )}
-          {(isDone || isError) && (
+          {(isDone || isError || isCancelled) && (
             <button
               onClick={() => onRemove(job.jobId)}
               className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors"
@@ -682,6 +1005,8 @@ function ClipJobCard({
             <span>
               {job.reconnected && job.status === "pending"
                 ? "Reconnecting…"
+                : isQueued
+                  ? (job.message ?? "Queued - starting soon...")
                 : job.status === "merging"
                   ? "Merging…"
                   : isConnecting
@@ -710,6 +1035,12 @@ function ClipJobCard({
       {isError && (
         <p className="text-xs text-red-400/80 relative z-10">
           {job.message ?? "Clip cut failed. Please try again."}
+        </p>
+      )}
+
+      {isCancelled && (
+        <p className="text-xs text-amber-400/80 relative z-10">
+          {job.message ?? "Clip cut was cancelled."}
         </p>
       )}
 

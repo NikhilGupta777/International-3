@@ -22,12 +22,21 @@ export function loadActiveDownload(): ActiveDownloadRecord | null {
   try {
     const raw = localStorage.getItem(ACTIVE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as ActiveDownloadRecord;
+    const parsed = JSON.parse(raw) as Partial<ActiveDownloadRecord>;
+    if (
+      !parsed ||
+      typeof parsed.jobId !== "string" ||
+      typeof parsed.url !== "string" ||
+      typeof parsed.savedAt !== "number"
+    ) {
+      clearActiveDownload();
+      return null;
+    }
     if (Date.now() - parsed.savedAt > TTL_MS) {
       clearActiveDownload();
       return null;
     }
-    return parsed;
+    return parsed as ActiveDownloadRecord;
   } catch {
     return null;
   }

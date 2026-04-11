@@ -9,6 +9,20 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// Minimal security headers without introducing new deps.
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()",
+  );
+  res.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  res.setHeader("Cross-Origin-Resource-Policy", "same-site");
+  next();
+});
+
 app.use(
   pinoHttp({
     logger,
@@ -33,6 +47,9 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 app.use("/api", router);
+app.use("/api", (_req: Request, res: Response) => {
+  res.status(404).json({ error: "API route not found" });
+});
 
 // Serve built frontend static files whenever they exist (production always, dev when built)
 const __dirname = fileURLToPath(new URL(".", import.meta.url));

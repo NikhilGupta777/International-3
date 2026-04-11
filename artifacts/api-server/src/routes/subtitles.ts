@@ -4,8 +4,8 @@ import { randomUUID } from "crypto";
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync,
 } from "fs";
-import { join } from "path";
-import { spawn } from "child_process";
+import { join, dirname, basename } from "path";
+import { spawn, execFileSync } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { logger } from "../lib/logger";
 import ffmpegStatic from "ffmpeg-static";
@@ -299,6 +299,39 @@ const upload = multer({
   limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
 });
 
+function resolveSystemBinary(bin: string): string | null {
+  try {
+    const finder = process.platform === "win32" ? "where" : "which";
+    const output = execFileSync(finder, [bin], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (!output) return null;
+    const first = output.split(/\r?\n/).find(Boolean)?.trim();
+    return first || null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveFfprobeFromFfmpegPath(ffmpegPath: string | null): string | null {
+  if (!ffmpegPath) return null;
+  const dir = dirname(ffmpegPath);
+  const ffmpegName = basename(ffmpegPath).toLowerCase();
+  const probeName = ffmpegName.endsWith(".exe") ? "ffprobe.exe" : "ffprobe";
+  const probePath = join(dir, probeName);
+  return existsSync(probePath) ? probePath : null;
+}
+
+const SYSTEM_FFMPEG = resolveSystemBinary("ffmpeg");
+const SYSTEM_FFPROBE = resolveSystemBinary("ffprobe");
+const FFMPEG_BIN = SYSTEM_FFMPEG ?? ffmpegStatic ?? "ffmpeg";
+const FFPROBE_BIN =
+  SYSTEM_FFPROBE ??
+  resolveFfprobeFromFfmpegPath(
+    ffmpegStatic ? String(ffmpegStatic) : null,
+  );
+
 function pickFirst(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
@@ -382,8 +415,6 @@ async function generateWithKeyRotation(
   // Outer loop: model. Inner loop: key.
   // All 4 keys are tried for each model before falling to the next model.
   for (const model of KEY_ROTATION_MODELS) {
-    let allQuotaForModel = true;
-
     for (let i = 0; i < clients.length; i++) {
       const keyLabel = `key ${i + 1}`;
       try {
@@ -397,17 +428,12 @@ async function generateWithKeyRotation(
         if (isQuota) {
           logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited on ${model} — trying next`);
         } else {
-          // Non-quota error (e.g. network, invalid request) — stop immediately
-          allQuotaForModel = false;
-          logger.warn({ err, model, keyLabel, label }, `${label} ${keyLabel} failed (non-quota error)`);
-          throw err;
+          // Keep rotating across keys/models even on non-quota failures.
+          logger.warn({ err, model, keyLabel, label }, `${label} ${keyLabel} failed (non-quota error) — trying next`);
         }
       }
     }
-
-    if (allQuotaForModel) {
-      logger.warn({ model, label }, `${label} all keys rate limited on ${model} — trying next model`);
-    }
+    logger.warn({ model, label }, `${label} all keys failed on ${model} — trying next model`);
   }
 
   throw lastErr instanceof Error ? lastErr : new Error(`${label} failed on all keys and all models`);
@@ -883,10 +909,8 @@ function stripFences(text: string): string {
 // outputPath: optional explicit destination (used for cached WAVs outside audioDir)
 function preprocessAudio(inputPath: string, outputPath?: string): Promise<{ path: string; cleanup: () => void }> {
   const outPath = outputPath ?? (inputPath + "_16k.wav");
-  // Prefer the bundled ffmpeg-static binary for portability; fall back to system ffmpeg.
-  const ffmpegBin = ffmpegStatic ?? "ffmpeg";
   return new Promise((resolve) => {
-    const proc = spawn(ffmpegBin, [
+    const proc = spawn(FFMPEG_BIN, [
       "-y", "-i", inputPath,
       "-ac", "1",           // mono
       "-ar", "16000",       // 16 kHz
@@ -907,8 +931,9 @@ function preprocessAudio(inputPath: string, outputPath?: string): Promise<{ path
 
 // ── Get audio duration via ffprobe ───────────────────────────────────────────
 function getAudioDuration(audioPath: string): Promise<number> {
+  if (!FFPROBE_BIN) return Promise.resolve(0);
   return new Promise((resolve) => {
-    const proc = spawn("ffprobe", [
+    const proc = spawn(FFPROBE_BIN, [
       "-v", "quiet",
       "-show_entries", "format=duration",
       "-of", "default=noprint_wrappers=1:nokey=1",
@@ -1092,6 +1117,8 @@ async function processAudio(
         const isQuota = /resource_exhausted|quota|429|rate.?limit/i.test(msg);
         if (isQuota && ki < clients.length - 1) {
           logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
+        } else if (!isQuota && ki < clients.length - 1) {
+          logger.warn({ err, keyLabel }, `${keyLabel} failed (non-quota) — trying next key`);
         } else if (!isQuota) {
           throw err;
         }
@@ -1253,7 +1280,19 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
       job.status = "uploading";
       job.progressPct = 20;
       job.message = "Using cached audio — skipping re-download...";
-      await processAudio(jobId, normalizedUrl, language, job.filename, translateLang, () => {}, cached);
+      await processAudio(
+        jobId,
+        normalizedUrl,
+        language,
+        job.filename,
+        translateLang,
+        () => {},
+        {
+          path: cached.wavPath,
+          mimeType: cached.mimeType,
+          durationSecs: cached.durationSecs,
+        },
+      );
       return;
     }
 

@@ -17,3 +17,5 @@ __pycache__
 .env
 .env.*
 !.env.example
+.yt-cookies.txt
+ytgrabber-key-*.pem

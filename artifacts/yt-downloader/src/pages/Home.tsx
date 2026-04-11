@@ -98,7 +98,11 @@ export default function Home() {
     mutation: {
       onSuccess: (data) => {
         setJobId(data.jobId);
-        saveActiveDownload({ jobId: data.jobId, url, savedAt: Date.now() });
+        saveActiveDownload({
+          jobId: data.jobId,
+          url: submittedUrl || url.trim(),
+          savedAt: Date.now(),
+        });
       },
       onError: (error) => {
         toast({
@@ -116,20 +120,30 @@ export default function Home() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url.trim()) return;
-    setSubmittedUrl(url.trim());
+    const normalizedUrl = url.trim();
+    if (!normalizedUrl) return;
+    setSubmittedUrl(normalizedUrl);
     if (mode === "download") {
-      getInfo.mutate({ data: { url } });
+      getInfo.mutate({ data: { url: normalizedUrl } });
     } else if (mode === "clips") {
       bestClipsRef.current?.startAnalyze();
     }
   };
 
   const handleDownload = (format: VideoFormat) => {
+    const downloadUrl = submittedUrl || url.trim();
+    if (!downloadUrl) {
+      toast({
+        title: "Missing URL",
+        description: "Please paste a valid YouTube URL first.",
+        variant: "destructive",
+      });
+      return;
+    }
     setActiveFormatId(format.formatId);
     download.mutate({ 
       data: { 
-        url, 
+        url: downloadUrl,
         formatId: format.formatId, 
         audioOnly: !format.hasVideo 
       } 
@@ -145,6 +159,28 @@ export default function Home() {
     return (b.filesize || 0) - (a.filesize || 0);
   }) || [];
 
+  const hasSyntheticBest = videoFormats.some(
+    (f) => f.formatId === "bestvideo+bestaudio/best",
+  );
+  const displayVideoFormats: VideoFormat[] = hasSyntheticBest
+    ? videoFormats
+    : [
+        {
+          formatId: "bestvideo+bestaudio/best",
+          ext: "mp4",
+          resolution: "source",
+          fps: null,
+          filesize: null,
+          vcodec: "best",
+          acodec: "best",
+          quality: "BEST",
+          label: "Best quality (merged)",
+          hasVideo: true,
+          hasAudio: true,
+        },
+        ...videoFormats,
+      ];
+
   const audioFormats = video?.formats?.filter(f => !f.hasVideo && f.hasAudio)?.sort((a, b) => {
     return (b.filesize || 0) - (a.filesize || 0);
   }) || [];
@@ -157,6 +193,22 @@ export default function Home() {
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
   const showSearch = mode !== "subtitles" && mode !== "clipcutter";
+
+  useEffect(() => {
+    const appName = "YTGrabber";
+    const modeLabel =
+      mode === "download"
+        ? "Download"
+        : mode === "clips"
+          ? "Best Clips"
+          : mode === "subtitles"
+            ? "Subtitles"
+            : "Clip Cutter";
+    const contentLabel = video?.title?.trim() || submittedUrl.trim();
+    document.title = contentLabel
+      ? `${modeLabel}: ${contentLabel} · ${appName}`
+      : `${modeLabel} · ${appName}`;
+  }, [mode, submittedUrl, video?.title]);
 
   return (
     <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
@@ -274,7 +326,6 @@ export default function Home() {
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="Paste YouTube URL..."
                 className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-3 text-white placeholder:text-white/30 text-base sm:text-lg min-w-0"
-                autoFocus
               />
               <Button 
                 type="submit" 
@@ -391,7 +442,7 @@ export default function Home() {
                         <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
                       </div>
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {videoFormats.map((format, idx) => (
+                        {displayVideoFormats.map((format, idx) => (
                           <FormatCard 
                             key={format.formatId} 
                             format={format} 

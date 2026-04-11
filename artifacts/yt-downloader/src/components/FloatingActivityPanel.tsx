@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Loader2, Captions, Scissors, Sparkles, Film,
@@ -7,62 +7,15 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-
+import { formatFilesize } from "@/lib/clip-history";
+import { isDownloadExpired } from "@/lib/download-history";
 import {
-  loadHistory as loadSubtitleHistory,
-  loadActiveJob,
-  deleteFromHistory as deleteSubtitle,
-  type SubtitleHistoryEntry,
-} from "@/lib/subtitle-history";
-import {
-  loadClipHistory,
-  loadActiveClipJobs,
-  deleteFromClipHistory,
-  formatFilesize,
-  type ClipHistoryEntry,
-  type ActiveClipJob,
-} from "@/lib/clip-history";
-import {
-  loadActiveDownload,
-  loadCompletedDownloads,
-  deleteCompletedDownload,
-  clearCompletedDownloads,
-  isDownloadExpired,
-  type ActiveDownloadRecord,
-  type CompletedDownloadRecord,
-} from "@/lib/download-history";
-import {
-  loadBestClipsHistory,
-  deleteFromBestClipsHistory,
-  type BestClipsHistoryEntry,
-} from "@/lib/best-clips-history";
-
-type TabMode = "download" | "clips" | "subtitles" | "clipcutter";
-
-type AnyEntry =
-  | { kind: "subtitle"; data: SubtitleHistoryEntry }
-  | { kind: "clip"; data: ClipHistoryEntry }
-  | { kind: "bestclips"; data: BestClipsHistoryEntry }
-  | { kind: "download"; data: CompletedDownloadRecord };
-
-interface ActiveEntry {
-  kind: "subtitle" | "clipcutter" | "download";
-  label: string;
-  sub: string;
-  tab: TabMode;
-  startedAt: number;
-}
-
-function shortUrl(url: string): string {
-  try {
-    const u = new URL(url);
-    const v = u.searchParams.get("v");
-    if (v) return `youtube.com/watch?v=${v}`;
-    return u.hostname + u.pathname.slice(0, 24);
-  } catch {
-    return url.slice(0, 36);
-  }
-}
+  useActivityFeed,
+  shortActivityUrl,
+  type ActivityCompletedEntry as AnyEntry,
+  type ActivityActiveEntry as ActiveEntry,
+  type ActivityTabMode as TabMode,
+} from "@/hooks/use-activity-feed";
 
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -72,52 +25,6 @@ function relativeTime(ts: number): string {
   if (mins < 60) return `${mins}m ago`;
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(diff / 86400000)}d ago`;
-}
-
-function loadAllCompleted(): AnyEntry[] {
-  const subs = loadSubtitleHistory().map((d): AnyEntry => ({ kind: "subtitle", data: d }));
-  const clips = loadClipHistory().map((d): AnyEntry => ({ kind: "clip", data: d }));
-  const best = loadBestClipsHistory().map((d): AnyEntry => ({ kind: "bestclips", data: d }));
-  const dls = loadCompletedDownloads().map((d): AnyEntry => ({ kind: "download", data: d }));
-  return [...subs, ...clips, ...best, ...dls].sort((a, b) => b.data.createdAt - a.data.createdAt);
-}
-
-function loadAllActive(): ActiveEntry[] {
-  const result: ActiveEntry[] = [];
-
-  const sub = loadActiveJob();
-  if (sub) {
-    result.push({
-      kind: "subtitle",
-      label: "Generating subtitles",
-      sub: sub.mode === "url" ? (sub.url ? shortUrl(sub.url) : "YouTube video") : (sub.inputFilename ?? "uploaded file"),
-      tab: "subtitles",
-      startedAt: sub.startedAt,
-    });
-  }
-
-  for (const c of loadActiveClipJobs()) {
-    result.push({
-      kind: "clipcutter",
-      label: `Cutting clip ${c.label}`,
-      sub: shortUrl(c.url),
-      tab: "clipcutter",
-      startedAt: c.startedAt,
-    });
-  }
-
-  const dl = loadActiveDownload();
-  if (dl) {
-    result.push({
-      kind: "download",
-      label: "Downloading video",
-      sub: shortUrl(dl.url),
-      tab: "download",
-      startedAt: dl.savedAt,
-    });
-  }
-
-  return result.sort((a, b) => b.startedAt - a.startedAt);
 }
 
 function downloadSrt(filename: string, srt: string) {
@@ -134,39 +41,19 @@ function downloadSrt(filename: string, srt: string) {
 
 export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState<ActiveEntry[]>([]);
-  const [completed, setCompleted] = useState<AnyEntry[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { toast } = useToast();
-
-  const refresh = useCallback(() => {
-    setActive(loadAllActive());
-    setCompleted(loadAllCompleted());
-  }, []);
-
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 4000);
-    return () => clearInterval(id);
-  }, [refresh]);
+  const { active, completed, deleteEntry, clearAll } = useActivityFeed(4000);
 
   const totalCount = active.length + completed.length;
   const hasActive = active.length > 0;
 
   const handleDelete = (entry: AnyEntry) => {
-    if (entry.kind === "subtitle") deleteSubtitle(entry.data.id);
-    else if (entry.kind === "clip") deleteFromClipHistory(entry.data.jobId);
-    else if (entry.kind === "download") deleteCompletedDownload(entry.data.jobId);
-    else deleteFromBestClipsHistory(entry.data.id);
-    refresh();
+    deleteEntry(entry);
   };
 
   const handleClearAll = () => {
-    loadSubtitleHistory().forEach((e) => deleteSubtitle(e.id));
-    loadClipHistory().forEach((e) => deleteFromClipHistory(e.jobId));
-    loadBestClipsHistory().forEach((e) => deleteFromBestClipsHistory(e.id));
-    clearCompletedDownloads();
-    refresh();
+    clearAll();
     toast({ title: "History cleared" });
   };
 
@@ -308,6 +195,7 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
                         const key =
                           entry.kind === "subtitle" ? `sub-${entry.data.id}` :
                           entry.kind === "clip" ? `clip-${entry.data.jobId}` :
+                          entry.kind === "download" ? `dl-${entry.data.jobId}` :
                           `best-${entry.data.id}`;
                         const isExpanded = expandedId === key;
                         const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -419,7 +307,7 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
                                   <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-white/35">
                                     <span className="text-violet-400/70 font-medium">Best Clips AI</span>
                                     <span>·</span>
-                                    <span className="truncate max-w-[100px]">{shortUrl(d.url)}</span>
+                                    <span className="truncate max-w-[100px]">{shortActivityUrl(d.url)}</span>
                                     <span>·</span>
                                     <span>{relativeTime(d.createdAt)}</span>
                                   </div>

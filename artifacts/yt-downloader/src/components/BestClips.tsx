@@ -162,8 +162,9 @@ interface StepState {
 
 type ClipKey = string;
 interface DownloadState {
-  status: "idle" | "downloading" | "done" | "error";
+  status: "idle" | "downloading" | "done" | "error" | "cancelled";
   percent: number;
+  jobId?: string;
   message?: string;
   startedAt?: number;
   elapsed?: number;
@@ -246,6 +247,7 @@ export const BestClips = forwardRef(function BestClips(
   const [videoDurationSec, setVideoDurationSec] = useState(0);
   const analysisStartRef = useRef<number | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const downloadStreamRefs = useRef<Map<ClipKey, EventSource>>(new Map());
   const { toast } = useToast();
 
   const PERSIST_KEY = "ytgrabber_bestclips_results";
@@ -292,6 +294,17 @@ export const BestClips = forwardRef(function BestClips(
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    return () => {
+      esRef.current?.close();
+      esRef.current = null;
+      for (const stream of downloadStreamRefs.current.values()) {
+        stream.close();
+      }
+      downloadStreamRefs.current.clear();
+    };
+  }, []);
+
   const BASE = import.meta.env.BASE_URL?.replace(/\/$/, "");
 
   const clipKey = (clip: BestClip): ClipKey =>
@@ -305,6 +318,33 @@ export const BestClips = forwardRef(function BestClips(
       }));
     },
     [],
+  );
+
+  const closeDownloadStream = useCallback((key: ClipKey) => {
+    const stream = downloadStreamRefs.current.get(key);
+    if (stream) {
+      stream.close();
+      downloadStreamRefs.current.delete(key);
+    }
+  }, []);
+
+  const closeAllDownloadStreams = useCallback(() => {
+    for (const [key, stream] of downloadStreamRefs.current.entries()) {
+      stream.close();
+      downloadStreamRefs.current.delete(key);
+    }
+  }, []);
+
+  const triggerClipDownload = useCallback(
+    (jobId: string, clipTitle: string) => {
+      const link = document.createElement("a");
+      link.href = `${BASE}/api/youtube/file/${jobId}`;
+      link.download = `${clipTitle}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    },
+    [BASE],
   );
 
   const selectDuration = (value: number) => {
@@ -339,6 +379,7 @@ export const BestClips = forwardRef(function BestClips(
     // Close any previous SSE
     esRef.current?.close();
     esRef.current = null;
+    closeAllDownloadStreams();
 
     setIsLoading(true);
     setError(null);
@@ -530,6 +571,187 @@ export const BestClips = forwardRef(function BestClips(
       toast({
         title: "Download failed",
         description: msg,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const startClipDownload = async (clip: BestClip) => {
+    const key = clipKey(clip);
+    if (downloadStates[key]?.status === "downloading") return;
+    closeDownloadStream(key);
+
+    setDownload(key, {
+      status: "downloading",
+      percent: 0,
+      message: "Starting...",
+      startedAt: Date.now(),
+      jobId: undefined,
+      eta: null,
+      speed: null,
+    });
+
+    try {
+      const startRes = await fetch(`${BASE}/api/youtube/clip-cut`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: url.trim(),
+          startTime: clip.startSec,
+          endTime: clip.endSec,
+          quality: "best",
+        }),
+      });
+      const startData = await startRes.json();
+      if (!startRes.ok) {
+        throw new Error(startData.error ?? "Failed to start download");
+      }
+
+      const jobId = String(startData.jobId ?? "");
+      if (!jobId) throw new Error("Missing job id");
+
+      setDownload(key, { jobId, message: "Preparing..." });
+      const stream = new EventSource(
+        `${BASE}/api/youtube/progress/stream/${jobId}`,
+      );
+      downloadStreamRefs.current.set(key, stream);
+
+      let terminal = false;
+      stream.onmessage = (event) => {
+        if (terminal) return;
+
+        let prog: {
+          status?: string;
+          percent?: number;
+          eta?: string | null;
+          speed?: string | null;
+          message?: string | null;
+        };
+
+        try {
+          prog = JSON.parse(event.data) as typeof prog;
+        } catch {
+          return;
+        }
+
+        if (prog.status === "done") {
+          terminal = true;
+          closeDownloadStream(key);
+          setDownload(key, {
+            status: "done",
+            percent: 100,
+            eta: null,
+            speed: null,
+            message: undefined,
+          });
+          triggerClipDownload(jobId, clip.title);
+          toast({
+            title: "Clip downloaded!",
+            description: `"${clip.title}" saved to your downloads.`,
+          });
+          return;
+        }
+
+        if (prog.status === "cancelled") {
+          terminal = true;
+          closeDownloadStream(key);
+          setDownload(key, {
+            status: "cancelled",
+            percent: 0,
+            eta: null,
+            speed: null,
+            message: prog.message ?? "Cancelled by user",
+          });
+          toast({
+            title: "Download cancelled",
+            description: `"${clip.title}" download was cancelled.`,
+          });
+          return;
+        }
+
+        if (prog.status === "error" || prog.status === "expired") {
+          terminal = true;
+          closeDownloadStream(key);
+          const msg = prog.message ?? "Download failed";
+          setDownload(key, { status: "error", percent: 0, message: msg });
+          toast({
+            title: "Download failed",
+            description: msg,
+            variant: "destructive",
+          });
+          return;
+        }
+
+        const pct = typeof prog.percent === "number" ? prog.percent : 0;
+        setDownload(key, {
+          status: "downloading",
+          jobId,
+          percent: pct,
+          eta: prog.eta ?? null,
+          speed: prog.speed ?? null,
+          message:
+            prog.status === "merging"
+              ? "Merging..."
+              : pct > 0
+                ? `${pct}%`
+                : "Preparing...",
+        });
+      };
+
+      stream.onerror = () => {
+        if (terminal) return;
+        terminal = true;
+        closeDownloadStream(key);
+        setDownload(key, {
+          status: "error",
+          percent: 0,
+          message: "Connection lost during download",
+        });
+        toast({
+          title: "Download failed",
+          description: "Connection lost during download",
+          variant: "destructive",
+        });
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Something went wrong";
+      setDownload(key, { status: "error", percent: 0, message: msg });
+      toast({
+        title: "Download failed",
+        description: msg,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleCancelDownload = async (clip: BestClip) => {
+    const key = clipKey(clip);
+    const jobId = downloadStates[key]?.jobId;
+    if (!jobId) return;
+
+    try {
+      const res = await fetch(`${BASE}/api/youtube/cancel/${jobId}`, {
+        method: "POST",
+      });
+      const data = await res
+        .json()
+        .catch(() => ({} as { error?: string }));
+      if (!res.ok) {
+        throw new Error(data.error ?? "Failed to cancel download");
+      }
+      setDownload(key, {
+        status: "downloading",
+        message: "Cancelling...",
+      });
+      toast({
+        title: "Cancelling download",
+        description: `"${clip.title}" cancel request sent.`,
+      });
+    } catch (err) {
+      toast({
+        title: "Cancel failed",
+        description:
+          err instanceof Error ? err.message : "Unable to cancel download",
         variant: "destructive",
       });
     }
@@ -1098,11 +1320,20 @@ export const BestClips = forwardRef(function BestClips(
                                     </span>
                                   </div>
                                 )}
-                                {dl.status === "error" && dl.message && (
-                                  <p className="text-red-400 text-xs mt-1">
-                                    {dl.message}
-                                  </p>
-                                )}
+                                {(dl.status === "error" ||
+                                  dl.status === "cancelled") &&
+                                  dl.message && (
+                                    <p
+                                      className={cn(
+                                        "text-xs mt-1",
+                                        dl.status === "cancelled"
+                                          ? "text-amber-400"
+                                          : "text-red-400",
+                                      )}
+                                    >
+                                      {dl.message}
+                                    </p>
+                                  )}
                               </div>
 
                               <div className="flex items-center gap-1.5 shrink-0">
@@ -1138,27 +1369,35 @@ export const BestClips = forwardRef(function BestClips(
                                   variant={
                                     dl.status === "done" ? "glass" : "default"
                                   }
-                                  onClick={() => handleDownloadClip(clip)}
-                                  disabled={dl.status === "downloading"}
+                                  onClick={() =>
+                                    dl.status === "downloading"
+                                      ? handleCancelDownload(clip)
+                                      : startClipDownload(clip)
+                                  }
                                   className={cn(
                                     "rounded-xl h-8 px-3 text-xs font-semibold min-w-[90px]",
                                     dl.status === "done" &&
                                       "bg-emerald-500/20 border-emerald-500/30 text-emerald-300",
                                     dl.status === "error" &&
                                       "bg-red-500/10 border-red-500/30 text-red-300",
+                                    dl.status === "cancelled" &&
+                                      "bg-amber-500/10 border-amber-500/30 text-amber-300",
+                                    dl.status === "downloading" &&
+                                      "bg-amber-500/15 border-amber-500/40 text-amber-200",
                                   )}
                                 >
                                   {dl.status === "downloading" ? (
                                     <span className="flex items-center gap-1.5">
-                                      <Loader2 className="w-3 h-3 animate-spin" />
-                                      {dl.percent > 0 ? `${dl.percent}%` : "…"}
+                                      <X className="w-3 h-3" />
+                                      Cancel
                                     </span>
                                   ) : dl.status === "done" ? (
                                     <span className="flex items-center gap-1.5">
                                       <CheckCircle2 className="w-3 h-3" />
                                       Downloaded
                                     </span>
-                                  ) : dl.status === "error" ? (
+                                  ) : dl.status === "error" ||
+                                    dl.status === "cancelled" ? (
                                     <span className="flex items-center gap-1.5">
                                       <Download className="w-3 h-3" />
                                       Retry

@@ -1,4 +1,10 @@
-import { Router, type IRouter, type Request, type Response } from "express";
+import {
+  Router,
+  type IRouter,
+  type Request,
+  type Response,
+  type NextFunction,
+} from "express";
 import { spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
 import {
@@ -17,7 +23,6 @@ import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleGenAI } from "@google/genai";
 import ffmpegStatic from "ffmpeg-static";
 
@@ -158,7 +163,14 @@ interface VideoFormatOut {
 }
 
 interface DownloadJob {
-  status: "pending" | "downloading" | "merging" | "done" | "error" | "expired";
+  status:
+    | "pending"
+    | "downloading"
+    | "merging"
+    | "done"
+    | "error"
+    | "expired"
+    | "cancelled";
   percent: number | null;
   speed: string | null;
   eta: string | null;
@@ -173,13 +185,182 @@ interface DownloadJob {
   clipStart?: number;
   clipEnd?: number;
   clipQuality?: string;
+  cancelled?: boolean;
+  activeProc?: ReturnType<typeof spawn> | null;
 }
 
 const jobs = new Map<string, DownloadJob>();
+const CANCELLED_BY_USER = "Cancelled by user";
+
+type QueuedClipJob = {
+  jobId: string;
+  run: () => Promise<void>;
+  resolve: () => void;
+  reject: (err: Error) => void;
+};
+
+const MAX_CONCURRENT_CLIP_JOBS = Math.max(
+  1,
+  Number.parseInt(process.env.MAX_CONCURRENT_CLIP_JOBS ?? "3", 10) || 3,
+);
+let activeClipJobCount = 0;
+const queuedClipJobs: QueuedClipJob[] = [];
+const queuedClipJobIds = new Set<string>();
+
+function updateQueuedClipJobMessages(): void {
+  queuedClipJobs.forEach((entry, index) => {
+    const job = jobs.get(entry.jobId);
+    if (!job || job.cancelled) return;
+    job.status = "pending";
+    job.message =
+      index === 0 && activeClipJobCount < MAX_CONCURRENT_CLIP_JOBS
+        ? "Queued - starting soon..."
+        : `Queued (#${index + 1})`;
+  });
+}
+
+function drainQueuedClipJobs(): void {
+  while (
+    activeClipJobCount < MAX_CONCURRENT_CLIP_JOBS &&
+    queuedClipJobs.length > 0
+  ) {
+    const next = queuedClipJobs.shift()!;
+    queuedClipJobIds.delete(next.jobId);
+    const job = jobs.get(next.jobId);
+    if (!job || job.cancelled) {
+      next.reject(new Error(CANCELLED_BY_USER));
+      updateQueuedClipJobMessages();
+      continue;
+    }
+
+    activeClipJobCount += 1;
+    job.message = "Starting clip job...";
+
+    Promise.resolve()
+      .then(next.run)
+      .then(() => next.resolve())
+      .catch((err) =>
+        next.reject(err instanceof Error ? err : new Error("Clip job failed")),
+      )
+      .finally(() => {
+        activeClipJobCount = Math.max(0, activeClipJobCount - 1);
+        updateQueuedClipJobMessages();
+        drainQueuedClipJobs();
+      });
+  }
+}
+
+function enqueueClipJob(jobId: string, run: () => Promise<void>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    queuedClipJobs.push({
+      jobId,
+      run,
+      resolve,
+      reject: (err: Error) => reject(err),
+    });
+    queuedClipJobIds.add(jobId);
+    updateQueuedClipJobMessages();
+    drainQueuedClipJobs();
+  });
+}
+
+function dequeueClipJob(jobId: string): boolean {
+  const index = queuedClipJobs.findIndex((entry) => entry.jobId === jobId);
+  if (index === -1) return false;
+  const [entry] = queuedClipJobs.splice(index, 1);
+  queuedClipJobIds.delete(jobId);
+  entry.reject(new Error(CANCELLED_BY_USER));
+  updateQueuedClipJobMessages();
+  return true;
+}
 
 function pickFirst(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
+
+type RateWindow = { count: number; resetAt: number };
+const rateWindows = new Map<string, RateWindow>();
+const RATE_LIMIT_WINDOW_MS = 3 * 60 * 1000;
+const RATE_LIMITS: Record<string, number> = {
+  "POST /youtube/clip-cut": 3,
+  "POST /youtube/download-clip": 3,
+  "POST /youtube/download": 3,
+  "POST /youtube/clips": 3,
+  "POST /youtube/cancel/:jobId": 180, // 60/min
+};
+const RATE_LIMIT_BYPASS_IPS = new Set(
+  (process.env.RATE_LIMIT_BYPASS_IPS ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean),
+);
+
+function normalizeIp(ip: string): string {
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+function getClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const firstForwarded = Array.isArray(forwarded)
+    ? forwarded[0]
+    : forwarded?.split(",")[0];
+  const ip = firstForwarded?.trim() || req.ip || req.socket.remoteAddress || "unknown";
+  return normalizeIp(ip);
+}
+
+function createIpRateLimiter(routeKey: keyof typeof RATE_LIMITS) {
+  const max = RATE_LIMITS[routeKey];
+  return (req: Request, res: Response, next: NextFunction) => {
+    const ip = getClientIp(req);
+    if (RATE_LIMIT_BYPASS_IPS.has(ip)) {
+      next();
+      return;
+    }
+
+    const now = Date.now();
+    const key = `${routeKey}|${ip}`;
+    const current = rateWindows.get(key);
+    if (!current || now >= current.resetAt) {
+      rateWindows.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+      next();
+      return;
+    }
+
+    if (current.count >= max) {
+      const minutesLeft = Math.max(
+        1,
+        Math.ceil((current.resetAt - now) / (60 * 1000)),
+      );
+      res
+        .status(429)
+        .json({
+          error: `Rate limit exceeded. Try again in ${minutesLeft} minutes.`,
+        });
+      return;
+    }
+
+    current.count += 1;
+    rateWindows.set(key, current);
+    next();
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, window] of rateWindows.entries()) {
+    if (now >= window.resetAt) {
+      rateWindows.delete(key);
+    }
+  }
+}, 60 * 1000);
+
+const clipCutRateLimiter = createIpRateLimiter("POST /youtube/clip-cut");
+const legacyDownloadClipRateLimiter = createIpRateLimiter(
+  "POST /youtube/download-clip",
+);
+const downloadRateLimiter = createIpRateLimiter("POST /youtube/download");
+const clipsRateLimiter = createIpRateLimiter("POST /youtube/clips");
+const cancelRateLimiter = createIpRateLimiter("POST /youtube/cancel/:jobId");
 
 // Base args applied to every yt-dlp call.
 // Keep extractor client selection on yt-dlp defaults for best compatibility.
@@ -992,7 +1173,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/youtube/download", async (req: Request, res: Response) => {
+router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: Response) => {
   const { url, formatId, audioOnly } = req.body as {
     url: string;
     formatId: string;
@@ -1031,8 +1212,14 @@ router.post("/youtube/download", async (req: Request, res: Response) => {
     req.log.error({ err, jobId }, "Download job failed");
     const j = jobs.get(jobId);
     if (j) {
-      j.status = "error";
-      j.message = err instanceof Error ? err.message : "Download failed";
+      const message = err instanceof Error ? err.message : "Download failed";
+      if (message === CANCELLED_BY_USER || j.cancelled) {
+        j.status = "cancelled";
+        j.message = CANCELLED_BY_USER;
+      } else {
+        j.status = "error";
+        j.message = message;
+      }
     }
   });
 });
@@ -1045,85 +1232,143 @@ function secsToTimestamp(secs: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(Math.floor(s)).padStart(2, "0")}`;
 }
 
-/** Map a quality preset label to a yt-dlp format string */
-function qualityToFormat(quality: string): string {
-  const h = quality.replace(/p$/, "");
-  if (h === "best" || !h) return "bestvideo+bestaudio/best";
-  return `bestvideo[height<=${h}]+bestaudio/best[height<=${h}]`;
+/** Build ordered yt-dlp format candidates for clip cutting. */
+function qualityToFormatCandidates(quality: string): string[] {
+  const normalized = quality.trim().toLowerCase().replace(/p$/, "");
+  const parsedHeight = Number.parseInt(normalized, 10);
+  const maxHeight =
+    normalized === "best" || !normalized || !Number.isFinite(parsedHeight) || parsedHeight <= 0
+      ? null
+      : parsedHeight;
+
+  if (maxHeight) {
+    const minProgressiveHeight = Math.min(360, maxHeight);
+    return [
+      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio[ext=m4a]`,
+      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio`,
+      `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
+      `bestvideo[height<=${maxHeight}]+bestaudio`,
+      `best[ext=mp4][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
+      `best[height<=${maxHeight}][height>=${minProgressiveHeight}]`,
+      `best[ext=mp4][height<=${maxHeight}]`,
+      `best[height<=${maxHeight}]`,
+    ];
+  }
+
+  return [
+    "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]",
+    "bestvideo[vcodec^=avc1]+bestaudio",
+    "bestvideo+bestaudio",
+    "best[ext=mp4][height>=360]",
+    "best[height>=360]",
+    "best[ext=mp4]",
+    "best",
+  ];
 }
+
+const MAX_CLIP_FORMAT_CANDIDATES = 6;
+const MAX_CLIP_CLIENT_FALLBACKS = 3;
+const MAX_CLIP_DOWNLOAD_ATTEMPTS = 20;
 
 async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   const jobRef = jobs.get(jobId)!;
+  if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
   const { clipStart = 0, clipEnd, clipQuality = "best" } = jobRef;
 
   const section = `*${secsToTimestamp(clipStart)}-${secsToTimestamp(clipEnd ?? clipStart + 60)}`;
-  const fmt = qualityToFormat(clipQuality);
+  const formatCandidates = qualityToFormatCandidates(clipQuality).slice(
+    0,
+    MAX_CLIP_FORMAT_CANDIDATES,
+  );
   const outputPath = join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
 
   jobRef.ext = "mp4";
   jobRef.status = "downloading";
   jobRef.message = "Cutting clip...";
 
-  const cmdArgs: string[] = [
-    "--no-playlist",
-    "--no-warnings",
-    "--newline",
-    "--progress",
-    "-f", fmt,
-    "--merge-output-format", "mp4",
-    "--download-sections", section,
-    "--force-keyframes-at-cuts",
-    "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "-o", outputPath,
-    job.url,
-  ];
-
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = isYouTubeUrl(job.url);
   const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
-  const attemptPlans: string[][] = [];
-  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
-  attemptPlans.push(defaultYoutubeArgs);
   const downloadFallbacks: string[][] = getYouTubeFallbacks();
 
-  const attempted = new Set<string>();
   let lastErr: Error | null = null;
+  let attemptsUsed = 0;
+  for (const formatSelector of formatCandidates) {
+    if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
+    if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) break;
 
-  for (const extra of attemptPlans) {
-    const key = extra.join("\u0001");
-    if (attempted.has(key)) continue;
-    attempted.add(key);
-    try {
-      await spawnDownloadOnce(extra, cmdArgs, jobRef);
-      lastErr = null;
-      break;
-    } catch (err) {
-      lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut failed");
-      if (!isYt || !isYouTubeBlockedError(lastErr.message)) throw lastErr;
-    }
-  }
+    const cmdArgs: string[] = [
+      "--no-playlist",
+      "--no-warnings",
+      "--newline",
+      "--progress",
+      "-f", formatSelector,
+      "--merge-output-format", "mp4",
+      "--download-sections", section,
+      "--force-keyframes-at-cuts",
+      "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+      "-o", outputPath,
+      job.url,
+    ];
 
-  if (lastErr && isYt) {
-    jobRef.message = "Retrying with alternate client...";
-    for (const fallback of downloadFallbacks) {
-      const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
-      for (const extra of plans) {
-        const key = extra.join("\u0001");
-        if (attempted.has(key)) continue;
-        attempted.add(key);
-        try {
-          await spawnDownloadOnce(extra, cmdArgs, jobRef);
-          lastErr = null;
-          break;
-        } catch (err) {
-          lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut fallback failed");
-        }
+    const attemptPlans: string[][] = [];
+    if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+    attemptPlans.push(defaultYoutubeArgs);
+
+    const attempted = new Set<string>();
+    lastErr = null;
+
+    for (const extra of attemptPlans) {
+      if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) break;
+      const key = extra.join("\u0001");
+      if (attempted.has(key)) continue;
+      attempted.add(key);
+      attemptsUsed += 1;
+      try {
+        await spawnDownloadOnce(extra, cmdArgs, jobRef);
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut failed");
+        if (!isYt || !isYouTubeBlockedError(lastErr.message)) break;
       }
-      if (!lastErr) break;
     }
+
+    const shouldTryClientFallback =
+      !!lastErr && isYt && isYouTubeBlockedError(lastErr.message);
+    if (shouldTryClientFallback && attemptsUsed < MAX_CLIP_DOWNLOAD_ATTEMPTS) {
+      jobRef.message = "Retrying with alternate client...";
+      for (const fallback of downloadFallbacks.slice(0, MAX_CLIP_CLIENT_FALLBACKS)) {
+        if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) break;
+        const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
+        for (const extra of plans) {
+          if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) break;
+          const key = extra.join("\u0001");
+          if (attempted.has(key)) continue;
+          attempted.add(key);
+          attemptsUsed += 1;
+          try {
+            await spawnDownloadOnce(extra, cmdArgs, jobRef);
+            lastErr = null;
+            break;
+          } catch (err) {
+            lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut fallback failed");
+          }
+        }
+        if (!lastErr) break;
+      }
+    }
+
+    if (!lastErr) break;
   }
 
+  if (lastErr && attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) {
+    throw new Error(
+      `Clip cut failed after ${attemptsUsed} attempts: ${lastErr.message}`,
+    );
+  }
   if (lastErr) throw lastErr;
+  if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   const possibleExts = ["mp4", "mkv", "webm"];
   let finalPath: string | null = null;
@@ -1133,6 +1378,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   }
   if (!finalPath && jobRef.filePath && existsSync(jobRef.filePath)) finalPath = jobRef.filePath;
   if (!finalPath) throw new Error("Clip file not found on disk");
+  if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   const stats = statSync(finalPath);
   jobRef.filesize = stats.size;
@@ -1146,7 +1392,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   scheduleAutoDelete(jobId, jobRef);
 }
 
-router.post("/youtube/clip-cut", async (req: Request, res: Response) => {
+router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: Response) => {
   const { url, startTime, endTime, quality } = req.body as {
     url: string;
     startTime: number;
@@ -1190,12 +1436,18 @@ router.post("/youtube/clip-cut", async (req: Request, res: Response) => {
   jobs.set(jobId, job);
   res.json({ jobId, status: "pending", message: "Clip cut started" });
 
-  processClipCut(jobId, job).catch((err) => {
+  enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
     req.log.error({ err, jobId }, "Clip cut job failed");
     const j = jobs.get(jobId);
     if (j) {
-      j.status = "error";
-      j.message = err instanceof Error ? err.message : "Clip cut failed";
+      const message = err instanceof Error ? err.message : "Clip cut failed";
+      if (message === CANCELLED_BY_USER || j.cancelled) {
+        j.status = "cancelled";
+        j.message = CANCELLED_BY_USER;
+      } else {
+        j.status = "error";
+        j.message = message;
+      }
     }
   });
 });
@@ -1208,6 +1460,11 @@ function spawnDownloadOnce(
   jobRef: DownloadJob,
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    if (jobRef.cancelled) {
+      reject(new Error(CANCELLED_BY_USER));
+      return;
+    }
+
     // Reset progress state for retry attempts
     jobRef.percent = 0;
     jobRef.filename = null;
@@ -1218,6 +1475,7 @@ function spawnDownloadOnce(
       ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...cmdArgs],
       { env: PYTHON_ENV },
     );
+    jobRef.activeProc = proc;
     let stderr = "";
 
     proc.stdout?.on("data", (data: Buffer) => {
@@ -1297,21 +1555,26 @@ function spawnDownloadOnce(
     });
 
     proc.on("close", (code: number | null) => {
-      if (code === 0) resolve();
+      jobRef.activeProc = null;
+      if (jobRef.cancelled) {
+        reject(new Error(CANCELLED_BY_USER));
+      } else if (code === 0) resolve();
       else
         reject(
           new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`),
         );
     });
 
-    proc.on("error", (err: Error) =>
-      reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
-    );
+    proc.on("error", (err: Error) => {
+      jobRef.activeProc = null;
+      reject(new Error(`Failed to start yt-dlp: ${err.message}`));
+    });
   });
 }
 
 async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   const jobRef = jobs.get(jobId)!;
+  if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   const isAudioOnly = job.audioOnly || job.formatId.startsWith("audio:");
 
@@ -1402,6 +1665,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   }
 
   if (lastErr) throw lastErr;
+  if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   // Find the output file (yt-dlp may change extension)
   const possibleExts = isAudioOnly ? ["mp3"] : ["mp4", "mkv", "webm"];
@@ -1424,6 +1688,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   if (!finalPath) {
     throw new Error("Downloaded file not found on disk");
   }
+  if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   const stats = statSync(finalPath);
   jobRef.filesize = stats.size;
@@ -1437,6 +1702,19 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   scheduleAutoDelete(jobId, jobRef);
 }
 
+function buildProgressPayload(jobId: string, job: DownloadJob) {
+  return {
+    jobId,
+    status: job.status,
+    percent: job.percent,
+    speed: job.speed,
+    eta: job.eta,
+    filename: job.filename,
+    filesize: job.filesize,
+    message: job.message,
+  };
+}
+
 router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
@@ -1448,16 +1726,96 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
     res.status(404).json({ error: "Job not found" });
     return;
   }
-  res.json({
-    jobId,
-    status: job.status,
-    percent: job.percent,
-    speed: job.speed,
-    eta: job.eta,
-    filename: job.filename,
-    filesize: job.filesize,
-    message: job.message,
+  res.json(buildProgressPayload(jobId, job));
+});
+
+router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+  const job = jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  const send = (payload: object) => {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  const sendSnapshot = () => {
+    const current = jobs.get(jobId);
+    if (!current) {
+      send({ status: "error", message: "Job not found" });
+      res.end();
+      return true;
+    }
+    send(buildProgressPayload(jobId, current));
+    if (["done", "error", "expired", "cancelled"].includes(current.status)) {
+      res.end();
+      return true;
+    }
+    return false;
+  };
+
+  if (sendSnapshot()) return;
+
+  const timer = setInterval(() => {
+    if (sendSnapshot()) clearInterval(timer);
+  }, 1000);
+
+  req.on("close", () => {
+    clearInterval(timer);
   });
+});
+
+router.post("/youtube/cancel/:jobId", cancelRateLimiter, (req: Request, res: Response) => {
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+
+  const job = jobs.get(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+
+  if (["done", "error", "expired", "cancelled"].includes(job.status)) {
+    res.json({ ok: true, alreadyFinished: true, status: job.status });
+    return;
+  }
+
+  job.cancelled = true;
+  job.status = "cancelled";
+  job.message = CANCELLED_BY_USER;
+  if (queuedClipJobIds.has(jobId)) {
+    dequeueClipJob(jobId);
+  }
+
+  if (job.activeProc) {
+    try {
+      job.activeProc.kill("SIGTERM");
+      setTimeout(() => {
+        if (job.activeProc) {
+          try {
+            job.activeProc.kill("SIGKILL");
+          } catch {}
+        }
+      }, 2000);
+    } catch {}
+  }
+
+  setTimeout(() => jobs.delete(jobId), 10 * 60 * 1000);
+  res.json({ ok: true, status: "cancelled" });
 });
 
 // ─── Video Stream Proxy ───────────────────────────────────────────────────
@@ -1655,15 +2013,9 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   res.setHeader("Content-Type", "application/octet-stream");
   res.setHeader("Content-Length", stats.size);
 
-  const readStream = createReadStream(job.filePath);
-  readStream.pipe(res);
-
-  readStream.on("close", () => {
-    try {
-      unlinkSync(job.filePath!);
-    } catch {}
-    jobs.delete(jobId);
-  });
+  // Keep the file available after first download so users can click Save again.
+  // Cleanup is handled by scheduleAutoDelete().
+  createReadStream(job.filePath).pipe(res);
 });
 
 // ─── Subtitle Download ────────────────────────────────────────────────────
@@ -1858,6 +2210,63 @@ function audioMimeType(ext: string): string {
   return map[ext.toLowerCase()] ?? "audio/mpeg";
 }
 
+function getPersonalGeminiApiKeys(): string[] {
+  return [
+    process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
+    process.env.GEMINI_API_KEY_2,
+    process.env.GEMINI_API_KEY_3,
+    process.env.GEMINI_API_KEY_4,
+  ].filter((k): k is string => !!k);
+}
+
+function isQuotaLikeGeminiError(message: string): boolean {
+  return /resource_exhausted|quota|429|rate.?limit/i.test(message);
+}
+
+const YOUTUBE_KEY_ROTATION_MODELS = [
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-1.5-flash",
+];
+
+async function generateWithPersonalKeyRotation(
+  label: string,
+  systemInstruction: string,
+  userContent: string,
+  models: string[] = YOUTUBE_KEY_ROTATION_MODELS,
+): Promise<string> {
+  const keys = getPersonalGeminiApiKeys();
+  if (keys.length === 0) {
+    throw new Error(
+      "No Gemini key configured — add GEMINI_API_KEY (or GEMINI_API_KEY_2/_3/_4)",
+    );
+  }
+
+  let lastErr: Error | null = null;
+  for (const model of models) {
+    for (let i = 0; i < keys.length; i++) {
+      const keyLabel = `key ${i + 1}`;
+      try {
+        const client = new GoogleGenAI({ apiKey: keys[i] });
+        const result = await client.models.generateContent({
+          model,
+          contents: [{ role: "user", parts: [{ text: userContent }] }],
+          ...(systemInstruction && { config: { systemInstruction } }),
+        });
+        return (result as any).text ?? "";
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err ?? "");
+        lastErr = err instanceof Error ? err : new Error(message);
+        console.warn(
+          `[${label}] ${keyLabel} failed on ${model}${isQuotaLikeGeminiError(message) ? " (quota/rate limit)" : ""}: ${message}`,
+        );
+      }
+    }
+  }
+  throw lastErr ?? new Error(`${label} failed on all keys/models`);
+}
+
 router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
   const { url, format = "srt" } = req.body as { url: string; format?: string };
 
@@ -1876,9 +2285,8 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
   const audioDir = join(DOWNLOAD_DIR, `audio-fix-${sessionId}`);
   const subDir = join(DOWNLOAD_DIR, `subs-fix-${sessionId}`);
   let geminiFileName: string | null = null;
-  const genAI = process.env.GEMINI_API_KEY
-    ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-    : null;
+  const primaryKey = getPersonalGeminiApiKeys()[0] ?? null;
+  const genAI = primaryKey ? new GoogleGenAI({ apiKey: primaryKey }) : null;
 
   try {
     // ── Step 1: Fetch raw subtitle VTT ──
@@ -2004,7 +2412,7 @@ ${inputTranscript}`;
       }
 
       if (!audioUsed) {
-        // Try Replit integration first (gemini-3.1-pro-preview), then own key (gemini-2.5-pro)
+        // Try Replit integration first, then rotate across personal keys/models.
         const replitBase = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
         const replitKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
         let done = false;
@@ -2023,12 +2431,12 @@ ${inputTranscript}`;
           }
         }
         if (!done) {
-          const result = await genAI.models.generateContent({
-            model: "gemini-2.5-pro",
-            contents: [{ role: "user", parts: [{ text: promptText }] }],
-            config: { systemInstruction },
-          });
-          corrected = (result as any).text ?? "";
+          corrected = await generateWithPersonalKeyRotation(
+            "subtitle/fix",
+            systemInstruction,
+            promptText,
+            ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-flash-preview"],
+          );
         }
       }
     } else {
@@ -2098,7 +2506,7 @@ ${inputTranscript}`;
 function isAiConfigured(): boolean {
   return (
     !!(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
-    !!process.env.GEMINI_API_KEY
+    getPersonalGeminiApiKeys().length > 0
   );
 }
 
@@ -2123,14 +2531,12 @@ async function clipsGeminiContent(
     }
   }
 
-  if (!process.env.GEMINI_API_KEY) throw new Error("No AI provider configured — add GEMINI_API_KEY or enable Replit integration");
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
-    ...(systemInstruction && { systemInstruction }),
-  });
-  const result = await model.generateContent(userContent);
-  return result.response.text();
+  return generateWithPersonalKeyRotation("clips/text", systemInstruction, userContent, [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3-flash-preview",
+    "gemini-1.5-flash",
+  ]);
 }
 
 interface VttCue {
@@ -2297,7 +2703,7 @@ setInterval(
 );
 
 // POST: start a clip analysis job, return jobId immediately
-router.post("/youtube/clips", async (req: Request, res: Response) => {
+router.post("/youtube/clips", clipsRateLimiter, async (req: Request, res: Response) => {
   const { url, durations, auto, instructions } = req.body as {
     url: string;
     durations?: number[];
@@ -2854,23 +3260,36 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
 
 // ─── Clip Download (specific time range) ─────────────────────────────────────
 
-router.post("/youtube/download-clip", async (req: Request, res: Response) => {
-  const { url, startSec, endSec, title } = req.body as {
+router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req: Request, res: Response) => {
+  const { url, startSec, endSec, title, quality } = req.body as {
     url: string;
     startSec: number;
     endSec: number;
     title?: string;
+    quality?: string;
   };
 
   if (!url || startSec == null || endSec == null) {
     res.status(400).json({ error: "url, startSec, and endSec are required" });
     return;
   }
+  if (typeof startSec !== "number" || typeof endSec !== "number") {
+    res.status(400).json({ error: "startSec and endSec (in seconds) must be numbers" });
+    return;
+  }
+  if (endSec <= startSec) {
+    res.status(400).json({ error: "endSec must be greater than startSec" });
+    return;
+  }
+  if (endSec - startSec > 3600) {
+    res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
+    return;
+  }
 
-  const jobId = randomUUID();
   const safeTitle = (title ?? "clip")
     .replace(/[^\w\s\-_.()]/g, "_")
     .slice(0, 60);
+  const jobId = randomUUID();
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -2878,155 +3297,33 @@ router.post("/youtube/download-clip", async (req: Request, res: Response) => {
     eta: null,
     filename: `${safeTitle}.mp4`,
     filesize: null,
-    message: "Starting clip download...",
+    message: "Queued - starting soon...",
     filePath: null,
     url,
-    formatId: "bestvideo+bestaudio/best",
+    formatId: "clip",
     audioOnly: false,
     ext: "mp4",
+    clipStart: startSec,
+    clipEnd: endSec,
+    clipQuality: quality ?? "best",
   };
 
   jobs.set(jobId, job);
   res.json({ jobId, status: "pending", message: "Clip download started" });
 
-  const start = formatTime(Math.round(startSec));
-  const end = formatTime(Math.round(endSec));
-  const outputPath = join(DOWNLOAD_DIR, `${jobId}.%(ext)s`);
-  const jobRef = jobs.get(jobId)!;
-  jobRef.status = "downloading";
-
-  const cookieArgs = getYtdlpCookieArgs();
-  const baseClipArgs = [
-    "--no-playlist",
-    "--no-warnings",
-    "--newline",
-    "--progress",
-    "--download-sections",
-    `*${start}-${end}`,
-    "-o",
-    outputPath,
-    url,
-  ];
-
-  const heavyClipFormats = [
-    "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]",
-    "bestvideo[vcodec^=avc1][height<=1080]+bestaudio",
-    "bestvideo[height<=1080]+bestaudio",
-    "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]",
-    "bestvideo[vcodec^=avc1]+bestaudio",
-    "bestvideo+bestaudio",
-  ];
-  const fastClipFormats = [
-    "best[ext=mp4][height<=1080]",
-    "best[height<=1080]",
-    "best[ext=mp4][height<=720]",
-    "best[height<=720]",
-  ];
-
-  const runClipAttempt = (formatSelector: string, heavy: boolean): Promise<void> =>
-    new Promise<void>((resolve, reject) => {
-      const args = [
-        ...baseClipArgs.slice(0, 4),
-        "-f",
-        formatSelector,
-        ...(heavy ? ["--merge-output-format", "mp4", "--force-keyframes-at-cuts"] : []),
-        ...baseClipArgs.slice(4),
-      ];
-
-      const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...cookieArgs, ...args], {
-        env: PYTHON_ENV,
-      });
-      let stderr = "";
-
-      proc.stdout?.on("data", (data: Buffer) => {
-        const lines = data.toString().split("\n");
-        for (const line of lines) {
-          const t = line.trim();
-          const progressMatch = t.match(/\[download\]\s+([\d.]+)%/);
-          if (progressMatch) {
-            jobRef.percent = Math.round(parseFloat(progressMatch[1]));
-          }
-          const destMatch = t.match(
-            /\[(?:download|Merger)\] Destination:\s+(.+)/,
-          );
-          if (destMatch) {
-            jobRef.filePath = destMatch[1].trim();
-            jobRef.filename =
-              destMatch[1].trim().split("/").pop() ?? `${safeTitle}.mp4`;
-          }
-          if (t.includes("[Merger]")) {
-            jobRef.status = "merging";
-            jobRef.message = "Merging clip...";
-          }
-        }
-      });
-      proc.stderr?.on("data", (d: Buffer) => {
-        stderr += d.toString();
-      });
-      proc.on("close", (code: number | null) => {
-        if (code === 0) resolve();
-        else
-          reject(
-            new Error(stderr.slice(-400) || `yt-dlp exited with code ${code}`),
-          );
-      });
-      proc.on("error", (err: Error) => reject(err));
-    });
-
-  const clipAttempt = async (): Promise<void> => {
-    let lastErr: Error | null = null;
-
-    for (const formatSelector of heavyClipFormats) {
-      try {
-        jobRef.message = "Downloading HD clip...";
-        await runClipAttempt(formatSelector, true);
-        return;
-      } catch (err) {
-        lastErr = err instanceof Error ? err : new Error("HD clip download failed");
-      }
+  enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
+    req.log.error({ err, jobId }, "Clip download failed");
+    const j = jobs.get(jobId);
+    if (!j) return;
+    const message = err instanceof Error ? err.message : "Clip download failed";
+    if (message === CANCELLED_BY_USER || j.cancelled) {
+      j.status = "cancelled";
+      j.message = CANCELLED_BY_USER;
+    } else {
+      j.status = "error";
+      j.message = message;
     }
-
-    for (const formatSelector of fastClipFormats) {
-      try {
-        jobRef.message = "Falling back to standard clip quality...";
-        await runClipAttempt(formatSelector, false);
-        return;
-      } catch (err) {
-        lastErr = err instanceof Error ? err : new Error("Standard clip download failed");
-      }
-    }
-
-    throw lastErr ?? new Error("Clip download failed");
-  };
-
-  clipAttempt()
-    .then(() => {
-      const ext = ["mp4", "mkv", "webm"].find((e) =>
-        existsSync(join(DOWNLOAD_DIR, `${jobId}.${e}`)),
-      );
-      const finalPath = ext
-        ? join(DOWNLOAD_DIR, `${jobId}.${ext}`)
-        : (jobRef.filePath ?? null);
-      if (!finalPath || !existsSync(finalPath)) {
-        jobRef.status = "error";
-        jobRef.message = "Clip file not found after download";
-        return;
-      }
-      jobRef.filePath = finalPath;
-      jobRef.filename = `${safeTitle}.mp4`;
-      jobRef.filesize = statSync(finalPath).size;
-      jobRef.status = "done";
-      jobRef.percent = 100;
-      jobRef.speed = null;
-      jobRef.eta = null;
-      jobRef.message = null;
-      scheduleAutoDelete(jobId, jobRef);
-    })
-    .catch((err) => {
-      req.log.error({ err, jobId }, "Clip download failed");
-      jobRef.status = "error";
-      jobRef.message = err instanceof Error ? err.message : "Download failed";
-    });
+  });
 });
 
 export default router;

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   History, Captions, Scissors, Sparkles, Trash2, Download,
@@ -36,6 +36,7 @@ import {
   deleteFromBestClipsHistory,
   type BestClipsHistoryEntry,
 } from "@/lib/best-clips-history";
+import { useActivityFeed } from "@/hooks/use-activity-feed";
 
 type TabMode = "download" | "clips" | "subtitles" | "clipcutter";
 
@@ -455,33 +456,36 @@ function DownloadRow({
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
-  const [entries, setEntries] = useState<AnyEntry[]>(() => loadAll());
-  const [activeEntries, setActiveEntries] = useState<ActiveEntry[]>(() => loadActiveEntries());
+  const { active: activeEntries, completed: entries, deleteEntry, clearAll } =
+    useActivityFeed(4000);
   const [open, setOpen] = useState(true);
   const { toast } = useToast();
 
-  const refresh = useCallback(() => {
-    setEntries(loadAll());
-    setActiveEntries(loadActiveEntries());
-  }, []);
-
-  // Poll every 4s to pick up newly completed jobs and drop finished active ones
-  useEffect(() => {
-    const id = setInterval(refresh, 4000);
-    return () => clearInterval(id);
-  }, [refresh]);
-
-  const handleDeleteSubtitle = (id: string) => { deleteSubtitle(id); refresh(); };
-  const handleDeleteClip = (jobId: string) => { deleteFromClipHistory(jobId); refresh(); };
-  const handleDeleteBestClips = (id: string) => { deleteFromBestClipsHistory(id); refresh(); };
-  const handleDeleteDownload = (jobId: string) => { deleteCompletedDownload(jobId); refresh(); };
+  const handleDeleteSubtitle = (id: string) => {
+    const entry = entries.find((item) => item.kind === "subtitle" && item.data.id === id);
+    if (entry) deleteEntry(entry);
+  };
+  const handleDeleteClip = (jobId: string) => {
+    const entry = entries.find(
+      (item) => item.kind === "clip" && item.data.jobId === jobId,
+    );
+    if (entry) deleteEntry(entry);
+  };
+  const handleDeleteBestClips = (id: string) => {
+    const entry = entries.find(
+      (item) => item.kind === "bestclips" && item.data.id === id,
+    );
+    if (entry) deleteEntry(entry);
+  };
+  const handleDeleteDownload = (jobId: string) => {
+    const entry = entries.find(
+      (item) => item.kind === "download" && item.data.jobId === jobId,
+    );
+    if (entry) deleteEntry(entry);
+  };
 
   const handleClearAll = () => {
-    loadSubtitleHistory().forEach((e) => deleteSubtitle(e.id));
-    loadClipHistory().forEach((e) => deleteFromClipHistory(e.jobId));
-    loadBestClipsHistory().forEach((e) => deleteFromBestClipsHistory(e.id));
-    clearCompletedDownloads();
-    refresh();
+    clearAll();
     toast({ title: "History cleared", description: "All recent activity has been removed." });
   };
 

@@ -115,6 +115,8 @@ export function GetSubtitles() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
+  const pollSessionRef = useRef(0);
   const pollIntervalMsRef = useRef(2500);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -181,14 +183,21 @@ export function GetSubtitles() {
   }, [loading]);
 
   const stopPolling = () => {
+    pollSessionRef.current += 1;
     if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+    if (pollAbortRef.current) {
+      pollAbortRef.current.abort();
+      pollAbortRef.current = null;
+    }
   };
 
   const pollStatus = useCallback((id: string) => {
     stopPolling();
+    const session = pollSessionRef.current;
     pollIntervalMsRef.current = 2500; // reset backoff for each new job
 
     const scheduleNext = (fn: () => Promise<void>) => {
+      if (session !== pollSessionRef.current) return;
       const interval = pollIntervalMsRef.current;
       // Grow interval by 30% each poll, capped at 10 seconds
       pollIntervalMsRef.current = Math.min(Math.round(interval * 1.3), 10_000);
@@ -196,8 +205,15 @@ export function GetSubtitles() {
     };
 
     const tick = async () => {
+      if (session !== pollSessionRef.current) return;
       try {
-        const res = await fetch(`${BASE()}/api/subtitles/status/${id}`);
+        const controller = new AbortController();
+        pollAbortRef.current = controller;
+        const res = await fetch(`${BASE()}/api/subtitles/status/${id}`, {
+          signal: controller.signal,
+        });
+        if (session !== pollSessionRef.current) return;
+        pollAbortRef.current = null;
 
         // 404 means the server restarted and the in-memory job is gone
         if (res.status === 404) {
@@ -261,7 +277,13 @@ export function GetSubtitles() {
           // Still running — schedule next poll with backoff
           scheduleNext(tick);
         }
-      } catch {
+      } catch (err) {
+        if (
+          err instanceof DOMException &&
+          err.name === "AbortError"
+        ) {
+          return;
+        }
         // Transient network error — retry with backoff
         scheduleNext(tick);
       }
@@ -359,6 +381,14 @@ export function GetSubtitles() {
   };
 
   const handleRetry = () => {
+    if (lastModeRef.current === "file" && !lastFileRef.current) {
+      setInputMode("file");
+      toast({
+        title: "Select file to retry",
+        description: "The previous upload is no longer available. Please pick the file again.",
+      });
+      return;
+    }
     startJob(
       lastModeRef.current,
       lastUrlRef.current,
@@ -453,9 +483,11 @@ export function GetSubtitles() {
   const entryCount = srtContent?.split("\n\n").filter(Boolean).length ?? 0;
 
   // Original language label for download button (e.g. "Download Odia Original")
+  const jobSourceLabel =
+    LANGUAGES.find((l) => l.value === jobSourceLang)?.label ?? jobSourceLang;
   const sourceLangLabel = jobSourceLang === "auto"
     ? "Original"
-    : `${jobSourceLang} Original`;
+    : `${jobSourceLabel} Original`;
 
   // ── Step tracker rendering ────────────────────────────────────────────────
   // Always use the job's frozen stepOrder (not live translateTo/inputMode)
