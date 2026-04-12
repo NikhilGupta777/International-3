@@ -7,10 +7,21 @@ services:
       PORT: "8080"
       NODE_ENV: production
       DATABASE_URL: postgresql://ytgrabber:ytgrabber@db:5432/ytgrabber
+      SESSION_SECRET: ${SESSION_SECRET:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_API_KEY_2: ${GEMINI_API_KEY_2:-}
+      GEMINI_API_KEY_3: ${GEMINI_API_KEY_3:-}
+      GEMINI_API_KEY_4: ${GEMINI_API_KEY_4:-}
       BHAGWAT_PASSWORD: ${BHAGWAT_PASSWORD}
       ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
-      # ── YouTube bot-detection bypass options (AWS/datacenter IPs are blocked by YouTube) ──
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_OBJECT_PREFIX: ${S3_OBJECT_PREFIX:-ytgrabber}
+      S3_SIGNED_URL_TTL_SEC: ${S3_SIGNED_URL_TTL_SEC:-7200}
+      # YouTube bot-detection bypass options (AWS/datacenter IPs can be blocked by YouTube)
       # OPTION 1 (easiest): Export cookies from a YouTube-logged-in Chrome browser using the
       # "Get cookies.txt LOCALLY" extension, then base64-encode: base64 -w 0 cookies.txt
       # Paste the result here. No file upload needed, just set and restart.
@@ -23,13 +34,19 @@ services:
       YTDLP_VISITOR_DATA: ${YTDLP_VISITOR_DATA:-}
       # OPTION 4 (recommended on AWS): bgutil dynamic PO-token provider sidecar
       YTDLP_POT_PROVIDER_URL: ${YTDLP_POT_PROVIDER_URL:-http://bgutil-provider:4416}
+      MAX_CONCURRENT_CLIP_JOBS: ${MAX_CONCURRENT_CLIP_JOBS:-3}
+      MAX_CONCURRENT_SUBTITLE_JOBS: ${MAX_CONCURRENT_SUBTITLE_JOBS:-3}
+      MAX_SUBTITLE_QUEUE_SIZE: ${MAX_SUBTITLE_QUEUE_SIZE:-40}
+      RATE_LIMIT_BYPASS_IPS: ${RATE_LIMIT_BYPASS_IPS:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:ops@videomaking.in}
     depends_on:
       db:
         condition: service_healthy
       bgutil-provider:
         condition: service_started
     restart: unless-stopped
-    # Allow large uploads and long-running downloads
     stop_grace_period: 2m
 
   bgutil-provider:

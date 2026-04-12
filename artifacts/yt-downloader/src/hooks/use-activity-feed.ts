@@ -2,17 +2,20 @@ import { useCallback, useEffect, useState } from "react";
 import {
   loadHistory as loadSubtitleHistory,
   loadActiveJob,
+  clearActiveJob,
   deleteFromHistory as deleteSubtitle,
   type SubtitleHistoryEntry,
 } from "@/lib/subtitle-history";
 import {
   loadClipHistory,
   loadActiveClipJobs,
+  saveActiveClipJobs,
   deleteFromClipHistory,
   type ClipHistoryEntry,
 } from "@/lib/clip-history";
 import {
   loadActiveDownload,
+  clearActiveDownload,
   loadCompletedDownloads,
   deleteCompletedDownload,
   clearCompletedDownloads,
@@ -113,6 +116,7 @@ function loadAllActive(): ActivityActiveEntry[] {
 }
 
 export function useActivityFeed(pollMs = 4000) {
+  const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
   const [active, setActive] = useState<ActivityActiveEntry[]>(() =>
     loadAllActive(),
   );
@@ -120,14 +124,97 @@ export function useActivityFeed(pollMs = 4000) {
     loadAllCompleted(),
   );
 
-  const refresh = useCallback(() => {
+  const syncActiveWithServer = useCallback(async () => {
+    const subtitleJob = loadActiveJob();
+    if (subtitleJob) {
+      try {
+        const res = await fetch(
+          `${BASE}/api/subtitles/status/${encodeURIComponent(subtitleJob.jobId)}`,
+        );
+        if (res.status === 404) {
+          clearActiveJob();
+        } else if (res.ok) {
+          const data = (await res.json()) as { status?: string };
+          if (
+            data.status === "done" ||
+            data.status === "error" ||
+            data.status === "cancelled"
+          ) {
+            clearActiveJob();
+          }
+        }
+      } catch {}
+    }
+
+    const clipJobs = loadActiveClipJobs();
+    if (clipJobs.length > 0) {
+      const kept = [] as typeof clipJobs;
+      for (const job of clipJobs) {
+        try {
+          const res = await fetch(
+            `${BASE}/api/youtube/progress/${encodeURIComponent(job.jobId)}`,
+          );
+          if (res.status === 404) {
+            continue;
+          }
+          if (!res.ok) {
+            kept.push(job);
+            continue;
+          }
+          const data = (await res.json()) as { status?: string };
+          const status = data.status;
+          if (
+            status === "done" ||
+            status === "error" ||
+            status === "cancelled" ||
+            status === "expired"
+          ) {
+            continue;
+          }
+          kept.push(job);
+        } catch {
+          kept.push(job);
+        }
+      }
+      if (kept.length !== clipJobs.length) {
+        saveActiveClipJobs(kept);
+      }
+    }
+
+    const downloadJob = loadActiveDownload();
+    if (downloadJob) {
+      try {
+        const res = await fetch(
+          `${BASE}/api/youtube/progress/${encodeURIComponent(downloadJob.jobId)}`,
+        );
+        if (res.status === 404) {
+          clearActiveDownload();
+        } else if (res.ok) {
+          const data = (await res.json()) as { status?: string };
+          if (
+            data.status === "done" ||
+            data.status === "error" ||
+            data.status === "cancelled" ||
+            data.status === "expired"
+          ) {
+            clearActiveDownload();
+          }
+        }
+      } catch {}
+    }
+  }, [BASE]);
+
+  const refresh = useCallback(async () => {
+    await syncActiveWithServer();
     setActive(loadAllActive());
     setCompleted(loadAllCompleted());
-  }, []);
+  }, [syncActiveWithServer]);
 
   useEffect(() => {
-    refresh();
-    const timer = setInterval(refresh, pollMs);
+    void refresh();
+    const timer = setInterval(() => {
+      void refresh();
+    }, pollMs);
     return () => clearInterval(timer);
   }, [pollMs, refresh]);
 
@@ -138,7 +225,7 @@ export function useActivityFeed(pollMs = 4000) {
       else if (entry.kind === "download")
         deleteCompletedDownload(entry.data.jobId);
       else deleteFromBestClipsHistory(entry.data.id);
-      refresh();
+      void refresh();
     },
     [refresh],
   );
@@ -148,7 +235,7 @@ export function useActivityFeed(pollMs = 4000) {
     loadClipHistory().forEach((entry) => deleteFromClipHistory(entry.jobId));
     loadBestClipsHistory().forEach((entry) => deleteFromBestClipsHistory(entry.id));
     clearCompletedDownloads();
-    refresh();
+    void refresh();
   }, [refresh]);
 
   return {

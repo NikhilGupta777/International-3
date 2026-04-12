@@ -6,8 +6,14 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import {
+  getHttpMetricsSnapshot,
+  getSystemMetricsSnapshot,
+  recordHttpMetrics,
+} from "./lib/ops-metrics";
 
 const app: Express = express();
+app.set("trust proxy", true);
 
 // Minimal security headers without introducing new deps.
 app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -45,6 +51,14 @@ app.use(
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const started = Date.now();
+  res.on("finish", () => {
+    const durationMs = Date.now() - started;
+    recordHttpMetrics(res.statusCode, durationMs);
+  });
+  next();
+});
 
 app.use("/api", router);
 app.use("/api", (_req: Request, res: Response) => {
@@ -89,5 +103,35 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     res.status(status).json({ error: message });
   }
 });
+
+const ALERT_INTERVAL_MS = 60 * 1000;
+setInterval(() => {
+  const http = getHttpMetricsSnapshot();
+  const sys = getSystemMetricsSnapshot();
+
+  if (http.recent5m.errorRatePct >= 10 && http.recent5m.requests >= 20) {
+    logger.warn(
+      {
+        errorRatePct: http.recent5m.errorRatePct,
+        requests5m: http.recent5m.requests,
+      },
+      "High 5xx rate detected in last 5 minutes",
+    );
+  }
+
+  if (sys.memory.systemUsedPct >= 90) {
+    logger.warn(
+      { systemUsedPct: sys.memory.systemUsedPct },
+      "High system memory usage detected",
+    );
+  }
+
+  if ((sys.disk.rootUsedPct ?? 0) >= 90) {
+    logger.warn(
+      { diskRootUsedPct: sys.disk.rootUsedPct },
+      "High disk usage detected on root filesystem",
+    );
+  }
+}, ALERT_INTERVAL_MS);
 
 export default app;

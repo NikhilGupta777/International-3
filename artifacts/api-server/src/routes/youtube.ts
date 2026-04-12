@@ -18,13 +18,26 @@ import {
   writeFileSync,
   readdirSync,
 } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, basename } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
 import { GoogleGenAI } from "@google/genai";
 import ffmpegStatic from "ffmpeg-static";
+import {
+  cleanupOldS3Objects,
+  deleteS3Object,
+  getS3StorageConfig,
+  getS3SignedDownloadUrl,
+  isS3StorageEnabled,
+  uploadFileToS3,
+} from "../lib/s3-storage";
+import { logger } from "../lib/logger";
+import {
+  getNotifyClientKey,
+  notifyClientPush,
+} from "../lib/push-notifications";
 
 const router: IRouter = Router();
 
@@ -129,22 +142,56 @@ function cleanupOldFiles() {
 }
 setInterval(cleanupOldFiles, 30 * 60 * 1000);
 cleanupOldFiles();
+if (isS3StorageEnabled()) {
+  void cleanupOldS3Objects({
+    namespace: "youtube/downloads",
+    maxAgeMs: MAX_FILE_AGE_MS,
+  }).catch((err) => {
+    logger.warn({ err }, "Failed initial S3 stale cleanup (youtube/downloads)");
+  });
+  void cleanupOldS3Objects({
+    namespace: "youtube/clips",
+    maxAgeMs: MAX_FILE_AGE_MS,
+  }).catch((err) => {
+    logger.warn({ err }, "Failed initial S3 stale cleanup (youtube/clips)");
+  });
+  setInterval(() => {
+    void cleanupOldS3Objects({
+      namespace: "youtube/downloads",
+      maxAgeMs: MAX_FILE_AGE_MS,
+    }).catch((err) => {
+      logger.warn({ err }, "Failed S3 stale cleanup (youtube/downloads)");
+    });
+    void cleanupOldS3Objects({
+      namespace: "youtube/clips",
+      maxAgeMs: MAX_FILE_AGE_MS,
+    }).catch((err) => {
+      logger.warn({ err }, "Failed S3 stale cleanup (youtube/clips)");
+    });
+  }, 30 * 60 * 1000);
+}
 
 // Auto-delete a job's file 2 hours after it's ready
 const AUTO_DELETE_MS = 2 * 60 * 60 * 1000;
 function scheduleAutoDelete(
   jobId: string,
-  jobRef: { filePath: string | null; status: string },
+  jobRef: DownloadJob,
 ) {
   setTimeout(() => {
-    if (jobRef.filePath) {
-      try {
-        unlinkSync(jobRef.filePath);
-      } catch {}
-      jobRef.filePath = null;
-    }
-    jobRef.status = "expired";
-    setTimeout(() => jobs.delete(jobId), 60_000);
+    void (async () => {
+      if (jobRef.filePath) {
+        try {
+          unlinkSync(jobRef.filePath);
+        } catch {}
+        jobRef.filePath = null;
+      }
+      if (jobRef.s3Key) {
+        await deleteS3Object(jobRef.s3Key);
+        jobRef.s3Key = null;
+      }
+      jobRef.status = "expired";
+      setTimeout(() => jobs.delete(jobId), 60_000);
+    })();
   }, AUTO_DELETE_MS);
 }
 
@@ -178,6 +225,7 @@ interface DownloadJob {
   filesize: number | null;
   message: string | null;
   filePath: string | null;
+  s3Key?: string | null;
   url: string;
   formatId: string;
   audioOnly: boolean;
@@ -187,10 +235,73 @@ interface DownloadJob {
   clipQuality?: string;
   cancelled?: boolean;
   activeProc?: ReturnType<typeof spawn> | null;
+  notifyClientKey?: string | null;
 }
 
 const jobs = new Map<string, DownloadJob>();
 const CANCELLED_BY_USER = "Cancelled by user";
+
+async function storeJobOutputInS3(
+  jobId: string,
+  jobRef: DownloadJob,
+  finalPath: string,
+  namespace: "youtube/downloads" | "youtube/clips",
+): Promise<void> {
+  const finalFilename = basename(finalPath) || `${jobId}.${jobRef.ext}`;
+  const stats = statSync(finalPath);
+  jobRef.filesize = stats.size;
+  jobRef.filename = finalFilename;
+
+  if (!isS3StorageEnabled()) {
+    jobRef.filePath = finalPath;
+    jobRef.s3Key = null;
+    return;
+  }
+
+  jobRef.message = "Uploading to cloud storage...";
+  jobRef.percent = Math.max(jobRef.percent ?? 0, 99);
+  const uploaded = await uploadFileToS3({
+    localPath: finalPath,
+    jobId,
+    namespace,
+    filename: finalFilename,
+  });
+  jobRef.s3Key = uploaded.key;
+  jobRef.filePath = null;
+  try {
+    unlinkSync(finalPath);
+  } catch {}
+}
+
+function pushCompletionNotification(
+  jobRef: DownloadJob,
+  title: string,
+  body: string,
+  tag: string,
+): void {
+  void notifyClientPush(jobRef.notifyClientKey, {
+    title,
+    body,
+    url: "/",
+    tag,
+    silent: true,
+  });
+}
+
+function pushFailureNotification(
+  jobRef: DownloadJob,
+  title: string,
+  body: string,
+  tag: string,
+): void {
+  void notifyClientPush(jobRef.notifyClientKey, {
+    title,
+    body,
+    url: "/",
+    tag,
+    silent: true,
+  });
+}
 
 type QueuedClipJob = {
   jobId: string;
@@ -897,13 +1008,37 @@ function runYtDlpForSubs(args: string[]): Promise<void> {
 function extractVideoId(url: string): string | null {
   try {
     const u = new URL(url);
-    if (u.hostname.includes("youtube.com")) {
-      return u.searchParams.get("v");
-    } else if (u.hostname.includes("youtu.be")) {
-      return u.pathname.slice(1);
+    const host = u.hostname.toLowerCase();
+    if (host.includes("youtube.com")) {
+      const watchId = u.searchParams.get("v");
+      if (watchId) return watchId;
+      const parts = u.pathname.split("/").filter(Boolean);
+      if (parts[0] === "shorts" || parts[0] === "embed" || parts[0] === "live") {
+        return parts[1] ?? null;
+      }
+    } else if (host.includes("youtu.be")) {
+      const first = u.pathname.split("/").filter(Boolean)[0];
+      return first ?? null;
     }
   } catch {}
   return null;
+}
+
+function normalizeInputUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+  const candidate =
+    /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+  try {
+    const u = new URL(candidate);
+    if (!isYouTubeUrl(candidate)) return candidate;
+    const videoId = extractVideoId(candidate);
+    if (!videoId) return candidate;
+    return `https://www.youtube.com/watch?v=${videoId}`;
+  } catch {
+    return trimmed;
+  }
 }
 
 function estimateFilesize(fmt: any, duration: number | null): number | null {
@@ -1072,6 +1207,7 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
     : hasPoToken
     ? "web+web_embedded (static po_token mode)"
     : "tv_embedded,android_vr,mweb (server-IP mode)";
+  const storage = getS3StorageConfig();
 
   res.json({
     ytdlpVersion,
@@ -1090,14 +1226,19 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
       ...(!hasPotProvider && !hasPoToken ? ["Set YTDLP_POT_PROVIDER_URL and install bgutil-ytdlp-pot-provider for dynamic YouTube PO tokens"] : []),
       ...(!hasPotProvider && !hasPoToken ? ["Or set YTDLP_PO_TOKEN + YTDLP_VISITOR_DATA from youtube-trusted-session-generator"] : []),
       ...(!hasProxy ? ["Or set YTDLP_PROXY to route through a residential/non-datacenter IP"] : []),
+      ...(!storage.enabled
+        ? ["Set S3_BUCKET to store completed downloads in S3 and serve via signed URLs"]
+        : []),
     ],
     cookieFilePath: YTDLP_COOKIES_FILE,
     cookieFileExists: existsSync(YTDLP_COOKIES_FILE),
+    storage,
   });
 });
 
 router.post("/youtube/info", async (req: Request, res: Response) => {
   const { url } = req.body as { url: string };
+  const normalizedUrl = normalizeInputUrl(url ?? "");
 
   if (!url) {
     res.status(400).json({ error: "URL is required" });
@@ -1105,9 +1246,9 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
   }
 
   if (
-    !extractVideoId(url) &&
-    !url.includes("youtube.com") &&
-    !url.includes("youtu.be")
+    !extractVideoId(normalizedUrl) &&
+    !normalizedUrl.includes("youtube.com") &&
+    !normalizedUrl.includes("youtu.be")
   ) {
     res.status(400).json({
       error:
@@ -1117,7 +1258,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
   }
 
   try {
-    const data = await runYtDlpMetadata(url);
+    const data = await runYtDlpMetadata(normalizedUrl);
 
     const formats = buildFormats(data.formats ?? [], data.duration ?? null);
 
@@ -1146,7 +1287,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     );
     if (bestCombined) {
       const prewarmFormat = bestCombined.formatId;
-      const cacheKey = `${url}::${prewarmFormat}`;
+      const cacheKey = `${normalizedUrl}::${prewarmFormat}`;
       if (!getCachedStreamUrl(cacheKey)) {
         runYtDlp([
           "--get-url",
@@ -1154,7 +1295,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
           "--no-warnings",
           "-f",
           prewarmFormat,
-          url,
+          normalizedUrl,
         ])
           .then((rawUrls) => {
             const cdnUrl = rawUrls.trim().split("\n")[0].trim();
@@ -1190,6 +1331,8 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
   }
 
   const jobId = randomUUID();
+  const normalizedUrl = normalizeInputUrl(url);
+  const notifyClientKey = getNotifyClientKey(req);
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -1199,10 +1342,11 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
     filesize: null,
     message: "Starting download...",
     filePath: null,
-    url,
+    url: normalizedUrl,
     formatId,
     audioOnly: audioOnly ?? false,
     ext: "mp4",
+    notifyClientKey,
   };
 
   jobs.set(jobId, job);
@@ -1219,6 +1363,12 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
       } else {
         j.status = "error";
         j.message = message;
+        pushFailureNotification(
+          j,
+          "Download failed",
+          message.slice(0, 200),
+          `download-error:${jobId}`,
+        );
       }
     }
   });
@@ -1268,7 +1418,7 @@ function qualityToFormatCandidates(quality: string): string[] {
 
 const MAX_CLIP_FORMAT_CANDIDATES = 6;
 const MAX_CLIP_CLIENT_FALLBACKS = 3;
-const MAX_CLIP_DOWNLOAD_ATTEMPTS = 20;
+const MAX_CLIP_DOWNLOAD_ATTEMPTS = 8;
 
 async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   const jobRef = jobs.get(jobId)!;
@@ -1380,15 +1530,18 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   if (!finalPath) throw new Error("Clip file not found on disk");
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
-  const stats = statSync(finalPath);
-  jobRef.filesize = stats.size;
-  jobRef.filePath = finalPath;
-  jobRef.filename = finalPath.split("/").pop() ?? `clip.${jobRef.ext}`;
+  await storeJobOutputInS3(jobId, jobRef, finalPath, "youtube/clips");
   jobRef.status = "done";
   jobRef.percent = 100;
   jobRef.speed = null;
   jobRef.eta = null;
   jobRef.message = null;
+  pushCompletionNotification(
+    jobRef,
+    "Clip ready",
+    jobRef.filename ?? "Your clip has finished processing.",
+    `clip:${jobId}`,
+  );
   scheduleAutoDelete(jobId, jobRef);
 }
 
@@ -1415,6 +1568,8 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
   }
 
   const jobId = randomUUID();
+  const normalizedUrl = normalizeInputUrl(url);
+  const notifyClientKey = getNotifyClientKey(req);
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -1424,13 +1579,14 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
     filesize: null,
     message: "Starting clip cut...",
     filePath: null,
-    url,
+    url: normalizedUrl,
     formatId: "clip",
     audioOnly: false,
     ext: "mp4",
     clipStart: startTime,
     clipEnd: endTime,
     clipQuality: quality ?? "best",
+    notifyClientKey,
   };
 
   jobs.set(jobId, job);
@@ -1447,6 +1603,12 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
       } else {
         j.status = "error";
         j.message = message;
+        pushFailureNotification(
+          j,
+          "Clip cut failed",
+          message.slice(0, 200),
+          `clip-error:${jobId}`,
+        );
       }
     }
   });
@@ -1690,15 +1852,18 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   }
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
-  const stats = statSync(finalPath);
-  jobRef.filesize = stats.size;
-  jobRef.filePath = finalPath;
-  jobRef.filename = finalPath.split("/").pop() ?? jobRef.filename ?? `video.${jobRef.ext}`;
+  await storeJobOutputInS3(jobId, jobRef, finalPath, "youtube/downloads");
   jobRef.status = "done";
   jobRef.percent = 100;
   jobRef.speed = null;
   jobRef.eta = null;
   jobRef.message = null;
+  pushCompletionNotification(
+    jobRef,
+    "Download complete",
+    jobRef.filename ?? "Your video download is ready.",
+    `download:${jobId}`,
+  );
   scheduleAutoDelete(jobId, jobRef);
 }
 
@@ -1887,7 +2052,8 @@ router.get("/youtube/stream", async (req: Request, res: Response) => {
       ? formatId
       : "best[ext=mp4]/best[height<=720][ext=mp4]/best";
 
-  const cacheKey = `${url}::${safeFormatId}`;
+  const normalizedUrl = normalizeInputUrl(url);
+  const cacheKey = `${normalizedUrl}::${safeFormatId}`;
 
   try {
     // Check cache first — avoids 10-15s yt-dlp resolve on every request
@@ -1901,7 +2067,7 @@ router.get("/youtube/stream", async (req: Request, res: Response) => {
         "--no-warnings",
         "-f",
         safeFormatId,
-        url,
+        normalizedUrl,
       ]);
       streamUrl = rawUrls.trim().split("\n")[0].trim();
       if (streamUrl && streamUrl.startsWith("http")) {
@@ -1972,7 +2138,7 @@ router.get("/youtube/stream", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
+router.get("/youtube/file/:jobId", async (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
@@ -1991,11 +2157,34 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
     return;
   }
   if (job.status !== "done" || !job.filePath) {
-    res.status(404).json({ error: "File not found or download not complete" });
-    return;
+    if (job.status !== "done" || !job.s3Key) {
+      res.status(404).json({ error: "File not found or download not complete" });
+      return;
+    }
   }
 
-  if (!existsSync(job.filePath)) {
+  const filename = job.filename ?? `video.${job.ext}`;
+
+  if (job.s3Key) {
+    try {
+      const signedUrl = await getS3SignedDownloadUrl({
+        key: job.s3Key,
+        filename,
+      });
+      res.redirect(302, signedUrl);
+      return;
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to generate signed S3 download URL");
+      if (!job.filePath) {
+        res.status(500).json({
+          error: "File is ready but cloud download URL could not be created.",
+        });
+        return;
+      }
+    }
+  }
+
+  if (!job.filePath || !existsSync(job.filePath)) {
     res.status(410).json({
       error: "File has expired. Please download the video again.",
       expired: true,
@@ -2004,7 +2193,6 @@ router.get("/youtube/file/:jobId", (req: Request, res: Response) => {
   }
 
   const stats = statSync(job.filePath);
-  const filename = job.filename ?? `video.${job.ext}`;
 
   res.setHeader(
     "Content-Disposition",
@@ -2111,6 +2299,7 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
   }
 
   const outputFormat = format === "vtt" ? "vtt" : "srt";
+  const normalizedUrl = normalizeInputUrl(url);
   const subDir = join(DOWNLOAD_DIR, `subs-${randomUUID()}`);
 
   try {
@@ -2125,7 +2314,7 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
         "--dump-json",
         "--no-playlist",
         "--no-warnings",
-        url,
+        normalizedUrl,
       ]);
       const meta = JSON.parse(metaJson);
       const subs: Record<string, any[]> = meta.subtitles ?? {};
@@ -2148,7 +2337,7 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
         "--no-warnings",
         "--no-playlist",
         "-o", subBase,
-        url,
+        normalizedUrl,
       ]).catch(() => {});
 
       if (!existsSync(subDir) || !readdirSync(subDir).some((f) => f.endsWith(".vtt"))) {
@@ -2281,6 +2470,7 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
   }
 
   const outputFormat = format === "vtt" ? "vtt" : "srt";
+  const normalizedUrl = normalizeInputUrl(url);
   const sessionId = randomUUID();
   const audioDir = join(DOWNLOAD_DIR, `audio-fix-${sessionId}`);
   const subDir = join(DOWNLOAD_DIR, `subs-fix-${sessionId}`);
@@ -2295,7 +2485,7 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
     let vttContent: string | null = null;
 
     try {
-      const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+      const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", normalizedUrl]);
       const meta = JSON.parse(metaJson);
       const directUrl = pickBestSubtitleUrl(meta.subtitles ?? {}, meta.automatic_captions ?? {}, meta.language);
       if (directUrl) {
@@ -2305,9 +2495,9 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
     } catch {}
 
     if (!vttContent) {
-      await runYtDlpForSubs(["--write-subs", "--write-auto-subs", "--sub-lang", "hi.*,en.*", "--sub-format", "vtt", "--skip-download", "--no-warnings", "--no-playlist", "-o", subBase, url]).catch(() => {});
+      await runYtDlpForSubs(["--write-subs", "--write-auto-subs", "--sub-lang", "hi.*,en.*", "--sub-format", "vtt", "--skip-download", "--no-warnings", "--no-playlist", "-o", subBase, normalizedUrl]).catch(() => {});
       if (!existsSync(subDir) || !readdirSync(subDir).some((f) => f.endsWith(".vtt"))) {
-        await runYtDlpForSubs(["--write-subs", "--write-auto-subs", "--sub-format", "vtt", "--skip-download", "--no-warnings", "--no-playlist", "-o", subBase, url]).catch(() => {});
+        await runYtDlpForSubs(["--write-subs", "--write-auto-subs", "--sub-format", "vtt", "--skip-download", "--no-warnings", "--no-playlist", "-o", subBase, normalizedUrl]).catch(() => {});
       }
       if (existsSync(subDir)) {
         const files = readdirSync(subDir);
@@ -2358,7 +2548,7 @@ ${inputTranscript}`;
             "-m", "yt_dlp",
             "-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
             "--no-playlist", "--no-warnings",
-            "-o", audioPattern, url,
+            "-o", audioPattern, normalizedUrl,
           ], { env: PYTHON_ENV });
           let stderr = "";
           proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
@@ -2687,6 +2877,7 @@ interface ClipJob {
   result?: { clips: BestClip[]; hasTranscript: boolean; videoDuration: number };
   error?: string;
   createdAt: number;
+  notifyClientKey?: string | null;
 }
 
 const clipJobs = new Map<string, ClipJob>();
@@ -2721,6 +2912,7 @@ router.post("/youtube/clips", clipsRateLimiter, async (req: Request, res: Respon
     res.status(400).json({ error: "URL is required" });
     return;
   }
+  const normalizedUrl = normalizeInputUrl(url);
   if (!isAiConfigured()) {
     res.status(503).json({
       error: "AI not configured",
@@ -2734,6 +2926,7 @@ router.post("/youtube/clips", clipsRateLimiter, async (req: Request, res: Respon
     emitter: new EventEmitter(),
     status: "pending",
     createdAt: Date.now(),
+    notifyClientKey: getNotifyClientKey(req),
   };
   job.emitter.setMaxListeners(5);
   clipJobs.set(jobId, job);
@@ -2743,7 +2936,7 @@ router.post("/youtube/clips", clipsRateLimiter, async (req: Request, res: Respon
   runClipAnalysis(
     jobId,
     job,
-    url,
+    normalizedUrl,
     normalizedDurations,
     req.log,
     auto ?? false,
@@ -2922,10 +3115,10 @@ async function runClipAnalysis(
             "--skip-download",
             "--no-warnings",
             "--no-playlist",
-            "-o",
-            subBase,
-            url,
-          ]).catch(() => {});
+          "-o",
+          subBase,
+          url,
+        ]).catch(() => {});
 
           // Try 2: any language auto-subs if first attempt got nothing
           if (!readdirSync(subDir).some((f) => f.endsWith(".vtt"))) {
@@ -3238,12 +3431,26 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
     const resultData = { clips, hasTranscript, videoDuration };
     job.status = "done";
     job.result = resultData;
+    void notifyClientPush(job.notifyClientKey, {
+      title: "Best clips ready",
+      body: `${clips.length} clips are ready to download.`,
+      url: "/",
+      tag: `bestclips:${jobId}`,
+      silent: true,
+    });
     emit("done", resultData);
   } catch (err) {
     log.error({ err }, "Clip analysis failed");
     const message = err instanceof Error ? err.message : "Unknown error";
     job.status = "error";
     job.error = message;
+    void notifyClientPush(job.notifyClientKey, {
+      title: "Best clips failed",
+      body: message.slice(0, 200),
+      url: "/",
+      tag: `bestclips-error:${jobId}`,
+      silent: true,
+    });
     emit("error", { message });
     // Cleanup subtitle dir if it exists
     try {
@@ -3285,11 +3492,13 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
     return;
   }
+  const normalizedUrl = normalizeInputUrl(url);
 
   const safeTitle = (title ?? "clip")
     .replace(/[^\w\s\-_.()]/g, "_")
     .slice(0, 60);
   const jobId = randomUUID();
+  const notifyClientKey = getNotifyClientKey(req);
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -3299,13 +3508,14 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     filesize: null,
     message: "Queued - starting soon...",
     filePath: null,
-    url,
+    url: normalizedUrl,
     formatId: "clip",
     audioOnly: false,
     ext: "mp4",
     clipStart: startSec,
     clipEnd: endSec,
     clipQuality: quality ?? "best",
+    notifyClientKey,
   };
 
   jobs.set(jobId, job);
@@ -3322,8 +3532,46 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     } else {
       j.status = "error";
       j.message = message;
+      pushFailureNotification(
+        j,
+        "Clip download failed",
+        message.slice(0, 200),
+        `clip-error:${jobId}`,
+      );
     }
   });
 });
 
 export default router;
+
+export function getYoutubeOpsSnapshot() {
+  let activeDownloads = 0;
+  let activeClipJobs = 0;
+  let pendingJobs = 0;
+
+  for (const job of jobs.values()) {
+    if (job.status === "pending") pendingJobs += 1;
+    if (job.formatId === "clip") {
+      if (["pending", "downloading", "merging"].includes(job.status)) {
+        activeClipJobs += 1;
+      }
+    } else if (["pending", "downloading", "merging"].includes(job.status)) {
+      activeDownloads += 1;
+    }
+  }
+
+  return {
+    limits: {
+      maxConcurrentClipJobs: MAX_CONCURRENT_CLIP_JOBS,
+      maxClipAttempts: MAX_CLIP_DOWNLOAD_ATTEMPTS,
+    },
+    queue: {
+      queuedClipJobs: queuedClipJobs.length,
+      activeClipJobSlotsUsed: activeClipJobCount,
+      pendingJobs,
+      activeClipJobs,
+      activeDownloads,
+      totalTrackedJobs: jobs.size,
+    },
+  };
+}

@@ -9,6 +9,7 @@ import { spawn, execFileSync } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 import { logger } from "../lib/logger";
 import ffmpegStatic from "ffmpeg-static";
+import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 
 const router = Router();
 
@@ -239,8 +240,188 @@ interface SrtJob {
   cancelled?: boolean;
   durationSecs?: number;
   progressPct?: number;
+  notifyClientKey?: string | null;
+  errorNotified?: boolean;
 }
 const jobs = new Map<string, SrtJob>();
+const CANCELLED_BY_USER = "Cancelled by user";
+
+function notifySubtitleReady(jobId: string, job: SrtJob): void {
+  void notifyClientPush(job.notifyClientKey, {
+    title: "Subtitles ready",
+    body: job.filename || "Your subtitle file is ready.",
+    url: "/",
+    tag: `subtitles:${jobId}`,
+    silent: true,
+  });
+}
+
+type QueuedSubtitleJob = {
+  jobId: string;
+  run: () => Promise<void>;
+  resolve: () => void;
+  reject: (err: Error) => void;
+};
+
+const MAX_CONCURRENT_SUBTITLE_JOBS = Math.max(
+  1,
+  Number.parseInt(process.env.MAX_CONCURRENT_SUBTITLE_JOBS ?? "3", 10) || 3,
+);
+let activeSubtitleJobCount = 0;
+const queuedSubtitleJobs: QueuedSubtitleJob[] = [];
+const queuedSubtitleJobIds = new Set<string>();
+
+function updateQueuedSubtitleJobMessages(): void {
+  queuedSubtitleJobs.forEach((entry, index) => {
+    const job = jobs.get(entry.jobId);
+    if (!job || job.cancelled) return;
+    job.status = "pending";
+    job.progressPct = 0;
+    job.message =
+      index === 0 && activeSubtitleJobCount < MAX_CONCURRENT_SUBTITLE_JOBS
+        ? "Queued - starting soon..."
+        : `Queued (#${index + 1})`;
+  });
+}
+
+function drainQueuedSubtitleJobs(): void {
+  while (
+    activeSubtitleJobCount < MAX_CONCURRENT_SUBTITLE_JOBS &&
+    queuedSubtitleJobs.length > 0
+  ) {
+    const next = queuedSubtitleJobs.shift()!;
+    queuedSubtitleJobIds.delete(next.jobId);
+    const job = jobs.get(next.jobId);
+    if (!job || job.cancelled) {
+      next.reject(new Error(CANCELLED_BY_USER));
+      updateQueuedSubtitleJobMessages();
+      continue;
+    }
+
+    activeSubtitleJobCount += 1;
+    job.status = "pending";
+    job.progressPct = 0;
+    job.message = "Starting subtitle job...";
+
+    Promise.resolve()
+      .then(next.run)
+      .then(() => next.resolve())
+      .catch((err) =>
+        next.reject(err instanceof Error ? err : new Error("Subtitle job failed")),
+      )
+      .finally(() => {
+        activeSubtitleJobCount = Math.max(0, activeSubtitleJobCount - 1);
+        updateQueuedSubtitleJobMessages();
+        drainQueuedSubtitleJobs();
+      });
+  }
+}
+
+function enqueueSubtitleJob(jobId: string, run: () => Promise<void>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    queuedSubtitleJobs.push({
+      jobId,
+      run,
+      resolve,
+      reject: (err: Error) => reject(err),
+    });
+    queuedSubtitleJobIds.add(jobId);
+    updateQueuedSubtitleJobMessages();
+    drainQueuedSubtitleJobs();
+  });
+}
+
+function dequeueSubtitleJob(jobId: string): boolean {
+  const index = queuedSubtitleJobs.findIndex((entry) => entry.jobId === jobId);
+  if (index === -1) return false;
+  const [entry] = queuedSubtitleJobs.splice(index, 1);
+  queuedSubtitleJobIds.delete(jobId);
+  entry.reject(new Error(CANCELLED_BY_USER));
+  updateQueuedSubtitleJobMessages();
+  return true;
+}
+
+type RateWindow = { count: number; resetAt: number };
+const rateWindows = new Map<string, RateWindow>();
+const RATE_LIMIT_WINDOW_MS = 3 * 60 * 1000;
+const RATE_LIMITS = {
+  "POST /subtitles/generate": 3,
+  "POST /subtitles/upload": 3,
+  "POST /subtitles/cancel/:jobId": 180, // 60/min
+} as const;
+const RATE_LIMIT_BYPASS_IPS = new Set(
+  (process.env.RATE_LIMIT_BYPASS_IPS ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean),
+);
+
+function normalizeIp(ip: string): string {
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+function getClientIp(req: Request): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  const firstForwarded = Array.isArray(forwarded)
+    ? forwarded[0]
+    : forwarded?.split(",")[0];
+  const ip = firstForwarded?.trim() || req.ip || req.socket.remoteAddress || "unknown";
+  return normalizeIp(ip);
+}
+
+function createIpRateLimiter(routeKey: keyof typeof RATE_LIMITS) {
+  const max = RATE_LIMITS[routeKey];
+  return (req: Request, res: Response, next: NextFunction) => {
+    const ip = getClientIp(req);
+    if (RATE_LIMIT_BYPASS_IPS.has(ip)) {
+      next();
+      return;
+    }
+    const now = Date.now();
+    const key = `${routeKey}|${ip}`;
+    const current = rateWindows.get(key);
+
+    if (!current || now >= current.resetAt) {
+      rateWindows.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+      next();
+      return;
+    }
+
+    if (current.count >= max) {
+      const minutesLeft = Math.max(
+        1,
+        Math.ceil((current.resetAt - now) / (60 * 1000)),
+      );
+      res
+        .status(429)
+        .json({ error: `Rate limit exceeded. Try again in ${minutesLeft} minutes.` });
+      return;
+    }
+
+    current.count += 1;
+    rateWindows.set(key, current);
+    next();
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, window] of rateWindows.entries()) {
+    if (now >= window.resetAt) {
+      rateWindows.delete(key);
+    }
+  }
+}, 60 * 1000);
+
+const subtitlesGenerateRateLimiter = createIpRateLimiter(
+  "POST /subtitles/generate",
+);
+const subtitlesUploadRateLimiter = createIpRateLimiter(
+  "POST /subtitles/upload",
+);
+const subtitlesCancelRateLimiter = createIpRateLimiter(
+  "POST /subtitles/cancel/:jobId",
+);
 
 // ── Job cleanup rules ─────────────────────────────────────────────────────────
 // • Completed jobs (done/error/cancelled): kept for 2 hours after they FINISH,
@@ -336,6 +517,49 @@ function pickFirst(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function extractVideoId(url: string): string | null {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    if (host.includes("youtube.com")) {
+      const watchId = u.searchParams.get("v");
+      if (watchId) return watchId;
+      const parts = u.pathname.split("/").filter(Boolean);
+      if (
+        parts[0] === "shorts" ||
+        parts[0] === "embed" ||
+        parts[0] === "live"
+      ) {
+        return parts[1] ?? null;
+      }
+    } else if (host.includes("youtu.be")) {
+      const first = u.pathname.split("/").filter(Boolean)[0];
+      return first ?? null;
+    }
+  } catch {}
+  return null;
+}
+
+function normalizeInputUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+  const candidate = /^https?:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const u = new URL(candidate);
+    const host = u.hostname.toLowerCase();
+    const isYouTube =
+      host.includes("youtube.com") || host.includes("youtu.be");
+    if (!isYouTube) return candidate;
+    const videoId = extractVideoId(candidate);
+    if (!videoId) return candidate;
+    return `https://www.youtube.com/watch?v=${videoId}`;
+  } catch {
+    return trimmed;
+  }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function audioMimeType(ext: string): string {
   const map: Record<string, string> = {
@@ -351,6 +575,9 @@ function isAiConfigured(): boolean {
   return !!(
     (process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
     process.env.GEMINI_API_KEY ||
+    process.env.GEMINI_API_KEY_2 ||
+    process.env.GEMINI_API_KEY_3 ||
+    process.env.GEMINI_API_KEY_4 ||
     process.env.GOOGLE_API_KEY
   );
 }
@@ -1213,11 +1440,13 @@ async function processAudio(
       job.progressPct = 100;
       job.message = "Subtitles ready!";
       job.srt = finalSrt;
+      notifySubtitleReady(jobId, job);
     } else {
       job.status = "done";
       job.progressPct = 100;
       job.message = "Subtitles ready!";
       job.srt = correctedFinalSrt;
+      notifySubtitleReady(jobId, job);
     }
   } catch (err: any) {
     logger.error({ err }, "SRT generation error");
@@ -1226,6 +1455,17 @@ async function processAudio(
       job.error = err.message || "Failed to generate subtitles";
     }
   } finally {
+    if (job.status === "error" && !job.errorNotified) {
+      job.errorNotified = true;
+      void notifyClientPush(job.notifyClientKey, {
+        title: "Subtitles failed",
+        body: (job.error || "Subtitle generation failed").slice(0, 200),
+        url: "/",
+        tag: `subtitles-error:${jobId}`,
+        silent: true,
+      });
+    }
+
     // Stamp completedAt on any terminal state so the cleanup interval uses
     // the 2-hour-after-completion TTL instead of the 30-min-from-creation one.
     const isTerminal = job.status === "done" || job.status === "error" || job.status === "cancelled";
@@ -1241,7 +1481,7 @@ async function processAudio(
 }
 
 // ── Route: Generate from YouTube URL ────────────────────────────────────────
-router.post("/subtitles/generate", async (req: Request, res: Response) => {
+router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Request, res: Response) => {
   const { url, language = "auto", translateTo } = req.body as { url: string; language?: string; translateTo?: string };
 
   if (!url?.trim()) {
@@ -1255,22 +1495,24 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
   }
 
   const jobId = randomUUID();
-  const normalizedUrl = url.trim();
+  const normalizedUrl = normalizeInputUrl(url);
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
+  const notifyClientKey = getNotifyClientKey(req);
 
   jobs.set(jobId, {
-    status: "audio",
-    message: "Downloading audio from YouTube...",
+    status: "pending",
+    message: "Queued - starting soon...",
     filename: "subtitles.srt",
     createdAt: Date.now(),
     translateTo: translateLang,
-    progressPct: 5,
+    progressPct: 0,
+    notifyClientKey,
   });
 
   res.json({ jobId });
 
   // Process in background
-  (async () => {
+  enqueueSubtitleJob(jobId, async () => {
     const job = jobs.get(jobId)!;
 
     // ── Check WAV cache (retry path: skip download + preprocessing) ──────────
@@ -1371,12 +1613,26 @@ router.post("/subtitles/generate", async (req: Request, res: Response) => {
       }
       try { rmSync(audioDir, { recursive: true }); } catch {}
     }
-  })();
+  }).catch((err) => {
+    const job = jobs.get(jobId);
+    if (!job) return;
+    const message = err instanceof Error ? err.message : "Subtitle generation failed";
+    if (message === CANCELLED_BY_USER || job.cancelled) {
+      job.status = "cancelled";
+      job.completedAt = Date.now();
+      job.message = CANCELLED_BY_USER;
+      return;
+    }
+    job.status = "error";
+    job.completedAt = Date.now();
+    job.error = message;
+  });
 });
 
 // ── Route: Generate from uploaded file ──────────────────────────────────────
 router.post(
   "/subtitles/upload",
+  subtitlesUploadRateLimiter,
   upload.single("file"),
   async (req: Request, res: Response) => {
     if (!req.file) {
@@ -1396,24 +1652,40 @@ router.post(
     const baseName = req.file.originalname.replace(/\.[^.]+$/, "");
     const srtFilename = `${baseName}.srt`;
     const jobId = randomUUID();
+    const notifyClientKey = getNotifyClientKey(req);
 
     jobs.set(jobId, {
-      status: "uploading",
-      message: "Uploading to AI...",
+      status: "pending",
+      message: "Queued - starting soon...",
       filename: srtFilename,
       createdAt: Date.now(),
       translateTo: translateLang,
-      progressPct: 5,
+      progressPct: 0,
+      notifyClientKey,
     });
 
     res.json({ jobId });
 
     // Process in background — delete the temp file after use
-    (async () => {
+    enqueueSubtitleJob(jobId, async () => {
       await processAudio(jobId, req.file!.path, language, srtFilename, translateLang, () => {
         try { rmSync(req.file!.path); } catch {}
       });
-    })();
+    }).catch((err) => {
+      try { rmSync(req.file!.path); } catch {}
+      const job = jobs.get(jobId);
+      if (!job) return;
+      const message = err instanceof Error ? err.message : "Subtitle generation failed";
+      if (message === CANCELLED_BY_USER || job.cancelled) {
+        job.status = "cancelled";
+        job.completedAt = Date.now();
+        job.message = CANCELLED_BY_USER;
+        return;
+      }
+      job.status = "error";
+      job.completedAt = Date.now();
+      job.error = message;
+    });
   },
 );
 
@@ -1427,7 +1699,7 @@ router.use((err: any, _req: Request, res: Response, next: NextFunction) => {
 });
 
 // ── Route: Cancel a running job ───────────────────────────────────────────────
-router.post("/subtitles/cancel/:jobId", (req: Request, res: Response) => {
+router.post("/subtitles/cancel/:jobId", subtitlesCancelRateLimiter, (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
@@ -1445,7 +1717,10 @@ router.post("/subtitles/cancel/:jobId", (req: Request, res: Response) => {
   job.cancelled = true;
   job.status = "cancelled";
   job.completedAt = Date.now();
-  job.message = "Cancelled by user";
+  job.message = CANCELLED_BY_USER;
+  if (queuedSubtitleJobIds.has(jobId)) {
+    dequeueSubtitleJob(jobId);
+  }
   res.json({ ok: true });
 });
 
@@ -1486,4 +1761,43 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
 });
 
 export default router;
+
+export function getSubtitlesOpsSnapshot() {
+  let activeJobs = 0;
+  let pendingJobs = 0;
+  let doneJobs = 0;
+  let errorJobs = 0;
+
+  for (const job of jobs.values()) {
+    if (job.status === "pending") pendingJobs += 1;
+    if (job.status === "done") doneJobs += 1;
+    if (job.status === "error") errorJobs += 1;
+    if (
+      job.status === "pending" ||
+      job.status === "audio" ||
+      job.status === "uploading" ||
+      job.status === "generating" ||
+      job.status === "correcting" ||
+      job.status === "translating" ||
+      job.status === "verifying"
+    ) {
+      activeJobs += 1;
+    }
+  }
+
+  return {
+    limits: {
+      maxConcurrentSubtitleJobs: MAX_CONCURRENT_SUBTITLE_JOBS,
+    },
+    queue: {
+      queuedSubtitleJobs: queuedSubtitleJobs.length,
+      activeSubtitleJobSlotsUsed: activeSubtitleJobCount,
+      activeJobs,
+      pendingJobs,
+      doneJobs,
+      errorJobs,
+      totalTrackedJobs: jobs.size,
+    },
+  };
+}
 

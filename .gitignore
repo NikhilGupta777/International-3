@@ -48,6 +48,7 @@ Thumbs.db
 deploy-bundle.tgz
 *.tgz
 *.tar.gz
+artifacts/api-server/*-player-script.js
 
 # Replit
 .cache/
@@ -57,6 +58,8 @@ deploy-bundle.tgz
 .env
 .yt-cookies.txt
 ytgrabber-key-*.pem
+deploy/ec2/keys/
+deploy/ec2/.env.production
 *.json
 *.log
 .pythonlibs/

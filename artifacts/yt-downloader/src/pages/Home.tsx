@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions, Scissors
+  Download, Loader2, Sparkles, Captions, Scissors, BellRing
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -22,9 +22,85 @@ import {
   saveActiveDownload,
   loadActiveDownload,
   clearActiveDownload,
+  loadCompletedDownloads as loadCompletedDownloadsForNotify,
 } from "@/lib/download-history";
+import { loadHistory as loadSubtitleHistoryForNotify } from "@/lib/subtitle-history";
+import {
+  loadActiveClipJobs,
+  loadClipHistory as loadClipHistoryForNotify,
+  saveActiveClipJobs,
+  saveToClipHistory,
+  type ClipHistoryEntry,
+} from "@/lib/clip-history";
+import { loadBestClipsHistory as loadBestClipsHistoryForNotify } from "@/lib/best-clips-history";
+import {
+  enablePushNotifications,
+  getPushConfig,
+  pushNotificationSupportSummary,
+} from "@/lib/push-notifications";
 
 type Mode = "download" | "clips" | "subtitles" | "clipcutter";
+
+function playSoftCompletionChime() {
+  try {
+    const AudioContextImpl =
+      window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextImpl) return;
+    const ctx = new AudioContextImpl();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.12);
+
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.02, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.14);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.15);
+    setTimeout(() => void ctx.close().catch(() => {}), 220);
+  } catch {
+    // Ignore browser audio limitations.
+  }
+}
+
+function buildCompletionSnapshot(): Set<string> {
+  const keys = new Set<string>();
+  for (const x of loadSubtitleHistoryForNotify()) keys.add(`subtitle:${x.id}`);
+  for (const x of loadClipHistoryForNotify()) keys.add(`clip:${x.jobId}`);
+  for (const x of loadCompletedDownloadsForNotify()) keys.add(`download:${x.jobId}`);
+  for (const x of loadBestClipsHistoryForNotify()) keys.add(`bestclips:${x.id}`);
+  return keys;
+}
+
+function notifyBackgroundCompletion(type: string, label: string) {
+  const title = `${type} completed`;
+  const body = label.length > 120 ? `${label.slice(0, 117)}...` : label;
+
+  const send = () => {
+    try {
+      // Notification may fail on some browsers if permission is blocked.
+      new Notification(title, { body, silent: true });
+    } catch {
+      // No-op
+    }
+  };
+
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission === "granted") {
+    send();
+    return;
+  }
+  if (Notification.permission === "default") {
+    void Notification.requestPermission().then((permission) => {
+      if (permission === "granted") send();
+    });
+  }
+}
 
 function getApiErrorMessage(error: unknown, fallback: string): string {
   if (
@@ -61,6 +137,12 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>("clips");
   const [playing, setPlaying] = useState(false);
   const [playerFormatId, setPlayerFormatId] = useState<string | undefined>();
+  const [pushSupported, setPushSupported] = useState(false);
+  const [pushConfigured, setPushConfigured] = useState(false);
+  const [pushPermission, setPushPermission] = useState<NotificationPermission | "unsupported">("unsupported");
+  const [pushEnabling, setPushEnabling] = useState(false);
+  const seenCompletionRef = useRef<Set<string>>(new Set());
+  const initializedCompletionsRef = useRef(false);
   const { toast } = useToast();
 
   // Restore an active download job from localStorage on page load
@@ -210,6 +292,166 @@ export default function Home() {
       : `${modeLabel} · ${appName}`;
   }, [mode, submittedUrl, video?.title]);
 
+  useEffect(() => {
+    const support = pushNotificationSupportSummary();
+    setPushSupported(support.supported);
+    setPushPermission(support.permission);
+
+    if (!support.supported) return;
+    void getPushConfig().then((cfg) => {
+      if (!cfg) return;
+      setPushConfigured(Boolean(cfg.enabled && cfg.publicKey));
+    });
+  }, []);
+
+  const handleEnablePush = async () => {
+    setPushEnabling(true);
+    const result = await enablePushNotifications();
+    setPushEnabling(false);
+
+    const support = pushNotificationSupportSummary();
+    setPushPermission(support.permission);
+
+    if (result.ok) {
+      toast({
+        title: "Alerts enabled",
+        description: "You will receive background completion notifications.",
+      });
+      return;
+    }
+
+    const description =
+      result.reason === "permission_denied"
+        ? "Notification permission is blocked in your browser settings."
+        : result.reason === "not_configured"
+          ? "Push is not configured on the server yet."
+          : "Could not enable browser alerts on this device.";
+    toast({
+      title: "Could not enable alerts",
+      description,
+      variant: "destructive",
+    });
+  };
+
+  // Background completion notifications across all tabs/history sources.
+  useEffect(() => {
+    const sync = () => {
+      const snapshot = buildCompletionSnapshot();
+      if (!initializedCompletionsRef.current) {
+        seenCompletionRef.current = snapshot;
+        initializedCompletionsRef.current = true;
+        return;
+      }
+
+      const isBackground = document.visibilityState !== "visible" || !document.hasFocus();
+      if (!isBackground) {
+        seenCompletionRef.current = snapshot;
+        return;
+      }
+
+      for (const key of snapshot) {
+        if (seenCompletionRef.current.has(key)) continue;
+
+        if (key.startsWith("subtitle:")) {
+          const id = key.slice("subtitle:".length);
+          const entry = loadSubtitleHistoryForNotify().find((x) => x.id === id);
+          if (entry) notifyBackgroundCompletion("Subtitles", entry.srtFilename);
+        } else if (key.startsWith("clip:")) {
+          const id = key.slice("clip:".length);
+          const entry = loadClipHistoryForNotify().find((x) => x.jobId === id);
+          if (entry) notifyBackgroundCompletion("Clip cut", entry.label);
+        } else if (key.startsWith("download:")) {
+          const id = key.slice("download:".length);
+          const entry = loadCompletedDownloadsForNotify().find((x) => x.jobId === id);
+          if (entry) notifyBackgroundCompletion("Download", entry.filename);
+        } else if (key.startsWith("bestclips:")) {
+          const id = key.slice("bestclips:".length);
+          const entry = loadBestClipsHistoryForNotify().find((x) => x.id === id);
+          if (entry) notifyBackgroundCompletion("Best clips", `${entry.clipCount} clips ready`);
+        }
+
+        playSoftCompletionChime();
+      }
+
+      seenCompletionRef.current = snapshot;
+    };
+
+    sync();
+    const timer = setInterval(sync, 4000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Reconcile Clip Cutter jobs even when user is on other tabs or reopens later.
+  useEffect(() => {
+    let closed = false;
+
+    const syncClipJobs = async () => {
+      const active = loadActiveClipJobs();
+      if (active.length === 0) return;
+
+      const nextActive: typeof active = [];
+      let changed = false;
+
+      for (const j of active) {
+        try {
+          const res = await fetch(
+            `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/youtube/progress/${encodeURIComponent(j.jobId)}`,
+          );
+          if (res.status === 404) {
+            changed = true;
+            continue;
+          }
+          if (!res.ok) {
+            nextActive.push(j);
+            continue;
+          }
+          const data = (await res.json()) as {
+            status?: string;
+            filename?: string | null;
+            filesize?: number | null;
+          };
+          const status = data.status ?? "pending";
+
+          if (status === "done") {
+            const entry: ClipHistoryEntry = {
+              jobId: j.jobId,
+              createdAt: Date.now(),
+              label: j.label,
+              url: j.url,
+              quality: j.quality,
+              filename: data.filename ?? `${j.jobId}.mp4`,
+              filesize: data.filesize ?? null,
+              durationSecs: Math.max(1, j.endSecs - j.startSecs),
+            };
+            saveToClipHistory(entry);
+            changed = true;
+            continue;
+          }
+
+          if (status === "error" || status === "cancelled" || status === "expired") {
+            changed = true;
+            continue;
+          }
+
+          nextActive.push(j);
+        } catch {
+          nextActive.push(j);
+        }
+      }
+
+      if (!closed && changed) {
+        saveActiveClipJobs(nextActive);
+      }
+    };
+
+    void syncClipJobs();
+    const timer = setInterval(() => void syncClipJobs(), 5000);
+    return () => {
+      closed = true;
+      clearInterval(timer);
+    };
+  }, []);
+
   return (
     <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
       
@@ -312,6 +554,28 @@ export default function Home() {
           </motion.div>
 
           {/* Search Bar — hidden in Bhagwat mode */}
+          {pushSupported && pushConfigured && pushPermission !== "granted" && (
+            <motion.div layout className="mb-4 w-full max-w-2xl">
+              <div className="glass-panel rounded-2xl border border-teal-500/25 bg-teal-500/10 px-4 py-3 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-teal-200">
+                  <BellRing className="w-4 h-4 shrink-0" />
+                  <span className="text-sm font-medium">
+                    Enable browser alerts for completed downloads and clips.
+                  </span>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleEnablePush}
+                  disabled={pushEnabling}
+                  className="bg-teal-600 hover:bg-teal-500 text-white shrink-0"
+                >
+                  {pushEnabling ? "Enabling..." : "Enable Alerts"}
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
           <motion.form 
             layout 
             onSubmit={handleSearch}
