@@ -10,6 +10,17 @@ import { GoogleGenAI } from "@google/genai";
 import { logger } from "../lib/logger";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
+import {
+  createS3PresignedUpload,
+  readTextFromS3,
+} from "../lib/s3-storage";
+import {
+  cancelYoutubeQueueJob,
+  getYoutubeQueueJobStatus,
+  isYoutubeQueueEnabledFor,
+  isYoutubeQueuePrimaryEnabledFor,
+  submitYoutubeQueuePrimaryJob,
+} from "../lib/youtube-queue";
 
 const router = Router();
 
@@ -226,7 +237,7 @@ async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Prom
 
 // ── In-memory job store ──────────────────────────────────────────────────────
 type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "translating" | "verifying" | "done" | "error" | "cancelled";
-interface SrtJob {
+export interface SrtJob {
   status: JobStatus;
   message: string;
   srt?: string;
@@ -252,7 +263,7 @@ function notifySubtitleReady(jobId: string, job: SrtJob): void {
     body: job.filename || "Your subtitle file is ready.",
     url: "/",
     tag: `subtitles:${jobId}`,
-    silent: true,
+    silent: false,
   });
 }
 
@@ -357,15 +368,26 @@ const RATE_LIMIT_BYPASS_IPS = new Set(
 );
 
 function normalizeIp(ip: string): string {
+  if (!ip) return "unknown";
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
 }
 
 function getClientIp(req: Request): string {
+  const cfConnectingIp = req.headers["cf-connecting-ip"];
+  const xRealIp = req.headers["x-real-ip"];
   const forwarded = req.headers["x-forwarded-for"];
+  const firstCf = Array.isArray(cfConnectingIp) ? cfConnectingIp[0] : cfConnectingIp;
+  const firstReal = Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
   const firstForwarded = Array.isArray(forwarded)
     ? forwarded[0]
     : forwarded?.split(",")[0];
-  const ip = firstForwarded?.trim() || req.ip || req.socket.remoteAddress || "unknown";
+  const ip =
+    firstCf?.trim() ||
+    firstReal?.trim() ||
+    firstForwarded?.trim() ||
+    req.ip ||
+    req.socket.remoteAddress ||
+    "unknown";
   return normalizeIp(ip);
 }
 
@@ -574,11 +596,7 @@ function audioMimeType(ext: string): string {
 function isAiConfigured(): boolean {
   return !!(
     (process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
-    process.env.GEMINI_API_KEY ||
-    process.env.GEMINI_API_KEY_2 ||
-    process.env.GEMINI_API_KEY_3 ||
-    process.env.GEMINI_API_KEY_4 ||
-    process.env.GOOGLE_API_KEY
+    getAllPersonalGeminiKeys().length > 0
   );
 }
 
@@ -586,25 +604,36 @@ function isAiConfigured(): boolean {
 const GEMINI_TIMEOUT_MS = 5 * 60 * 1000;
 
 function getGenAI(): GoogleGenAI | null {
-  const directKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  const directKey = getAllPersonalGeminiKeys()[0] ?? null;
   if (directKey) {
     return new GoogleGenAI({ apiKey: directKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
   }
   return null;
 }
 
+// Returns all configured personal API keys in order:
+// GEMINI_API_KEY (or GOOGLE_API_KEY fallback), GEMINI_API_KEY_2..GEMINI_API_KEY_10.
+function getAllPersonalGeminiKeys(): string[] {
+  const keys: string[] = [];
+  const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (first) keys.push(first);
+  for (let index = 2; index <= 10; index += 1) {
+    const envName = `GEMINI_API_KEY_${index}` as keyof NodeJS.ProcessEnv;
+    const value = process.env[envName];
+    if (value && value.trim().length > 0) keys.push(value.trim());
+  }
+  return Array.from(new Set(keys));
+}
+
 // Returns all configured personal API key clients in order.
-// Reads GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3, GEMINI_API_KEY_4.
 function getAllPersonalGenAIClients(): GoogleGenAI[] {
-  const keyEnvs = [
-    process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
-    process.env.GEMINI_API_KEY_2,
-    process.env.GEMINI_API_KEY_3,
-    process.env.GEMINI_API_KEY_4,
-  ];
-  return keyEnvs
-    .filter((k): k is string => !!k)
+  return getAllPersonalGeminiKeys()
     .map((apiKey) => new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } }));
+}
+
+function isGeminiRetryableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /resource_exhausted|quota|429|rate.?limit|unavailable|503|deadline|timeout|internal|500|overloaded|try again later/i.test(msg);
 }
 
 function getReplitGenAI(): GoogleGenAI | null {
@@ -623,9 +652,8 @@ function getReplitGenAI(): GoogleGenAI | null {
 // The remaining models are used only when ALL keys are rate-limited on the current model.
 const KEY_ROTATION_MODELS = [
   "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-3-flash-preview",
-  "gemini-1.5-flash",
-  "gemini-3.1-flash-lite-preview",
 ];
 
 async function generateWithKeyRotation(
@@ -650,8 +678,7 @@ async function generateWithKeyRotation(
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
-        const msg = err instanceof Error ? err.message : String(err ?? "");
-        const isQuota = /resource_exhausted|quota|429|rate.?limit/i.test(msg);
+        const isQuota = isGeminiRetryableError(err);
         if (isQuota) {
           logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited on ${model} — trying next`);
         } else {
@@ -1294,8 +1321,7 @@ async function processAudio(
             break;
           } catch (err) {
             lastPass1Err = err;
-            const msg = err instanceof Error ? err.message : String(err ?? "");
-            if (!/resource_exhausted|quota|429|rate.?limit/i.test(msg)) throw err;
+            if (!isGeminiRetryableError(err)) throw err;
             logger.warn({ model, keyLabel }, `Transcription rate limited on ${model} — trying next model`);
           }
         }
@@ -1321,8 +1347,7 @@ async function processAudio(
             logger.info({ model, keyLabel }, "Subtitle correction completed");
             break;
           } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err ?? "");
-            if (!/resource_exhausted|quota|429|rate.?limit/i.test(msg)) {
+            if (!isGeminiRetryableError(err)) {
               logger.warn({ err, model, keyLabel }, "Correction failed (non-quota) — using Pass 1 output");
               break;
             }
@@ -1340,8 +1365,7 @@ async function processAudio(
 
       } catch (err) {
         lastKeyErr = err;
-        const msg = err instanceof Error ? err.message : String(err ?? "");
-        const isQuota = /resource_exhausted|quota|429|rate.?limit/i.test(msg);
+        const isQuota = isGeminiRetryableError(err);
         if (isQuota && ki < clients.length - 1) {
           logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
         } else if (!isQuota && ki < clients.length - 1) {
@@ -1499,6 +1523,27 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
   const notifyClientKey = getNotifyClientKey(req);
 
+  if (isYoutubeQueuePrimaryEnabledFor("subtitles")) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "subtitles",
+        sourceUrl: normalizedUrl,
+        meta: {
+          language,
+          translateTo: translateLang ?? null,
+          notifyClientKey: notifyClientKey ?? null,
+          inputMode: "url",
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Subtitle generation queued" });
+    } catch (err) {
+      logger.error({ err, jobId }, "Failed to queue subtitles URL job");
+      res.status(502).json({ error: "Failed to queue subtitle job" });
+    }
+    return;
+  }
+
   jobs.set(jobId, {
     status: "pending",
     message: "Queued - starting soon...",
@@ -1630,6 +1675,105 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
 });
 
 // ── Route: Generate from uploaded file ──────────────────────────────────────
+router.post("/subtitles/upload/init", subtitlesUploadRateLimiter, async (req: Request, res: Response) => {
+  const { filename, contentType, size } = req.body as {
+    filename?: string;
+    contentType?: string;
+    size?: number | string;
+  };
+
+  if (!filename || typeof filename !== "string") {
+    res.status(400).json({ error: "filename is required" });
+    return;
+  }
+  if (!contentType || typeof contentType !== "string") {
+    res.status(400).json({ error: "contentType is required" });
+    return;
+  }
+
+  const numericSize =
+    typeof size === "number" ? size : typeof size === "string" ? Number(size) : Number.NaN;
+  if (!Number.isFinite(numericSize) || numericSize <= 0) {
+    res.status(400).json({ error: "size is required" });
+    return;
+  }
+  if (numericSize > 500 * 1024 * 1024) {
+    res.status(413).json({ error: "File is too large - maximum upload size is 500 MB" });
+    return;
+  }
+
+  try {
+    const upload = await createS3PresignedUpload({
+      jobId: randomUUID(),
+      namespace: "subtitles/uploads",
+      filename,
+      contentType,
+    });
+    res.json({
+      uploadUrl: upload.uploadUrl,
+      uploadKey: upload.key,
+      filename: upload.filename,
+    });
+  } catch (err) {
+    logger.error({ err }, "Failed to initialize subtitles upload");
+    res.status(500).json({ error: "Failed to initialize upload" });
+  }
+});
+
+router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: Request, res: Response) => {
+  const { uploadKey, originalFilename, language = "auto", translateTo } = req.body as {
+    uploadKey?: string;
+    originalFilename?: string;
+    language?: string;
+    translateTo?: string;
+  };
+
+  if (!uploadKey || typeof uploadKey !== "string") {
+    res.status(400).json({ error: "uploadKey is required" });
+    return;
+  }
+  if (!originalFilename || typeof originalFilename !== "string") {
+    res.status(400).json({ error: "originalFilename is required" });
+    return;
+  }
+
+  if (!isAiConfigured()) {
+    res.status(503).json({ error: "AI not configured - add GEMINI_API_KEY" });
+    return;
+  }
+
+  const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
+  const jobId = randomUUID();
+  const notifyClientKey = getNotifyClientKey(req);
+
+  if (isYoutubeQueuePrimaryEnabledFor("subtitles")) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "subtitles",
+        sourceUrl: `s3://${uploadKey}`,
+        meta: {
+          inputMode: "upload",
+          uploadS3Key: uploadKey,
+          originalFilename,
+          language,
+          translateTo: translateLang ?? null,
+          notifyClientKey: notifyClientKey ?? null,
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Subtitle generation queued" });
+    } catch (err) {
+      logger.error({ err, jobId }, "Failed to queue subtitles upload job");
+      res.status(502).json({ error: "Failed to queue subtitle upload job" });
+    }
+    return;
+  }
+
+  res.status(409).json({
+    error: "S3-first subtitle upload requires queue-primary subtitles mode",
+  });
+});
+
 router.post(
   "/subtitles/upload",
   subtitlesUploadRateLimiter,
@@ -1707,7 +1851,27 @@ router.post("/subtitles/cancel/:jobId", subtitlesCancelRateLimiter, (req: Reques
   }
   const job = jobs.get(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isYoutubeQueueEnabledFor("subtitles")) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    void cancelYoutubeQueueJob(jobId)
+      .then((cancelled) => {
+        if (!cancelled.ok) {
+          res.status(404).json({ error: "Job not found" });
+          return;
+        }
+        res.json({
+          ok: true,
+          status: cancelled.status,
+          alreadyFinished: cancelled.alreadyFinished ?? false,
+          queue: { batchJobId: cancelled.batchJobId },
+        });
+      })
+      .catch((err) => {
+        logger.error({ err, jobId }, "Failed to cancel queued subtitle job");
+        res.status(500).json({ error: "Failed to cancel job" });
+      });
     return;
   }
   if (job.status === "done" || job.status === "error" || job.status === "cancelled") {
@@ -1733,7 +1897,68 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
   }
   const job = jobs.get(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isYoutubeQueueEnabledFor("subtitles")) {
+      res.json({ status: "not_found", message: "Job not found" });
+      return;
+    }
+    void getYoutubeQueueJobStatus(jobId)
+      .then(async (queueStatus) => {
+        if (!queueStatus) {
+          res.json({ status: "not_found", message: "Job not found" });
+          return;
+        }
+
+        if (queueStatus.status === "done") {
+          const srt = queueStatus.s3Key ? await readTextFromS3(queueStatus.s3Key) : null;
+          const originalSrt = queueStatus.originalS3Key
+            ? await readTextFromS3(queueStatus.originalS3Key)
+            : null;
+          res.json({
+            status: queueStatus.status,
+            message: queueStatus.message,
+            filename: queueStatus.filename,
+            srt,
+            originalSrt,
+            originalFilename: queueStatus.originalFilename ?? null,
+            durationSecs: queueStatus.durationSecs ?? null,
+            progressPct: 100,
+            queue: {
+              updatedAt: queueStatus.updatedAt,
+              batchJobId: queueStatus.batchJobId,
+            },
+          });
+          return;
+        }
+
+        if (queueStatus.status === "error") {
+          res.json({
+            status: "error",
+            error: queueStatus.message ?? "Subtitle generation failed",
+            durationSecs: queueStatus.durationSecs ?? null,
+            progressPct: queueStatus.progressPct ?? 0,
+            queue: {
+              updatedAt: queueStatus.updatedAt,
+              batchJobId: queueStatus.batchJobId,
+            },
+          });
+          return;
+        }
+
+        res.json({
+          status: queueStatus.status,
+          message: queueStatus.message,
+          durationSecs: queueStatus.durationSecs ?? null,
+          progressPct: queueStatus.progressPct ?? 0,
+          queue: {
+            updatedAt: queueStatus.updatedAt,
+            batchJobId: queueStatus.batchJobId,
+          },
+        });
+      })
+      .catch((err) => {
+        logger.error({ err, jobId }, "Failed queued subtitle status lookup");
+        res.status(500).json({ error: "Failed to fetch job status" });
+      });
     return;
   }
 
@@ -1799,5 +2024,57 @@ export function getSubtitlesOpsSnapshot() {
       totalTrackedJobs: jobs.size,
     },
   };
+}
+
+export async function processSubtitleAudio(
+  jobId: string,
+  audioPath: string,
+  language: string,
+  filename: string,
+  translateTo?: string,
+  cleanup?: () => void,
+  precomputedWav?: { path: string; mimeType: string; durationSecs: number },
+) {
+  return processAudio(jobId, audioPath, language, filename, translateTo, cleanup, precomputedWav);
+}
+
+export async function downloadSubtitleSourceAudio(
+  args: string[],
+  job: { cancelled?: boolean },
+): Promise<void> {
+  return runYtDlpAudio(args, job);
+}
+
+export function createSubtitleJobState(
+  jobId: string,
+  initial: Partial<SrtJob>,
+): SrtJob {
+  const job: SrtJob = {
+    status: initial.status ?? "pending",
+    message: initial.message ?? "",
+    filename: initial.filename ?? "subtitles.srt",
+    createdAt: initial.createdAt ?? Date.now(),
+    originalFilename: initial.originalFilename,
+    translateTo: initial.translateTo,
+    cancelled: initial.cancelled,
+    durationSecs: initial.durationSecs,
+    progressPct: initial.progressPct,
+    notifyClientKey: initial.notifyClientKey ?? null,
+    srt: initial.srt,
+    originalSrt: initial.originalSrt,
+    error: initial.error,
+    completedAt: initial.completedAt,
+    errorNotified: initial.errorNotified,
+  };
+  jobs.set(jobId, job);
+  return job;
+}
+
+export function getSubtitleJobState(jobId: string): SrtJob | undefined {
+  return jobs.get(jobId);
+}
+
+export function deleteSubtitleJobState(jobId: string): void {
+  jobs.delete(jobId);
 }
 

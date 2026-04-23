@@ -30,6 +30,7 @@ import {
 } from "@/lib/clip-history";
 
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
+const JOB_NOT_FOUND_GRACE_MS = 15 * 60 * 1000;
 
 const QUALITY_OPTIONS = [
   { label: "Best", value: "best" },
@@ -75,6 +76,25 @@ type JobStatus =
   | "error"
   | "cancelled";
 
+function normalizeJobStatus(raw: string | undefined, current: JobStatus): JobStatus {
+  if (!raw) return current;
+  const s = raw.toLowerCase();
+  if (s === "queued") return "pending";
+  if (s === "running") return "downloading";
+  if (
+    s === "pending" ||
+    s === "downloading" ||
+    s === "merging" ||
+    s === "done" ||
+    s === "error" ||
+    s === "cancelled"
+  ) {
+    return s;
+  }
+  if (s === "expired") return "error";
+  return current;
+}
+
 interface ActiveJob {
   jobId: string;
   label: string;
@@ -90,6 +110,7 @@ interface ActiveJob {
   filesize: number | null;
   message: string | null;
   downloaded: boolean;
+  savedToHistory: boolean;
   startedAt: number;
   reconnected?: boolean;
 }
@@ -166,7 +187,8 @@ export function ClipCutter() {
       filename: null,
       filesize: null,
       message: "Reconnecting…",
-      downloaded: true, // don't auto-trigger download again on reconnect
+      downloaded: false,
+      savedToHistory: false,
       startedAt: s.startedAt,
       reconnected: true,
     }));
@@ -198,6 +220,9 @@ export function ClipCutter() {
 
             // 404 means server restarted and the job is gone
             if (res.status === 404) {
+              if (Date.now() - job.startedAt < JOB_NOT_FOUND_GRACE_MS) {
+                continue;
+              }
               setJobs((prev) => {
                 const updated = prev.map((j) =>
                   j.jobId !== job.jobId ? j : {
@@ -221,7 +246,7 @@ export function ClipCutter() {
 
                 const updatedJob: ActiveJob = {
                   ...j,
-                  status: data.status as JobStatus,
+                  status: normalizeJobStatus(data.status, j.status),
                   percent: data.percent ?? j.percent,
                   speed: data.speed ?? null,
                   eta: data.eta ?? null,
@@ -230,18 +255,8 @@ export function ClipCutter() {
                   message: data.message ?? null,
                 };
 
-                if (data.status === "done" && !j.downloaded) {
-                  updatedJob.downloaded = true;
-                  const link = document.createElement("a");
-                  link.href = `${BASE_URL}/api/youtube/file/${j.jobId}`;
-                  link.download = data.filename ?? "clip.mp4";
-                  document.body.appendChild(link);
-                  link.click();
-                  document.body.removeChild(link);
-                }
-
                 // Save to history when done
-                if (data.status === "done") {
+                if (data.status === "done" && !j.savedToHistory) {
                   const entry: ClipHistoryEntry = {
                     jobId: j.jobId,
                     createdAt: Date.now(),
@@ -254,6 +269,7 @@ export function ClipCutter() {
                   };
                   saveToClipHistory(entry);
                   setHistory(loadClipHistory());
+                  updatedJob.savedToHistory = true;
                 }
 
                 return updatedJob;
@@ -285,19 +301,8 @@ export function ClipCutter() {
     }
   }, []);
 
-  const triggerClipDownload = useCallback((jobId: string, filename: string) => {
-    const link = document.createElement("a");
-    link.href = `${BASE_URL}/api/youtube/file/${jobId}`;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }, []);
-
   const applyProgressUpdate = useCallback(
     (jobId: string, data: ProgressPayload) => {
-      let shouldDownload = false;
-      let downloadName = "clip.mp4";
       let historyEntry: ClipHistoryEntry | null = null;
 
       setJobs((prev) => {
@@ -305,15 +310,7 @@ export function ClipCutter() {
           if (j.jobId !== jobId) return j;
 
           const rawStatus = (data.status ?? j.status) as string;
-          const nextStatus: JobStatus =
-            rawStatus === "pending" ||
-            rawStatus === "downloading" ||
-            rawStatus === "merging" ||
-            rawStatus === "done" ||
-            rawStatus === "error" ||
-            rawStatus === "cancelled"
-              ? rawStatus
-              : "error";
+          const nextStatus = normalizeJobStatus(rawStatus, j.status);
 
           const nextJob: ActiveJob = {
             ...j,
@@ -330,20 +327,18 @@ export function ClipCutter() {
             reconnected: false,
           };
 
-          if (nextStatus === "done" && !j.downloaded) {
-            shouldDownload = true;
-            downloadName = data.filename ?? j.filename ?? "clip.mp4";
+          if (nextStatus === "done" && !j.savedToHistory) {
             historyEntry = {
               jobId: j.jobId,
               createdAt: Date.now(),
               label: j.label,
               url: j.url,
               quality: j.quality,
-              filename: downloadName,
+              filename: data.filename ?? j.filename ?? "clip.mp4",
               filesize: data.filesize ?? j.filesize,
               durationSecs: j.endSecs - j.startSecs,
             };
-            nextJob.downloaded = true;
+            nextJob.savedToHistory = true;
           }
 
           return nextJob;
@@ -357,12 +352,8 @@ export function ClipCutter() {
         saveToClipHistory(historyEntry);
         setHistory(loadClipHistory());
       }
-
-      if (shouldDownload) {
-        triggerClipDownload(jobId, downloadName);
-      }
     },
-    [persistActiveJobs, triggerClipDownload],
+    [persistActiveJobs],
   );
 
   const markJobLost = useCallback(
@@ -389,6 +380,10 @@ export function ClipCutter() {
       try {
         const res = await fetch(`${BASE_URL}/api/youtube/progress/${jobId}`);
         if (res.status === 404) {
+          const current = jobsRef.current.find((j) => j.jobId === jobId);
+          if (current && Date.now() - current.startedAt < JOB_NOT_FOUND_GRACE_MS) {
+            return;
+          }
           markJobLost(jobId, "Server restarted - job was lost. Please retry.");
           return;
         }
@@ -546,6 +541,7 @@ export function ClipCutter() {
         filesize: null,
         message: null,
         downloaded: false,
+        savedToHistory: false,
         startedAt: Date.now(),
       };
 
@@ -575,6 +571,35 @@ export function ClipCutter() {
       return updated;
     });
   };
+
+  // Attempt one automatic download when the clip becomes ready.
+  // Browser policies may still block it; Save button remains fallback.
+  useEffect(() => {
+    const ready = jobs.find((j) => j.status === "done" && !j.downloaded);
+    if (!ready) return;
+
+    const href = `${BASE_URL}/api/youtube/file/${ready.jobId}`;
+    const filename = ready.filename ?? "clip.mp4";
+
+    try {
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = filename;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch {
+      // no-op; explicit Save is still available
+    } finally {
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.jobId === ready.jobId ? { ...j, downloaded: true } : j,
+        ),
+      );
+    }
+  }, [jobs]);
 
   const cancelJob = async (jobId: string) => {
     setJobs((prev) =>
@@ -646,13 +671,22 @@ export function ClipCutter() {
         </div>
 
         <div className="flex flex-col gap-2">
-          <label className="text-[11px] font-bold uppercase tracking-widest text-white/35">
+          <label
+            htmlFor="clipcutter-url"
+            className="text-[11px] font-bold uppercase tracking-widest text-white/35"
+          >
             YouTube URL
           </label>
           <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus-within:border-orange-500/40 transition-colors">
             <Youtube className="w-4 h-4 text-white/30 shrink-0" />
             <input
-              type="text"
+              id="clipcutter-url"
+              name="clipcutter_url"
+              type="url"
+              inputMode="url"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="YouTube URL"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               placeholder="https://youtube.com/watch?v=..."
@@ -661,16 +695,24 @@ export function ClipCutter() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="flex flex-col gap-2">
-            <label className="text-[11px] font-bold uppercase tracking-widest text-white/35">
+            <label
+              htmlFor="clipcutter-start-time"
+              className="text-[11px] font-bold uppercase tracking-widest text-white/35"
+            >
               Start Time
             </label>
             <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus-within:border-orange-500/40 transition-colors">
               <Clock className="w-4 h-4 text-white/30 shrink-0" />
-              <input
-                type="text"
-                value={startTime}
+                <input
+                  id="clipcutter-start-time"
+                  name="clipcutter_start_time"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label="Clip start time"
+                  value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
                 placeholder="0:00"
                 className="bg-transparent flex-1 outline-none text-white placeholder:text-white/25 text-sm font-mono"
@@ -680,14 +722,22 @@ export function ClipCutter() {
           </div>
 
           <div className="flex flex-col gap-2">
-            <label className="text-[11px] font-bold uppercase tracking-widest text-white/35">
+            <label
+              htmlFor="clipcutter-end-time"
+              className="text-[11px] font-bold uppercase tracking-widest text-white/35"
+            >
               End Time
             </label>
             <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus-within:border-orange-500/40 transition-colors">
               <Clock className="w-4 h-4 text-white/30 shrink-0" />
-              <input
-                type="text"
-                value={endTime}
+                <input
+                  id="clipcutter-end-time"
+                  name="clipcutter_end_time"
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label="Clip end time"
+                  value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
                 placeholder="0:30"
                 className="bg-transparent flex-1 outline-none text-white placeholder:text-white/25 text-sm font-mono"
@@ -786,7 +836,14 @@ export function ClipCutter() {
                 </span>
               </div>
               <button
-                onClick={() => { clearClipHistory(); setHistory([]); }}
+                onClick={() => {
+                  const confirmed = window.confirm(
+                    "Clear all clip history from this device?",
+                  );
+                  if (!confirmed) return;
+                  clearClipHistory();
+                  setHistory([]);
+                }}
                 className="flex items-center gap-1 text-xs text-white/25 hover:text-red-400 transition-colors"
               >
                 <Trash2 className="w-3 h-3" /> Clear all
@@ -1046,7 +1103,7 @@ function ClipJobCard({
 
       {isDone && (
         <p className="text-xs text-green-400/70 relative z-10">
-          Downloaded automatically — use Save if it didn't open.
+          Clip is ready. Use Save to download.
         </p>
       )}
     </motion.div>

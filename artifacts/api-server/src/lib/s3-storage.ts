@@ -74,6 +74,20 @@ function buildObjectKey(namespace: string, jobId: string, filename: string): str
   return `${S3_OBJECT_PREFIX}/${cleanedNamespace}/${day}/${objectName}`;
 }
 
+async function bodyToString(body: unknown): Promise<string> {
+  if (!body) return "";
+  if (typeof (body as any).transformToString === "function") {
+    return (body as any).transformToString();
+  }
+  return await new Promise<string>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    (body as NodeJS.ReadableStream)
+      .on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      .on("end", () => resolve(Buffer.concat(chunks).toString("utf8")))
+      .on("error", reject);
+  });
+}
+
 export function isS3StorageEnabled(): boolean {
   return Boolean(S3_BUCKET);
 }
@@ -117,6 +131,64 @@ export async function uploadFileToS3(params: {
   return { bucket: S3_BUCKET, key, filename: resolvedFilename };
 }
 
+export async function uploadTextToS3(params: {
+  body: string;
+  jobId: string;
+  namespace: string;
+  filename: string;
+  contentType?: string;
+}): Promise<{ bucket: string; key: string; filename: string }> {
+  const client = getS3Client();
+  const resolvedFilename = safeFilename(params.filename);
+  const key = buildObjectKey(params.namespace, params.jobId, resolvedFilename);
+  await client.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      Body: params.body,
+      ContentType: params.contentType ?? inferContentType(resolvedFilename),
+      CacheControl: "private, max-age=7200",
+      Metadata: {
+        "created-at": String(Date.now()),
+        "source-app": "ytgrabber",
+      },
+    }),
+  );
+  return { bucket: S3_BUCKET, key, filename: resolvedFilename };
+}
+
+export async function createS3PresignedUpload(params: {
+  jobId: string;
+  namespace: string;
+  filename: string;
+  contentType?: string;
+  expiresInSec?: number;
+}): Promise<{ bucket: string; key: string; uploadUrl: string; filename: string }> {
+  const client = getS3Client();
+  const resolvedFilename = safeFilename(params.filename);
+  const key = buildObjectKey(params.namespace, params.jobId, resolvedFilename);
+  const uploadUrl = await getSignedUrl(
+    client,
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      ContentType: params.contentType ?? inferContentType(resolvedFilename),
+      CacheControl: "private, max-age=7200",
+      Metadata: {
+        "created-at": String(Date.now()),
+        "source-app": "ytgrabber-upload",
+      },
+    }),
+    {
+      expiresIn: Math.max(
+        60,
+        Math.min(60 * 60, params.expiresInSec ?? 15 * 60),
+      ),
+    },
+  );
+  return { bucket: S3_BUCKET, key, uploadUrl, filename: resolvedFilename };
+}
+
 export async function getS3SignedDownloadUrl(params: {
   key: string;
   filename: string;
@@ -156,6 +228,17 @@ export async function deleteS3Object(key: string): Promise<void> {
   } catch (err) {
     logger.warn({ err, key }, "Failed to delete S3 object");
   }
+}
+
+export async function readTextFromS3(key: string): Promise<string> {
+  const client = getS3Client();
+  const out = await client.send(
+    new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+    }),
+  );
+  return bodyToString(out.Body);
 }
 
 export async function cleanupOldS3Objects(params: {

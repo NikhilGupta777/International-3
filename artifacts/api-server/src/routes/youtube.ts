@@ -29,6 +29,7 @@ import {
   cleanupOldS3Objects,
   deleteS3Object,
   getS3StorageConfig,
+  readTextFromS3,
   getS3SignedDownloadUrl,
   isS3StorageEnabled,
   uploadFileToS3,
@@ -38,6 +39,14 @@ import {
   getNotifyClientKey,
   notifyClientPush,
 } from "../lib/push-notifications";
+import {
+  cancelYoutubeQueueJob,
+  getYoutubeQueueJobStatus,
+  isYoutubeQueueEnabledFor,
+  isYoutubeQueuePrimaryEnabledFor,
+  submitYoutubeQueuePrimaryJob,
+  submitYoutubeQueueShadowJob,
+} from "../lib/youtube-queue";
 
 const router: IRouter = Router();
 
@@ -77,13 +86,40 @@ function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
 const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
 const PYTHON_BIN =
   process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+const YTDLP_BIN =
+  process.env.YTDLP_BIN ??
+  (process.platform === "win32"
+    ? ""
+    : ["/usr/local/bin/yt-dlp", "/opt/bin/yt-dlp", "/var/task/bin/yt-dlp"].find(
+        (candidate) => existsSync(candidate),
+      ) ?? "");
 const YTDLP_COOKIES_FILE =
-  process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
+  process.env.YTDLP_COOKIES_FILE || join(_workspaceRoot, ".yt-cookies.txt");
+const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
 
 // Optional HTTP/SOCKS proxy for yt-dlp (critical for cloud/datacenter IPs blocked by YouTube).
 // Set YTDLP_PROXY=socks5://user:pass@host:port  or  http://host:port
 const YTDLP_PROXY = process.env.YTDLP_PROXY ?? "";
-const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
+const IS_QUEUE_WORKER_CONTEXT = !!(
+  process.env.JOB_PAYLOAD || process.env.QUEUE_MODE
+);
+const RAW_YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
+const LOCAL_BGUTIL_PROVIDER_RE = /^https?:\/\/bgutil-provider(?::\d+)?\/?$/i;
+const YTDLP_POT_PROVIDER_URL =
+  IS_QUEUE_WORKER_CONTEXT &&
+  LOCAL_BGUTIL_PROVIDER_RE.test(RAW_YTDLP_POT_PROVIDER_URL)
+    ? ""
+    : RAW_YTDLP_POT_PROVIDER_URL;
+if (
+  IS_QUEUE_WORKER_CONTEXT &&
+  RAW_YTDLP_POT_PROVIDER_URL &&
+  !YTDLP_POT_PROVIDER_URL
+) {
+  logger.warn(
+    { potProviderUrl: RAW_YTDLP_POT_PROVIDER_URL },
+    "Ignoring local bgutil provider URL inside queue worker context",
+  );
+}
 
 // Optional po_token + visitor_data pair to bypass YouTube bot-detection on server IPs.
 // Generate with: https://github.com/iv-org/youtube-trusted-session-generator
@@ -93,6 +129,75 @@ const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
 const HAS_DYNAMIC_POT_PROVIDER = !!YTDLP_POT_PROVIDER_URL;
 const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 
+type ExportedBrowserCookie = {
+  domain?: unknown;
+  hostOnly?: unknown;
+  path?: unknown;
+  secure?: unknown;
+  session?: unknown;
+  expirationDate?: unknown;
+  name?: unknown;
+  value?: unknown;
+};
+
+function cookiesToNetscape(cookieList: ExportedBrowserCookie[]): string | null {
+  const lines: string[] = [];
+  for (const cookie of cookieList) {
+    const domainRaw = typeof cookie.domain === "string" ? cookie.domain.trim() : "";
+    const nameRaw = typeof cookie.name === "string" ? cookie.name.trim() : "";
+    const valueRaw = typeof cookie.value === "string" ? cookie.value : "";
+    if (!domainRaw || !nameRaw) continue;
+    const domainLower = domainRaw.toLowerCase();
+    const keepCookie =
+      domainLower.includes("youtube.com") ||
+      domainLower.includes("youtu.be") ||
+      domainLower.includes("google.com") ||
+      domainLower.includes("googlevideo.com");
+    if (!keepCookie) continue;
+
+    const path = typeof cookie.path === "string" && cookie.path.trim() ? cookie.path.trim() : "/";
+    const includeSubdomains =
+      cookie.hostOnly === true || !domainRaw.startsWith(".") ? "FALSE" : "TRUE";
+    const secure = cookie.secure === true ? "TRUE" : "FALSE";
+    const isSession = cookie.session === true;
+    const expiry =
+      !isSession && typeof cookie.expirationDate === "number" && Number.isFinite(cookie.expirationDate)
+        ? String(Math.floor(cookie.expirationDate))
+        : "0";
+    lines.push(
+      `${domainRaw}\t${includeSubdomains}\t${path}\t${secure}\t${expiry}\t${nameRaw}\t${valueRaw}`,
+    );
+  }
+  if (lines.length === 0) return null;
+  return `# Netscape HTTP Cookie File\n${lines.join("\n")}\n`;
+}
+
+function decodeCookiesFromBase64(base64Value: string): string | null {
+  const decoded = Buffer.from(base64Value, "base64").toString("utf8");
+  const trimmed = decoded.trim();
+  if (!trimmed) return null;
+  if (
+    trimmed.startsWith("# Netscape HTTP Cookie File") ||
+    trimmed.startsWith(".youtube.com") ||
+    trimmed.includes("\t")
+  ) {
+    return trimmed.endsWith("\n") ? trimmed : `${trimmed}\n`;
+  }
+  if (trimmed.startsWith("{")) {
+    const parsedObj = JSON.parse(trimmed) as { cookies?: ExportedBrowserCookie[] };
+    if (Array.isArray(parsedObj.cookies)) {
+      return cookiesToNetscape(parsedObj.cookies);
+    }
+  }
+  if (trimmed.startsWith("[")) {
+    const parsedList = JSON.parse(trimmed) as ExportedBrowserCookie[];
+    if (Array.isArray(parsedList)) {
+      return cookiesToNetscape(parsedList);
+    }
+  }
+  return null;
+}
+
 // YTDLP_COOKIES_BASE64: base64-encoded Netscape cookie file content.
 // Export cookies from a YouTube-logged-in browser using a cookie exporter extension,
 // then base64-encode the file: base64 -w 0 cookies.txt
@@ -100,22 +205,58 @@ const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 const YTDLP_COOKIES_BASE64 = process.env.YTDLP_COOKIES_BASE64 ?? "";
 if (YTDLP_COOKIES_BASE64) {
   try {
-    const cookieContent = Buffer.from(YTDLP_COOKIES_BASE64, "base64").toString("utf8");
-    if (
-      cookieContent.startsWith("# Netscape HTTP Cookie File") ||
-      cookieContent.startsWith(".youtube.com") ||
-      cookieContent.includes("\t")
-    ) {
+    const cookieContent = decodeCookiesFromBase64(YTDLP_COOKIES_BASE64);
+    if (cookieContent) {
       const cookieDir = dirname(YTDLP_COOKIES_FILE);
       if (!existsSync(cookieDir)) mkdirSync(cookieDir, { recursive: true });
       writeFileSync(YTDLP_COOKIES_FILE, cookieContent, "utf8");
       console.log("[yt-dlp] Loaded cookies from YTDLP_COOKIES_BASE64 env var");
     } else {
-      console.warn("[yt-dlp] YTDLP_COOKIES_BASE64 set but decoded content does not look like a Netscape cookie file — skipping");
+      console.warn("[yt-dlp] YTDLP_COOKIES_BASE64 set but cookie payload could not be converted to Netscape format — skipping");
     }
   } catch (e) {
     console.error("[yt-dlp] Failed to decode YTDLP_COOKIES_BASE64:", e);
   }
+}
+
+let ensureYtdlpCookiesPromise: Promise<void> | null = null;
+
+async function ensureYtdlpCookiesLoaded(): Promise<void> {
+  if (!YTDLP_COOKIES_S3_KEY) return;
+  if (existsSync(YTDLP_COOKIES_FILE)) {
+    const cookieArgs = getYtdlpCookieArgs();
+    if (cookieArgs.length > 0) return;
+  }
+
+  if (!ensureYtdlpCookiesPromise) {
+    ensureYtdlpCookiesPromise = (async () => {
+      try {
+        const encoded = (await readTextFromS3(YTDLP_COOKIES_S3_KEY)).trim();
+        if (!encoded) return;
+        const cookieContent = decodeCookiesFromBase64(encoded);
+        if (!cookieContent) {
+          logger.warn(
+            { key: YTDLP_COOKIES_S3_KEY },
+            "S3 cookie payload could not be converted to Netscape format",
+          );
+          return;
+        }
+        const cookieDir = dirname(YTDLP_COOKIES_FILE);
+        if (!existsSync(cookieDir)) mkdirSync(cookieDir, { recursive: true });
+        writeFileSync(YTDLP_COOKIES_FILE, cookieContent, "utf8");
+        logger.info(
+          { key: YTDLP_COOKIES_S3_KEY },
+          "Loaded yt-dlp cookies from S3",
+        );
+      } catch (err) {
+        logger.warn({ err, key: YTDLP_COOKIES_S3_KEY }, "Failed to load yt-dlp cookies from S3");
+      }
+    })().finally(() => {
+      ensureYtdlpCookiesPromise = null;
+    });
+  }
+
+  await ensureYtdlpCookiesPromise;
 }
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
@@ -240,6 +381,8 @@ interface DownloadJob {
 
 const jobs = new Map<string, DownloadJob>();
 const CANCELLED_BY_USER = "Cancelled by user";
+const isDownloadQueueEnabled = (): boolean =>
+  isYoutubeQueueEnabledFor("download") || isYoutubeQueueEnabledFor("clip-cut");
 
 async function storeJobOutputInS3(
   jobId: string,
@@ -284,7 +427,7 @@ function pushCompletionNotification(
     body,
     url: "/",
     tag,
-    silent: true,
+    silent: false,
   });
 }
 
@@ -407,15 +550,26 @@ const RATE_LIMIT_BYPASS_IPS = new Set(
 );
 
 function normalizeIp(ip: string): string {
+  if (!ip) return "unknown";
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
 }
 
 function getClientIp(req: Request): string {
+  const cfConnectingIp = req.headers["cf-connecting-ip"];
+  const xRealIp = req.headers["x-real-ip"];
   const forwarded = req.headers["x-forwarded-for"];
+  const firstCf = Array.isArray(cfConnectingIp) ? cfConnectingIp[0] : cfConnectingIp;
+  const firstReal = Array.isArray(xRealIp) ? xRealIp[0] : xRealIp;
   const firstForwarded = Array.isArray(forwarded)
     ? forwarded[0]
     : forwarded?.split(",")[0];
-  const ip = firstForwarded?.trim() || req.ip || req.socket.remoteAddress || "unknown";
+  const ip =
+    firstCf?.trim() ||
+    firstReal?.trim() ||
+    firstForwarded?.trim() ||
+    req.ip ||
+    req.socket.remoteAddress ||
+    "unknown";
   return normalizeIp(ip);
 }
 
@@ -656,13 +810,13 @@ function getUserFriendlyYtError(message: string): string {
 
 function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(
-      PYTHON_BIN,
-      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...args],
-      {
-        env: PYTHON_ENV,
-      },
-    );
+    const command = YTDLP_BIN || PYTHON_BIN;
+    const commandArgs = YTDLP_BIN
+      ? [...BASE_YTDLP_ARGS, ...extraArgs, ...args]
+      : ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...args];
+    const proc = spawn(command, commandArgs, {
+      env: PYTHON_ENV,
+    });
     let stdout = "";
     let stderr = "";
     proc.stdout?.on("data", (d) => {
@@ -685,6 +839,7 @@ function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
 }
 
 async function runYtDlp(args: string[]): Promise<string> {
+  await ensureYtdlpCookiesLoaded();
   const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = !!(maybeUrl && isYouTubeUrl(maybeUrl));
@@ -981,15 +1136,16 @@ const SUBS_YTDLP_ARGS = [
 
 // Run yt-dlp for subtitle-only fetches (uses mweb/android — tv_embedded breaks subs)
 function runYtDlpForSubs(args: string[]): Promise<void> {
-  const cookieArgs = getYtdlpCookieArgs();
   return new Promise((resolve, reject) => {
-    const proc = spawn(
-      PYTHON_BIN,
-      ["-m", "yt_dlp", ...SUBS_YTDLP_ARGS, ...cookieArgs, ...args],
-      {
+    void ensureYtdlpCookiesLoaded().then(() => {
+      const cookieArgs = getYtdlpCookieArgs();
+      const command = YTDLP_BIN || PYTHON_BIN;
+      const commandArgs = YTDLP_BIN
+        ? [...SUBS_YTDLP_ARGS, ...cookieArgs, ...args]
+        : ["-m", "yt_dlp", ...SUBS_YTDLP_ARGS, ...cookieArgs, ...args];
+      const proc = spawn(command, commandArgs, {
         env: PYTHON_ENV,
-      },
-    );
+      });
     let stderr = "";
     proc.stderr?.on("data", (d) => {
       stderr += d.toString();
@@ -1002,6 +1158,7 @@ function runYtDlpForSubs(args: string[]): Promise<void> {
     proc.on("error", (err) =>
       reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
     );
+    }).catch((err) => reject(err instanceof Error ? err : new Error(String(err))));
   });
 }
 
@@ -1236,6 +1393,19 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
   });
 });
 
+router.get("/youtube/client-access", (req: Request, res: Response) => {
+  const ip = getClientIp(req);
+  const downloadInputEnabled = RATE_LIMIT_BYPASS_IPS.has(ip);
+
+  res.json({
+    downloadInputEnabled,
+    telegram: {
+      url: "https://t.me/c/2852263933/3",
+      message: "For High Quality Fast Video Download, join this Telegram Group",
+    },
+  });
+});
+
 router.post("/youtube/info", async (req: Request, res: Response) => {
   const { url } = req.body as { url: string };
   const normalizedUrl = normalizeInputUrl(url ?? "");
@@ -1333,6 +1503,27 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
   const jobId = randomUUID();
   const normalizedUrl = normalizeInputUrl(url);
   const notifyClientKey = getNotifyClientKey(req);
+
+  if (isYoutubeQueuePrimaryEnabledFor("download")) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "download",
+        sourceUrl: normalizedUrl,
+        meta: {
+          formatId,
+          audioOnly: audioOnly ?? false,
+          notifyClientKey: notifyClientKey ?? null,
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Download queued" });
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to submit primary queue download job");
+      res.status(502).json({ error: "Failed to queue download job" });
+    }
+    return;
+  }
+
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -1351,6 +1542,18 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
 
   jobs.set(jobId, job);
   res.json({ jobId, status: "pending", message: "Download started" });
+
+  void submitYoutubeQueueShadowJob({
+    jobId,
+    jobType: "download",
+    sourceUrl: normalizedUrl,
+    meta: {
+      formatId,
+      audioOnly: audioOnly ?? false,
+    },
+  }).catch((err) => {
+    req.log.warn({ err, jobId }, "Failed to submit shadow queue download job");
+  });
 
   processDownload(jobId, job).catch((err) => {
     req.log.error({ err, jobId }, "Download job failed");
@@ -1417,7 +1620,7 @@ function qualityToFormatCandidates(quality: string): string[] {
 }
 
 const MAX_CLIP_FORMAT_CANDIDATES = 6;
-const MAX_CLIP_CLIENT_FALLBACKS = 3;
+const MAX_CLIP_CLIENT_FALLBACKS = 5;
 const MAX_CLIP_DOWNLOAD_ATTEMPTS = 8;
 
 async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
@@ -1570,6 +1773,28 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
   const jobId = randomUUID();
   const normalizedUrl = normalizeInputUrl(url);
   const notifyClientKey = getNotifyClientKey(req);
+
+  if (isYoutubeQueuePrimaryEnabledFor("clip-cut")) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "clip-cut",
+        sourceUrl: normalizedUrl,
+        meta: {
+          startTime,
+          endTime,
+          quality: quality ?? "best",
+          notifyClientKey: notifyClientKey ?? null,
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Clip cut queued" });
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to submit primary queue clip-cut job");
+      res.status(502).json({ error: "Failed to queue clip cut job" });
+    }
+    return;
+  }
+
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -1591,6 +1816,19 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
 
   jobs.set(jobId, job);
   res.json({ jobId, status: "pending", message: "Clip cut started" });
+
+  void submitYoutubeQueueShadowJob({
+    jobId,
+    jobType: "clip-cut",
+    sourceUrl: normalizedUrl,
+    meta: {
+      startTime,
+      endTime,
+      quality: quality ?? "best",
+    },
+  }).catch((err) => {
+    req.log.warn({ err, jobId }, "Failed to submit shadow queue clip-cut job");
+  });
 
   enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
     req.log.error({ err, jobId }, "Clip cut job failed");
@@ -1887,11 +2125,58 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
     return;
   }
   const job = jobs.get(jobId);
-  if (!job) {
-    res.status(404).json({ error: "Job not found" });
+  if (job) {
+    res.json(buildProgressPayload(jobId, job));
     return;
   }
-  res.json(buildProgressPayload(jobId, job));
+  if (!isDownloadQueueEnabled()) {
+    res.json({
+      jobId,
+      status: "not_found",
+      percent: null,
+      speed: null,
+      eta: null,
+      filename: null,
+      filesize: null,
+      message: "Job not found",
+    });
+    return;
+  }
+  void getYoutubeQueueJobStatus(jobId)
+    .then((queueStatus) => {
+      if (!queueStatus) {
+        res.json({
+          jobId,
+          status: "not_found",
+          percent: null,
+          speed: null,
+          eta: null,
+          filename: null,
+          filesize: null,
+          message: "Job not found",
+        });
+        return;
+      }
+      res.json({
+        jobId,
+        status: queueStatus.status,
+        percent: null,
+        speed: null,
+        eta: null,
+        filename: queueStatus.filename,
+        filesize: queueStatus.filesize,
+        message: queueStatus.message,
+        queue: {
+          updatedAt: queueStatus.updatedAt,
+          batchJobId: queueStatus.batchJobId,
+          s3Key: queueStatus.s3Key,
+        },
+      });
+    })
+    .catch((err) => {
+      req.log.error({ err, jobId }, "Failed queue progress lookup");
+      res.status(500).json({ error: "Failed to fetch progress" });
+    });
 });
 
 router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
@@ -1902,7 +2187,68 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
   }
   const job = jobs.get(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isDownloadQueueEnabled()) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const send = (payload: object) => {
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    const pollQueue = async (): Promise<boolean> => {
+      const queueStatus = await getYoutubeQueueJobStatus(jobId);
+      if (!queueStatus) {
+        send({ status: "error", message: "Job not found" });
+        res.end();
+        return true;
+      }
+      send({
+        jobId,
+        status: queueStatus.status,
+        percent: null,
+        speed: null,
+        eta: null,
+        filename: queueStatus.filename,
+        filesize: queueStatus.filesize,
+        message: queueStatus.message,
+        queue: {
+          updatedAt: queueStatus.updatedAt,
+          batchJobId: queueStatus.batchJobId,
+          s3Key: queueStatus.s3Key,
+        },
+      });
+      if (["done", "error", "expired", "cancelled"].includes(queueStatus.status)) {
+        res.end();
+        return true;
+      }
+      return false;
+    };
+
+    void pollQueue().catch((err) => {
+      req.log.error({ err, jobId }, "Failed queue progress stream lookup");
+      send({ status: "error", message: "Failed to fetch job status" });
+      res.end();
+    });
+
+    const timer = setInterval(() => {
+      void pollQueue().then((finished) => {
+        if (finished) clearInterval(timer);
+      }).catch((err) => {
+        req.log.error({ err, jobId }, "Failed queue progress stream poll");
+        send({ status: "error", message: "Failed to fetch job status" });
+        clearInterval(timer);
+        res.end();
+      });
+    }, 2000);
+
+    req.on("close", () => {
+      clearInterval(timer);
+    });
     return;
   }
 
@@ -1941,7 +2287,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
   });
 });
 
-router.post("/youtube/cancel/:jobId", cancelRateLimiter, (req: Request, res: Response) => {
+router.post("/youtube/cancel/:jobId", cancelRateLimiter, async (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
@@ -1950,7 +2296,26 @@ router.post("/youtube/cancel/:jobId", cancelRateLimiter, (req: Request, res: Res
 
   const job = jobs.get(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isDownloadQueueEnabled()) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    try {
+      const cancelled = await cancelYoutubeQueueJob(jobId);
+      if (!cancelled.ok) {
+        res.status(404).json({ error: "Job not found" });
+        return;
+      }
+      res.json({
+        ok: true,
+        status: cancelled.status,
+        alreadyFinished: cancelled.alreadyFinished ?? false,
+        queue: { batchJobId: cancelled.batchJobId },
+      });
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to cancel queue job");
+      res.status(500).json({ error: "Failed to cancel job" });
+    }
     return;
   }
 
@@ -2146,9 +2511,46 @@ router.get("/youtube/file/:jobId", async (req: Request, res: Response) => {
   }
   const job = jobs.get(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found", expired: true });
-    return;
+    if (!isDownloadQueueEnabled()) {
+      res.status(404).json({ error: "Job not found", expired: true });
+      return;
+    }
+
+    const queueStatus = await getYoutubeQueueJobStatus(jobId);
+    if (!queueStatus) {
+      res.status(404).json({ error: "Job not found", expired: true });
+      return;
+    }
+
+    if (queueStatus.status === "expired") {
+      res.status(410).json({
+        error: "File has expired. Please download the video again.",
+        expired: true,
+      });
+      return;
+    }
+
+    if (queueStatus.status !== "done" || !queueStatus.s3Key) {
+      res.status(404).json({ error: "File not found or download not complete" });
+      return;
+    }
+
+    try {
+      const signedUrl = await getS3SignedDownloadUrl({
+        key: queueStatus.s3Key,
+        filename: queueStatus.filename ?? "video.mp4",
+      });
+      res.redirect(302, signedUrl);
+      return;
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to generate signed S3 URL for queue file");
+      res.status(500).json({
+        error: "File is ready but cloud download URL could not be created.",
+      });
+      return;
+    }
   }
+
   if (job.status === "expired") {
     res.status(410).json({
       error: "File has expired. Please download the video again.",
@@ -2400,12 +2802,15 @@ function audioMimeType(ext: string): string {
 }
 
 function getPersonalGeminiApiKeys(): string[] {
-  return [
-    process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
-    process.env.GEMINI_API_KEY_2,
-    process.env.GEMINI_API_KEY_3,
-    process.env.GEMINI_API_KEY_4,
-  ].filter((k): k is string => !!k);
+  const keys: string[] = [];
+  const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (first) keys.push(first);
+  for (let index = 2; index <= 10; index += 1) {
+    const envName = `GEMINI_API_KEY_${index}` as keyof NodeJS.ProcessEnv;
+    const value = process.env[envName];
+    if (value && value.trim().length > 0) keys.push(value.trim());
+  }
+  return Array.from(new Set(keys));
 }
 
 function isQuotaLikeGeminiError(message: string): boolean {
@@ -2413,10 +2818,9 @@ function isQuotaLikeGeminiError(message: string): boolean {
 }
 
 const YOUTUBE_KEY_ROTATION_MODELS = [
-  "gemini-2.5-pro",
   "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-3-flash-preview",
-  "gemini-1.5-flash",
 ];
 
 async function generateWithPersonalKeyRotation(
@@ -2625,7 +3029,11 @@ ${inputTranscript}`;
             "subtitle/fix",
             systemInstruction,
             promptText,
-            ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-3-flash-preview"],
+            [
+              "gemini-2.5-flash",
+              "gemini-2.5-flash-lite",
+              "gemini-3-flash-preview",
+            ],
           );
         }
       }
@@ -2723,9 +3131,8 @@ async function clipsGeminiContent(
 
   return generateWithPersonalKeyRotation("clips/text", systemInstruction, userContent, [
     "gemini-2.5-flash",
-    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
     "gemini-3-flash-preview",
-    "gemini-1.5-flash",
   ]);
 }
 
@@ -2871,7 +3278,7 @@ export interface BestClip {
   reason: string;
 }
 
-interface ClipJob {
+export interface ClipJob {
   emitter: EventEmitter;
   status: "pending" | "running" | "done" | "error";
   result?: { clips: BestClip[]; hasTranscript: boolean; videoDuration: number };
@@ -2922,11 +3329,34 @@ router.post("/youtube/clips", clipsRateLimiter, async (req: Request, res: Respon
   }
 
   const jobId = randomUUID();
+  const notifyClientKey = getNotifyClientKey(req);
+
+  if (isYoutubeQueuePrimaryEnabledFor("best-clips")) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "best-clips",
+        sourceUrl: normalizedUrl,
+        meta: {
+          durations: normalizedDurations,
+          auto: auto ?? false,
+          instructions: normalizedInstructions ?? null,
+          notifyClientKey: notifyClientKey ?? null,
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Best-clips analysis queued" });
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to submit primary queue best-clips job");
+      res.status(502).json({ error: "Failed to queue best-clips job" });
+    }
+    return;
+  }
+
   const job: ClipJob = {
     emitter: new EventEmitter(),
     status: "pending",
     createdAt: Date.now(),
-    notifyClientKey: getNotifyClientKey(req),
+    notifyClientKey,
   };
   job.emitter.setMaxListeners(5);
   clipJobs.set(jobId, job);
@@ -2953,7 +3383,88 @@ router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
   }
   const job = clipJobs.get(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isYoutubeQueueEnabledFor("best-clips")) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+    const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+    const pollQueue = async (): Promise<boolean> => {
+      const queueStatus = await getYoutubeQueueJobStatus(jobId);
+        if (!queueStatus) {
+          send({ type: "error", message: "Job not found" });
+          res.end();
+          return true;
+        }
+        const isTerminal =
+          queueStatus.status === "done" ||
+          queueStatus.status === "error" ||
+          queueStatus.status === "cancelled" ||
+          queueStatus.status === "expired";
+        if (isTerminal) {
+          let resultData: { clips: BestClip[]; hasTranscript: boolean; videoDuration: number } | null = null;
+          if (queueStatus.status === "done" && queueStatus.resultJson) {
+            try {
+              resultData = JSON.parse(queueStatus.resultJson) as {
+                clips: BestClip[];
+                hasTranscript: boolean;
+                videoDuration: number;
+              };
+            } catch (err) {
+              req.log.error({ err, jobId }, "Failed to parse queued best-clips result");
+            }
+          }
+          send({
+            type: queueStatus.status === "done" && resultData ? "done" : "error",
+            message: queueStatus.message ?? queueStatus.status,
+            queue: {
+              updatedAt: queueStatus.updatedAt,
+              batchJobId: queueStatus.batchJobId,
+            },
+            clips: resultData?.clips ?? [],
+            hasTranscript: resultData?.hasTranscript ?? false,
+            videoDuration: resultData?.videoDuration ?? 0,
+          });
+          res.end();
+          return true;
+        }
+        send({
+          type: "step",
+          step: "queue",
+          status: "running",
+          message: queueStatus.message ?? "Queued for processing...",
+          queue: {
+            updatedAt: queueStatus.updatedAt,
+            batchJobId: queueStatus.batchJobId,
+          },
+        });
+      return false;
+    };
+
+    void pollQueue().catch((err) => {
+      req.log.error({ err, jobId }, "Failed queue clips stream lookup");
+      send({ type: "error", message: "Failed to fetch job status" });
+      res.end();
+    });
+
+    const timer = setInterval(() => {
+      void pollQueue().then((finished) => {
+        if (finished) clearInterval(timer);
+      }).catch((err) => {
+        req.log.error({ err, jobId }, "Failed queue clips stream poll");
+        send({ type: "error", message: "Failed to fetch job status" });
+        clearInterval(timer);
+        res.end();
+      });
+    }, 2500);
+
+    req.on("close", () => {
+      clearInterval(timer);
+    });
     return;
   }
 
@@ -2997,7 +3508,80 @@ router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
   });
 });
 
-async function runClipAnalysis(
+router.get("/youtube/clips/status/:jobId", async (req: Request, res: Response) => {
+  const jobId = pickFirst(req.params.jobId);
+  if (!jobId) {
+    res.status(400).json({ error: "jobId is required" });
+    return;
+  }
+
+  const localJob = clipJobs.get(jobId);
+  if (localJob) {
+    if (localJob.status === "done" && localJob.result) {
+      res.json({
+        status: "done",
+        message: "Analysis complete",
+        clips: localJob.result.clips ?? [],
+        hasTranscript: localJob.result.hasTranscript ?? false,
+        videoDuration: localJob.result.videoDuration ?? 0,
+      });
+      return;
+    }
+    if (localJob.status === "error") {
+      res.json({
+        status: "error",
+        message: localJob.error ?? "Analysis failed",
+      });
+      return;
+    }
+    res.json({
+      status: "running",
+      message: "Analysis in progress",
+    });
+    return;
+  }
+
+  if (!isYoutubeQueueEnabledFor("best-clips")) {
+    res.json({ status: "not_found", message: "Job not found" });
+    return;
+  }
+
+  try {
+    const queueStatus = await getYoutubeQueueJobStatus(jobId);
+    if (!queueStatus) {
+      res.json({ status: "not_found", message: "Job not found" });
+      return;
+    }
+    let resultData: { clips: BestClip[]; hasTranscript: boolean; videoDuration: number } | null = null;
+    if (queueStatus.status === "done" && queueStatus.resultJson) {
+      try {
+        resultData = JSON.parse(queueStatus.resultJson) as {
+          clips: BestClip[];
+          hasTranscript: boolean;
+          videoDuration: number;
+        };
+      } catch (err) {
+        req.log.error({ err, jobId }, "Failed to parse queued best-clips result in status route");
+      }
+    }
+    res.json({
+      status: queueStatus.status,
+      message: queueStatus.message ?? queueStatus.status,
+      queue: {
+        updatedAt: queueStatus.updatedAt,
+        batchJobId: queueStatus.batchJobId,
+      },
+      clips: resultData?.clips ?? [],
+      hasTranscript: resultData?.hasTranscript ?? false,
+      videoDuration: resultData?.videoDuration ?? 0,
+    });
+  } catch (err) {
+    req.log.error({ err, jobId }, "Failed to fetch best-clips status");
+    res.status(500).json({ error: "Failed to fetch best-clips status" });
+  }
+});
+
+export async function runClipAnalysis(
   jobId: string,
   job: ClipJob,
   url: string,
@@ -3006,7 +3590,12 @@ async function runClipAnalysis(
   autoMode: boolean = false,
   customInstructions?: string,
 ): Promise<void> {
-  const emit = (event: string, data: object) => job.emitter.emit(event, data);
+  const emit = (event: string, data: object) => {
+    if (event === "error" && job.emitter.listenerCount("error") === 0) {
+      return false;
+    }
+    return job.emitter.emit(event, data);
+  };
   const step = (
     step: string,
     status: "running" | "done" | "warn",
@@ -3436,7 +4025,7 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
       body: `${clips.length} clips are ready to download.`,
       url: "/",
       tag: `bestclips:${jobId}`,
-      silent: true,
+      silent: false,
     });
     emit("done", resultData);
   } catch (err) {
@@ -3499,6 +4088,29 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     .slice(0, 60);
   const jobId = randomUUID();
   const notifyClientKey = getNotifyClientKey(req);
+
+  if (isYoutubeQueuePrimaryEnabledFor("clip-cut")) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "clip-cut",
+        sourceUrl: normalizedUrl,
+        meta: {
+          startSec,
+          endSec,
+          quality: quality ?? "best",
+          source: "legacy-download-clip",
+          notifyClientKey: notifyClientKey ?? null,
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Clip download queued" });
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to submit primary queue legacy clip job");
+      res.status(502).json({ error: "Failed to queue clip download job" });
+    }
+    return;
+  }
+
   const job: DownloadJob = {
     status: "pending",
     percent: 0,
@@ -3520,6 +4132,20 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
 
   jobs.set(jobId, job);
   res.json({ jobId, status: "pending", message: "Clip download started" });
+
+  void submitYoutubeQueueShadowJob({
+    jobId,
+    jobType: "clip-cut",
+    sourceUrl: normalizedUrl,
+    meta: {
+      startSec,
+      endSec,
+      quality: quality ?? "best",
+      source: "legacy-download-clip",
+    },
+  }).catch((err) => {
+    req.log.warn({ err, jobId }, "Failed to submit shadow queue legacy clip job");
+  });
 
   enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
     req.log.error({ err, jobId }, "Clip download failed");
@@ -3574,4 +4200,26 @@ export function getYoutubeOpsSnapshot() {
       totalTrackedJobs: jobs.size,
     },
   };
+}
+
+export function createClipJobState(jobId: string, initial: Partial<ClipJob>): ClipJob {
+  const job: ClipJob = {
+    emitter: initial.emitter ?? new EventEmitter(),
+    status: initial.status ?? "pending",
+    result: initial.result,
+    error: initial.error,
+    createdAt: initial.createdAt ?? Date.now(),
+    notifyClientKey: initial.notifyClientKey ?? null,
+  };
+  job.emitter.setMaxListeners(5);
+  clipJobs.set(jobId, job);
+  return job;
+}
+
+export function getClipJobState(jobId: string): ClipJob | undefined {
+  return clipJobs.get(jobId);
+}
+
+export function deleteClipJobState(jobId: string): void {
+  clipJobs.delete(jobId);
 }

@@ -50,6 +50,7 @@ const STEP_LABELS: Record<string, string> = {
 const BASE_STEPS_URL  = ["audio", "uploading", "generating", "correcting"];
 const BASE_STEPS_FILE = ["uploading", "generating", "correcting"];
 const TRANSLATE_STEPS = ["translating", "verifying"];
+const SUBTITLE_JOB_MISSING_GRACE_MS = 2 * 60 * 1000;
 
 /** Rough time estimate: audioDuration * 0.15s per pass + overheads */
 function estimateSeconds(durationSecs: number, hasTranslation: boolean): number {
@@ -154,7 +155,7 @@ export function GetSubtitles() {
     setJobMessage("Reconnecting to background job…");
     if (active.url) setUrl(active.url);
 
-    pollStatus(active.jobId);
+    pollStatus(active.jobId, active.startedAt);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -191,9 +192,10 @@ export function GetSubtitles() {
     }
   };
 
-  const pollStatus = useCallback((id: string) => {
+  const pollStatus = useCallback((id: string, startedAtHint?: number) => {
     stopPolling();
     const session = pollSessionRef.current;
+    const startedAt = startedAtHint ?? Date.now();
     pollIntervalMsRef.current = 2500; // reset backoff for each new job
 
     const scheduleNext = (fn: () => Promise<void>) => {
@@ -215,8 +217,14 @@ export function GetSubtitles() {
         if (session !== pollSessionRef.current) return;
         pollAbortRef.current = null;
 
-        // 404 means the server restarted and the in-memory job is gone
+        // A transient 404 can happen during restart/deploy. Keep retrying briefly.
         if (res.status === 404) {
+          if (Date.now() - startedAt < SUBTITLE_JOB_MISSING_GRACE_MS) {
+            setJobStatus("pending");
+            setJobMessage("Reconnecting to subtitle job...");
+            scheduleNext(tick);
+            return;
+          }
           stopPolling();
           setLoading(false);
           setJobStatus("error");
@@ -322,22 +330,54 @@ export function GetSubtitles() {
     lastModeRef.current = mode;
 
     try {
-      let res: Response;
+      let data: { jobId: string };
       if (mode === "url") {
-        res = await fetch(`${BASE()}/api/subtitles/generate`, {
+        const res = await fetch(`${BASE()}/api/subtitles/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: urlVal.trim(), language: lang, translateTo: trans }),
         });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || "Failed to start job");
+        data = body;
       } else {
-        const form = new FormData();
-        form.append("file", fileVal!);
-        form.append("language", lang);
-        form.append("translateTo", trans);
-        res = await fetch(`${BASE()}/api/subtitles/upload`, { method: "POST", body: form });
+        const initRes = await fetch(`${BASE()}/api/subtitles/upload/init`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: fileVal!.name,
+            contentType: fileVal!.type || "application/octet-stream",
+            size: fileVal!.size,
+          }),
+        });
+        const initBody = await initRes.json();
+        if (!initRes.ok) throw new Error(initBody.error || "Failed to initialize upload");
+
+        const uploadRes = await fetch(initBody.uploadUrl, {
+          method: "PUT",
+          headers: {
+            "Content-Type": fileVal!.type || "application/octet-stream",
+          },
+          body: fileVal!,
+        });
+        if (!uploadRes.ok) {
+          throw new Error("Failed to upload media file");
+        }
+
+        const startRes = await fetch(`${BASE()}/api/subtitles/upload/start`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            uploadKey: initBody.uploadKey,
+            originalFilename: fileVal!.name,
+            language: lang,
+            translateTo: trans,
+          }),
+        });
+        const startBody = await startRes.json();
+        if (!startRes.ok) throw new Error(startBody.error || "Failed to start uploaded subtitle job");
+        data = startBody;
       }
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to start job");
 
       setJobId(data.jobId);
 
@@ -359,7 +399,7 @@ export function GetSubtitles() {
         return; // UI already shows "cancelled" from handleCancel
       }
 
-      pollStatus(data.jobId);
+      pollStatus(data.jobId, Date.now());
     } catch (err: any) {
       if (pendingCancelRef.current) return; // suppress error if cancelled
       setLoading(false);
@@ -650,7 +690,12 @@ export function GetSubtitles() {
             <div className="relative flex-1">
               <Youtube className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
               <input
-                type="text"
+                type="url"
+                name="subtitle_youtube_url"
+                inputMode="url"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label="YouTube URL for subtitles"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder="Paste YouTube URL..."
@@ -694,6 +739,8 @@ export function GetSubtitles() {
               <input
                 ref={fileInputRef}
                 type="file"
+                name="subtitle_upload_file"
+                aria-label="Upload audio or video file"
                 accept="audio/*,video/*,.mp4,.mkv,.avi,.mov,.webm,.mp3,.m4a,.wav,.flac,.ogg,.opus"
                 className="hidden"
                 onChange={(e) => { if (e.target.files?.[0]) setFile(e.target.files[0]); }}

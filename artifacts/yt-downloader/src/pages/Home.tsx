@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions, Scissors, BellRing
+  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -16,7 +16,6 @@ import { BestClips, type BestClipsHandle } from "@/components/BestClips";
 import { BhavishyaClips } from "@/components/BhavishyaClips";
 import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
-import { GlobalHistoryPanel } from "@/components/GlobalHistoryPanel";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import {
   saveActiveDownload,
@@ -41,6 +40,69 @@ import {
 
 type Mode = "download" | "clips" | "subtitles" | "clipcutter";
 
+type ClientAccessConfig = {
+  downloadInputEnabled: boolean;
+  telegram?: {
+    url?: string;
+    message?: string;
+  };
+};
+
+const GUIDE_SEEN_KEY = "videomaking-guide-seen-v1";
+const CLIP_JOB_MISSING_GRACE_MS = 15 * 60 * 1000;
+
+const GUIDE_TABS: Array<{
+  mode: Mode;
+  title: string;
+  summary: string;
+  steps: string[];
+}> = [
+  {
+    mode: "download",
+    title: "Download Tab",
+    summary: "Download complete videos or audio from a source URL.",
+    steps: [
+      "Paste the video URL and click Start.",
+      "Pick quality/audio option from available formats.",
+      "Track progress in Active Download and Activity panel.",
+      "Use Save when the job is completed.",
+    ],
+  },
+  {
+    mode: "clips",
+    title: "Best Clips Tab",
+    summary: "Use AI to find high-value segments from a long video.",
+    steps: [
+      "Paste URL and choose duration mode (Auto / 1m / 3m / 8-10m).",
+      "Add optional AI instructions for topic-specific clips.",
+      "Click Find Best Clips and follow step progress.",
+      "Download or retry each suggested clip card.",
+    ],
+  },
+  {
+    mode: "subtitles",
+    title: "Subtitles Tab",
+    summary: "Generate SRT subtitles from URL or uploaded media.",
+    steps: [
+      "Choose YouTube URL or Upload File mode.",
+      "Select source language and optional translation language.",
+      "Start generation and monitor the stage tracker.",
+      "Download SRT or copy text when completed.",
+    ],
+  },
+  {
+    mode: "clipcutter",
+    title: "Clip Cut Tab",
+    summary: "Cut an exact time range and download only that segment.",
+    steps: [
+      "Paste URL and set Start / End timestamps.",
+      "Choose output quality and click Cut & Download.",
+      "Watch queue/progress status in job cards.",
+      "Use Save when clip status becomes done.",
+    ],
+  },
+];
+
 function playSoftCompletionChime() {
   try {
     const AudioContextImpl =
@@ -60,6 +122,9 @@ function playSoftCompletionChime() {
 
     osc.connect(gain);
     gain.connect(ctx.destination);
+    if (ctx.state === "suspended") {
+      void ctx.resume().catch(() => {});
+    }
     osc.start();
     osc.stop(ctx.currentTime + 0.15);
     setTimeout(() => void ctx.close().catch(() => {}), 220);
@@ -84,7 +149,7 @@ function notifyBackgroundCompletion(type: string, label: string) {
   const send = () => {
     try {
       // Notification may fail on some browsers if permission is blocked.
-      new Notification(title, { body, silent: true });
+      new Notification(title, { body, silent: false });
     } catch {
       // No-op
     }
@@ -141,6 +206,14 @@ export default function Home() {
   const [pushConfigured, setPushConfigured] = useState(false);
   const [pushPermission, setPushPermission] = useState<NotificationPermission | "unsupported">("unsupported");
   const [pushEnabling, setPushEnabling] = useState(false);
+  const [clientAccessLoaded, setClientAccessLoaded] = useState(false);
+  const [downloadInputEnabled, setDownloadInputEnabled] = useState(false);
+  const [telegramUrl, setTelegramUrl] = useState("https://t.me/c/2852263933/3");
+  const [telegramMessage, setTelegramMessage] = useState(
+    "For High Quality Fast Video Download, join this Telegram Group",
+  );
+  const [showGuide, setShowGuide] = useState(false);
+  const [activeGuideMode, setActiveGuideMode] = useState<Mode>("download");
   const seenCompletionRef = useRef<Set<string>>(new Set());
   const initializedCompletionsRef = useRef(false);
   const { toast } = useToast();
@@ -152,6 +225,19 @@ export default function Home() {
       setJobId(saved.jobId);
       if (saved.url) setUrl(saved.url);
       setMode("download");
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const seen = localStorage.getItem(GUIDE_SEEN_KEY);
+      if (!seen) {
+        setShowGuide(true);
+        setActiveGuideMode("download");
+      }
+    } catch {
+      setShowGuide(true);
+      setActiveGuideMode("download");
     }
   }, []);
 
@@ -202,6 +288,14 @@ export default function Home() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    if (mode === "download" && (!clientAccessLoaded || !downloadInputEnabled)) {
+      toast({
+        title: "Download access is limited",
+        description: "Join the Telegram group below for high quality fast downloads.",
+        variant: "destructive",
+      });
+      return;
+    }
     const normalizedUrl = url.trim();
     if (!normalizedUrl) return;
     setSubmittedUrl(normalizedUrl);
@@ -275,9 +369,11 @@ export default function Home() {
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
   const showSearch = mode !== "subtitles" && mode !== "clipcutter";
+  const isDownloadInputBlocked =
+    mode === "download" && (!clientAccessLoaded || !downloadInputEnabled);
 
   useEffect(() => {
-    const appName = "YTGrabber";
+    const appName = "VideoMaking Studio";
     const modeLabel =
       mode === "download"
         ? "Download"
@@ -302,6 +398,33 @@ export default function Home() {
       if (!cfg) return;
       setPushConfigured(Boolean(cfg.enabled && cfg.publicKey));
     });
+  }, []);
+
+  useEffect(() => {
+    let closed = false;
+    const loadClientAccess = async () => {
+      try {
+        const res = await fetch(
+          `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/youtube/client-access`,
+        );
+        if (!res.ok) throw new Error("Failed to load access config");
+        const data = (await res.json()) as ClientAccessConfig;
+        if (closed) return;
+        setDownloadInputEnabled(Boolean(data.downloadInputEnabled));
+        if (data.telegram?.url) setTelegramUrl(data.telegram.url);
+        if (data.telegram?.message) setTelegramMessage(data.telegram.message);
+      } catch {
+        if (!closed) {
+          setDownloadInputEnabled(false);
+        }
+      } finally {
+        if (!closed) setClientAccessLoaded(true);
+      }
+    };
+    void loadClientAccess();
+    return () => {
+      closed = true;
+    };
   }, []);
 
   const handleEnablePush = async () => {
@@ -331,6 +454,18 @@ export default function Home() {
       description,
       variant: "destructive",
     });
+  };
+
+  const openGuide = () => {
+    setActiveGuideMode(mode);
+    setShowGuide(true);
+  };
+
+  const closeGuide = () => {
+    setShowGuide(false);
+    try {
+      localStorage.setItem(GUIDE_SEEN_KEY, "1");
+    } catch {}
   };
 
   // Background completion notifications across all tabs/history sources.
@@ -398,6 +533,10 @@ export default function Home() {
             `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/youtube/progress/${encodeURIComponent(j.jobId)}`,
           );
           if (res.status === 404) {
+            if (Date.now() - j.startedAt < CLIP_JOB_MISSING_GRACE_MS) {
+              nextActive.push(j);
+              continue;
+            }
             changed = true;
             continue;
           }
@@ -453,15 +592,11 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-3 sm:px-6">
+    <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-2 sm:px-6">
       
       {/* Premium Background */}
       <div className="fixed inset-0 z-[-1]">
-        <img 
-          src={`${import.meta.env.BASE_URL}images/dark-glow-bg.png`} 
-          alt="Dark premium abstract background" 
-          className="w-full h-full object-cover opacity-50 mix-blend-screen"
-        />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(229,9,20,0.22),transparent_50%),radial-gradient(circle_at_80%_15%,rgba(147,51,234,0.14),transparent_45%),radial-gradient(circle_at_50%_100%,rgba(244,63,94,0.16),transparent_55%)]" />
         <div className="absolute inset-0 bg-background/80 backdrop-blur-[20px] sm:backdrop-blur-[60px]" />
         <div className="absolute top-[-20%] left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-primary/20 blur-[120px] rounded-full pointer-events-none" />
       </div>
@@ -479,27 +614,31 @@ export default function Home() {
           )}
         >
           {/* Logo */}
-          <motion.div layout className="flex items-center gap-2 sm:gap-3 mb-5 sm:mb-8">
+          <motion.div layout className="flex items-center gap-2 sm:gap-3 mb-4 sm:mb-8">
             <div className="bg-primary/20 p-3 rounded-2xl border border-primary/30 shadow-[0_0_30px_rgba(229,9,20,0.3)]">
               <Youtube className="w-8 h-8 text-primary" />
             </div>
-            <h1 className="text-3xl md:text-5xl font-display font-bold tracking-tight text-white">
-              YT<span className="text-primary text-glow">Grabber</span>
+            <h1 className="text-2xl sm:text-3xl md:text-5xl font-display font-bold tracking-tight text-white text-center sm:text-left">
+              VideoMaking <span className="text-primary text-glow">Studio</span>
             </h1>
           </motion.div>
 
           {!showVideoInfo && !showClips && (
-            <motion.p layout className="text-white/60 text-lg mb-8 text-center max-w-lg">
-              Download high-quality videos and audio, or let AI find the best clips from any YouTube video.
+            <motion.p layout className="text-white/60 text-base sm:text-lg mb-6 sm:mb-8 text-center max-w-lg px-2 sm:px-0">
+              Smart media workspace for YouTube workflows: fast downloads, AI best-clips extraction, subtitles, and precise clip cutting.
             </motion.p>
           )}
 
           {/* Mode Tabs */}
-          <motion.div layout className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1 mb-6 w-full sm:w-auto">
+          <motion.div
+            layout
+            className="w-full sm:w-auto mb-6 rounded-2xl border border-white/10 bg-white/5 p-1"
+          >
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
             <button
               onClick={() => { setMode("download"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
+                "flex-1 min-w-[78px] sm:min-w-0 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "download"
                   ? "bg-primary text-white shadow-[0_0_20px_rgba(229,9,20,0.3)]"
                   : "text-white/50 hover:text-white/80"
@@ -512,7 +651,7 @@ export default function Home() {
             <button
               onClick={() => { setMode("clips"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
+                "flex-1 min-w-[78px] sm:min-w-0 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "clips"
                   ? "bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-[0_0_20px_rgba(139,92,246,0.4)]"
                   : "text-white/50 hover:text-white/80"
@@ -528,7 +667,7 @@ export default function Home() {
             <button
               onClick={() => { setMode("subtitles"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
+                "flex-1 min-w-[78px] sm:min-w-0 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "subtitles"
                   ? "bg-gradient-to-r from-teal-600 to-cyan-600 text-white shadow-[0_0_20px_rgba(20,184,166,0.35)]"
                   : "text-white/50 hover:text-white/80"
@@ -541,7 +680,7 @@ export default function Home() {
             <button
               onClick={() => { setMode("clipcutter"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
               className={cn(
-                "flex-1 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
+                "flex-1 min-w-[78px] sm:min-w-0 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
                 mode === "clipcutter"
                   ? "bg-gradient-to-r from-orange-600 to-amber-600 text-white shadow-[0_0_20px_rgba(249,115,22,0.35)]"
                   : "text-white/50 hover:text-white/80"
@@ -551,12 +690,13 @@ export default function Home() {
               <span className="sm:hidden">Cut</span>
               <span className="hidden sm:inline">Clip Cut</span>
             </button>
+            </div>
           </motion.div>
 
           {/* Search Bar — hidden in Bhagwat mode */}
           {pushSupported && pushConfigured && pushPermission !== "granted" && (
             <motion.div layout className="mb-4 w-full max-w-2xl">
-              <div className="glass-panel rounded-2xl border border-teal-500/25 bg-teal-500/10 px-4 py-3 flex items-center justify-between gap-3">
+              <div className="glass-panel rounded-2xl border border-teal-500/25 bg-teal-500/10 px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-2 text-teal-200">
                   <BellRing className="w-4 h-4 shrink-0" />
                   <span className="text-sm font-medium">
@@ -568,7 +708,7 @@ export default function Home() {
                   size="sm"
                   onClick={handleEnablePush}
                   disabled={pushEnabling}
-                  className="bg-teal-600 hover:bg-teal-500 text-white shrink-0"
+                  className="bg-teal-600 hover:bg-teal-500 text-white shrink-0 w-full sm:w-auto"
                 >
                   {pushEnabling ? "Enabling..." : "Enable Alerts"}
                 </Button>
@@ -585,17 +725,29 @@ export default function Home() {
             <div className="relative glass-panel rounded-2xl flex p-2 shadow-2xl items-center focus-within:border-primary/50 transition-colors">
               <Search className="w-6 h-6 text-white/40 ml-4 hidden sm:block" />
               <input 
-                type="text"
+                type="url"
+                name="youtube_url"
+                inputMode="url"
+                autoComplete="off"
+                spellCheck={false}
+                aria-label="YouTube URL"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="Paste YouTube URL..."
+                placeholder={
+                  isDownloadInputBlocked
+                    ? "Download input is disabled"
+                    : "Paste YouTube URL..."
+                }
+                disabled={isDownloadInputBlocked}
                 className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-3 text-white placeholder:text-white/30 text-base sm:text-lg min-w-0"
               />
               <Button 
                 type="submit" 
                 size="lg"
-                disabled={isSearchPending || !url.trim()}
-                className="h-10 sm:h-12 px-4 sm:px-6 rounded-xl shrink-0 text-sm sm:text-base"
+                disabled={
+                  isSearchPending || !url.trim() || isDownloadInputBlocked
+                }
+                className="h-10 sm:h-12 px-3 sm:px-6 rounded-xl shrink-0 text-sm sm:text-base min-w-[106px] sm:min-w-0"
               >
                 {isSearchPending ? (
                   <span className="flex items-center gap-2">
@@ -604,12 +756,54 @@ export default function Home() {
                   </span>
                 ) : (
                   <span className="flex items-center gap-1.5 sm:gap-2">
-                    {buttonPlaceholder} <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
+                    <span className="sm:hidden">{mode === "clips" ? "Analyze" : "Start"}</span>
+                    <span className="hidden sm:inline">{buttonPlaceholder}</span>
+                    <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
                   </span>
                 )}
               </Button>
             </div>
           </motion.form>
+
+          {mode === "download" && isDownloadInputBlocked && (
+            <motion.div
+              layout
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 w-full max-w-2xl"
+            >
+              <div className="glass-panel rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-4">
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 bg-amber-500/20 p-2 rounded-lg border border-amber-400/40">
+                    <Shield className="w-4 h-4 text-amber-300" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-amber-200 font-semibold text-sm">
+                      Download tab access is limited
+                    </p>
+                    <p className="text-amber-100/80 text-sm mt-1">
+                      Download support for YouTube, Instagram, and Twitter videos is managed via Telegram.
+                    </p>
+                    <a
+                      href={telegramUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-3 inline-flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-[#229ED9] hover:bg-[#1b8fc4] border border-[#58b8e6] px-4 py-2.5 text-sm font-bold text-white shadow-[0_0_16px_rgba(34,158,217,0.35)] transition-colors"
+                    >
+                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/20">
+                        <Send className="w-3.5 h-3.5" />
+                      </span>
+                      <span className="text-center">Join Telegram Group</span>
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                    <p className="text-[12px] text-amber-100/60 mt-2">
+                      Tap the blue button above to open Telegram.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
         </motion.div>
 
         {/* Content area */}
@@ -790,13 +984,162 @@ export default function Home() {
 
           </AnimatePresence>
 
-          <GlobalHistoryPanel onSwitchTab={setMode} />
-
         </div>
       </main>
 
-      <FloatingActivityPanel onSwitchTab={setMode} />
+      <FloatingActivityPanel onSwitchTab={setMode} onOpenGuide={openGuide} />
+
+      <GuideModal
+        open={showGuide}
+        activeMode={activeGuideMode}
+        onSelectMode={setActiveGuideMode}
+        onSwitchTab={(nextMode) => {
+          setMode(nextMode);
+          setActiveGuideMode(nextMode);
+          window.scrollTo({ top: 0, behavior: "smooth" });
+          closeGuide();
+        }}
+        onClose={closeGuide}
+      />
     </div>
+  );
+}
+
+function GuideModal({
+  open,
+  activeMode,
+  onSelectMode,
+  onSwitchTab,
+  onClose,
+}: {
+  open: boolean;
+  activeMode: Mode;
+  onSelectMode: (mode: Mode) => void;
+  onSwitchTab: (mode: Mode) => void;
+  onClose: () => void;
+}) {
+  const activeIndex = Math.max(
+    0,
+    GUIDE_TABS.findIndex((x) => x.mode === activeMode),
+  );
+  const active = GUIDE_TABS[activeIndex];
+  const isLast = activeIndex === GUIDE_TABS.length - 1;
+
+  const handleNext = () => {
+    if (isLast) {
+      onSwitchTab(active.mode);
+      return;
+    }
+    onSelectMode(GUIDE_TABS[activeIndex + 1].mode);
+  };
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-sm p-4 sm:p-6 flex items-start sm:items-center justify-center overflow-y-auto"
+        >
+          <motion.div
+            initial={{ opacity: 0, y: 18, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 14, scale: 0.98 }}
+            className="w-full max-w-3xl my-4 sm:my-0 max-h-[92vh] glass-panel rounded-3xl border border-white/15 overflow-hidden flex flex-col"
+          >
+            <div className="px-5 sm:px-7 py-5 border-b border-white/10 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-teal-300/80 font-semibold">
+                  Welcome Guide
+                </p>
+                <h3 className="text-xl sm:text-2xl font-display font-bold text-white mt-1">
+                  How VideoMaking Studio Works
+                </h3>
+                <p className="text-sm text-white/55 mt-1">
+                  Quick walkthrough of each tab so new users can start confidently.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                className="text-white/60 hover:text-white hover:bg-white/10 px-2.5 sm:px-4"
+                onClick={onClose}
+              >
+                <span className="sm:hidden">✕</span>
+                <span className="hidden sm:inline">Close</span>
+              </Button>
+            </div>
+
+            <div className="p-4 sm:p-7 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4 sm:gap-5 overflow-y-auto">
+              <div className="hidden md:block space-y-2">
+                {GUIDE_TABS.map((tab) => (
+                  <button
+                    key={tab.mode}
+                    type="button"
+                    onClick={() => onSelectMode(tab.mode)}
+                    className={cn(
+                      "w-full text-left rounded-xl border px-3.5 py-3 transition-colors",
+                      activeMode === tab.mode
+                        ? "bg-primary/15 border-primary/40 text-white"
+                        : "bg-white/5 border-white/10 text-white/60 hover:text-white hover:border-white/20",
+                    )}
+                  >
+                    <p className="font-semibold text-sm">{tab.title}</p>
+                    <p className="text-xs mt-1 opacity-80">{tab.summary}</p>
+                  </button>
+                ))}
+              </div>
+
+              <div className="md:hidden -mt-1 flex gap-2 overflow-x-auto no-scrollbar pb-1">
+                {GUIDE_TABS.map((tab) => (
+                  <button
+                    key={`mobile-${tab.mode}`}
+                    type="button"
+                    onClick={() => onSelectMode(tab.mode)}
+                    className={cn(
+                      "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap",
+                      activeMode === tab.mode
+                        ? "bg-primary/20 border-primary/50 text-white"
+                        : "bg-white/5 border-white/15 text-white/70",
+                    )}
+                  >
+                    {tab.title.replace(" Tab", "")}
+                  </button>
+                ))}
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4 sm:p-5">
+                <h4 className="text-lg sm:text-xl font-display font-semibold text-white">{active.title}</h4>
+                <p className="text-sm text-white/60 mt-1">{active.summary}</p>
+                <div className="mt-3 sm:mt-4 space-y-2.5">
+                  {active.steps.map((step, idx) => (
+                    <div
+                      key={`${active.mode}-step-${idx}`}
+                      className="flex items-start gap-2.5 text-sm text-white/80"
+                    >
+                      <span className="w-5 h-5 shrink-0 rounded-full bg-primary/20 border border-primary/40 text-[11px] text-primary flex items-center justify-center font-semibold">
+                        {idx + 1}
+                      </span>
+                      <span>{step}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 sm:mt-5 pt-4 border-t border-white/10 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    onClick={handleNext}
+                    className="bg-primary hover:bg-primary/90 text-white w-full sm:w-auto"
+                  >
+                    {isLast ? "Start Making" : "Next"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 

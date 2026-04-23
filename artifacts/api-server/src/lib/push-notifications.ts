@@ -1,5 +1,7 @@
 import type { Request } from "express";
 import webpush, { type PushSubscription } from "web-push";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { logger } from "./logger";
 
 type PushPayload = {
@@ -17,6 +19,9 @@ const vapidSubject =
 
 const pushEnabled = Boolean(vapidPublicKey && vapidPrivateKey);
 const subscriptionsByClient = new Map<string, Map<string, PushSubscription>>();
+const PUSH_SUBSCRIPTIONS_FILE =
+  process.env.PUSH_SUBSCRIPTIONS_FILE?.trim() ||
+  join(process.cwd(), "tmp", "push-subscriptions.json");
 
 if (pushEnabled) {
   webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
@@ -25,6 +30,43 @@ if (pushEnabled) {
     "Web Push disabled: set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY to enable browser push notifications",
   );
 }
+
+function persistSubscriptions(): void {
+  try {
+    const data: Record<string, PushSubscription[]> = {};
+    for (const [clientKey, bucket] of subscriptionsByClient.entries()) {
+      data[clientKey] = Array.from(bucket.values());
+    }
+    mkdirSync(dirname(PUSH_SUBSCRIPTIONS_FILE), { recursive: true });
+    writeFileSync(PUSH_SUBSCRIPTIONS_FILE, JSON.stringify(data), "utf8");
+  } catch (err) {
+    logger.warn({ err }, "Failed to persist push subscriptions");
+  }
+}
+
+function restoreSubscriptions(): void {
+  if (!pushEnabled) return;
+  try {
+    if (!existsSync(PUSH_SUBSCRIPTIONS_FILE)) return;
+    const raw = readFileSync(PUSH_SUBSCRIPTIONS_FILE, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, PushSubscription[]>;
+    for (const [clientKey, subscriptions] of Object.entries(parsed)) {
+      if (!Array.isArray(subscriptions) || subscriptions.length === 0) continue;
+      const bucket = new Map<string, PushSubscription>();
+      for (const sub of subscriptions) {
+        if (!sub?.endpoint || !sub?.keys?.p256dh || !sub?.keys?.auth) continue;
+        bucket.set(sub.endpoint, sub);
+      }
+      if (bucket.size > 0) {
+        subscriptionsByClient.set(clientKey, bucket);
+      }
+    }
+  } catch (err) {
+    logger.warn({ err }, "Failed to restore push subscriptions");
+  }
+}
+
+restoreSubscriptions();
 
 function normalizeIp(ip: string): string {
   return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
@@ -66,6 +108,7 @@ export function addPushSubscription(
   const bucket = subscriptionsByClient.get(clientKey) ?? new Map<string, PushSubscription>();
   bucket.set(endpoint, subscription);
   subscriptionsByClient.set(clientKey, bucket);
+  persistSubscriptions();
 }
 
 export function removePushSubscription(
@@ -76,6 +119,7 @@ export function removePushSubscription(
   if (!bucket) return;
   bucket.delete(endpoint);
   if (bucket.size === 0) subscriptionsByClient.delete(clientKey);
+  persistSubscriptions();
 }
 
 export async function notifyClientPush(
@@ -91,7 +135,7 @@ export async function notifyClientPush(
     body: payload.body,
     url: payload.url ?? "/",
     tag: payload.tag ?? "ytgrabber",
-    silent: payload.silent ?? true,
+    silent: payload.silent ?? false,
   });
 
   const invalidEndpoints: string[] = [];
@@ -123,5 +167,7 @@ export async function notifyClientPush(
   if (bucket.size === 0) {
     subscriptionsByClient.delete(clientKey);
   }
+  if (invalidEndpoints.length > 0) {
+    persistSubscriptions();
+  }
 }
-

@@ -3,6 +3,7 @@ import {
   loadHistory as loadSubtitleHistory,
   loadActiveJob,
   clearActiveJob,
+  saveToHistory as saveSubtitleHistory,
   deleteFromHistory as deleteSubtitle,
   type SubtitleHistoryEntry,
 } from "@/lib/subtitle-history";
@@ -10,6 +11,7 @@ import {
   loadClipHistory,
   loadActiveClipJobs,
   saveActiveClipJobs,
+  saveToClipHistory,
   deleteFromClipHistory,
   type ClipHistoryEntry,
 } from "@/lib/clip-history";
@@ -41,6 +43,22 @@ export interface ActivityActiveEntry {
   sub: string;
   tab: ActivityTabMode;
   startedAt: number;
+}
+
+interface ActivitySnapshot {
+  active: ActivityActiveEntry[];
+  completed: ActivityCompletedEntry[];
+}
+
+const BASE = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const listeners = new Set<(snapshot: ActivitySnapshot) => void>();
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let pollMsActive: number | null = null;
+let refreshInFlight: Promise<void> | null = null;
+const QUEUE_MISSING_GRACE_MS = 15 * 60 * 1000;
+
+function emit(snapshot: ActivitySnapshot) {
+  for (const listener of listeners) listener(snapshot);
 }
 
 export function shortActivityUrl(url: string): string {
@@ -115,128 +133,222 @@ function loadAllActive(): ActivityActiveEntry[] {
   return active.sort((a, b) => b.startedAt - a.startedAt);
 }
 
-export function useActivityFeed(pollMs = 4000) {
-  const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
-  const [active, setActive] = useState<ActivityActiveEntry[]>(() =>
-    loadAllActive(),
-  );
-  const [completed, setCompleted] = useState<ActivityCompletedEntry[]>(() =>
-    loadAllCompleted(),
-  );
+let currentSnapshot: ActivitySnapshot = {
+  active: loadAllActive(),
+  completed: loadAllCompleted(),
+};
 
-  const syncActiveWithServer = useCallback(async () => {
-    const subtitleJob = loadActiveJob();
-    if (subtitleJob) {
-      try {
-        const res = await fetch(
-          `${BASE}/api/subtitles/status/${encodeURIComponent(subtitleJob.jobId)}`,
-        );
-        if (res.status === 404) {
+async function syncActiveWithServer() {
+  const subtitleJob = loadActiveJob();
+  if (subtitleJob) {
+    try {
+      const res = await fetch(
+        `${BASE}/api/subtitles/status/${encodeURIComponent(subtitleJob.jobId)}`,
+      );
+      if (res.status === 404) {
+        clearActiveJob();
+      } else if (res.ok) {
+        const data = (await res.json()) as {
+          status?: string;
+          srt?: string;
+          filename?: string;
+          originalSrt?: string;
+          originalFilename?: string;
+        };
+        if (
+          data.status === "done" ||
+          data.status === "error" ||
+          data.status === "cancelled"
+        ) {
+          if (data.status === "done" && data.srt) {
+            const entry: SubtitleHistoryEntry = {
+              id: subtitleJob.jobId,
+              createdAt: Date.now(),
+              mode: subtitleJob.mode,
+              url: subtitleJob.mode === "url" ? subtitleJob.url : undefined,
+              inputFilename:
+                subtitleJob.mode === "file"
+                  ? subtitleJob.inputFilename
+                  : undefined,
+              srtFilename: data.filename ?? "subtitles.srt",
+              language: subtitleJob.language,
+              translateTo: subtitleJob.translateTo,
+              srt: data.srt,
+              originalSrt: data.originalSrt,
+              originalFilename: data.originalFilename,
+              entryCount: data.srt
+                .trim()
+                .split(/\n\n+/)
+                .filter(Boolean).length,
+            };
+            saveSubtitleHistory(entry);
+          }
           clearActiveJob();
-        } else if (res.ok) {
-          const data = (await res.json()) as { status?: string };
-          if (
-            data.status === "done" ||
-            data.status === "error" ||
-            data.status === "cancelled"
-          ) {
-            clearActiveJob();
-          }
-        }
-      } catch {}
-    }
-
-    const clipJobs = loadActiveClipJobs();
-    if (clipJobs.length > 0) {
-      const kept = [] as typeof clipJobs;
-      for (const job of clipJobs) {
-        try {
-          const res = await fetch(
-            `${BASE}/api/youtube/progress/${encodeURIComponent(job.jobId)}`,
-          );
-          if (res.status === 404) {
-            continue;
-          }
-          if (!res.ok) {
-            kept.push(job);
-            continue;
-          }
-          const data = (await res.json()) as { status?: string };
-          const status = data.status;
-          if (
-            status === "done" ||
-            status === "error" ||
-            status === "cancelled" ||
-            status === "expired"
-          ) {
-            continue;
-          }
-          kept.push(job);
-        } catch {
-          kept.push(job);
         }
       }
-      if (kept.length !== clipJobs.length) {
-        saveActiveClipJobs(kept);
-      }
-    }
+    } catch {}
+  }
 
-    const downloadJob = loadActiveDownload();
-    if (downloadJob) {
+  const clipJobs = loadActiveClipJobs();
+  if (clipJobs.length > 0) {
+    const kept = [] as typeof clipJobs;
+    for (const job of clipJobs) {
       try {
         const res = await fetch(
-          `${BASE}/api/youtube/progress/${encodeURIComponent(downloadJob.jobId)}`,
+          `${BASE}/api/youtube/progress/${encodeURIComponent(job.jobId)}`,
         );
         if (res.status === 404) {
-          clearActiveDownload();
-        } else if (res.ok) {
-          const data = (await res.json()) as { status?: string };
-          if (
-            data.status === "done" ||
-            data.status === "error" ||
-            data.status === "cancelled" ||
-            data.status === "expired"
-          ) {
-            clearActiveDownload();
+          // Queue-backed jobs can briefly return 404 during propagation/restarts.
+          // Keep recent jobs so they don't disappear from UI/activity on refresh.
+          if (Date.now() - job.startedAt < QUEUE_MISSING_GRACE_MS) {
+            kept.push(job);
           }
+          continue;
         }
-      } catch {}
+        if (!res.ok) {
+          kept.push(job);
+          continue;
+        }
+        const data = (await res.json()) as {
+          status?: string;
+          filename?: string | null;
+          filesize?: number | null;
+        };
+        const status = data.status;
+        if (
+          status === "done" ||
+          status === "error" ||
+          status === "cancelled" ||
+          status === "expired"
+        ) {
+          if (status === "done") {
+            saveToClipHistory({
+              jobId: job.jobId,
+              createdAt: Date.now(),
+              label: job.label,
+              url: job.url,
+              quality: job.quality,
+              filename: data.filename ?? "clip.mp4",
+              filesize: data.filesize ?? null,
+              durationSecs: Math.max(1, job.endSecs - job.startSecs),
+            });
+          }
+          continue;
+        }
+        kept.push(job);
+      } catch {
+        kept.push(job);
+      }
     }
-  }, [BASE]);
+    if (kept.length !== clipJobs.length) {
+      saveActiveClipJobs(kept);
+    }
+  }
 
-  const refresh = useCallback(async () => {
+  const downloadJob = loadActiveDownload();
+  if (downloadJob) {
+    try {
+      const res = await fetch(
+        `${BASE}/api/youtube/progress/${encodeURIComponent(downloadJob.jobId)}`,
+      );
+      if (res.status === 404) {
+        if (Date.now() - downloadJob.savedAt >= QUEUE_MISSING_GRACE_MS) {
+          clearActiveDownload();
+        }
+      } else if (res.ok) {
+        const data = (await res.json()) as { status?: string };
+        if (
+          data.status === "done" ||
+          data.status === "error" ||
+          data.status === "cancelled" ||
+          data.status === "expired"
+        ) {
+          clearActiveDownload();
+        }
+      }
+    } catch {}
+  }
+}
+
+async function refreshShared() {
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
     await syncActiveWithServer();
-    setActive(loadAllActive());
-    setCompleted(loadAllCompleted());
-  }, [syncActiveWithServer]);
+    currentSnapshot = {
+      active: loadAllActive(),
+      completed: loadAllCompleted(),
+    };
+    emit(currentSnapshot);
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+
+  return refreshInFlight;
+}
+
+function ensurePolling(pollMs: number) {
+  if (pollTimer && pollMsActive !== null && pollMs >= pollMsActive) return;
+  if (pollTimer) clearInterval(pollTimer);
+
+  pollMsActive = pollMs;
+  pollTimer = setInterval(() => {
+    void refreshShared();
+  }, pollMs);
+}
+
+function stopPollingIfUnused() {
+  if (listeners.size > 0) return;
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  pollMsActive = null;
+}
+
+export function useActivityFeed(pollMs = 4000) {
+  const [active, setActive] = useState<ActivityActiveEntry[]>(
+    () => currentSnapshot.active,
+  );
+  const [completed, setCompleted] = useState<ActivityCompletedEntry[]>(
+    () => currentSnapshot.completed,
+  );
 
   useEffect(() => {
-    void refresh();
-    const timer = setInterval(() => {
-      void refresh();
-    }, pollMs);
-    return () => clearInterval(timer);
-  }, [pollMs, refresh]);
+    const listener = (snapshot: ActivitySnapshot) => {
+      setActive(snapshot.active);
+      setCompleted(snapshot.completed);
+    };
+    listeners.add(listener);
+    ensurePolling(pollMs);
+    void refreshShared();
 
-  const deleteEntry = useCallback(
-    (entry: ActivityCompletedEntry) => {
-      if (entry.kind === "subtitle") deleteSubtitle(entry.data.id);
-      else if (entry.kind === "clip") deleteFromClipHistory(entry.data.jobId);
-      else if (entry.kind === "download")
-        deleteCompletedDownload(entry.data.jobId);
-      else deleteFromBestClipsHistory(entry.data.id);
-      void refresh();
-    },
-    [refresh],
-  );
+    return () => {
+      listeners.delete(listener);
+      stopPollingIfUnused();
+    };
+  }, [pollMs]);
 
-  const clearAll = useCallback(() => {
+  const refresh = useCallback(async () => {
+    await refreshShared();
+  }, []);
+
+  const deleteEntry = useCallback(async (entry: ActivityCompletedEntry) => {
+    if (entry.kind === "subtitle") deleteSubtitle(entry.data.id);
+    else if (entry.kind === "clip") deleteFromClipHistory(entry.data.jobId);
+    else if (entry.kind === "download")
+      deleteCompletedDownload(entry.data.jobId);
+    else deleteFromBestClipsHistory(entry.data.id);
+    await refreshShared();
+  }, []);
+
+  const clearAll = useCallback(async () => {
     loadSubtitleHistory().forEach((entry) => deleteSubtitle(entry.id));
     loadClipHistory().forEach((entry) => deleteFromClipHistory(entry.jobId));
-    loadBestClipsHistory().forEach((entry) => deleteFromBestClipsHistory(entry.id));
+    loadBestClipsHistory().forEach((entry) =>
+      deleteFromBestClipsHistory(entry.id),
+    );
     clearCompletedDownloads();
-    void refresh();
-  }, [refresh]);
+    await refreshShared();
+  }, []);
 
   return {
     active,

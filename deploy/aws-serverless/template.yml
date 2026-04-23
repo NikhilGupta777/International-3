@@ -1,0 +1,397 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: VideoMaking Studio serverless control plane and static frontend
+
+Parameters:
+  Prefix:
+    Type: String
+  ImageUri:
+    Type: String
+  SiteBucketName:
+    Type: String
+    Default: ""
+  SiteDomainName:
+    Type: String
+    Default: ""
+  CloudFrontCertificateArn:
+    Type: String
+    Default: ""
+  SessionSecret:
+    Type: String
+    NoEcho: true
+  WebsiteAuthUser:
+    Type: String
+    Default: kalki_avatar
+  WebsiteAuthPassword:
+    Type: String
+    NoEcho: true
+    Default: kalkiavatar#2026
+  GeminiApiKey:
+    Type: String
+    NoEcho: true
+  GeminiApiKey2:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey3:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey4:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey5:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey6:
+    Type: String
+    NoEcho: true
+    Default: ""
+  AssemblyAiApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  YtdlpCookiesFile:
+    Type: String
+    Default: ""
+  YtdlpCookiesS3Key:
+    Type: String
+    Default: ""
+  YtdlpPoToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+  YtdlpVisitorData:
+    Type: String
+    Default: ""
+  YtdlpPotProviderUrl:
+    Type: String
+    Default: ""
+  YtdlpProxy:
+    Type: String
+    Default: ""
+  OutputBucketName:
+    Type: String
+  OutputBucketRegion:
+    Type: String
+    Default: us-east-1
+  OutputObjectPrefix:
+    Type: String
+    Default: ytgrabber-green
+  SignedUrlTtlSec:
+    Type: Number
+    Default: 7200
+  YoutubeQueueRegion:
+    Type: String
+  YoutubeQueueJobTable:
+    Type: String
+  YoutubeBatchJobQueue:
+    Type: String
+  YoutubeBatchJobDefinition:
+    Type: String
+  YoutubeQueuePrimaryEnabled:
+    Type: String
+    Default: "true"
+  YoutubeQueueShadowEnabled:
+    Type: String
+    Default: "false"
+  YoutubeQueuePrimaryJobTypes:
+    Type: String
+    Default: download,clip-cut,subtitles,best-clips
+  YoutubeQueueShadowJobTypes:
+    Type: String
+    Default: download,clip-cut
+  RateLimitBypassIps:
+    Type: String
+    Default: ""
+  VapidPublicKey:
+    Type: String
+    Default: ""
+  VapidPrivateKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  VapidSubject:
+    Type: String
+    Default: mailto:ops@videomaking.in
+
+Conditions:
+  UseCustomSiteBucket: !Not [!Equals [!Ref SiteBucketName, ""]]
+  UseCustomDomain: !And
+    - !Not [!Equals [!Ref SiteDomainName, ""]]
+    - !Not [!Equals [!Ref CloudFrontCertificateArn, ""]]
+  SiteDomainIsWww: !Equals
+    - !Select [0, !Split [".", !Ref SiteDomainName]]
+    - "www"
+
+Resources:
+  StaticSiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If [UseCustomSiteBucket, !Ref SiteBucketName, !Ref AWS::NoValue]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+
+  CloudFrontOac:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Description: !Sub "${Prefix} static site OAC"
+        Name: !Sub "${Prefix}-site-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  CloudFrontSpaRewriteFn:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${Prefix}-spa-rewrite"
+      AutoPublish: true
+      FunctionConfig:
+        Runtime: cloudfront-js-2.0
+        Comment: Rewrite clean non-API routes to index.html for SPA
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri || "/";
+          if (uri.startsWith("/api/")) return request;
+          if (uri === "/api") return request;
+          if (uri.indexOf(".") !== -1) return request;
+          request.uri = "/index.html";
+          return request;
+        }
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Prefix}-api-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${Prefix}-api-access"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${YoutubeQueueJobTable}"
+              - Effect: Allow
+                Action:
+                  - batch:SubmitJob
+                  - batch:TerminateJob
+                  - batch:DescribeJobs
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${OutputBucketName}/*"
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${OutputBucketName}"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt StaticSiteBucket.Arn
+                  - !Sub "${StaticSiteBucket.Arn}/*"
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${Prefix}-api"
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      Role: !GetAtt ApiRole.Arn
+      MemorySize: 1536
+      Timeout: 29
+      EphemeralStorage:
+        Size: 1024
+      Environment:
+        Variables:
+          NODE_ENV: production
+          PORT: "8080"
+          SESSION_SECRET: !Ref SessionSecret
+          WEBSITE_AUTH_USER: !Ref WebsiteAuthUser
+          WEBSITE_AUTH_PASSWORD: !Ref WebsiteAuthPassword
+          GEMINI_API_KEY: !Ref GeminiApiKey
+          GEMINI_API_KEY_2: !Ref GeminiApiKey2
+          GEMINI_API_KEY_3: !Ref GeminiApiKey3
+          GEMINI_API_KEY_4: !Ref GeminiApiKey4
+          GEMINI_API_KEY_5: !Ref GeminiApiKey5
+          GEMINI_API_KEY_6: !Ref GeminiApiKey6
+          ASSEMBLYAI_API_KEY: !Ref AssemblyAiApiKey
+          YTDLP_COOKIES_FILE: !Ref YtdlpCookiesFile
+          YTDLP_COOKIES_S3_KEY: !Ref YtdlpCookiesS3Key
+          YTDLP_PO_TOKEN: !Ref YtdlpPoToken
+          YTDLP_VISITOR_DATA: !Ref YtdlpVisitorData
+          YTDLP_POT_PROVIDER_URL: !Ref YtdlpPotProviderUrl
+          YTDLP_PROXY: !Ref YtdlpProxy
+          S3_BUCKET: !Ref OutputBucketName
+          S3_REGION: !Ref OutputBucketRegion
+          S3_OBJECT_PREFIX: !Ref OutputObjectPrefix
+          S3_SIGNED_URL_TTL_SEC: !Ref SignedUrlTtlSec
+          YOUTUBE_QUEUE_PRIMARY_ENABLED: !Ref YoutubeQueuePrimaryEnabled
+          YOUTUBE_QUEUE_SHADOW_ENABLED: !Ref YoutubeQueueShadowEnabled
+          YOUTUBE_QUEUE_PRIMARY_JOB_TYPES: !Ref YoutubeQueuePrimaryJobTypes
+          YOUTUBE_QUEUE_SHADOW_JOB_TYPES: !Ref YoutubeQueueShadowJobTypes
+          YOUTUBE_QUEUE_REGION: !Ref YoutubeQueueRegion
+          YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable
+          YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue
+          YOUTUBE_BATCH_JOB_DEFINITION: !Ref YoutubeBatchJobDefinition
+          RATE_LIMIT_BYPASS_IPS: !Ref RateLimitBypassIps
+          VAPID_PUBLIC_KEY: !Ref VapidPublicKey
+          VAPID_PRIVATE_KEY: !Ref VapidPrivateKey
+          VAPID_SUBJECT: !Ref VapidSubject
+          DISABLE_STATIC_SERVE: "true"
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${Prefix}-http-api"
+      ProtocolType: HTTP
+
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      PayloadFormatVersion: "2.0"
+      IntegrationUri: !GetAtt ApiFunction.Arn
+
+  HttpApiRouteApiRoot:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "ANY /api"
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  HttpApiRouteApiProxy:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: "ANY /api/{proxy+}"
+      Target: !Sub "integrations/${HttpApiIntegration}"
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: "$default"
+      AutoDeploy: true
+
+  ApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*"
+
+  StaticBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref StaticSiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${StaticSiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}"
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        HttpVersion: http2and3
+        DefaultRootObject: index.html
+        CustomErrorResponses: []
+        Aliases: !If
+          - UseCustomDomain
+          - !If
+            - SiteDomainIsWww
+            - [!Ref SiteDomainName, !Select [1, !Split ["www.", !Ref SiteDomainName]]]
+            - [!Ref SiteDomainName, !Sub "www.${SiteDomainName}"]
+          - !Ref AWS::NoValue
+        Origins:
+          - Id: static-origin
+            DomainName: !GetAtt StaticSiteBucket.RegionalDomainName
+            S3OriginConfig: {}
+            OriginAccessControlId: !GetAtt CloudFrontOac.Id
+          - Id: api-origin
+            DomainName: !Select [2, !Split ["/", !GetAtt HttpApi.ApiEndpoint]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              HTTPSPort: 443
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: static-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt CloudFrontSpaRewriteFn.FunctionMetadata.FunctionARN
+        CacheBehaviors:
+          - PathPattern: /api*
+            TargetOriginId: api-origin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
+            CachedMethods: [GET, HEAD, OPTIONS]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            Compress: true
+        ViewerCertificate: !If
+          - UseCustomDomain
+          - AcmCertificateArn: !Ref CloudFrontCertificateArn
+            MinimumProtocolVersion: TLSv1.2_2021
+            SslSupportMethod: sni-only
+          - CloudFrontDefaultCertificate: true
+
+Outputs:
+  StaticSiteBucketName:
+    Value: !Ref StaticSiteBucket
+  CloudFrontDistributionId:
+    Value: !Ref CloudFrontDistribution
+  CloudFrontDomainName:
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  HttpApiEndpoint:
+    Value: !GetAtt HttpApi.ApiEndpoint
+  ApiFunctionName:
+    Value: !Ref ApiFunction

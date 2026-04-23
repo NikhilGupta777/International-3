@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Loader2, Captions, Scissors, Sparkles, Film,
   Clock, ArrowRight, Download, Copy, ChevronDown,
-  ChevronUp, ExternalLink, Trash2, Activity,
+  ChevronUp, ExternalLink, Trash2, Activity, CircleHelp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -39,7 +39,13 @@ function downloadSrt(filename: string, srt: string) {
   URL.revokeObjectURL(url);
 }
 
-export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
+export function FloatingActivityPanel({
+  onSwitchTab,
+  onOpenGuide,
+}: {
+  onSwitchTab: (tab: TabMode) => void;
+  onOpenGuide: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { toast } = useToast();
@@ -53,6 +59,10 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
   };
 
   const handleClearAll = () => {
+    const confirmed = window.confirm(
+      "Clear all completed activity from this device?",
+    );
+    if (!confirmed) return;
     clearAll();
     toast({ title: "History cleared" });
   };
@@ -64,7 +74,19 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
   };
 
   return (
-    <div className="fixed top-4 right-4 sm:right-6 z-50 flex flex-col items-end gap-2">
+    <div className="fixed top-2 right-2 sm:top-4 sm:right-6 z-50 flex flex-col items-end gap-2 max-w-[calc(100vw-12px)]">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={onOpenGuide}
+          className="flex items-center gap-2 pl-3 pr-3 h-9 rounded-full bg-[#1a1a1f] border border-white/10 hover:border-white/25 hover:scale-[1.03] shadow-[0_4px_20px_rgba(0,0,0,0.5)] transition-all duration-200"
+          title="Open quick guide"
+        >
+          <CircleHelp className="w-4 h-4 text-teal-300" />
+          <span className="text-sm font-medium text-white/70 hidden sm:inline">
+            Help
+          </span>
+        </button>
+
       {/* Pill button */}
       <button
         onClick={() => setOpen((o) => !o)}
@@ -90,6 +112,7 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
           </span>
         )}
       </button>
+      </div>
 
       {/* Panel — opens downward */}
       <AnimatePresence>
@@ -99,7 +122,7 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
-            className="w-[340px] sm:w-[380px] max-h-[520px] flex flex-col rounded-2xl border border-white/10 bg-[#0d0d0f]/95 backdrop-blur-xl shadow-[0_8px_40px_rgba(0,0,0,0.6)] overflow-hidden"
+            className="w-[min(380px,calc(100vw-16px))] max-h-[72vh] sm:max-h-[520px] flex flex-col rounded-2xl border border-white/10 bg-[#0d0d0f]/95 backdrop-blur-xl shadow-[0_8px_40px_rgba(0,0,0,0.6)] overflow-hidden"
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 shrink-0">
@@ -147,14 +170,14 @@ export function FloatingActivityPanel({ onSwitchTab }: { onSwitchTab: (tab: TabM
                       <p className="text-[10px] font-semibold text-amber-400/60 uppercase tracking-wider px-1">
                         Processing now
                       </p>
-                      {active.map((e, i) => {
+                      {active.map((e) => {
                         const icon =
                           e.kind === "subtitle" ? <Captions className="w-3.5 h-3.5 text-teal-400" /> :
                           e.kind === "clipcutter" ? <Scissors className="w-3.5 h-3.5 text-orange-400" /> :
                           <Film className="w-3.5 h-3.5 text-blue-400" />;
                         return (
                           <div
-                            key={i}
+                            key={`active-${e.kind}-${e.startedAt}-${e.label}`}
                             className="flex items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2.5"
                           >
                             <div className="shrink-0">{icon}</div>

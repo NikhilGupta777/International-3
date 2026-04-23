@@ -246,7 +246,10 @@ export const BestClips = forwardRef(function BestClips(
   const [analysisElapsed, setAnalysisElapsed] = useState(0);
   const [videoDurationSec, setVideoDurationSec] = useState(0);
   const analysisStartRef = useRef<number | null>(null);
+  const analysisJobIdRef = useRef<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+  const analysisStatusTimerRef = useRef<number | null>(null);
+  const analysisStatusErrorCountRef = useRef(0);
   const downloadStreamRefs = useRef<Map<ClipKey, EventSource>>(new Map());
   const { toast } = useToast();
 
@@ -296,6 +299,12 @@ export const BestClips = forwardRef(function BestClips(
 
   useEffect(() => {
     return () => {
+      if (analysisStatusTimerRef.current !== null) {
+        window.clearInterval(analysisStatusTimerRef.current);
+        analysisStatusTimerRef.current = null;
+      }
+      analysisStatusErrorCountRef.current = 0;
+      analysisJobIdRef.current = null;
       esRef.current?.close();
       esRef.current = null;
       for (const stream of downloadStreamRefs.current.values()) {
@@ -367,6 +376,116 @@ export const BestClips = forwardRef(function BestClips(
     setSteps((prev) => ({ ...prev, [name]: { status, message, data } }));
   };
 
+  const clearAnalysisStatusPolling = useCallback(() => {
+    if (analysisStatusTimerRef.current !== null) {
+      window.clearInterval(analysisStatusTimerRef.current);
+      analysisStatusTimerRef.current = null;
+    }
+    analysisStatusErrorCountRef.current = 0;
+  }, []);
+
+  const finishAnalysisWithError = useCallback(
+    (message: string) => {
+      clearAnalysisStatusPolling();
+      analysisJobIdRef.current = null;
+      analysisStartRef.current = null;
+      setIsLoading(false);
+      setError(message);
+    },
+    [clearAnalysisStatusPolling],
+  );
+
+  const finishAnalysisWithSuccess = useCallback(
+    (msg: { clips?: BestClip[]; hasTranscript?: boolean; videoDuration?: number }) => {
+      const resultClips: BestClip[] = msg.clips ?? [];
+      setClips(resultClips);
+      setHasTranscript(msg.hasTranscript ?? false);
+      setVideoDurationSec(msg.videoDuration ?? 0);
+      if (!resultClips.length) {
+        const noTranscript = !msg.hasTranscript;
+        setError(
+          noTranscript
+            ? "No clips found. This video has no transcript/subtitles, so the AI is working from title and description only — try a video with subtitles for better results."
+            : "No clips could be identified. The video content may not have clearly distinct highlight segments, or the AI response could not be parsed. Please try again.",
+        );
+      } else {
+        try {
+          sessionStorage.setItem(
+            PERSIST_KEY,
+            JSON.stringify({
+              url: url.trim(),
+              clips: resultClips,
+              hasTranscript: msg.hasTranscript ?? false,
+            }),
+          );
+        } catch {}
+        saveToBestClipsHistory({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          createdAt: Date.now(),
+          url: url.trim(),
+          clipCount: resultClips.length,
+          hasTranscript: msg.hasTranscript ?? false,
+          clips: resultClips,
+        });
+      }
+      clearAnalysisStatusPolling();
+      analysisJobIdRef.current = null;
+      analysisStartRef.current = null;
+      setIsLoading(false);
+    },
+    [clearAnalysisStatusPolling, url],
+  );
+
+  const pollBestClipsStatus = useCallback(
+    async (jobId: string) => {
+      const res = await fetch(`${BASE}/api/youtube/clips/status/${jobId}`);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload?.error ?? "Failed to read analysis status");
+      }
+      const status = typeof payload?.status === "string" ? payload.status : "running";
+      const message = typeof payload?.message === "string" ? payload.message : "Analysis in progress";
+
+      if (status === "done") {
+        updateStep("ai", "done", message, payload);
+        finishAnalysisWithSuccess(payload);
+        return;
+      }
+      if (status === "error" || status === "cancelled" || status === "expired") {
+        finishAnalysisWithError(message || "Analysis failed");
+        return;
+      }
+      updateStep("ai", "running", message, payload);
+    },
+    [BASE, finishAnalysisWithError, finishAnalysisWithSuccess],
+  );
+
+  const startBestClipsStatusPolling = useCallback(
+    (jobId: string) => {
+      if (analysisStatusTimerRef.current !== null) return;
+      updateStep("ai", "running", "Reconnecting to analysis status...");
+      void pollBestClipsStatus(jobId).catch((err) => {
+        analysisStatusErrorCountRef.current += 1;
+        if (analysisStatusErrorCountRef.current >= 4) {
+          finishAnalysisWithError(
+            err instanceof Error ? err.message : "Connection lost during analysis. Please try again.",
+          );
+        }
+      });
+      analysisStatusTimerRef.current = window.setInterval(() => {
+        void pollBestClipsStatus(jobId).catch((err) => {
+          analysisStatusErrorCountRef.current += 1;
+          if (analysisStatusErrorCountRef.current >= 4) {
+            finishAnalysisWithError(
+              err instanceof Error ? err.message : "Connection lost during analysis. Please try again.",
+            );
+          }
+        });
+      }, 3000);
+    },
+    [finishAnalysisWithError, pollBestClipsStatus],
+  );
+
   useImperativeHandle(ref, () => ({ startAnalyze: handleAnalyze }));
 
   const activeTopic = TOPIC_PRESETS.find((p) => p.id === selectedTopic) ?? null;
@@ -377,6 +496,8 @@ export const BestClips = forwardRef(function BestClips(
     if (is8MinMode && !selectedTopic) return;
 
     // Close any previous SSE
+    clearAnalysisStatusPolling();
+    analysisJobIdRef.current = null;
     esRef.current?.close();
     esRef.current = null;
     closeAllDownloadStreams();
@@ -421,6 +542,7 @@ export const BestClips = forwardRef(function BestClips(
         throw new Error(startData.error ?? "Failed to start analysis");
 
       const { jobId } = startData;
+      analysisJobIdRef.current = jobId;
 
       // 2. Connect SSE stream
       const es = new EventSource(`${BASE}/api/youtube/clips/stream/${jobId}`);
@@ -438,58 +560,35 @@ export const BestClips = forwardRef(function BestClips(
               if (stepName === "metadata" && msg.videoDuration) {
                 setVideoDurationSec(msg.videoDuration);
               }
+            } else if (msg.step === "queue") {
+              updateStep("ai", "running", msg.message ?? "Queued for processing...", msg);
             }
           } else if (msg.type === "done") {
-            const resultClips: BestClip[] = msg.clips ?? [];
-            setClips(resultClips);
-            setHasTranscript(msg.hasTranscript ?? false);
-            if (!resultClips.length) {
-              const noTranscript = !msg.hasTranscript;
-              setError(
-                noTranscript
-                  ? "No clips found. This video has no transcript/subtitles, so the AI is working from title and description only — try a video with subtitles for better results."
-                  : "No clips could be identified. The video content may not have clearly distinct highlight segments, or the AI response could not be parsed. Please try again.",
-              );
-            } else {
-              try {
-                sessionStorage.setItem(PERSIST_KEY, JSON.stringify({
-                  url: url.trim(),
-                  clips: resultClips,
-                  hasTranscript: msg.hasTranscript ?? false,
-                }));
-              } catch {}
-              saveToBestClipsHistory({
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-                createdAt: Date.now(),
-                url: url.trim(),
-                clipCount: resultClips.length,
-                hasTranscript: msg.hasTranscript ?? false,
-                clips: resultClips,
-              });
-            }
-            analysisStartRef.current = null;
-            setIsLoading(false);
             es.close();
             esRef.current = null;
+            finishAnalysisWithSuccess(msg);
           } else if (msg.type === "error") {
-            setError(msg.message ?? "Analysis failed");
-            analysisStartRef.current = null;
-            setIsLoading(false);
             es.close();
             esRef.current = null;
+            finishAnalysisWithError(msg.message ?? "Analysis failed");
           }
         } catch {}
       };
 
       es.onerror = () => {
-        setError("Connection lost during analysis. Please try again.");
-        analysisStartRef.current = null;
-        setIsLoading(false);
         es.close();
         esRef.current = null;
+        if (analysisJobIdRef.current) {
+          startBestClipsStatusPolling(analysisJobIdRef.current);
+        } else {
+          finishAnalysisWithError("Connection lost during analysis. Please try again.");
+        }
       };
     } catch (err) {
+      clearAnalysisStatusPolling();
+      analysisJobIdRef.current = null;
       setError(err instanceof Error ? err.message : "Failed to start analysis");
+      analysisStartRef.current = null;
       setIsLoading(false);
     }
   }
@@ -644,10 +743,9 @@ export const BestClips = forwardRef(function BestClips(
             speed: null,
             message: undefined,
           });
-          triggerClipDownload(jobId, clip.title);
           toast({
-            title: "Clip downloaded!",
-            description: `"${clip.title}" saved to your downloads.`,
+            title: "Clip ready",
+            description: `"${clip.title}" is ready. Tap Save to download.`,
           });
           return;
         }
@@ -1016,7 +1114,10 @@ export const BestClips = forwardRef(function BestClips(
           ) : is8MinMode && selectedTopic && activeTopic ? (
             <span className="flex items-center gap-2">
               <Sparkles className="w-4 h-4" />
-              Find Best {activeTopic.label} Clip (8-10 min)
+              <span className="sm:hidden">Find Best Clips</span>
+              <span className="hidden sm:inline">
+                Find Best {activeTopic.label} Clip (8-10 min)
+              </span>
             </span>
           ) : is8MinMode ? (
             <span className="flex items-center gap-2">
@@ -1372,7 +1473,9 @@ export const BestClips = forwardRef(function BestClips(
                                   onClick={() =>
                                     dl.status === "downloading"
                                       ? handleCancelDownload(clip)
-                                      : startClipDownload(clip)
+                                      : dl.status === "done" && dl.jobId
+                                        ? triggerClipDownload(dl.jobId, clip.title)
+                                        : startClipDownload(clip)
                                   }
                                   className={cn(
                                     "rounded-xl h-8 px-3 text-xs font-semibold min-w-[90px]",
@@ -1393,8 +1496,8 @@ export const BestClips = forwardRef(function BestClips(
                                     </span>
                                   ) : dl.status === "done" ? (
                                     <span className="flex items-center gap-1.5">
-                                      <CheckCircle2 className="w-3 h-3" />
-                                      Downloaded
+                                      <Download className="w-3 h-3" />
+                                      Save
                                     </span>
                                   ) : dl.status === "error" ||
                                     dl.status === "cancelled" ? (

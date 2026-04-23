@@ -458,6 +458,7 @@ function DownloadRow({
 export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
   const { active: activeEntries, completed: entries, deleteEntry, clearAll } =
     useActivityFeed(4000);
+  const hasAnyActivity = activeEntries.length > 0 || entries.length > 0;
   const [open, setOpen] = useState(true);
   const { toast } = useToast();
 
@@ -485,6 +486,10 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
   };
 
   const handleClearAll = () => {
+    const confirmed = window.confirm(
+      "Clear all completed activity from this device?",
+    );
+    if (!confirmed) return;
     clearAll();
     toast({ title: "History cleared", description: "All recent activity has been removed." });
   };
@@ -495,6 +500,10 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
   }, [activeEntries.length]);
 
   const totalCount = entries.length + activeEntries.length;
+
+  if (!hasAnyActivity) {
+    return null;
+  }
 
   return (
     <div className="mt-8">
@@ -554,9 +563,9 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
                   <p className="text-[10px] font-semibold text-white/30 uppercase tracking-wider px-1 pb-1">
                     Processing in background
                   </p>
-                  {activeEntries.map((e, i) => (
+                  {activeEntries.map((e) => (
                     <ActiveRow
-                      key={`active-${e.kind}-${i}`}
+                      key={`active-${e.kind}-${e.startedAt}-${e.label}`}
                       entry={e}
                       onView={onSwitchTab}
                     />

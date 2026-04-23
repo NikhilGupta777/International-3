@@ -50,7 +50,7 @@ Required values:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy\ec2\deploy-over-ssh.ps1 `
-  -Host <EC2_PUBLIC_IP_OR_DOMAIN> `
+  -HostName <EC2_PUBLIC_IP_OR_DOMAIN> `
   -KeyPath .\deploy\ec2\keys\ytgrabber-prod-key.pem `
   -LocalEnvPath .\deploy\ec2\.env.production `
   -Branch main
@@ -86,3 +86,29 @@ git log --oneline -n 5
 git checkout <previous_commit>
 sudo docker compose -f docker-compose.yml -f deploy/ec2/docker-compose.prod.yml up -d --build
 ```
+
+## Blue-Green Option (Recommended for zero downtime)
+
+If you want to keep `videomaking.in` live while preparing a new version:
+
+1. Provision a separate green instance:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\ec2\provision-green.ps1
+```
+
+2. Create and fill green env:
+
+```powershell
+Copy-Item .\deploy\ec2\.env.green.example .\deploy\ec2\.env.green
+```
+
+3. Deploy to green:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\ec2\deploy-green.ps1 -HostName <GREEN_IP_OR_DOMAIN> -Branch main
+```
+
+4. Follow full rollout/cutover checklist:
+
+- [blue-green-rollout.md](/C:/Users/g_n-n/Desktop/apps/international-3%20clone/International-3/deploy/ec2/blue-green-rollout.md)

@@ -1,0 +1,15 @@
+FROM public.ecr.aws/lambda/nodejs:20
+
+RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp \
+    && /usr/local/bin/yt-dlp --version
+
+WORKDIR ${LAMBDA_TASK_ROOT}
+
+COPY artifacts/api-server/dist ./artifacts/api-server/dist
+
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV YTDLP_BIN=/usr/local/bin/yt-dlp
+
+CMD ["artifacts/api-server/dist/lambda.handler"]

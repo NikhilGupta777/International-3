@@ -4,7 +4,7 @@ self.addEventListener("push", (event) => {
     body: "A background job has finished.",
     url: "/",
     tag: "ytgrabber",
-    silent: true,
+    silent: false,
   };
 
   try {
@@ -26,7 +26,7 @@ self.addEventListener("push", (event) => {
       data: { url: payload.url || "/" },
       icon: "/favicon.svg",
       badge: "/favicon.svg",
-      silent: payload.silent !== false,
+      silent: payload.silent === true,
       renotify: false,
       requireInteraction: false,
     }),
@@ -51,4 +51,3 @@ self.addEventListener("notificationclick", (event) => {
     }),
   );
 });
-

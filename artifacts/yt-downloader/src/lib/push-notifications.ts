@@ -64,7 +64,10 @@ export function installNotifyClientHeader(): void {
 export async function registerPushServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!("serviceWorker" in navigator)) return null;
   try {
-    return await navigator.serviceWorker.register("/push-sw.js", { scope: "/" });
+    const base = (import.meta.env.BASE_URL ?? "/").replace(/\/?$/, "/");
+    return await navigator.serviceWorker.register(`${base}push-sw.js`, {
+      scope: base,
+    });
   } catch {
     return null;
   }
