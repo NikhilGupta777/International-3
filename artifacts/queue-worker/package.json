@@ -1,0 +1,21 @@
+{
+  "name": "@workspace/queue-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ./build.mjs",
+    "start": "node ./dist/index.cjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1028.0",
+    "@aws-sdk/client-s3": "^3.1028.0",
+    "pino": "^9"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "esbuild": "^0.27.3",
+    "typescript": "~5.9.2"
+  }
+}

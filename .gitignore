@@ -79,3 +79,5 @@ archive/
 /*.log
 .pythonlibs/
 .venv/
+
+output/
