@@ -4,6 +4,7 @@ import opsRouter from "./ops";
 import notificationsRouter from "./notifications";
 import youtubeRouter from "./youtube";
 import subtitlesRouter from "./subtitles";
+import bhagwatRouter from "./bhagwat";
 
 const router: IRouter = Router();
 
@@ -12,5 +13,6 @@ router.use(opsRouter);
 router.use(notificationsRouter);
 router.use(youtubeRouter);
 router.use(subtitlesRouter);
+router.use(bhagwatRouter);
 
 export default router;
