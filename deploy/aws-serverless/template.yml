@@ -24,6 +24,9 @@ Parameters:
   WebsiteAuthPassword:
     Type: String
     NoEcho: true
+  BhagwatPassword:
+    Type: String
+    NoEcho: true
   GeminiApiKey:
     Type: String
     NoEcho: true
@@ -238,6 +241,7 @@ Resources:
           SESSION_SECRET: !Ref SessionSecret
           WEBSITE_AUTH_USER: !Ref WebsiteAuthUser
           WEBSITE_AUTH_PASSWORD: !Ref WebsiteAuthPassword
+          BHAGWAT_PASSWORD: !Ref BhagwatPassword
           GEMINI_API_KEY: !Ref GeminiApiKey
           GEMINI_API_KEY_2: !Ref GeminiApiKey2
           GEMINI_API_KEY_3: !Ref GeminiApiKey3

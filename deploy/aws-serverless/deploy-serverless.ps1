@@ -140,6 +140,22 @@ $primaryJobTypes = if ($envMap.ContainsKey("YOUTUBE_QUEUE_PRIMARY_JOB_TYPES") -a
   "download,clip-cut"
 }
 
+$bhagwatPassword = Get-OptionalEnv $envMap 'BHAGWAT_PASSWORD'
+if (-not $bhagwatPassword) {
+  $apiFunctionName = "$Prefix-api"
+  $existingBhagwatPassword = aws lambda get-function-configuration `
+    --region $Region `
+    --function-name $apiFunctionName `
+    --query "Environment.Variables.BHAGWAT_PASSWORD" `
+    --output text 2>$null
+  if ($LASTEXITCODE -eq 0 -and $existingBhagwatPassword -and $existingBhagwatPassword -ne "None") {
+    $bhagwatPassword = $existingBhagwatPassword
+  }
+}
+if (-not $bhagwatPassword) {
+  throw "Missing required env value: BHAGWAT_PASSWORD"
+}
+
 $requiredTypes = @("download", "clip-cut", "subtitles", "best-clips")
 $primarySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($item in ($primaryJobTypes -split ",")) {
@@ -160,6 +176,7 @@ $parameterOverrides = @(
   "SessionSecret=$(Get-RequiredEnv $envMap 'SESSION_SECRET')"
   "WebsiteAuthUser=$(Get-OptionalEnv $envMap 'WEBSITE_AUTH_USER' 'kalki_avatar')"
   "WebsiteAuthPassword=$(Get-RequiredEnv $envMap 'WEBSITE_AUTH_PASSWORD')"
+  "BhagwatPassword=$bhagwatPassword"
   "GeminiApiKey=$(Get-RequiredEnv $envMap 'GEMINI_API_KEY')"
   "GeminiApiKey2=$(Get-OptionalEnv $envMap 'GEMINI_API_KEY_2')"
   "GeminiApiKey3=$(Get-OptionalEnv $envMap 'GEMINI_API_KEY_3')"
