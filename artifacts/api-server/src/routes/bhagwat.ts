@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import {
   existsSync,
   mkdirSync,
@@ -23,6 +23,12 @@ import { AssemblyAI } from "assemblyai";
 import ffmpegStatic from "ffmpeg-static";
 
 const router: Router = Router();
+const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
+const BHAGWAT_AUTH_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
+
+function isBhagwatAuthenticated(req: Request): boolean {
+  return req.signedCookies?.[BHAGWAT_AUTH_COOKIE_NAME] === "1";
+}
 
 // Make yt-dlp (installed via uv sync in Replit, or system pip3 in Docker)
 // visible to Python without overriding the system PATH in environments where
@@ -143,6 +149,18 @@ interface UploadedAudio {
   createdAt: number;
 }
 const uploadedAudios = new Map<string, UploadedAudio>();
+
+router.use("/bhagwat", (req: Request, res: Response, next: NextFunction) => {
+  if (req.path === "/auth") {
+    next();
+    return;
+  }
+  if (isBhagwatAuthenticated(req)) {
+    next();
+    return;
+  }
+  res.status(401).json({ error: "Bhagwat authentication required" });
+});
 
 function pickFirst(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
@@ -1118,9 +1136,6 @@ setInterval(
 // never exposed in client-side JavaScript.
 router.post("/bhagwat/auth", (req: Request, res: Response) => {
   const bodyPassword = (req.body as { password?: string })?.password;
-  const queryPassword = typeof (req.query as { password?: unknown })?.password === "string"
-    ? ((req.query as { password?: string }).password ?? "")
-    : "";
   const rawPassword = (() => {
     const raw = (req as Request & { rawBody?: unknown }).rawBody;
     if (typeof raw !== "string" || !raw) return "";
@@ -1131,7 +1146,7 @@ router.post("/bhagwat/auth", (req: Request, res: Response) => {
       return "";
     }
   })();
-  const password = bodyPassword || queryPassword || rawPassword;
+  const password = bodyPassword || rawPassword;
   const expected = process.env.BHAGWAT_PASSWORD;
   if (!expected) {
     res.status(503).json({ ok: false, message: "BHAGWAT_PASSWORD is not configured" });
@@ -1141,6 +1156,14 @@ router.post("/bhagwat/auth", (req: Request, res: Response) => {
     res.status(401).json({ ok: false, message: "Incorrect password" });
     return;
   }
+  res.cookie(BHAGWAT_AUTH_COOKIE_NAME, "1", {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax",
+    signed: true,
+    maxAge: BHAGWAT_AUTH_MAX_AGE_MS,
+    path: "/",
+  });
   res.json({ ok: true });
 });
 
