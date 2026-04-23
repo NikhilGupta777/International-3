@@ -147,7 +147,12 @@ if (-not $bhagwatPassword) {
     --stack-name $StackName `
     --query "Stacks[0].Parameters[?ParameterKey=='BhagwatPassword'].ParameterValue | [0]" `
     --output text 2>$null
-  if ($LASTEXITCODE -eq 0 -and $existingBhagwatPasswordFromStack -and $existingBhagwatPasswordFromStack -ne "None") {
+  if (
+    $LASTEXITCODE -eq 0 -and
+    $existingBhagwatPasswordFromStack -and
+    $existingBhagwatPasswordFromStack -ne "None" -and
+    $existingBhagwatPasswordFromStack -ne "****"
+  ) {
     $bhagwatPassword = $existingBhagwatPasswordFromStack
   }
 }
