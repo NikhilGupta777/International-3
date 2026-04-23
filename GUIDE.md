@@ -538,6 +538,14 @@ The site works fine for all other users.
    aws cloudformation describe-stacks --region us-east-1 --stack-name ytgrabber-green-serverless --query "Stacks[0].StackStatus" --output text
    ```
 
+### Browser Shows "Security Risk / SSL_ERROR_BAD_CERT_DOMAIN"
+
+This happens if your custom domain (`videomaking.in`) points to CloudFront, but CloudFront doesn't have an SSL certificate attached for that domain.
+1. Ensure an SSL certificate for `videomaking.in` and `*.videomaking.in` is issued in **AWS Certificate Manager (ACM)** in the `us-east-1` region.
+2. In the AWS Console, go to **CloudFront** -> select your distribution -> **Edit**.
+3. Under **Alternate domain names (CNAME)**, ensure `videomaking.in` and `www.videomaking.in` are listed.
+4. Under **Custom SSL certificate**, select the ACM certificate and save changes.
+
 ### Jobs Stay "Queued" Forever
 
 1. Check Batch compute environment is ENABLED:
@@ -601,6 +609,14 @@ This is a pay-per-use architecture. You pay nothing when nobody is using the sit
 - The entire site requires login (session cookie)
 - Session secret is a 64-byte random value — do not rotate unless necessary (it invalidates all sessions)
 - AWS credentials are IAM user credentials with scoped permissions (S3, Batch, DynamoDB, Lambda)
+
+### ⚠️ Critical: Do Not Delete `.env.green`
+
+The production secrets file lives at `deploy/ec2/.env.green`. **Do not delete the `deploy/ec2/` folder.** Even though the architecture is now serverless, the deployment script `deploy-serverless.ps1` expects this file to exist.
+If this file is ever accidentally deleted from your hard drive, it can only be recovered by querying the live Lambda environment using the AWS CLI:
+```powershell
+aws lambda get-function-configuration --region us-east-1 --function-name ytgrabber-green-api --query "Environment.Variables" --output json
+```
 
 ### What to Never Commit
 
