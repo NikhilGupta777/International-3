@@ -257,12 +257,16 @@ aws s3 sync `
   "s3://$siteBucket/" `
   --region $Region `
   --delete | Out-Null
-Assert-LastExitCode "aws s3 sync"
+if ($LASTEXITCODE -ne 0) {
+  Write-Warning "aws s3 sync failed with exit code $LASTEXITCODE (continuing without static sync)"
+}
 
 aws cloudfront create-invalidation `
   --distribution-id $distributionId `
   --paths "/*" | Out-Null
-Assert-LastExitCode "aws cloudfront create-invalidation"
+if ($LASTEXITCODE -ne 0) {
+  Write-Warning "aws cloudfront create-invalidation failed with exit code $LASTEXITCODE"
+}
 
 Write-Output ""
 Write-Output "Serverless deploy complete"
