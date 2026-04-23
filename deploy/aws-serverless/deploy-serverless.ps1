@@ -142,6 +142,16 @@ $primaryJobTypes = if ($envMap.ContainsKey("YOUTUBE_QUEUE_PRIMARY_JOB_TYPES") -a
 
 $bhagwatPassword = Get-OptionalEnv $envMap 'BHAGWAT_PASSWORD'
 if (-not $bhagwatPassword) {
+  $existingBhagwatPasswordFromStack = aws cloudformation describe-stacks `
+    --region $Region `
+    --stack-name $StackName `
+    --query "Stacks[0].Parameters[?ParameterKey=='BhagwatPassword'].ParameterValue | [0]" `
+    --output text 2>$null
+  if ($LASTEXITCODE -eq 0 -and $existingBhagwatPasswordFromStack -and $existingBhagwatPasswordFromStack -ne "None") {
+    $bhagwatPassword = $existingBhagwatPasswordFromStack
+  }
+}
+if (-not $bhagwatPassword) {
   $apiFunctionName = "$Prefix-api"
   $existingBhagwatPassword = aws lambda get-function-configuration `
     --region $Region `
