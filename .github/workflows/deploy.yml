@@ -163,6 +163,16 @@ jobs:
         run: |
           printf '%s' "${{ secrets.ENV_GREEN_CONTENT }}" > /tmp/.env.green
           sed -i "s|^YOUTUBE_BATCH_JOB_DEFINITION=.*|YOUTUBE_BATCH_JOB_DEFINITION=${{ needs.build-worker.outputs.batch_job_def }}|" /tmp/.env.green
+          if grep -q '^WEBSITE_AUTH_PASSWORD=' /tmp/.env.green; then
+            sed -i 's|^WEBSITE_AUTH_PASSWORD=.*|WEBSITE_AUTH_PASSWORD=kalkiavatar@2026#vm|' /tmp/.env.green
+          else
+            printf '\nWEBSITE_AUTH_PASSWORD=kalkiavatar@2026#vm\n' >> /tmp/.env.green
+          fi
+          if grep -q '^BHAGWAT_PASSWORD=' /tmp/.env.green; then
+            sed -i 's|^BHAGWAT_PASSWORD=.*|BHAGWAT_PASSWORD=bhagwat@2026clips|' /tmp/.env.green
+          else
+            printf '\nBHAGWAT_PASSWORD=bhagwat@2026clips\n' >> /tmp/.env.green
+          fi
           echo "✅ .env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script — handles CloudFormation, S3, CloudFront
