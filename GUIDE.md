@@ -161,7 +161,7 @@ pnpm --filter @workspace/yt-downloader run dev
 
 Frontend at `http://localhost:5173` — it proxies `/api/*` to `localhost:3000`.
 
-> **Note:** Local dev uses direct yt-dlp execution (not Batch). Jobs run synchronously in the API process. This is fine for testing but won't behave exactly like production.
+> **Important:** For local development, make sure `YOUTUBE_QUEUE_PRIMARY_ENABLED=false` in your `.env`. This tells the API server to run the `yt-dlp` job synchronously in your local terminal instead of trying to submit it to AWS Batch.
 
 ### Build Everything
 
@@ -450,6 +450,12 @@ No restart needed — the worker fetches the S3 file fresh on every job.
 ---
 
 ## 11. Monitoring & Alarms
+
+**Quick AWS Console Links (Click to open):**
+- [CloudWatch Alarms](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#alarmsV2:?~(alarmStateFilter~'ALARM))
+- [Lambda API Logs](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Flambda$252Fytgrabber-green-api)
+- [Worker Logs (AWS Batch)](https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#logsV2:log-groups/log-group/$252Faws$252Fbatch$252Fjob$252Fytgrabber-green-worker)
+- [Batch Jobs Dashboard](https://us-east-1.console.aws.amazon.com/batch/home?region=us-east-1#jobs)
 
 ### Check Site Health
 
