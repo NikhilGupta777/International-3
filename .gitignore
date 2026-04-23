@@ -60,6 +60,9 @@ artifacts/api-server/*-player-script.js
 ytgrabber-key-*.pem
 deploy/ec2/keys/
 deploy/ec2/.env.production
+deploy/ec2/.env.green
+deploy/ec2/.env.green.deploytmp
+tmp-*
 *.json
 *.log
 .pythonlibs/
