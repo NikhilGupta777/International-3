@@ -13,6 +13,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Assert-LastExitCode {
+  param([string]$Step)
+  if ($LASTEXITCODE -ne 0) {
+    throw "$Step failed with exit code $LASTEXITCODE"
+  }
+}
+
 function Get-EnvMap {
   param([string]$Path)
 
@@ -95,9 +102,11 @@ function Remove-RollbackCompleteStackIfNeeded {
   aws cloudformation delete-stack `
     --region $Region `
     --stack-name $StackName | Out-Null
+  Assert-LastExitCode "cloudformation delete-stack"
   aws cloudformation wait stack-delete-complete `
     --region $Region `
     --stack-name $StackName
+  Assert-LastExitCode "cloudformation wait stack-delete-complete"
 }
 
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -191,10 +200,12 @@ aws cloudformation deploy `
   --capabilities CAPABILITY_NAMED_IAM `
   --parameter-overrides $parameterOverrides `
   --no-fail-on-empty-changeset | Out-Null
+Assert-LastExitCode "cloudformation deploy"
 
 $stackJson = aws cloudformation describe-stacks `
   --region $Region `
   --stack-name $StackName | ConvertFrom-Json
+Assert-LastExitCode "cloudformation describe-stacks"
 if (-not $stackJson -or -not $stackJson.Stacks -or $stackJson.Stacks.Count -eq 0) {
   throw "CloudFormation stack was not created: $StackName"
 }
@@ -212,16 +223,19 @@ if (-not $siteBucket -or -not $distributionId) {
 }
 
 pnpm --filter @workspace/yt-downloader run build
+Assert-LastExitCode "pnpm yt-downloader build"
 
 aws s3 sync `
   (Join-Path $repoRoot "artifacts\yt-downloader\dist\public") `
   "s3://$siteBucket/" `
   --region $Region `
   --delete | Out-Null
+Assert-LastExitCode "aws s3 sync"
 
 aws cloudfront create-invalidation `
   --distribution-id $distributionId `
   --paths "/*" | Out-Null
+Assert-LastExitCode "aws cloudfront create-invalidation"
 
 Write-Output ""
 Write-Output "Serverless deploy complete"
