@@ -34,7 +34,6 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
-      - uses: docker/setup-buildx-action@v3
 
       - uses: pnpm/action-setup@v4
         with: { version: latest }
@@ -50,13 +49,27 @@ jobs:
         run: |
           TAG="${GITHUB_SHA::8}"
           URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_API_REPO }}:${TAG}"
-          docker buildx build \
+          docker build \
             --platform linux/amd64 \
             -f Dockerfile.api-lambda \
             -t "$URI" \
-            --push .
+            .
+          docker push "$URI"
+
+          DIGEST=$(aws ecr batch-get-image \
+            --region "${{ env.AWS_REGION }}" \
+            --repository-name "${{ env.ECR_API_REPO }}" \
+            --image-ids "imageTag=${TAG}" \
+            --accepted-media-types "application/vnd.docker.distribution.manifest.v2+json" "application/vnd.oci.image.manifest.v1+json" \
+            --query "images[0].imageId.imageDigest" \
+            --output text)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "None" ]; then
+            echo "Lambda-compatible manifest was not published for $URI"
+            exit 1
+          fi
+
           echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
-          echo "✅ API image: ${URI}"
+          echo "✅ API image: ${URI} (${DIGEST})"
 
   # ─── Job 2: Build & push Fargate worker image ────────────────────────────────
   build-worker:

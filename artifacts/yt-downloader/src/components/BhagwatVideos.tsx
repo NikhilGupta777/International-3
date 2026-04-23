@@ -62,7 +62,6 @@ function timeAgo(ts: number) {
 
 // ── Password Gate ─────────────────────────────────────────────────────────────
 function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
-  const FALLBACK_BHAGWAT_PASSWORD = "bhagwat@2026clips";
   const [pw, setPw] = useState("");
   const [show, setShow] = useState(false);
   const [error, setError] = useState("");
@@ -81,11 +80,6 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
         body: JSON.stringify({ password: pw }),
       });
       if (res.ok) {
-        sessionStorage.setItem(STORAGE_KEY, "1");
-        onUnlock();
-      } else if (res.status === 404 && pw === FALLBACK_BHAGWAT_PASSWORD) {
-        // Temporary fallback: when backend route is not yet deployed, allow the
-        // operator-provided emergency password so production is not blocked.
         sessionStorage.setItem(STORAGE_KEY, "1");
         onUnlock();
       } else {
