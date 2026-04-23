@@ -17,7 +17,8 @@ RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
 COPY . .
 
-RUN pnpm install --frozen-lockfile
+RUN pnpm config set network-concurrency 1 && pnpm config set child-concurrency 1
+RUN pnpm install --filter @workspace/queue-worker... --frozen-lockfile
 RUN pnpm --filter @workspace/queue-worker run build
 
 CMD ["node", "artifacts/queue-worker/dist/index.cjs"]
