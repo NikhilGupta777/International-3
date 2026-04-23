@@ -1,9 +1,17 @@
+import type { Request } from "express";
 import serverless from "serverless-http";
 import app from "./app";
 
 export const handler = serverless(app, {
   provider: "aws",
-  request(request, event: { body?: unknown; isBase64Encoded?: boolean }, context) {
+  request(
+    request: Request & {
+      apiGateway?: { event?: unknown; context?: unknown };
+      rawBody?: string;
+    },
+    event: { body?: unknown; isBase64Encoded?: boolean },
+    context: unknown,
+  ) {
     const raw =
       typeof event?.body === "string"
         ? event.isBase64Encoded

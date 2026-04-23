@@ -43,7 +43,7 @@ const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
 const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
 let ytdlpCookiesBase64 = process.env.YTDLP_COOKIES_BASE64 ?? "";
 const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
-const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE ?? join(tmpdir(), ".yt-cookies-worker.txt");
+const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || join(tmpdir(), ".yt-cookies-worker.txt");
 const S3_BUCKET = process.env.S3_BUCKET ?? "";
 const S3_OBJECT_PREFIX = (process.env.S3_OBJECT_PREFIX ?? "ytgrabber-green").replace(/^\/+|\/+$/g, "");
 

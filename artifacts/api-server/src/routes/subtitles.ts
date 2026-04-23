@@ -118,6 +118,14 @@ function getDefaultSrtYoutubeExtractorArgs(): string[] {
       `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
     ];
   }
+  // Browser cookies are tied to web clients. Prefer web when cookies exist.
+  const hasCookies = getSrtCookieArgs().length > 0;
+  if (hasCookies) {
+    return [
+      "--extractor-args",
+      "youtube:player_client=web,web_embedded,tv_embedded",
+    ];
+  }
   return [
     "--extractor-args",
     "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless",
@@ -132,6 +140,19 @@ function getSrtYoutubeFallbacks(): string[][] {
       ["--extractor-args", "youtube:player_client=mweb,ios"],
       ["--extractor-args", "youtube:player_client=ios"],
       ["--extractor-args", "youtube:player_client=android_vr"],
+    ];
+  }
+  const hasCookies = getSrtCookieArgs().length > 0;
+  if (hasCookies) {
+    // Keep web-first fallback order when authenticated browser cookies are present.
+    return [
+      ["--extractor-args", "youtube:player_client=web"],
+      ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
+      ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+      ["--extractor-args", "youtube:player_client=tv_embedded"],
+      ["--extractor-args", "youtube:player_client=android_vr"],
+      ["--extractor-args", "youtube:player_client=mweb"],
+      ["--extractor-args", "youtube:player_client=ios"],
     ];
   }
   return [
