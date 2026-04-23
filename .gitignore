@@ -63,7 +63,19 @@ deploy/ec2/.env.production
 deploy/ec2/.env.green
 deploy/ec2/.env.green.deploytmp
 tmp-*
-*.json
-*.log
+
+# Agent scratch / temp work
+scratch/
+.playwright-cli/
+
+# Legacy directories (kept locally for reference, not needed in git)
+attached_assets/
+screenshots/
+archive/
+
+# Temp/scratch JSON and log files (only root-level)
+/tmp-*.json
+/tmp-*.txt
+/*.log
 .pythonlibs/
 .venv/
