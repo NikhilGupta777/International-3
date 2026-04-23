@@ -497,11 +497,16 @@ aws logs get-log-events --region us-east-1 `
 
 ```powershell
 $base = "https://d2bcwj2idfdwb4.cloudfront.net"
+$authUser = $env:WEBSITE_AUTH_USER
+$authPass = $env:WEBSITE_AUTH_PASSWORD
+if (-not $authPass) { throw "Set WEBSITE_AUTH_PASSWORD in your shell before smoke test" }
+if (-not $authUser) { $authUser = "kalki_avatar" }
+$loginBody = @{ username = $authUser; password = $authPass } | ConvertTo-Json -Compress
 
 # Login
 curl.exe -s -c .\test-cookies.txt `
   -H "content-type: application/json" `
-  --data-binary '{"username":"kalki_avatar","password":"kalkiavatar#2026"}' `
+  --data-binary $loginBody `
   "$base/api/auth/login"
 
 # Submit clip-cut

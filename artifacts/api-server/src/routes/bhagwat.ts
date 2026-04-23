@@ -1118,8 +1118,11 @@ setInterval(
 // never exposed in client-side JavaScript.
 router.post("/bhagwat/auth", (req: Request, res: Response) => {
   const { password } = req.body as { password?: string };
-  const expected =
-    process.env.BHAGWAT_PASSWORD ?? "bhagwatnarrationvideos@clips2026";
+  const expected = process.env.BHAGWAT_PASSWORD;
+  if (!expected) {
+    res.status(503).json({ ok: false, message: "BHAGWAT_PASSWORD is not configured" });
+    return;
+  }
   if (!password || password !== expected) {
     res.status(401).json({ ok: false, message: "Incorrect password" });
     return;

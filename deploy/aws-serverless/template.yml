@@ -24,7 +24,6 @@ Parameters:
   WebsiteAuthPassword:
     Type: String
     NoEcho: true
-    Default: kalkiavatar#2026
   GeminiApiKey:
     Type: String
     NoEcho: true

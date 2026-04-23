@@ -19,12 +19,19 @@ app.set("trust proxy", true);
 const DISABLE_STATIC_SERVE = process.env.DISABLE_STATIC_SERVE === "true";
 const AUTH_COOKIE_NAME = "videomaking_auth";
 const AUTH_USER = process.env.WEBSITE_AUTH_USER ?? "kalki_avatar";
-const AUTH_PASS = process.env.WEBSITE_AUTH_PASSWORD ?? "kalkiavatar#2026";
+const AUTH_PASS = process.env.WEBSITE_AUTH_PASSWORD;
 const AUTH_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
 const AUTH_COOKIE_SECRET =
   process.env.SESSION_SECRET ??
-  process.env.AUTH_COOKIE_SECRET ??
-  "videomaking-auth-secret";
+  process.env.AUTH_COOKIE_SECRET;
+
+if (!AUTH_PASS) {
+  throw new Error("WEBSITE_AUTH_PASSWORD must be set");
+}
+
+if (!AUTH_COOKIE_SECRET) {
+  throw new Error("SESSION_SECRET or AUTH_COOKIE_SECRET must be set");
+}
 
 function secureEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
