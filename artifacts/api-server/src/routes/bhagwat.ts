@@ -1117,7 +1117,21 @@ setInterval(
 // The password is stored server-side in BHAGWAT_PASSWORD env var so it is
 // never exposed in client-side JavaScript.
 router.post("/bhagwat/auth", (req: Request, res: Response) => {
-  const { password } = req.body as { password?: string };
+  const bodyPassword = (req.body as { password?: string })?.password;
+  const queryPassword = typeof (req.query as { password?: unknown })?.password === "string"
+    ? ((req.query as { password?: string }).password ?? "")
+    : "";
+  const rawPassword = (() => {
+    const raw = (req as Request & { rawBody?: unknown }).rawBody;
+    if (typeof raw !== "string" || !raw) return "";
+    try {
+      const parsed = JSON.parse(raw) as { password?: unknown };
+      return typeof parsed.password === "string" ? parsed.password : "";
+    } catch {
+      return "";
+    }
+  })();
+  const password = bodyPassword || queryPassword || rawPassword;
   const expected = process.env.BHAGWAT_PASSWORD;
   if (!expected) {
     res.status(503).json({ ok: false, message: "BHAGWAT_PASSWORD is not configured" });

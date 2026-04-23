@@ -82,6 +82,15 @@ function extractLoginCredentials(req: Request): {
     }
   }
 
+  const query = req.query as Record<string, unknown> | undefined;
+  if (query && typeof query === "object") {
+    const username = typeof query.username === "string" ? query.username : undefined;
+    const password = typeof query.password === "string" ? query.password : undefined;
+    if (username !== undefined || password !== undefined) {
+      return { username, password };
+    }
+  }
+
   // Fallback for Lambda adapters where parsed body is not populated.
   const eventBody = (req as Request & {
     apiGateway?: { event?: { body?: string; isBase64Encoded?: boolean } };

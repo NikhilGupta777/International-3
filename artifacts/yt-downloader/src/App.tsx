@@ -98,7 +98,8 @@ function App() {
     setSubmitting(true);
     setLoginError("");
     try {
-      const res = await fetch(`${base}/api/auth/login`, {
+      const loginUrl = `${base}/api/auth/login?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+      const res = await fetch(loginUrl, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
