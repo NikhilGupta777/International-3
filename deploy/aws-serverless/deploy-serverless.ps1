@@ -225,14 +225,17 @@ $parameterOverrides = @(
 
 Remove-RollbackCompleteStackIfNeeded -Region $Region -StackName $StackName
 
-aws cloudformation deploy `
+$deployOutput = aws cloudformation deploy `
   --region $Region `
   --stack-name $StackName `
   --template-file $templatePath `
   --capabilities CAPABILITY_NAMED_IAM `
   --parameter-overrides $parameterOverrides `
-  --no-fail-on-empty-changeset | Out-Null
-Assert-LastExitCode "cloudformation deploy"
+  --no-fail-on-empty-changeset 2>&1
+if ($LASTEXITCODE -ne 0) {
+  Write-Error ("cloudformation deploy output: " + ($deployOutput -join " "))
+  Assert-LastExitCode "cloudformation deploy"
+}
 
 $stackJson = aws cloudformation describe-stacks `
   --region $Region `
