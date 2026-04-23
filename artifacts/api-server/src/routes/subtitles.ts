@@ -66,7 +66,7 @@ const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
 const HAS_DYNAMIC_POT_PROVIDER = !!YTDLP_POT_PROVIDER_URL;
 const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 const YTDLP_COOKIES_FILE =
-  process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
+  process.env.YTDLP_COOKIES_FILE || join(_workspaceRoot, ".yt-cookies.txt");
 const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
 
 // ── AssemblyAI — used for audio > 10 minutes ─────────────────────────────────
