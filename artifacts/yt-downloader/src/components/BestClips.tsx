@@ -250,6 +250,7 @@ export const BestClips = forwardRef(function BestClips(
   const esRef = useRef<EventSource | null>(null);
   const analysisStatusTimerRef = useRef<number | null>(null);
   const analysisStatusErrorCountRef = useRef(0);
+  const resultsKeyRef = useRef(0); // bumped on each new analysis to force clean remount of results
   const downloadStreamRefs = useRef<Map<ClipKey, EventSource>>(new Map());
   const { toast } = useToast();
 
@@ -511,6 +512,9 @@ export const BestClips = forwardRef(function BestClips(
     setAnalysisElapsed(0);
     setVideoDurationSec(0);
     analysisStartRef.current = Date.now();
+    resultsKeyRef.current += 1; // invalidate any stale results section
+    // Clear persisted session results so old data can't ghost in
+    try { sessionStorage.removeItem(PERSIST_KEY); } catch {}
 
     try {
       // 1. Start the job
@@ -1273,6 +1277,7 @@ export const BestClips = forwardRef(function BestClips(
       <AnimatePresence>
         {groupedClips.length > 0 && !isLoading && (
           <motion.div
+            key={`results-${resultsKeyRef.current}`}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}

@@ -2818,9 +2818,8 @@ function isQuotaLikeGeminiError(message: string): boolean {
 }
 
 const YOUTUBE_KEY_ROTATION_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
   "gemini-3-flash-preview",
+  "gemini-2.5-pro",
 ];
 
 async function generateWithPersonalKeyRotation(
@@ -3014,14 +3013,14 @@ ${inputTranscript}`;
           try {
             const rc = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
             const rr = await rc.models.generateContent({
-              model: "gemini-3.1-pro-preview",
+              model: "gemini-2.5-pro",
               contents: [{ role: "user", parts: [{ text: promptText }] }],
               config: { systemInstruction },
             });
             corrected = (rr as any).text ?? "";
             done = true;
           } catch (e) {
-            console.warn("[subtitle/fix] Replit gemini-3.1-pro-preview failed, falling back to own key:", (e as Error).message);
+            console.warn("[subtitle/fix] Replit gemini-2.5-pro failed, falling back to own key:", (e as Error).message);
           }
         }
         if (!done) {
@@ -3030,9 +3029,8 @@ ${inputTranscript}`;
             systemInstruction,
             promptText,
             [
-              "gemini-2.5-flash",
-              "gemini-2.5-flash-lite",
               "gemini-3-flash-preview",
+              "gemini-2.5-pro",
             ],
           );
         }
@@ -3130,8 +3128,7 @@ async function clipsGeminiContent(
   }
 
   return generateWithPersonalKeyRotation("clips/text", systemInstruction, userContent, [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-2.5-pro",
     "gemini-3-flash-preview",
   ]);
 }

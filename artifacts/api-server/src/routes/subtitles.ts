@@ -2,7 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import multer from "multer";
 import { randomUUID } from "crypto";
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, statSync, createReadStream,
 } from "fs";
 import { join, dirname, basename } from "path";
 import { spawn, execFileSync } from "child_process";
@@ -67,6 +67,11 @@ const HAS_DYNAMIC_POT_PROVIDER = !!YTDLP_POT_PROVIDER_URL;
 const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 const YTDLP_COOKIES_FILE =
   process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
+const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
+
+// ── AssemblyAI — used for audio > 10 minutes ─────────────────────────────────
+const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
+const ASSEMBLYAI_THRESHOLD_SECS = 600; // 10 minutes
 
 // Base args applied to every yt-dlp call (matches youtube.ts for consistency).
 const YTDLP_BASE_ARGS: string[] = [
@@ -138,6 +143,115 @@ function getSrtYoutubeFallbacks(): string[][] {
   ];
 }
 
+type ExportedBrowserCookie = {
+  domain?: unknown;
+  hostOnly?: unknown;
+  path?: unknown;
+  secure?: unknown;
+  session?: unknown;
+  expirationDate?: unknown;
+  name?: unknown;
+  value?: unknown;
+};
+
+function cookiesToNetscape(cookieList: ExportedBrowserCookie[]): string | null {
+  const lines: string[] = [];
+  for (const cookie of cookieList) {
+    const domainRaw = typeof cookie.domain === "string" ? cookie.domain.trim() : "";
+    const nameRaw = typeof cookie.name === "string" ? cookie.name.trim() : "";
+    const valueRaw = typeof cookie.value === "string" ? cookie.value : "";
+    if (!domainRaw || !nameRaw) continue;
+    const domainLower = domainRaw.toLowerCase();
+    const keepCookie =
+      domainLower.includes("youtube.com") ||
+      domainLower.includes("youtu.be") ||
+      domainLower.includes("google.com") ||
+      domainLower.includes("googlevideo.com");
+    if (!keepCookie) continue;
+
+    const path = typeof cookie.path === "string" && cookie.path.trim() ? cookie.path.trim() : "/";
+    const includeSubdomains =
+      cookie.hostOnly === true || !domainRaw.startsWith(".") ? "FALSE" : "TRUE";
+    const secure = cookie.secure === true ? "TRUE" : "FALSE";
+    const isSession = cookie.session === true;
+    const expiry =
+      !isSession && typeof cookie.expirationDate === "number" && Number.isFinite(cookie.expirationDate)
+        ? String(Math.floor(cookie.expirationDate))
+        : "0";
+    lines.push(
+      `${domainRaw}\t${includeSubdomains}\t${path}\t${secure}\t${expiry}\t${nameRaw}\t${valueRaw}`,
+    );
+  }
+  if (lines.length === 0) return null;
+  return `# Netscape HTTP Cookie File\n${lines.join("\n")}\n`;
+}
+
+function decodeCookiesFromBase64(base64Value: string): string | null {
+  const decoded = Buffer.from(base64Value, "base64").toString("utf8");
+  const trimmed = decoded.trim();
+  if (!trimmed) return null;
+  if (
+    trimmed.startsWith("# Netscape HTTP Cookie File") ||
+    trimmed.startsWith(".youtube.com") ||
+    trimmed.includes("\t")
+  ) {
+    return trimmed.endsWith("\n") ? trimmed : `${trimmed}\n`;
+  }
+  if (trimmed.startsWith("{")) {
+    const parsedObj = JSON.parse(trimmed) as { cookies?: ExportedBrowserCookie[] };
+    if (Array.isArray(parsedObj.cookies)) {
+      return cookiesToNetscape(parsedObj.cookies);
+    }
+  }
+  if (trimmed.startsWith("[")) {
+    const parsedList = JSON.parse(trimmed) as ExportedBrowserCookie[];
+    if (Array.isArray(parsedList)) {
+      return cookiesToNetscape(parsedList);
+    }
+  }
+  return null;
+}
+
+let ensureYtdlpCookiesPromise: Promise<void> | null = null;
+
+async function ensureYtdlpCookiesLoaded(): Promise<void> {
+  if (!YTDLP_COOKIES_S3_KEY) return;
+
+  // If the cookie file was cleaned up by OS (e.g. /tmp purge), reset the singleton
+  // so we reload from S3 rather than silently using no cookies for the rest of the session.
+  if (!existsSync(YTDLP_COOKIES_FILE) && ensureYtdlpCookiesPromise) {
+    ensureYtdlpCookiesPromise = null;
+    logger.warn({ file: YTDLP_COOKIES_FILE }, "Cookie file missing — resetting load promise to re-fetch from S3");
+  }
+
+  if (existsSync(YTDLP_COOKIES_FILE)) {
+    if (getSrtCookieArgs().length > 0) return;
+  }
+
+  if (!ensureYtdlpCookiesPromise) {
+    ensureYtdlpCookiesPromise = (async () => {
+      try {
+        const encoded = (await readTextFromS3(YTDLP_COOKIES_S3_KEY)).trim();
+        if (!encoded) return;
+        const cookieContent = decodeCookiesFromBase64(encoded);
+        if (!cookieContent) {
+          logger.warn({ key: YTDLP_COOKIES_S3_KEY }, "S3 cookie payload could not be converted to Netscape format");
+          return;
+        }
+        const cookieDir = dirname(YTDLP_COOKIES_FILE);
+        if (!existsSync(cookieDir)) mkdirSync(cookieDir, { recursive: true });
+        writeFileSync(YTDLP_COOKIES_FILE, cookieContent, "utf8");
+        logger.info({ key: YTDLP_COOKIES_S3_KEY }, "Loaded yt-dlp cookies from S3 for subtitles");
+      } catch (e) {
+        // Reset promise so the next request can retry loading cookies
+        ensureYtdlpCookiesPromise = null;
+        logger.error({ err: e, key: YTDLP_COOKIES_S3_KEY }, "Failed to load yt-dlp cookies from S3");
+      }
+    })();
+  }
+  await ensureYtdlpCookiesPromise;
+}
+
 // Return cookie args only when the cookies file exists and is a valid Netscape file.
 function getSrtCookieArgs(): string[] {
   if (!YTDLP_COOKIES_FILE) return [];
@@ -192,6 +306,8 @@ async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Prom
       proc.on("error", (err) => { clearInterval(cancelPoll); reject(err); });
     });
   }
+
+  await ensureYtdlpCookiesLoaded();
 
   const cookieArgs = getSrtCookieArgs();
   const defaultYoutubeArgs = getDefaultSrtYoutubeExtractorArgs();
@@ -646,14 +762,12 @@ function getReplitGenAI(): GoogleGenAI | null {
 }
 
 // Passes 1 & 2 (audio-dependent): use personal keys only with key rotation.
-// Tries each configured key in order with gemini-2.5-flash.
+// gemini-3-flash-preview is primary (fast transcription).
+// gemini-2.5-pro is the quality fallback.
 // Rotates to the next key on 429 rate limit. Throws if all keys are exhausted.
-// Models tried in order — gemini-2.5-flash is primary (as specified).
-// The remaining models are used only when ALL keys are rate-limited on the current model.
 const KEY_ROTATION_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
   "gemini-3-flash-preview",
+  "gemini-2.5-pro",
 ];
 
 async function generateWithKeyRotation(
@@ -1211,6 +1325,199 @@ function secondsToSrtTime(secs: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+
+// ── AssemblyAI helpers ────────────────────────────────────────────────────────
+
+function toAssemblyAiLangCode(language: string): string | undefined {
+  if (language === "auto") return undefined;
+  const map: Record<string, string> = {
+    "English": "en", "Hindi": "hi", "Spanish": "es", "French": "fr",
+    "German": "de", "Portuguese": "pt", "Italian": "it", "Japanese": "ja",
+    "Korean": "ko", "Chinese": "zh", "Arabic": "ar", "Russian": "ru",
+    "Dutch": "nl", "Turkish": "tr", "Polish": "pl", "Swedish": "sv",
+    "Ukrainian": "uk", "Bengali": "bn", "Gujarati": "gu", "Marathi": "mr",
+    "Tamil": "ta", "Telugu": "te", "Punjabi": "pa",
+  };
+  const found = Object.entries(map).find(([k]) => k.toLowerCase() === language.toLowerCase());
+  return found ? found[1] : undefined;
+}
+
+async function assemblyAiUpload(audioPath: string): Promise<string> {
+  const { request } = await import("https");
+  return new Promise((resolve, reject) => {
+    const size = statSync(audioPath).size;
+    const opts = {
+      hostname: "api.assemblyai.com", path: "/v2/upload", method: "POST",
+      headers: {
+        authorization: ASSEMBLYAI_API_KEY,
+        "content-type": "application/octet-stream",
+        "content-length": size,
+      },
+    };
+    const req = request(opts, (res) => {
+      let body = "";
+      res.on("data", (c: Buffer) => { body += c.toString(); });
+      res.on("end", () => {
+        try {
+          const j = JSON.parse(body) as { upload_url?: string; error?: string };
+          if (j.upload_url) resolve(j.upload_url);
+          else reject(new Error(j.error ?? `AssemblyAI upload error (HTTP ${res.statusCode})`));
+        } catch { reject(new Error("AssemblyAI upload: bad JSON response")); }
+      });
+    });
+    req.on("error", reject);
+    createReadStream(audioPath).pipe(req);
+  });
+}
+
+async function assemblyAiCreateTranscript(uploadUrl: string, language: string): Promise<string> {
+  const { request } = await import("https");
+  const langCode = toAssemblyAiLangCode(language);
+  const payload = JSON.stringify({
+    audio_url: uploadUrl,
+    language_detection: !langCode,
+    ...(langCode ? { language_code: langCode } : {}),
+    punctuate: true,
+    format_text: true,
+  });
+  return new Promise((resolve, reject) => {
+    const opts = {
+      hostname: "api.assemblyai.com", path: "/v2/transcript", method: "POST",
+      headers: {
+        authorization: ASSEMBLYAI_API_KEY,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+      },
+    };
+    const req = request(opts, (res) => {
+      let body = "";
+      res.on("data", (c: Buffer) => { body += c.toString(); });
+      res.on("end", () => {
+        try {
+          const j = JSON.parse(body) as { id?: string; error?: string };
+          if (j.id) resolve(j.id);
+          else reject(new Error(j.error ?? `AssemblyAI transcript create error (HTTP ${res.statusCode})`));
+        } catch { reject(new Error("AssemblyAI transcript: bad JSON response")); }
+      });
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+}
+
+type AssemblyAiWord = { start: number; end: number; text: string; confidence: number };
+
+async function assemblyAiPollTranscript(
+  transcriptId: string,
+  job: { cancelled?: boolean },
+): Promise<AssemblyAiWord[]> {
+  const { request } = await import("https");
+  const MAX_POLLS = 360; // 30 min at 5s intervals
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    if (job.cancelled) throw new Error("Cancelled");
+    const result = await new Promise<any>((resolve, reject) => {
+      const opts = {
+        hostname: "api.assemblyai.com",
+        path: `/v2/transcript/${transcriptId}`,
+        method: "GET",
+        headers: { authorization: ASSEMBLYAI_API_KEY },
+      };
+      const req = request(opts, (res) => {
+        let body = "";
+        res.on("data", (c: Buffer) => { body += c.toString(); });
+        res.on("end", () => {
+          try { resolve(JSON.parse(body)); }
+          catch { reject(new Error("AssemblyAI poll: bad JSON")); }
+        });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    if (result.status === "completed") {
+      if (!Array.isArray(result.words) || result.words.length === 0)
+        throw new Error("AssemblyAI returned an empty transcript — no speech detected");
+      return result.words as AssemblyAiWord[];
+    }
+    if (result.status === "error")
+      throw new Error(result.error ?? "AssemblyAI transcription failed");
+  }
+  throw new Error("AssemblyAI transcription timed out after 30 minutes");
+}
+
+function assemblyAiWordsToSrt(words: AssemblyAiWord[]): string {
+  if (words.length === 0) return "";
+  const MAX_WORDS = 6;
+  const MAX_MS = 5000;
+  const cues: Array<{ start: number; end: number; text: string }> = [];
+  let i = 0;
+  while (i < words.length) {
+    const start = words[i].start;
+    const group: string[] = [];
+    let end = words[i].end;
+    while (i < words.length && group.length < MAX_WORDS && (words[i].start - start) < MAX_MS) {
+      group.push(words[i].text);
+      end = words[i].end;
+      i++;
+    }
+    cues.push({ start, end, text: group.join(" ") });
+  }
+  const fmt = (ms: number) => {
+    const h = Math.floor(ms / 3_600_000);
+    const m = Math.floor((ms % 3_600_000) / 60_000);
+    const s = Math.floor((ms % 60_000) / 1000);
+    const mm = ms % 1000;
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(mm).padStart(3, "0")}`;
+  };
+  return cues.map((c, idx) => `${idx + 1}\n${fmt(c.start)} --> ${fmt(c.end)}\n${c.text}`).join("\n\n") + "\n";
+}
+
+async function transcribeWithAssemblyAI(
+  audioPath: string,
+  language: string,
+  job: SrtJob,
+): Promise<string> {
+  logger.info({ audioPath, language }, "AssemblyAI: uploading audio");
+  const uploadUrl = await assemblyAiUpload(audioPath);
+  if (job.cancelled) throw new Error("Cancelled");
+  logger.info("AssemblyAI: creating transcript job");
+  const transcriptId = await assemblyAiCreateTranscript(uploadUrl, language);
+  logger.info({ transcriptId }, "AssemblyAI: polling for completion");
+  const words = await assemblyAiPollTranscript(transcriptId, job);
+  logger.info({ transcriptId, wordCount: words.length }, "AssemblyAI: transcription complete");
+  return assemblyAiWordsToSrt(words);
+}
+
+// Text-only correction prompt — used in AssemblyAI path (no audio file available).
+function buildTextOnlyCorrectionPrompt(rawSrt: string, language: string, durationSrt: string): string {
+  const langNote = language === "auto"
+    ? "The subtitles are in their original language — do NOT translate anything."
+    : `The subtitles are in ${language} — do NOT translate anything.`;
+  return `You are an expert subtitle proofreader. I will give you a draft SRT generated by speech recognition. Fix all errors you can identify from the text alone.
+
+${langNote}
+
+AUDIO DURATION: ${durationSrt}. All timestamps must be within 00:00:00,000 → ${durationSrt},000.
+
+TIMESTAMP FORMAT: Always HH:MM:SS,mmm (e.g. 00:01:23,456). Missing hours prefix is a bug — fix it.
+
+RULES:
+- Fix obvious garbled words / mishearings based on linguistic context
+- Fix timestamps that exceed the audio duration
+- Split any entry with MORE THAN 6 words into shorter entries with proportional timestamps
+- Remove duplicate consecutive entries with nearly identical text
+- Re-number entries sequentially from 1
+- Return ONLY the corrected SRT — no explanations, no markdown fences
+
+DRAFT SRT:
+---
+${rawSrt}
+---
+
+Return the fully corrected SRT:`;
+}
+
 // ── Core processing function ─────────────────────────────────────────────────
 async function processAudio(
   jobId: string,
@@ -1254,8 +1561,6 @@ async function processAudio(
       durationSecs = await getAudioDuration(processedPath);
     }
 
-    const audioBuffer = readFileSync(processedPath);
-    const audioBlob = new Blob([audioBuffer], { type: mimeType });
 
     // Measure exact audio duration so we can tell Gemini to stay within bounds
     const durationSrt = durationSecs > 0 ? secondsToSrtTime(durationSecs) : "99:59:59";
@@ -1264,127 +1569,180 @@ async function processAudio(
 
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
 
-    // ── Key-rotation loop for Passes 1 & 2 (audio-dependent) ─────────────────
-    // A fileUri is tied to the API key/project that uploaded it — a different key
-    // gets 403 on the same URI. So each key attempt uploads its own copy, runs both
-    // passes, then deletes the file. On quota (429) we move to the next key.
     let correctedFinalSrt: string | null = null;
-    let lastKeyErr: unknown;
 
-    for (let ki = 0; ki < clients.length; ki++) {
-      const client = clients[ki];
-      const keyLabel = `key ${ki + 1}`;
-      let geminiFileName: string | null = null;
+    const useAssemblyAI = !!ASSEMBLYAI_API_KEY && durationSecs >= ASSEMBLYAI_THRESHOLD_SECS;
 
-      try {
-        // Upload with this key's client
-        job.status = "uploading";
-        job.progressPct = 20;
-        job.message = ki === 0 ? "Uploading audio to AI..." : `Uploading audio to AI (${keyLabel})...`;
+    if (useAssemblyAI) {
+      // ── AssemblyAI path (audio > 10 min) ─────────────────────────────────────
+      // Pass 1: AssemblyAI transcription (word-level timestamps, highly accurate)
+      job.status = "audio";
+      job.progressPct = 20;
+      job.message = "Uploading to AssemblyAI for transcription…";
+      logger.info({ durationSecs }, "Routing to AssemblyAI (long audio)");
 
-        const uploadResult = await client.files.upload({
-          file: audioBlob,
-          config: { mimeType, displayName: filename },
-        });
-        geminiFileName = uploadResult.name!;
+      const rawSrt = await transcribeWithAssemblyAI(processedPath, language, job);
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
 
-        // Poll until ACTIVE (up to 3 min)
-        let fileInfo: any = uploadResult;
-        let attempts = 0;
-        while (fileInfo.state === "PROCESSING" && attempts < 90) {
-          await new Promise((r) => setTimeout(r, 2000));
-          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
-          fileInfo = await client.files.get({ name: geminiFileName });
-          attempts++;
-        }
-        if (fileInfo.state !== "ACTIVE") throw new Error("Audio processing timed out — please try again");
+      const cleanedRaw = stripFences(rawSrt);
 
-        const fileUri: string = fileInfo.uri;
-
-        // Pass 1: Transcription — try each model in turn on this key
-        if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
-        job.status = "generating";
-        job.progressPct = 40;
-        job.message = "AI is transcribing audio...";
-
-        let rawSrt = "";
-        let lastPass1Err: unknown;
-        for (const model of KEY_ROTATION_MODELS) {
-          try {
-            const result = await client.models.generateContent({
-              model,
-              contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildSrtPrompt(language, durationSrt) }] }],
-              config: { temperature: 0.1, maxOutputTokens: 65536 },
-            });
-            rawSrt = result.text?.trim() ?? "";
-            logger.info({ model, keyLabel }, "Initial subtitle transcription completed");
-            break;
-          } catch (err) {
-            lastPass1Err = err;
-            if (!isGeminiRetryableError(err)) throw err;
-            logger.warn({ model, keyLabel }, `Transcription rate limited on ${model} — trying next model`);
-          }
-        }
-        if (!rawSrt) throw lastPass1Err instanceof Error ? lastPass1Err : new Error("All models rate limited on transcription");
-
-        const cleanedRaw = stripFences(rawSrt);
-
-        // Pass 2: Correction — same fileUri (same key), try each model in turn
-        if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+      // Pass 2: Text-only Gemini correction.
+      // Skip for very long audio (>30 min) — the SRT would be too large for Gemini's
+      // token limit and would be truncated. AssemblyAI word-level output is accurate enough.
+      const CORRECTION_MAX_SECS = 1800; // 30 minutes
+      let correctedText = "";
+      if (durationSecs < CORRECTION_MAX_SECS) {
         job.status = "correcting";
-        job.progressPct = 60;
-        job.message = "AI is auto-correcting errors...";
-
-        let correctedSrt = "";
-        for (const model of KEY_ROTATION_MODELS) {
-          try {
-            const result = await client.models.generateContent({
+        job.progressPct = 70;
+        job.message = "AI is refining subtitles…";
+        try {
+          correctedText = await generateWithKeyRotation(
+            (model) => ({
               model,
-              contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
+              contents: [{ role: "user", parts: [{ text: buildTextOnlyCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
               config: { temperature: 0.1, maxOutputTokens: 65536 },
-            });
-            correctedSrt = result.text?.trim() ?? "";
-            logger.info({ model, keyLabel }, "Subtitle correction completed");
-            break;
-          } catch (err) {
-            if (!isGeminiRetryableError(err)) {
-              logger.warn({ err, model, keyLabel }, "Correction failed (non-quota) — using Pass 1 output");
+            }),
+            "SRT text correction (AssemblyAI path)",
+          );
+        } catch (err) {
+          logger.warn({ err }, "Text-only correction failed — using raw AssemblyAI output");
+        }
+      } else {
+        logger.info({ durationSecs }, "Skipping Gemini correction for very long audio — using raw AssemblyAI output directly");
+      }
+
+      const rawFinal = correctedText && correctedText.length > 10 ? stripFences(correctedText) : cleanedRaw;
+      const normalized = normalizeSrtTimestamps(rawFinal);
+      const deduped = cleanupHallucinatedEntries(normalized);
+      const strictFiltered = strictFilterMalformedTimestamps(deduped);
+      correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
+
+    } else {
+      // ── Gemini path (audio ≤ 10 min) ─────────────────────────────────────────
+      // Read into memory only here — short audio only (AssemblyAI streams directly).
+      const audioBuffer = readFileSync(processedPath);
+      const audioBlob = new Blob([audioBuffer], { type: mimeType });
+      // A fileUri is tied to the API key/project that uploaded it — a different key
+      // gets 403 on the same URI. So each key attempt uploads its own copy, runs both
+      // passes, then deletes the file. On quota (429) we move to the next key.
+      let lastKeyErr: unknown;
+
+      for (let ki = 0; ki < clients.length; ki++) {
+        const client = clients[ki];
+        const keyLabel = `key ${ki + 1}`;
+        let geminiFileName: string | null = null;
+
+        try {
+          // Upload with this key's client
+          job.status = "uploading";
+          job.progressPct = 20;
+          job.message = ki === 0 ? "Uploading audio to AI..." : `Uploading audio to AI (${keyLabel})...`;
+
+          const uploadResult = await client.files.upload({
+            file: audioBlob,
+            config: { mimeType, displayName: filename },
+          });
+          geminiFileName = uploadResult.name!;
+
+          // Poll until ACTIVE (up to 3 min)
+          let fileInfo: any = uploadResult;
+          let attempts = 0;
+          while (fileInfo.state === "PROCESSING" && attempts < 90) {
+            await new Promise((r) => setTimeout(r, 2000));
+            if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+            fileInfo = await client.files.get({ name: geminiFileName });
+            attempts++;
+          }
+          if (fileInfo.state !== "ACTIVE") throw new Error("Audio processing timed out — please try again");
+
+          const fileUri: string = fileInfo.uri;
+
+          // Pass 1: Transcription
+          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+          job.status = "generating";
+          job.progressPct = 40;
+          job.message = "AI is transcribing audio...";
+
+          let rawSrt = "";
+          let lastPass1Err: unknown;
+          for (const model of KEY_ROTATION_MODELS) {
+            try {
+              const result = await client.models.generateContent({
+                model,
+                contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildSrtPrompt(language, durationSrt) }] }],
+                config: { temperature: 0.1, maxOutputTokens: 65536 },
+              });
+              rawSrt = result.text?.trim() ?? "";
+              logger.info({ model, keyLabel }, "Initial subtitle transcription completed");
               break;
+            } catch (err) {
+              lastPass1Err = err;
+              if (!isGeminiRetryableError(err)) throw err;
+              logger.warn({ model, keyLabel }, `Transcription rate limited on ${model} — trying next model`);
             }
-            logger.warn({ model, keyLabel }, `Correction rate limited on ${model} — trying next model`);
+          }
+          if (!rawSrt) throw lastPass1Err instanceof Error ? lastPass1Err : new Error("All models rate limited on transcription");
+
+          const cleanedRaw = stripFences(rawSrt);
+
+          // Pass 2: Correction (audio-aware — same fileUri)
+          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+          job.status = "correcting";
+          job.progressPct = 60;
+          job.message = "AI is auto-correcting errors...";
+
+          let correctedSrt = "";
+          for (const model of KEY_ROTATION_MODELS) {
+            try {
+              const result = await client.models.generateContent({
+                model,
+                contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
+                config: { temperature: 0.1, maxOutputTokens: 65536 },
+              });
+              correctedSrt = result.text?.trim() ?? "";
+              logger.info({ model, keyLabel }, "Subtitle correction completed");
+              break;
+            } catch (err) {
+              if (!isGeminiRetryableError(err)) {
+                logger.warn({ err, model, keyLabel }, "Correction failed (non-quota) — using Pass 1 output");
+                break;
+              }
+              logger.warn({ model, keyLabel }, `Correction rate limited on ${model} — trying next model`);
+            }
+          }
+
+          const rawFinal = (correctedSrt && correctedSrt.length > 10) ? stripFences(correctedSrt) : cleanedRaw;
+          const normalized = normalizeSrtTimestamps(rawFinal);
+          const deduped = cleanupHallucinatedEntries(normalized);
+          const strictFiltered = strictFilterMalformedTimestamps(deduped);
+          correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
+
+          break; // Both passes succeeded — exit key loop
+
+        } catch (err) {
+          lastKeyErr = err;
+          const isQuota = isGeminiRetryableError(err);
+          if (isQuota && ki < clients.length - 1) {
+            logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
+          } else if (!isQuota && ki < clients.length - 1) {
+            logger.warn({ err, keyLabel }, `${keyLabel} failed (non-quota) — trying next key`);
+          } else if (!isQuota) {
+            throw err;
+          }
+        } finally {
+          if (geminiFileName) {
+            try { await client.files.delete({ name: geminiFileName }); } catch {}
           }
         }
+      }
 
-        const rawFinal = (correctedSrt && correctedSrt.length > 10) ? stripFences(correctedSrt) : cleanedRaw;
-        const normalized = normalizeSrtTimestamps(rawFinal);
-        const deduped = cleanupHallucinatedEntries(normalized);
-        const strictFiltered = strictFilterMalformedTimestamps(deduped);
-        correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
-
-        break; // Both passes succeeded — exit key loop
-
-      } catch (err) {
-        lastKeyErr = err;
-        const isQuota = isGeminiRetryableError(err);
-        if (isQuota && ki < clients.length - 1) {
-          logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
-        } else if (!isQuota && ki < clients.length - 1) {
-          logger.warn({ err, keyLabel }, `${keyLabel} failed (non-quota) — trying next key`);
-        } else if (!isQuota) {
-          throw err;
-        }
-      } finally {
-        if (geminiFileName) {
-          try { await client.files.delete({ name: geminiFileName }); } catch {}
-        }
+      if (!correctedFinalSrt) {
+        job.status = "error";
+        job.error = lastKeyErr instanceof Error ? lastKeyErr.message : "All API keys exhausted — try again later";
+        return;
       }
     }
 
-    if (!correctedFinalSrt) {
-      job.status = "error";
-      job.error = lastKeyErr instanceof Error ? lastKeyErr.message : "All API keys exhausted — try again later";
-      return;
-    }
 
     // Validate the SRT before proceeding
     if (!validateSrt(correctedFinalSrt)) {
@@ -1403,7 +1761,7 @@ async function processAudio(
       job.message = `Translating subtitles to ${translateTo}...`;
 
       const translatedRaw = await generateWithReplitFirst(
-        "gemini-3.1-pro-preview",
+        "gemini-2.5-pro",
         (model) => ({
           model,
           contents: [
@@ -1432,7 +1790,7 @@ async function processAudio(
       job.message = `Verifying ${translateTo} translation...`;
 
       const verifiedRaw = await generateWithReplitFirst(
-        "gemini-3.1-pro-preview",
+        "gemini-2.5-pro",
         (model) => ({
           model,
           contents: [

@@ -1068,9 +1068,9 @@ function ClipJobCard({
                   ? "Merging…"
                   : isConnecting
                     ? elapsed < 15
-                      ? "Solving challenge…"
+                      ? "Starting worker…"
                       : elapsed < 40
-                        ? "Fetching video…"
+                        ? "Worker booting up…"
                         : "Downloading…"
                     : job.speed
                       ? job.speed

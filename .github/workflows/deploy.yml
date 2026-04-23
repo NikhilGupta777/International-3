@@ -1,0 +1,183 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false # never cancel a running deploy mid-flight
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "596596146505"
+  ECR_API_REPO: ytgrabber-green-api-lambda
+  ECR_WORKER_REPO: ytgrabber-green-worker
+  CF_STACK_PREFIX: ytgrabber-green
+
+jobs:
+  # ─── Job 1: Build & push API Lambda image ────────────────────────────────────
+  build-api:
+    name: Build API Lambda Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.push.outputs.image_uri }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: pnpm/action-setup@v4
+        with: { version: latest }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @workspace/api-server run build
+
+      - name: Build & push API Lambda image
+        id: push
+        run: |
+          TAG="${GITHUB_SHA::8}"
+          URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_API_REPO }}:${TAG}"
+          docker build \
+            --platform linux/amd64 \
+            --cache-from "type=registry,ref=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_API_REPO }}:cache" \
+            --cache-to "type=registry,ref=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_API_REPO }}:cache,mode=max" \
+            -f Dockerfile.api-lambda \
+            -t "$URI" \
+            --push .
+          echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
+          echo "✅ API image: ${URI}"
+
+  # ─── Job 2: Build & push Fargate worker image ────────────────────────────────
+  build-worker:
+    name: Build Fargate Worker Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.push.outputs.image_uri }}
+      batch_job_def: ${{ steps.register.outputs.batch_job_def }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build & push worker image
+        id: push
+        run: |
+          TAG="${GITHUB_SHA::8}"
+          URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_WORKER_REPO }}:${TAG}"
+          docker build \
+            --platform linux/amd64 \
+            --cache-from "type=registry,ref=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_WORKER_REPO }}:cache" \
+            --cache-to "type=registry,ref=${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_WORKER_REPO }}:cache,mode=max" \
+            -f artifacts/queue-worker/Dockerfile \
+            -t "$URI" \
+            --push .
+          echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
+          echo "✅ Worker image: ${URI}"
+
+      - name: Register new Batch job definition
+        id: register
+        run: |
+          WORKER_URI="${{ steps.push.outputs.image_uri }}"
+
+          # Get current active job definition
+          CURRENT=$(aws batch describe-job-definitions \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-worker-job \
+            --status ACTIVE \
+            --query 'sort_by(jobDefinitions, &revision)[-1]' \
+            --output json)
+
+          # Build trimmed JSON for new revision (strip read-only fields)
+          NEW_JSON=$(echo "$CURRENT" | jq \
+            --arg img "$WORKER_URI" \
+            '{
+              type: .type,
+              containerProperties: (.containerProperties | .image = $img),
+              retryStrategy: .retryStrategy,
+              timeout: .timeout
+            } | with_entries(select(.value != null))')
+
+          # Register it
+          RESULT=$(aws batch register-job-definition \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-worker-job \
+            --cli-input-json "$NEW_JSON")
+
+          REV=$(echo "$RESULT" | jq -r '.revision')
+          DEF="${{ env.CF_STACK_PREFIX }}-worker-job:${REV}"
+          echo "batch_job_def=${DEF}" >> "$GITHUB_OUTPUT"
+          echo "✅ Batch job def: ${DEF}"
+
+  # ─── Job 3: Deploy full stack ─────────────────────────────────────────────────
+  deploy:
+    name: Deploy to AWS
+    runs-on: ubuntu-latest
+    needs: [build-api, build-worker]
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      # pnpm + node needed because deploy-serverless.ps1 runs pnpm build internally
+      - uses: pnpm/action-setup@v4
+        with: { version: latest }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile
+
+      # Write env file — inject fresh batch job def
+      - name: Write .env.green
+        run: |
+          printf '%s' "${{ secrets.ENV_GREEN_CONTENT }}" > /tmp/.env.green
+          sed -i "s|^YOUTUBE_BATCH_JOB_DEFINITION=.*|YOUTUBE_BATCH_JOB_DEFINITION=${{ needs.build-worker.outputs.batch_job_def }}|" /tmp/.env.green
+          echo "✅ .env.green ready ($(wc -l < /tmp/.env.green) lines)"
+
+      # Run the existing deploy script — handles CloudFormation, S3, CloudFront
+      - name: Deploy (CloudFormation + S3 + Lambda)
+        shell: pwsh
+        run: |
+          ./deploy/aws-serverless/deploy-serverless.ps1 `
+            -Region "${{ env.AWS_REGION }}" `
+            -Prefix "${{ env.CF_STACK_PREFIX }}" `
+            -SkipImageBuild `
+            -ImageUri "${{ needs.build-api.outputs.image_uri }}" `
+            -EnvFilePath "/tmp/.env.green"
+
+      - name: Summary
+        run: |
+          echo "## ✅ Deployed to Production" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${GITHUB_SHA::8}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **API image** | \`${{ needs.build-api.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Worker image** | \`${{ needs.build-worker.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Batch job** | \`${{ needs.build-worker.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Live** | https://videomaking.in |" >> $GITHUB_STEP_SUMMARY
