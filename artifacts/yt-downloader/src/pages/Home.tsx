@@ -118,12 +118,12 @@ const GUIDE_TABS: Array<{
   {
     mode: "scenefinder",
     title: "Scene Finder Tab",
-    summary: "Find matching Katha scenes from pasted transcripts or notes.",
+    summary: "Match Katha photos against your saved venue/reference image library.",
     steps: [
-      "Paste transcript, SRT, or timestamped notes.",
-      "Describe the scene/topic you want to find.",
-      "Click Find Matching Scenes and wait for AI matching.",
-      "Use the timestamps and quotes to cut or create videos.",
+      "Upload reference photos for every known Katha place in Library.",
+      "Add place name, location/date, and visual notes for each batch.",
+      "Upload a query photo in Identify.",
+      "Use the AI-ranked venue matches and shared visual features.",
     ],
   },
   {

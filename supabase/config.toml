@@ -1,0 +1,4 @@
+project_id = "edyttxzbywbpumtyixfz"
+
+[functions.identify-katha]
+verify_jwt = false
