@@ -38,13 +38,13 @@ waitForPort = 5000
 name = "API Server"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "PORT=8080 pnpm --filter @workspace/api-server run start"
-waitForPort = 8080
-
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "S3_BUCKET=malikaeditorr S3_REGION=us-east-1 S3_OBJECT_PREFIX=ytgrabber-green YTDLP_COOKIES_S3_KEY=ytgrabber-green/secrets/ytdlp-cookies-base64.txt YTDLP_BIN=/home/runner/workspace/.pythonlibs/bin/yt-dlp PORT=8080 NODE_ENV=development pnpm --filter @workspace/api-server run start"
+waitForPort = 8080
 
 [[ports]]
 localPort = 5000
@@ -66,11 +66,18 @@ externalPort = 3000
 localPort = 8080
 externalPort = 8080
 
-[[ports]]
-localPort = 8082
-externalPort = 4200
-
 [deployment]
 deploymentTarget = "static"
 build = ["pnpm", "--filter", "@workspace/yt-downloader", "run", "build"]
 publicDir = "artifacts/yt-downloader/dist/public"
+
+[userenv]
+
+[userenv.shared]
+S3_BUCKET = "malikaeditorr"
+S3_REGION = "us-east-1"
+S3_OBJECT_PREFIX = "ytgrabber-green"
+YTDLP_COOKIES_S3_KEY = "ytgrabber-green/secrets/ytdlp-cookies-base64.txt"
+AWS_REGION = "us-east-1"
+NODE_ENV = "production"
+YTDLP_BIN = "/home/runner/workspace/.pythonlibs/bin/yt-dlp"
