@@ -1218,6 +1218,10 @@ setInterval(
 // never exposed in client-side JavaScript.
 router.post("/bhagwat/auth", (req: Request, res: Response) => {
   const bodyPassword = (req.body as { password?: string })?.password;
+  const queryPassword = (() => {
+    const raw = (req.query as Record<string, unknown> | undefined)?.password;
+    return typeof raw === "string" ? raw : "";
+  })();
   const rawPassword = (() => {
     const raw = (req as Request & { rawBody?: unknown }).rawBody;
     if (typeof raw !== "string" || !raw) return "";
@@ -1228,7 +1232,23 @@ router.post("/bhagwat/auth", (req: Request, res: Response) => {
       return "";
     }
   })();
-  const password = bodyPassword || rawPassword;
+  const eventPassword = (() => {
+    const event = (req as Request & {
+      apiGateway?: { event?: { body?: string; isBase64Encoded?: boolean } };
+    }).apiGateway?.event;
+    if (!event?.body) return "";
+    const text = event.isBase64Encoded
+      ? Buffer.from(event.body, "base64").toString("utf8")
+      : event.body;
+    if (!text) return "";
+    try {
+      const parsed = JSON.parse(text) as { password?: unknown };
+      return typeof parsed.password === "string" ? parsed.password : "";
+    } catch {
+      return "";
+    }
+  })();
+  const password = bodyPassword || rawPassword || eventPassword || queryPassword;
   const expected = process.env.BHAGWAT_PASSWORD;
   if (!expected) {
     res.status(503).json({ ok: false, message: "BHAGWAT_PASSWORD is not configured" });
