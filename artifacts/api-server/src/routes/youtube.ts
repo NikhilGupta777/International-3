@@ -1486,7 +1486,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
 router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: Response) => {
   const { url, formatId, audioOnly } = req.body as {
     url: string;
-    formatId: string;
+    formatId?: string;
     audioOnly?: boolean;
   };
 
@@ -1494,10 +1494,7 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
     res.status(400).json({ error: "URL is required" });
     return;
   }
-  if (!formatId) {
-    res.status(400).json({ error: "formatId is required" });
-    return;
-  }
+  const requestedFormatId = formatId?.trim() || "bestvideo+bestaudio/best";
 
   const jobId = randomUUID();
   const normalizedUrl = normalizeInputUrl(url);
@@ -1510,7 +1507,7 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
         jobType: "download",
         sourceUrl: normalizedUrl,
         meta: {
-          formatId,
+          formatId: requestedFormatId,
           audioOnly: audioOnly ?? false,
           notifyClientKey: notifyClientKey ?? null,
         },
@@ -1533,7 +1530,7 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
     message: "Starting download...",
     filePath: null,
     url: normalizedUrl,
-    formatId,
+    formatId: requestedFormatId,
     audioOnly: audioOnly ?? false,
     ext: "mp4",
     notifyClientKey,
@@ -1547,7 +1544,7 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
     jobType: "download",
     sourceUrl: normalizedUrl,
     meta: {
-      formatId,
+      formatId: requestedFormatId,
       audioOnly: audioOnly ?? false,
     },
   }).catch((err) => {

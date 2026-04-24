@@ -322,7 +322,15 @@ export default function Home() {
     if (!normalizedUrl) return;
     setSubmittedUrl(normalizedUrl);
     if (mode === "download") {
-      getInfo.mutate({ data: { url: normalizedUrl } });
+      setJobId(null);
+      setActiveFormatId("bestvideo+bestaudio/best");
+      download.mutate({
+        data: {
+          url: normalizedUrl,
+          formatId: "bestvideo+bestaudio/best",
+          audioOnly: false,
+        },
+      });
     } else if (mode === "clips") {
       bestClipsRef.current?.startAnalyze();
     }
@@ -392,7 +400,7 @@ export default function Home() {
   const showTimestamps = mode === "timestamps";
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
-  const isSearchPending = getInfo.isPending;
+  const isSearchPending = mode === "download" ? download.isPending : getInfo.isPending;
   const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder" && mode !== "timestamps";
   const isDownloadInputBlocked = false;
 

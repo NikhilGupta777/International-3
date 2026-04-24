@@ -106,7 +106,7 @@ function parseJobTypeList(value: string | undefined): Set<QueueJobType> | null {
   return out.size > 0 ? out : null;
 }
 
-const DEFAULT_PRIMARY_JOB_TYPES = new Set<QueueJobType>(["download", "clip-cut"]);
+const DEFAULT_PRIMARY_JOB_TYPES = new Set<QueueJobType>(["clip-cut"]);
 const DEFAULT_SHADOW_JOB_TYPES = new Set<QueueJobType>(["download", "clip-cut"]);
 
 const PRIMARY_JOB_TYPES =

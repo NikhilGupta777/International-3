@@ -100,7 +100,7 @@ Parameters:
     Default: "false"
   YoutubeQueuePrimaryJobTypes:
     Type: String
-    Default: download,clip-cut,best-clips,bhagwat-analyze,bhagwat-render
+    Default: clip-cut,best-clips,bhagwat-analyze,bhagwat-render
   YoutubeQueueShadowJobTypes:
     Type: String
     Default: download,clip-cut

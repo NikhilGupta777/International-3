@@ -137,7 +137,7 @@ if (-not $resolvedImageUri) {
 $primaryJobTypes = if ($envMap.ContainsKey("YOUTUBE_QUEUE_PRIMARY_JOB_TYPES") -and $envMap["YOUTUBE_QUEUE_PRIMARY_JOB_TYPES"]) {
   $envMap["YOUTUBE_QUEUE_PRIMARY_JOB_TYPES"]
 } else {
-  "download,clip-cut"
+  "clip-cut"
 }
 
 $bhagwatPassword = Get-OptionalEnv $envMap 'BHAGWAT_PASSWORD'
@@ -171,7 +171,7 @@ if (-not $bhagwatPassword) {
   throw "Missing required env value: BHAGWAT_PASSWORD"
 }
 
-$requiredTypes = @("download", "clip-cut", "best-clips", "bhagwat-analyze", "bhagwat-render")
+$requiredTypes = @("clip-cut", "best-clips", "bhagwat-analyze", "bhagwat-render")
 $primarySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($item in ($primaryJobTypes -split ",")) {
   $trimmed = $item.Trim()

@@ -174,9 +174,9 @@ jobs:
             printf '\nBHAGWAT_PASSWORD=bhagwat@2026clips\n' >> /tmp/.env.green
           fi
           if grep -q '^YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=' /tmp/.env.green; then
-            sed -i 's|^YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=.*|YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=download,clip-cut,best-clips,subtitles,bhagwat-analyze,bhagwat-render|' /tmp/.env.green
+            sed -i 's|^YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=.*|YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=clip-cut,best-clips,subtitles,bhagwat-analyze,bhagwat-render|' /tmp/.env.green
           else
-            printf '\nYOUTUBE_QUEUE_PRIMARY_JOB_TYPES=download,clip-cut,best-clips,subtitles,bhagwat-analyze,bhagwat-render\n' >> /tmp/.env.green
+            printf '\nYOUTUBE_QUEUE_PRIMARY_JOB_TYPES=clip-cut,best-clips,subtitles,bhagwat-analyze,bhagwat-render\n' >> /tmp/.env.green
           fi
           if grep -q '^SUBTITLES_FORCE_LAMBDA=' /tmp/.env.green; then
             sed -i 's|^SUBTITLES_FORCE_LAMBDA=.*|SUBTITLES_FORCE_LAMBDA=false|' /tmp/.env.green
