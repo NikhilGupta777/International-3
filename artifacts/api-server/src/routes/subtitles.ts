@@ -1763,8 +1763,8 @@ async function processAudio(
             logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
           } else if (!isQuota && ki < clients.length - 1) {
             logger.warn({ err, keyLabel }, `${keyLabel} failed (non-quota) — trying next key`);
-          } else if (!isQuota) {
-            throw err;
+          } else {
+            logger.warn({ err, keyLabel }, `${keyLabel} failed - using fallback after key rotation`);
           }
         } finally {
           if (geminiFileName) {
