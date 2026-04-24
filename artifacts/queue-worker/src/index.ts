@@ -809,12 +809,13 @@ async function handleBestClips(payload: WorkerPayload): Promise<void> {
     notifyClientKey,
   });
 
+  const stepUpdates: Promise<void>[] = [];
   const onStep = (data: any) => {
     const message =
       typeof data?.message === "string" && data.message.trim().length > 0
         ? data.message
         : "Analyzing best clips...";
-    void updateJobState(payload.jobId, "running", message);
+    stepUpdates.push(updateJobState(payload.jobId, "running", message));
   };
 
   job.emitter.on("step", onStep);
@@ -835,6 +836,7 @@ async function handleBestClips(payload: WorkerPayload): Promise<void> {
       throw new Error(job.error ?? "Best clips analysis did not produce a result");
     }
 
+    await Promise.allSettled(stepUpdates);
     await updateJobState(payload.jobId, "done", `${job.result.clips.length} clips found`, {
       resultJson: JSON.stringify(job.result),
       progressPct: 100,
