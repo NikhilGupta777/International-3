@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlarmClock, CheckCircle2, AlertCircle, Loader2, Copy, Check,
@@ -116,6 +116,13 @@ export function Timestamps() {
   const closeSSE = () => {
     if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
   };
+
+  // Close any open SSE connection when the component unmounts (e.g. tab change)
+  useEffect(() => {
+    return () => {
+      if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -183,6 +183,20 @@ export function GetSubtitles() {
     return () => { if (tickRef.current) clearInterval(tickRef.current); };
   }, [loading]);
 
+  // Stop status polling and any pending fetch when the component unmounts
+  // (e.g. user switches tab). Without this, polling can continue forever
+  // in the background after the component is gone.
+  useEffect(() => {
+    return () => {
+      pollSessionRef.current += 1;
+      if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }
+      if (pollAbortRef.current) {
+        pollAbortRef.current.abort();
+        pollAbortRef.current = null;
+      }
+    };
+  }, []);
+
   const stopPolling = () => {
     pollSessionRef.current += 1;
     if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null; }

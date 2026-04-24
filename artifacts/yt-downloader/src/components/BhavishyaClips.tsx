@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Download, Play, Loader2, AlertCircle, Clock, CheckCircle2,
@@ -111,6 +111,13 @@ export function BhavishyaClips({ url }: { url: string }) {
 
   const stopStream = useCallback(() => {
     if (esRef.current) { esRef.current.close(); esRef.current = null; }
+  }, []);
+
+  // Close any open SSE connection when the component unmounts (e.g. tab change)
+  useEffect(() => {
+    return () => {
+      if (esRef.current) { esRef.current.close(); esRef.current = null; }
+    };
   }, []);
 
   const handleFind = async () => {
