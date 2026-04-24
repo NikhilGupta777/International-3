@@ -1351,7 +1351,9 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
   let ytdlpVersion = "unknown";
   try {
     ytdlpVersion = await new Promise<string>((resolve) => {
-      const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", "--version"], { env: PYTHON_ENV });
+      const verCommand = YTDLP_BIN || PYTHON_BIN;
+      const verArgs = YTDLP_BIN ? ["--version"] : ["-m", "yt_dlp", "--version"];
+      const proc = spawn(verCommand, verArgs, { env: PYTHON_ENV });
       let out = "";
       proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
       proc.on("close", () => resolve(out.trim() || "unknown"));
@@ -1870,11 +1872,11 @@ function spawnDownloadOnce(
     jobRef.filename = null;
     jobRef.filePath = null;
 
-    const proc = spawn(
-      PYTHON_BIN,
-      ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...cmdArgs],
-      { env: PYTHON_ENV },
-    );
+    const command = YTDLP_BIN || PYTHON_BIN;
+    const commandArgs = YTDLP_BIN
+      ? [...BASE_YTDLP_ARGS, ...extraArgs, ...cmdArgs]
+      : ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...cmdArgs];
+    const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
     jobRef.activeProc = proc;
     let stderr = "";
 
@@ -2947,12 +2949,16 @@ ${inputTranscript}`;
         const audioPattern = join(audioDir, "audio.%(ext)s");
 
         await new Promise<void>((resolve, reject) => {
-          const proc = spawn(PYTHON_BIN, [
-            "-m", "yt_dlp",
+          const audioCommand = YTDLP_BIN || PYTHON_BIN;
+          const audioBaseArgs = [
             "-f", "bestaudio[ext=m4a]/bestaudio[ext=mp4]/bestaudio",
             "--no-playlist", "--no-warnings",
             "-o", audioPattern, normalizedUrl,
-          ], { env: PYTHON_ENV });
+          ];
+          const audioArgs = YTDLP_BIN
+            ? audioBaseArgs
+            : ["-m", "yt_dlp", ...audioBaseArgs];
+          const proc = spawn(audioCommand, audioArgs, { env: PYTHON_ENV });
           let stderr = "";
           proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
           proc.on("close", (code) => { code === 0 ? resolve() : reject(new Error(stderr.slice(-500))); });

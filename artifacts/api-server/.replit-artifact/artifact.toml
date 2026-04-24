@@ -22,6 +22,9 @@ kind = "api"
   S3_REGION = "us-east-1"
   S3_OBJECT_PREFIX = "ytgrabber-green"
   YTDLP_COOKIES_S3_KEY = "ytgrabber-green/secrets/ytdlp-cookies-base64.txt"
+  # Use the standalone yt-dlp binary (no python yt_dlp module on Replit Nix
+  # Python). Mirrors Lambda Docker which sets the same env to /usr/local/bin/yt-dlp.
+  YTDLP_BIN = "/home/runner/workspace/.local/bin/yt-dlp"
 
   [services.production]
 

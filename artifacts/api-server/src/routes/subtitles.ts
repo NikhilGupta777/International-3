@@ -73,6 +73,15 @@ function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
 const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
 const PYTHON_BIN =
   process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+// Prefer the bundled yt-dlp binary on Linux (Lambda Docker has no python3).
+// Mirrors youtube.ts:89-95.
+const YTDLP_BIN =
+  process.env.YTDLP_BIN ??
+  (process.platform === "win32"
+    ? ""
+    : ["/usr/local/bin/yt-dlp", "/opt/bin/yt-dlp", "/var/task/bin/yt-dlp"].find(
+        (candidate) => existsSync(candidate),
+      ) ?? "");
 
 // ── yt-dlp config (mirrors youtube.ts / bhagwat.ts) ─────────────────────────
 const YTDLP_PROXY        = process.env.YTDLP_PROXY ?? "";
@@ -321,11 +330,11 @@ const SRT_YTDLP_FALLBACKS: string[][] = getSrtYoutubeFallbacks();
 async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Promise<void> {
   function spawnOnce(extraArgs: string[]): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const proc = spawn(
-        PYTHON_BIN,
-        ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...extraArgs, ...args],
-        { env: PYTHON_ENV },
-      );
+      const command = YTDLP_BIN || PYTHON_BIN;
+      const commandArgs = YTDLP_BIN
+        ? [...YTDLP_BASE_ARGS, ...extraArgs, ...args]
+        : ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...extraArgs, ...args];
+      const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
       let stderr = "";
       proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
       const cancelPoll = setInterval(() => {

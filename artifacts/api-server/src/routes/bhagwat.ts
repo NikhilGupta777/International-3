@@ -85,6 +85,16 @@ function buildPythonEnv(workspaceRoot: string): NodeJS.ProcessEnv {
 const PYTHON_ENV = buildPythonEnv(_workspaceRoot);
 const PYTHON_BIN =
   process.env.PYTHON_BIN ?? (process.platform === "win32" ? "py" : "python3");
+// Standalone yt-dlp binary path. When set (Lambda Docker, dev override) we use
+// the binary directly instead of `python3 -m yt_dlp` (which requires the
+// yt_dlp module to be importable). Mirrors youtube.ts:89-95.
+const YTDLP_BIN =
+  process.env.YTDLP_BIN ??
+  (process.platform === "win32"
+    ? ""
+    : ["/usr/local/bin/yt-dlp", "/opt/bin/yt-dlp", "/var/task/bin/yt-dlp"].find(
+        (candidate) => existsSync(candidate),
+      ) ?? "");
 
 const DOWNLOAD_DIR = join(tmpdir(), "yt-downloader");
 const BHAGWAT_RENDERED_DIR = join(DOWNLOAD_DIR, "bhagwat_rendered");
@@ -1138,7 +1148,11 @@ const YTDLP_CLOUD_FALLBACKS: string[][] = getBhagwatYoutubeFallbacks();
 function runYtDlpOnce(baseArgs: string[], extraArgs: string[], callArgs: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "", err = "";
-    const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...baseArgs, ...extraArgs, ...callArgs], { env: PYTHON_ENV });
+    const command = YTDLP_BIN || PYTHON_BIN;
+    const commandArgs = YTDLP_BIN
+      ? [...baseArgs, ...extraArgs, ...callArgs]
+      : ["-m", "yt_dlp", ...baseArgs, ...extraArgs, ...callArgs];
+    const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
     proc.stdout.on("data", (d) => { out += d.toString(); });
     proc.stderr.on("data", (d) => { err += d.toString(); });
     proc.on("close", (code) =>

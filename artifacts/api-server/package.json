@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
+    "dev": "export NODE_ENV=development && export YTDLP_BIN=\"${YTDLP_BIN:-/home/runner/workspace/.local/bin/yt-dlp}\" && export S3_BUCKET=\"${S3_BUCKET:-malikaeditorr}\" && export S3_REGION=\"${S3_REGION:-us-east-1}\" && export S3_OBJECT_PREFIX=\"${S3_OBJECT_PREFIX:-ytgrabber-green}\" && export YTDLP_COOKIES_S3_KEY=\"${YTDLP_COOKIES_S3_KEY:-ytgrabber-green/secrets/ytdlp-cookies-base64.txt}\" && pnpm run build && pnpm run start",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
