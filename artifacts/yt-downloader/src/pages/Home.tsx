@@ -116,13 +116,13 @@ const GUIDE_TABS: Array<{
   },
   {
     mode: "scenefinder",
-    title: "Scene Finder Tab",
-    summary: "Match Katha photos against your saved venue/reference image library.",
+    title: "Find Sabha Tab",
+    summary: "Identify a Katha sabha venue by matching photos against your saved reference library.",
     steps: [
-      "Upload reference photos for every known Katha place in Library.",
+      "Upload reference photos for every known sabha venue in the Library.",
       "Add place name, location/date, and visual notes for each batch.",
       "Upload a query photo in Identify.",
-      "Use the AI-ranked venue matches and shared visual features.",
+      "Review AI-ranked sabha matches with shared visual features.",
     ],
   },
   {
@@ -425,7 +425,7 @@ export default function Home() {
                 ? "Bhagwat Studio"
                 : mode === "timestamps"
                   ? "Timestamps"
-                  : "Scene Finder";
+                  : "Find Sabha";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
       ? `${modeLabel}: ${contentLabel} · ${appName}`
@@ -669,7 +669,7 @@ export default function Home() {
 
           {!showVideoInfo && !showClips && (
             <motion.p layout className="text-white/60 text-base sm:text-lg mb-6 sm:mb-8 text-center max-w-lg px-2 sm:px-0">
-              Smart media workspace for YouTube workflows: fast downloads, AI best-clips extraction, subtitles, precise clip cutting, scene finding, and Bhagwat devotional studio rendering.
+              Smart media workspace for YouTube workflows: fast downloads, AI best-clips extraction, subtitles, precise clip cutting, sabha venue matching, and Bhagwat devotional studio rendering.
             </motion.p>
           )}
 
@@ -760,8 +760,8 @@ export default function Home() {
               )}
             >
               <ListVideo className="w-3.5 h-3.5 shrink-0" />
-              <span className="sm:hidden">Scenes</span>
-              <span className="hidden sm:inline">Scene Find</span>
+              <span className="sm:hidden">Sabha</span>
+              <span className="hidden sm:inline">Find Sabha</span>
               <Badge className="hidden sm:inline-flex bg-cyan-500/20 text-cyan-200 border-cyan-500/30 text-[10px] px-1.5 py-0">
                 AI
               </Badge>
