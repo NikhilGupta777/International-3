@@ -1395,12 +1395,9 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
   });
 });
 
-router.get("/youtube/client-access", (req: Request, res: Response) => {
-  const ip = getClientIp(req);
-  const downloadInputEnabled = RATE_LIMIT_BYPASS_IPS.has(ip);
-
+router.get("/youtube/client-access", (_req: Request, res: Response) => {
   res.json({
-    downloadInputEnabled,
+    downloadInputEnabled: true,
     telegram: {
       url: "https://t.me/c/2852263933/3",
       message: "For High Quality Fast Video Download, join this Telegram Group",

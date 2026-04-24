@@ -241,12 +241,7 @@ export default function Home() {
   const [pushConfigured, setPushConfigured] = useState(false);
   const [pushPermission, setPushPermission] = useState<NotificationPermission | "unsupported">("unsupported");
   const [pushEnabling, setPushEnabling] = useState(false);
-  const [clientAccessLoaded, setClientAccessLoaded] = useState(false);
-  const [downloadInputEnabled, setDownloadInputEnabled] = useState(false);
   const [telegramUrl, setTelegramUrl] = useState("https://t.me/c/2852263933/3");
-  const [telegramMessage, setTelegramMessage] = useState(
-    "For High Quality Fast Video Download, join this Telegram Group",
-  );
   const [showGuide, setShowGuide] = useState(false);
   const [activeGuideMode, setActiveGuideMode] = useState<Mode>("download");
   const seenCompletionRef = useRef<Set<string>>(new Set());
@@ -323,14 +318,6 @@ export default function Home() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (mode === "download" && (!clientAccessLoaded || !downloadInputEnabled)) {
-      toast({
-        title: "Download access is limited",
-        description: "Join the Telegram group below for high quality fast downloads.",
-        variant: "destructive",
-      });
-      return;
-    }
     const normalizedUrl = url.trim();
     if (!normalizedUrl) return;
     setSubmittedUrl(normalizedUrl);
@@ -407,8 +394,7 @@ export default function Home() {
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
   const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder" && mode !== "timestamps";
-  const isDownloadInputBlocked =
-    mode === "download" && (!clientAccessLoaded || !downloadInputEnabled);
+  const isDownloadInputBlocked = false;
 
   useEffect(() => {
     const appName = "VideoMaking Studio";
@@ -454,15 +440,9 @@ export default function Home() {
         if (!res.ok) throw new Error("Failed to load access config");
         const data = (await res.json()) as ClientAccessConfig;
         if (closed) return;
-        setDownloadInputEnabled(Boolean(data.downloadInputEnabled));
         if (data.telegram?.url) setTelegramUrl(data.telegram.url);
-        if (data.telegram?.message) setTelegramMessage(data.telegram.message);
       } catch {
-        if (!closed) {
-          setDownloadInputEnabled(false);
-        }
-      } finally {
-        if (!closed) setClientAccessLoaded(true);
+        // Download access is open; this config only customizes the Telegram link.
       }
     };
     void loadClientAccess();
