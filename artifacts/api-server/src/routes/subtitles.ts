@@ -26,6 +26,21 @@ const router = Router();
 
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
 
+function envBool(value: string | undefined, fallback: boolean): boolean {
+  if (!value) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+// Default ON as requested: subtitles run directly on API Lambda path.
+const SUBTITLES_FORCE_LAMBDA = envBool(process.env.SUBTITLES_FORCE_LAMBDA, true);
+const isSubtitlesQueuePrimaryEnabled = (): boolean =>
+  !SUBTITLES_FORCE_LAMBDA && isYoutubeQueuePrimaryEnabledFor("subtitles");
+const isSubtitlesQueueEnabled = (): boolean =>
+  !SUBTITLES_FORCE_LAMBDA && isYoutubeQueueEnabledFor("subtitles");
+
 // ── Python / yt-dlp environment (mirrors setup in youtube.ts) ────────────────
 // Make yt-dlp visible to Python without overriding system PATH in environments
 // where .pythonlibs does not exist (e.g. the Docker production container).
@@ -1902,7 +1917,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
   const notifyClientKey = getNotifyClientKey(req);
 
-  if (isYoutubeQueuePrimaryEnabledFor("subtitles")) {
+  if (isSubtitlesQueuePrimaryEnabled()) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,
@@ -2125,7 +2140,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
   const jobId = randomUUID();
   const notifyClientKey = getNotifyClientKey(req);
 
-  if (isYoutubeQueuePrimaryEnabledFor("subtitles")) {
+  if (isSubtitlesQueuePrimaryEnabled()) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,
@@ -2149,7 +2164,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
   }
 
   res.status(409).json({
-    error: "S3-first subtitle upload requires queue-primary subtitles mode",
+    error: "S3-first subtitle upload requires queue-primary subtitles mode (or disable SUBTITLES_FORCE_LAMBDA)",
   });
 });
 
@@ -2230,7 +2245,7 @@ router.post("/subtitles/cancel/:jobId", subtitlesCancelRateLimiter, (req: Reques
   }
   const job = jobs.get(jobId);
   if (!job) {
-    if (!isYoutubeQueueEnabledFor("subtitles")) {
+    if (!isSubtitlesQueueEnabled()) {
       res.status(404).json({ error: "Job not found" });
       return;
     }
@@ -2276,7 +2291,7 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
   }
   const job = jobs.get(jobId);
   if (!job) {
-    if (!isYoutubeQueueEnabledFor("subtitles")) {
+    if (!isSubtitlesQueueEnabled()) {
       res.json({ status: "not_found", message: "Job not found" });
       return;
     }

@@ -21,14 +21,37 @@ import { get as httpGet } from "http";
 import multer from "multer";
 import { AssemblyAI } from "assemblyai";
 import ffmpegStatic from "ffmpeg-static";
+import {
+  cancelYoutubeQueueJob,
+  getYoutubeQueueJobStatus,
+  isYoutubeQueueEnabledFor,
+  isYoutubeQueuePrimaryEnabledFor,
+  submitYoutubeQueuePrimaryJob,
+} from "../lib/youtube-queue";
+import {
+  deleteS3Object,
+  getS3SignedDownloadUrl,
+  isS3StorageEnabled,
+  uploadFileToS3,
+} from "../lib/s3-storage";
 
 const router: Router = Router();
 const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
 const BHAGWAT_AUTH_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
+const BHAGWAT_QUEUE_POLL_MS = 2000;
 
 function isBhagwatAuthenticated(req: Request): boolean {
   return req.signedCookies?.[BHAGWAT_AUTH_COOKIE_NAME] === "1";
 }
+
+const isBhagwatAnalyzeQueuePrimaryEnabled = (): boolean =>
+  isYoutubeQueuePrimaryEnabledFor("bhagwat-analyze");
+const isBhagwatAnalyzeQueueEnabled = (): boolean =>
+  isYoutubeQueueEnabledFor("bhagwat-analyze");
+const isBhagwatRenderQueuePrimaryEnabled = (): boolean =>
+  isYoutubeQueuePrimaryEnabledFor("bhagwat-render");
+const isBhagwatRenderQueueEnabled = (): boolean =>
+  isYoutubeQueueEnabledFor("bhagwat-render");
 
 // Make yt-dlp (installed via uv sync in Replit, or system pip3 in Docker)
 // visible to Python without overriding the system PATH in environments where
@@ -140,18 +163,58 @@ const audioUpload = multer({
 });
 
 // ── Uploaded audio store ──────────────────────────────────────────────────────
-interface UploadedAudio {
+export interface UploadedAudio {
   path: string;
   originalName: string;
   mimeType: string;
   sizeBytes: number;
+  s3Key?: string;
   durationSec: number; // filled after AssemblyAI transcription
   createdAt: number;
 }
 const uploadedAudios = new Map<string, UploadedAudio>();
 
+export function createBhagwatUploadedAudioState(
+  audioId: string,
+  audio: UploadedAudio,
+): UploadedAudio {
+  uploadedAudios.set(audioId, audio);
+  return audio;
+}
+
+export function getBhagwatUploadedAudioState(
+  audioId: string,
+): UploadedAudio | undefined {
+  return uploadedAudios.get(audioId);
+}
+
+export function deleteBhagwatUploadedAudioState(audioId: string): void {
+  uploadedAudios.delete(audioId);
+}
+
+export async function ensureBhagwatUploadedAudioS3Key(
+  audioId: string,
+  audio: UploadedAudio,
+): Promise<string> {
+  if (audio.s3Key) return audio.s3Key;
+  if (!isS3StorageEnabled()) {
+    throw new Error("S3 storage is not configured for Bhagwat uploaded audio");
+  }
+  const uploaded = await uploadFileToS3({
+    localPath: audio.path,
+    jobId: audioId,
+    namespace: "bhagwat/uploads",
+    filename: audio.originalName,
+    contentType: audio.mimeType || "application/octet-stream",
+  });
+  audio.s3Key = uploaded.key;
+  uploadedAudios.set(audioId, audio);
+  return uploaded.key;
+}
+
 router.use("/bhagwat", (req: Request, res: Response, next: NextFunction) => {
-  if (req.path === "/auth") {
+  const normalizedPath = req.path.replace(/\/+$/, "");
+  if (normalizedPath.endsWith("/auth")) {
     next();
     return;
   }
@@ -1105,13 +1168,14 @@ function pickBestSubtitleUrl(
 }
 
 // ── Analysis job store ────────────────────────────────────────────────────────
-interface AnalysisJob {
+export interface AnalysisJob {
   emitter: EventEmitter;
   status: "pending" | "running" | "done" | "error";
   result?: {
     timeline: TimelineSegment[];
     videoDuration: number;
     videoTitle: string;
+    transcriptText?: string;
   };
   error?: string;
   createdAt: number;
@@ -1119,6 +1183,24 @@ interface AnalysisJob {
   abort?: () => void;
 }
 const analysisJobs = new Map<string, AnalysisJob>();
+
+export function createBhagwatAnalysisJobState(
+  jobId: string,
+  job: AnalysisJob,
+): AnalysisJob {
+  analysisJobs.set(jobId, job);
+  return job;
+}
+
+export function getBhagwatAnalysisJobState(
+  jobId: string,
+): AnalysisJob | undefined {
+  return analysisJobs.get(jobId);
+}
+
+export function deleteBhagwatAnalysisJobState(jobId: string): void {
+  analysisJobs.delete(jobId);
+}
 
 // Clean up completed/failed analysis jobs older than 1 hour (memory leak fix)
 setInterval(
@@ -1179,6 +1261,29 @@ router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
     return;
   }
   const jobId = randomUUID();
+
+  if (isBhagwatAnalyzeQueuePrimaryEnabled()) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "bhagwat-analyze",
+        sourceUrl: url,
+        meta: {
+          mode: mode ?? "full",
+          ...(typeof clipStartSec === "number" ? { clipStartSec } : {}),
+          ...(typeof clipEndSec === "number" ? { clipEndSec } : {}),
+          sourceKind: "youtube",
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Bhagwat analysis queued" });
+      return;
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to queue Bhagwat analysis");
+      res.status(502).json({ error: "Failed to queue Bhagwat analysis job" });
+      return;
+    }
+  }
+
   const job: AnalysisJob = {
     emitter: new EventEmitter(),
     status: "pending",
@@ -1202,9 +1307,100 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
-  const job = analysisJobs.get(jobId);
+  const job = getBhagwatAnalysisJobState(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isBhagwatAnalyzeQueueEnabled()) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+    const send = (event: string, data: object) =>
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    let closed = false;
+    req.on("close", () => {
+      closed = true;
+    });
+
+    const pollQueue = async (): Promise<boolean> => {
+      const queueStatus = await getYoutubeQueueJobStatus(jobId);
+      if (!queueStatus) {
+        send("jobError", { message: "Job not found" });
+        res.end();
+        return true;
+      }
+
+      if (queueStatus.status === "done") {
+        if (!queueStatus.resultJson) {
+          send("jobError", { message: "Analysis finished without result payload" });
+          res.end();
+          return true;
+        }
+        try {
+          const resultData = JSON.parse(queueStatus.resultJson) as {
+            timeline: TimelineSegment[];
+            videoDuration: number;
+            videoTitle: string;
+            transcriptText?: string;
+          };
+          send("done", resultData);
+          res.end();
+          return true;
+        } catch (err) {
+          req.log.error({ err, jobId }, "Failed to parse queued Bhagwat analysis result");
+          send("jobError", { message: "Invalid queued analysis payload" });
+          res.end();
+          return true;
+        }
+      }
+
+      if (["error", "cancelled", "expired"].includes(queueStatus.status)) {
+        send("jobError", { message: queueStatus.message ?? "Analysis failed" });
+        res.end();
+        return true;
+      }
+
+      send("step", {
+        step: "ai",
+        status: "running",
+        message: queueStatus.message ?? "Queued for processing...",
+        queue: {
+          updatedAt: queueStatus.updatedAt,
+          batchJobId: queueStatus.batchJobId,
+        },
+      });
+      return false;
+    };
+
+    void pollQueue()
+      .then((finished) => {
+        if (finished || closed) return;
+        const timer = setInterval(() => {
+          if (closed) {
+            clearInterval(timer);
+            return;
+          }
+          void pollQueue()
+            .then((done) => {
+              if (done) clearInterval(timer);
+            })
+            .catch((err) => {
+              req.log.error({ err, jobId }, "Failed queued Bhagwat analysis poll");
+              send("jobError", { message: "Failed to fetch queued analysis status" });
+              clearInterval(timer);
+              res.end();
+            });
+        }, BHAGWAT_QUEUE_POLL_MS);
+      })
+      .catch((err) => {
+        req.log.error({ err, jobId }, "Failed queued Bhagwat analysis lookup");
+        send("jobError", { message: "Failed to fetch queued analysis status" });
+        res.end();
+      });
     return;
   }
   res.setHeader("Content-Type", "text/event-stream");
@@ -1242,8 +1438,31 @@ router.post("/bhagwat/cancel-analyze/:jobId", (req: Request, res: Response) => {
     res.status(400).json({ ok: false });
     return;
   }
-  const job = analysisJobs.get(jobId);
-  if (!job) { res.status(404).json({ ok: false }); return; }
+  const job = getBhagwatAnalysisJobState(jobId);
+  if (!job) {
+    if (!isBhagwatAnalyzeQueueEnabled()) {
+      res.status(404).json({ ok: false });
+      return;
+    }
+    void cancelYoutubeQueueJob(jobId)
+      .then((cancelled) => {
+        if (!cancelled.ok) {
+          res.status(404).json({ ok: false });
+          return;
+        }
+        res.json({
+          ok: true,
+          status: cancelled.status,
+          alreadyFinished: cancelled.alreadyFinished ?? false,
+          queue: { batchJobId: cancelled.batchJobId },
+        });
+      })
+      .catch((err) => {
+        req.log.error({ err, jobId }, "Failed to cancel queued Bhagwat analysis");
+        res.status(500).json({ ok: false, error: "Failed to cancel job" });
+      });
+    return;
+  }
   job.cancelled = true;
   job.abort?.();
   res.json({ ok: true });
@@ -1443,7 +1662,7 @@ Both arrays can be empty if there's nothing to improve or add. Only suggest new 
 }
 
 // ── Render job store ──────────────────────────────────────────────────────────
-interface RenderJob {
+export interface RenderJob {
   emitter: EventEmitter;
   status: "pending" | "running" | "done" | "error" | "expired";
   outputPath?: string;
@@ -1458,6 +1677,22 @@ interface RenderJob {
   abort?: () => void;
 }
 const renderJobs = new Map<string, RenderJob>();
+
+export function createBhagwatRenderJobState(
+  jobId: string,
+  job: RenderJob,
+): RenderJob {
+  renderJobs.set(jobId, job);
+  return job;
+}
+
+export function getBhagwatRenderJobState(jobId: string): RenderJob | undefined {
+  return renderJobs.get(jobId);
+}
+
+export function deleteBhagwatRenderJobState(jobId: string): void {
+  renderJobs.delete(jobId);
+}
 
 interface PersistedRenderMeta {
   jobId: string;
@@ -1574,6 +1809,31 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
     res.status(400).json({ error: "url and timeline are required" });
     return;
   }
+  const jobId = randomUUID();
+  if (isBhagwatRenderQueuePrimaryEnabled()) {
+    try {
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "bhagwat-render",
+        sourceUrl: url,
+        meta: {
+          timeline,
+          videoDuration: videoDuration ?? 0,
+          ...(typeof clipStartSec === "number" ? { clipStartSec } : {}),
+          ...(typeof clipEndSec === "number" ? { clipEndSec } : {}),
+          mode: mode ?? "full",
+          videoTitle,
+          sourceKind: "youtube",
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Bhagwat render queued" });
+      return;
+    } catch (err) {
+      req.log.error({ err, jobId }, "Failed to queue Bhagwat render");
+      res.status(502).json({ error: "Failed to queue Bhagwat render job" });
+      return;
+    }
+  }
   const MAX_CONCURRENT_RENDERS = 3;
   const activeRenders = [...renderJobs.values()].filter(
     j => j.status === "pending" || j.status === "running",
@@ -1582,7 +1842,6 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
     res.status(429).json({ error: `Server is busy with ${activeRenders} active render(s). Please wait a moment and try again.` });
     return;
   }
-  const jobId = randomUUID();
   const job: RenderJob = {
     emitter: new EventEmitter(),
     status: "pending",
@@ -1612,7 +1871,82 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
   }
   const job = ensureRenderJob(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isBhagwatRenderQueueEnabled()) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders?.();
+    const send = (event: string, data: object) =>
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    let closed = false;
+    req.on("close", () => {
+      closed = true;
+    });
+
+    const pollQueue = async (): Promise<boolean> => {
+      const queueStatus = await getYoutubeQueueJobStatus(jobId);
+      if (!queueStatus) {
+        send("jobError", { message: "Job not found" });
+        res.end();
+        return true;
+      }
+      if (queueStatus.status === "done") {
+        let filename = queueStatus.filename ?? "bhagwat_video.mp4";
+        if (queueStatus.resultJson) {
+          try {
+            const parsed = JSON.parse(queueStatus.resultJson) as { filename?: string };
+            if (parsed.filename) filename = parsed.filename;
+          } catch {}
+        }
+        send("done", {
+          downloadUrl: `/api/bhagwat/download/${jobId}`,
+          filename,
+        });
+        res.end();
+        return true;
+      }
+      if (["error", "cancelled", "expired"].includes(queueStatus.status)) {
+        send("jobError", { message: queueStatus.message ?? "Render failed" });
+        res.end();
+        return true;
+      }
+      send("progress", {
+        percent: queueStatus.progressPct ?? 0,
+        message: queueStatus.message ?? "Queued for render...",
+      });
+      return false;
+    };
+
+    void pollQueue()
+      .then((finished) => {
+        if (finished || closed) return;
+        const timer = setInterval(() => {
+          if (closed) {
+            clearInterval(timer);
+            return;
+          }
+          void pollQueue()
+            .then((done) => {
+              if (done) clearInterval(timer);
+            })
+            .catch((err) => {
+              req.log.error({ err, jobId }, "Failed queued Bhagwat render poll");
+              send("jobError", { message: "Failed to fetch queued render status" });
+              clearInterval(timer);
+              res.end();
+            });
+        }, BHAGWAT_QUEUE_POLL_MS);
+      })
+      .catch((err) => {
+        req.log.error({ err, jobId }, "Failed queued Bhagwat render lookup");
+        send("jobError", { message: "Failed to fetch queued render status" });
+        res.end();
+      });
     return;
   }
   res.setHeader("Content-Type", "text/event-stream");
@@ -1655,7 +1989,67 @@ router.get("/bhagwat/render-state/:jobId", (req: Request, res: Response) => {
   }
   const job = ensureRenderJob(jobId);
   if (!job) {
-    res.status(404).json({ error: "Job not found" });
+    if (!isBhagwatRenderQueueEnabled()) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+    void getYoutubeQueueJobStatus(jobId)
+      .then((queueStatus) => {
+        if (!queueStatus) {
+          res.status(404).json({ error: "Job not found" });
+          return;
+        }
+        if (queueStatus.status === "done") {
+          let filename = queueStatus.filename ?? "bhagwat_video.mp4";
+          if (queueStatus.resultJson) {
+            try {
+              const parsed = JSON.parse(queueStatus.resultJson) as { filename?: string };
+              if (parsed.filename) filename = parsed.filename;
+            } catch {}
+          }
+          res.json({
+            status: "done",
+            percent: 100,
+            message: queueStatus.message ?? "Video ready for download!",
+            downloadUrl: `/api/bhagwat/download/${jobId}`,
+            filename,
+          });
+          return;
+        }
+        if (queueStatus.status === "error") {
+          res.json({
+            status: "error",
+            percent: queueStatus.progressPct ?? 0,
+            message: queueStatus.message ?? "Render failed",
+          });
+          return;
+        }
+        if (queueStatus.status === "expired") {
+          res.json({
+            status: "expired",
+            percent: 100,
+            message: queueStatus.message ?? "Rendered file expired",
+          });
+          return;
+        }
+        if (queueStatus.status === "cancelled") {
+          res.json({
+            status: "error",
+            percent: queueStatus.progressPct ?? 0,
+            message: queueStatus.message ?? "Render cancelled",
+          });
+          return;
+        }
+        res.json({
+          status: queueStatus.status,
+          percent: queueStatus.progressPct ?? 0,
+          message: queueStatus.message ?? "Queued for render...",
+        });
+      })
+      .catch((err) => {
+        req.log.error({ err, jobId }, "Failed queued Bhagwat render-state lookup");
+        res.status(500).json({ error: "Failed to fetch render status" });
+      });
     return;
   }
   if (job.status === "done") {
@@ -1716,7 +2110,30 @@ router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
     return;
   }
   const job = ensureRenderJob(jobId);
-  if (!job) { res.status(404).json({ ok: false }); return; }
+  if (!job) {
+    if (!isBhagwatRenderQueueEnabled()) {
+      res.status(404).json({ ok: false });
+      return;
+    }
+    void cancelYoutubeQueueJob(jobId)
+      .then((cancelled) => {
+        if (!cancelled.ok) {
+          res.status(404).json({ ok: false });
+          return;
+        }
+        res.json({
+          ok: true,
+          status: cancelled.status,
+          alreadyFinished: cancelled.alreadyFinished ?? false,
+          queue: { batchJobId: cancelled.batchJobId },
+        });
+      })
+      .catch((err) => {
+        req.log.error({ err, jobId }, "Failed to cancel queued Bhagwat render");
+        res.status(500).json({ ok: false, error: "Failed to cancel job" });
+      });
+    return;
+  }
   job.cancelled = true;
   job.abort?.();
   res.json({ ok: true });
@@ -1732,7 +2149,34 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
   }
   const job = renderJobs.get(jobId);
   if (!job?.outputPath || !existsSync(job.outputPath)) {
-    res.status(404).json({ error: "File not ready or already deleted" });
+    if (!isBhagwatRenderQueueEnabled()) {
+      res.status(404).json({ error: "File not ready or already deleted" });
+      return;
+    }
+    void getYoutubeQueueJobStatus(jobId)
+      .then(async (queueStatus) => {
+        if (!queueStatus) {
+          res.status(404).json({ error: "File not ready or already deleted" });
+          return;
+        }
+        if (queueStatus.status === "expired") {
+          res.status(410).json({ error: "Rendered file expired" });
+          return;
+        }
+        if (queueStatus.status !== "done" || !queueStatus.s3Key) {
+          res.status(404).json({ error: "File not ready or already deleted" });
+          return;
+        }
+        const signedUrl = await getS3SignedDownloadUrl({
+          key: queueStatus.s3Key,
+          filename: queueStatus.filename ?? "bhagwat_video.mp4",
+        });
+        res.redirect(302, signedUrl);
+      })
+      .catch((err) => {
+        req.log.error({ err, jobId }, "Failed queued Bhagwat download lookup");
+        res.status(500).json({ error: "Failed to resolve download URL" });
+      });
     return;
   }
   res.download(job.outputPath, job.filename ?? "bhagwat_video.mp4");
@@ -1774,7 +2218,7 @@ setInterval(
 );
 
 // ── runBhagwatAnalysis ────────────────────────────────────────────────────────
-async function runBhagwatAnalysis(
+export async function runBhagwatAnalysis(
   jobId: string,
   job: AnalysisJob,
   url: string,
@@ -2176,7 +2620,7 @@ ${
 }
 
 // ── runBhagwatRender ──────────────────────────────────────────────────────────
-async function runBhagwatRender(
+export async function runBhagwatRender(
   jobId: string,
   job: RenderJob,
   url: string,
@@ -2948,7 +3392,7 @@ async function transcribeWithAssemblyAI(
 }
 
 // ── runBhagwatAnalysisFromFile ────────────────────────────────────────────────
-async function runBhagwatAnalysisFromFile(
+export async function runBhagwatAnalysisFromFile(
   jobId: string,
   job: AnalysisJob,
   audioId: string,
@@ -3264,6 +3708,9 @@ router.delete("/bhagwat/audio/:audioId", (req: Request, res: Response) => {
   try {
     unlinkSync(audio.path);
   } catch {}
+  if (audio.s3Key) {
+    void deleteS3Object(audio.s3Key);
+  }
   uploadedAudios.delete(audioId);
   res.json({ ok: true });
 });
@@ -3278,19 +3725,52 @@ router.post("/bhagwat/analyze-audio", (req: Request, res: Response) => {
     res.status(400).json({ error: "audioId is required" });
     return;
   }
-  if (!uploadedAudios.has(audioId)) {
+  const audio = getBhagwatUploadedAudioState(audioId);
+  if (!audio) {
     res
       .status(404)
       .json({ error: "Audio file not found — please upload again" });
     return;
   }
   const jobId = randomUUID();
+
+  if (isBhagwatAnalyzeQueuePrimaryEnabled()) {
+    void ensureBhagwatUploadedAudioS3Key(audioId, audio)
+      .then(async (uploadS3Key) => {
+        await submitYoutubeQueuePrimaryJob({
+          jobId,
+          jobType: "bhagwat-analyze",
+          sourceUrl: `upload://bhagwat/${audioId}`,
+          meta: {
+            mode: mode ?? "full",
+            sourceKind: "upload",
+            audioId,
+            uploadS3Key,
+            originalFilename: audio.originalName,
+            mimeType: audio.mimeType,
+            sizeBytes: audio.sizeBytes,
+          },
+        });
+        res.json({ jobId, status: "queued", message: "Bhagwat audio analysis queued" });
+      })
+      .catch((err) => {
+        req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio analysis");
+        res.status(502).json({
+          error:
+            err instanceof Error
+              ? err.message
+              : "Failed to queue Bhagwat audio analysis",
+        });
+      });
+    return;
+  }
+
   const job: AnalysisJob = {
     emitter: new EventEmitter(),
     status: "pending",
     createdAt: Date.now(),
   };
-  analysisJobs.set(jobId, job);
+  createBhagwatAnalysisJobState(jobId, job);
   res.json({ jobId });
   runBhagwatAnalysisFromFile(jobId, job, audioId, mode ?? "full").catch(
     () => {},
@@ -3312,13 +3792,50 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     res.status(400).json({ error: "audioId and timeline are required" });
     return;
   }
-  const audio = uploadedAudios.get(audioId);
+  const audio = getBhagwatUploadedAudioState(audioId);
   if (!audio) {
     res
       .status(404)
       .json({ error: "Audio file not found — please upload again" });
     return;
   }
+  const jobId = randomUUID();
+
+  if (isBhagwatRenderQueuePrimaryEnabled()) {
+    try {
+      const uploadS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
+      await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "bhagwat-render",
+        sourceUrl: `upload://bhagwat/${audioId}`,
+        meta: {
+          timeline,
+          videoDuration: videoDuration ?? 0,
+          ...(typeof clipStartSec === "number" ? { clipStartSec } : {}),
+          ...(typeof clipEndSec === "number" ? { clipEndSec } : {}),
+          mode: mode ?? "full",
+          sourceKind: "upload",
+          audioId,
+          uploadS3Key,
+          originalFilename: audio.originalName,
+          mimeType: audio.mimeType,
+          sizeBytes: audio.sizeBytes,
+        },
+      });
+      res.json({ jobId, status: "queued", message: "Bhagwat audio render queued" });
+      return;
+    } catch (err) {
+      req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio render");
+      res.status(502).json({
+        error:
+          err instanceof Error
+            ? err.message
+            : "Failed to queue Bhagwat audio render",
+      });
+      return;
+    }
+  }
+
   const MAX_CONCURRENT_RENDERS = 3;
   const activeRenders = [...renderJobs.values()].filter(
     j => j.status === "pending" || j.status === "running",
@@ -3328,14 +3845,13 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     return;
   }
 
-  const jobId = randomUUID();
   const job: RenderJob = {
     emitter: new EventEmitter(),
     status: "pending",
     createdAt: Date.now(),
     title: audio.originalName.replace(/\.[^.]+$/, ""),
   };
-  renderJobs.set(jobId, job);
+  createBhagwatRenderJobState(jobId, job);
   res.json({ jobId });
   runBhagwatRender(
     jobId,

@@ -13,7 +13,13 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { logger } from "./logger";
 
-type QueueJobType = "download" | "clip-cut" | "subtitles" | "best-clips";
+type QueueJobType =
+  | "download"
+  | "clip-cut"
+  | "subtitles"
+  | "best-clips"
+  | "bhagwat-analyze"
+  | "bhagwat-render";
 
 type QueuePayload = {
   jobId: string;
@@ -75,7 +81,14 @@ const JOB_DEFINITION = process.env.YOUTUBE_BATCH_JOB_DEFINITION ?? "";
 const ddb = JOB_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 const batch = JOB_QUEUE && JOB_DEFINITION ? new BatchClient({ region: REGION }) : null;
 
-const ALL_JOB_TYPES: QueueJobType[] = ["download", "clip-cut", "subtitles", "best-clips"];
+const ALL_JOB_TYPES: QueueJobType[] = [
+  "download",
+  "clip-cut",
+  "subtitles",
+  "best-clips",
+  "bhagwat-analyze",
+  "bhagwat-render",
+];
 
 function parseJobTypeList(value: string | undefined): Set<QueueJobType> | null {
   if (!value) return null;

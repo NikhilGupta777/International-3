@@ -8,8 +8,7 @@ await build({
   target: "node20",
   format: "cjs",
   sourcemap: true,
-  // Treat all npm packages as external — only bundle our own TypeScript source.
-  // This prevents esbuild from trying to resolve api-server's deps (express,
-  // multer, @google/genai, etc.) which are available at runtime via pnpm.
-  packages: "external",
+  // Bundle runtime deps into worker output because this worker dynamically
+  // imports api-server route modules. Keeping deps bundled avoids runtime
+  // resolution failures for transitive modules in Batch containers.
 });

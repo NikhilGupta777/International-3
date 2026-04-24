@@ -173,6 +173,16 @@ jobs:
           else
             printf '\nBHAGWAT_PASSWORD=bhagwat@2026clips\n' >> /tmp/.env.green
           fi
+          if grep -q '^YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=' /tmp/.env.green; then
+            sed -i 's|^YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=.*|YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=download,clip-cut,best-clips,bhagwat-analyze,bhagwat-render|' /tmp/.env.green
+          else
+            printf '\nYOUTUBE_QUEUE_PRIMARY_JOB_TYPES=download,clip-cut,best-clips,bhagwat-analyze,bhagwat-render\n' >> /tmp/.env.green
+          fi
+          if grep -q '^SUBTITLES_FORCE_LAMBDA=' /tmp/.env.green; then
+            sed -i 's|^SUBTITLES_FORCE_LAMBDA=.*|SUBTITLES_FORCE_LAMBDA=true|' /tmp/.env.green
+          else
+            printf '\nSUBTITLES_FORCE_LAMBDA=true\n' >> /tmp/.env.green
+          fi
           echo "✅ .env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script — handles CloudFormation, S3, CloudFront

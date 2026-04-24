@@ -171,7 +171,7 @@ if (-not $bhagwatPassword) {
   throw "Missing required env value: BHAGWAT_PASSWORD"
 }
 
-$requiredTypes = @("download", "clip-cut", "subtitles", "best-clips")
+$requiredTypes = @("download", "clip-cut", "best-clips", "bhagwat-analyze", "bhagwat-render")
 $primarySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($item in ($primaryJobTypes -split ",")) {
   $trimmed = $item.Trim()
@@ -217,6 +217,7 @@ $parameterOverrides = @(
   "YoutubeQueueShadowEnabled=$(Get-OptionalEnv $envMap 'YOUTUBE_QUEUE_SHADOW_ENABLED' 'false')"
   "YoutubeQueuePrimaryJobTypes=$primaryJobTypes"
   "YoutubeQueueShadowJobTypes=$(Get-OptionalEnv $envMap 'YOUTUBE_QUEUE_SHADOW_JOB_TYPES' 'download,clip-cut')"
+  "SubtitlesForceLambda=$(Get-OptionalEnv $envMap 'SUBTITLES_FORCE_LAMBDA' 'true')"
   "RateLimitBypassIps=$(Get-OptionalEnv $envMap 'RATE_LIMIT_BYPASS_IPS')"
   "VapidPublicKey=$(Get-OptionalEnv $envMap 'VAPID_PUBLIC_KEY')"
   "VapidPrivateKey=$(Get-OptionalEnv $envMap 'VAPID_PRIVATE_KEY')"

@@ -24,7 +24,13 @@ import pino from "pino";
 
 type WorkerPayload = {
   jobId: string;
-  jobType: "download" | "clip-cut" | "subtitles" | "best-clips";
+  jobType:
+    | "download"
+    | "clip-cut"
+    | "subtitles"
+    | "best-clips"
+    | "bhagwat-analyze"
+    | "bhagwat-render";
   sourceUrl: string;
   requestedAt: number;
   meta?: Record<string, unknown>;
@@ -153,6 +159,39 @@ function getMetaBool(meta: Record<string, unknown> | undefined, key: string, fal
     if (v === "false" || v === "0" || v === "no") return false;
   }
   return fallback;
+}
+
+type BhagwatTimelineSegment = {
+  startSec: number;
+  endSec: number;
+  isBhajan: boolean;
+  imageChangeEvery: number;
+  description: string;
+  imagePrompt: string;
+};
+
+function parseBhagwatTimeline(meta: Record<string, unknown> | undefined): BhagwatTimelineSegment[] {
+  const raw = meta?.timeline;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+    .map((item) => {
+      const startSec = Number(item.startSec);
+      const endSec = Number(item.endSec);
+      const imageChangeEvery = Number(item.imageChangeEvery ?? 10);
+      return {
+        startSec: Number.isFinite(startSec) ? Math.max(0, startSec) : 0,
+        endSec: Number.isFinite(endSec) ? Math.max(0, endSec) : 0,
+        isBhajan: item.isBhajan === true,
+        imageChangeEvery: Number.isFinite(imageChangeEvery)
+          ? Math.max(1, Math.round(imageChangeEvery))
+          : 10,
+        description: typeof item.description === "string" ? item.description.slice(0, 200) : "",
+        imagePrompt: typeof item.imagePrompt === "string" ? item.imagePrompt.slice(0, 1000) : "",
+      };
+    })
+    .filter((item) => item.endSec > item.startSec + 0.5 && item.imagePrompt.trim().length > 0)
+    .sort((a, b) => a.startSec - b.startSec);
 }
 
 function toAttr(value: string | number | boolean): AttributeValue {
@@ -477,7 +516,7 @@ function findOutputFile(jobId: string, preferredExts: string[]): string {
 async function uploadIfConfigured(
   localPath: string,
   jobId: string,
-  namespace: "youtube/downloads" | "youtube/clips",
+  namespace: "youtube/downloads" | "youtube/clips" | "bhagwat/final",
 ): Promise<{ s3Key: string | null; filename: string; filesize: number }> {
   const filename = basename(localPath);
   const filesize = statSync(localPath).size;
@@ -945,6 +984,215 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
   }
 }
 
+async function handleBhagwatAnalyze(payload: WorkerPayload): Promise<void> {
+  const {
+    createBhagwatAnalysisJobState,
+    createBhagwatUploadedAudioState,
+    deleteBhagwatAnalysisJobState,
+    deleteBhagwatUploadedAudioState,
+    runBhagwatAnalysis,
+    runBhagwatAnalysisFromFile,
+  } = await import("../../api-server/src/routes/bhagwat");
+
+  const modeRaw = getMetaString(payload.meta, "mode");
+  const mode: "smart" | "full" = modeRaw === "smart" ? "smart" : "full";
+  const clipStartSec = getMetaNumber(payload.meta, "clipStartSec");
+  const clipEndSec = getMetaNumber(payload.meta, "clipEndSec");
+  const sourceKind = getMetaString(payload.meta, "sourceKind") === "upload" ? "upload" : "youtube";
+  const originalFilename = getMetaString(payload.meta, "originalFilename") ?? `${payload.jobId}.bin`;
+  const mimeType = getMetaString(payload.meta, "mimeType") ?? "application/octet-stream";
+  const sizeBytes = getMetaNumber(payload.meta, "sizeBytes") ?? 0;
+
+  const job = createBhagwatAnalysisJobState(payload.jobId, {
+    emitter: new EventEmitter(),
+    status: "pending",
+    createdAt: Date.now(),
+  });
+
+  const progressByStep: Record<string, number> = {
+    metadata: 20,
+    transcript: 55,
+    ai: 85,
+  };
+  let stagedAudioId: string | null = null;
+  let stagedAudioPath: string | null = null;
+
+  const onStep = (data: unknown) => {
+    const stepData = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+    const step = typeof stepData.step === "string" ? stepData.step : "";
+    const status = typeof stepData.status === "string" ? stepData.status : "running";
+    const message =
+      typeof stepData.message === "string" && stepData.message.trim().length > 0
+        ? stepData.message
+        : "Bhagwat analysis running...";
+    const progressPct = progressByStep[step] ?? 10;
+    void updateJobState(payload.jobId, status === "warn" ? "running" : "running", message, {
+      progressPct,
+    });
+  };
+
+  job.emitter.on("step", onStep);
+
+  try {
+    await updateJobState(payload.jobId, "running", "Starting Bhagwat analysis...", {
+      progressPct: 3,
+    });
+
+    if (sourceKind === "upload") {
+      const uploadS3Key = getMetaString(payload.meta, "uploadS3Key");
+      if (!uploadS3Key) {
+        throw new Error("Missing uploadS3Key for Bhagwat uploaded-audio analysis");
+      }
+      stagedAudioPath = join(tmpdir(), `${payload.jobId}-${basename(originalFilename)}`);
+      await updateJobState(payload.jobId, "uploading", "Fetching uploaded audio...", {
+        progressPct: 8,
+      });
+      await downloadS3ObjectToLocal(uploadS3Key, stagedAudioPath);
+      stagedAudioId = getMetaString(payload.meta, "audioId") ?? payload.jobId;
+      createBhagwatUploadedAudioState(stagedAudioId, {
+        path: stagedAudioPath,
+        originalName: originalFilename,
+        mimeType,
+        sizeBytes,
+        durationSec: 0,
+        createdAt: Date.now(),
+        s3Key: uploadS3Key,
+      });
+      await runBhagwatAnalysisFromFile(payload.jobId, job, stagedAudioId, mode);
+    } else {
+      await runBhagwatAnalysis(
+        payload.jobId,
+        job,
+        payload.sourceUrl,
+        mode,
+        clipStartSec === null ? undefined : clipStartSec,
+        clipEndSec === null ? undefined : clipEndSec,
+      );
+    }
+
+    if (job.status !== "done" || !job.result) {
+      throw new Error(job.error ?? "Bhagwat analysis did not produce a result");
+    }
+
+    await updateJobState(payload.jobId, "done", "Bhagwat analysis complete", {
+      progressPct: 100,
+      resultJson: JSON.stringify(job.result),
+    });
+  } finally {
+    job.emitter.off("step", onStep);
+    deleteBhagwatAnalysisJobState(payload.jobId);
+    if (stagedAudioId) {
+      deleteBhagwatUploadedAudioState(stagedAudioId);
+    }
+    if (stagedAudioPath) {
+      cleanupFile(stagedAudioPath);
+    }
+  }
+}
+
+async function handleBhagwatRender(payload: WorkerPayload): Promise<void> {
+  const {
+    createBhagwatRenderJobState,
+    deleteBhagwatRenderJobState,
+    runBhagwatRender,
+  } = await import("../../api-server/src/routes/bhagwat");
+
+  const timeline = parseBhagwatTimeline(payload.meta);
+  if (timeline.length === 0) {
+    throw new Error("Bhagwat render timeline is empty or invalid");
+  }
+
+  const modeRaw = getMetaString(payload.meta, "mode");
+  const mode: "smart" | "full" = modeRaw === "smart" ? "smart" : "full";
+  const sourceKind = getMetaString(payload.meta, "sourceKind") === "upload" ? "upload" : "youtube";
+  const clipStartSec = getMetaNumber(payload.meta, "clipStartSec");
+  const clipEndSec = getMetaNumber(payload.meta, "clipEndSec");
+  const videoDuration = getMetaNumber(payload.meta, "videoDuration") ?? 0;
+  const originalFilename = getMetaString(payload.meta, "originalFilename") ?? "uploaded-audio";
+
+  let stagedAudioPath: string | null = null;
+  if (sourceKind === "upload") {
+    const uploadS3Key = getMetaString(payload.meta, "uploadS3Key");
+    if (!uploadS3Key) {
+      throw new Error("Missing uploadS3Key for Bhagwat uploaded-audio render");
+    }
+    stagedAudioPath = join(tmpdir(), `${payload.jobId}-${basename(originalFilename)}`);
+    await updateJobState(payload.jobId, "uploading", "Fetching uploaded audio...", {
+      progressPct: 6,
+    });
+    await downloadS3ObjectToLocal(uploadS3Key, stagedAudioPath);
+  }
+
+  const job = createBhagwatRenderJobState(payload.jobId, {
+    emitter: new EventEmitter(),
+    status: "pending",
+    createdAt: Date.now(),
+    title: originalFilename.replace(/\.[^.]+$/, ""),
+  });
+
+  const onProgress = (data: unknown) => {
+    const progressData = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+    const percent = typeof progressData.percent === "number" ? progressData.percent : 0;
+    const message =
+      typeof progressData.message === "string" && progressData.message.trim().length > 0
+        ? progressData.message
+        : "Bhagwat render running...";
+    void updateJobState(payload.jobId, "running", message, {
+      progressPct: Math.max(0, Math.min(99, Math.round(percent))),
+    });
+  };
+
+  job.emitter.on("progress", onProgress);
+
+  try {
+    await updateJobState(payload.jobId, "running", "Starting Bhagwat render...", {
+      progressPct: 3,
+    });
+
+    await runBhagwatRender(
+      payload.jobId,
+      job,
+      sourceKind === "upload" ? "" : payload.sourceUrl,
+      timeline,
+      videoDuration,
+      clipStartSec === null ? undefined : clipStartSec,
+      clipEndSec === null ? undefined : clipEndSec,
+      stagedAudioPath ?? undefined,
+      mode,
+    );
+
+    if (job.status !== "done" || !job.outputPath || !existsSync(job.outputPath)) {
+      throw new Error(job.error ?? "Bhagwat render did not produce an output file");
+    }
+
+    if (!s3 || !S3_BUCKET) {
+      throw new Error("S3 is required for queued Bhagwat render downloads");
+    }
+
+    const uploaded = await uploadIfConfigured(job.outputPath, payload.jobId, "bhagwat/final");
+    if (!uploaded.s3Key) {
+      throw new Error("Failed to upload rendered Bhagwat video to S3");
+    }
+
+    const filename = job.filename ?? uploaded.filename;
+    await updateJobState(payload.jobId, "done", "Bhagwat render complete", {
+      progressPct: 100,
+      filename,
+      filesize: uploaded.filesize,
+      s3Key: uploaded.s3Key,
+      resultJson: JSON.stringify({ filename, s3Key: uploaded.s3Key }),
+    });
+
+    cleanupFile(job.outputPath);
+  } finally {
+    job.emitter.off("progress", onProgress);
+    deleteBhagwatRenderJobState(payload.jobId);
+    if (stagedAudioPath) {
+      cleanupFile(stagedAudioPath);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   await loadCookiesFromS3IfConfigured();
   const payload = parsePayload();
@@ -971,6 +1219,14 @@ async function main(): Promise<void> {
   }
   if (payload.jobType === "subtitles") {
     await handleSubtitles(payload);
+    return;
+  }
+  if (payload.jobType === "bhagwat-analyze") {
+    await handleBhagwatAnalyze(payload);
+    return;
+  }
+  if (payload.jobType === "bhagwat-render") {
+    await handleBhagwatRender(payload);
     return;
   }
 
