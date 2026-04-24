@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo
+  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo, AlarmClock
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -18,6 +18,7 @@ import { BhagwatVideos } from "@/components/BhagwatVideos";
 import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
 import { KathaSceneFinder } from "@/components/KathaSceneFinder";
+import { Timestamps } from "@/components/Timestamps";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import {
   saveActiveDownload,
@@ -40,7 +41,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder";
+type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps";
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -123,6 +124,17 @@ const GUIDE_TABS: Array<{
       "Describe the scene/topic you want to find.",
       "Click Find Matching Scenes and wait for AI matching.",
       "Use the timestamps and quotes to cut or create videos.",
+    ],
+  },
+  {
+    mode: "timestamps",
+    title: "Timestamps Tab",
+    summary: "Generate YouTube chapter timestamps from any video using AI.",
+    steps: [
+      "Paste a YouTube URL and click Generate Timestamps.",
+      "AI fetches the transcript automatically (or uses AssemblyAI if no subtitles).",
+      "Gemini 2.5 Pro creates meaningful chapter markers.",
+      "Copy the timestamps directly into your YouTube description.",
     ],
   },
 ];
@@ -391,10 +403,11 @@ export default function Home() {
   const showClipCutter = mode === "clipcutter";
   const showBhagwat = mode === "bhagwat";
   const showSceneFinder = mode === "scenefinder";
+  const showTimestamps = mode === "timestamps";
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
-  const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder";
+  const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder" && mode !== "timestamps";
   const isDownloadInputBlocked =
     mode === "download" && (!clientAccessLoaded || !downloadInputEnabled);
 
@@ -411,7 +424,9 @@ export default function Home() {
               ? "Clip Cutter"
               : mode === "bhagwat"
                 ? "Bhagwat Studio"
-                : "Scene Finder";
+                : mode === "timestamps"
+                  ? "Timestamps"
+                  : "Scene Finder";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
       ? `${modeLabel}: ${contentLabel} · ${appName}`
@@ -752,6 +767,22 @@ export default function Home() {
                 AI
               </Badge>
             </button>
+            <button
+              onClick={() => { setMode("timestamps"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              className={cn(
+                "flex-1 min-w-[78px] sm:min-w-0 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
+                mode === "timestamps"
+                  ? "bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-[0_0_20px_rgba(99,102,241,0.35)]"
+                  : "text-white/50 hover:text-white/80"
+              )}
+            >
+              <AlarmClock className="w-3.5 h-3.5 shrink-0" />
+              <span className="sm:hidden">Times</span>
+              <span className="hidden sm:inline">Timestamps</span>
+              <Badge className="hidden sm:inline-flex bg-indigo-500/20 text-indigo-200 border-indigo-500/30 text-[10px] px-1.5 py-0">
+                AI
+              </Badge>
+            </button>
             </div>
           </motion.div>
 
@@ -1068,6 +1099,19 @@ export default function Home() {
                 className="w-full"
               >
                 <KathaSceneFinder />
+              </motion.div>
+            )}
+
+            {showTimestamps && (
+              <motion.div
+                key="timestamps-panel"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.3 }}
+                className="w-full"
+              >
+                <Timestamps />
               </motion.div>
             )}
 
