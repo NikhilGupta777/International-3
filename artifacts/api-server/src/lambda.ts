@@ -1,8 +1,16 @@
 import type { Request } from "express";
 import serverless from "serverless-http";
 import app from "./app";
+import { runSceneFinderWorker } from "./routes/scene-finder";
 
-export const handler = serverless(app, {
+type SceneFinderWorkerEvent = {
+  source?: string;
+  jobId?: string;
+  query?: string;
+  transcript?: string;
+};
+
+const httpHandler = serverless(app, {
   provider: "aws",
   request(
     request: Request & {
@@ -28,3 +36,19 @@ export const handler = serverless(app, {
     });
   },
 });
+
+export const handler = async (event: SceneFinderWorkerEvent, context: unknown) => {
+  if (event?.source === "videomaking.scene-finder") {
+    if (!event.jobId || !event.query || !event.transcript) {
+      throw new Error("Invalid Scene Finder worker payload");
+    }
+    await runSceneFinderWorker({
+      source: "videomaking.scene-finder",
+      jobId: event.jobId,
+      query: event.query,
+      transcript: event.transcript,
+    });
+    return { ok: true };
+  }
+  return httpHandler(event as any, context as any);
+};

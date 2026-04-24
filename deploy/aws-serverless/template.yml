@@ -201,6 +201,10 @@ Resources:
                 Resource: !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${YoutubeQueueJobTable}"
               - Effect: Allow
                 Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-api"
+              - Effect: Allow
+                Action:
                   - batch:SubmitJob
                   - batch:TerminateJob
                   - batch:DescribeJobs
@@ -234,7 +238,7 @@ Resources:
         ImageUri: !Ref ImageUri
       Role: !GetAtt ApiRole.Arn
       MemorySize: 1536
-      Timeout: 29
+      Timeout: 90
       EphemeralStorage:
         Size: 1024
       Environment:

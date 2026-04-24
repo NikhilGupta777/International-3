@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send
+  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -17,6 +17,7 @@ import { BhavishyaClips } from "@/components/BhavishyaClips";
 import { BhagwatVideos } from "@/components/BhagwatVideos";
 import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
+import { KathaSceneFinder } from "@/components/KathaSceneFinder";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import {
   saveActiveDownload,
@@ -39,7 +40,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat";
+type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder";
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -111,6 +112,17 @@ const GUIDE_TABS: Array<{
       "Paste a URL or upload audio, then run Analyze to create timeline scenes.",
       "Review and improve AI prompt suggestions before render.",
       "Render final video and download from history when done.",
+    ],
+  },
+  {
+    mode: "scenefinder",
+    title: "Scene Finder Tab",
+    summary: "Find matching Katha scenes from pasted transcripts or notes.",
+    steps: [
+      "Paste transcript, SRT, or timestamped notes.",
+      "Describe the scene/topic you want to find.",
+      "Click Find Matching Scenes and wait for AI matching.",
+      "Use the timestamps and quotes to cut or create videos.",
     ],
   },
 ];
@@ -378,10 +390,11 @@ export default function Home() {
   const showSubtitles = mode === "subtitles";
   const showClipCutter = mode === "clipcutter";
   const showBhagwat = mode === "bhagwat";
+  const showSceneFinder = mode === "scenefinder";
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
-  const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat";
+  const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder";
   const isDownloadInputBlocked =
     mode === "download" && (!clientAccessLoaded || !downloadInputEnabled);
 
@@ -396,7 +409,9 @@ export default function Home() {
             ? "Subtitles"
             : mode === "clipcutter"
               ? "Clip Cutter"
-              : "Bhagwat Studio";
+              : mode === "bhagwat"
+                ? "Bhagwat Studio"
+                : "Scene Finder";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
       ? `${modeLabel}: ${contentLabel} · ${appName}`
@@ -625,7 +640,7 @@ export default function Home() {
           animate={{ opacity: 1, y: 0 }}
           className={cn(
             "w-full flex flex-col items-center transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            (showVideoInfo || showClips || showSubtitles || showClipCutter || showBhagwat) ? "pt-12 mb-8" : "pt-[25vh]"
+            (showVideoInfo || showClips || showSubtitles || showClipCutter || showBhagwat || showSceneFinder) ? "pt-12 mb-8" : "pt-[25vh]"
           )}
         >
           {/* Logo */}
@@ -640,7 +655,7 @@ export default function Home() {
 
           {!showVideoInfo && !showClips && (
             <motion.p layout className="text-white/60 text-base sm:text-lg mb-6 sm:mb-8 text-center max-w-lg px-2 sm:px-0">
-              Smart media workspace for YouTube workflows: fast downloads, AI best-clips extraction, subtitles, precise clip cutting, and Bhagwat devotional studio rendering.
+              Smart media workspace for YouTube workflows: fast downloads, AI best-clips extraction, subtitles, precise clip cutting, scene finding, and Bhagwat devotional studio rendering.
             </motion.p>
           )}
 
@@ -719,6 +734,22 @@ export default function Home() {
               <span className="hidden sm:inline">Bhagwat</span>
               <Badge className="hidden sm:inline-flex bg-amber-500/20 text-amber-200 border-amber-500/30 text-[10px] px-1.5 py-0">
                 Pro
+              </Badge>
+            </button>
+            <button
+              onClick={() => { setMode("scenefinder"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              className={cn(
+                "flex-1 min-w-[78px] sm:min-w-0 sm:flex-none flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 whitespace-nowrap",
+                mode === "scenefinder"
+                  ? "bg-gradient-to-r from-cyan-600 to-blue-600 text-white shadow-[0_0_20px_rgba(6,182,212,0.35)]"
+                  : "text-white/50 hover:text-white/80"
+              )}
+            >
+              <ListVideo className="w-3.5 h-3.5 shrink-0" />
+              <span className="sm:hidden">Scenes</span>
+              <span className="hidden sm:inline">Scene Find</span>
+              <Badge className="hidden sm:inline-flex bg-cyan-500/20 text-cyan-200 border-cyan-500/30 text-[10px] px-1.5 py-0">
+                AI
               </Badge>
             </button>
             </div>
@@ -1024,6 +1055,19 @@ export default function Home() {
                 className="w-full"
               >
                 <BhagwatVideos />
+              </motion.div>
+            )}
+
+            {showSceneFinder && (
+              <motion.div
+                key="scenefinder-panel"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.3 }}
+                className="w-full"
+              >
+                <KathaSceneFinder />
               </motion.div>
             )}
 
