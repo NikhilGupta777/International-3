@@ -64,6 +64,33 @@ Render jobs use an in-memory `renderJobs` Map that is wiped when the API server 
 - Cleanup window (`RENDER_DELETE_MS`) raised from 10 → 60 minutes after first download.
 - Frontend `tryResolveRenderJob` treats HTTP 404 from `/render-state` as terminal: clears pending state, stops SSE reconnect, shows actionable message.
 
+## Timestamps Tab — Lambda Pipeline Fix (Apr 2026)
+
+**Bug:** In production every Timestamps job was stuck at `progressPct: 5` /
+`"Fetching video info…"`. Root cause: the API Lambda's `setImmediate` block
+ran `runYtDlpMetadata` + `fetchTranscript` before invoking the worker Lambda
+for Gemini. AWS Lambda freezes the request container the moment the response
+is returned to API Gateway, so any async work scheduled via `setImmediate`
+after `res.json` is suspended and effectively never finishes.
+
+**Fix (`artifacts/api-server/src/routes/timestamps.ts` + `lambda.ts`):**
+
+- POST `/api/youtube/timestamps` now writes the initial DDB record and
+  immediately invokes the worker Lambda with `{ url, instructions }` only.
+  No more `setImmediate` for the heavy lifting.
+- `runTimestampWorker` now accepts a `url`-only payload and runs the full
+  pipeline (yt-dlp metadata → transcript fetch → Gemini) inside the worker
+  Lambda, which has its own 15-minute runtime. Legacy
+  `{ videoTitle, transcript }` payloads are still accepted so any in-flight
+  jobs from the prior deploy still complete.
+- `lambda.ts` accepts both payload shapes and dispatches accordingly.
+- The local Express ("inline") path is unchanged — `runTimestampAnalysis`
+  still does everything in-process for dev.
+
+Required prod env (already set): `TIMESTAMPS_WORKER_FUNCTION_NAME=ytgrabber-green-api`
+(self-invoke), IAM `lambda:InvokeFunction` policy, `GEMINI_API_KEY`,
+`YOUTUBE_QUEUE_JOB_TABLE`, `YTDLP_COOKIES_S3_KEY`.
+
 ## Bhagwat Tab — End-to-End Hardening (Apr 2026)
 
 Production-blocker plus follow-up correctness/robustness fixes:

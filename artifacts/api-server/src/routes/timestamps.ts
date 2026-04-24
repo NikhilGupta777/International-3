@@ -766,21 +766,100 @@ async function runTimestampAnalysis(
 }
 
 // ── Lambda worker (called from lambda.ts) ─────────────────────────────────────
+//
+// Two payload shapes are supported:
+//   1. { url, instructions? }            — full pipeline (yt-dlp metadata +
+//                                          transcript + Gemini). Used by the
+//                                          API handler when running on Lambda.
+//   2. { videoTitle, videoDuration,
+//        transcript, instructions? }     — Gemini-only (legacy). Kept so that
+//                                          any in-flight invocations from a
+//                                          prior deploy still complete.
+//
+// Lambda freezes the API container as soon as `res.json` returns to API
+// Gateway, which means any work scheduled via `setImmediate` in the API
+// handler may never finish. Doing the full pipeline here, in a dedicated
+// worker invocation, gives us the full 15-minute Lambda runtime per job.
 export type TimestampWorkerEvent = {
   source: "videomaking.timestamps";
   jobId: string;
-  videoTitle: string;
-  videoDuration: number;
-  transcript: string;
+  url?: string;
+  videoTitle?: string;
+  videoDuration?: number;
+  transcript?: string;
   instructions?: string;
 };
 
-export async function runTimestampWorker(event: TimestampWorkerEvent): Promise<void> {
-  const { jobId, videoTitle, videoDuration, transcript, instructions } = event;
-  await ddbUpdateJob(jobId, "running", "Generating timestamps with Gemini...", { progressPct: 60 });
+async function runTimestampPipelineFromUrl(
+  jobId: string,
+  url: string,
+  instructions?: string,
+): Promise<void> {
+  // 1. Metadata
+  await ddbUpdateJob(jobId, "running", "Fetching video info...", { progressPct: 10 });
+  let meta: any;
   try {
+    meta = await runYtDlpMetadata(url);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    const friendly = /sign.in|bot|blocked|403/i.test(msg)
+      ? "YouTube blocked server access. Try again later."
+      : "Could not load video info. Check the URL and try again.";
+    throw new Error(friendly);
+  }
+
+  const videoTitle: string = meta.title ?? "";
+  const videoDuration: number = meta.duration ?? 0;
+  const videoDescription: string = (meta.description ?? "").slice(0, 800);
+
+  // 2. Transcript
+  await ddbUpdateJob(
+    jobId,
+    "running",
+    `Fetching transcript for "${videoTitle.slice(0, 50)}"...`,
+    { progressPct: 30 },
+  );
+  const { transcript, source } = await fetchTranscript(url, meta, async (msg) => {
+    await ddbUpdateJob(jobId, "running", msg, { progressPct: 45 }).catch(() => {});
+  });
+  const finalTranscript =
+    transcript || `Title: ${videoTitle}\nDescription: ${videoDescription}`;
+
+  logger.info({ jobId, source, transcriptChars: finalTranscript.length }, "[timestamps] transcript ready");
+
+  // 3. Gemini
+  await ddbUpdateJob(jobId, "running", "Generating timestamps with Gemini 2.5 Pro...", { progressPct: 65 });
+  const sampled = sampleTranscript(finalTranscript, MAX_TRANSCRIPT_CHARS);
+  const rawResponse = await callGemini(videoTitle, videoDuration, sampled, instructions);
+
+  const timestamps = parseTimestampsJson(rawResponse);
+  if (!timestamps || timestamps.length === 0) {
+    throw new Error("AI did not return valid timestamps. Please try again.");
+  }
+  timestamps.sort((a, b) => a.startSec - b.startSec);
+  if (timestamps[0].startSec > 5) timestamps.unshift({ startSec: 0, label: "शुरुआत / Start" });
+
+  await ddbUpdateJob(jobId, "done", `${timestamps.length} timestamps generated`, {
+    progressPct: 100,
+    resultJson: JSON.stringify({ timestamps, videoTitle, videoDuration }),
+  });
+}
+
+export async function runTimestampWorker(event: TimestampWorkerEvent): Promise<void> {
+  const { jobId, url, videoTitle, videoDuration, transcript, instructions } = event;
+  try {
+    if (url && url.trim()) {
+      await runTimestampPipelineFromUrl(jobId, url.trim(), instructions);
+      return;
+    }
+
+    // Legacy Gemini-only path
+    if (typeof transcript !== "string" || typeof videoTitle !== "string") {
+      throw new Error("Worker payload missing url or transcript");
+    }
+    await ddbUpdateJob(jobId, "running", "Generating timestamps with Gemini...", { progressPct: 60 });
     const sampled = sampleTranscript(transcript, MAX_TRANSCRIPT_CHARS);
-    const rawResponse = await callGemini(videoTitle, videoDuration, sampled, instructions);
+    const rawResponse = await callGemini(videoTitle, videoDuration ?? 0, sampled, instructions);
     const timestamps = parseTimestampsJson(rawResponse);
     if (!timestamps || timestamps.length === 0)
       throw new Error("AI did not return valid timestamps");
@@ -788,11 +867,12 @@ export async function runTimestampWorker(event: TimestampWorkerEvent): Promise<v
     if (timestamps[0].startSec > 5) timestamps.unshift({ startSec: 0, label: "शुरुआत / Start" });
     await ddbUpdateJob(jobId, "done", `${timestamps.length} timestamps generated`, {
       progressPct: 100,
-      resultJson: JSON.stringify({ timestamps, videoTitle, videoDuration }),
+      resultJson: JSON.stringify({ timestamps, videoTitle, videoDuration: videoDuration ?? 0 }),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Timestamp generation failed";
-    await ddbUpdateJob(jobId, "error", message, { progressPct: 0 });
+    logger.error({ err, jobId }, "[timestamps] worker failed");
+    await ddbUpdateJob(jobId, "error", message.slice(0, 500), { progressPct: 0 }).catch(() => {});
   }
 }
 
@@ -810,68 +890,43 @@ router.post("/youtube/timestamps", async (req: Request, res: Response) => {
   const useLambda = !!(lambdaClient && WORKER_FUNCTION_NAME && ddb && JOB_TABLE);
 
   if (useLambda) {
-    // ── Lambda mode: fetch transcript here, invoke Lambda for Gemini ──────────
+    // ── Lambda mode: invoke worker Lambda for the full pipeline ──────────────
+    //
+    // Earlier versions did the yt-dlp metadata + transcript fetch inside a
+    // setImmediate before invoking the worker for Gemini. That doesn't work
+    // on Lambda — the API container is frozen the moment the response is
+    // returned, so the setImmediate code may never finish (jobs got stuck at
+    // progressPct 5 forever). We now hand the URL directly to the worker
+    // Lambda, which has its own 15-minute runtime.
     try {
-      // Write initial DynamoDB record
-      await ddbPutJob(jobId, "running", "Fetching video info...");
+      await ddbPutJob(jobId, "running", "Queued for AI analysis...");
 
-      // Run transcript fetch in background (this server is persistent ECS, not Lambda)
-      setImmediate(async () => {
-        try {
-          await ddbUpdateJob(jobId, "running", "Fetching video info...", { progressPct: 5 });
-          let meta: any;
-          try {
-            meta = await runYtDlpMetadata(url.trim());
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            await ddbUpdateJob(jobId, "error", msg.slice(0, 500));
-            return;
-          }
+      const workerPayload: TimestampWorkerEvent = {
+        source: "videomaking.timestamps",
+        jobId,
+        url: url.trim(),
+        instructions: instructions?.trim() || undefined,
+      };
 
-          const videoTitle: string = meta.title ?? "";
-          const videoDuration: number = meta.duration ?? 0;
-
-          await ddbUpdateJob(jobId, "running", `Fetching transcript for "${videoTitle.slice(0, 50)}"...`, { progressPct: 20 });
-
-          const { transcript, source } = await fetchTranscript(url.trim(), meta, async (msg) => {
-            await ddbUpdateJob(jobId, "running", msg, { progressPct: 40 }).catch(() => {});
+      if (lambdaClient && WORKER_FUNCTION_NAME) {
+        await lambdaClient.send(new InvokeCommand({
+          FunctionName: WORKER_FUNCTION_NAME,
+          InvocationType: "Event",
+          Payload: Buffer.from(JSON.stringify(workerPayload)),
+        }));
+        res.json({ jobId, mode: "lambda" });
+      } else {
+        // Should not happen given useLambda check above, but guard anyway.
+        res.json({ jobId, mode: "lambda" });
+        setImmediate(() => {
+          runTimestampWorker(workerPayload).catch((err) => {
+            logger.error({ err, jobId }, "[timestamps] Inline worker fallback failed");
           });
-
-          const finalTranscript = transcript ||
-            `Title: ${videoTitle}\nDescription: ${(meta.description ?? "").slice(0, 800)}`;
-
-          await ddbUpdateJob(jobId, "running", "Invoking AI for timestamp generation...", { progressPct: 55 });
-
-          const workerPayload: TimestampWorkerEvent = {
-            source: "videomaking.timestamps",
-            jobId,
-            videoTitle,
-            videoDuration,
-            transcript: finalTranscript,
-            instructions: instructions?.trim() || undefined,
-          };
-
-          // Invoke Lambda worker
-          if (lambdaClient && WORKER_FUNCTION_NAME) {
-            await lambdaClient.send(new InvokeCommand({
-              FunctionName: WORKER_FUNCTION_NAME,
-              InvocationType: "Event",
-              Payload: Buffer.from(JSON.stringify(workerPayload)),
-            }));
-          } else {
-            // Fallback: run worker inline
-            await runTimestampWorker(workerPayload);
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Analysis failed";
-          logger.error({ err, jobId }, "[timestamps] Lambda-mode background task failed");
-          await ddbUpdateJob(jobId, "error", msg.slice(0, 500)).catch(() => {});
-        }
-      });
-
-      res.json({ jobId, mode: "lambda" });
+        });
+      }
     } catch (err) {
       logger.error({ err, jobId }, "[timestamps] Failed to start Lambda-mode job");
+      await ddbUpdateJob(jobId, "error", "Failed to start job").catch(() => {});
       res.status(502).json({ error: "Failed to start job" });
     }
     return;

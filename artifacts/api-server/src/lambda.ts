@@ -7,6 +7,7 @@ type WorkerEvent = {
   source?: string;
   jobId?: string;
   query?: string;
+  url?: string;
   transcript?: string;
   videoTitle?: string;
   videoDuration?: number;
@@ -43,12 +44,19 @@ const httpHandler = serverless(app, {
 export const handler = async (event: WorkerEvent, context: unknown) => {
   // Timestamps Lambda worker
   if (event?.source === "videomaking.timestamps") {
-    if (!event.jobId || typeof event.videoTitle !== "string" || typeof event.transcript !== "string") {
-      throw new Error("Invalid Timestamps worker payload");
+    if (!event.jobId) {
+      throw new Error("Invalid Timestamps worker payload: missing jobId");
+    }
+    const hasUrl = typeof event.url === "string" && event.url.trim().length > 0;
+    const hasLegacy =
+      typeof event.videoTitle === "string" && typeof event.transcript === "string";
+    if (!hasUrl && !hasLegacy) {
+      throw new Error("Invalid Timestamps worker payload: need url or transcript");
     }
     await runTimestampWorker({
       source: "videomaking.timestamps",
       jobId: event.jobId,
+      url: event.url,
       videoTitle: event.videoTitle,
       videoDuration: typeof event.videoDuration === "number" ? event.videoDuration : 0,
       transcript: event.transcript,
