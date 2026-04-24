@@ -5,7 +5,6 @@ import notificationsRouter from "./notifications";
 import youtubeRouter from "./youtube";
 import subtitlesRouter from "./subtitles";
 import bhagwatRouter from "./bhagwat";
-import sceneFinderRouter from "./scene-finder";
 
 const router: IRouter = Router();
 
@@ -15,6 +14,5 @@ router.use(notificationsRouter);
 router.use(youtubeRouter);
 router.use(subtitlesRouter);
 router.use(bhagwatRouter);
-router.use(sceneFinderRouter);
 
 export default router;

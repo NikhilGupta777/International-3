@@ -65,6 +65,9 @@
   
   --accent: 348 83% 47%;
   --accent-foreground: 0 0% 100%;
+  --gradient-warm: linear-gradient(135deg, hsl(25 95% 45%), hsl(40 95% 56%));
+  --gradient-soft: linear-gradient(180deg, hsl(38 70% 96%), hsl(34 70% 90%));
+  --shadow-warm: 0 10px 40px -12px hsl(25 95% 45% / 0.35);
   
   --destructive: 0 84% 60%;
   --destructive-foreground: 0 0% 98%;
