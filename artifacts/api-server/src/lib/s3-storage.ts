@@ -88,6 +88,23 @@ async function bodyToString(body: unknown): Promise<string> {
   });
 }
 
+async function bodyToBuffer(body: unknown): Promise<Buffer> {
+  if (!body) return Buffer.alloc(0);
+  if (typeof (body as any).transformToByteArray === "function") {
+    return Buffer.from(await (body as any).transformToByteArray());
+  }
+  if (typeof (body as any).transformToString === "function") {
+    return Buffer.from(await (body as any).transformToString(), "utf8");
+  }
+  return await new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    (body as NodeJS.ReadableStream)
+      .on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+      .on("end", () => resolve(Buffer.concat(chunks)))
+      .on("error", reject);
+  });
+}
+
 export function isS3StorageEnabled(): boolean {
   return Boolean(S3_BUCKET);
 }
@@ -239,6 +256,17 @@ export async function readTextFromS3(key: string): Promise<string> {
     }),
   );
   return bodyToString(out.Body);
+}
+
+export async function readBufferFromS3(key: string): Promise<Buffer> {
+  const client = getS3Client();
+  const out = await client.send(
+    new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+    }),
+  );
+  return bodyToBuffer(out.Body);
 }
 
 export async function cleanupOldS3Objects(params: {

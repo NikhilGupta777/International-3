@@ -12,6 +12,7 @@ import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
   createS3PresignedUpload,
+  readBufferFromS3,
   readTextFromS3,
 } from "../lib/s3-storage";
 import {
@@ -2163,8 +2164,50 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
     return;
   }
 
-  res.status(409).json({
-    error: "S3-first subtitle upload requires queue-primary subtitles mode (or disable SUBTITLES_FORCE_LAMBDA)",
+  const baseName = originalFilename.replace(/\.[^.]+$/, "");
+  const srtFilename = `${baseName}.srt`;
+  jobs.set(jobId, {
+    status: "pending",
+    message: "Queued - starting soon...",
+    filename: srtFilename,
+    createdAt: Date.now(),
+    translateTo: translateLang,
+    progressPct: 0,
+    notifyClientKey,
+  });
+
+  res.json({ jobId });
+
+  enqueueSubtitleJob(jobId, async () => {
+    const tempPath = join(DOWNLOAD_DIR, `subtitles-upload-${jobId}-${basename(originalFilename)}`);
+    try {
+      mkdirSync(dirname(tempPath), { recursive: true });
+      const body = await readBufferFromS3(uploadKey);
+      writeFileSync(tempPath, body);
+      await processAudio(jobId, tempPath, language, srtFilename, translateLang, () => {
+        try { rmSync(tempPath); } catch {}
+      });
+    } catch (err) {
+      try { rmSync(tempPath); } catch {}
+      const job = jobs.get(jobId);
+      if (!job) return;
+      const message = err instanceof Error ? err.message : "Subtitle upload processing failed";
+      if (message === CANCELLED_BY_USER || job.cancelled) {
+        job.status = "cancelled";
+        job.completedAt = Date.now();
+        job.message = CANCELLED_BY_USER;
+        return;
+      }
+      job.status = "error";
+      job.completedAt = Date.now();
+      job.error = message;
+    }
+  }).catch((err) => {
+    const job = jobs.get(jobId);
+    if (!job) return;
+    job.status = "error";
+    job.completedAt = Date.now();
+    job.error = err instanceof Error ? err.message : "Subtitle upload processing failed";
   });
 });
 
