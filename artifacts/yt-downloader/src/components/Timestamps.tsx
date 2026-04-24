@@ -93,6 +93,7 @@ export function Timestamps() {
   const [instructions, setInstructions] = useState("");
   const [showInstructions, setShowInstructions] = useState(false);
   const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
+  const statusRef = useRef<"idle" | "running" | "done" | "error">("idle");
   const [steps, setSteps] = useState<Step[]>([]);
   const [result, setResult] = useState<JobResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +122,7 @@ export function Timestamps() {
     if (!url.trim() || isRunning) return;
 
     closeSSE();
+    statusRef.current = "running";
     setStatus("running");
     setSteps([]);
     setResult(null);
@@ -168,6 +170,7 @@ export function Timestamps() {
           updateStep(data.step, (data.status as StepStatus) ?? "running", data.message ?? "");
         } else if (data.type === "done") {
           closeSSE();
+          statusRef.current = "done";
           setStatus("done");
           setResult({
             timestamps: data.timestamps ?? [],
@@ -182,6 +185,7 @@ export function Timestamps() {
           });
         } else if (data.type === "error") {
           closeSSE();
+          statusRef.current = "error";
           setStatus("error");
           const msg = data.message ?? "Analysis failed";
           setError(msg);
@@ -192,7 +196,8 @@ export function Timestamps() {
 
     sse.onerror = () => {
       closeSSE();
-      if (status !== "done") {
+      if (statusRef.current !== "done" && statusRef.current !== "error") {
+        statusRef.current = "error";
         setStatus("error");
         setError("Connection lost. The server may still be processing — please try again.");
         toast({ title: "Connection error", description: "Lost connection to server", variant: "destructive" });

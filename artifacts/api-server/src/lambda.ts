@@ -2,12 +2,16 @@ import type { Request } from "express";
 import serverless from "serverless-http";
 import app from "./app";
 import { runSceneFinderWorker } from "./routes/scene-finder";
+import { runTimestampWorker, type TimestampWorkerEvent } from "./routes/timestamps";
 
-type SceneFinderWorkerEvent = {
+type WorkerEvent = {
   source?: string;
   jobId?: string;
   query?: string;
   transcript?: string;
+  videoTitle?: string;
+  videoDuration?: number;
+  instructions?: string;
 };
 
 const httpHandler = serverless(app, {
@@ -37,7 +41,8 @@ const httpHandler = serverless(app, {
   },
 });
 
-export const handler = async (event: SceneFinderWorkerEvent, context: unknown) => {
+export const handler = async (event: WorkerEvent, context: unknown) => {
+  // Scene Finder Lambda worker
   if (event?.source === "videomaking.scene-finder") {
     if (!event.jobId || !event.query || !event.transcript) {
       throw new Error("Invalid Scene Finder worker payload");
@@ -50,5 +55,22 @@ export const handler = async (event: SceneFinderWorkerEvent, context: unknown) =
     });
     return { ok: true };
   }
+
+  // Timestamps Lambda worker
+  if (event?.source === "videomaking.timestamps") {
+    if (!event.jobId || typeof event.videoTitle !== "string" || typeof event.transcript !== "string") {
+      throw new Error("Invalid Timestamps worker payload");
+    }
+    await runTimestampWorker({
+      source: "videomaking.timestamps",
+      jobId: event.jobId,
+      videoTitle: event.videoTitle,
+      videoDuration: typeof event.videoDuration === "number" ? event.videoDuration : 0,
+      transcript: event.transcript,
+      instructions: event.instructions,
+    } as TimestampWorkerEvent);
+    return { ok: true };
+  }
+
   return httpHandler(event as any, context as any);
 };
