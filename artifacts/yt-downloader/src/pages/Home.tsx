@@ -13,7 +13,6 @@ import { Badge } from "@/components/ui/badge";
 import { cn, formatBytes, formatDuration, formatViews } from "@/lib/utils";
 import { ActiveDownload } from "@/components/ActiveDownload";
 import { BestClips, type BestClipsHandle } from "@/components/BestClips";
-import { BhavishyaClips } from "@/components/BhavishyaClips";
 import { BhagwatVideos } from "@/components/BhagwatVideos";
 import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
@@ -1045,7 +1044,6 @@ export default function Home() {
                 className="flex flex-col"
               >
                 <BestClips ref={bestClipsRef} url={url} />
-                {submittedUrl && <BhavishyaClips url={submittedUrl} />}
               </motion.div>
             )}
 
