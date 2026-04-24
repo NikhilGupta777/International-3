@@ -22,7 +22,6 @@ RUN pnpm config set network-concurrency 1 && pnpm config set child-concurrency 1
 # api-server route modules at runtime, so api-server runtime deps
 # (express, multer, etc.) must exist in this image.
 RUN pnpm -r install --frozen-lockfile
-RUN node -e "require.resolve('express')"
 RUN pnpm --filter @workspace/queue-worker run build
 
 CMD ["node", "artifacts/queue-worker/dist/index.cjs"]
