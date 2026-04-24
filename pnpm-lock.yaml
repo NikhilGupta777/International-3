@@ -192,7 +192,7 @@ importers:
         specifier: ^3.1029.0
         version: 3.1029.0
       '@aws-sdk/client-lambda':
-        specifier: ^3.1029.0
+        specifier: ^3.1035.0
         version: 3.1035.0
       '@aws-sdk/client-s3':
         specifier: ^3.1028.0
