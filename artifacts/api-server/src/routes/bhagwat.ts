@@ -1751,6 +1751,8 @@ interface PersistedRenderMeta {
   filename: string;
   title?: string;
   completedAt: number;
+  status?: "running" | "done";
+  startedAt?: number;
 }
 
 const renderMetaPath = (jobId: string) => join(BHAGWAT_RENDERED_DIR, `${jobId}.json`);
@@ -1767,6 +1769,8 @@ function readPersistedRenderMeta(jobId: string): PersistedRenderMeta | null {
         filename: parsed.filename,
         title: typeof parsed.title === "string" ? parsed.title : undefined,
         completedAt: typeof parsed.completedAt === "number" ? parsed.completedAt : Date.now(),
+        status: parsed.status === "running" || parsed.status === "done" ? parsed.status : undefined,
+        startedAt: typeof parsed.startedAt === "number" ? parsed.startedAt : undefined,
       };
     }
   } catch {}
@@ -1779,6 +1783,24 @@ function persistRenderMeta(jobId: string, job: RenderJob) {
     filename: job.filename ?? "bhagwat_video.mp4",
     title: job.title,
     completedAt: Date.now(),
+    status: "done",
+  };
+  try {
+    writeFileSync(renderMetaPath(jobId), JSON.stringify(meta));
+  } catch {}
+}
+
+// Write a "running" meta marker the moment a render starts so that if the
+// server restarts mid-render, we can detect the interrupted job on hydration
+// and surface a clear message (instead of a generic 404 / connection error).
+export function persistRenderMetaStart(jobId: string, job: RenderJob) {
+  const meta: PersistedRenderMeta = {
+    jobId,
+    filename: job.filename ?? "bhagwat_video.mp4",
+    title: job.title,
+    completedAt: 0,
+    status: "running",
+    startedAt: Date.now(),
   };
   try {
     writeFileSync(renderMetaPath(jobId), JSON.stringify(meta));
@@ -1808,14 +1830,25 @@ function ensureRenderJob(jobId: string): RenderJob | undefined {
   }
 
   if (meta) {
+    // Meta exists but no output file. Two cases:
+    //   1. status === "running"  → server restarted mid-render. Mark as error so
+    //      the frontend stops reconnecting and shows a clear message.
+    //   2. status === "done" / undefined → file was completed and then deleted
+    //      (cleanup ran). Mark as expired.
+    const interrupted = meta.status === "running";
     const hydrated: RenderJob = {
       emitter: new EventEmitter(),
-      status: "expired",
+      status: interrupted ? "error" : "expired",
       filename: meta.filename,
       title: meta.title,
+      error: interrupted
+        ? "Render was interrupted by a server restart — please start a new render."
+        : undefined,
       progressPercent: 100,
-      progressMessage: "Rendered file expired",
-      createdAt: meta.completedAt,
+      progressMessage: interrupted
+        ? "Render interrupted (server restarted)"
+        : "Rendered file expired",
+      createdAt: meta.startedAt ?? meta.completedAt ?? Date.now(),
     };
     renderJobs.set(jobId, hydrated);
     return hydrated;
@@ -1832,6 +1865,10 @@ function readRenderHistory(limit = 20) {
       const jobId = entry.replace(/\.json$/i, "");
       const meta = readPersistedRenderMeta(jobId);
       if (!meta) continue;
+      // Only show successfully completed renders. Skip "running" markers and
+      // anything where the underlying file no longer exists on disk.
+      if (meta.status === "running") continue;
+      if (!existsSync(renderVideoPath(jobId))) continue;
       entries.push({
         id: jobId,
         title: meta.title ?? meta.filename,
@@ -2191,7 +2228,7 @@ router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-const RENDER_DELETE_MS = 10 * 60 * 1000; // 10 minutes after download
+const RENDER_DELETE_MS = 60 * 60 * 1000; // 60 minutes after first download (was 10)
 
 router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
@@ -2694,6 +2731,8 @@ export async function runBhagwatRender(
     job.emitter.emit(event, data);
   };
   job.status = "running";
+  // Persist a "running" marker so a server restart mid-render is detectable.
+  persistRenderMetaStart(jobId, job);
 
   const tmpId = randomUUID();
   const audioPath = join(BHAGWAT_TMP_DIR, `${tmpId}_audio`);
@@ -3370,6 +3409,9 @@ export async function runBhagwatRender(
     console.error("[bhagwat/render] Error:", message);
     job.status = "error";
     job.error = message;
+    // Remove the "running" meta marker so this failure isn't later mistaken
+    // for an "interrupted by restart" job after a real server restart.
+    try { unlinkSync(renderMetaPath(jobId)); } catch {}
     emit("jobError", { message });
     try {
       for (const f of readdirSync(imgDir))

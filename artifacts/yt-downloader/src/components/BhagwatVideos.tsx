@@ -837,6 +837,14 @@ function BhagwatEditor({
       const res = await fetch(`${BASE}/api/bhagwat/render-state/${jobId}`, {
         cache: "no-store",
       });
+      if (res.status === 404) {
+        // Job is truly gone (server restarted, or job expired). Stop reconnecting.
+        removePendingRender(jobId);
+        setSseReconnecting(false);
+        setErrorMsg("Render was interrupted — the server may have restarted. Please start a new render.");
+        setPhase("error");
+        return true;
+      }
       if (!res.ok) {
         return false;
       }

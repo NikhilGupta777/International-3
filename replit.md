@@ -53,3 +53,13 @@ The Vite dev server proxies `/api` requests to `localhost:8080` (configurable vi
 Configured as a static site deployment:
 - Build: `pnpm --filter @workspace/yt-downloader run build`
 - Output: `artifacts/yt-downloader/dist/public`
+
+## Bhagwat AI Editor — Render Resilience (Apr 2026)
+
+Render jobs use an in-memory `renderJobs` Map that is wiped when the API server restarts. To stop "Connection error during render" misreports:
+
+- Backend writes a `status:"running"` meta JSON the moment a render starts (`persistRenderMetaStart`). On hydration, if meta says `running` but no mp4 exists, the job is hydrated as `error` with message "Render was interrupted by a server restart — please start a new render."
+- Render history list filters out `running` markers and entries where the mp4 is gone.
+- Render-error catch path deletes the meta marker so real failures aren't later misreported as restart-interrupted.
+- Cleanup window (`RENDER_DELETE_MS`) raised from 10 → 60 minutes after first download.
+- Frontend `tryResolveRenderJob` treats HTTP 404 from `/render-state` as terminal: clears pending state, stops SSE reconnect, shows actionable message.
