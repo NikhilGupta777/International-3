@@ -46,6 +46,18 @@ interface PendingRender {
   startedAt: number;
 }
 
+// Defensive JSON.parse for SSE handlers — a malformed payload from the server
+// must NOT crash the listener (which leaves the UI silently stuck on the
+// previous "running" state). Returns the fallback and logs to the console.
+function safeParseSseJson<T = any>(raw: unknown, fallback: T): T {
+  if (typeof raw !== "string") return fallback;
+  try { return JSON.parse(raw) as T; }
+  catch (err) {
+    console.warn("[bhagwat] Failed to parse SSE payload:", err, raw);
+    return fallback;
+  }
+}
+
 function formatSec(s: number) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
   if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
@@ -1057,16 +1069,16 @@ function BhagwatEditor({
         setAnalyzeJobId(session.analyzeJobId);
         const es = new EventSource(`${BASE}/api/bhagwat/analyze-status/${session.analyzeJobId}`);
         esRef.current = es;
-        es.addEventListener("step", e => { setSseReconnecting(false); const d = JSON.parse(e.data); setStep(d.step, d.status, d.message); });
+        es.addEventListener("step", e => { setSseReconnecting(false); const d = safeParseSseJson(e.data, {} as any); setStep(d.step, d.status, d.message); });
         es.addEventListener("done", e => {
           setSseReconnecting(false);
-          const d = JSON.parse(e.data);
+          const d = safeParseSseJson(e.data, {} as any);
           setTimeline(d.timeline); setVideoTitle(d.videoTitle ?? ""); setVideoDuration(d.videoDuration ?? 0); setTranscriptText(d.transcriptText ?? "");
           setPhase("analyzed"); es.close();
         });
         es.addEventListener("jobError", e => {
           setSseReconnecting(false);
-          const d = JSON.parse((e as MessageEvent).data);
+          const d = safeParseSseJson((e as MessageEvent).data, {} as any);
           setErrorMsg(d.message ?? "Analysis failed"); setPhase("error"); es.close();
         });
         es.onerror = () => {
@@ -1096,10 +1108,10 @@ function BhagwatEditor({
         void tryResolveRenderJob(session.renderJobId, session.videoTitle ?? "");
         const es = new EventSource(`${BASE}/api/bhagwat/render-status/${session.renderJobId}`);
         esRef.current = es;
-        es.addEventListener("progress", e => { setSseReconnecting(false); const d = JSON.parse(e.data); setRenderPercent(d.percent ?? 0); setRenderMessage(d.message ?? ""); });
+        es.addEventListener("progress", e => { setSseReconnecting(false); const d = safeParseSseJson(e.data, {} as any); setRenderPercent(d.percent ?? 0); setRenderMessage(d.message ?? ""); });
         es.addEventListener("done", e => {
           setSseReconnecting(false);
-          const d = JSON.parse(e.data);
+          const d = safeParseSseJson(e.data, {} as any);
           const absoluteDownloadUrl = `${BASE}${d.downloadUrl}`;
           const filename = d.filename ?? "bhagwat_video.mp4";
           setDownloadUrl(absoluteDownloadUrl); setDownloadFilename(filename);
@@ -1110,7 +1122,7 @@ function BhagwatEditor({
         });
         es.addEventListener("jobError", e => {
           setSseReconnecting(false);
-          const d = JSON.parse((e as MessageEvent).data);
+          const d = safeParseSseJson((e as MessageEvent).data, {} as any);
           removePendingRender(session.renderJobId);
           setErrorMsg(d.message ?? "Render failed"); setPhase("error"); es.close();
         });
@@ -1268,12 +1280,12 @@ function BhagwatEditor({
 
       es.addEventListener("step", e => {
         setSseReconnecting(false);
-        const d = JSON.parse(e.data);
+        const d = safeParseSseJson(e.data, {} as any);
         setStep(d.step, d.status, d.message);
       });
       es.addEventListener("done", e => {
         setSseReconnecting(false);
-        const d = JSON.parse(e.data);
+        const d = safeParseSseJson(e.data, {} as any);
         setTimeline(d.timeline);
         setVideoTitle(d.videoTitle ?? "");
         setVideoDuration(d.videoDuration ?? 0);
@@ -1283,7 +1295,7 @@ function BhagwatEditor({
       });
       es.addEventListener("jobError", e => {
         setSseReconnecting(false);
-        const d = JSON.parse((e as MessageEvent).data);
+        const d = safeParseSseJson((e as MessageEvent).data, {} as any);
         setErrorMsg(d.message ?? "Analysis failed");
         setPhase("error");
         es.close();
@@ -1313,14 +1325,19 @@ function BhagwatEditor({
         body: JSON.stringify({ timeline, videoTitle, videoDuration, transcriptText }),
       });
       const { jobId } = await res.json();
+      // Close any prior SSE before opening a new one (e.g. user clicked
+      // Review again before the previous one finished) and save to esRef so
+      // the global Stop button can cancel an in-flight review.
+      esRef.current?.close();
       const es = new EventSource(`${BASE}/api/bhagwat/review-status/${jobId}`);
+      esRef.current = es;
 
       es.addEventListener("chunk", e => {
-        const d = JSON.parse(e.data);
+        const d = safeParseSseJson(e.data, {} as any);
         setReviewText(prev => prev + (d.text ?? ""));
       });
       es.addEventListener("suggestions", e => {
-        const d = JSON.parse(e.data);
+        const d = safeParseSseJson(e.data, {} as any);
         const improvements: Suggestion[] = d.suggestions ?? [];
         const newSegs: TimelineSegment[] = (d.newSegments ?? []).map((s: any) => ({
           startSec: s.startSec,
@@ -1358,7 +1375,7 @@ function BhagwatEditor({
         }
       });
       es.addEventListener("jobError", e => {
-        const d = JSON.parse((e as MessageEvent).data);
+        const d = safeParseSseJson((e as MessageEvent).data, {} as any);
         toast({ title: "Review failed", description: d.message, variant: "destructive" });
         setReviewing(false);
         es.close();
@@ -1428,13 +1445,13 @@ function BhagwatEditor({
 
       es.addEventListener("progress", e => {
         setSseReconnecting(false);
-        const d = JSON.parse(e.data);
+        const d = safeParseSseJson(e.data, {} as any);
         setRenderPercent(d.percent ?? 0);
         setRenderMessage(d.message ?? "");
       });
       es.addEventListener("done", e => {
         setSseReconnecting(false);
-        const d = JSON.parse(e.data);
+        const d = safeParseSseJson(e.data, {} as any);
         const absoluteDownloadUrl = `${BASE}${d.downloadUrl}`;
         const filename = d.filename ?? "bhagwat_video.mp4";
         setDownloadUrl(absoluteDownloadUrl);
@@ -1447,7 +1464,7 @@ function BhagwatEditor({
       });
       es.addEventListener("jobError", e => {
         setSseReconnecting(false);
-        const d = JSON.parse((e as MessageEvent).data);
+        const d = safeParseSseJson((e as MessageEvent).data, {} as any);
         removePendingRender(jobId);
         setErrorMsg(d.message ?? "Render failed");
         setPhase("error");

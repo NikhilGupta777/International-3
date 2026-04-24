@@ -63,3 +63,15 @@ Render jobs use an in-memory `renderJobs` Map that is wiped when the API server 
 - Render-error catch path deletes the meta marker so real failures aren't later misreported as restart-interrupted.
 - Cleanup window (`RENDER_DELETE_MS`) raised from 10 → 60 minutes after first download.
 - Frontend `tryResolveRenderJob` treats HTTP 404 from `/render-state` as terminal: clears pending state, stops SSE reconnect, shows actionable message.
+
+## Bhagwat Tab — End-to-End Hardening (Apr 2026)
+
+Production-blocker plus follow-up correctness/robustness fixes:
+
+- **S3 cookie loading**: `bhagwat.ts` now lazily fetches yt-dlp browser cookies from `s3://$S3_BUCKET/$YTDLP_COOKIES_S3_KEY` (JSON browser-export format), converts to Netscape, and caches on disk. Wired into `runYtDlp` and `runYtDlpForSubs` (in-flight dedup + on-disk cache). Mirrors the `youtube.ts` pattern. Required env: `S3_BUCKET`, `S3_REGION`, `YTDLP_COOKIES_S3_KEY`. Without it, AWS Lambda yt-dlp calls fail bot-detection.
+- **Local env parity**: New `artifacts/api-server/src/lib/load-env.ts` is the very first import in `src/index.ts` (side-effect ESM import) and loads the repo-root `.env` into `process.env` before any other module reads env. `artifact.toml` carries the same values for the dev workflow.
+- **Path-traversal guard**: `pickSafeBhagwatId` (regex `[A-Za-z0-9_-]{1,128}`) replaces `pickFirst` at all 8 `req.params.{jobId,audioId}` sites — bad ids return 400 before touching disk.
+- **CLI-flag injection guard**: `safeFsArg` prepends `./` when a path arg starts with `-`, applied at every ffmpeg/ffprobe `-i` call site that takes a user-influenced path (audioFile, audio.path, clip image paths, concat list).
+- **Analyze restart-resilience**: parallels render — start marker via `persistAnalysisMetaStart`, cleanup via `clearAnalysisMeta`, boot-time sweep + `hydrateInterruptedAnalysis` (called from analyze-status SSE handler).
+- **Background-task error visibility**: replaced silent `.catch(()=>{})` on `runBhagwatAnalysis`, `runBhagwatRender`, `runBhagwatReview`, and the upload-render path with `req.log.error`. Best-effort subtitle fetches stay silent (immediate fallback in code).
+- **Frontend SSE hardening**: `safeParseSseJson<T>()` wraps every SSE `JSON.parse` (15 sites) in `BhagwatVideos.tsx`. Review SSE now stored in `esRef.current` with prior-close so Stop terminates review streams too.

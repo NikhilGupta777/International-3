@@ -9,7 +9,7 @@ import {
   rmdirSync,
   statSync,
 } from "fs";
-import { join, basename } from "path";
+import { join, basename, dirname } from "path";
 import { tmpdir } from "os";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
@@ -31,8 +31,10 @@ import {
   deleteS3Object,
   getS3SignedDownloadUrl,
   isS3StorageEnabled,
+  readTextFromS3,
   uploadFileToS3,
 } from "../lib/s3-storage";
+import { logger } from "../lib/logger";
 
 const router: Router = Router();
 const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
@@ -226,6 +228,28 @@ router.use("/bhagwat", (req: Request, res: Response, next: NextFunction) => {
 
 function pickFirst(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+// ── Path-traversal & CLI-flag injection guards ────────────────────────────────
+// All Bhagwat job/audio/upload IDs are server-generated UUIDs — clients must
+// only echo them back. Reject anything that contains path separators, dots,
+// nulls, or could otherwise escape our temp directories.
+const SAFE_BHAGWAT_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+function isSafeBhagwatId(value: unknown): value is string {
+  return typeof value === "string" && SAFE_BHAGWAT_ID_RE.test(value);
+}
+function pickSafeBhagwatId(value: string | string[] | undefined): string | null {
+  const v = pickFirst(value);
+  return isSafeBhagwatId(v) ? v : null;
+}
+
+// Prefix file-system arguments passed to ffmpeg/yt-dlp so a leading "-" in
+// the path is never interpreted as a CLI flag (defence-in-depth — our temp
+// filenames are UUIDs, but uploaded filenames could in theory be hostile).
+function safeFsArg(p: string): string {
+  if (!p) return p;
+  if (p.startsWith("-")) return `./${p}`;
+  return p;
 }
 
 // Sweep old uploads after 2 hours
@@ -857,6 +881,141 @@ const HAS_DYNAMIC_POT_PROVIDER = !!YTDLP_POT_PROVIDER_URL;
 const HAS_STATIC_PO_TOKEN = !!(YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA);
 const YTDLP_COOKIES_FILE =
   process.env.YTDLP_COOKIES_FILE ?? join(_workspaceRoot, ".yt-cookies.txt");
+const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
+
+// Convert exported browser-extension cookies (JSON list/object) into Netscape
+// cookie format that yt-dlp accepts. Mirrors youtube.ts's helper.
+type ExportedBrowserCookie = {
+  domain?: unknown;
+  hostOnly?: unknown;
+  path?: unknown;
+  secure?: unknown;
+  session?: unknown;
+  expirationDate?: unknown;
+  name?: unknown;
+  value?: unknown;
+};
+function bhagwatCookiesToNetscape(cookieList: ExportedBrowserCookie[]): string | null {
+  const lines: string[] = [];
+  for (const c of cookieList) {
+    const domainRaw = typeof c.domain === "string" ? c.domain.trim() : "";
+    const nameRaw = typeof c.name === "string" ? c.name.trim() : "";
+    const valueRaw = typeof c.value === "string" ? c.value : "";
+    if (!domainRaw || !nameRaw) continue;
+    const dl = domainRaw.toLowerCase();
+    const keep =
+      dl.includes("youtube.com") ||
+      dl.includes("youtu.be") ||
+      dl.includes("google.com") ||
+      dl.includes("googlevideo.com");
+    if (!keep) continue;
+    const path = typeof c.path === "string" && c.path.trim() ? c.path.trim() : "/";
+    const includeSubdomains =
+      c.hostOnly === true || !domainRaw.startsWith(".") ? "FALSE" : "TRUE";
+    const secure = c.secure === true ? "TRUE" : "FALSE";
+    const isSession = c.session === true;
+    const expiry =
+      !isSession && typeof c.expirationDate === "number" && Number.isFinite(c.expirationDate)
+        ? String(Math.floor(c.expirationDate))
+        : "0";
+    lines.push(
+      `${domainRaw}\t${includeSubdomains}\t${path}\t${secure}\t${expiry}\t${nameRaw}\t${valueRaw}`,
+    );
+  }
+  if (lines.length === 0) return null;
+  return `# Netscape HTTP Cookie File\n${lines.join("\n")}\n`;
+}
+
+function decodeBhagwatCookiesFromBase64(base64Value: string): string | null {
+  try {
+    const decoded = Buffer.from(base64Value, "base64").toString("utf8").trim();
+    if (!decoded) return null;
+    if (
+      decoded.startsWith("# Netscape HTTP Cookie File") ||
+      decoded.startsWith(".youtube.com") ||
+      (decoded.includes("\t") && !decoded.startsWith("{") && !decoded.startsWith("["))
+    ) {
+      return decoded.endsWith("\n") ? decoded : `${decoded}\n`;
+    }
+    if (decoded.startsWith("{")) {
+      const parsedObj = JSON.parse(decoded) as { cookies?: ExportedBrowserCookie[] };
+      if (Array.isArray(parsedObj.cookies)) return bhagwatCookiesToNetscape(parsedObj.cookies);
+    }
+    if (decoded.startsWith("[")) {
+      const parsedList = JSON.parse(decoded) as ExportedBrowserCookie[];
+      if (Array.isArray(parsedList)) return bhagwatCookiesToNetscape(parsedList);
+    }
+  } catch (err) {
+    logger.warn({ err }, "[bhagwat] Failed to decode cookie payload");
+  }
+  return null;
+}
+
+// Eagerly write any base64-env cookie blob to disk on startup (parity with youtube.ts).
+const YTDLP_COOKIES_BASE64 = process.env.YTDLP_COOKIES_BASE64 ?? "";
+if (YTDLP_COOKIES_BASE64) {
+  const cookieContent = decodeBhagwatCookiesFromBase64(YTDLP_COOKIES_BASE64);
+  if (cookieContent) {
+    try {
+      const cookieDir = dirname(YTDLP_COOKIES_FILE);
+      if (!existsSync(cookieDir)) mkdirSync(cookieDir, { recursive: true });
+      writeFileSync(YTDLP_COOKIES_FILE, cookieContent, "utf8");
+      logger.info("[bhagwat] Loaded cookies from YTDLP_COOKIES_BASE64 env var");
+    } catch (err) {
+      logger.warn({ err }, "[bhagwat] Failed to write cookie file from env var");
+    }
+  } else {
+    logger.warn("[bhagwat] YTDLP_COOKIES_BASE64 set but cookie payload could not be converted to Netscape format — skipping");
+  }
+}
+
+// Lazy S3 cookie loader — fetches s3://<bucket>/<YTDLP_COOKIES_S3_KEY> the
+// first time a yt-dlp call needs cookies. Cached in-process; one inflight
+// promise prevents thundering herd on Lambda cold start. Mirrors youtube.ts.
+let ensureBhagwatCookiesPromise: Promise<void> | null = null;
+async function ensureBhagwatYtdlpCookiesLoaded(): Promise<void> {
+  if (!YTDLP_COOKIES_S3_KEY) return;
+  // If we already have a valid file on disk, skip the S3 round-trip.
+  if (existsSync(YTDLP_COOKIES_FILE)) {
+    try {
+      const stat = statSync(YTDLP_COOKIES_FILE);
+      const header = readFileSync(YTDLP_COOKIES_FILE, "utf8").slice(0, 256).trimStart();
+      if (
+        stat.isFile() &&
+        stat.size >= 24 &&
+        (header.startsWith("# Netscape HTTP Cookie File") || header.startsWith(".youtube.com"))
+      ) {
+        return;
+      }
+    } catch {}
+  }
+  if (!ensureBhagwatCookiesPromise) {
+    ensureBhagwatCookiesPromise = (async () => {
+      try {
+        const encoded = (await readTextFromS3(YTDLP_COOKIES_S3_KEY)).trim();
+        if (!encoded) return;
+        const cookieContent = decodeBhagwatCookiesFromBase64(encoded);
+        if (!cookieContent) {
+          logger.warn(
+            { key: YTDLP_COOKIES_S3_KEY },
+            "[bhagwat] S3 cookie payload could not be converted to Netscape format",
+          );
+          return;
+        }
+        const cookieDir = dirname(YTDLP_COOKIES_FILE);
+        if (!existsSync(cookieDir)) mkdirSync(cookieDir, { recursive: true });
+        writeFileSync(YTDLP_COOKIES_FILE, cookieContent, "utf8");
+        logger.info({ key: YTDLP_COOKIES_S3_KEY }, "[bhagwat] Loaded yt-dlp cookies from S3");
+      } catch (err) {
+        logger.warn({ err, key: YTDLP_COOKIES_S3_KEY }, "[bhagwat] Failed to load yt-dlp cookies from S3");
+      }
+    })().finally(() => {
+      // Allow re-attempt on next call if it failed.
+      ensureBhagwatCookiesPromise = null;
+    });
+  }
+  await ensureBhagwatCookiesPromise;
+}
 
 function getBhagwatCookieArgs(): string[] {
   if (!YTDLP_COOKIES_FILE) return [];
@@ -990,6 +1149,8 @@ function runYtDlpOnce(baseArgs: string[], extraArgs: string[], callArgs: string[
 
 async function runYtDlp(args: string[]): Promise<string> {
   const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
+  // Load cookies from S3 lazily on first use (Lambda cold start).
+  await ensureBhagwatYtdlpCookiesLoaded();
   const cookieArgs = getBhagwatCookieArgs();
   const defaultYoutubeArgs = maybeUrl ? getDefaultBhagwatYoutubeExtractorArgs() : [];
   const attemptPlans: string[][] = [];
@@ -1027,6 +1188,7 @@ async function runYtDlp(args: string[]): Promise<string> {
 }
 
 async function runYtDlpForSubs(args: string[]): Promise<string> {
+  await ensureBhagwatYtdlpCookiesLoaded();
   const cookieArgs = getBhagwatCookieArgs();
   const defaultYoutubeArgs = getDefaultBhagwatYoutubeExtractorArgs();
   const attemptPlans: string[][] = [];
@@ -1216,6 +1378,61 @@ export interface AnalysisJob {
 }
 const analysisJobs = new Map<string, AnalysisJob>();
 
+// ── Analysis restart-resilience markers ──────────────────────────────────────
+// When `runBhagwatAnalysis` starts in-process (non-queue mode), drop a small
+// JSON marker on disk. If the server restarts mid-analysis we sweep these on
+// boot and hydrate them as `error: interrupted by restart` so the SSE polling
+// frontend gets a clear message instead of an indefinite "Job not found" loop.
+const BHAGWAT_ANALYSIS_META_DIR = join(BHAGWAT_TMP_DIR, "_analysis_meta");
+try { mkdirSync(BHAGWAT_ANALYSIS_META_DIR, { recursive: true }); } catch {}
+const analysisMetaPath = (jobId: string) => join(BHAGWAT_ANALYSIS_META_DIR, `${jobId}.json`);
+
+function persistAnalysisMetaStart(jobId: string) {
+  try {
+    writeFileSync(
+      analysisMetaPath(jobId),
+      JSON.stringify({ jobId, status: "running", startedAt: Date.now() }),
+    );
+  } catch {}
+}
+function clearAnalysisMeta(jobId: string) {
+  try { unlinkSync(analysisMetaPath(jobId)); } catch {}
+}
+function hydrateInterruptedAnalysis(jobId: string): AnalysisJob | undefined {
+  const metaPath = analysisMetaPath(jobId);
+  if (!existsSync(metaPath)) return undefined;
+  let startedAt = Date.now();
+  try {
+    const parsed = JSON.parse(readFileSync(metaPath, "utf8")) as { startedAt?: number };
+    if (typeof parsed.startedAt === "number") startedAt = parsed.startedAt;
+  } catch {}
+  const interruptedJob: AnalysisJob = {
+    emitter: new EventEmitter(),
+    status: "error",
+    error: "Analysis was interrupted by a server restart — please start a new analysis.",
+    createdAt: startedAt,
+  };
+  analysisJobs.set(jobId, interruptedJob);
+  // Clean up the marker so the UI can immediately re-attempt without
+  // re-hitting the same interrupted-state error.
+  clearAnalysisMeta(jobId);
+  return interruptedJob;
+}
+// Boot-time sweep: any leftover marker from a previous process means that
+// analysis never finished. Move them all into the in-memory map as errored
+// jobs so the next SSE poll resolves quickly with a clear message.
+try {
+  for (const entry of readdirSync(BHAGWAT_ANALYSIS_META_DIR)) {
+    if (!entry.endsWith(".json")) continue;
+    const jobId = entry.replace(/\.json$/i, "");
+    if (!isSafeBhagwatId(jobId)) {
+      try { unlinkSync(join(BHAGWAT_ANALYSIS_META_DIR, entry)); } catch {}
+      continue;
+    }
+    hydrateInterruptedAnalysis(jobId);
+  }
+} catch {}
+
 export function createBhagwatAnalysisJobState(
   jobId: string,
   job: AnalysisJob,
@@ -1350,16 +1567,22 @@ router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
     mode ?? "full",
     clipStartSec,
     clipEndSec,
-  ).catch(() => {});
+  ).catch((err) => {
+    req.log.error({ err, jobId }, "[bhagwat/analyze] Background analysis failed");
+  });
 });
 
 router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
-  const jobId = pickFirst(req.params.jobId);
+  const jobId = pickSafeBhagwatId(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
-  const job = getBhagwatAnalysisJobState(jobId);
+  // If the in-memory job is gone, first check whether a "running" marker
+  // from a previous process exists on disk (analysis interrupted by restart).
+  // Hydrating it here lets the SSE reconnection path resolve quickly with a
+  // clean error instead of looping on "Job not found".
+  const job = getBhagwatAnalysisJobState(jobId) ?? hydrateInterruptedAnalysis(jobId);
   if (!job) {
     if (!isBhagwatAnalyzeQueueEnabled()) {
       res.status(404).json({ error: "Job not found" });
@@ -1485,7 +1708,7 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
 });
 
 router.post("/bhagwat/cancel-analyze/:jobId", (req: Request, res: Response) => {
-  const jobId = pickFirst(req.params.jobId);
+  const jobId = pickSafeBhagwatId(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ ok: false });
     return;
@@ -1603,11 +1826,13 @@ router.post("/bhagwat/review-plan", (req: Request, res: Response) => {
     videoTitle ?? "",
     videoDuration ?? 0,
     transcriptText ?? "",
-  ).catch(() => {});
+  ).catch((err) => {
+    req.log.error({ err, jobId }, "[bhagwat] background review failed");
+  });
 });
 
 router.get("/bhagwat/review-status/:jobId", (req: Request, res: Response) => {
-  const jobId = pickFirst(req.params.jobId);
+  const jobId = pickSafeBhagwatId(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
     return;
@@ -1949,11 +2174,13 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
     clipEndSec,
     undefined,
     mode ?? "full",
-  ).catch(() => {});
+  ).catch((err) => {
+    req.log.error({ err, jobId }, "[bhagwat/render] Background render failed");
+  });
 });
 
 router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
-  const jobId = pickFirst(req.params.jobId);
+  const jobId = pickSafeBhagwatId(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
     return;
@@ -2071,7 +2298,7 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
 });
 
 router.get("/bhagwat/render-state/:jobId", (req: Request, res: Response) => {
-  const jobId = pickFirst(req.params.jobId);
+  const jobId = pickSafeBhagwatId(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
     return;
@@ -2193,7 +2420,7 @@ router.delete("/bhagwat/render-history", (_req: Request, res: Response) => {
 });
 
 router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
-  const jobId = pickFirst(req.params.jobId);
+  const jobId = pickSafeBhagwatId(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ ok: false });
     return;
@@ -2231,7 +2458,7 @@ router.post("/bhagwat/cancel-render/:jobId", (req: Request, res: Response) => {
 const RENDER_DELETE_MS = 60 * 60 * 1000; // 60 minutes after first download (was 10)
 
 router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
-  const jobId = pickFirst(req.params.jobId);
+  const jobId = pickSafeBhagwatId(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
     return;
@@ -2324,6 +2551,9 @@ export async function runBhagwatAnalysis(
   ) => emit("step", { step: s, status, message });
 
   job.status = "running";
+  // Drop a "running" marker so a server restart mid-analysis can be detected
+  // on next boot (see hydrateInterruptedAnalysis sweep).
+  persistAnalysisMetaStart(jobId);
   const tmpId = randomUUID();
   const subDir = join(BHAGWAT_TMP_DIR, `subs_${tmpId}`);
 
@@ -2689,12 +2919,16 @@ ${
     };
     job.status = "done";
     job.result = resultData;
+    clearAnalysisMeta(jobId);
     emit("done", resultData);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[bhagwat/analyze] Error:", message);
     job.status = "error";
     job.error = message;
+    // Drop the running marker so a real failure isn't later misreported as an
+    // "interrupted by restart" job after the next reboot.
+    clearAnalysisMeta(jobId);
     emit("jobError", { message });
     try {
       if (existsSync(subDir)) {
@@ -2838,7 +3072,7 @@ export async function runBhagwatRender(
           "-t",
           String(clipEndSec - clipStartSec),
           "-i",
-          audioFile,
+          safeFsArg(audioFile),
           "-c:a",
           "aac",
           "-b:a",
@@ -3125,7 +3359,7 @@ export async function runBhagwatRender(
         const bArgs: string[] = [
           "-ss", (sourceOffset + batchStart).toFixed(3),
           "-t", batchDur.toFixed(3),
-          "-i", audioFile,
+          "-i", safeFsArg(audioFile),
         ];
 
         if (batchClips.length === 0) {
@@ -3215,9 +3449,9 @@ export async function runBhagwatRender(
         "-t",
         dur.toFixed(3),
         "-i",
-        clips[0].imgPath,
+        safeFsArg(clips[0].imgPath),
       );
-      ffArgs.push("-i", audioFile);
+      ffArgs.push("-i", safeFsArg(audioFile));
       ffArgs.push(
         "-vf",
         `${SCALE},fade=t=in:st=0:d=${FIRST_FADEIN.toFixed(3)}:enable='lte(t,${FIRST_FADEIN.toFixed(3)})',fade=t=out:st=${(dur - LAST_FADEOUT).toFixed(3)}:d=${LAST_FADEOUT.toFixed(3)}:enable='gte(t,${(dur - LAST_FADEOUT).toFixed(3)})'`,
@@ -3311,8 +3545,8 @@ export async function runBhagwatRender(
       ffArgs.push(
         "-f", "concat",
         "-safe", "0",
-        "-i", concatListPath,
-        "-i", audioFile,
+        "-i", safeFsArg(concatListPath),
+        "-i", safeFsArg(audioFile),
         "-vf", vf,
         "-c:v", "libx264",
         "-preset", "fast",
@@ -3522,7 +3756,7 @@ export async function runBhagwatAnalysisFromFile(
           "format=duration",
           "-of",
           "default=noprint_wrappers=1:nokey=1",
-          audio.path,
+          safeFsArg(audio.path),
         ]);
         let out = "";
         ff.stdout.on("data", (d: Buffer) => {
@@ -3789,7 +4023,7 @@ router.post("/bhagwat/upload-audio", (req: Request, res: Response) => {
 
 // Delete uploaded audio
 router.delete("/bhagwat/audio/:audioId", (req: Request, res: Response) => {
-  const audioId = pickFirst(req.params.audioId);
+  const audioId = pickSafeBhagwatId(req.params.audioId);
   if (!audioId) {
     res.status(400).json({ error: "audioId is required" });
     return;
@@ -3957,7 +4191,9 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     clipEndSec,
     audio.path,
     mode ?? "full",
-  ).catch(() => {});
+  ).catch((err) => {
+    req.log.error({ err, jobId }, "[bhagwat] background render-audio failed");
+  });
 });
 
 export default router;

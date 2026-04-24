@@ -1,3 +1,7 @@
+// Must come first: side-effect import that loads .env into process.env
+// before any downstream module captures config values at import-time.
+import "./lib/load-env";
+
 import app from "./app";
 import { logger } from "./lib/logger";
 

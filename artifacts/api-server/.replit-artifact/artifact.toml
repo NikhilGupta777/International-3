@@ -15,6 +15,13 @@ kind = "api"
 
   [services.development.env]
   SERVE_STATIC = "true"
+  # Mirror production S3 layout locally so the same code path (S3 cookie
+  # loader, S3 storage helpers) is exercised in dev. AWS credentials come
+  # from Replit Secrets — do NOT add them here.
+  S3_BUCKET = "malikaeditorr"
+  S3_REGION = "us-east-1"
+  S3_OBJECT_PREFIX = "ytgrabber-green"
+  YTDLP_COOKIES_S3_KEY = "ytgrabber-green/secrets/ytdlp-cookies-base64.txt"
 
   [services.production]
 
