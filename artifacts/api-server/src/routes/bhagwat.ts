@@ -14,7 +14,6 @@ import { tmpdir } from "os";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { EventEmitter } from "events";
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
@@ -445,25 +444,39 @@ async function generateImageViaReplit(prompt: string, model = "gemini-2.5-flash-
 }
 
 async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
-  if (!process.env.GEMINI_API_KEY)
+  const keys = getPersonalGeminiApiKeys();
+  if (keys.length === 0)
     throw new Error("GEMINI_API_KEY is not configured");
 
-  const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  const response = await client.models.generateContent({
-    model: "gemini-2.5-flash-image",
-    contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
-    config: {
-      responseModalities: [Modality.TEXT, Modality.IMAGE],
-      imageConfig: { aspectRatio: "16:9", imageSize: "2K" } as any,
-    },
-  });
-  return extractImageBytes(response);
+  let lastErr: unknown;
+  for (let i = 0; i < keys.length; i++) {
+    try {
+      const client = new GoogleGenAI({ apiKey: keys[i] });
+      const response = await client.models.generateContent({
+        model: "gemini-2.5-flash-image",
+        contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
+        config: {
+          responseModalities: [Modality.TEXT, Modality.IMAGE],
+          imageConfig: { aspectRatio: "16:9", imageSize: "2K" } as any,
+        },
+      });
+      return extractImageBytes(response);
+    } catch (err) {
+      lastErr = err;
+      console.warn(
+        `[bhagwat/img] own Gemini image key ${i + 1} failed, trying next key:`,
+        err instanceof Error ? err.message : String(err ?? ""),
+      );
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error("Gemini image generation failed");
 }
 
 function isAnyAIConfigured(): boolean {
   return (
     !!(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
-    !!process.env.GEMINI_API_KEY
+    getPersonalGeminiApiKeys().length > 0
   );
 }
 
@@ -510,9 +523,21 @@ const BHAGWAT_REVIEW_TIMEOUT_MS = Number(
   process.env.BHAGWAT_REVIEW_TIMEOUT_MS ?? 90_000,
 );
 
+function getPersonalGeminiApiKeys(): string[] {
+  const keys: string[] = [];
+  const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+  if (first?.trim()) keys.push(first.trim());
+  for (let index = 2; index <= 10; index += 1) {
+    const envName = `GEMINI_API_KEY_${index}` as keyof NodeJS.ProcessEnv;
+    const value = process.env[envName];
+    if (value?.trim()) keys.push(value.trim());
+  }
+  return Array.from(new Set(keys));
+}
+
 function shouldRetryWithLighterGeminiModel(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
-  return /resource_exhausted|quota|429|503|unavailable|overloaded|high demand|rate.?limit/i.test(msg);
+  return /resource_exhausted|quota|429|503|unavailable|overloaded|high demand|rate.?limit|api[_ ]?key|expired|invalid/i.test(msg);
 }
 
 async function ownKeyGeminiContent(
@@ -522,9 +547,10 @@ async function ownKeyGeminiContent(
 ): Promise<string> {
   const replitBase = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const replitKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  if (!process.env.GEMINI_API_KEY && !(replitBase && replitKey))
-    throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
-  if (!process.env.GEMINI_API_KEY && replitBase && replitKey) {
+  const keys = getPersonalGeminiApiKeys();
+  if (keys.length === 0 && !(replitBase && replitKey))
+    throw new Error("GEMINI_API_KEY is not configured - add it in Secrets");
+  if (keys.length === 0 && replitBase && replitKey) {
     const client = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
     const result = await client.models.generateContent({
       model: "gemini-2.5-flash",
@@ -533,34 +559,37 @@ async function ownKeyGeminiContent(
     });
     return (result as any).text ?? "";
   }
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-  let lastErr: unknown;
 
+  let lastErr: unknown;
   for (let i = 0; i < OWN_KEY_TEXT_MODELS.length; i++) {
     const modelName = OWN_KEY_TEXT_MODELS[i];
-    try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        ...(systemInstruction && { systemInstruction }),
-      });
-      const result = await model.generateContent(userContent);
-      return result.response.text();
-    } catch (err) {
-      lastErr = err;
-      const canRetry =
-        i < OWN_KEY_TEXT_MODELS.length - 1 &&
-        shouldRetryWithLighterGeminiModel(err);
-      console.warn(
-        canRetry
-          ? `[bhagwat/text] ${label} (${modelName}) failed, retrying with lighter Gemini model:`
-          : `[bhagwat/text] ${label} (${modelName}) failed:`,
-        err instanceof Error ? err.message : String(err ?? ""),
-      );
-      if (!canRetry) throw err;
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+      try {
+        const client = new GoogleGenAI({ apiKey: keys[keyIndex] });
+        const result = await client.models.generateContent({
+          model: modelName,
+          contents: [{ role: "user", parts: [{ text: userContent }] }],
+          ...(systemInstruction && { config: { systemInstruction } }),
+        });
+        return (result as any).text ?? "";
+      } catch (err) {
+        lastErr = err;
+        const canRetry =
+          keyIndex < keys.length - 1 ||
+          (i < OWN_KEY_TEXT_MODELS.length - 1 &&
+            shouldRetryWithLighterGeminiModel(err));
+        console.warn(
+          canRetry
+            ? "[bhagwat/text] " + label + " key " + (keyIndex + 1) + " (" + modelName + ") failed, trying next Gemini key/model:"
+            : "[bhagwat/text] " + label + " key " + (keyIndex + 1) + " (" + modelName + ") failed:",
+          err instanceof Error ? err.message : String(err ?? ""),
+        );
+        if (!canRetry) throw err;
+      }
     }
   }
 
-  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed`);
+  throw lastErr instanceof Error ? lastErr : new Error(label + " failed");
 }
 
 async function ownKeyGeminiStream(
@@ -571,9 +600,10 @@ async function ownKeyGeminiStream(
 ): Promise<string> {
   const replitBase = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const replitKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
-  if (!process.env.GEMINI_API_KEY && !(replitBase && replitKey))
-    throw new Error("GEMINI_API_KEY is not configured — add it in Secrets");
-  if (!process.env.GEMINI_API_KEY && replitBase && replitKey) {
+  const keys = getPersonalGeminiApiKeys();
+  if (keys.length === 0 && !(replitBase && replitKey))
+    throw new Error("GEMINI_API_KEY is not configured - add it in Secrets");
+  if (keys.length === 0 && replitBase && replitKey) {
     const client = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
     const stream = client.models.generateContentStream({
       model: "gemini-2.5-flash",
@@ -587,44 +617,46 @@ async function ownKeyGeminiStream(
     }
     return fullText;
   }
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-  let lastErr: unknown;
 
+  let lastErr: unknown;
   for (let i = 0; i < OWN_KEY_TEXT_MODELS.length; i++) {
     const modelName = OWN_KEY_TEXT_MODELS[i];
-    let fullText = "";
-
-    try {
-      const model = genAI.getGenerativeModel({
-        model: modelName,
-        ...(systemInstruction && { systemInstruction }),
-      });
-      const result = await model.generateContentStream(userContent);
-      for await (const chunk of result.stream) {
-        const text = chunk.text();
-        if (text) {
-          fullText += text;
-          onChunk(text);
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+      let fullText = "";
+      try {
+        const client = new GoogleGenAI({ apiKey: keys[keyIndex] });
+        const stream = client.models.generateContentStream({
+          model: modelName,
+          contents: [{ role: "user", parts: [{ text: userContent }] }],
+          ...(systemInstruction && { config: { systemInstruction } }),
+        });
+        for await (const chunk of await stream) {
+          const text: string = (chunk as any).text ?? "";
+          if (text) {
+            fullText += text;
+            onChunk(text);
+          }
         }
+        return fullText;
+      } catch (err) {
+        lastErr = err;
+        const canRetry =
+          fullText.length === 0 &&
+          (keyIndex < keys.length - 1 ||
+            (i < OWN_KEY_TEXT_MODELS.length - 1 &&
+              shouldRetryWithLighterGeminiModel(err)));
+        console.warn(
+          canRetry
+            ? "[bhagwat/text] " + label + " stream key " + (keyIndex + 1) + " (" + modelName + ") failed before output, trying next Gemini key/model:"
+            : "[bhagwat/text] " + label + " stream key " + (keyIndex + 1) + " (" + modelName + ") failed:",
+          err instanceof Error ? err.message : String(err ?? ""),
+        );
+        if (!canRetry) throw err;
       }
-      return fullText;
-    } catch (err) {
-      lastErr = err;
-      const canRetry =
-        fullText.length === 0 &&
-        i < OWN_KEY_TEXT_MODELS.length - 1 &&
-        shouldRetryWithLighterGeminiModel(err);
-      console.warn(
-        canRetry
-          ? `[bhagwat/text] ${label} stream (${modelName}) failed before output, retrying with lighter Gemini model:`
-          : `[bhagwat/text] ${label} stream (${modelName}) failed:`,
-        err instanceof Error ? err.message : String(err ?? ""),
-      );
-      if (!canRetry) throw err;
     }
   }
 
-  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed`);
+  throw lastErr instanceof Error ? lastErr : new Error(label + " failed");
 }
 
 async function geminiProContent(
