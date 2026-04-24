@@ -1016,6 +1016,7 @@ async function handleBhagwatAnalyze(payload: WorkerPayload): Promise<void> {
   };
   let stagedAudioId: string | null = null;
   let stagedAudioPath: string | null = null;
+  const stepUpdates: Promise<void>[] = [];
 
   const onStep = (data: unknown) => {
     const stepData = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
@@ -1026,9 +1027,11 @@ async function handleBhagwatAnalyze(payload: WorkerPayload): Promise<void> {
         ? stepData.message
         : "Bhagwat analysis running...";
     const progressPct = progressByStep[step] ?? 10;
-    void updateJobState(payload.jobId, status === "warn" ? "running" : "running", message, {
-      progressPct,
-    });
+    stepUpdates.push(
+      updateJobState(payload.jobId, "running", message, {
+        progressPct,
+      }),
+    );
   };
 
   job.emitter.on("step", onStep);
@@ -1074,6 +1077,7 @@ async function handleBhagwatAnalyze(payload: WorkerPayload): Promise<void> {
       throw new Error(job.error ?? "Bhagwat analysis did not produce a result");
     }
 
+    await Promise.allSettled(stepUpdates);
     await updateJobState(payload.jobId, "done", "Bhagwat analysis complete", {
       progressPct: 100,
       resultJson: JSON.stringify(job.result),
@@ -1130,6 +1134,7 @@ async function handleBhagwatRender(payload: WorkerPayload): Promise<void> {
     title: originalFilename.replace(/\.[^.]+$/, ""),
   });
 
+  const progressUpdates: Promise<void>[] = [];
   const onProgress = (data: unknown) => {
     const progressData = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
     const percent = typeof progressData.percent === "number" ? progressData.percent : 0;
@@ -1137,9 +1142,11 @@ async function handleBhagwatRender(payload: WorkerPayload): Promise<void> {
       typeof progressData.message === "string" && progressData.message.trim().length > 0
         ? progressData.message
         : "Bhagwat render running...";
-    void updateJobState(payload.jobId, "running", message, {
-      progressPct: Math.max(0, Math.min(99, Math.round(percent))),
-    });
+    progressUpdates.push(
+      updateJobState(payload.jobId, "running", message, {
+        progressPct: Math.max(0, Math.min(99, Math.round(percent))),
+      }),
+    );
   };
 
   job.emitter.on("progress", onProgress);
@@ -1174,6 +1181,7 @@ async function handleBhagwatRender(payload: WorkerPayload): Promise<void> {
       throw new Error("Failed to upload rendered Bhagwat video to S3");
     }
 
+    await Promise.allSettled(progressUpdates);
     const filename = job.filename ?? uploaded.filename;
     await updateJobState(payload.jobId, "done", "Bhagwat render complete", {
       progressPct: 100,
