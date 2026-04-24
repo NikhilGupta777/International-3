@@ -1774,9 +1774,22 @@ async function processAudio(
       }
 
       if (!correctedFinalSrt) {
-        job.status = "error";
-        job.error = lastKeyErr instanceof Error ? lastKeyErr.message : "All API keys exhausted — try again later";
-        return;
+        if (ASSEMBLYAI_API_KEY) {
+          logger.warn({ err: lastKeyErr }, "Gemini audio path failed - falling back to AssemblyAI subtitles");
+          job.status = "audio";
+          job.progressPct = 45;
+          job.message = "Gemini upload failed - using AssemblyAI fallback...";
+          const rawSrt = await transcribeWithAssemblyAI(processedPath, language, job);
+          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+          const normalized = normalizeSrtTimestamps(stripFences(rawSrt));
+          const deduped = cleanupHallucinatedEntries(normalized);
+          const strictFiltered = strictFilterMalformedTimestamps(deduped);
+          correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
+        } else {
+          job.status = "error";
+          job.error = lastKeyErr instanceof Error ? lastKeyErr.message : "All API keys exhausted - try again later";
+          return;
+        }
       }
     }
 
