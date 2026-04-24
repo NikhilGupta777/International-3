@@ -2814,7 +2814,7 @@ function getPersonalGeminiApiKeys(): string[] {
 }
 
 function isQuotaLikeGeminiError(message: string): boolean {
-  return /resource_exhausted|quota|429|rate.?limit/i.test(message);
+  return /resource_exhausted|quota|429|rate.?limit|503|unavailable|overloaded|high demand|try again later/i.test(message);
 }
 
 const YOUTUBE_KEY_ROTATION_MODELS = [
