@@ -2006,6 +2006,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
 
   // Build the same cookie + fallback strategy as runYtDlp so that cookies are
   // sent and bot-detected attempts are retried with different player clients.
+  await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = isYouTubeUrl(job.url);
 
