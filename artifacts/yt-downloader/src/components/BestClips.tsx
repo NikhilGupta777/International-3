@@ -251,7 +251,7 @@ export const BestClips = forwardRef(function BestClips(
   const analysisStatusTimerRef = useRef<number | null>(null);
   const analysisStatusErrorCountRef = useRef(0);
   const resultsKeyRef = useRef(0); // bumped on each new analysis to force clean remount of results
-  const downloadStreamRefs = useRef<Map<ClipKey, EventSource>>(new Map());
+  const downloadPollRefs = useRef<Map<ClipKey, number>>(new Map());
   const { toast } = useToast();
 
   const PERSIST_KEY = "ytgrabber_bestclips_results";
@@ -308,10 +308,10 @@ export const BestClips = forwardRef(function BestClips(
       analysisJobIdRef.current = null;
       esRef.current?.close();
       esRef.current = null;
-      for (const stream of downloadStreamRefs.current.values()) {
-        stream.close();
+      for (const id of downloadPollRefs.current.values()) {
+        window.clearInterval(id);
       }
-      downloadStreamRefs.current.clear();
+      downloadPollRefs.current.clear();
     };
   }, []);
 
@@ -331,17 +331,17 @@ export const BestClips = forwardRef(function BestClips(
   );
 
   const closeDownloadStream = useCallback((key: ClipKey) => {
-    const stream = downloadStreamRefs.current.get(key);
-    if (stream) {
-      stream.close();
-      downloadStreamRefs.current.delete(key);
+    const id = downloadPollRefs.current.get(key);
+    if (id !== undefined) {
+      window.clearInterval(id);
+      downloadPollRefs.current.delete(key);
     }
   }, []);
 
   const closeAllDownloadStreams = useCallback(() => {
-    for (const [key, stream] of downloadStreamRefs.current.entries()) {
-      stream.close();
-      downloadStreamRefs.current.delete(key);
+    for (const [key, id] of downloadPollRefs.current.entries()) {
+      window.clearInterval(id);
+      downloadPollRefs.current.delete(key);
     }
   }, []);
 
@@ -714,107 +714,85 @@ export const BestClips = forwardRef(function BestClips(
       if (!jobId) throw new Error("Missing job id");
 
       setDownload(key, { jobId, message: "Preparing..." });
-      const stream = new EventSource(
-        `${BASE}/api/youtube/progress/stream/${jobId}`,
-      );
-      downloadStreamRefs.current.set(key, stream);
 
-      let terminal = false;
-      stream.onmessage = (event) => {
-        if (terminal) return;
-
-        let prog: {
-          status?: string;
-          percent?: number;
-          eta?: string | null;
-          speed?: string | null;
-          message?: string | null;
-        };
-
+      const pollProgress = async () => {
         try {
-          prog = JSON.parse(event.data) as typeof prog;
+          const res = await fetch(`${BASE}/api/youtube/progress/${jobId}`, { cache: "no-store" });
+          if (!res.ok) return;
+          const prog = await res.json() as {
+            status?: string;
+            percent?: number;
+            eta?: string | null;
+            speed?: string | null;
+            message?: string | null;
+          };
+
+          if (prog.status === "done") {
+            closeDownloadStream(key);
+            setDownload(key, {
+              status: "done",
+              percent: 100,
+              eta: null,
+              speed: null,
+              message: undefined,
+            });
+            toast({
+              title: "Clip ready",
+              description: `"${clip.title}" is ready. Tap Save to download.`,
+            });
+            return;
+          }
+
+          if (prog.status === "cancelled") {
+            closeDownloadStream(key);
+            setDownload(key, {
+              status: "cancelled",
+              percent: 0,
+              eta: null,
+              speed: null,
+              message: prog.message ?? "Cancelled by user",
+            });
+            toast({
+              title: "Download cancelled",
+              description: `"${clip.title}" download was cancelled.`,
+            });
+            return;
+          }
+
+          if (prog.status === "error" || prog.status === "expired") {
+            closeDownloadStream(key);
+            const msg = prog.message ?? "Download failed";
+            setDownload(key, { status: "error", percent: 0, message: msg });
+            toast({
+              title: "Download failed",
+              description: msg,
+              variant: "destructive",
+            });
+            return;
+          }
+
+          const pct = typeof prog.percent === "number" ? prog.percent : 0;
+          setDownload(key, {
+            status: "downloading",
+            jobId,
+            percent: pct,
+            eta: prog.eta ?? null,
+            speed: prog.speed ?? null,
+            message:
+              prog.status === "merging"
+                ? "Merging..."
+                : pct > 0
+                  ? `${pct}%`
+                  : "Preparing...",
+          });
         } catch {
-          return;
+          // network blip — keep polling
         }
-
-        if (prog.status === "done") {
-          terminal = true;
-          closeDownloadStream(key);
-          setDownload(key, {
-            status: "done",
-            percent: 100,
-            eta: null,
-            speed: null,
-            message: undefined,
-          });
-          toast({
-            title: "Clip ready",
-            description: `"${clip.title}" is ready. Tap Save to download.`,
-          });
-          return;
-        }
-
-        if (prog.status === "cancelled") {
-          terminal = true;
-          closeDownloadStream(key);
-          setDownload(key, {
-            status: "cancelled",
-            percent: 0,
-            eta: null,
-            speed: null,
-            message: prog.message ?? "Cancelled by user",
-          });
-          toast({
-            title: "Download cancelled",
-            description: `"${clip.title}" download was cancelled.`,
-          });
-          return;
-        }
-
-        if (prog.status === "error" || prog.status === "expired") {
-          terminal = true;
-          closeDownloadStream(key);
-          const msg = prog.message ?? "Download failed";
-          setDownload(key, { status: "error", percent: 0, message: msg });
-          toast({
-            title: "Download failed",
-            description: msg,
-            variant: "destructive",
-          });
-          return;
-        }
-
-        const pct = typeof prog.percent === "number" ? prog.percent : 0;
-        setDownload(key, {
-          status: "downloading",
-          jobId,
-          percent: pct,
-          eta: prog.eta ?? null,
-          speed: prog.speed ?? null,
-          message:
-            prog.status === "merging"
-              ? "Merging..."
-              : pct > 0
-                ? `${pct}%`
-                : "Preparing...",
-        });
       };
 
-      stream.onerror = () => {
-        if (terminal) return;
-        terminal = true;
-        closeDownloadStream(key);
-        setDownload(key, {
-          status: "error",
-          percent: 0,
-          message: "Connection lost during download",
-        });
-        toast({
-          title: "Download failed",
-          description: "Connection lost during download",
-          variant: "destructive",
-        });
-      };
+      const intervalId = window.setInterval(() => { void pollProgress(); }, 3000);
+      downloadPollRefs.current.set(key, intervalId);
+      void pollProgress();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Something went wrong";
       setDownload(key, { status: "error", percent: 0, message: msg });
