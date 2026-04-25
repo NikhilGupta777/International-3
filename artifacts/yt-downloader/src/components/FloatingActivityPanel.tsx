@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Loader2, Captions, Scissors, Sparkles, Film,
   Clock, ArrowRight, Download, Copy, ChevronDown,
-  ChevronUp, ExternalLink, Trash2, Activity, CircleHelp,
+  ChevronUp, ExternalLink, Trash2, Activity, CircleHelp, BellRing,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -42,9 +42,17 @@ function downloadSrt(filename: string, srt: string) {
 export function FloatingActivityPanel({
   onSwitchTab,
   onOpenGuide,
+  pushProps,
 }: {
   onSwitchTab: (tab: TabMode) => void;
   onOpenGuide: () => void;
+  pushProps?: {
+    supported: boolean;
+    configured: boolean;
+    permission: string;
+    enabling: boolean;
+    onEnable: () => void;
+  };
 }) {
   const [open, setOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -76,6 +84,20 @@ export function FloatingActivityPanel({
   return (
     <div className="fixed top-2 right-2 sm:top-4 sm:right-6 z-50 flex flex-col items-end gap-2 max-w-[calc(100vw-12px)]">
       <div className="flex items-center gap-2">
+        {pushProps && pushProps.supported && pushProps.configured && pushProps.permission !== "granted" && (
+          <button
+            onClick={pushProps.onEnable}
+            disabled={pushProps.enabling}
+            className="flex items-center gap-2 pl-3 pr-3 h-9 rounded-full bg-[#1a1a1f] border border-teal-500/30 hover:border-teal-400/50 hover:bg-teal-500/10 shadow-[0_4px_20px_rgba(0,0,0,0.5)] transition-all duration-200 group"
+            title="Enable browser alerts for background jobs"
+          >
+            <BellRing className={cn("w-4 h-4 text-teal-300", pushProps.enabling && "animate-pulse")} />
+            <span className="text-sm font-medium text-teal-300/80 hidden sm:inline group-hover:text-teal-300">
+              {pushProps.enabling ? "Enabling..." : "Alerts"}
+            </span>
+          </button>
+        )}
+
         <button
           onClick={onOpenGuide}
           className="flex items-center gap-2 pl-3 pr-3 h-9 rounded-full bg-[#1a1a1f] border border-white/10 hover:border-white/25 hover:scale-[1.03] shadow-[0_4px_20px_rgba(0,0,0,0.5)] transition-all duration-200"

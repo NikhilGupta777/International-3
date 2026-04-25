@@ -137,6 +137,17 @@ const GUIDE_TABS: Array<{
       "Copy the timestamps directly into your YouTube description.",
     ],
   },
+  {
+    mode: "upload",
+    title: "Share Tab",
+    summary: "Upload files and share them via public gallery.",
+    steps: [
+      "Navigate to the Share tab.",
+      "Select a file to upload from your local device.",
+      "Set its visibility to Public to show it in the gallery.",
+      "Share the direct link or let others browse the public gallery.",
+    ],
+  },
 ];
 
 function playSoftCompletionChime() {
@@ -726,29 +737,6 @@ export default function Home() {
             </div>
           </motion.div>
 
-          {/* Search Bar — hidden in Bhagwat mode */}
-          {pushSupported && pushConfigured && pushPermission !== "granted" && (
-            <motion.div layout className="mb-4 w-full max-w-2xl">
-              <div className="glass-panel rounded-2xl border border-teal-500/25 bg-teal-500/10 px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-teal-200">
-                  <BellRing className="w-4 h-4 shrink-0" />
-                  <span className="text-sm font-medium">
-                    Enable browser alerts for completed downloads and clips.
-                  </span>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleEnablePush}
-                  disabled={pushEnabling}
-                  className="bg-teal-600 hover:bg-teal-500 text-white shrink-0 w-full sm:w-auto"
-                >
-                  {pushEnabling ? "Enabling..." : "Enable Alerts"}
-                </Button>
-              </div>
-            </motion.div>
-          )}
-
           <motion.form 
             layout 
             onSubmit={handleSearch}
@@ -1071,7 +1059,17 @@ export default function Home() {
         </div>
       </main>
 
-      <FloatingActivityPanel onSwitchTab={setMode} onOpenGuide={openGuide} />
+      <FloatingActivityPanel 
+        onSwitchTab={setMode} 
+        onOpenGuide={openGuide} 
+        pushProps={{
+          supported: pushSupported,
+          configured: pushConfigured,
+          permission: pushPermission,
+          enabling: pushEnabling,
+          onEnable: handleEnablePush
+        }}
+      />
 
       <GuideModal
         open={showGuide}
@@ -1111,7 +1109,7 @@ function GuideModal({
 
   const handleNext = () => {
     if (isLast) {
-      onSwitchTab(active.mode);
+      onSwitchTab("clips");
       return;
     }
     onSelectMode(GUIDE_TABS[activeIndex + 1].mode);
