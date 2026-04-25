@@ -499,7 +499,7 @@ OUTPUT FORMAT: Return ONLY a valid JSON array. Each object must have:
 
 CRITICAL RULES:
 1. First entry MUST be startSec: 0.
-2. TARGET DENSITY: aim for 1 timestamp every 4-8 minutes of content. A 2-hour video = 15-20+ entries. A 30-min video = 5-8 entries. Never give fewer than 5.
+2. COVERAGE: capture EVERY distinct topic, scripture, story, prophecy, bhajan, mantra, and segment — however many there are. A 2h video with 30 topic shifts gets 30 entries. Do NOT merge unrelated topics. Do NOT impose any maximum or minimum count — let the content dictate.
 3. Each "endSec" = the startSec of the NEXT entry (last entry endSec = video duration in seconds).
 4. Write labels in the SAME language as the video (Hindi for Hindi, Odia for Odia, etc.).
 5. Bhajans/songs: "भजन — [first line or name of the song]"
@@ -559,7 +559,7 @@ ${instructions ? `\nCUSTOM INSTRUCTIONS: ${instructions}\n` : ""}
 TRANSCRIPT:
 ${transcript}
 
-Generate detailed topic-level timestamps (1 per 4-8 min, 15-20+ for a 2h video). Include endSec for each entry. Return ONLY the JSON array.`;
+Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, story, scripture, or segment in the video. No count limit. Include endSec for each entry. Return ONLY the JSON array.`;
 
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const integrationKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
