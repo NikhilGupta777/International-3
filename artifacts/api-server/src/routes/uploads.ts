@@ -120,17 +120,35 @@ async function dbUpdate(fileId: string, updates: Record<string, any>) {
 
 async function dbListPublic(limit = 24, cursor?: string) {
   if (ddb) {
-    const res = await ddb.send(new ScanCommand({
-      TableName: UPLOADS_TABLE,
-      FilterExpression: "#v = :pub AND #s = :done",
-      ExpressionAttributeNames: { "#v": "visibility", "#s": "status" },
-      ExpressionAttributeValues: { ":pub": { S: "public" }, ":done": { S: "done" } },
-      Limit: limit,
-      ...(cursor ? { ExclusiveStartKey: { fileId: { S: cursor } } } : {}),
-    }));
+    let collected: Record<string, any>[] = [];
+    let currentCursor = cursor ? { fileId: { S: cursor } } : undefined;
+    
+    while (collected.length < limit) {
+      const res = await ddb.send(new ScanCommand({
+        TableName: UPLOADS_TABLE,
+        FilterExpression: "#v = :pub AND #s = :done",
+        ExpressionAttributeNames: { "#v": "visibility", "#s": "status" },
+        ExpressionAttributeValues: { ":pub": { S: "public" }, ":done": { S: "done" } },
+        Limit: 100, // Process 100 items per batch to find public ones
+        ...(currentCursor ? { ExclusiveStartKey: currentCursor } : {}),
+      }));
+      collected.push(...(res.Items ?? []));
+      currentCursor = res.LastEvaluatedKey as Record<string, any> | undefined;
+      if (!currentCursor) break;
+    }
+
+    const sliced = collected.slice(0, limit);
+    let nextCursorStr: string | undefined = undefined;
+    
+    if (collected.length > limit) {
+      nextCursorStr = sliced[sliced.length - 1].fileId.S;
+    } else if (currentCursor) {
+      nextCursorStr = currentCursor.fileId?.S;
+    }
+
     return {
-      files: (res.Items ?? []).map(fromDb),
-      nextCursor: res.LastEvaluatedKey?.fileId?.S,
+      files: sliced.map(fromDb),
+      nextCursor: nextCursorStr,
     };
   }
   const all = Array.from(mem.values())
@@ -254,8 +272,11 @@ router.get("/file/:fileId", async (req: Request, res: Response) => {
     if (!isPreview) {
       params.ResponseContentDisposition = `attachment; filename="${encodeURIComponent(record.filename)}"`;
     }
-    const downloadUrl = await getSignedUrl(s3, new GetObjectCommand(params), { expiresIn: TTL_DOWNLOAD });
-    
+    const downloadUrl = await getSignedUrl(s3, new GetObjectCommand({
+      Bucket: BUCKET, Key: record.s3Key,
+      ResponseContentDisposition: isPreview ? "inline" : `attachment; filename="${record.filename}"`
+    }), { expiresIn: TTL_DOWNLOAD });
+
     // If they actually download or preview, increment count
     if (!isPreview && (wantsJson || wantsDownload)) {
       dbUpdate(record.fileId, { downloadCount: (record.downloadCount ?? 0) + 1 }).catch(() => {});

@@ -668,14 +668,16 @@ function AudioUploadZone({
 function BhagwatEditor({
   BASE, url, setUrl,
   clipRange, onClearClip,
+  sourceMode, setSourceMode,
 }: {
   BASE: string;
   url: string;
   setUrl: (v: string) => void;
   clipRange?: { startSec: number; endSec: number; title: string };
   onClearClip?: () => void;
+  sourceMode: "youtube" | "upload";
+  setSourceMode: (v: "youtube" | "upload") => void;
 }) {
-  const [sourceMode, setSourceMode] = useState<"youtube" | "upload">("youtube");
   const [uploadedFile, setUploadedFile] = useState<{ audioId: string; filename: string; sizeBytes: number } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
@@ -2154,6 +2156,7 @@ export function BhagwatVideos() {
   const [tab, setTab] = useState<"clips" | "editor">("editor");
   // Lifted up so the Find Clips tab pre-fills the same URL the editor already has
   const [url, setUrl] = useState("");
+  const [sourceMode, setSourceMode] = useState<"youtube" | "upload">("youtube");
   // Clip range set when user clicks "Edit with AI" on a found clip
   const [clipRange, setClipRange] = useState<{ startSec: number; endSec: number; title: string } | undefined>(undefined);
   // Key to force-reset BhagwatEditor when a new clip is selected
@@ -2183,24 +2186,26 @@ export function BhagwatVideos() {
       className="space-y-5"
     >
       {/* Shared YouTube URL input — visible on both tabs */}
-      <div className="glass-panel rounded-2xl px-4 py-3 flex items-center gap-3">
-        <Film className="w-4 h-4 text-amber-400 shrink-0" />
-        <input
-          type="text"
-          value={url}
-          onChange={e => setUrl(e.target.value)}
-          placeholder="Paste YouTube URL of Bhagwat Katha, Ram Katha, or any devotional video…"
-          className="flex-1 bg-transparent text-white placeholder:text-white/30 outline-none text-sm"
-        />
-        {url && (
-          <button
-            onClick={() => setUrl("")}
-            className="text-white/30 hover:text-white/60 transition-colors shrink-0"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        )}
-      </div>
+      {!(tab === "editor" && sourceMode === "upload") && (
+        <div className="glass-panel rounded-2xl px-4 py-3 flex items-center gap-3">
+          <Film className="w-4 h-4 text-amber-400 shrink-0" />
+          <input
+            type="text"
+            value={url}
+            onChange={e => setUrl(e.target.value)}
+            placeholder="Paste YouTube URL of Bhagwat Katha, Ram Katha, or any devotional video…"
+            className="flex-1 bg-transparent text-white placeholder:text-white/30 outline-none text-sm"
+          />
+          {url && (
+            <button
+              onClick={() => setUrl("")}
+              className="text-white/30 hover:text-white/60 transition-colors shrink-0"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1">
         <button
@@ -2238,6 +2243,8 @@ export function BhagwatVideos() {
           setUrl={setUrl}
           clipRange={clipRange}
           onClearClip={handleClearClip}
+          sourceMode={sourceMode}
+          setSourceMode={setSourceMode}
         />
       </div>
       <div className={tab === "clips" ? undefined : "hidden"}>

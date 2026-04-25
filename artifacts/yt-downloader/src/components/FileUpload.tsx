@@ -341,7 +341,7 @@ export function FileUpload() {
 
       {/* Sub-tabs */}
       <div className="flex gap-1 mb-6 p-1 rounded-lg" style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)"}}>
-        <button onClick={() => setTab("upload")} className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all", tab === "upload" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>↑ Upload</button>
+        <button onClick={() => setTab("upload")} className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all", tab === "upload" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>↑ Share</button>
         <button onClick={() => setTab("my-uploads")} className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all", tab === "my-uploads" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>Folder My Uploads</button>
         <button onClick={() => setTab("gallery")} className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all", tab === "gallery" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>⊞ Public Gallery</button>
       </div>
@@ -570,11 +570,17 @@ function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => voi
     }
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE()}/api/uploads/file/${file.fileId}?preview=1`);
+      const res = await fetch(`${BASE()}/api/uploads/file/${file.fileId}?preview=1&json=1`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "File not found or expired.");
+      }
       const data = await res.json() as { downloadUrl: string };
       setPreviewUrl(data.downloadUrl);
       setPreviewing(true);
-    } catch { /* ignore */ }
+    } catch (err) {
+      toast({ title: "Error", description: err instanceof Error ? err.message : "Preview failed", variant: "destructive" });
+    }
     finally { setDownloading(false); }
   };
 
@@ -582,11 +588,17 @@ function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => voi
     setDownloading(true);
     try {
       const res = await fetch(`${BASE()}/api/uploads/file/${file.fileId}?json=1`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "File not found or expired.");
+      }
       const data = await res.json() as { downloadUrl: string; filename: string };
       const a = document.createElement("a");
       a.href = data.downloadUrl; a.download = data.filename;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    } catch { /* ignore */ }
+    } catch (err) {
+      toast({ title: "Error", description: err instanceof Error ? err.message : "Download failed", variant: "destructive" });
+    }
     finally { setDownloading(false); }
   };
 
