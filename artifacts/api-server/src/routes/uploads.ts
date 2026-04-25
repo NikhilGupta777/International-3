@@ -238,15 +238,75 @@ router.get("/file/:fileId", async (req: Request, res: Response) => {
   try {
     const record = await dbGet(String(req.params.fileId));
     if (!record || record.status !== "done") return res.status(404).json({ error: "File not found." });
+    
     const isPreview = req.query.preview === "1";
+    const wantsJson = req.query.json === "1";
+    const wantsDownload = req.query.download === "1";
+
     const params: any = { Bucket: BUCKET, Key: record.s3Key };
     if (!isPreview) {
       params.ResponseContentDisposition = `attachment; filename="${encodeURIComponent(record.filename)}"`;
     }
     const downloadUrl = await getSignedUrl(s3, new GetObjectCommand(params), { expiresIn: TTL_DOWNLOAD });
-    if (!isPreview) dbUpdate(record.fileId, { downloadCount: (record.downloadCount ?? 0) + 1 }).catch(() => {});
+    
+    // If they actually download or preview, increment count
+    if (!isPreview && (wantsJson || wantsDownload)) {
+      dbUpdate(record.fileId, { downloadCount: (record.downloadCount ?? 0) + 1 }).catch(() => {});
+    }
+
     const { s3Key: _, multipartUploadId: __, ...safe } = record;
-    return res.json({ ...safe, downloadUrl });
+
+    if (wantsJson || isPreview) {
+      return res.json({ ...safe, downloadUrl });
+    }
+
+    if (wantsDownload) {
+      return res.redirect(downloadUrl);
+    }
+
+    // Direct browser visit -> Return a beautiful HTML landing page
+    const sizeMB = (record.size / 1024 / 1024).toFixed(2);
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Download ${record.filename}</title>
+  <style>
+    body { margin: 0; background: #0a0a0a; color: white; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; overflow: hidden; }
+    .bg-grid { position: absolute; inset: 0; background-size: 40px 40px; background-image: linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px); z-index: -1; }
+    .bg-glow { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 600px; height: 600px; background: radial-gradient(circle, rgba(255,255,255,0.03) 0%, transparent 70%); z-index: -1; }
+    .card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); padding: 2.5rem 2rem; border-radius: 1.25rem; text-align: center; max-width: 420px; width: 90%; backdrop-filter: blur(10px); }
+    .icon { width: 56px; height: 56px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 1rem; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.5rem auto; }
+    .icon svg { width: 28px; height: 28px; color: rgba(255,255,255,0.7); }
+    h1 { font-size: 1.15rem; font-weight: 600; margin: 0 0 0.5rem 0; line-height: 1.4; word-break: break-all; color: rgba(255,255,255,0.9); }
+    p.meta { color: rgba(255,255,255,0.4); font-size: 0.85rem; margin: 0 0 2rem 0; }
+    a.btn { display: flex; align-items: center; justify-content: center; gap: 0.5rem; background: white; color: black; text-decoration: none; padding: 0.875rem 1.5rem; border-radius: 0.75rem; font-weight: 600; font-size: 0.9rem; transition: all 0.2s; box-shadow: 0 4px 12px rgba(255,255,255,0.1); }
+    a.btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(255,255,255,0.15); }
+    a.btn svg { width: 18px; height: 18px; }
+    .footer { margin-top: 1.5rem; font-size: 0.75rem; color: rgba(255,255,255,0.25); }
+  </style>
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <div class="bg-glow"></div>
+  <div class="card">
+    <div class="icon">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+    </div>
+    <h1>${record.title || record.filename}</h1>
+    <p class="meta">${sizeMB} MB • Shared securely</p>
+    <a href="?download=1" class="btn">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Download File
+    </a>
+    <div class="footer">Powered by VideoMaking</div>
+  </div>
+</body>
+</html>
+    `;
+    return res.send(html);
   } catch (err) {
     logger.error({ err }, "[uploads] get file failed");
     return res.status(500).json({ error: "Failed to get file." });

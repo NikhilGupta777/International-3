@@ -572,7 +572,7 @@ function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => voi
   const handleDownload = async () => {
     setDownloading(true);
     try {
-      const res = await fetch(`${BASE()}/api/uploads/file/${file.fileId}`);
+      const res = await fetch(`${BASE()}/api/uploads/file/${file.fileId}?json=1`);
       const data = await res.json() as { downloadUrl: string; filename: string };
       const a = document.createElement("a");
       a.href = data.downloadUrl; a.download = data.filename;
