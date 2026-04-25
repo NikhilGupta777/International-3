@@ -32,50 +32,48 @@ export function KathaSceneFinder() {
   useEffect(() => { loadRefs(); }, []);
 
   return (
-    <div className="min-h-screen" style={{ background: "var(--gradient-soft)" }}>
+    <div className="space-y-4">
       <Toaster richColors position="top-center" />
 
-      <header className="border-b border-border/50 backdrop-blur bg-background/70 sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-3">
+      {/* Tab header — matches the style of other tabs (Get Subtitles, Timestamps, etc.) */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
           <div
             className="h-10 w-10 rounded-xl flex items-center justify-center text-primary-foreground shrink-0"
             style={{ background: "var(--gradient-warm)", boxShadow: "var(--shadow-warm)" }}
           >
             <Sparkles className="h-5 w-5" />
           </div>
-          <div className="flex-1 min-w-0">
-            <h1 className="text-xl font-bold tracking-tight truncate">Bhagwat Katha Locator</h1>
+          <div>
+            <h2 className="text-lg font-bold tracking-tight">Bhagwat Katha Locator</h2>
             <p className="text-xs text-muted-foreground">AI venue matching from your reference library</p>
           </div>
-          <Badge variant="secondary" className="hidden sm:inline-flex">{references.length} images</Badge>
         </div>
-      </header>
+        <Badge variant="secondary">{references.length} images</Badge>
+      </div>
 
-      <main className="max-w-6xl mx-auto px-4 py-6">
-        <Tabs value={tab} onValueChange={setTab}>
-          <TabsList className="grid w-full grid-cols-2 max-w-md">
-            <TabsTrigger value="identify">Identify</TabsTrigger>
-            <TabsTrigger value="library">Library ({references.length})</TabsTrigger>
-          </TabsList>
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList className="grid w-full grid-cols-2 max-w-md">
+          <TabsTrigger value="identify">Identify</TabsTrigger>
+          <TabsTrigger value="library">Library ({references.length})</TabsTrigger>
+        </TabsList>
 
-          <TabsContent value="identify" className="mt-6">
-            <IdentifyTab references={references} onOpenLightbox={setLightbox} />
-          </TabsContent>
+        <TabsContent value="identify" className="mt-4">
+          <IdentifyTab references={references} onOpenLightbox={setLightbox} />
+        </TabsContent>
 
-          <TabsContent value="library" className="mt-6 space-y-6">
-            <AddReferenceForm onAdded={loadRefs} />
-            <LibraryList
-              references={references}
-              loading={loadingRefs}
-              onChanged={loadRefs}
-              onOpenLightbox={setLightbox}
-            />
-          </TabsContent>
-        </Tabs>
-      </main>
+        <TabsContent value="library" className="mt-4 space-y-6">
+          <AddReferenceForm onAdded={loadRefs} />
+          <LibraryList
+            references={references}
+            loading={loadingRefs}
+            onChanged={loadRefs}
+            onOpenLightbox={setLightbox}
+          />
+        </TabsContent>
+      </Tabs>
 
       <Lightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
 }
-
