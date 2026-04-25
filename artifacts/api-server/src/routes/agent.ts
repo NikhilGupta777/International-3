@@ -115,7 +115,7 @@ function parseTimestamp(ts: string): number {
 }
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
-const STUDIO_TOOLS = [
+const STUDIO_TOOLS: any[] = [
   {
     name: "get_video_info",
     description: "Fetch metadata about a YouTube video (title, duration, uploader, view count). Always call this first if you don't already have the title.",
@@ -485,7 +485,7 @@ router.post("/agent/chat", async (req, res) => {
         contents: loopContents,
         config: {
           systemInstruction: SYSTEM_PROMPT,
-          tools: [{ functionDeclarations: STUDIO_TOOLS }],
+          tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
         }
       });
 
