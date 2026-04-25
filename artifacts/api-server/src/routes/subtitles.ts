@@ -1861,39 +1861,20 @@ async function processAudio(
 
           const cleanedRaw = stripFences(rawSrt);
 
-          // Pass 2: Correction (audio-aware — same fileUri)
+          // The transcription pass already listens to the full audio and returns SRT.
+          // A second audio-aware correction pass can exceed Lambda/API time budgets, so
+          // keep this path fast and deterministic; translation still has its own checks.
           if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
           job.status = "correcting";
           job.progressPct = 60;
-          job.message = "AI is auto-correcting errors...";
+          job.message = "Cleaning subtitle timing...";
 
-          let correctedSrt = "";
-          for (const model of KEY_ROTATION_MODELS) {
-            try {
-              const result = await client.models.generateContent({
-                model,
-                contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
-                config: { temperature: 0.1, maxOutputTokens: 65536 },
-              });
-              correctedSrt = result.text?.trim() ?? "";
-              logger.info({ model, keyLabel }, "Subtitle correction completed");
-              break;
-            } catch (err) {
-              if (!isGeminiRetryableError(err)) {
-                logger.warn({ err, model, keyLabel }, "Correction failed (non-quota) — using Pass 1 output");
-                break;
-              }
-              logger.warn({ model, keyLabel }, `Correction rate limited on ${model} — trying next model`);
-            }
-          }
-
-          const rawFinal = (correctedSrt && correctedSrt.length > 10) ? stripFences(correctedSrt) : cleanedRaw;
-          const normalized = normalizeSrtTimestamps(rawFinal);
+          const normalized = normalizeSrtTimestamps(cleanedRaw);
           const deduped = cleanupHallucinatedEntries(normalized);
           const strictFiltered = strictFilterMalformedTimestamps(deduped);
           correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
 
-          break; // Both passes succeeded — exit key loop
+          break; // Transcription and cleanup succeeded - exit key loop
 
         } catch (err) {
           lastKeyErr = err;
