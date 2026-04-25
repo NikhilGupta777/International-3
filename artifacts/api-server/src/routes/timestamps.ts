@@ -554,7 +554,7 @@ Generate YouTube chapter timestamps. Return ONLY the JSON array.`;
 
   if (!GEMINI_API_KEYS.length) throw new Error("No Gemini API key configured. Set GEMINI_API_KEY in Secrets.");
 
-  const models = ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"];
+  const models = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
   for (const [keyIndex, apiKey] of GEMINI_API_KEYS.entries()) {
     for (const model of models) {
       try {
