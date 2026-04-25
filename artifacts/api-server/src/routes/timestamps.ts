@@ -44,6 +44,14 @@ const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
 const _workspaceRoot = process.env.REPL_HOME ?? process.cwd();
 const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
+const GEMINI_API_KEYS = [
+  process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY,
+  process.env.GEMINI_API_KEY_2,
+  process.env.GEMINI_API_KEY_3,
+  process.env.GEMINI_API_KEY_4,
+  process.env.GEMINI_API_KEY_5,
+  process.env.GEMINI_API_KEY_6,
+].filter((key): key is string => typeof key === "string" && key.trim().length > 0);
 
 const ddb = JOB_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 const lambdaClient = WORKER_FUNCTION_NAME ? new LambdaClient({ region: REGION }) : null;
@@ -544,19 +552,22 @@ Generate YouTube chapter timestamps. Return ONLY the JSON array.`;
     }
   }
 
-  if (!GEMINI_API_KEY) throw new Error("No Gemini API key configured. Set GEMINI_API_KEY in Secrets.");
+  if (!GEMINI_API_KEYS.length) throw new Error("No Gemini API key configured. Set GEMINI_API_KEY in Secrets.");
 
-  for (const model of ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"]) {
-    try {
-      const client = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-      const result = await client.models.generateContent({
-        model,
-        contents: [{ role: "user", parts: [{ text: userContent }] }],
-        config: { systemInstruction: SYSTEM_PROMPT },
-      });
-      return (result as any).text ?? "";
-    } catch (err) {
-      logger.warn({ err, model }, `[timestamps] Gemini model ${model} failed`);
+  const models = ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"];
+  for (const [keyIndex, apiKey] of GEMINI_API_KEYS.entries()) {
+    for (const model of models) {
+      try {
+        const client = new GoogleGenAI({ apiKey });
+        const result = await client.models.generateContent({
+          model,
+          contents: [{ role: "user", parts: [{ text: userContent }] }],
+          config: { systemInstruction: SYSTEM_PROMPT },
+        });
+        return (result as any).text ?? "";
+      } catch (err) {
+        logger.warn({ err, model, keyIndex }, "[timestamps] Gemini attempt failed");
+      }
     }
   }
   throw new Error("All Gemini models failed. Please try again.");
