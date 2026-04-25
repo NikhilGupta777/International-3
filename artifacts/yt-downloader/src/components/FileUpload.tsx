@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Upload, Cloud, Link2, Copy, Check, Eye, EyeOff,
+  Upload, Cloud, Link2, Copy, Check, Eye, XOctagon,
   FileText, Film, Music, Image, Archive, File,
   Download, Globe, Lock, Trash2, ChevronDown, ChevronUp,
-  CheckCircle2, AlertCircle, Loader2, X, FolderHeart
+  CheckCircle2, AlertCircle, Loader2, X, FolderHeart, Info
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -47,17 +46,24 @@ const CONCURRENCY = 4;
 // ── Multipart upload engine ──────────────────────────────────────────────────
 async function uploadPart(
   signedUrl: string, chunk: Blob,
-  onProgress: (loaded: number) => void
+  onProgress: (loaded: number) => void,
+  signal: AbortSignal
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const handleAbort = () => { xhr.abort(); reject(new Error("aborted")); };
+    signal.addEventListener("abort", handleAbort);
     xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
     xhr.onload = () => {
+      signal.removeEventListener("abort", handleAbort);
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve((xhr.getResponseHeader("ETag") ?? "").replace(/"/g, ""));
       } else reject(new Error(`Part ${xhr.status}`));
     };
-    xhr.onerror = () => reject(new Error("Network error"));
+    xhr.onerror = () => {
+      signal.removeEventListener("abort", handleAbort);
+      reject(new Error("Network error"));
+    };
     xhr.open("PUT", signedUrl);
     xhr.send(chunk);
   });
@@ -65,13 +71,22 @@ async function uploadPart(
 
 async function uploadSingle(
   url: string, file: File, mime: string,
-  onProgress: (pct: number) => void
+  onProgress: (pct: number, loaded: number) => void,
+  signal: AbortSignal
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100)); };
-    xhr.onload = () => xhr.status < 300 ? resolve() : reject(new Error(`Upload ${xhr.status}`));
-    xhr.onerror = () => reject(new Error("Network error"));
+    const handleAbort = () => { xhr.abort(); reject(new Error("aborted")); };
+    signal.addEventListener("abort", handleAbort);
+    xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(Math.round(e.loaded / e.total * 100), e.loaded); };
+    xhr.onload = () => {
+      signal.removeEventListener("abort", handleAbort);
+      xhr.status < 300 ? resolve() : reject(new Error(`Upload ${xhr.status}`));
+    };
+    xhr.onerror = () => {
+      signal.removeEventListener("abort", handleAbort);
+      reject(new Error("Network error"));
+    };
     xhr.open("PUT", url);
     xhr.setRequestHeader("Content-Type", mime);
     xhr.send(file);
@@ -126,10 +141,13 @@ export function FileUpload() {
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [speedStr, setSpeedStr] = useState("");
+  const [etaStr, setEtaStr] = useState("");
   const [done, setDone] = useState<{ shareUrl: string; fileId: string; filename: string; size: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   // Gallery / My Uploads state
   const [gallery, setGallery] = useState<PublicFile[]>([]);
@@ -166,22 +184,54 @@ export function FileUpload() {
     if (f) { if (f.size > MAX_SIZE) { setError("File exceeds 3 GB limit."); return; } setFile(f); setError(null); }
   };
 
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      setUploading(false);
+      setError("Upload cancelled.");
+    }
+  };
+
   const handleUpload = async () => {
     if (!file || uploading) return;
     setUploading(true); setProgress(0); setError(null); setDone(null);
+    setSpeedStr("calculating..."); setEtaStr("...");
+    
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    const signal = abortController.signal;
+    const startTime = Date.now();
+    let lastUpdate = startTime;
+
+    const updateStats = (loadedBytes: number) => {
+      const now = Date.now();
+      const elapsed = (now - startTime) / 1000;
+      if (elapsed > 1 && now - lastUpdate > 500) {
+        const speedBps = loadedBytes / elapsed;
+        setSpeedStr(`${fmtBytes(speedBps)}/s`);
+        const remainingBytes = file.size - loadedBytes;
+        const etaSecs = Math.max(0, remainingBytes / Math.max(speedBps, 1));
+        if (etaSecs > 60) setEtaStr(`${Math.ceil(etaSecs / 60)} mins left`);
+        else setEtaStr(`${Math.ceil(etaSecs)} secs left`);
+        lastUpdate = now;
+      }
+    };
 
     try {
       // 1. Presign
       const initRes = await fetch(`${BASE_URL()}/api/uploads/presign`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ filename: file.name, size: file.size, mimeType: file.type || "application/octet-stream", visibility, title, description }),
+        signal
       });
       if (!initRes.ok) { const e = await initRes.json().catch(() => ({})); throw new Error((e as any).error ?? "Init failed"); }
       const init = await initRes.json() as any;
 
       // 2. Upload
       if (init.uploadType === "single") {
-        await uploadSingle(init.presignedUrl, file, file.type || "application/octet-stream", pct => setProgress(pct));
+        await uploadSingle(init.presignedUrl, file, file.type || "application/octet-stream", (pct, loaded) => {
+          setProgress(pct); updateStats(loaded);
+        }, signal);
         setProgress(99);
       } else {
         // Multipart — upload CONCURRENCY parts at a time
@@ -190,13 +240,18 @@ export function FileUpload() {
         let uploadedBytes = 0;
 
         for (let i = 0; i < parts.length; i += CONCURRENCY) {
+          if (signal.aborted) throw new Error("aborted");
           const batch = parts.slice(i, i + CONCURRENCY);
           await Promise.all(batch.map(async (p) => {
             const start = (p.partNumber - 1) * PART_SIZE;
             const chunk = file.slice(start, start + PART_SIZE);
+            let partLoaded = 0;
             const etag = await uploadPart(p.signedUrl, chunk, (loaded) => {
-              setProgress(Math.min(98, Math.round((uploadedBytes + loaded) / file.size * 100)));
-            });
+              const diff = loaded - partLoaded;
+              partLoaded = loaded;
+              updateStats(uploadedBytes + diff);
+              setProgress(Math.min(98, Math.round((uploadedBytes + diff) / file.size * 100)));
+            }, signal);
             uploadedBytes += chunk.size;
             results.push({ partNumber: p.partNumber, etag });
           }));
@@ -209,6 +264,7 @@ export function FileUpload() {
         const compRes = await fetch(`${BASE_URL()}/api/uploads/complete`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ fileId: init.fileId, parts: results }),
+          signal
         });
         if (!compRes.ok) throw new Error("Complete failed");
         const comp = await compRes.json() as any;
@@ -223,6 +279,7 @@ export function FileUpload() {
       const compRes = await fetch(`${BASE_URL()}/api/uploads/complete`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fileId: init.fileId }),
+        signal
       });
       if (!compRes.ok) throw new Error("Complete failed");
       const comp = await compRes.json() as any;
@@ -231,7 +288,11 @@ export function FileUpload() {
       setDone({ shareUrl: frontendShareUrl, fileId: comp.fileId, filename: comp.filename, size: comp.size });
       saveLocalUpload({ fileId: comp.fileId, filename: comp.filename, title, description, size: comp.size, mimeType: file.type || "application/octet-stream", visibility, uploadedAt: Date.now(), downloadCount: 0 });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      if ((err as Error).message === "aborted" || signal.aborted) {
+        setError("Upload cancelled.");
+      } else {
+        setError(err instanceof Error ? err.message : "Upload failed");
+      }
     } finally {
       setUploading(false);
     }
@@ -259,9 +320,13 @@ export function FileUpload() {
         <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{background:"rgba(255,255,255,0.07)",border:"1px solid rgba(255,255,255,0.10)"}}>
           <Cloud className="w-5 h-5 text-white/70" />
         </div>
-        <div>
+        <div className="flex-1">
           <h2 className="text-base font-semibold text-white tracking-tight">File Share</h2>
           <p className="text-xs" style={{color:"rgba(255,255,255,0.40)"}}>Upload any file up to 3 GB — get a shareable link</p>
+        </div>
+        <div className="px-3 py-1.5 rounded-full flex items-center gap-1.5" style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)"}}>
+           <Info className="w-3.5 h-3.5 text-amber-400" />
+           <span className="text-[10px] font-medium text-white/50 tracking-wide uppercase">Auto-deletes in 7 days</span>
         </div>
       </div>
 
@@ -361,8 +426,8 @@ export function FileUpload() {
                 {/* Options row */}
                 <div className="flex items-center gap-3 flex-wrap">
                   {/* Visibility toggle */}
-                  <button onClick={() => setVisibility(v => v === "public" ? "private" : "public")}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all"
+                  <button onClick={() => setVisibility(v => v === "public" ? "private" : "public")} disabled={uploading}
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                     style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.08)", color:"rgba(255,255,255,0.65)"}}>
                     {visibility === "public"
                       ? <><Globe className="w-3.5 h-3.5 text-emerald-400"/>Public</>
@@ -370,8 +435,8 @@ export function FileUpload() {
                   </button>
 
                   {/* Meta toggle */}
-                  <button onClick={() => setShowMeta(v => !v)}
-                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all"
+                  <button onClick={() => setShowMeta(v => !v)} disabled={uploading}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-50"
                     style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.08)",color:"rgba(255,255,255,0.45)"}}>
                     {showMeta ? <ChevronUp className="w-3.5 h-3.5"/> : <ChevronDown className="w-3.5 h-3.5"/>}
                     Add details
@@ -382,10 +447,10 @@ export function FileUpload() {
                 <AnimatePresence>
                   {showMeta && (
                     <motion.div initial={{opacity:0,height:0}} animate={{opacity:1,height:"auto"}} exit={{opacity:0,height:0}} className="space-y-2 overflow-hidden">
-                      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Title (optional)"
-                        className="w-full px-4 py-2.5 rounded-lg text-sm text-white placeholder-white/25 bg-white/5 border border-white/10 outline-none focus:border-white/25 transition-colors" />
-                      <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Description (optional)" rows={3}
-                        className="w-full px-4 py-2.5 rounded-lg text-sm text-white placeholder-white/25 bg-white/5 border border-white/10 outline-none focus:border-white/25 transition-colors resize-none" />
+                      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Title (optional)" disabled={uploading}
+                        className="w-full px-4 py-2.5 rounded-lg text-sm text-white placeholder-white/25 bg-white/5 border border-white/10 outline-none focus:border-white/25 transition-colors disabled:opacity-50" />
+                      <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Description (optional)" rows={3} disabled={uploading}
+                        className="w-full px-4 py-2.5 rounded-lg text-sm text-white placeholder-white/25 bg-white/5 border border-white/10 outline-none focus:border-white/25 transition-colors resize-none disabled:opacity-50" />
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -393,25 +458,38 @@ export function FileUpload() {
                 {/* Progress bar */}
                 {uploading && (
                   <div>
-                    <div className="flex justify-between text-xs mb-1.5" style={{color:"rgba(255,255,255,0.45)"}}>
-                      <span className="flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin"/>Uploading{file && file.size > 50*1024*1024 ? " (multipart)…" : "…"}</span>
-                      <span>{progress}%</span>
+                    <div className="flex justify-between items-end text-xs mb-1.5">
+                      <div className="flex flex-col gap-1">
+                        <span className="flex items-center gap-1.5" style={{color:"rgba(255,255,255,0.65)"}}>
+                          <Loader2 className="w-3 h-3 animate-spin text-white/50"/>
+                          Uploading{file && file.size > 50*1024*1024 ? " (multipart)…" : "…"}
+                        </span>
+                        <span style={{color:"rgba(255,255,255,0.30)"}} className="ml-4.5">{speedStr} · {etaStr}</span>
+                      </div>
+                      <span style={{color:"rgba(255,255,255,0.55)"}}>{progress}%</span>
                     </div>
-                    <div className="h-1.5 rounded-full overflow-hidden" style={{background:"rgba(255,255,255,0.08)"}}>
-                      <motion.div className="h-full rounded-full" style={{background:"rgba(255,255,255,0.70)"}}
-                        animate={{width:`${progress}%`}} transition={{ease:"easeOut",duration:0.4}} />
+                    <div className="flex items-center gap-3">
+                      <div className="h-1.5 rounded-full overflow-hidden flex-1" style={{background:"rgba(255,255,255,0.08)"}}>
+                        <motion.div className="h-full rounded-full" style={{background:"rgba(255,255,255,0.70)"}}
+                          animate={{width:`${progress}%`}} transition={{ease:"easeOut",duration:0.4}} />
+                      </div>
+                      <button onClick={handleCancel} title="Cancel Upload" className="p-1.5 rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors">
+                        <XOctagon className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 )}
 
                 {/* Upload button */}
-                <button
-                  onClick={handleUpload}
-                  disabled={!file || uploading}
-                  className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-                  style={{background: file && !uploading ? "rgba(255,255,255,0.90)" : "rgba(255,255,255,0.08)", color: file && !uploading ? "#111" : "rgba(255,255,255,0.40)"}}>
-                  {uploading ? "Uploading…" : !file ? "Select a file to upload" : `Upload ${fmtBytes(file.size)} · ${visibility}`}
-                </button>
+                {!uploading && (
+                  <button
+                    onClick={handleUpload}
+                    disabled={!file}
+                    className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{background: file ? "rgba(255,255,255,0.90)" : "rgba(255,255,255,0.08)", color: file ? "#111" : "rgba(255,255,255,0.40)"}}>
+                    {!file ? "Select a file to upload" : `Upload ${fmtBytes(file.size)} · ${visibility}`}
+                  </button>
+                )}
               </>
             )}
           </motion.div>
@@ -471,6 +549,25 @@ function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => voi
   const BASE = () => (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
   const [downloading, setDownloading] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const canPreview = file.mimeType.startsWith("image/") || file.mimeType.startsWith("video/");
+
+  const handlePreview = async () => {
+    if (previewUrl) {
+      setPreviewing(true);
+      return;
+    }
+    setDownloading(true);
+    try {
+      const res = await fetch(`${BASE()}/api/uploads/file/${file.fileId}?preview=1`);
+      const data = await res.json() as { downloadUrl: string };
+      setPreviewUrl(data.downloadUrl);
+      setPreviewing(true);
+    } catch { /* ignore */ }
+    finally { setDownloading(false); }
+  };
 
   const handleDownload = async () => {
     setDownloading(true);
@@ -498,29 +595,54 @@ function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => voi
   };
 
   return (
-    <div className="rounded-xl p-4 flex items-start gap-3 transition-all" style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)"}}>
-      <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{background:"rgba(255,255,255,0.06)"}}>
-        <span className={fileColor(file.mimeType)}>{fileIcon(file.mimeType)}</span>
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-white/90 truncate">{file.title || file.filename}</p>
-        {file.description && <p className="text-xs mt-0.5 line-clamp-1" style={{color:"rgba(255,255,255,0.40)"}}>{file.description}</p>}
-        <div className="flex items-center gap-3 mt-1 text-[10px]" style={{color:"rgba(255,255,255,0.30)"}}>
-          <span>{file.visibility === "private" ? <><Lock className="w-2.5 h-2.5 inline mr-0.5 text-amber-400"/> Private</> : <><Globe className="w-2.5 h-2.5 inline mr-0.5 text-emerald-400"/> Public</>}</span>
-          <span>{fmtBytes(file.size)}</span>
-          <span>{fmtTime(file.uploadedAt)}</span>
-          {file.downloadCount > 0 && <span><Download className="w-2.5 h-2.5 inline mr-0.5"/>{file.downloadCount}</span>}
+    <>
+      <div className="rounded-xl p-4 flex items-start gap-3 transition-all" style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)"}}>
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 cursor-pointer hover:opacity-80 transition-opacity" onClick={() => canPreview ? handlePreview() : null} style={{background:"rgba(255,255,255,0.06)"}}>
+          <span className={fileColor(file.mimeType)}>{fileIcon(file.mimeType)}</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium text-white/90 truncate">{file.title || file.filename}</p>
+          {file.description && <p className="text-xs mt-0.5 line-clamp-1" style={{color:"rgba(255,255,255,0.40)"}}>{file.description}</p>}
+          <div className="flex items-center gap-3 mt-1 text-[10px]" style={{color:"rgba(255,255,255,0.30)"}}>
+            <span>{file.visibility === "private" ? <><Lock className="w-2.5 h-2.5 inline mr-0.5 text-amber-400"/> Private</> : <><Globe className="w-2.5 h-2.5 inline mr-0.5 text-emerald-400"/> Public</>}</span>
+            <span>{fmtBytes(file.size)}</span>
+            <span>{fmtTime(file.uploadedAt)}</span>
+            {file.downloadCount > 0 && <span><Download className="w-2.5 h-2.5 inline mr-0.5"/>{file.downloadCount}</span>}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {canPreview && (
+            <button onClick={handlePreview} disabled={downloading} title="Preview" className="p-1.5 rounded-lg transition-colors bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90">
+              <Eye className="w-3.5 h-3.5"/>
+            </button>
+          )}
+          <button onClick={copyLink} title="Copy link" className="p-1.5 rounded-lg transition-colors bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90"><Link2 className="w-3.5 h-3.5"/></button>
+          <button onClick={handleDownload} disabled={downloading} title="Download" className="p-1.5 rounded-lg transition-colors bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90">
+            {downloading && !previewing ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Download className="w-3.5 h-3.5"/>}
+          </button>
+          <button onClick={handleDelete} disabled={deleting} title="Delete" className="p-1.5 rounded-lg transition-colors hover:bg-red-500/15 text-white/30 hover:text-red-400">
+            {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Trash2 className="w-3.5 h-3.5"/>}
+          </button>
         </div>
       </div>
-      <div className="flex items-center gap-1 shrink-0">
-        <button onClick={copyLink} title="Copy link" className="p-1.5 rounded-lg transition-colors bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90"><Link2 className="w-3.5 h-3.5"/></button>
-        <button onClick={handleDownload} disabled={downloading} title="Download" className="p-1.5 rounded-lg transition-colors bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90">
-          {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Download className="w-3.5 h-3.5"/>}
-        </button>
-        <button onClick={handleDelete} disabled={deleting} title="Delete" className="p-1.5 rounded-lg transition-colors hover:bg-red-500/15 text-white/30 hover:text-red-400">
-          {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Trash2 className="w-3.5 h-3.5"/>}
-        </button>
-      </div>
-    </div>
+
+      {/* Preview Modal */}
+      <AnimatePresence>
+        {previewing && previewUrl && (
+          <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8 bg-black/90 backdrop-blur-sm" onClick={() => setPreviewing(false)}>
+            <div className="relative w-full h-full max-w-5xl flex flex-col items-center justify-center" onClick={e => e.stopPropagation()}>
+              <button onClick={() => setPreviewing(false)} className="absolute top-0 right-0 p-3 bg-white/10 hover:bg-white/20 rounded-xl text-white transition-colors z-10">
+                <X className="w-6 h-6"/>
+              </button>
+              {file.mimeType.startsWith("video/") ? (
+                <video src={previewUrl} controls autoPlay className="max-w-full max-h-full rounded-lg shadow-2xl" />
+              ) : (
+                <img src={previewUrl} alt={file.filename} className="max-w-full max-h-full rounded-lg shadow-2xl object-contain" />
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }

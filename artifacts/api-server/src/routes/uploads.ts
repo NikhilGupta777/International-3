@@ -43,8 +43,22 @@ const TTL_DOWNLOAD   = 86_400;                  // 24h presigned download URL
 const s3  = new S3Client({ region: REGION });
 const ddb = UPLOADS_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 
-// ── In-memory fallback ─────────────────────────────────────────────────────
+// ── In-memory fallback & Rate Limiting ───────────────────────────────────────
 const mem = new Map<string, Record<string, any>>();
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const record = rateLimitMap.get(ip) || { count: 0, resetAt: now + 3600000 };
+  if (now > record.resetAt) {
+    record.count = 0;
+    record.resetAt = now + 3600000;
+  }
+  if (record.count >= 20) return false;
+  record.count++;
+  rateLimitMap.set(ip, record);
+  return true;
+}
 
 // ── DynamoDB helpers ───────────────────────────────────────────────────────
 function toDb(v: any) {
@@ -138,6 +152,9 @@ async function dbDelete(fileId: string) {
 // ── POST /api/uploads/presign ─────────────────────────────────────────────
 router.post("/presign", async (req: Request, res: Response) => {
   try {
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (!checkRateLimit(ip)) return res.status(429).json({ error: "Rate limit exceeded. Max 20 uploads per hour." });
+
     const { filename, size, mimeType, visibility = "public", title = "", description = "" } = req.body ?? {};
     if (!filename || typeof size !== "number") return res.status(400).json({ error: "filename and size required" });
     if (size > MAX_BYTES) return res.status(400).json({ error: "File exceeds 3 GB limit." });
@@ -221,11 +238,13 @@ router.get("/file/:fileId", async (req: Request, res: Response) => {
   try {
     const record = await dbGet(String(req.params.fileId));
     if (!record || record.status !== "done") return res.status(404).json({ error: "File not found." });
-    const downloadUrl = await getSignedUrl(s3, new GetObjectCommand({
-      Bucket: BUCKET, Key: record.s3Key,
-      ResponseContentDisposition: `attachment; filename="${encodeURIComponent(record.filename)}"`,
-    }), { expiresIn: TTL_DOWNLOAD });
-    dbUpdate(record.fileId, { downloadCount: (record.downloadCount ?? 0) + 1 }).catch(() => {});
+    const isPreview = req.query.preview === "1";
+    const params: any = { Bucket: BUCKET, Key: record.s3Key };
+    if (!isPreview) {
+      params.ResponseContentDisposition = `attachment; filename="${encodeURIComponent(record.filename)}"`;
+    }
+    const downloadUrl = await getSignedUrl(s3, new GetObjectCommand(params), { expiresIn: TTL_DOWNLOAD });
+    if (!isPreview) dbUpdate(record.fileId, { downloadCount: (record.downloadCount ?? 0) + 1 }).catch(() => {});
     const { s3Key: _, multipartUploadId: __, ...safe } = record;
     return res.json({ ...safe, downloadUrl });
   } catch (err) {
