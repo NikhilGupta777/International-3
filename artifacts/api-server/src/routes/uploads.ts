@@ -136,7 +136,10 @@ async function dbListPublic(limit = 24, cursor?: string) {
   const all = Array.from(mem.values())
     .filter(f => f.visibility === "public" && f.status === "done")
     .sort((a, b) => b.uploadedAt - a.uploadedAt);
-  return { files: all.slice(0, limit), nextCursor: undefined };
+  const startIndex = cursor ? all.findIndex(f => f.fileId === cursor) + 1 : 0;
+  const sliced = all.slice(startIndex, startIndex + limit);
+  const nextCursor = startIndex + limit < all.length ? sliced[sliced.length - 1]?.fileId : undefined;
+  return { files: sliced, nextCursor };
 }
 
 async function dbDelete(fileId: string) {
@@ -152,7 +155,8 @@ async function dbDelete(fileId: string) {
 // ── POST /api/uploads/presign ─────────────────────────────────────────────
 router.post("/presign", async (req: Request, res: Response) => {
   try {
-    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    const rawIp = req.headers["x-forwarded-for"] || req.ip || req.socket.remoteAddress || "unknown";
+    const ip = Array.isArray(rawIp) ? rawIp[0] : rawIp.split(",")[0].trim();
     if (!checkRateLimit(ip)) return res.status(429).json({ error: "Rate limit exceeded. Max 20 uploads per hour." });
 
     const { filename, size, mimeType, visibility = "public", title = "", description = "" } = req.body ?? {};
@@ -211,7 +215,10 @@ router.post("/complete", async (req: Request, res: Response) => {
     const record = await dbGet(fileId);
     if (!record) return res.status(404).json({ error: "Upload not found." });
 
-    if (Array.isArray(parts) && parts.length > 0 && record.multipartUploadId) {
+    if (record.multipartUploadId) {
+      if (!Array.isArray(parts) || parts.length === 0) {
+        return res.status(400).json({ error: "Parts array is required for multipart complete." });
+      }
       await s3.send(new CompleteMultipartUploadCommand({
         Bucket: BUCKET, Key: record.s3Key, UploadId: record.multipartUploadId,
         MultipartUpload: { Parts: parts.map((p: any) => ({ PartNumber: p.partNumber, ETag: p.etag })) },

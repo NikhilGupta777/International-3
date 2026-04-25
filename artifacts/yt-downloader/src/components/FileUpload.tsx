@@ -237,25 +237,34 @@ export function FileUpload() {
         // Multipart — upload CONCURRENCY parts at a time
         const parts = init.parts as { partNumber: number; signedUrl: string }[];
         const results: { partNumber: number; etag: string }[] = [];
-        let uploadedBytes = 0;
+        let baseUploadedBytes = 0;
 
         for (let i = 0; i < parts.length; i += CONCURRENCY) {
           if (signal.aborted) throw new Error("aborted");
           const batch = parts.slice(i, i + CONCURRENCY);
+          const partProgress = new Map<number, number>();
+          
           await Promise.all(batch.map(async (p) => {
             const start = (p.partNumber - 1) * PART_SIZE;
             const chunk = file.slice(start, start + PART_SIZE);
-            let partLoaded = 0;
+            
             const etag = await uploadPart(p.signedUrl, chunk, (loaded) => {
-              const diff = loaded - partLoaded;
-              partLoaded = loaded;
-              updateStats(uploadedBytes + diff);
-              setProgress(Math.min(98, Math.round((uploadedBytes + diff) / file.size * 100)));
+              partProgress.set(p.partNumber, loaded);
+              let currentBatchLoaded = 0;
+              for (const val of partProgress.values()) currentBatchLoaded += val;
+              const totalLoaded = baseUploadedBytes + currentBatchLoaded;
+              updateStats(totalLoaded);
+              setProgress(Math.min(98, Math.round(totalLoaded / file.size * 100)));
             }, signal);
-            uploadedBytes += chunk.size;
+            
             results.push({ partNumber: p.partNumber, etag });
           }));
-          setProgress(Math.min(98, Math.round(uploadedBytes / file.size * 100)));
+          
+          for (const p of batch) {
+            const start = (p.partNumber - 1) * PART_SIZE;
+            baseUploadedBytes += file.slice(start, start + PART_SIZE).size;
+          }
+          setProgress(Math.min(98, Math.round(baseUploadedBytes / file.size * 100)));
         }
         results.sort((a, b) => a.partNumber - b.partNumber);
         setProgress(99);
