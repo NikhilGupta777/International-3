@@ -18,6 +18,7 @@ import { GetSubtitles } from "@/components/GetSubtitles";
 import { ClipCutter } from "@/components/ClipCutter";
 import { KathaSceneFinder } from "@/components/KathaSceneFinder";
 import { Timestamps } from "@/components/Timestamps";
+import { FileUpload } from "@/components/FileUpload";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import {
   saveActiveDownload,
@@ -40,7 +41,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps";
+type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload";
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -390,6 +391,7 @@ export default function Home() {
   const showBhagwat = mode === "bhagwat";
   const showSceneFinder = mode === "scenefinder";
   const showTimestamps = mode === "timestamps";
+  const showUpload = mode === "upload";
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
@@ -713,6 +715,13 @@ export default function Home() {
               <AlarmClock className="w-3 h-3 shrink-0 opacity-70" />
               <span>Timestamps</span>
               <span className="text-[9px] font-bold tracking-wider opacity-50 bg-white/10 rounded px-1 py-px">AI</span>
+            </button>
+            <button
+              onClick={() => { setMode("upload"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+              className={cn("studio-tab", mode === "upload" && "studio-tab-active")}
+            >
+              <UploadCloud className="w-3 h-3 shrink-0 opacity-70" />
+              <span>Upload</span>
             </button>
             </div>
           </motion.div>
@@ -1041,6 +1050,19 @@ export default function Home() {
                 className="w-full"
               >
                 <Timestamps />
+              </motion.div>
+            )}
+
+            {showUpload && (
+              <motion.div
+                key="upload-panel"
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.3 }}
+                className="w-full"
+              >
+                <FileUpload />
               </motion.div>
             )}
 
