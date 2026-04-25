@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlarmClock, CheckCircle2, AlertCircle, Loader2, Copy, Check,
@@ -88,6 +88,7 @@ export function Timestamps() {
   const { toast } = useToast();
   const { copied, copy } = useClipboard();
   const sseRef = useRef<EventSource | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [url, setUrl] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -117,10 +118,75 @@ export function Timestamps() {
     if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
   };
 
+  const closePolling = () => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+  };
+
+  const finishWithResult = (data: Partial<JobResult>) => {
+    closeSSE();
+    closePolling();
+    statusRef.current = "done";
+    setStatus("done");
+    setResult({
+      timestamps: data.timestamps ?? [],
+      videoTitle: data.videoTitle ?? "",
+      videoDuration: data.videoDuration ?? 0,
+      hasTranscript: data.hasTranscript ?? false,
+      transcriptSource: data.transcriptSource,
+    });
+    toast({
+      title: "Timestamps ready!",
+      description: `${data.timestamps?.length ?? 0} chapters generated`,
+    });
+  };
+
+  const failWithMessage = (message: string) => {
+    closeSSE();
+    closePolling();
+    statusRef.current = "error";
+    setStatus("error");
+    setError(message);
+    toast({ title: "Error", description: message, variant: "destructive" });
+  };
+
+  const startPolling = (jobId: string) => {
+    if (pollRef.current) return;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${BASE}/api/youtube/timestamps/status/${encodeURIComponent(jobId)}`);
+        const data = await res.json().catch(() => ({})) as Partial<JobResult> & {
+          status?: string;
+          message?: string;
+          progressPct?: number;
+          error?: string;
+        };
+        if (!res.ok) throw new Error(data.error ?? "Failed to fetch status");
+        if (data.status === "done") {
+          finishWithResult(data);
+          return;
+        }
+        if (data.status === "error" || data.status === "cancelled") {
+          failWithMessage(data.error ?? data.message ?? "Analysis failed");
+          return;
+        }
+        const pct = data.progressPct ?? 0;
+        const stepName = pct >= 55 ? "ai" : pct >= 20 ? "transcript" : "metadata";
+        updateStep(stepName, "running", data.message ?? "Processing...");
+      } catch (err) {
+        if (statusRef.current === "running") {
+          updateStep("metadata", "warn", err instanceof Error ? err.message : "Waiting for server status...");
+        }
+      }
+    };
+    void poll();
+    pollRef.current = setInterval(() => { void poll(); }, 3000);
+  };
+
   // Close any open SSE connection when the component unmounts (e.g. tab change)
   useEffect(() => {
     return () => {
       if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
+      closePolling();
     };
   }, []);
 
@@ -129,6 +195,7 @@ export function Timestamps() {
     if (!url.trim() || isRunning) return;
 
     closeSSE();
+    closePolling();
     statusRef.current = "running";
     setStatus("running");
     setSteps([]);
@@ -176,27 +243,9 @@ export function Timestamps() {
         if (data.type === "step" && data.step) {
           updateStep(data.step, (data.status as StepStatus) ?? "running", data.message ?? "");
         } else if (data.type === "done") {
-          closeSSE();
-          statusRef.current = "done";
-          setStatus("done");
-          setResult({
-            timestamps: data.timestamps ?? [],
-            videoTitle: data.videoTitle ?? "",
-            videoDuration: data.videoDuration ?? 0,
-            hasTranscript: data.hasTranscript ?? false,
-            transcriptSource: data.transcriptSource,
-          });
-          toast({
-            title: "Timestamps ready!",
-            description: `${data.timestamps?.length ?? 0} chapters generated`,
-          });
+          finishWithResult(data);
         } else if (data.type === "error") {
-          closeSSE();
-          statusRef.current = "error";
-          setStatus("error");
-          const msg = data.message ?? "Analysis failed";
-          setError(msg);
-          toast({ title: "Error", description: msg, variant: "destructive" });
+          failWithMessage(data.message ?? "Analysis failed");
         }
       } catch {}
     };
@@ -204,16 +253,15 @@ export function Timestamps() {
     sse.onerror = () => {
       closeSSE();
       if (statusRef.current !== "done" && statusRef.current !== "error") {
-        statusRef.current = "error";
-        setStatus("error");
-        setError("Connection lost. The server may still be processing — please try again.");
-        toast({ title: "Connection error", description: "Lost connection to server", variant: "destructive" });
+        updateStep("metadata", "warn", "Live connection dropped; checking status...");
+        startPolling(jobId);
       }
     };
   };
 
   const handleReset = () => {
     closeSSE();
+    closePolling();
     setStatus("idle");
     setSteps([]);
     setResult(null);
@@ -268,7 +316,7 @@ export function Timestamps() {
             className="bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold px-5 rounded-xl shadow-lg shadow-indigo-500/20 disabled:opacity-40 shrink-0"
           >
             {isRunning ? (
-              <><Loader2 className="w-4 h-4 animate-spin mr-2" />Analyzing…</>
+              <><Loader2 className="w-4 h-4 animate-spin mr-2" />Analyzingâ€¦</>
             ) : (
               <><Sparkles className="w-4 h-4 mr-2" />Generate</>
             )}
@@ -478,3 +526,4 @@ export function Timestamps() {
     </div>
   );
 }
+
