@@ -121,7 +121,7 @@ async function dbUpdate(fileId: string, updates: Record<string, any>) {
 async function dbListPublic(limit = 24, cursor?: string) {
   if (ddb) {
     let collected: Record<string, any>[] = [];
-    let currentCursor = cursor ? { fileId: { S: cursor } } : undefined;
+    let currentCursor: Record<string, any> | undefined = cursor ? { fileId: { S: cursor } } : undefined;
     
     while (collected.length < limit) {
       const res = await ddb.send(new ScanCommand({
