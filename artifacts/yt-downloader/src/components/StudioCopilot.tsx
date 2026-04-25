@@ -3,30 +3,40 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
   Download, Scissors, Sparkles, Captions, AlarmClock,
-  UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, Clock,
+  UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, Clock, History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const HISTORY_KEY = "copilot-chat-history-v1";
+const HISTORY_KEY = "copilot-sessions-v2";
 
-function loadHistory(): Message[] {
+type ChatSession = {
+  id: string;
+  title: string;
+  updatedAt: Date;
+  messages: Message[];
+};
+
+function loadSessions(): ChatSession[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as any[];
-    // Revive Date objects
-    return parsed.map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+    return parsed.map(s => ({
+      ...s,
+      updatedAt: new Date(s.updatedAt),
+      messages: s.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) }))
+    })).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   } catch {
     return [];
   }
 }
 
-function saveHistory(messages: Message[]) {
+function saveSessions(sessions: ChatSession[]) {
   try {
-    // Keep last 60 messages to avoid localStorage bloat
-    const toSave = messages.slice(-60);
+    // Keep last 30 sessions
+    const toSave = sessions.slice(0, 30);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(toSave));
-  } catch { /* storage full — ignore */ }
+  } catch { /* storage full */ }
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -342,7 +352,10 @@ function MessageBubble({
 
 // ── Main StudioCopilot component ──────────────────────────────────────────────
 export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => void }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [listening, setListening] = useState(false);
@@ -353,21 +366,60 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-  // Load history from localStorage on mount
+  // Load sessions on mount
   useEffect(() => {
-    const history = loadHistory();
-    if (history.length > 0) setMessages(history);
+    const loaded = loadSessions();
+    setSessions(loaded);
+    if (loaded.length > 0) {
+      setCurrentSessionId(loaded[0].id);
+    }
   }, []);
 
-  // Save history whenever messages change (but not during streaming)
+  const currentMessages = sessions.find(s => s.id === currentSessionId)?.messages ?? [];
+
+  // Save sessions to localStorage whenever they change
   useEffect(() => {
-    if (!streaming && messages.length > 0) {
-      saveHistory(messages);
+    if (!streaming && sessions.length > 0) {
+      saveSessions(sessions);
     }
-  }, [messages, streaming]);
+  }, [sessions, streaming]);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [currentMessages]);
+
+  const updateCurrentSession = useCallback((updater: (msgs: Message[]) => Message[]) => {
+    setSessions(prev => {
+      const activeId = currentSessionId ?? crypto.randomUUID();
+      const existing = prev.find(s => s.id === activeId);
+
+      const oldMsgs = existing?.messages ?? [];
+      const newMsgs = updater(oldMsgs);
+
+      // Extract title from first user message
+      let title = existing?.title ?? "New Chat";
+      if (!existing || existing.title === "New Chat") {
+        const firstUser = newMsgs.find(m => m.role === "user")?.parts[0];
+        if (firstUser?.kind === "text") {
+          title = firstUser.content.slice(0, 40) + (firstUser.content.length > 40 ? "..." : "");
+        }
+      }
+
+      const updatedSession: ChatSession = {
+        id: activeId,
+        title,
+        updatedAt: new Date(),
+        messages: newMsgs
+      };
+
+      if (!existing && !currentSessionId) {
+        setTimeout(() => setCurrentSessionId(activeId), 0);
+      }
+
+      const filtered = prev.filter(s => s.id !== activeId);
+      return [updatedSession, ...filtered];
+    });
+  }, [currentSessionId]);
 
   // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -393,11 +445,11 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMsg]);
+    updateCurrentSession(prev => [...prev, userMsg]);
     setStreaming(true);
 
     // Build conversation history for API
-    const history = [...messages, userMsg].map(m => ({
+    const history = [...currentMessages, userMsg].map(m => ({
       role: m.role === "assistant" ? "model" : "user",
       content: m.parts.filter(p => p.kind === "text").map(p => (p as any).content).join("\n"),
     }));
@@ -410,7 +462,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       parts: [],
       timestamp: new Date(),
     };
-    setMessages(prev => [...prev, assistantMsg]);
+    updateCurrentSession(prev => [...prev, assistantMsg]);
 
     abortRef.current = new AbortController();
 
@@ -431,7 +483,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       let buffer = "";
 
       const updateAssistant = (updater: (prev: Message) => Message) => {
-        setMessages(msgs => msgs.map(m => m.id === assistantId ? updater(m) : m));
+        updateCurrentSession(msgs => msgs.map(m => m.id === assistantId ? updater(m) : m));
       };
 
       while (true) {
@@ -519,7 +571,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
-        setMessages(msgs => msgs.map(m => m.id === assistantId
+        updateCurrentSession(msgs => msgs.map(m => m.id === assistantId
           ? { ...m, parts: [...m.parts, { kind: "text", content: "⚠️ Connection error. Please try again." }] }
           : m
         ));
@@ -527,7 +579,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     } finally {
       setStreaming(false);
     }
-  }, [messages, streaming, BASE, onNavigate]);
+  }, [currentMessages, streaming, BASE, onNavigate, updateCurrentSession, currentSessionId]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -575,19 +627,93 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     setListening(true);
   };
 
-  const isEmpty = messages.length === 0;
+  const isEmpty = currentMessages.length === 0;
   const speechSupported = !!(
     (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
   );
 
   const handleNewChat = () => {
     if (streaming) return;
-    setMessages([]);
-    try { localStorage.removeItem(HISTORY_KEY); } catch {}
+    setCurrentSessionId(null);
+    setShowHistory(false);
+  };
+
+  const deleteSession = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSessions(prev => prev.filter(s => s.id !== id));
+    if (currentSessionId === id) setCurrentSessionId(null);
   };
 
   return (
     <div className="copilot-wrap">
+      {/* ── Top Header Bar ── */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] bg-[#09090b]/80 shrink-0 z-10 sticky top-0 backdrop-blur-md">
+        <div className="flex items-center gap-2">
+          <Bot className="w-4 h-4 text-primary" />
+          <span className="text-sm font-semibold text-white/90">Copilot</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className={cn("p-2 rounded-lg transition-colors", showHistory ? "bg-white/10 text-white" : "text-white/40 hover:bg-white/5 hover:text-white/80")}
+            title="Chat History"
+          >
+            <History className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleNewChat}
+            disabled={streaming}
+            className="p-2 rounded-lg text-white/40 hover:bg-white/5 hover:text-white/80 transition-colors disabled:opacity-40"
+            title="New Chat"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* ── History Panel Overlay ── */}
+      <AnimatePresence>
+        {showHistory && (
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -20 }}
+            className="absolute inset-y-[45px] left-0 right-0 bg-[#09090b]/95 backdrop-blur-xl z-20 flex flex-col border-b border-white/[0.06]"
+          >
+            <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
+              <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Chat History</span>
+              <button onClick={() => setShowHistory(false)} className="text-white/40 hover:text-white"><X className="w-4 h-4"/></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-2 flex flex-col gap-1">
+              {sessions.length === 0 ? (
+                <div className="p-4 text-center text-white/30 text-xs">No previous chats</div>
+              ) : (
+                sessions.map(s => (
+                  <button
+                    key={s.id}
+                    onClick={() => { setCurrentSessionId(s.id); setShowHistory(false); }}
+                    className={cn(
+                      "flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-sm transition-colors group",
+                      currentSessionId === s.id ? "bg-white/10 text-white" : "text-white/60 hover:bg-white/5"
+                    )}
+                  >
+                    <div className="flex flex-col min-w-0">
+                      <span className="font-medium truncate pr-4">{s.title}</span>
+                      <span className="text-[10px] text-white/30 mt-0.5">{s.updatedAt.toLocaleDateString()} {s.updatedAt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                    </div>
+                    <div
+                      onClick={(e) => deleteSession(s.id, e)}
+                      className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/20 hover:text-red-400 transition-all"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ── Empty state / Welcome ── */}
       {isEmpty && (
@@ -619,23 +745,8 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       {/* ── Messages ── */}
       {!isEmpty && (
         <div className="copilot-messages">
-          {/* Chat header with New Chat button */}
-          <div className="flex items-center justify-between pb-2 border-b border-white/6 mb-2">
-            <div className="flex items-center gap-1.5 text-white/30 text-[10px]">
-              <Clock className="w-3 h-3" />
-              <span>Chat history saved</span>
-            </div>
-            <button
-              onClick={handleNewChat}
-              disabled={streaming}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/8 text-white/40 hover:text-white/70 text-[11px] font-medium transition-all disabled:opacity-40"
-            >
-              <Trash2 className="w-3 h-3" />
-              New Chat
-            </button>
-          </div>
           <AnimatePresence initial={false}>
-            {messages.map(msg => (
+            {currentMessages.map(msg => (
               <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} />
             ))}
           </AnimatePresence>
