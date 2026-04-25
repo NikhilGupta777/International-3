@@ -291,13 +291,21 @@ async function executeTool(
   res: any,
 ): Promise<{ result: any; artifact?: object }> {
   const apiBase = getApiBase(req);
-  const cookieHeader = req.headers.cookie ?? "";
   const INTERNAL_SECRET = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
-  const internalHeaders = {
+
+  const internalHeaders: Record<string, string> = {
     "Content-Type": "application/json",
-    Cookie: cookieHeader,
+    Cookie: req.headers.cookie ?? "",
     "x-internal-agent": INTERNAL_SECRET,
   };
+
+  // Forward client identity so jobs created by the agent appear in the user's Activity panel
+  if (req.headers["x-forwarded-for"]) internalHeaders["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
+  else if (req.ip) internalHeaders["x-forwarded-for"] = req.ip;
+
+  if (req.headers["x-notify-client"]) internalHeaders["x-notify-client"] = String(req.headers["x-notify-client"]);
+  if (req.headers["x-client-id"]) internalHeaders["x-client-id"] = String(req.headers["x-client-id"]);
+  if (req.headers["x-device-id"]) internalHeaders["x-device-id"] = String(req.headers["x-device-id"]);
 
   switch (name) {
 
@@ -540,7 +548,7 @@ router.post("/agent/chat", async (req, res) => {
     while (continueLoop && iterations < MAX_ITERATIONS) {
       iterations++;
 
-      const response = await ai.models.generateContent({
+      const stream = await ai.models.generateContentStream({
         model: AGENT_MODEL,
         contents: loopContents,
         config: {
@@ -556,23 +564,43 @@ router.post("/agent/chat", async (req, res) => {
         }
       });
 
-      const candidate = response.candidates?.[0];
-      if (!candidate) {
-        sseEvent(res, { type: "text", content: "I wasn't able to process that. Please try again." });
-        break;
+      const allParts: any[] = [];
+      let hasToolCall = false;
+
+      for await (const chunk of stream) {
+        const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+        for (const p of parts) {
+          if (p.text) {
+            sseEvent(res, { type: "text", content: p.text });
+          }
+          if (p.functionCall) {
+            hasToolCall = true;
+          }
+          allParts.push(p);
+        }
       }
 
-      const parts = candidate.content?.parts ?? [];
-      let hasToolCall = false;
+      // Reconstruct final parts array, grouping text to avoid API errors
+      const finalParts: any[] = [];
+      let currentText = "";
+      for (const p of allParts) {
+        if (p.text) currentText += p.text;
+        else if (p.functionCall) {
+          if (currentText) {
+            finalParts.push({ text: currentText });
+            currentText = "";
+          }
+          finalParts.push(p);
+        }
+      }
+      if (currentText) {
+        finalParts.push({ text: currentText });
+      }
+
       const toolResults: any[] = [];
 
-      for (const part of parts) {
-        if (part.text) {
-          sseEvent(res, { type: "text", content: part.text });
-        }
-
+      for (const part of finalParts) {
         if (part.functionCall) {
-          hasToolCall = true;
           const { name, args } = part.functionCall;
           const toolArgs = (args ?? {}) as Record<string, any>;
 
@@ -613,7 +641,7 @@ router.post("/agent/chat", async (req, res) => {
       if (hasToolCall) {
         loopContents = [
           ...loopContents,
-          { role: "model" as const, parts },
+          { role: "model" as const, parts: finalParts },
           { role: "user" as const, parts: toolResults },
         ];
       } else {
