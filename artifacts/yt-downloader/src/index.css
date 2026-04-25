@@ -318,7 +318,11 @@
   text-overflow: ellipsis;
 }
 
+/* Desktop rail: show on hover */
 .studio-nav-rail:hover .nav-item-label { opacity: 1; }
+
+/* Mobile drawer: always show labels */
+.studio-drawer .nav-item-label { opacity: 1; }
 
 .nav-badge {
   font-size: 8px;
@@ -333,6 +337,8 @@
   flex-shrink: 0;
 }
 .studio-nav-rail:hover .nav-badge { opacity: 1; }
+/* Mobile drawer: always show badges */
+.studio-drawer .nav-badge { opacity: 1; }
 
 /* Topbar logo section */
 .studio-logo {
