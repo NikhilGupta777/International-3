@@ -511,10 +511,19 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             }
 
             else if (evt.type === "tool_start") {
-              updateAssistant(m => ({
-                ...m,
-                parts: [...m.parts, { kind: "tool_start", name: evt.name, args: evt.args, done: false }],
-              }));
+              updateAssistant(m => {
+                const existing = m.parts.find(p => p.kind === "tool_start" && p.name === evt.name && !p.done);
+                if (existing) {
+                  return {
+                    ...m,
+                    parts: m.parts.map(p => p === existing ? { ...p, args: evt.args } : p)
+                  };
+                }
+                return {
+                  ...m,
+                  parts: [...m.parts, { kind: "tool_start", name: evt.name, args: evt.args, done: false }],
+                };
+              });
             }
 
             else if (evt.type === "tool_progress") {

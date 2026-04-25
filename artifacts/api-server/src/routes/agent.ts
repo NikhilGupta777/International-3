@@ -576,7 +576,6 @@ router.post("/agent/chat", async (req, res) => {
 
       const allParts: any[] = [];
       let hasToolCall = false;
-      const seenToolCalls = new Set<string>();
 
       for await (const chunk of stream) {
         if (!isClientConnected) break;
@@ -589,14 +588,10 @@ router.post("/agent/chat", async (req, res) => {
             hasToolCall = true;
             const { name, args } = p.functionCall;
             const toolArgs = (args ?? {}) as Record<string, any>;
-            const toolKey = `${name}-${JSON.stringify(toolArgs)}`;
             
-            if (!seenToolCalls.has(toolKey)) {
-              seenToolCalls.add(toolKey);
-              sseEvent(res, { type: "tool_start", name, args: toolArgs });
-              if (name === "navigate_to_tab") {
-                sseEvent(res, { type: "navigate", tab: toolArgs.tab });
-              }
+            sseEvent(res, { type: "tool_start", name, args: toolArgs });
+            if (name === "navigate_to_tab") {
+              sseEvent(res, { type: "navigate", tab: toolArgs.tab });
             }
           }
           allParts.push(p);
