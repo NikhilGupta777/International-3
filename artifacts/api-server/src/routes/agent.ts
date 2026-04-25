@@ -1,13 +1,9 @@
 /**
- * AI Studio Copilot Agent Route
+ * AI Studio Copilot Agent Route — Full Agentic Execution
  * POST /api/agent/chat
  *
- * Accepts a conversation and streams SSE back with:
- *  - text tokens (real-time)
- *  - tool_start / tool_done cards (transparent tool use)
- *  - navigate directives (switch frontend tab)
- *  - artifact cards (download links, previews)
- *  - done sentinel
+ * Each tool call WAITS for job completion and returns real download links.
+ * SSE events: text | tool_start | tool_progress | tool_done | artifact | navigate | error | done
  */
 
 import { Router } from "express";
@@ -17,54 +13,159 @@ const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
 const AGENT_MODEL = "gemini-2.0-flash";
+// Max time to wait for a job to complete (8 min)
+const JOB_TIMEOUT_MS = 8 * 60 * 1000;
+const POLL_INTERVAL_MS = 2500;
 
-// ── SSE helpers ──────────────────────────────────────────────────────────────
+// ── Resolve base URL for internal API calls ───────────────────────────────────
+function getApiBase(req: any): string {
+  // Use env override first (for Lambda / container environments)
+  if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
+  const proto = req.headers["x-forwarded-proto"] ?? "http";
+  const host  = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
+  return `${proto}://${host}/api`;
+}
+
+// ── SSE helper ────────────────────────────────────────────────────────────────
 function sseEvent(res: any, payload: object) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
-// ── Tool definitions for Gemini function calling ─────────────────────────────
+// ── Job poller: wait for a download/clip job to finish ───────────────────────
+async function pollJobUntilDone(
+  res: any,
+  toolName: string,
+  progressUrl: string,
+  jobId: string,
+): Promise<{ status: string; filename?: string; filesize?: number; s3Key?: string }> {
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const r = await fetch(progressUrl);
+    if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
+    const data = await r.json() as any;
+
+    const { status, percent, message, filename, filesize } = data;
+
+    // Stream progress back
+    sseEvent(res, {
+      type: "tool_progress",
+      name: toolName,
+      status,
+      percent: percent ?? null,
+      message: message ?? status,
+      jobId,
+    });
+
+    if (status === "done") return { status, filename, filesize };
+    if (["error", "cancelled", "expired", "not_found"].includes(status)) {
+      throw new Error(`Job ${status}: ${message ?? ""}`);
+    }
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+  }
+
+  throw new Error("Job timed out after 8 minutes");
+}
+
+// ── Subtitle job poller ───────────────────────────────────────────────────────
+async function pollSubtitleUntilDone(
+  res: any,
+  statusUrl: string,
+  jobId: string,
+): Promise<{ status: string; srtFilename?: string; vttFilename?: string }> {
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const r = await fetch(statusUrl);
+    if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
+    const data = await r.json() as any;
+
+    const { status, progressPct, message, srtFilename, vttFilename } = data;
+
+    sseEvent(res, {
+      type: "tool_progress",
+      name: "generate_subtitles",
+      status,
+      percent: progressPct ?? null,
+      message: message ?? status,
+      jobId,
+    });
+
+    if (status === "done") return { status, srtFilename, vttFilename };
+    if (["error", "cancelled"].includes(status)) {
+      throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
+    }
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+  }
+
+  throw new Error("Subtitle job timed out after 8 minutes");
+}
+
+// ── Parse timestamps like "5:32" or "1:22:10" into seconds ───────────────────
+function parseTimestamp(ts: string): number {
+  const parts = ts.trim().split(":").map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0];
+}
+
+// ── Tool definitions ──────────────────────────────────────────────────────────
 const STUDIO_TOOLS = [
   {
     name: "get_video_info",
-    description: "Fetch metadata about a YouTube video: title, duration, uploader, view count. Use this first before cutting or downloading.",
+    description: "Fetch metadata about a YouTube video (title, duration, uploader, view count). Always call this first if you don't already have the title.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-      },
-      required: ["url"],
-    },
-  },
-  {
-    name: "download_video",
-    description: "Start a full video or audio download from a YouTube URL. Returns a jobId to track progress.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        url: { type: Type.STRING, description: "YouTube video URL" },
-        quality: { type: Type.STRING, description: "Quality like '1080p', '720p', '360p', 'audio_only'. Defaults to best." },
       },
       required: ["url"],
     },
   },
   {
     name: "cut_video_clip",
-    description: "Cut an exact time range from a YouTube video and return a downloadable clip. startTime and endTime in HH:MM:SS or MM:SS format.",
+    description: "Cut an exact time range from a YouTube video and deliver a download link. Provide startTime and endTime as 'MM:SS' or 'HH:MM:SS'. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url:       { type: Type.STRING, description: "YouTube video URL" },
-        startTime: { type: Type.STRING, description: "Clip start time, e.g. '5:32' or '01:22:10'" },
-        endTime:   { type: Type.STRING, description: "Clip end time, e.g. '6:23' or '01:25:00'" },
-        quality:   { type: Type.STRING, description: "Output quality, e.g. '720p' or '360p'. Default: 720p." },
+        startTime: { type: Type.STRING, description: "Start time e.g. '5:32' or '01:22:10'" },
+        endTime:   { type: Type.STRING, description: "End time e.g. '6:23' or '01:25:00'" },
+        quality:   { type: Type.STRING, description: "Output quality: '1080p', '720p', '480p', '360p'. Default: 720p." },
       },
       required: ["url", "startTime", "endTime"],
     },
   },
   {
+    name: "download_video",
+    description: "Download a full YouTube video and deliver a download link. WAITS for completion and returns a download link.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url:     { type: Type.STRING, description: "YouTube video URL" },
+        quality: { type: Type.STRING, description: "Quality: '1080p', '720p', '480p', '360p', 'audio_only'. Default: best video." },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "generate_subtitles",
+    description: "Generate SRT subtitle file from a YouTube video, optionally translated. WAITS for completion and returns a download link.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url:         { type: Type.STRING, description: "YouTube video URL" },
+        language:    { type: Type.STRING, description: "Source language code, e.g. 'hi' for Hindi. Default: auto-detect." },
+        translateTo: { type: Type.STRING, description: "Target translation language code, e.g. 'en'. Optional." },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "find_best_clips",
-    description: "Use AI to find the most valuable/engaging segments from a long YouTube video.",
+    description: "Use AI to find the most valuable segments from a long YouTube video. Starts the analysis job.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -76,21 +177,8 @@ const STUDIO_TOOLS = [
     },
   },
   {
-    name: "generate_subtitles",
-    description: "Generate SRT subtitle file from a YouTube video. Can optionally translate to another language.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        url:        { type: Type.STRING, description: "YouTube video URL" },
-        language:   { type: Type.STRING, description: "Source language code, e.g. 'hi' for Hindi. Default: auto-detect." },
-        translateTo: { type: Type.STRING, description: "Target translation language, e.g. 'en' for English. Optional." },
-      },
-      required: ["url"],
-    },
-  },
-  {
     name: "generate_timestamps",
-    description: "Generate YouTube chapter timestamps from a video transcript using AI.",
+    description: "Generate YouTube chapter timestamps from a video using AI. Returns the timestamps text directly.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -112,7 +200,7 @@ const STUDIO_TOOLS = [
   },
   {
     name: "navigate_to_tab",
-    description: "Switch the studio UI to a specific tab. Use when user asks to 'go to', 'open', or 'show' a tool.",
+    description: "Switch the studio UI to a specific tool tab. Use when user asks to open a specific tab.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -126,128 +214,222 @@ const STUDIO_TOOLS = [
   },
 ];
 
-const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot — a powerful AI agent that can perform any task in the VideoMaking Studio platform on behalf of the user.
+const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot — a powerful AI agent embedded inside VideoMaking Studio.
 
-You have access to these tools:
-- get_video_info: Fetch video metadata (title, duration, uploader)
-- download_video: Download full YouTube videos
-- cut_video_clip: Cut a specific time range from a video
-- find_best_clips: AI-powered best-segment detection for long videos
-- generate_subtitles: Create SRT subtitle files, optionally translated
-- generate_timestamps: Generate chapter timestamps for YouTube
-- list_shared_files: Browse the public file gallery
-- navigate_to_tab: Switch to any studio tool tab
+You have access to studio tools that actually execute and wait for completion — not just start jobs.
+When you call cut_video_clip, download_video, or generate_subtitles, the tool WAITS for the job to finish and gives you a real download URL.
+Always tell the user what you're doing and present the download link when done.
 
-Guidelines:
-- Always be transparent about which tools you're using and why.
-- If the user gives you a YouTube URL with a task, parse the timestamps correctly (e.g. "5:32 to 6:23" = startTime "5:32", endTime "6:23").
-- After completing a task, summarize what was done and offer next steps.
-- Be concise and action-oriented. This is a production tool, not a chatbot.
-- If a task takes time (download, render), explain that it starts in the background.
-- For devotional/Bhagwat content, be respectful and helpful.`;
+**Rules:**
+1. For cut/download/subtitle tasks: call the tool, it will complete end-to-end, then present the download link as a clickable URL.
+2. Always parse timestamps correctly: "5:32 to 6:23" means startTime="5:32", endTime="6:23".
+3. If user gives a YouTube URL with a task, extract the URL and immediately execute it.
+4. After completing a task, summarize what was done, present the download link clearly, and offer related next steps.
+5. Be concise, action-oriented, and use professional language.
+6. For devotional/Bhagwat content, be respectful.
+7. If a task will take a while (large video), let the user know it may take a few minutes.
 
-// ── Tool executor: maps Gemini tool calls → real API calls ───────────────────
-const BASE_URL = process.env.INTERNAL_API_BASE ?? "http://localhost:3000";
+**Download link format:** Always present download links as: "✅ Done! [Download your file](/api/youtube/file/JOBID)"`;
 
-async function executeTool(name: string, args: Record<string, any>, req: any): Promise<{ result: any; artifact?: object }> {
-  const apiBase = `${BASE_URL}/api`;
+// ── Tool executor ─────────────────────────────────────────────────────────────
+async function executeTool(
+  name: string,
+  args: Record<string, any>,
+  req: any,
+  res: any,
+): Promise<{ result: any; artifact?: object }> {
+  const apiBase = getApiBase(req);
+  const cookieHeader = req.headers.cookie ?? "";
 
   switch (name) {
+
     case "get_video_info": {
+      sseEvent(res, { type: "tool_progress", name, message: "Fetching video metadata..." });
       const r = await fetch(`${apiBase}/youtube/info`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Cookie": req.headers.cookie ?? "" },
+        headers: { "Content-Type": "application/json", Cookie: cookieHeader },
         body: JSON.stringify({ url: args.url }),
       });
       const data = await r.json().catch(() => ({ error: "Failed to fetch info" }));
       return { result: data };
     }
 
+    case "cut_video_clip": {
+      const startSecs = parseTimestamp(String(args.startTime));
+      const endSecs   = parseTimestamp(String(args.endTime));
+      const quality   = args.quality ?? "720p";
+
+      sseEvent(res, { type: "tool_progress", name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
+
+      const r = await fetch(`${apiBase}/youtube/clip-cut`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookieHeader },
+        body: JSON.stringify({ url: args.url, startTime: startSecs, endTime: endSecs, quality }),
+      });
+
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({})) as any;
+        throw new Error(err.error ?? `Clip cut failed: ${r.status}`);
+      }
+
+      const { jobId } = await r.json() as any;
+
+      // Poll until done
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId);
+
+      const downloadUrl = `/api/youtube/file/${jobId}`;
+      return {
+        result: { jobId, downloadUrl, startTime: args.startTime, endTime: args.endTime },
+        artifact: {
+          artifactType: "download",
+          label: `Clip ready: ${args.startTime} → ${args.endTime}`,
+          downloadUrl,
+          jobId,
+        },
+      };
+    }
+
     case "download_video": {
+      const quality = args.quality ?? "best";
+
+      sseEvent(res, { type: "tool_progress", name, message: `Starting download (${quality})...` });
+
+      // Get info first to pick best format
+      let formatId = quality === "audio_only" ? "audio:bestaudio" : "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
+      if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]";
+      if (quality === "720p")  formatId = "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]";
+      if (quality === "480p")  formatId = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]";
+      if (quality === "360p")  formatId = "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]";
+
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Cookie": req.headers.cookie ?? "" },
-        body: JSON.stringify({ url: args.url, formatId: args.quality ?? "best" }),
+        headers: { "Content-Type": "application/json", Cookie: cookieHeader },
+        body: JSON.stringify({ url: args.url, formatId }),
       });
-      const data = await r.json().catch(() => ({ error: "Download failed" }));
-      const artifact = data.jobId
-        ? { artifactType: "job_link", label: `Download started (Job: ${data.jobId})`, tab: "download" }
-        : undefined;
-      return { result: data, artifact };
-    }
 
-    case "cut_video_clip": {
-      const r = await fetch(`${apiBase}/youtube/clip`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Cookie": req.headers.cookie ?? "" },
-        body: JSON.stringify({
-          url: args.url,
-          startTime: args.startTime,
-          endTime: args.endTime,
-          quality: args.quality ?? "720p",
-        }),
-      });
-      const data = await r.json().catch(() => ({ error: "Clip failed" }));
-      const artifact = data.jobId
-        ? { artifactType: "job_link", label: `Clip job started (${args.startTime} → ${args.endTime})`, tab: "clipcutter", jobId: data.jobId }
-        : undefined;
-      return { result: data, artifact };
-    }
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({})) as any;
+        throw new Error(err.error ?? `Download failed: ${r.status}`);
+      }
 
-    case "find_best_clips": {
-      const r = await fetch(`${apiBase}/youtube/best-clips`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Cookie": req.headers.cookie ?? "" },
-        body: JSON.stringify({
-          url: args.url,
-          durationMode: args.durationMode ?? "auto",
-          instructions: args.instructions,
-        }),
-      });
-      const data = await r.json().catch(() => ({ error: "Best clips failed" }));
-      const artifact = data.id
-        ? { artifactType: "job_link", label: "Best Clips analysis started", tab: "clips" }
-        : undefined;
-      return { result: data, artifact };
+      const { jobId } = await r.json() as any;
+
+      // Poll until done
+      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId);
+      const downloadUrl = `/api/youtube/file/${jobId}`;
+
+      return {
+        result: { jobId, downloadUrl, filename: final.filename },
+        artifact: {
+          artifactType: "download",
+          label: `Video ready: ${final.filename ?? "video.mp4"}`,
+          downloadUrl,
+          jobId,
+        },
+      };
     }
 
     case "generate_subtitles": {
-      const r = await fetch(`${apiBase}/subtitles/start`, {
+      sseEvent(res, { type: "tool_progress", name, message: "Starting subtitle generation..." });
+
+      const r = await fetch(`${apiBase}/subtitles/generate`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Cookie": req.headers.cookie ?? "" },
+        headers: { "Content-Type": "application/json", Cookie: cookieHeader },
         body: JSON.stringify({
           url: args.url,
           language: args.language ?? "auto",
-          translateTo: args.translateTo,
+          translateTo: args.translateTo ?? null,
+          source: "url",
         }),
       });
-      const data = await r.json().catch(() => ({ error: "Subtitle gen failed" }));
-      const artifact = data.id
-        ? { artifactType: "job_link", label: "Subtitle generation started", tab: "subtitles" }
-        : undefined;
-      return { result: data, artifact };
+
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({})) as any;
+        throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
+      }
+
+      const { id: jobId } = await r.json() as any;
+
+      // Poll until done
+      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${jobId}`, jobId);
+      const srtUrl = `/api/subtitles/status/${jobId}/download?format=srt`;
+
+      return {
+        result: { jobId, srtFilename: final.srtFilename },
+        artifact: {
+          artifactType: "download",
+          label: `Subtitles ready${args.translateTo ? ` (${args.translateTo})` : ""}: ${final.srtFilename ?? "subtitles.srt"}`,
+          downloadUrl: srtUrl,
+          jobId,
+        },
+      };
+    }
+
+    case "find_best_clips": {
+      sseEvent(res, { type: "tool_progress", name, message: "Starting best clips analysis..." });
+
+      const r = await fetch(`${apiBase}/youtube/clips`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Cookie: cookieHeader },
+        body: JSON.stringify({
+          url: args.url,
+          durationMode: args.durationMode ?? "auto",
+          instructions: args.instructions ?? "",
+        }),
+      });
+
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({})) as any;
+        throw new Error(err.error ?? `Best clips job failed: ${r.status}`);
+      }
+
+      const { jobId } = await r.json() as any;
+
+      return {
+        result: { jobId, message: "Best clips analysis started. Check the Best Clips tab for results." },
+        artifact: {
+          artifactType: "tab_link",
+          label: "Best Clips analysis started — open tab to see results",
+          tab: "clips",
+          jobId,
+        },
+      };
     }
 
     case "generate_timestamps": {
+      sseEvent(res, { type: "tool_progress", name, message: "Generating timestamps..." });
+
       const r = await fetch(`${apiBase}/timestamps`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Cookie": req.headers.cookie ?? "" },
+        headers: { "Content-Type": "application/json", Cookie: cookieHeader },
         body: JSON.stringify({ url: args.url }),
       });
-      const data = await r.json().catch(() => ({ error: "Timestamp gen failed" }));
-      return { result: data };
+
+      const data = await r.json().catch(() => ({ error: "Timestamp generation failed" })) as any;
+
+      if (!r.ok) throw new Error(data.error ?? `Timestamps failed: ${r.status}`);
+
+      return {
+        result: data,
+        artifact: data.timestamps ? {
+          artifactType: "text",
+          label: "Timestamps generated",
+          content: typeof data.timestamps === "string" ? data.timestamps : JSON.stringify(data.timestamps, null, 2),
+        } : undefined,
+      };
     }
 
     case "list_shared_files": {
       const limit = args.limit ?? 12;
       const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, {
-        headers: { "Cookie": req.headers.cookie ?? "" },
+        headers: { Cookie: cookieHeader },
       });
       const data = await r.json().catch(() => ({ items: [] }));
       return { result: data };
     }
 
     case "navigate_to_tab": {
+      // Handled in the loop — just return ok
       return { result: { navigated: true, tab: args.tab } };
     }
 
@@ -256,10 +438,10 @@ async function executeTool(name: string, args: Record<string, any>, req: any): P
   }
 }
 
-// ── POST /api/agent/chat ─────────────────────────────────────────────────────
+// ── POST /api/agent/chat ──────────────────────────────────────────────────────
 router.post("/agent/chat", async (req, res) => {
   if (!GEMINI_API_KEY) {
-    res.status(503).json({ error: "AI Copilot is not configured. Add GEMINI_API_KEY to environment." });
+    res.status(503).json({ error: "AI Copilot not configured — add GEMINI_API_KEY to environment." });
     return;
   }
 
@@ -272,7 +454,7 @@ router.post("/agent/chat", async (req, res) => {
     return;
   }
 
-  // SSE setup
+  // Setup SSE
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -282,7 +464,6 @@ router.post("/agent/chat", async (req, res) => {
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-    // Convert our messages to Gemini format
     const geminiContents = messages.map((m) => ({
       role: m.role,
       parts: [{ text: m.content }],
@@ -290,9 +471,12 @@ router.post("/agent/chat", async (req, res) => {
 
     let continueLoop = true;
     let loopContents = [...geminiContents];
+    let iterations = 0;
+    const MAX_ITERATIONS = 6;
 
-    // Agentic loop: keep going until no more tool calls
-    while (continueLoop) {
+    while (continueLoop && iterations < MAX_ITERATIONS) {
+      iterations++;
+
       const response = await ai.models.generateContent({
         model: AGENT_MODEL,
         systemInstruction: SYSTEM_PROMPT,
@@ -302,7 +486,7 @@ router.post("/agent/chat", async (req, res) => {
 
       const candidate = response.candidates?.[0];
       if (!candidate) {
-        sseEvent(res, { type: "text", content: "I wasn't able to process that request. Please try again." });
+        sseEvent(res, { type: "text", content: "I wasn't able to process that. Please try again." });
         break;
       }
 
@@ -311,54 +495,56 @@ router.post("/agent/chat", async (req, res) => {
       const toolResults: any[] = [];
 
       for (const part of parts) {
-        // Text token
         if (part.text) {
           sseEvent(res, { type: "text", content: part.text });
         }
 
-        // Tool call
         if (part.functionCall) {
           hasToolCall = true;
           const { name, args } = part.functionCall;
           const toolArgs = (args ?? {}) as Record<string, any>;
 
-          // Emit tool_start
           sseEvent(res, { type: "tool_start", name, args: toolArgs });
 
-          // Special case: navigate doesn't need an API call
+          // Navigate directive (frontend handles immediately)
           if (name === "navigate_to_tab") {
             sseEvent(res, { type: "navigate", tab: toolArgs.tab });
           }
 
-          // Execute tool
-          const { result, artifact } = await executeTool(name!, toolArgs, req);
+          let toolResult: any;
+          let toolArtifact: object | undefined;
 
-          // Emit tool_done
-          sseEvent(res, { type: "tool_done", name, result });
+          try {
+            const { result, artifact } = await executeTool(name!, toolArgs, req, res);
+            toolResult = result;
+            toolArtifact = artifact;
+          } catch (toolErr: any) {
+            toolResult = { error: toolErr?.message ?? "Tool execution failed" };
+            sseEvent(res, { type: "tool_progress", name, status: "error", message: toolErr?.message ?? "Failed" });
+          }
 
-          // Emit artifact if present
-          if (artifact) {
-            sseEvent(res, { type: "artifact", ...artifact });
+          sseEvent(res, { type: "tool_done", name, result: toolResult });
+
+          if (toolArtifact) {
+            sseEvent(res, { type: "artifact", ...toolArtifact });
           }
 
           toolResults.push({
             functionResponse: {
               name,
-              response: { result },
+              response: { result: toolResult },
             },
           });
         }
       }
 
       if (hasToolCall) {
-        // Add model response + tool results back to context for next loop
         loopContents = [
           ...loopContents,
           { role: "model" as const, parts },
           { role: "user" as const, parts: toolResults },
         ];
       } else {
-        // No more tool calls — done
         continueLoop = false;
       }
     }
@@ -366,7 +552,7 @@ router.post("/agent/chat", async (req, res) => {
     sseEvent(res, { type: "done" });
     res.end();
   } catch (err: any) {
-    sseEvent(res, { type: "error", message: err?.message ?? "Unknown error in copilot" });
+    sseEvent(res, { type: "error", message: err?.message ?? "Unknown copilot error" });
     res.end();
   }
 });

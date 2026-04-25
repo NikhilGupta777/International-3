@@ -12,16 +12,17 @@ import { Button } from "@/components/ui/button";
 type SseEvent =
   | { type: "text"; content: string }
   | { type: "tool_start"; name: string; args: Record<string, any> }
+  | { type: "tool_progress"; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
   | { type: "tool_done"; name: string; result: any }
   | { type: "navigate"; tab: string }
-  | { type: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string }
+  | { type: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string }
   | { type: "error"; message: string }
   | { type: "done" };
 
 type MessagePart =
   | { kind: "text"; content: string }
-  | { kind: "tool_start"; name: string; args: Record<string, any>; done?: boolean; result?: any }
-  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string };
+  | { kind: "tool_start"; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
+  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string };
 
 type Message = {
   id: string;
@@ -66,19 +67,21 @@ const STARTERS = [
 // ── ToolCard sub-component ────────────────────────────────────────────────────
 function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
-  const [expanded, setExpanded] = useState(false);
 
   const argStr = Object.entries(part.args)
     .filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `${k}: ${String(v).length > 60 ? String(v).slice(0, 57) + "…" : v}`)
     .join(" · ");
 
+  const pct = part.progress;
+  const hasProgress = pct !== null && pct !== undefined;
+
   return (
     <div className={cn(
-      "rounded-xl border px-3 py-2 text-xs flex flex-col gap-1.5 transition-all",
+      "rounded-xl border px-3 py-2 text-xs flex flex-col gap-2 transition-all",
       part.done
         ? "border-white/10 bg-white/[0.03]"
-        : "border-white/15 bg-white/[0.06] animate-pulse-subtle"
+        : "border-white/15 bg-white/[0.06]"
     )}>
       <div className="flex items-center gap-2">
         <span className={cn("shrink-0", meta.color)}>{meta.icon}</span>
@@ -88,23 +91,34 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
           : <Loader2 className="w-3.5 h-3.5 text-white/40 ml-auto shrink-0 animate-spin" />
         }
       </div>
+
       {argStr && (
         <span className="text-white/40 font-mono text-[10px] leading-relaxed truncate">
           {argStr}
         </span>
       )}
-      {part.done && part.result && (
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className="text-white/30 hover:text-white/60 text-[10px] text-left transition-colors"
-        >
-          {expanded ? "▲ hide result" : "▼ show result"}
-        </button>
+
+      {/* Live progress bar */}
+      {!part.done && hasProgress && (
+        <div className="flex flex-col gap-1">
+          <div className="h-1 rounded-full bg-white/10 overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{
+                width: `${Math.max(2, pct!)}%`,
+                background: "linear-gradient(90deg, #dc2626, #ef4444)",
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-white/40 text-[10px]">{part.progressMsg ?? "Processing..."}</span>
+            <span className="text-white/50 text-[10px] font-mono">{pct}%</span>
+          </div>
+        </div>
       )}
-      {expanded && part.result && (
-        <pre className="text-[10px] text-white/40 font-mono bg-black/30 rounded-lg p-2 overflow-x-auto max-h-28 whitespace-pre-wrap break-all">
-          {JSON.stringify(part.result, null, 2)}
-        </pre>
+
+      {!part.done && !hasProgress && part.progressMsg && (
+        <span className="text-white/40 text-[10px]">{part.progressMsg}</span>
       )}
     </div>
   );
@@ -118,6 +132,72 @@ function ArtifactCard({
   part: MessagePart & { kind: "artifact" };
   onNavigate?: (tab: string) => void;
 }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyText = () => {
+    if (!part.content) return;
+    void navigator.clipboard.writeText(part.content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Download artifact — real file link
+  if (part.artifactType === "download" && part.downloadUrl) {
+    return (
+      <div className="rounded-2xl border border-green-500/25 bg-green-500/8 overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3">
+          <div className="p-2 rounded-xl bg-green-500/15 shrink-0">
+            <CheckCircle className="w-5 h-5 text-green-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-green-300">✅ Ready to download</p>
+            <p className="text-xs text-white/50 truncate mt-0.5">{part.label}</p>
+          </div>
+        </div>
+        <div className="px-4 pb-3 flex gap-2">
+          <a
+            href={part.downloadUrl}
+            download
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm text-white transition-all"
+            style={{ background: "linear-gradient(135deg, #16a34a, #15803d)", boxShadow: "0 4px 16px rgba(22,163,74,0.35)" }}
+          >
+            <Download className="w-4 h-4" />
+            Download File
+          </a>
+          {part.tab && onNavigate && (
+            <button
+              onClick={() => onNavigate(part.tab!)}
+              className="px-3 py-2.5 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-xs font-medium transition-colors"
+            >
+              Open Tab
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Text artifact (timestamps, etc.)
+  if (part.artifactType === "text" && part.content) {
+    return (
+      <div className="rounded-xl border border-white/12 bg-white/[0.04] overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-white/8">
+          <span className="text-xs font-semibold text-white/70">{part.label}</span>
+          <button
+            onClick={copyText}
+            className="text-[10px] text-white/40 hover:text-white/80 transition-colors px-2 py-0.5 rounded bg-white/6"
+          >
+            {copied ? "✓ Copied" : "Copy"}
+          </button>
+        </div>
+        <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-48 whitespace-pre-wrap">
+          {part.content}
+        </pre>
+      </div>
+    );
+  }
+
+  // Tab link artifact
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/8 px-3 py-2.5 flex items-center gap-3">
       <div className="p-1.5 rounded-lg bg-primary/15">
@@ -324,12 +404,23 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
               }));
             }
 
+            else if (evt.type === "tool_progress") {
+              updateAssistant(m => ({
+                ...m,
+                parts: m.parts.map(p =>
+                  p.kind === "tool_start" && p.name === evt.name && !p.done
+                    ? { ...p, progress: evt.percent ?? null, progressMsg: evt.message ?? evt.status }
+                    : p
+                ),
+              }));
+            }
+
             else if (evt.type === "tool_done") {
               updateAssistant(m => ({
                 ...m,
                 parts: m.parts.map(p =>
                   p.kind === "tool_start" && p.name === evt.name && !p.done
-                    ? { ...p, done: true, result: evt.result }
+                    ? { ...p, done: true, result: evt.result, progress: 100 }
                     : p
                 ),
               }));
@@ -340,14 +431,17 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             }
 
             else if (evt.type === "artifact") {
+              const e = evt as any;
               updateAssistant(m => ({
                 ...m,
                 parts: [...m.parts, {
                   kind: "artifact",
-                  artifactType: (evt as any).artifactType,
-                  label: (evt as any).label,
-                  tab: (evt as any).tab,
-                  jobId: (evt as any).jobId,
+                  artifactType: e.artifactType,
+                  label: e.label,
+                  tab: e.tab,
+                  jobId: e.jobId,
+                  downloadUrl: e.downloadUrl,
+                  content: e.content,
                 }],
               }));
             }
