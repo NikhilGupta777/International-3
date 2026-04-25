@@ -2,6 +2,7 @@ import type { Request } from "express";
 import serverless from "serverless-http";
 import app from "./app";
 import { runTimestampWorker, type TimestampWorkerEvent } from "./routes/timestamps";
+import { runSubtitleWorker, type SubtitleWorkerEvent } from "./routes/subtitles";
 
 type WorkerEvent = {
   source?: string;
@@ -12,6 +13,9 @@ type WorkerEvent = {
   videoTitle?: string;
   videoDuration?: number;
   instructions?: string;
+  language?: string;
+  translateTo?: string;
+  notifyClientKey?: string | null;
 };
 
 const httpHandler = serverless(app, {
@@ -62,6 +66,21 @@ export const handler = async (event: WorkerEvent, context: unknown) => {
       transcript: event.transcript,
       instructions: event.instructions,
     } as TimestampWorkerEvent);
+    return { ok: true };
+  }
+
+  if (event?.source === "videomaking.subtitles") {
+    if (!event.jobId || !event.url) {
+      throw new Error("Invalid Subtitles worker payload: missing jobId or url");
+    }
+    await runSubtitleWorker({
+      source: "videomaking.subtitles",
+      jobId: event.jobId,
+      url: event.url,
+      language: event.language,
+      translateTo: event.translateTo,
+      notifyClientKey: event.notifyClientKey ?? null,
+    } as SubtitleWorkerEvent);
     return { ok: true };
   }
 

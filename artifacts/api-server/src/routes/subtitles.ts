@@ -12,6 +12,7 @@ import {
   GetItemCommand,
   PutItemCommand,
 } from "@aws-sdk/client-dynamodb";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
@@ -35,6 +36,11 @@ const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
 const AWS_REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1";
 const JOB_TABLE = process.env.YOUTUBE_QUEUE_JOB_TABLE ?? process.env.JOB_TABLE ?? "";
 const ddb = JOB_TABLE ? new DynamoDBClient({ region: AWS_REGION }) : null;
+const WORKER_FUNCTION_NAME =
+  process.env.SUBTITLES_WORKER_FUNCTION_NAME ??
+  process.env.AWS_LAMBDA_FUNCTION_NAME ??
+  "";
+const lambdaClient = WORKER_FUNCTION_NAME ? new LambdaClient({ region: AWS_REGION }) : null;
 
 function envBool(value: string | undefined, fallback: boolean): boolean {
   if (!value) return fallback;
@@ -2045,6 +2051,132 @@ async function processAudio(
   }
 }
 
+export type SubtitleWorkerEvent = {
+  source: "videomaking.subtitles";
+  jobId: string;
+  url: string;
+  language?: string;
+  translateTo?: string;
+  notifyClientKey?: string | null;
+};
+
+async function runSubtitleUrlJob(params: {
+  jobId: string;
+  normalizedUrl: string;
+  language: string;
+  translateLang?: string;
+  notifyClientKey?: string | null;
+}): Promise<void> {
+  let job = jobs.get(params.jobId);
+  if (!job) {
+    job = trackSubtitleJob(params.jobId, {
+      status: "pending",
+      message: "Starting subtitle job...",
+      filename: "subtitles.srt",
+      createdAt: Date.now(),
+      translateTo: params.translateLang,
+      progressPct: 0,
+      notifyClientKey: params.notifyClientKey ?? null,
+    });
+  }
+
+  const cached = urlWavCache.get(params.normalizedUrl);
+  if (cached && existsSync(cached.wavPath)) {
+    logger.info({ normalizedUrl: params.normalizedUrl }, "WAV cache hit - skipping download and preprocessing");
+    job.status = "uploading";
+    job.progressPct = 20;
+    job.message = "Using cached audio - skipping re-download...";
+    await processAudio(params.jobId, params.normalizedUrl, params.language, job.filename, params.translateLang, () => {}, {
+      path: cached.wavPath,
+      mimeType: cached.mimeType,
+      durationSecs: cached.durationSecs,
+    });
+    return;
+  }
+
+  const audioDir = join(DOWNLOAD_DIR, `srt-yt-${params.jobId}`);
+  try {
+    mkdirSync(audioDir, { recursive: true });
+    const audioPattern = join(audioDir, "%(title)s.%(ext)s");
+    await runYtDlpAudio([
+      "-f", "bestaudio/best",
+      "--no-playlist", "--no-warnings",
+      "-o", audioPattern, params.normalizedUrl,
+    ], job);
+
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+
+    const audioFiles = existsSync(audioDir) ? readdirSync(audioDir) : [];
+    const audioFile = audioFiles
+      .map((f) => join(audioDir, f))
+      .filter((f) => /\.(m4a|mp4|webm|ogg|opus|mp3|flac|wav|aac)$/i.test(f))
+      .sort((a, b) => statSync(b).size - statSync(a).size)[0];
+
+    if (!audioFile) {
+      job.status = "error";
+      job.completedAt = Date.now();
+      job.error = "Could not download audio - check the URL and try again";
+      return;
+    }
+
+    const videoTitle = basename(audioFile).replace(/\.[^.]+$/, "").replace(/[<>:"/\\|?*]/g, "-").trim() || "subtitles";
+    job.filename = `${videoTitle}.srt`;
+
+    job.progressPct = 15;
+    mkdirSync(WAV_CACHE_DIR, { recursive: true });
+    const wavOutputPath = join(WAV_CACHE_DIR, `${params.jobId}_16k.wav`);
+    const preprocessed = await preprocessAudio(audioFile, wavOutputPath);
+
+    if (job.cancelled) {
+      preprocessed.cleanup();
+      job.status = "cancelled"; job.message = "Cancelled";
+      try { rmSync(audioDir, { recursive: true, force: true }); } catch {}
+      return;
+    }
+
+    const ext = preprocessed.path.split(".").pop()!.toLowerCase();
+    const mimeType = audioMimeType(ext);
+    const durationSecs = await getAudioDuration(preprocessed.path);
+
+    urlWavCache.set(params.normalizedUrl, {
+      wavPath: preprocessed.path,
+      mimeType,
+      durationSecs,
+      createdAt: Date.now(),
+    });
+
+    await processAudio(
+      params.jobId,
+      preprocessed.path,
+      params.language,
+      job.filename,
+      params.translateLang,
+      () => {
+        try { rmSync(audioDir, { recursive: true, force: true }); } catch {}
+      },
+      { path: preprocessed.path, mimeType, durationSecs },
+    );
+  } catch (err: any) {
+    logger.error({ err }, "SRT YouTube download error");
+    if (job.status !== "cancelled") {
+      job.status = "error";
+      job.completedAt = Date.now();
+      job.error = err.message || "Failed to download audio";
+    }
+    try { rmSync(audioDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+export async function runSubtitleWorker(event: SubtitleWorkerEvent): Promise<void> {
+  await runSubtitleUrlJob({
+    jobId: event.jobId,
+    normalizedUrl: normalizeInputUrl(event.url),
+    language: event.language ?? "auto",
+    translateLang: event.translateTo,
+    notifyClientKey: event.notifyClientKey ?? null,
+  });
+}
+
 // ── Route: Generate from YouTube URL ────────────────────────────────────────
 router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Request, res: Response) => {
   const { url, language = "auto", translateTo } = req.body as { url: string; language?: string; translateTo?: string };
@@ -2081,6 +2213,44 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
     } catch (err) {
       logger.error({ err, jobId }, "Failed to queue subtitles URL job");
       res.status(502).json({ error: "Failed to queue subtitle job" });
+    }
+    return;
+  }
+
+  const useLambdaWorker = !!(lambdaClient && WORKER_FUNCTION_NAME && ddb && JOB_TABLE);
+  if (useLambdaWorker) {
+    trackSubtitleJob(jobId, {
+      status: "pending",
+      message: "Queued - starting soon...",
+      filename: "subtitles.srt",
+      createdAt: Date.now(),
+      translateTo: translateLang,
+      progressPct: 0,
+      notifyClientKey,
+    });
+    try {
+      await lambdaClient.send(new InvokeCommand({
+        FunctionName: WORKER_FUNCTION_NAME,
+        InvocationType: "Event",
+        Payload: Buffer.from(JSON.stringify({
+          source: "videomaking.subtitles",
+          jobId,
+          url: normalizedUrl,
+          language,
+          translateTo: translateLang,
+          notifyClientKey: notifyClientKey ?? null,
+        } satisfies SubtitleWorkerEvent)),
+      }));
+      res.json({ jobId, mode: "lambda" });
+    } catch (err) {
+      logger.error({ err, jobId }, "Failed to start subtitles Lambda worker");
+      const job = jobs.get(jobId);
+      if (job) {
+        job.status = "error";
+        job.completedAt = Date.now();
+        job.error = "Failed to start subtitle job";
+      }
+      res.status(502).json({ error: "Failed to start subtitle job" });
     }
     return;
   }
