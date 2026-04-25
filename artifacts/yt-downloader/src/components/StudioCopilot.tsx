@@ -7,6 +7,28 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+const HISTORY_KEY = "copilot-chat-history-v1";
+
+function loadHistory(): Message[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as any[];
+    // Revive Date objects
+    return parsed.map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(messages: Message[]) {
+  try {
+    // Keep last 60 messages to avoid localStorage bloat
+    const toSave = messages.slice(-60);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(toSave));
+  } catch { /* storage full — ignore */ }
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 type SseEvent =
   | { type: "text"; content: string }
@@ -331,7 +353,18 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-  // Scroll to bottom on new messages
+  // Load history from localStorage on mount
+  useEffect(() => {
+    const history = loadHistory();
+    if (history.length > 0) setMessages(history);
+  }, []);
+
+  // Save history whenever messages change (but not during streaming)
+  useEffect(() => {
+    if (!streaming && messages.length > 0) {
+      saveHistory(messages);
+    }
+  }, [messages, streaming]);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -550,6 +583,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const handleNewChat = () => {
     if (streaming) return;
     setMessages([]);
+    try { localStorage.removeItem(HISTORY_KEY); } catch {}
   };
 
   return (
@@ -589,7 +623,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
           <div className="flex items-center justify-between pb-2 border-b border-white/6 mb-2">
             <div className="flex items-center gap-1.5 text-white/30 text-[10px]">
               <Clock className="w-3 h-3" />
-              <span>Current Session</span>
+              <span>Chat history saved</span>
             </div>
             <button
               onClick={handleNewChat}
