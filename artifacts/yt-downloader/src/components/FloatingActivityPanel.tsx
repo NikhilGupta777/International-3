@@ -43,6 +43,7 @@ export function FloatingActivityPanel({
   onSwitchTab,
   onOpenGuide,
   pushProps,
+  inline = false,
 }: {
   onSwitchTab: (tab: TabMode) => void;
   onOpenGuide: () => void;
@@ -53,6 +54,7 @@ export function FloatingActivityPanel({
     enabling: boolean;
     onEnable: () => void;
   };
+  inline?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -82,7 +84,10 @@ export function FloatingActivityPanel({
   };
 
   return (
-    <div className="fixed top-2 right-2 sm:top-4 sm:right-6 z-50 flex flex-col items-end gap-2 max-w-[calc(100vw-12px)]">
+    <div className={inline
+      ? "relative flex items-center gap-1.5"
+      : "fixed top-2 right-2 sm:top-4 sm:right-6 z-50 flex flex-col items-end gap-2 max-w-[calc(100vw-12px)]"
+    }>
       <div className="flex items-center gap-2">
         {pushProps && pushProps.supported && pushProps.configured && pushProps.permission !== "granted" && (
           <button
@@ -144,7 +149,12 @@ export function FloatingActivityPanel({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -8, scale: 0.97 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
-            className="w-[min(380px,calc(100vw-16px))] max-h-[72vh] sm:max-h-[520px] flex flex-col rounded-2xl border border-white/10 bg-[#0d0d0f]/95 backdrop-blur-xl shadow-[0_8px_40px_rgba(0,0,0,0.6)] overflow-hidden"
+            className={cn(
+              "w-[min(380px,calc(100vw-16px))] max-h-[72vh] sm:max-h-[520px] flex flex-col rounded-2xl border border-white/10 bg-[#0d0d0f]/95 backdrop-blur-xl shadow-[0_8px_40px_rgba(0,0,0,0.6)] overflow-hidden",
+              inline
+                ? "absolute right-0 top-full mt-2 z-50"
+                : ""
+            )}
           >
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/8 shrink-0">

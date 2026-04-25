@@ -204,9 +204,188 @@
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
+
+  /* ── no-scrollbar ─────────────────────────────────────────── */
+  .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
 }
 
-/* ── App-level auth gate ────────────────────────────────────── */
+/* ── Workspace Layout (Sidebar IDE style) ───────────────────── */
+.studio-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+  background: #0d0d0f;
+}
+
+.studio-topbar {
+  height: 44px;
+  flex-shrink: 0;
+  background: #0d0d0f;
+  border-bottom: 1px solid #1a1a1e;
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 0;
+  gap: 0;
+  z-index: 40;
+  position: relative;
+}
+
+.studio-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Nav rail — 52px collapsed, 200px on hover */
+.studio-nav-rail {
+  width: 52px;
+  flex-shrink: 0;
+  background: #0d0d0f;
+  border-right: 1px solid #1a1a1e;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.22s cubic-bezier(0.16,1,0.3,1);
+  z-index: 30;
+}
+
+.studio-nav-rail:hover { width: 200px; }
+
+.studio-nav-section {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 0;
+  gap: 1px;
+}
+
+.studio-nav-divider {
+  height: 1px;
+  background: #1a1a1e;
+  margin: 4px 10px;
+}
+
+/* Nav item */
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  height: 38px;
+  cursor: pointer;
+  color: rgba(255,255,255,0.38);
+  transition: color 0.14s ease, background 0.14s ease;
+  white-space: nowrap;
+  border: none;
+  background: transparent;
+  text-align: left;
+  width: 100%;
+  overflow: hidden;
+}
+
+.nav-item:hover {
+  color: rgba(255,255,255,0.82);
+  background: rgba(255,255,255,0.04);
+}
+
+.nav-item-active {
+  color: rgba(255,255,255,0.96) !important;
+  background: rgba(220,38,38,0.09) !important;
+}
+
+.nav-item-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2.5px;
+  background: #dc2626;
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 8px rgba(220,38,38,0.5);
+}
+
+.nav-item-label {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.studio-nav-rail:hover .nav-item-label { opacity: 1; }
+
+.nav-badge {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.09);
+  color: rgba(255,255,255,0.45);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  flex-shrink: 0;
+}
+.studio-nav-rail:hover .nav-badge { opacity: 1; }
+
+/* Topbar logo section */
+.studio-logo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px 0 14px;
+  height: 44px;
+  width: 52px;
+  overflow: hidden;
+  flex-shrink: 0;
+  border-right: 1px solid #1a1a1e;
+  transition: width 0.22s cubic-bezier(0.16,1,0.3,1);
+  white-space: nowrap;
+}
+
+.studio-logo:hover { width: 200px; }
+
+.studio-logo-text {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.80);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  white-space: nowrap;
+}
+.studio-logo:hover .studio-logo-text { opacity: 1; }
+
+/* Content area */
+.studio-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #111111;
+  position: relative;
+}
+
+/* Content inner container */
+.studio-content-inner {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 32px 20px 80px;
+}
+
+/* Search bar inside content area */
+.studio-search-wrap {
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto 28px;
+}
+
+/* App-level auth gate ────────────────────────────────────── */
 .auth-gated-content {
   filter: blur(14px) saturate(0.92) brightness(0.72);
   transform: scale(1.01);

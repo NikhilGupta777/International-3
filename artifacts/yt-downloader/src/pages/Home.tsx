@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo, AlarmClock, UploadCloud
+  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo, AlarmClock, UploadCloud, Bot,
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -20,6 +20,7 @@ import { KathaSceneFinder } from "@/components/KathaSceneFinder";
 import { Timestamps } from "@/components/Timestamps";
 import { FileUpload } from "@/components/FileUpload";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
+import { Sidebar } from "@/components/layout/Sidebar";
 import {
   saveActiveDownload,
   loadActiveDownload,
@@ -41,7 +42,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload";
+type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot";
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -396,17 +397,18 @@ export default function Home() {
   }) || [];
 
   const showVideoInfo = mode === "download" && video && !jobId;
-  const showClips = mode === "clips" && submittedUrl;
   const showSubtitles = mode === "subtitles";
   const showClipCutter = mode === "clipcutter";
   const showBhagwat = mode === "bhagwat";
   const showSceneFinder = mode === "scenefinder";
   const showTimestamps = mode === "timestamps";
   const showUpload = mode === "upload";
+  const showCopilot = mode === "copilot";
+
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
-  const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder" && mode !== "timestamps" && mode !== "upload";
+  const showSearch = mode === "download" || mode === "clips";
   const isDownloadInputBlocked = false;
 
   useEffect(() => {
@@ -427,8 +429,8 @@ export default function Home() {
                   : "Find Sabha";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
-      ? `${modeLabel}: ${contentLabel} · ${appName}`
-      : `${modeLabel} · ${appName}`;
+      ? `${modeLabel}: ${contentLabel} Â· ${appName}`
+      : `${modeLabel} Â· ${appName}`;
   }, [mode, submittedUrl, video?.title]);
 
   useEffect(() => {
@@ -628,465 +630,357 @@ export default function Home() {
     };
   }, []);
 
+  const switchMode = (m: Mode) => {
+    setMode(m);
+    const el = document.querySelector('.studio-content');
+    if (el) el.scrollTop = 0;
+  };
+
   return (
-    <div className="min-h-screen relative overflow-x-hidden flex flex-col items-center pb-24 px-2 sm:px-6">
+    <div className="studio-workspace">
 
-      {/* Studio Background */}
-      <div className="fixed inset-0 z-[-1]" style={{background:"#111111"}}>
-        {/* Subtle dot grid */}
-        <div className="absolute inset-0 studio-dots" />
-        {/* Very faint warm glow at top only */}
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[900px] h-[320px] rounded-full pointer-events-none" style={{background:"radial-gradient(ellipse at 50% 0%, rgba(185,28,28,0.10), transparent 70%)"}} />
-      </div>
-
-      <main className="w-full max-w-5xl mx-auto flex flex-col items-center z-10 relative">
-        
-        {/* Header + Search */}
-        <motion.div 
-          layout
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          className={cn(
-            "w-full flex flex-col items-center transition-all duration-700 ease-[cubic-bezier(0.16,1,0.3,1)]",
-            (showVideoInfo || showClips || showSubtitles || showClipCutter || showBhagwat || showSceneFinder) ? "pt-12 mb-8" : "pt-[25vh]"
-          )}
-        >
-          {/* Logo */}
-          <motion.div layout className="flex items-center gap-2.5 sm:gap-3 mb-5 sm:mb-8">
-            <div className="p-2 rounded-lg border" style={{background:"rgba(185,28,28,0.12)",borderColor:"rgba(185,28,28,0.22)"}}>
-              <Youtube className="w-6 h-6 text-primary" />
-            </div>
-            <h1 className="text-xl sm:text-2xl md:text-4xl font-semibold tracking-[-0.03em] text-white text-center sm:text-left">
-              VideoMaking <span className="text-primary text-glow">Studio</span>
-            </h1>
-          </motion.div>
-
-          {!showVideoInfo && !showClips && (
-            <motion.p layout className="mb-6 sm:mb-8 text-center max-w-md px-2 sm:px-0 text-sm leading-relaxed" style={{color:"rgba(255,255,255,0.40)"}}>
-              Download · Best Clips · Subtitles · Clip Cut · Bhagwat · Find Sabha · Timestamps
-            </motion.p>
-          )}
-
-          {/* Mode Tabs */}
-          <motion.div
-            layout
-            className="w-full mb-6 overflow-x-auto no-scrollbar"
-            style={{borderBottom:"1px solid rgba(255,255,255,0.08)"}}
+      {/* â”€â”€ Topbar â”€â”€ */}
+      <header className="studio-topbar">
+        {/* Logo â€” expands on hover like the sidebar */}
+        <div className="studio-logo" title="VideoMaking Studio">
+          <div
+            className="p-1.5 rounded-md shrink-0"
+            style={{ background: "rgba(185,28,28,0.15)", border: "1px solid rgba(185,28,28,0.25)" }}
           >
-            <div className="flex items-center gap-0.5 min-w-max pb-0">
-            <button
-              onClick={() => { setMode("download"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "download" && "studio-tab-active")}
-            >
-              <Download className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Download</span>
-            </button>
-            <button
-              onClick={() => { setMode("clips"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "clips" && "studio-tab-active")}
-            >
-              <Sparkles className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Best Clips</span>
-              <span className="text-[9px] font-bold tracking-wider opacity-50 bg-white/10 rounded px-1 py-px">AI</span>
-            </button>
-            <button
-              onClick={() => { setMode("subtitles"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "subtitles" && "studio-tab-active")}
-            >
-              <Captions className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Subtitles</span>
-            </button>
-            <button
-              onClick={() => { setMode("clipcutter"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "clipcutter" && "studio-tab-active")}
-            >
-              <Scissors className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Clip Cut</span>
-            </button>
-            <button
-              onClick={() => { setMode("bhagwat"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "bhagwat" && "studio-tab-active")}
-            >
-              <Shield className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Bhagwat</span>
-              <span className="text-[9px] font-bold tracking-wider opacity-50 bg-white/10 rounded px-1 py-px">Pro</span>
-            </button>
-            <button
-              onClick={() => { setMode("scenefinder"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "scenefinder" && "studio-tab-active")}
-            >
-              <ListVideo className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Find Sabha</span>
-              <span className="text-[9px] font-bold tracking-wider opacity-50 bg-white/10 rounded px-1 py-px">AI</span>
-            </button>
-            <button
-              onClick={() => { setMode("timestamps"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "timestamps" && "studio-tab-active")}
-            >
-              <AlarmClock className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Timestamps</span>
-              <span className="text-[9px] font-bold tracking-wider opacity-50 bg-white/10 rounded px-1 py-px">AI</span>
-            </button>
-            <button
-              onClick={() => { setMode("upload"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-              className={cn("studio-tab", mode === "upload" && "studio-tab-active")}
-            >
-              <UploadCloud className="w-3 h-3 shrink-0 opacity-70" />
-              <span>Upload</span>
-            </button>
-            </div>
-          </motion.div>
+            <Youtube className="w-4 h-4 text-primary" />
+          </div>
+          <span className="studio-logo-text">VideoMaking <span className="text-primary">Studio</span></span>
+        </div>
 
-          <motion.form 
-            layout 
-            onSubmit={handleSearch}
-            className={cn("w-full max-w-2xl relative group", !showSearch && "hidden")}
-          >
-            <div className="relative rounded-xl flex p-1.5 items-center transition-all" style={{background:"#1a1a1a",border:"1px solid #2e2e2e",boxShadow:"0 2px 20px rgba(0,0,0,0.4)"}}>
-              <Search className="w-6 h-6 text-white/40 ml-4 hidden sm:block" />
-              <input 
-                type="url"
-                name="youtube_url"
-                inputMode="url"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="YouTube URL"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder={
-                  isDownloadInputBlocked
-                    ? "Download input is disabled"
-                    : "Paste YouTube URL..."
-                }
-                disabled={isDownloadInputBlocked}
-                className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-2.5 text-white placeholder:text-white/25 text-sm sm:text-base min-w-0 font-medium"
-              />
-              <Button 
-                type="submit" 
-                size="lg"
-                disabled={
-                  isSearchPending || !url.trim() || isDownloadInputBlocked
-                }
-                className="h-10 sm:h-12 px-3 sm:px-6 rounded-xl shrink-0 text-sm sm:text-base min-w-[106px] sm:min-w-0"
-              >
-                {isSearchPending ? (
-                  <span className="flex items-center gap-2">
-                    <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
-                    <span className="hidden sm:inline">Fetching</span>
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1.5 sm:gap-2">
-                    <span className="sm:hidden">{mode === "clips" ? "Analyze" : "Start"}</span>
-                    <span className="hidden sm:inline">{buttonPlaceholder}</span>
-                    <ArrowRight className="w-4 h-4 sm:w-5 sm:h-5" />
-                  </span>
-                )}
-              </Button>
-            </div>
-          </motion.form>
+        {/* Spacer */}
+        <div className="flex-1" />
 
-          {mode === "download" && isDownloadInputBlocked && (
-            <motion.div
-              layout
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mt-4 w-full max-w-2xl"
-            >
-              <div className="glass-panel rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-4">
-                <div className="flex items-start gap-3">
-                  <div className="mt-0.5 bg-amber-500/20 p-2 rounded-lg border border-amber-400/40">
-                    <Shield className="w-4 h-4 text-amber-300" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-amber-200 font-semibold text-sm">
-                      Download tab access is limited
-                    </p>
-                    <p className="text-amber-100/80 text-sm mt-1">
-                      Download support for YouTube, Instagram, and Twitter videos is managed via Telegram.
-                    </p>
-                    <a
-                      href={telegramUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-3 inline-flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-[#229ED9] hover:bg-[#1b8fc4] border border-[#58b8e6] px-4 py-2.5 text-sm font-bold text-white shadow-[0_0_16px_rgba(34,158,217,0.35)] transition-colors"
+        {/* Inline activity panel controls */}
+        <FloatingActivityPanel
+          inline
+          onSwitchTab={switchMode}
+          onOpenGuide={openGuide}
+          pushProps={{
+            supported: pushSupported,
+            configured: pushConfigured,
+            permission: pushPermission,
+            enabling: pushEnabling,
+            onEnable: handleEnablePush,
+          }}
+        />
+      </header>
+
+      {/* â”€â”€ Body: sidebar + content â”€â”€ */}
+      <div className="studio-body">
+
+        {/* Sidebar */}
+        <Sidebar mode={mode} onModeChange={switchMode} />
+
+        {/* Main scrollable content */}
+        <main className="studio-content" id="studio-content">
+          <div className="studio-content-inner">
+
+            {/* Search bar â€” only for download + clips modes */}
+            {showSearch && (
+              <div className="studio-search-wrap">
+                <form onSubmit={handleSearch}>
+                  <div
+                    className="relative rounded-xl flex p-1.5 items-center transition-all"
+                    style={{ background: "#1a1a1a", border: "1px solid #2e2e2e", boxShadow: "0 2px 20px rgba(0,0,0,0.4)" }}
+                  >
+                    <Search className="w-5 h-5 text-white/40 ml-3 hidden sm:block shrink-0" />
+                    <input
+                      type="url"
+                      name="youtube_url"
+                      inputMode="url"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-label="YouTube URL"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      placeholder={isDownloadInputBlocked ? "Download input is disabled" : "Paste YouTube URL..."}
+                      disabled={isDownloadInputBlocked}
+                      className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-2.5 text-white placeholder:text-white/25 text-sm min-w-0 font-medium"
+                    />
+                    <Button
+                      type="submit"
+                      size="lg"
+                      disabled={isSearchPending || !url.trim() || isDownloadInputBlocked}
+                      className="h-10 px-4 sm:px-6 rounded-xl shrink-0 text-sm min-w-[90px]"
                     >
-                      <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/20">
-                        <Send className="w-3.5 h-3.5" />
-                      </span>
-                      <span className="text-center">Join Telegram Group</span>
-                      <ExternalLink className="w-4 h-4" />
-                    </a>
-                    <p className="text-[12px] text-amber-100/60 mt-2">
-                      Tap the blue button above to open Telegram.
-                    </p>
+                      {isSearchPending ? (
+                        <span className="flex items-center gap-2">
+                          <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
+                          <span className="hidden sm:inline">Fetching</span>
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1.5">
+                          {buttonPlaceholder}
+                          <ArrowRight className="w-4 h-4" />
+                        </span>
+                      )}
+                    </Button>
                   </div>
-                </div>
+                </form>
+
+                {/* Download blocked banner */}
+                {mode === "download" && isDownloadInputBlocked && (
+                  <div className="mt-4 glass-panel rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-4">
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 bg-amber-500/20 p-2 rounded-lg border border-amber-400/40">
+                        <Shield className="w-4 h-4 text-amber-300" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-amber-200 font-semibold text-sm">Download tab access is limited</p>
+                        <p className="text-amber-100/80 text-sm mt-1">
+                          Download support for YouTube, Instagram, and Twitter videos is managed via Telegram.
+                        </p>
+                        <a
+                          href={telegramUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="mt-3 inline-flex w-full sm:w-auto items-center justify-center gap-2 rounded-xl bg-[#229ED9] hover:bg-[#1b8fc4] border border-[#58b8e6] px-4 py-2.5 text-sm font-bold text-white shadow-[0_0_16px_rgba(34,158,217,0.35)] transition-colors"
+                        >
+                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/20">
+                            <Send className="w-3.5 h-3.5" />
+                          </span>
+                          <span>Join Telegram Group</span>
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
-            </motion.div>
-          )}
-        </motion.div>
-
-        {/* Content area */}
-        <div className="w-full">
-
-          {/* Download Progress — always its own AnimatePresence so it overlays independently */}
-          <AnimatePresence>
-            {jobId && mode === "download" && (
-              <ActiveDownload
-                jobId={jobId}
-                onReset={() => {
-                  clearActiveDownload();
-                  setJobId(null);
-                  setActiveFormatId(null);
-                }}
-                onExpired={clearActiveDownload}
-              />
             )}
-          </AnimatePresence>
 
-          {/* Single AnimatePresence so tab exit + enter are coordinated */}
-          <AnimatePresence mode="wait">
+            {/* â”€â”€ Content panels â”€â”€ */}
 
-          {/* ── Download Mode ── */}
-            {showVideoInfo && (
-              <motion.div 
-                key="download-results"
-                initial={{ opacity: 0, y: 40 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                transition={{ duration: 0.5, delay: 0.1 }}
-                className="flex flex-col gap-8"
-              >
-                {/* Video Info Card */}
-                <div className="glass-panel p-4 sm:p-6 rounded-3xl flex flex-col md:flex-row gap-6 sm:gap-8 items-center md:items-start group relative overflow-hidden">
-                  <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[80px] rounded-full pointer-events-none" />
-                  
-                  <div className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors bg-black">
-                    {playing ? (
-                      <InlinePlayer
-                        url={url}
-                        formatId={playerFormatId}
-                        onClose={() => setPlaying(false)}
-                      />
-                    ) : (
-                      <button
-                        className="w-full h-full relative"
-                        onClick={() => {
-                          const combined = videoFormats.find(f => !f.formatId.includes("+"));
-                          setPlayerFormatId(combined?.formatId);
-                          setPlaying(true);
-                        }}
-                      >
-                        <img src={video.thumbnail || ''} alt={video.title} className="w-full h-full object-cover" />
-                        <div className="absolute inset-0 bg-black/30 hover:bg-black/10 transition-colors flex items-center justify-center">
-                          <div className="bg-black/50 backdrop-blur-md p-3 rounded-full text-white/90 hover:text-white hover:scale-110 transition-all shadow-lg">
-                            <Play className="w-8 h-8 ml-1" />
+            {/* Active download progress */}
+            <AnimatePresence>
+              {jobId && mode === "download" && (
+                <ActiveDownload
+                  jobId={jobId}
+                  onReset={() => {
+                    clearActiveDownload();
+                    setJobId(null);
+                    setActiveFormatId(null);
+                  }}
+                  onExpired={clearActiveDownload}
+                />
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence mode="wait">
+
+              {/* Download video info */}
+              {showVideoInfo && (
+                <motion.div
+                  key="download-results"
+                  initial={{ opacity: 0, y: 24 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.97 }}
+                  transition={{ duration: 0.4, delay: 0.05 }}
+                  className="flex flex-col gap-8"
+                >
+                  {/* Video Info Card */}
+                  <div className="glass-panel p-4 sm:p-6 rounded-3xl flex flex-col md:flex-row gap-6 sm:gap-8 items-center md:items-start group relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-primary/10 blur-[80px] rounded-full pointer-events-none" />
+
+                    <div className="relative w-full md:w-80 shrink-0 aspect-video rounded-2xl overflow-hidden shadow-2xl border border-white/10 group-hover:border-primary/30 transition-colors bg-black">
+                      {playing ? (
+                        <InlinePlayer
+                          url={url}
+                          formatId={playerFormatId}
+                          onClose={() => setPlaying(false)}
+                        />
+                      ) : (
+                        <button
+                          className="w-full h-full relative"
+                          onClick={() => {
+                            const combined = videoFormats.find(f => !f.formatId.includes("+"));
+                            setPlayerFormatId(combined?.formatId);
+                            setPlaying(true);
+                          }}
+                        >
+                          <img src={video.thumbnail || ''} alt={video.title} className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 bg-black/30 hover:bg-black/10 transition-colors flex items-center justify-center">
+                            <div className="bg-black/50 backdrop-blur-md p-3 rounded-full text-white/90 hover:text-white hover:scale-110 transition-all shadow-lg">
+                              <Play className="w-8 h-8 ml-1" />
+                            </div>
                           </div>
+                          <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-md text-white text-xs font-semibold px-2 py-1 rounded-md flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {formatDuration(video.duration)}
+                          </div>
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex flex-col flex-1 w-full justify-center h-full min-h-[180px]">
+                      <h2 className="text-2xl sm:text-3xl font-display font-bold text-white leading-tight mb-4">
+                        {video.title}
+                      </h2>
+                      <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-white/70">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-900 border border-white/10 flex items-center justify-center font-bold text-xs text-white uppercase shadow-inner">
+                            {video.uploader?.charAt(0) || 'Y'}
+                          </div>
+                          <span className="font-medium text-white/90">{video.uploader}</span>
                         </div>
-                        <div className="absolute bottom-2 right-2 bg-black/80 backdrop-blur-md text-white text-xs font-semibold px-2 py-1 rounded-md flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          {formatDuration(video.duration)}
+                        <div className="flex items-center gap-2 text-sm">
+                          <Eye className="w-4 h-4 text-white/40" />
+                          {formatViews(video.viewCount)}
                         </div>
-                      </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Formats Grid */}
+                  <div className="space-y-8">
+                    {videoFormats.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-3 px-2">
+                          <Film className="w-5 h-5 text-primary" />
+                          <h3 className="text-xl font-display font-semibold text-white">Video Options</h3>
+                          <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {displayVideoFormats.map((format, idx) => (
+                            <FormatCard
+                              key={format.formatId}
+                              format={format}
+                              isBest={idx === 0}
+                              onDownload={handleDownload}
+                              isPending={activeFormatId === format.formatId && download.isPending}
+                              isDisabled={download.isPending}
+                            />
+                          ))}
+                        </div>
+                        <SubtitleDownloadRow url={submittedUrl} />
+                      </div>
+                    )}
+                    {audioFormats.length > 0 && (
+                      <div className="space-y-4">
+                        <div className="flex items-center gap-3 px-2">
+                          <Music className="w-5 h-5 text-purple-400" />
+                          <h3 className="text-xl font-display font-semibold text-white">Audio Only</h3>
+                          <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {audioFormats.slice(0, 6).map((format, idx) => (
+                            <FormatCard
+                              key={format.formatId}
+                              format={format}
+                              isBest={idx === 0}
+                              onDownload={handleDownload}
+                              isPending={activeFormatId === format.formatId && download.isPending}
+                              isDisabled={download.isPending}
+                              audioOnly
+                            />
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
+                </motion.div>
+              )}
 
-                  <div className="flex flex-col flex-1 w-full justify-center h-full min-h-[180px]">
-                    <h2 className="text-2xl sm:text-3xl font-display font-bold text-white leading-tight mb-4">
-                      {video.title}
-                    </h2>
-                    <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-white/70">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-900 border border-white/10 flex items-center justify-center font-bold text-xs text-white uppercase shadow-inner">
-                          {video.uploader?.charAt(0) || 'Y'}
-                        </div>
-                        <span className="font-medium text-white/90">{video.uploader}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-sm">
-                        <Eye className="w-4 h-4 text-white/40" />
-                        {formatViews(video.viewCount)}
-                      </div>
+              {/* Best Clips */}
+              {mode === "clips" && (
+                <motion.div
+                  key="clips-panel"
+                  initial={{ opacity: 0, y: 16 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.25 }}
+                >
+                  <BestClips ref={bestClipsRef} url={url} />
+                </motion.div>
+              )}
+
+              {/* Subtitles */}
+              {showSubtitles && (
+                <motion.div key="subtitles-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }}>
+                  <GetSubtitles />
+                </motion.div>
+              )}
+
+              {/* Clip Cutter */}
+              {showClipCutter && (
+                <motion.div key="clipcutter-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }}>
+                  <ClipCutter />
+                </motion.div>
+              )}
+
+              {/* Bhagwat Studio */}
+              {showBhagwat && (
+                <motion.div key="bhagwat-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
+                  <BhagwatVideos />
+                </motion.div>
+              )}
+
+              {/* Find Sabha */}
+              {showSceneFinder && (
+                <motion.div key="scenefinder-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
+                  <KathaSceneFinder />
+                </motion.div>
+              )}
+
+              {/* Timestamps */}
+              {showTimestamps && (
+                <motion.div key="timestamps-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
+                  <Timestamps />
+                </motion.div>
+              )}
+
+              {/* Share (upload) */}
+              {showUpload && (
+                <motion.div key="upload-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
+                  <FileUpload />
+                </motion.div>
+              )}
+
+              {/* AI Copilot â€” Phase 2 placeholder */}
+              {showCopilot && (
+                <motion.div key="copilot-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
+                  <div className="flex flex-col items-center justify-center py-24 gap-4">
+                    <div className="p-4 rounded-2xl" style={{ background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.2)" }}>
+                      <Bot className="w-10 h-10 text-primary" />
+                    </div>
+                    <h2 className="text-2xl font-bold text-white">AI Studio Copilot</h2>
+                    <p className="text-white/50 text-sm max-w-md text-center">
+                      Your AI agent with full access to every studio tool. Ask it to download, clip, subtitle, or render anything â€” coming very soon.
+                    </p>
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                      <span className="text-xs text-amber-300 font-medium">Building Phase 2...</span>
                     </div>
                   </div>
-                </div>
+                </motion.div>
+              )}
 
-                {/* Formats Grid */}
-                <div className="space-y-8">
-                  {videoFormats.length > 0 && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3 px-2">
-                        <Film className="w-5 h-5 text-primary" />
-                        <h3 className="text-xl font-display font-semibold text-white">Video Options</h3>
-                        <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {displayVideoFormats.map((format, idx) => (
-                          <FormatCard 
-                            key={format.formatId} 
-                            format={format} 
-                            isBest={idx === 0} 
-                            onDownload={handleDownload}
-                            isPending={activeFormatId === format.formatId && download.isPending}
-                            isDisabled={download.isPending}
-                          />
-                        ))}
-                      </div>
-                      <SubtitleDownloadRow url={submittedUrl} />
-                    </div>
-                  )}
+            </AnimatePresence>
 
-                  {audioFormats.length > 0 && (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-3 px-2">
-                        <Music className="w-5 h-5 text-purple-400" />
-                        <h3 className="text-xl font-display font-semibold text-white">Audio Only</h3>
-                        <div className="h-[1px] flex-1 bg-gradient-to-r from-white/10 to-transparent ml-4" />
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {audioFormats.slice(0, 6).map((format, idx) => (
-                          <FormatCard 
-                            key={format.formatId} 
-                            format={format} 
-                            isBest={idx === 0} 
-                            onDownload={handleDownload}
-                            isPending={activeFormatId === format.formatId && download.isPending}
-                            isDisabled={download.isPending}
-                            audioOnly
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </motion.div>
-            )}
-
-          {/* ── Best Clips Mode ── */}
-            {mode === "clips" && (
-              <motion.div
-                key="clips-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="flex flex-col"
-              >
-                <BestClips ref={bestClipsRef} url={url} />
-              </motion.div>
-            )}
-
-          {/* ── Subtitles Mode ── */}
-            {showSubtitles && (
-              <motion.div
-                key="subtitles-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-              >
-                <GetSubtitles />
-              </motion.div>
-            )}
-
-          {/* ── Clip Cutter Mode ── */}
-            {showClipCutter && (
-              <motion.div
-                key="clipcutter-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-              >
-                <ClipCutter />
-              </motion.div>
-            )}
-
-          {/* ── Bhagwat Studio Mode ── */}
-            {showBhagwat && (
-              <motion.div
-                key="bhagwat-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="w-full"
-              >
-                <BhagwatVideos />
-              </motion.div>
-            )}
-
-            {showSceneFinder && (
-              <motion.div
-                key="scenefinder-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="w-full"
-              >
-                <KathaSceneFinder />
-              </motion.div>
-            )}
-
-            {showTimestamps && (
-              <motion.div
-                key="timestamps-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="w-full"
-              >
-                <Timestamps />
-              </motion.div>
-            )}
-
-            {showUpload && (
-              <motion.div
-                key="upload-panel"
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -10 }}
-                transition={{ duration: 0.3 }}
-                className="w-full"
-              >
-                <FileUpload />
-              </motion.div>
-            )}
-
-          </AnimatePresence>
-
-        </div>
-      </main>
-
-      <FloatingActivityPanel 
-        onSwitchTab={setMode} 
-        onOpenGuide={openGuide} 
-        pushProps={{
-          supported: pushSupported,
-          configured: pushConfigured,
-          permission: pushPermission,
-          enabling: pushEnabling,
-          onEnable: handleEnablePush
-        }}
-      />
+          </div>
+        </main>
+      </div>
 
       <GuideModal
         open={showGuide}
-        activeMode={activeGuideMode}
-        onSelectMode={setActiveGuideMode}
+        activeMode={activeGuideMode as any}
+        onSelectMode={setActiveGuideMode as any}
         onSwitchTab={(nextMode) => {
-          setMode(nextMode);
+          switchMode(nextMode as Mode);
           setActiveGuideMode(nextMode);
-          window.scrollTo({ top: 0, behavior: "smooth" });
           closeGuide();
         }}
         onClose={closeGuide}
       />
+
     </div>
   );
 }
-
 function GuideModal({
   open,
   activeMode,
@@ -1148,7 +1042,7 @@ function GuideModal({
                 className="text-white/60 hover:text-white hover:bg-white/10 px-2.5 sm:px-4"
                 onClick={onClose}
               >
-                <span className="sm:hidden">✕</span>
+                <span className="sm:hidden">âœ•</span>
                 <span className="hidden sm:inline">Close</span>
               </Button>
             </div>
@@ -1373,7 +1267,7 @@ function SubtitleDownloadRow({ url }: { url: string }) {
           {fixing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Fixing with AI…
+              Fixing with AIâ€¦
             </>
           ) : (
             <>
@@ -1386,7 +1280,7 @@ function SubtitleDownloadRow({ url }: { url: string }) {
 
       {fixing && (
         <p className="text-xs text-white/30 sm:ml-auto">
-          Downloading audio & running AI correction — this may take a minute…
+          Downloading audio & running AI correction â€” this may take a minuteâ€¦
         </p>
       )}
     </div>
@@ -1415,7 +1309,7 @@ function InlinePlayer({
       {loading && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/50 z-10">
           <Loader2 className="w-7 h-7 animate-spin" />
-          <span className="text-xs">Resolving stream…</span>
+          <span className="text-xs">Resolving streamâ€¦</span>
         </div>
       )}
       {error && (
@@ -1452,3 +1346,4 @@ function InlinePlayer({
     </div>
   );
 }
+
