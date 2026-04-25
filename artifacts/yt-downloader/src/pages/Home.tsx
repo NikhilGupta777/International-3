@@ -678,8 +678,8 @@ export default function Home() {
         <Sidebar mode={mode} onModeChange={switchMode} />
 
         {/* Main scrollable content */}
-        <main className="studio-content" id="studio-content">
-          <div className="studio-content-inner">
+        <main className={cn("studio-content", mode === "copilot" && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", mode === "copilot" && "is-copilot")}>
 
             {/* Search bar â€” only for download + clips modes */}
             {showSearch && (
@@ -944,7 +944,7 @@ export default function Home() {
 
               {/* AI Copilot */}
               {showCopilot && (
-                <motion.div key="copilot-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
+                <motion.div key="copilot-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
                   <StudioCopilot onNavigate={(tab) => switchMode(tab as any)} />
                 </motion.div>
               )}

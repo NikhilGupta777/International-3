@@ -647,7 +647,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   return (
     <div className="copilot-wrap">
       {/* ── Top Header Bar ── */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] bg-[#09090b]/80 shrink-0 z-10 sticky top-0 backdrop-blur-md">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] bg-[#111111]/80 shrink-0 z-10 sticky top-0 backdrop-blur-md">
         <div className="flex items-center gap-2">
           <Bot className="w-4 h-4 text-primary" />
           <span className="text-sm font-semibold text-white/90">Copilot</span>
@@ -678,7 +678,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -20 }}
-            className="absolute inset-y-[45px] left-0 right-0 bg-[#09090b]/95 backdrop-blur-xl z-20 flex flex-col border-b border-white/[0.06]"
+            className="absolute inset-y-[45px] left-0 right-0 bg-[#111111]/95 backdrop-blur-xl z-20 flex flex-col border-b border-white/[0.06]"
           >
             <div className="px-4 py-3 border-b border-white/[0.06] flex items-center justify-between">
               <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Chat History</span>
