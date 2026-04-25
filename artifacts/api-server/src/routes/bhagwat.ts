@@ -2872,8 +2872,20 @@ ${
     if (timeline.length === 0)
       throw new Error("AI returned an empty timeline — please try again");
 
-    // Sort and (for full mode) ensure coverage with no gaps
+    // Sort and ensure no overlapping segments (critical for audio sync)
     timeline.sort((a, b) => a.startSec - b.startSec);
+    if (timeline.length > 0) {
+      const resolved: TimelineSegment[] = [timeline[0]];
+      for (let i = 1; i < timeline.length; i++) {
+        const prev = resolved[resolved.length - 1];
+        const seg = timeline[i].startSec < prev.endSec
+          ? { ...timeline[i], startSec: prev.endSec }
+          : timeline[i];
+        if (seg.endSec > seg.startSec + 1) resolved.push(seg);
+      }
+      timeline = resolved;
+    }
+
     if (mode === "full" && videoDuration > 0) {
       if (timeline[0].startSec > 0) {
         timeline.unshift({
@@ -2889,13 +2901,7 @@ ${
       const filled: TimelineSegment[] = [timeline[0]];
       for (let i = 1; i < timeline.length; i++) {
         const prev = filled[filled.length - 1];
-        // Clip overlapping segment so it starts where the previous one ended
-        const seg =
-          timeline[i].startSec < prev.endSec
-            ? { ...timeline[i], startSec: prev.endSec }
-            : timeline[i];
-        // Skip degenerate segments produced by clipping
-        if (seg.endSec <= seg.startSec + 1) continue;
+        const seg = timeline[i];
         if (seg.startSec > prev.endSec) {
           // Fill the gap
           filled.push({
@@ -3377,10 +3383,13 @@ export async function runBhagwatRender(
         ];
 
         if (batchClips.length === 0) {
-          // No overlays in this window — just transcode the raw video segment
+          // No overlays in this window — transcode the raw video segment but MUST enforce 1080p scale
+          // so it concats safely with other 1080p batches.
           bArgs.push(
+            "-vf", SCALE,
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
             "-c:a", "aac", "-b:a", "192k",
             "-y", batchTmpPath,
           );
