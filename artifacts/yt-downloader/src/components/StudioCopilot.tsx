@@ -77,69 +77,98 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 
 // ── Starter prompts ───────────────────────────────────────────────────────────
 const STARTERS = [
-  { icon: <Scissors className="w-4 h-4" />, text: "Cut a clip from 5:32 to 6:23 of this video" },
-  { icon: <Sparkles className="w-4 h-4" />, text: "Find the best clips from this YouTube video" },
+  { icon: <Scissors className="w-4 h-4" />, text: "Cut a clip from 5:32 to 6:23" },
+  { icon: <Sparkles className="w-4 h-4" />, text: "Find the best clips from this video" },
   { icon: <Captions className="w-4 h-4" />, text: "Generate Hindi subtitles for a video" },
-  { icon: <AlarmClock className="w-4 h-4" />, text: "Create chapter timestamps for a video" },
+  { icon: <AlarmClock className="w-4 h-4" />, text: "Create chapter timestamps" },
   { icon: <Download className="w-4 h-4" />, text: "Download this YouTube video in 1080p" },
-  { icon: <Bot className="w-4 h-4" />, text: "What tools does this studio have?" },
+  { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
 
-// ── ToolCard sub-component ────────────────────────────────────────────────────
+// ── Simple inline Markdown renderer ─────────────────────────────────────────
+function renderMd(text: string): React.ReactNode {
+  const lines = text.split("\n");
+  const result: React.ReactNode[] = [];
+
+  lines.forEach((line, li) => {
+    // Ordered list item
+    const olMatch = /^(\d+)\.\s+(.*)/.exec(line);
+    // Unordered list item
+    const ulMatch = /^[-*]\s+(.*)/.exec(line);
+
+    const inlineRender = (str: string, key: string): React.ReactNode => {
+      const parts: React.ReactNode[] = [];
+      // Split on bold (**text**), inline code (`code`)
+      const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+      let last = 0; let m;
+      let k = 0;
+      while ((m = re.exec(str)) !== null) {
+        if (m.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, m.index)}</span>);
+        const tok = m[0];
+        if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2, -2)}</strong>);
+        else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1, -1)}</code>);
+        last = m.index + tok.length;
+      }
+      if (last < str.length) parts.push(<span key={`${key}-e`}>{str.slice(last)}</span>);
+      return parts.length > 0 ? parts : str;
+    };
+
+    if (olMatch) {
+      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/40 shrink-0">{olMatch[1]}.</span><span>{inlineRender(olMatch[2], `ol${li}`)}</span></div>);
+    } else if (ulMatch) {
+      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">•</span><span>{inlineRender(ulMatch[1], `ul${li}`)}</span></div>);
+    } else if (line.trim() === "") {
+      if (li < lines.length - 1) result.push(<div key={li} className="h-2" />);
+    } else {
+      result.push(<div key={li}>{inlineRender(line, `ln${li}`)}</div>);
+    }
+  });
+
+  return result;
+}
+
+// ── Genspark-style ToolCard (inline row) ────────────────────────────────────
 function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
 
   const argStr = Object.entries(part.args)
     .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${k}: ${String(v).length > 60 ? String(v).slice(0, 57) + "…" : v}`)
+    .map(([k, v]) => `${k}: ${String(v).length > 50 ? String(v).slice(0, 47) + "…" : v}`)
     .join(" · ");
 
   const pct = part.progress;
   const hasProgress = pct !== null && pct !== undefined;
 
   return (
-    <div className={cn(
-      "rounded-xl border px-3 py-2 text-xs flex flex-col gap-2 transition-all",
-      part.done
-        ? "border-white/10 bg-white/[0.03]"
-        : "border-white/15 bg-white/[0.06]"
-    )}>
-      <div className="flex items-center gap-2">
-        <span className={cn("shrink-0", meta.color)}>{meta.icon}</span>
-        <span className={cn("font-semibold", meta.color)}>{meta.label}</span>
-        {part.done
-          ? <CheckCircle className="w-3.5 h-3.5 text-green-500 ml-auto shrink-0" />
-          : <Loader2 className="w-3.5 h-3.5 text-white/40 ml-auto shrink-0 animate-spin" />
-        }
-      </div>
-
+    <div className="copilot-tool-row">
+      {/* "Using Tool" label */}
+      <span className="text-white/25 text-[10px] font-medium shrink-0">Using Tool</span>
+      <span className="copilot-tool-divider" />
+      {/* Icon + name */}
+      <span className={cn("shrink-0", meta.color)}>{meta.icon}</span>
+      <span className={cn("copilot-tool-label", meta.color)}>{meta.label}</span>
+      {/* Args */}
       {argStr && (
-        <span className="text-white/40 font-mono text-[10px] leading-relaxed truncate">
-          {argStr}
-        </span>
+        <>
+          <span className="copilot-tool-divider" />
+          <span className="copilot-tool-args">{argStr}</span>
+        </>
       )}
+      {/* Status icon */}
+      <span className="copilot-tool-status">
+        {part.done
+          ? <CheckCircle className="w-3.5 h-3.5 text-green-500" />
+          : hasProgress
+            ? <span className="text-[10px] text-white/40 font-mono">{pct}%</span>
+            : <Loader2 className="w-3.5 h-3.5 text-white/30 animate-spin" />
+        }
+      </span>
 
-      {/* Live progress bar */}
+      {/* Progress bar row below (when in progress) */}
       {!part.done && hasProgress && (
-        <div className="flex flex-col gap-1">
-          <div className="h-1 rounded-full bg-white/10 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{
-                width: `${Math.max(2, pct!)}%`,
-                background: "linear-gradient(90deg, #dc2626, #ef4444)",
-              }}
-            />
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-white/40 text-[10px]">{part.progressMsg ?? "Processing..."}</span>
-            <span className="text-white/50 text-[10px] font-mono">{pct}%</span>
-          </div>
+        <div className="absolute left-0 right-0 bottom-0 h-[2px] rounded-b-[8px] bg-white/5 overflow-hidden">
+          <div className="h-full bg-gradient-to-r from-red-600 to-red-400 transition-all duration-500" style={{ width: `${Math.max(2, pct!)}%` }} />
         </div>
-      )}
-
-      {!part.done && !hasProgress && part.progressMsg && (
-        <span className="text-white/40 text-[10px]">{part.progressMsg}</span>
       )}
     </div>
   );
@@ -276,13 +305,13 @@ function MessageBubble({
               <div
                 key={i}
                 className={cn(
-                  "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
+                  "rounded-2xl px-4 py-3 text-sm leading-relaxed",
                   isUser
-                    ? "bg-primary text-white rounded-tr-sm"
-                    : "bg-white/[0.07] text-white/90 rounded-tl-sm border border-white/8"
+                    ? "bg-[#dc2626] text-white rounded-tr-sm"
+                    : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md"
                 )}
               >
-                {part.content}
+                {isUser ? part.content : renderMd(part.content)}
               </div>
             );
           }
@@ -568,8 +597,8 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
           </div>
           <h2 className="copilot-welcome-title">AI Studio Copilot</h2>
           <p className="copilot-welcome-sub">
-            Your intelligent agent with full access to every studio tool.<br />
-            Just ask — I'll download, clip, subtitle, timestamp or browse anything for you.
+            Autonomous AI agent with full access to every studio tool.<br />
+            Just give me a YouTube URL and a task — I'll handle everything.
           </p>
 
           <div className="copilot-starters">

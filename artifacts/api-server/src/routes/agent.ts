@@ -492,7 +492,7 @@ router.post("/agent/chat", async (req, res) => {
     let continueLoop = true;
     let loopContents: any[] = [...geminiContents];
     let iterations = 0;
-    const MAX_ITERATIONS = 6;
+    const MAX_ITERATIONS = 10;
 
     while (continueLoop && iterations < MAX_ITERATIONS) {
       iterations++;
@@ -503,6 +503,13 @@ router.post("/agent/chat", async (req, res) => {
         config: {
           systemInstruction: SYSTEM_PROMPT,
           tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
+          toolConfig: {
+            functionCallingConfig: {
+              mode: "AUTO" as any,
+            },
+          },
+          temperature: 0.15,
+          maxOutputTokens: 2048,
         }
       });
 
