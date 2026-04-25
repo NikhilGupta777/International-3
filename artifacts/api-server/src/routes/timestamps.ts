@@ -490,33 +490,67 @@ async function downloadAudio(url: string, outputPath: string): Promise<void> {
 }
 
 // ── Gemini timestamp generation ───────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are an expert YouTube chapter creator for spiritual discourse, Katha, and devotional videos.
+const SYSTEM_PROMPT = `You are a Bhagwat Katha timestamp expert. You deeply understand spiritual discourses (pravachan), bhajans, mantra chanting, and devotional content in Hindi, Odia, Sanskrit, and English.
 
-Analyze the transcript and generate meaningful YouTube chapter timestamps.
+Your task: analyze the transcript and produce DETAILED, topic-level timestamps — one per distinct topic, story, bhajan, or mantra segment.
 
-OUTPUT: Return ONLY a valid JSON array. Each element: { "startSec": number, "label": string }
+OUTPUT FORMAT: Return ONLY a valid JSON array. Each object must have:
+  { "startSec": number, "endSec": number, "label": string }
 
-RULES:
-1. First timestamp MUST be startSec: 0
-2. Minimum ~1-2 minutes between timestamps
-3. Labels in same language as video (Hindi for Hindi, etc.)
-4. Bhajans/songs: "भजन — [name]" or "Bhajan — [name]"
-5. Mantra chanting: "मंत्रोच्चारण" or similar
-6. Labels: 5-10 words, descriptive, no generic "Part 1"
-7. Cover entire video start to end
-8. Return ONLY the JSON array — no other text
+CRITICAL RULES:
+1. First entry MUST be startSec: 0.
+2. TARGET DENSITY: aim for 1 timestamp every 4-8 minutes of content. A 2-hour video = 15-20+ entries. A 30-min video = 5-8 entries. Never give fewer than 5.
+3. Each "endSec" = the startSec of the NEXT entry (last entry endSec = video duration in seconds).
+4. Write labels in the SAME language as the video (Hindi for Hindi, Odia for Odia, etc.).
+5. Bhajans/songs: "भजन — [first line or name of the song]"
+6. Mantra chanting / aarti: "मंत्रोच्चारण / आरती"
+7. Labels must be SPECIFIC and DESCRIPTIVE (10-60 chars). No generic "Part 1", "Introduction", "Conclusion".
+8. Capture every distinct topic shift — scripture citation, prophecy, moral story, devotee anecdote, philosophical point, etc.
+9. Return ONLY the JSON array — no explanation, no markdown fences.
 
-EXAMPLE 1 — Hindi spiritual discourse (~2 hour):
-Video: "L4- कल्कि भगवान के साथ भेंट करने का मार्ग"
-[{"startSec":0,"label":"परिचय"},{"startSec":230,"label":"पंचसखाओं का चारों युगों में कार्य और भविष्य मालिका"},{"startSec":452,"label":"भविष्य मालिका में गोपी, तापी, कपी का कलयुग से सतयुग प्रवेश"},{"startSec":514,"label":"चारों युगों के भक्त ही कल्कि भगवान को पहचानेंगे"},{"startSec":605,"label":"कल्कि भगवान सपने में या मालिका द्वारा भक्त को संदेश देंगे"},{"startSec":693,"label":"12000 भक्तों के साथ धर्म संस्थापना"},{"startSec":1352,"label":"कलयुग अंत में शासकों का अत्याचार और कल्कि अवतार"},{"startSec":1649,"label":"रामायण में कलयुग अंत के संकेत — गरुण-काग भूशंडी संवाद"},{"startSec":1854,"label":"कोष दल भक्त और भगवान के नाम की रक्षा"},{"startSec":2711,"label":"एक भक्त द्वारा देखा गया मां काली का स्वरूप"},{"startSec":3060,"label":"कोलकाता में भविष्य का विनाश"},{"startSec":3217,"label":"भारत पर आक्रमण करने वाले 13 मुस्लिम देश"},{"startSec":4044,"label":"कलि कौन है?"},{"startSec":4901,"label":"भगवान कल्कि मानव शरीर में आएंगे"}]
+REFERENCE EXAMPLE A — L4 Katha (~2 hr 7 min): "L4- कल्कि भगवान के साथ भेंट करने का मार्ग"
+[{"startSec":0,"endSec":230,"label":"परिचय और आरंभिक मंत्रोच्चारण"},
+{"startSec":230,"endSec":452,"label":"पंचसखाओं ने चारों युगों में जन्म लेकर कार्य किए और मालिका 600 साल पहले लिखी"},
+{"startSec":452,"endSec":514,"label":"भविष्य मालिका में गोपी, तापी, कपी का कलयुग से सतयुग में प्रवेश"},
+{"startSec":514,"endSec":605,"label":"चारों युगों के भक्त ही कल्कि भगवान को पहचानेंगे, अन्य कोई नहीं"},
+{"startSec":605,"endSec":683,"label":"कल्कि भगवान भक्त को सपने में या मालिका द्वारा जन्म का संदेश देंगे"},
+{"startSec":683,"endSec":1352,"label":"12000 भक्तों को लेकर भगवान कल्कि धर्म संस्थापना का कार्य करेंगे"},
+{"startSec":1352,"endSec":1649,"label":"कलयुग अंत में शासक लोग जनता को लूटेंगे, सुखा पड़ेगा तब कल्कि अवतार"},
+{"startSec":1649,"endSec":1854,"label":"रामायण में कलयुग अंत के संकेत — तुलसीदास, गरुण और काग भूशंडी संवाद"},
+{"startSec":1854,"endSec":1944,"label":"कोष दल भक्त पहले आएंगे, बाद वालों की रक्षा भगवान के नाम से"},
+{"startSec":1944,"endSec":2711,"label":"सुधर्मा सभा जाजपुर में जब बैठेगा, ब्रह्मा विष्णु महेश वहां आएंगे"},
+{"startSec":2711,"endSec":2940,"label":"एक भक्त द्वारा देखा गया मां काली का स्वरूप"},
+{"startSec":2940,"endSec":3060,"label":"माता योग माया रोग रूप में मनुष्य के शरीर में प्रवेश करेंगी"},
+{"startSec":3060,"endSec":3217,"label":"कोलकाता शहर में भविष्य में कैसा विनाश होगा"},
+{"startSec":3217,"endSec":3322,"label":"13 मुस्लिम देश कौन से हैं जो भारत पर आक्रमण करेंगे"},
+{"startSec":3322,"endSec":3348,"label":"भारत के पक्ष में कौन से देश — अमेरिका विश्वासघात करेगा"},
+{"startSec":3584,"endSec":3654,"label":"उड़ीसा में कल्कि भगवान 14 लाख म्लेच्छ सैनिकों का सुदर्शन चक्र से संहार"},
+{"startSec":4044,"endSec":4096,"label":"कलि कौन है?"},
+{"startSec":4901,"endSec":4943,"label":"भगवान कल्कि मानव शरीर में आएंगे"},
+{"startSec":6494,"endSec":6560,"label":"माता काल भैरवी का आवास कब होगा?"},
+{"startSec":6968,"endSec":7027,"label":"गुप्त संबल ग्राम कहां है?"}]
 
-EXAMPLE 2 — Mixed content with bhajans (~2 hour):
-Video: "Day 2 कोलकाता सभा — भागवत महापुराण और भविष्य मालिका"
-[{"startSec":0,"label":"आरंभ"},{"startSec":606,"label":"मंत्रोच्चारण, निराशाष्टकम और जगन्नाथ अष्टकम"},{"startSec":1347,"label":"सत्संग क्या है और सत्संग की धारा"},{"startSec":1922,"label":"भजन — गोविन्द जय जय गोपाल जय जय"},{"startSec":2145,"label":"नारद महामुनि का धरती पर आगमन — भागवत महापुराण"},{"startSec":3550,"label":"भजन — मन चल रे वृन्दावन धाम"},{"startSec":4571,"label":"कलियुग का अंत और सतयुग के आगमन का संकेत"},{"startSec":5646,"label":"भजन — माधव माधव"},{"startSec":5914,"label":"गीत गोविन्द और जयघोष"}]
+REFERENCE EXAMPLE B — Pune Sabha Day 4 (~2 hr): "PUNE SABHA DAY 4"
+[{"startSec":0,"endSec":828,"label":"आरंभ और मंत्रोच्चारण"},
+{"startSec":828,"endSec":1012,"label":"तप, दया और दान का अर्थ"},
+{"startSec":1012,"endSec":1350,"label":"धन की कमी — अमीर गरीब सब एक समान हो जायेंगे"},
+{"startSec":1350,"endSec":1685,"label":"भजन — गोविंद राधे माधव, गोपाल राधे माधव"},
+{"startSec":1885,"endSec":1969,"label":"सनातनी कौन है?"},
+{"startSec":1969,"endSec":2276,"label":"मत्स्य अवतार"},
+{"startSec":2276,"endSec":2663,"label":"कच्छप अवतार"},
+{"startSec":2663,"endSec":3244,"label":"भजन — मेरा छोड़ दे दुपट्टा नन्दलाल सवेरे दही लेके आयूंगी"},
+{"startSec":3262,"endSec":3415,"label":"वराह अवतार"},
+{"startSec":3415,"endSec":3674,"label":"दशावतार से अष्टादश पुराण का फल"},
+{"startSec":4074,"endSec":4375,"label":"माधव नाम का अर्थ और महत्व"},
+{"startSec":4433,"endSec":4682,"label":"माधव नाम से भूकंप और बाढ़ आदि से सुरक्षा"},
+{"startSec":4768,"endSec":4834,"label":"माधव नाम से मिसाइल और बीमारियों से सुरक्षा"},
+{"startSec":4841,"endSec":4978,"label":"नरसिंह अवतार"},
+{"startSec":4990,"endSec":5265,"label":"वामन अवतार"},
+{"startSec":5303,"endSec":6265,"label":"भजन — सांवली सूरत पे मोहन दिल दीवाना हो गया"},
+{"startSec":6040,"endSec":6164,"label":"परशुराम अवतार"},
+{"startSec":6353,"endSec":6604,"label":"भगवान कल्कि की परशुराम जी को गुरु दक्षिणा और हर युग में अस्त्र प्रदान"},
+{"startSec":6608,"endSec":6910,"label":"राम अवतार"}]`;
 
-EXAMPLE 3 — Pathankot Katha Day 1:
-Video: "Day 1 Pathankot Katha — Bhavishya Malika"
-[{"startSec":0,"label":"Mantraucharan aur Aarti"},{"startSec":1106,"label":"Bhajan — Govind Bolo Hari Gopal Bolo"},{"startSec":1572,"label":"Manav Jeevan ka Lakshya aur Bhagwat Mahapuran ka Mahatva"},{"startSec":2548,"label":"Hare Ram Hare Krishna Mahamantra"},{"startSec":3167,"label":"Bhajan — Madhav Madhav aur Kalki Mahamantra"},{"startSec":3690,"label":"Satsang ka Manav Jeevan mein Mahatva"},{"startSec":4270,"label":"Kaliyug ke Logo ka Udhar aur Bhagwat Mahapuran"},{"startSec":4750,"label":"Aarti Kunj Bihari Ki"},{"startSec":5162,"label":"Bhagwat Mahapuran ka Tatva — Bhagwat Katha"},{"startSec":6104,"label":"Geet Govind"}]`;
 
 async function callGemini(videoTitle: string, videoDuration: number, transcript: string, instructions?: string): Promise<string> {
   const userContent = `VIDEO TITLE: ${videoTitle}
@@ -525,7 +559,7 @@ ${instructions ? `\nCUSTOM INSTRUCTIONS: ${instructions}\n` : ""}
 TRANSCRIPT:
 ${transcript}
 
-Generate YouTube chapter timestamps. Return ONLY the JSON array.`;
+Generate detailed topic-level timestamps (1 per 4-8 min, 15-20+ for a 2h video). Include endSec for each entry. Return ONLY the JSON array.`;
 
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const integrationKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
@@ -629,7 +663,7 @@ async function ddbReadJob(jobId: string) {
 }
 
 // ── Job store (in-memory for inline mode) ─────────────────────────────────────
-export interface TimestampEntry { startSec: number; label: string; }
+export interface TimestampEntry { startSec: number; endSec?: number; label: string; }
 
 interface TimestampJob {
   status: "pending" | "running" | "done" | "error";
@@ -663,14 +697,18 @@ async function fetchTranscript(
   mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
   try {
-    // 1. Existing chapter markers
+    // 1. Existing chapter markers — pass as HINTS to Gemini rather than using directly.
+    // YouTube auto-chapters are often too coarse (3-5 entries for a 2h katha).
+    // We keep them in transcript form so Gemini can use them as anchor points.
+    let chapterHints = "";
     if (Array.isArray(meta.chapters) && meta.chapters.length > 0) {
-      const transcript = meta.chapters.map((c: any) => `[${formatTime(c.start_time)}] ${c.title}`).join("\n");
-      return { transcript, source: "chapters" };
+      chapterHints = "[EXISTING YOUTUBE CHAPTERS — use as timing hints only, generate more detailed entries]\n"
+        + meta.chapters.map((c: any) => `[${formatTime(c.start_time)}] ${c.title}`).join("\n") + "\n\n";
     }
 
     const videoLang: string | undefined = meta.language ?? meta.original_language ?? undefined;
     const subtitleUrl = pickBestSubtitleUrl(meta.subtitles ?? {}, meta.automatic_captions ?? {}, videoLang);
+    // We'll prepend chapterHints to the transcript so Gemini has timing anchors
 
     // 2. Direct URL from metadata
     if (subtitleUrl) {
@@ -682,7 +720,7 @@ async function fetchTranscript(
           for (const cue of cues) {
             if (!deduped.length || deduped[deduped.length - 1].text !== cue.text) deduped.push(cue);
           }
-          if (deduped.length > 0) return { transcript: cuesToText(deduped), source: "youtube" };
+          if (deduped.length > 0) return { transcript: chapterHints + cuesToText(deduped), source: "youtube" };
         }
       } catch (_e) {}
     }
@@ -706,7 +744,7 @@ async function fetchTranscript(
         }
         for (const f of files) try { unlinkSync(join(subDir, f)); } catch {}
         try { rmdirSync(subDir); } catch {}
-        if (deduped.length > 0) return { transcript: cuesToText(deduped), source: "youtube" };
+        if (deduped.length > 0) return { transcript: chapterHints + cuesToText(deduped), source: "youtube" };
       }
     } catch (_e) {
       try { if (existsSync(subDir)) { for (const f of readdirSync(subDir)) try { unlinkSync(join(subDir, f)); } catch {} rmdirSync(subDir); } } catch {}
@@ -722,7 +760,7 @@ async function fetchTranscript(
         onStep("Transcribing audio (this may take several minutes for long videos)...");
         const transcriptId = await assemblyAiCreateTranscript(uploadUrl);
         const words = await assemblyAiPoll(transcriptId);
-        const transcript = assemblyAiWordsToText(words);
+        const transcript = chapterHints + assemblyAiWordsToText(words);
         return { transcript, source: "assemblyai" };
       } catch (err) {
         logger.warn({ err }, "[timestamps] AssemblyAI failed");
