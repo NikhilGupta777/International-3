@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo, AlarmClock
+  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo, AlarmClock, UploadCloud
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
