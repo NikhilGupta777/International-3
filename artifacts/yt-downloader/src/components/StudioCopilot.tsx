@@ -3,10 +3,31 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
   Download, Scissors, Sparkles, Captions, AlarmClock,
-  UploadCloud, Shield, ListVideo, X, Paperclip, Mic, MicOff,
+  UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, Clock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+
+const HISTORY_KEY = "copilot-chat-history-v1";
+
+function loadHistory(): Message[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as any[];
+    // Revive Date objects
+    return parsed.map(m => ({ ...m, timestamp: new Date(m.timestamp) }));
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(messages: Message[]) {
+  try {
+    // Keep last 60 messages to avoid localStorage bloat
+    const toSave = messages.slice(-60);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(toSave));
+  } catch { /* storage full — ignore */ }
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type SseEvent =
@@ -303,7 +324,18 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-  // Auto-scroll to bottom
+  // Load history from localStorage on mount
+  useEffect(() => {
+    const history = loadHistory();
+    if (history.length > 0) setMessages(history);
+  }, []);
+
+  // Save history whenever messages change (but not during streaming)
+  useEffect(() => {
+    if (!streaming && messages.length > 0) {
+      saveHistory(messages);
+    }
+  }, [messages, streaming]);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -519,6 +551,12 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
   );
 
+  const handleNewChat = () => {
+    if (streaming) return;
+    setMessages([]);
+    try { localStorage.removeItem(HISTORY_KEY); } catch {}
+  };
+
   return (
     <div className="copilot-wrap">
 
@@ -552,6 +590,21 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       {/* ── Messages ── */}
       {!isEmpty && (
         <div className="copilot-messages">
+          {/* Chat header with New Chat button */}
+          <div className="flex items-center justify-between pb-2 border-b border-white/6 mb-2">
+            <div className="flex items-center gap-1.5 text-white/30 text-[10px]">
+              <Clock className="w-3 h-3" />
+              <span>Chat history saved</span>
+            </div>
+            <button
+              onClick={handleNewChat}
+              disabled={streaming}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/8 text-white/40 hover:text-white/70 text-[11px] font-medium transition-all disabled:opacity-40"
+            >
+              <Trash2 className="w-3 h-3" />
+              New Chat
+            </button>
+          </div>
           <AnimatePresence initial={false}>
             {messages.map(msg => (
               <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} />

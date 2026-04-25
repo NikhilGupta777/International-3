@@ -967,31 +967,10 @@ export default function Home() {
         onClose={closeGuide}
       />
 
-      {/* Mobile bottom nav — hidden on desktop via CSS */}
-      <nav className="mobile-bottom-nav">
-        {([
-          { mode: "copilot",     icon: <Bot className="w-5 h-5" />,        label: "Copilot" },
-          { mode: "clips",       icon: <Sparkles className="w-5 h-5" />,   label: "Clips" },
-          { mode: "download",    icon: <Download className="w-5 h-5" />,   label: "Download" },
-          { mode: "subtitles",   icon: <Captions className="w-5 h-5" />,   label: "Subtitles" },
-          { mode: "clipcutter",  icon: <Scissors className="w-5 h-5" />,   label: "Cut" },
-          { mode: "timestamps",  icon: <AlarmClock className="w-5 h-5" />, label: "Time" },
-          { mode: "upload",      icon: <UploadCloud className="w-5 h-5" />, label: "Share" },
-        ] as Array<{ mode: Mode; icon: React.ReactNode; label: string }>).map((item) => (
-          <button
-            key={item.mode}
-            onClick={() => switchMode(item.mode)}
-            className={cn("mobile-nav-item", mode === item.mode && "mobile-nav-item-active")}
-          >
-            {item.icon}
-            <span className="mobile-nav-label">{item.label}</span>
-          </button>
-        ))}
-      </nav>
-
     </div>
   );
 }
+
 function GuideModal({
   open,
   activeMode,
