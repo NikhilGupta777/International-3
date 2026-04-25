@@ -40,11 +40,12 @@ async function pollJobUntilDone(
   toolName: string,
   progressUrl: string,
   jobId: string,
+  headers: Record<string, string>,
 ): Promise<{ status: string; filename?: string; filesize?: number; s3Key?: string }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
-    const r = await fetch(progressUrl);
+    const r = await fetch(progressUrl, { headers });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
     const data = await r.json() as any;
 
@@ -76,11 +77,12 @@ async function pollSubtitleUntilDone(
   res: any,
   statusUrl: string,
   jobId: string,
+  headers: Record<string, string>,
 ): Promise<{ status: string; srtFilename?: string; vttFilename?: string }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
 
   while (Date.now() < deadline) {
-    const r = await fetch(statusUrl);
+    const r = await fetch(statusUrl, { headers });
     if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
     const data = await r.json() as any;
 
@@ -104,6 +106,42 @@ async function pollSubtitleUntilDone(
   }
 
   throw new Error("Subtitle job timed out after 8 minutes");
+}
+
+// ── Timestamps job poller ─────────────────────────────────────────────────────
+async function pollTimestampsUntilDone(
+  res: any,
+  statusUrl: string,
+  jobId: string,
+  headers: Record<string, string>,
+): Promise<{ status: string; timestamps?: any }> {
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+
+  while (Date.now() < deadline) {
+    const r = await fetch(statusUrl, { headers });
+    if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
+    const data = await r.json() as any;
+
+    const { status, progressPct, message, timestamps } = data;
+
+    sseEvent(res, {
+      type: "tool_progress",
+      name: "generate_timestamps",
+      status,
+      percent: progressPct ?? null,
+      message: message ?? status,
+      jobId,
+    });
+
+    if (status === "done") return { status, timestamps };
+    if (["error", "cancelled"].includes(status)) {
+      throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
+    }
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+  }
+
+  throw new Error("Timestamp job timed out after 8 minutes");
 }
 
 // ── Parse timestamps like "5:32" or "1:22:10" into seconds ───────────────────
@@ -295,7 +333,7 @@ async function executeTool(
       const { jobId } = await r.json() as any;
 
       // Poll until done
-      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId);
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders);
 
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
@@ -335,7 +373,7 @@ async function executeTool(
       const { jobId } = await r.json() as any;
 
       // Poll until done
-      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId);
+      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders);
       const downloadUrl = `/api/youtube/file/${jobId}`;
 
       return {
@@ -371,7 +409,7 @@ async function executeTool(
       const { id: jobId } = await r.json() as any;
 
       // Poll until done
-      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${jobId}`, jobId);
+      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${jobId}`, jobId, internalHeaders);
       const srtUrl = `/api/subtitles/status/${jobId}/download?format=srt`;
 
       return {
@@ -419,26 +457,31 @@ async function executeTool(
     case "generate_timestamps": {
       sseEvent(res, { type: "tool_progress", name, message: "Generating timestamps..." });
 
-      const r = await fetch(`${apiBase}/timestamps`, {
+      const r = await fetch(`${apiBase}/youtube/timestamps`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
 
-      const data = await r.json().catch(() => ({ error: "Timestamp generation failed" })) as any;
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({})) as any;
+        throw new Error(err.error ?? `Timestamps failed: ${r.status}`);
+      }
 
-      if (!r.ok) throw new Error(data.error ?? `Timestamps failed: ${r.status}`);
+      const { jobId } = await r.json() as any;
+
+      // Poll until done
+      const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders);
 
       return {
-        result: data,
-        artifact: data.timestamps ? {
+        result: { jobId, timestamps: final.timestamps },
+        artifact: final.timestamps ? {
           artifactType: "text",
           label: "Timestamps generated",
-          content: typeof data.timestamps === "string" ? data.timestamps : JSON.stringify(data.timestamps, null, 2),
+          content: typeof final.timestamps === "string" ? final.timestamps : JSON.stringify(final.timestamps, null, 2),
         } : undefined,
       };
     }
-
     case "list_shared_files": {
       const limit = args.limit ?? 12;
       const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, {
