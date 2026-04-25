@@ -395,7 +395,7 @@ export default function Home() {
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
   const isSearchPending = getInfo.isPending;
-  const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder" && mode !== "timestamps";
+  const showSearch = mode !== "subtitles" && mode !== "clipcutter" && mode !== "bhagwat" && mode !== "scenefinder" && mode !== "timestamps" && mode !== "upload";
   const isDownloadInputBlocked = false;
 
   useEffect(() => {

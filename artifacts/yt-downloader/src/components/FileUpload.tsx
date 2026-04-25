@@ -4,7 +4,7 @@ import {
   Upload, Cloud, Link2, Copy, Check, Eye, EyeOff,
   FileText, Film, Music, Image, Archive, File,
   Download, Globe, Lock, Trash2, ChevronDown, ChevronUp,
-  CheckCircle2, AlertCircle, Loader2, X,
+  CheckCircle2, AlertCircle, Loader2, X, FolderHeart
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -91,7 +91,26 @@ interface PublicFile {
   downloadCount: number;
 }
 
-type Tab = "upload" | "gallery";
+type Tab = "upload" | "my-uploads" | "gallery";
+
+// ── Local Storage Helpers ────────────────────────────────────────────────────
+function saveLocalUpload(file: PublicFile) {
+  try {
+    const existing = JSON.parse(localStorage.getItem("videomaking_uploads") || "[]");
+    localStorage.setItem("videomaking_uploads", JSON.stringify([file, ...existing]));
+  } catch { /* ignore */ }
+}
+function getLocalUploads(): PublicFile[] {
+  try {
+    return JSON.parse(localStorage.getItem("videomaking_uploads") || "[]");
+  } catch { return []; }
+}
+function removeLocalUpload(fileId: string) {
+  try {
+    const existing = getLocalUploads();
+    localStorage.setItem("videomaking_uploads", JSON.stringify(existing.filter((x: any) => x.fileId !== fileId)));
+  } catch { /* ignore */ }
+}
 
 // ── Main Component ───────────────────────────────────────────────────────────
 export function FileUpload() {
@@ -112,15 +131,17 @@ export function FileUpload() {
   const [copied, setCopied] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Gallery state
+  // Gallery / My Uploads state
   const [gallery, setGallery] = useState<PublicFile[]>([]);
+  const [myUploads, setMyUploads] = useState<PublicFile[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | undefined>();
 
   const loadGallery = useCallback(async (cursor?: string) => {
     setGalleryLoading(true);
     try {
-      const url = `${BASE_URL()}/api/uploads/public?limit=24${cursor ? `&cursor=${cursor}` : ""}`;
+      const cursorQuery = cursor ? "&cursor=" + cursor : "";
+      const url = `${BASE_URL()}/api/uploads/public?limit=24${cursorQuery}`;
       const res = await fetch(url);
       const data = await res.json() as { files: PublicFile[]; nextCursor?: string };
       setGallery(prev => cursor ? [...prev, ...data.files] : data.files);
@@ -129,7 +150,10 @@ export function FileUpload() {
     finally { setGalleryLoading(false); }
   }, []);
 
-  useEffect(() => { if (tab === "gallery") loadGallery(); }, [tab, loadGallery]);
+  useEffect(() => { 
+    if (tab === "gallery") loadGallery(); 
+    if (tab === "my-uploads") setMyUploads(getLocalUploads());
+  }, [tab, loadGallery]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setDragging(false);
@@ -171,7 +195,6 @@ export function FileUpload() {
             const start = (p.partNumber - 1) * PART_SIZE;
             const chunk = file.slice(start, start + PART_SIZE);
             const etag = await uploadPart(p.signedUrl, chunk, (loaded) => {
-              // rough combined progress
               setProgress(Math.min(98, Math.round((uploadedBytes + loaded) / file.size * 100)));
             });
             uploadedBytes += chunk.size;
@@ -190,7 +213,9 @@ export function FileUpload() {
         if (!compRes.ok) throw new Error("Complete failed");
         const comp = await compRes.json() as any;
         setProgress(100);
-        setDone({ shareUrl: comp.shareUrl, fileId: comp.fileId, filename: comp.filename, size: comp.size });
+        const frontendShareUrl = `${window.location.origin}${BASE_URL()}/api/uploads/file/${comp.fileId}`;
+        setDone({ shareUrl: frontendShareUrl, fileId: comp.fileId, filename: comp.filename, size: comp.size });
+        saveLocalUpload({ fileId: comp.fileId, filename: comp.filename, title, description, size: comp.size, mimeType: file.type || "application/octet-stream", visibility, uploadedAt: Date.now(), downloadCount: 0 });
         setUploading(false); return;
       }
 
@@ -202,7 +227,9 @@ export function FileUpload() {
       if (!compRes.ok) throw new Error("Complete failed");
       const comp = await compRes.json() as any;
       setProgress(100);
-      setDone({ shareUrl: comp.shareUrl, fileId: comp.fileId, filename: comp.filename, size: comp.size });
+      const frontendShareUrl = `${window.location.origin}${BASE_URL()}/api/uploads/file/${comp.fileId}`;
+      setDone({ shareUrl: frontendShareUrl, fileId: comp.fileId, filename: comp.filename, size: comp.size });
+      saveLocalUpload({ fileId: comp.fileId, filename: comp.filename, title, description, size: comp.size, mimeType: file.type || "application/octet-stream", visibility, uploadedAt: Date.now(), downloadCount: 0 });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -240,13 +267,9 @@ export function FileUpload() {
 
       {/* Sub-tabs */}
       <div className="flex gap-1 mb-6 p-1 rounded-lg" style={{background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.07)"}}>
-        {(["upload","gallery"] as Tab[]).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all",
-              tab === t ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>
-            {t === "upload" ? "↑ Upload" : "⊞ Public Gallery"}
-          </button>
-        ))}
+        <button onClick={() => setTab("upload")} className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all", tab === "upload" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>↑ Upload</button>
+        <button onClick={() => setTab("my-uploads")} className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all", tab === "my-uploads" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>Folder My Uploads</button>
+        <button onClick={() => setTab("gallery")} className={cn("flex-1 py-1.5 text-xs font-medium rounded-md transition-all", tab === "gallery" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>⊞ Public Gallery</button>
       </div>
 
       <AnimatePresence mode="wait">
@@ -394,6 +417,23 @@ export function FileUpload() {
           </motion.div>
         )}
 
+        {/* ── My Uploads Tab ── */}
+        {tab === "my-uploads" && (
+          <motion.div key="my-uploads" initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}} className="space-y-3">
+            {myUploads.length === 0 ? (
+              <div className="py-16 text-center text-sm" style={{color:"rgba(255,255,255,0.30)"}}>You haven't uploaded anything yet.</div>
+            ) : (
+              <>
+                {myUploads.map(f => <GalleryCard key={f.fileId} file={f} onDelete={() => {
+                  removeLocalUpload(f.fileId);
+                  setMyUploads(getLocalUploads());
+                  toast({ title: "Deleted", description: f.filename });
+                }} />)}
+              </>
+            )}
+          </motion.div>
+        )}
+
         {/* ── Gallery Tab ── */}
         {tab === "gallery" && (
           <motion.div key="gallery" initial={{opacity:0,y:8}} animate={{opacity:1,y:0}} exit={{opacity:0}} className="space-y-3">
@@ -458,7 +498,7 @@ function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => voi
   };
 
   return (
-    <div className="rounded-xl p-4 flex items-start gap-3 group transition-all" style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)"}}>
+    <div className="rounded-xl p-4 flex items-start gap-3 transition-all" style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)"}}>
       <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{background:"rgba(255,255,255,0.06)"}}>
         <span className={fileColor(file.mimeType)}>{fileIcon(file.mimeType)}</span>
       </div>
@@ -466,14 +506,15 @@ function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => voi
         <p className="text-sm font-medium text-white/90 truncate">{file.title || file.filename}</p>
         {file.description && <p className="text-xs mt-0.5 line-clamp-1" style={{color:"rgba(255,255,255,0.40)"}}>{file.description}</p>}
         <div className="flex items-center gap-3 mt-1 text-[10px]" style={{color:"rgba(255,255,255,0.30)"}}>
+          <span>{file.visibility === "private" ? <><Lock className="w-2.5 h-2.5 inline mr-0.5 text-amber-400"/> Private</> : <><Globe className="w-2.5 h-2.5 inline mr-0.5 text-emerald-400"/> Public</>}</span>
           <span>{fmtBytes(file.size)}</span>
           <span>{fmtTime(file.uploadedAt)}</span>
           {file.downloadCount > 0 && <span><Download className="w-2.5 h-2.5 inline mr-0.5"/>{file.downloadCount}</span>}
         </div>
       </div>
-      <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={copyLink} title="Copy link" className="p-1.5 rounded-lg transition-colors hover:bg-white/8 text-white/40 hover:text-white/70"><Link2 className="w-3.5 h-3.5"/></button>
-        <button onClick={handleDownload} disabled={downloading} title="Download" className="p-1.5 rounded-lg transition-colors hover:bg-white/8 text-white/40 hover:text-white/70">
+      <div className="flex items-center gap-1 shrink-0">
+        <button onClick={copyLink} title="Copy link" className="p-1.5 rounded-lg transition-colors bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90"><Link2 className="w-3.5 h-3.5"/></button>
+        <button onClick={handleDownload} disabled={downloading} title="Download" className="p-1.5 rounded-lg transition-colors bg-white/5 hover:bg-white/10 text-white/60 hover:text-white/90">
           {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin"/> : <Download className="w-3.5 h-3.5"/>}
         </button>
         <button onClick={handleDelete} disabled={deleting} title="Delete" className="p-1.5 rounded-lg transition-colors hover:bg-red-500/15 text-white/30 hover:text-red-400">
