@@ -158,11 +158,19 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Write env file — inject fresh batch job def
+      # Write env file and inject fresh runtime settings.
       - name: Write .env.green
         run: |
           printf '%s' "${{ secrets.ENV_GREEN_CONTENT }}" > /tmp/.env.green
           sed -i "s|^YOUTUBE_BATCH_JOB_DEFINITION=.*|YOUTUBE_BATCH_JOB_DEFINITION=${{ needs.build-worker.outputs.batch_job_def }}|" /tmp/.env.green
+          sed -i '/^GEMINI_API_KEY_[2-9]=/d;/^GEMINI_API_KEY_10=/d' /tmp/.env.green
+          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
+            if grep -q '^GEMINI_API_KEY=' /tmp/.env.green; then
+              sed -i 's|^GEMINI_API_KEY=.*|GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}|' /tmp/.env.green
+            else
+              printf '\nGEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}\n' >> /tmp/.env.green
+            fi
+          fi
           if grep -q '^WEBSITE_AUTH_PASSWORD=' /tmp/.env.green; then
             sed -i 's|^WEBSITE_AUTH_PASSWORD=.*|WEBSITE_AUTH_PASSWORD=kalkiavatar@2026#vm|' /tmp/.env.green
           else
@@ -183,9 +191,14 @@ jobs:
           else
             printf '\nSUBTITLES_FORCE_LAMBDA=true\n' >> /tmp/.env.green
           fi
-          echo "✅ .env.green ready ($(wc -l < /tmp/.env.green) lines)"
+          if grep -q '^YTDLP_COOKIES_FILE=' /tmp/.env.green; then
+            sed -i 's|^YTDLP_COOKIES_FILE=.*|YTDLP_COOKIES_FILE=/tmp/yt-cookies.txt|' /tmp/.env.green
+          else
+            printf '\nYTDLP_COOKIES_FILE=/tmp/yt-cookies.txt\n' >> /tmp/.env.green
+          fi
+          echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
-      # Run the existing deploy script — handles CloudFormation, S3, CloudFront
+      # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.
       - name: Deploy (CloudFormation + S3 + Lambda)
         shell: pwsh
         run: |

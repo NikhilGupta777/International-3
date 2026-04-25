@@ -23,7 +23,7 @@ import {
 import { join, dirname, basename } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
-import { createRequire } from "module";
+import { fileURLToPath } from "url";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
 import { GoogleGenAI } from "@google/genai";
@@ -52,8 +52,6 @@ import {
 } from "../lib/youtube-queue";
 
 const router: IRouter = Router();
-const require = createRequire(import.meta.url);
-const ffprobeStatic = require("ffprobe-static") as { path?: string };
 
 // Use Replit's built-in GOOGLE_API_KEY as fallback when GEMINI_API_KEY is not set
 if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
@@ -673,9 +671,13 @@ function findFfmpeg(): string | null {
   return null;
 }
 const FFMPEG_PATH = findFfmpeg();
+const BUNDLED_FFPROBE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
+);
 const FFPROBE_STATIC_PATH =
-  typeof ffprobeStatic?.path === "string" && existsSync(ffprobeStatic.path)
-    ? ffprobeStatic.path
+  existsSync(BUNDLED_FFPROBE_PATH)
+    ? BUNDLED_FFPROBE_PATH
     : null;
 
 function ensureYtdlpFfmpegLocation(): string | null {
