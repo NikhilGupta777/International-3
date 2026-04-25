@@ -10,6 +10,8 @@ import { EventEmitter } from "events";
 import {
   existsSync,
   mkdirSync,
+  copyFileSync,
+  chmodSync,
   unlinkSync,
   rmdirSync,
   statSync,
@@ -21,6 +23,7 @@ import {
 import { join, dirname, basename } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
+import { createRequire } from "module";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
 import { GoogleGenAI } from "@google/genai";
@@ -49,6 +52,8 @@ import {
 } from "../lib/youtube-queue";
 
 const router: IRouter = Router();
+const require = createRequire(import.meta.url);
+const ffprobeStatic = require("ffprobe-static") as { path?: string };
 
 // Use Replit's built-in GOOGLE_API_KEY as fallback when GEMINI_API_KEY is not set
 if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
@@ -668,8 +673,38 @@ function findFfmpeg(): string | null {
   return null;
 }
 const FFMPEG_PATH = findFfmpeg();
+const FFPROBE_STATIC_PATH =
+  typeof ffprobeStatic?.path === "string" && existsSync(ffprobeStatic.path)
+    ? ffprobeStatic.path
+    : null;
+
+function ensureYtdlpFfmpegLocation(): string | null {
+  if (!FFMPEG_PATH) return null;
+
+  try {
+    const systemProbe = execFileSync("which", ["ffprobe"], { encoding: "utf8" }).trim();
+    if (systemProbe) return dirname(FFMPEG_PATH);
+  } catch {}
+
+  if (!FFPROBE_STATIC_PATH) return FFMPEG_PATH;
+
+  const binDir = join(tmpdir(), "ytgrabber-ffmpeg-bin");
+  mkdirSync(binDir, { recursive: true });
+  const ffmpegTarget = join(binDir, process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
+  const ffprobeTarget = join(binDir, process.platform === "win32" ? "ffprobe.exe" : "ffprobe");
+
+  if (!existsSync(ffmpegTarget)) copyFileSync(FFMPEG_PATH, ffmpegTarget);
+  if (!existsSync(ffprobeTarget)) copyFileSync(FFPROBE_STATIC_PATH, ffprobeTarget);
+  try {
+    chmodSync(ffmpegTarget, 0o755);
+    chmodSync(ffprobeTarget, 0o755);
+  } catch {}
+  return binDir;
+}
+
 if (FFMPEG_PATH) {
-  BASE_YTDLP_ARGS.push("--ffmpeg-location", FFMPEG_PATH);
+  const ffmpegLocation = ensureYtdlpFfmpegLocation();
+  if (ffmpegLocation) BASE_YTDLP_ARGS.push("--ffmpeg-location", ffmpegLocation);
 }
 
 // Inject proxy if configured (essential for AWS/cloud IPs blocked by YouTube)
