@@ -21,6 +21,7 @@ import { Timestamps } from "@/components/Timestamps";
 import { FileUpload } from "@/components/FileUpload";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { StudioCopilot } from "@/components/StudioCopilot";
 import {
   saveActiveDownload,
   loadActiveDownload,
@@ -941,22 +942,10 @@ export default function Home() {
                 </motion.div>
               )}
 
-              {/* AI Copilot â€” Phase 2 placeholder */}
+              {/* AI Copilot */}
               {showCopilot && (
                 <motion.div key="copilot-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
-                  <div className="flex flex-col items-center justify-center py-24 gap-4">
-                    <div className="p-4 rounded-2xl" style={{ background: "rgba(220,38,38,0.1)", border: "1px solid rgba(220,38,38,0.2)" }}>
-                      <Bot className="w-10 h-10 text-primary" />
-                    </div>
-                    <h2 className="text-2xl font-bold text-white">AI Studio Copilot</h2>
-                    <p className="text-white/50 text-sm max-w-md text-center">
-                      Your AI agent with full access to every studio tool. Ask it to download, clip, subtitle, or render anything â€” coming very soon.
-                    </p>
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-500/10 border border-amber-500/20">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-                      <span className="text-xs text-amber-300 font-medium">Building Phase 2...</span>
-                    </div>
-                  </div>
+                  <StudioCopilot onNavigate={(tab) => switchMode(tab as any)} />
                 </motion.div>
               )}
 
@@ -977,6 +966,28 @@ export default function Home() {
         }}
         onClose={closeGuide}
       />
+
+      {/* Mobile bottom nav — hidden on desktop via CSS */}
+      <nav className="mobile-bottom-nav">
+        {([
+          { mode: "copilot",     icon: <Bot className="w-5 h-5" />,        label: "Copilot" },
+          { mode: "clips",       icon: <Sparkles className="w-5 h-5" />,   label: "Clips" },
+          { mode: "download",    icon: <Download className="w-5 h-5" />,   label: "Download" },
+          { mode: "subtitles",   icon: <Captions className="w-5 h-5" />,   label: "Subtitles" },
+          { mode: "clipcutter",  icon: <Scissors className="w-5 h-5" />,   label: "Cut" },
+          { mode: "timestamps",  icon: <AlarmClock className="w-5 h-5" />, label: "Time" },
+          { mode: "upload",      icon: <UploadCloud className="w-5 h-5" />, label: "Share" },
+        ] as Array<{ mode: Mode; icon: React.ReactNode; label: string }>).map((item) => (
+          <button
+            key={item.mode}
+            onClick={() => switchMode(item.mode)}
+            className={cn("mobile-nav-item", mode === item.mode && "mobile-nav-item-active")}
+          >
+            {item.icon}
+            <span className="mobile-nav-label">{item.label}</span>
+          </button>
+        ))}
+      </nav>
 
     </div>
   );

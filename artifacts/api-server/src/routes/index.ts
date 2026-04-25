@@ -7,6 +7,7 @@ import subtitlesRouter from "./subtitles";
 import bhagwatRouter from "./bhagwat";
 import timestampsRouter from "./timestamps";
 import uploadsRouter from "./uploads";
+import agentRouter from "./agent";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(subtitlesRouter);
 router.use(bhagwatRouter);
 router.use(timestampsRouter);
 router.use("/uploads", uploadsRouter);
+router.use(agentRouter);
 
 export default router;
