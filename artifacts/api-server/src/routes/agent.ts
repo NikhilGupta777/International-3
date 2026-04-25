@@ -15,7 +15,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY 
 // Use most capable model for the agentic loop (function calling + reasoning)
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.1-pro-preview";
 // Fast model for single-turn / lightweight tasks
-const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3.1-flash-preview";
+const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3-flash-preview";
 // Max time to wait for a job to complete (8 min)
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
