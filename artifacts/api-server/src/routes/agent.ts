@@ -532,6 +532,16 @@ router.post("/agent/chat", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
+  let isClientConnected = true;
+  req.on("close", () => {
+    isClientConnected = false;
+  });
+
+  // Keep connection alive against ALB/proxy idle timeouts (send SSE comment every 15s)
+  const keepAlive = setInterval(() => {
+    if (isClientConnected) res.write(":\n\n");
+  }, 15000);
+
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -545,7 +555,7 @@ router.post("/agent/chat", async (req, res) => {
     let iterations = 0;
     const MAX_ITERATIONS = 10;
 
-    while (continueLoop && iterations < MAX_ITERATIONS) {
+    while (continueLoop && iterations < MAX_ITERATIONS && isClientConnected) {
       iterations++;
 
       const stream = await ai.models.generateContentStream({
@@ -568,6 +578,7 @@ router.post("/agent/chat", async (req, res) => {
       let hasToolCall = false;
 
       for await (const chunk of stream) {
+        if (!isClientConnected) break;
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
           if (p.text) {
@@ -600,6 +611,7 @@ router.post("/agent/chat", async (req, res) => {
       const toolResults: any[] = [];
 
       for (const part of finalParts) {
+        if (!isClientConnected) break;
         if (part.functionCall) {
           const { name, args } = part.functionCall;
           const toolArgs = (args ?? {}) as Record<string, any>;
@@ -649,11 +661,16 @@ router.post("/agent/chat", async (req, res) => {
       }
     }
 
-    sseEvent(res, { type: "done" });
-    res.end();
+    if (isClientConnected) {
+      sseEvent(res, { type: "done" });
+    }
   } catch (err: any) {
-    sseEvent(res, { type: "error", message: err?.message ?? "Unknown copilot error" });
-    res.end();
+    if (isClientConnected) {
+      sseEvent(res, { type: "error", message: err?.message ?? "Unknown copilot error" });
+    }
+  } finally {
+    clearInterval(keepAlive);
+    if (!res.writableEnded) res.end();
   }
 });
 
