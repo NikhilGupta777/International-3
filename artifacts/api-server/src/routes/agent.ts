@@ -473,7 +473,7 @@ router.post("/agent/chat", async (req, res) => {
     }));
 
     let continueLoop = true;
-    let loopContents = [...geminiContents];
+    let loopContents: any[] = [...geminiContents];
     let iterations = 0;
     const MAX_ITERATIONS = 6;
 
@@ -482,9 +482,11 @@ router.post("/agent/chat", async (req, res) => {
 
       const response = await ai.models.generateContent({
         model: AGENT_MODEL,
-        systemInstruction: SYSTEM_PROMPT,
-        tools: [{ functionDeclarations: STUDIO_TOOLS }],
         contents: loopContents,
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          tools: [{ functionDeclarations: STUDIO_TOOLS }],
+        }
       });
 
       const candidate = response.candidates?.[0];
