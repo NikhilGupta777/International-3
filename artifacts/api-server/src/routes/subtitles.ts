@@ -21,6 +21,8 @@ import {
   readBufferFromS3,
   readTextFromS3,
   uploadTextToS3,
+  cleanupOldS3Objects,
+  isS3StorageEnabled,
 } from "../lib/s3-storage";
 import {
   cancelYoutubeQueueJob,
@@ -41,6 +43,19 @@ const WORKER_FUNCTION_NAME =
   process.env.AWS_LAMBDA_FUNCTION_NAME ??
   "";
 const lambdaClient = WORKER_FUNCTION_NAME ? new LambdaClient({ region: AWS_REGION }) : null;
+
+// S3 cleanup for subtitle files (6h TTL, runs every 30 min)
+const SUBTITLE_S3_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+if (isS3StorageEnabled()) {
+  const runSubtitleS3Cleanup = () => {
+    void cleanupOldS3Objects({ namespace: "subtitles", maxAgeMs: SUBTITLE_S3_MAX_AGE_MS })
+      .catch((err: unknown) => logger.warn({ err }, "S3 subtitles cleanup failed"));
+    void cleanupOldS3Objects({ namespace: "subtitles-original", maxAgeMs: SUBTITLE_S3_MAX_AGE_MS })
+      .catch((err: unknown) => logger.warn({ err }, "S3 subtitles-original cleanup failed"));
+  };
+  runSubtitleS3Cleanup(); // clear old files on startup
+  setInterval(runSubtitleS3Cleanup, 30 * 60 * 1000);
+}
 
 function envBool(value: string | undefined, fallback: boolean): boolean {
   if (!value) return fallback;
