@@ -7,6 +7,11 @@ import {
 import { join, dirname, basename } from "path";
 import { spawn, execFileSync } from "child_process";
 import { GoogleGenAI } from "@google/genai";
+import {
+  DynamoDBClient,
+  GetItemCommand,
+  PutItemCommand,
+} from "@aws-sdk/client-dynamodb";
 import { logger } from "../lib/logger";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
@@ -14,6 +19,7 @@ import {
   createS3PresignedUpload,
   readBufferFromS3,
   readTextFromS3,
+  uploadTextToS3,
 } from "../lib/s3-storage";
 import {
   cancelYoutubeQueueJob,
@@ -26,6 +32,9 @@ import {
 const router = Router();
 
 const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR ?? "/tmp/ytgrabber";
+const AWS_REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1";
+const JOB_TABLE = process.env.YOUTUBE_QUEUE_JOB_TABLE ?? process.env.JOB_TABLE ?? "";
+const ddb = JOB_TABLE ? new DynamoDBClient({ region: AWS_REGION }) : null;
 
 function envBool(value: string | undefined, fallback: boolean): boolean {
   if (!value) return fallback;
@@ -404,6 +413,8 @@ export interface SrtJob {
   message: string;
   srt?: string;
   originalSrt?: string;
+  s3Key?: string;
+  originalS3Key?: string;
   error?: string;
   filename: string;
   originalFilename?: string;
@@ -418,6 +429,119 @@ export interface SrtJob {
 }
 const jobs = new Map<string, SrtJob>();
 const CANCELLED_BY_USER = "Cancelled by user";
+const persistedSubtitleTimers = new Map<string, NodeJS.Timeout>();
+
+async function persistSubtitleJob(jobId: string, job: SrtJob): Promise<void> {
+  if (!ddb || !JOB_TABLE) return;
+
+  let s3Key = job.s3Key;
+  let originalS3Key = job.originalS3Key;
+  if (job.status === "done") {
+    if (job.srt && !s3Key) {
+      const uploaded = await uploadTextToS3({
+        body: job.srt,
+        jobId,
+        namespace: "subtitles",
+        filename: job.filename,
+        contentType: "application/x-subrip",
+      });
+      s3Key = uploaded.key;
+      job.s3Key = s3Key;
+    }
+    if (job.originalSrt && !originalS3Key) {
+      const uploaded = await uploadTextToS3({
+        body: job.originalSrt,
+        jobId,
+        namespace: "subtitles-original",
+        filename: job.originalFilename ?? `original-${job.filename}`,
+        contentType: "application/x-subrip",
+      });
+      originalS3Key = uploaded.key;
+      job.originalS3Key = originalS3Key;
+    }
+  }
+
+  const now = Date.now();
+  const item: Record<string, any> = {
+    jobId: { S: jobId },
+    status: { S: job.status },
+    message: { S: job.status === "error" ? (job.error ?? job.message ?? "Subtitle generation failed") : (job.message ?? job.status) },
+    filename: { S: job.filename },
+    createdAt: { N: String(job.createdAt || now) },
+    updatedAt: { N: String(now) },
+    progressPct: { N: String(job.status === "done" ? 100 : (job.progressPct ?? 0)) },
+  };
+  if (job.completedAt) item.completedAt = { N: String(job.completedAt) };
+  if (job.durationSecs != null) item.durationSecs = { N: String(job.durationSecs) };
+  if (s3Key) item.s3Key = { S: s3Key };
+  if (originalS3Key) item.originalS3Key = { S: originalS3Key };
+  if (job.originalFilename) item.originalFilename = { S: job.originalFilename };
+
+  await ddb.send(new PutItemCommand({ TableName: JOB_TABLE, Item: item }));
+}
+
+function schedulePersistSubtitleJob(jobId: string, job: SrtJob): void {
+  if (!ddb || !JOB_TABLE) return;
+  const existing = persistedSubtitleTimers.get(jobId);
+  if (existing) clearTimeout(existing);
+  const terminal = job.status === "done" || job.status === "error" || job.status === "cancelled";
+  const timeout = setTimeout(() => {
+    persistedSubtitleTimers.delete(jobId);
+    persistSubtitleJob(jobId, job).catch((err) =>
+      logger.warn({ err, jobId }, "Failed to persist subtitle job state"),
+    );
+  }, terminal ? 0 : 250);
+  persistedSubtitleTimers.set(jobId, timeout);
+}
+
+async function readPersistedSubtitleJob(jobId: string): Promise<{
+  status: string;
+  message: string | null;
+  filename: string | null;
+  s3Key: string | null;
+  originalS3Key: string | null;
+  originalFilename: string | null;
+  durationSecs: number | null;
+  progressPct: number | null;
+  updatedAt: number | null;
+} | null> {
+  if (!ddb || !JOB_TABLE) return null;
+  const out = await ddb.send(new GetItemCommand({
+    TableName: JOB_TABLE,
+    Key: { jobId: { S: jobId } },
+    ConsistentRead: true,
+  }));
+  const item = out.Item;
+  if (!item) return null;
+  return {
+    status: item.status?.S ?? "pending",
+    message: item.message?.S ?? null,
+    filename: item.filename?.S ?? null,
+    s3Key: item.s3Key?.S ?? null,
+    originalS3Key: item.originalS3Key?.S ?? null,
+    originalFilename: item.originalFilename?.S ?? null,
+    durationSecs: item.durationSecs?.N ? Number(item.durationSecs.N) : null,
+    progressPct: item.progressPct?.N ? Number(item.progressPct.N) : null,
+    updatedAt: item.updatedAt?.N ? Number(item.updatedAt.N) : null,
+  };
+}
+
+function trackSubtitleJob(jobId: string, job: SrtJob): SrtJob {
+  const tracked = new Proxy(job, {
+    set(target, prop, value) {
+      const ok = Reflect.set(target, prop, value);
+      if (typeof prop === "string" && prop !== "s3Key" && prop !== "originalS3Key" && prop !== "errorNotified") {
+        schedulePersistSubtitleJob(jobId, target);
+      }
+      return ok;
+    },
+  });
+  jobs.set(jobId, tracked);
+  void persistSubtitleJob(jobId, tracked).catch((err) =>
+    logger.warn({ err, jobId }, "Failed to persist initial subtitle job state"),
+  );
+  return tracked;
+}
 
 function notifySubtitleReady(jobId: string, job: SrtJob): void {
   void notifyClientPush(job.notifyClientKey, {
@@ -1961,7 +2085,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
     return;
   }
 
-  jobs.set(jobId, {
+  trackSubtitleJob(jobId, {
     status: "pending",
     message: "Queued - starting soon...",
     filename: "subtitles.srt",
@@ -2059,11 +2183,13 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
 
       await processAudio(
         jobId,
-        audioFile,
+        preprocessed.path,
         language,
         job.filename,
         translateLang,
-        () => {}, // audioDir already cleaned up above
+        () => {
+          try { rmSync(audioDir, { recursive: true, force: true }); } catch {}
+        },
         { path: preprocessed.path, mimeType, durationSecs },
       );
     } catch (err: any) {
@@ -2188,7 +2314,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
 
   const baseName = originalFilename.replace(/\.[^.]+$/, "");
   const srtFilename = `${baseName}.srt`;
-  jobs.set(jobId, {
+  trackSubtitleJob(jobId, {
     status: "pending",
     message: "Queued - starting soon...",
     filename: srtFilename,
@@ -2257,7 +2383,7 @@ router.post(
     const jobId = randomUUID();
     const notifyClientKey = getNotifyClientKey(req);
 
-    jobs.set(jobId, {
+    trackSubtitleJob(jobId, {
       status: "pending",
       message: "Queued - starting soon...",
       filename: srtFilename,
@@ -2348,7 +2474,7 @@ router.post("/subtitles/cancel/:jobId", subtitlesCancelRateLimiter, (req: Reques
 });
 
 // ── Route: Poll job status ────────────────────────────────────────────────────
-router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
+router.get("/subtitles/status/:jobId", async (req: Request, res: Response) => {
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
@@ -2356,6 +2482,43 @@ router.get("/subtitles/status/:jobId", (req: Request, res: Response) => {
   }
   const job = jobs.get(jobId);
   if (!job) {
+    const persisted = await readPersistedSubtitleJob(jobId).catch((err) => {
+      logger.warn({ err, jobId }, "Failed persisted subtitle status lookup");
+      return null;
+    });
+    if (persisted) {
+      if (persisted.status === "done") {
+        const srt = persisted.s3Key ? await readTextFromS3(persisted.s3Key) : null;
+        const originalSrt = persisted.originalS3Key ? await readTextFromS3(persisted.originalS3Key) : null;
+        res.json({
+          status: "done",
+          message: persisted.message ?? "Subtitles ready!",
+          filename: persisted.filename ?? "subtitles.srt",
+          srt,
+          originalSrt,
+          originalFilename: persisted.originalFilename,
+          durationSecs: persisted.durationSecs,
+          progressPct: 100,
+        });
+        return;
+      }
+      if (persisted.status === "error") {
+        res.json({
+          status: "error",
+          error: persisted.message ?? "Subtitle generation failed",
+          durationSecs: persisted.durationSecs,
+          progressPct: persisted.progressPct ?? 0,
+        });
+        return;
+      }
+      res.json({
+        status: persisted.status,
+        message: persisted.message,
+        durationSecs: persisted.durationSecs,
+        progressPct: persisted.progressPct ?? 0,
+      });
+      return;
+    }
     if (!isSubtitlesQueueEnabled()) {
       res.json({ status: "not_found", message: "Job not found" });
       return;
@@ -2525,8 +2688,7 @@ export function createSubtitleJobState(
     completedAt: initial.completedAt,
     errorNotified: initial.errorNotified,
   };
-  jobs.set(jobId, job);
-  return job;
+  return trackSubtitleJob(jobId, job);
 }
 
 export function getSubtitleJobState(jobId: string): SrtJob | undefined {
@@ -2536,4 +2698,3 @@ export function getSubtitleJobState(jobId: string): SrtJob | undefined {
 export function deleteSubtitleJobState(jobId: string): void {
   jobs.delete(jobId);
 }
-
