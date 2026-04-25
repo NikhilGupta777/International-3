@@ -19,7 +19,7 @@ import {
   existsSync, mkdirSync, readdirSync, readFileSync,
   unlinkSync, rmdirSync, statSync, createReadStream, writeFileSync,
 } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { randomUUID } from "crypto";
 import { get as httpsGet } from "https";
 import { get as httpGet } from "http";
@@ -103,22 +103,52 @@ function cookiesToNetscape(list: BrowserCookie[]): string | null {
   return lines.length ? `# Netscape HTTP Cookie File\n\n${lines.join("\n")}\n` : null;
 }
 
+function decodeCookiesFromStorage(raw: string): string | null {
+  const trimmedRaw = raw.trim();
+  if (!trimmedRaw) return null;
+
+  let decoded = trimmedRaw;
+  try {
+    decoded = Buffer.from(trimmedRaw, "base64").toString("utf8").trim();
+  } catch {
+    decoded = trimmedRaw;
+  }
+
+  if (!decoded) return null;
+  if (
+    decoded.startsWith("# Netscape HTTP Cookie File") ||
+    decoded.startsWith(".youtube.com") ||
+    decoded.includes("\t")
+  ) {
+    return decoded.endsWith("\n") ? decoded : `${decoded}\n`;
+  }
+
+  try {
+    if (decoded.startsWith("{")) {
+      const parsed = JSON.parse(decoded) as { cookies?: BrowserCookie[] };
+      return Array.isArray(parsed.cookies) ? cookiesToNetscape(parsed.cookies) : null;
+    }
+    if (decoded.startsWith("[")) {
+      const parsed = JSON.parse(decoded) as BrowserCookie[];
+      return Array.isArray(parsed) ? cookiesToNetscape(parsed) : null;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 async function ensureCookiesLoaded(): Promise<void> {
   if (_cookiesLoaded) return;
   if (_cookiesLoading) return _cookiesLoading;
   _cookiesLoading = (async () => {
     try {
       if (!YTDLP_COOKIES_S3_KEY) return;
-      const raw = await readTextFromS3(YTDLP_COOKIES_S3_KEY);
-      if (!raw) return;
-      let decoded: string;
-      try { decoded = Buffer.from(raw.trim(), "base64").toString("utf8"); }
-      catch { decoded = raw.trim(); }
-      let parsed: BrowserCookie[];
-      try { parsed = JSON.parse(decoded); } catch { return; }
-      if (!Array.isArray(parsed)) return;
-      const netscape = cookiesToNetscape(parsed);
+      const netscape = decodeCookiesFromStorage(await readTextFromS3(YTDLP_COOKIES_S3_KEY));
       if (!netscape) return;
+      const cookieDir = dirname(YTDLP_COOKIES_FILE);
+      if (!existsSync(cookieDir)) mkdirSync(cookieDir, { recursive: true });
       writeFileSync(YTDLP_COOKIES_FILE, netscape, "utf8");
       logger.info("[timestamps] Cookies loaded from S3");
     } catch (err) {
@@ -153,17 +183,64 @@ const BASE_YTDLP_ARGS = [
 ];
 
 // ── yt-dlp runners ────────────────────────────────────────────────────────────
-async function runYtDlp(args: string[]): Promise<string> {
-  await ensureCookiesLoaded();
-  const cookieArgs = getCookieArgs();
-  const clientArgs = cookieArgs.length
+function isYouTubeUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(host);
+  } catch {
+    return false;
+  }
+}
+
+function isYouTubeBlockedError(message: string): boolean {
+  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|precondition.*failed|http error 401|requested format is not available|format.*not available/i.test(message);
+}
+
+function getFriendlyYtError(message: string): string {
+  if (/video unavailable|this video is unavailable|removed by|has been removed/i.test(message)) {
+    return "This video is unavailable or has been removed.";
+  }
+  if (/not made this video available|not available in your country|geo.?restrict/i.test(message)) {
+    return "This video is geo-restricted and cannot be accessed from this server.";
+  }
+  if (isYouTubeBlockedError(message)) {
+    return "YouTube blocked server access even after cookie/client fallback. Try again or use a different video.";
+  }
+  return "Could not load video info. Check the URL and try again.";
+}
+
+function getDefaultYoutubeArgs(hasCookies: boolean): string[] {
+  return hasCookies
     ? ["--extractor-args", "youtube:player_client=web,web_embedded,tv_embedded"]
     : ["--extractor-args", "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless"];
+}
+
+function getYoutubeFallbacks(hasCookies: boolean): string[][] {
+  return hasCookies
+    ? [
+        ["--extractor-args", "youtube:player_client=web"],
+        ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
+        ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+        ["--extractor-args", "youtube:player_client=tv_embedded"],
+        ["--extractor-args", "youtube:player_client=android_vr"],
+        ["--extractor-args", "youtube:player_client=mweb"],
+        ["--extractor-args", "youtube:player_client=ios"],
+      ]
+    : [
+        ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
+        ["--extractor-args", "youtube:player_client=tv_embedded"],
+        ["--extractor-args", "youtube:player_client=android_vr"],
+        ["--extractor-args", "youtube:player_client=mweb"],
+        ["--extractor-args", "youtube:player_client=ios"],
+      ];
+}
+
+function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const cmd = YTDLP_BIN || PYTHON_BIN;
     const cmdArgs = YTDLP_BIN
-      ? [...BASE_YTDLP_ARGS, ...clientArgs, ...cookieArgs, ...args]
-      : ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...clientArgs, ...cookieArgs, ...args];
+      ? [...BASE_YTDLP_ARGS, ...extraArgs, ...args]
+      : ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...args];
     const proc = spawn(cmd, cmdArgs, { env: PYTHON_ENV });
     let out = ""; let err = "";
     proc.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
@@ -173,26 +250,47 @@ async function runYtDlp(args: string[]): Promise<string> {
   });
 }
 
+async function runYtDlp(args: string[]): Promise<string> {
+  await ensureCookiesLoaded();
+  const maybeUrl = [...args].reverse().find((arg) => /^https?:\/\//i.test(arg));
+  const isYt = !!(maybeUrl && isYouTubeUrl(maybeUrl));
+  const cookieArgs = getCookieArgs();
+  const hasCookies = cookieArgs.length > 0;
+  const baseClientArgs = isYt ? getDefaultYoutubeArgs(hasCookies) : [];
+  const attempts: string[][] = hasCookies
+    ? [[...cookieArgs, ...baseClientArgs], baseClientArgs]
+    : [baseClientArgs];
+
+  if (isYt) {
+    for (const fallback of getYoutubeFallbacks(hasCookies)) {
+      if (hasCookies) attempts.push([...cookieArgs, ...fallback]);
+      attempts.push(fallback);
+    }
+  }
+
+  const attempted = new Set<string>();
+  let lastErr: Error | null = null;
+  for (const extra of attempts) {
+    const key = extra.join("\u0001");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
+    try {
+      return await runYtDlpOnce(extra, args);
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp failed");
+      if (!isYt || !isYouTubeBlockedError(lastErr.message)) throw lastErr;
+    }
+  }
+  throw lastErr ?? new Error("yt-dlp failed");
+}
+
 async function runYtDlpMetadata(url: string): Promise<any> {
   const raw = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
   return JSON.parse(raw);
 }
 
 function runYtDlpForSubs(args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    void ensureCookiesLoaded().then(() => {
-      const cookieArgs = getCookieArgs();
-      const cmd = YTDLP_BIN || PYTHON_BIN;
-      const cmdArgs = YTDLP_BIN
-        ? [...BASE_YTDLP_ARGS, ...cookieArgs, ...args]
-        : ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...cookieArgs, ...args];
-      const proc = spawn(cmd, cmdArgs, { env: PYTHON_ENV });
-      let err = "";
-      proc.stderr?.on("data", (d: Buffer) => { err += d.toString(); });
-      proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(err.slice(-1000) || `yt-dlp subs exited ${code}`)));
-      proc.on("error", reject);
-    });
-  });
+  return runYtDlp(args).then(() => undefined);
 }
 
 function fetchUrl(url: string): Promise<string> {
@@ -385,23 +483,10 @@ function assemblyAiWordsToText(words: AssemblyAiWord[]): string {
 }
 
 async function downloadAudio(url: string, outputPath: string): Promise<void> {
-  await ensureCookiesLoaded();
-  const cookieArgs = getCookieArgs();
-  const clientArgs = cookieArgs.length
-    ? ["--extractor-args", "youtube:player_client=web,web_embedded,tv_embedded"]
-    : ["--extractor-args", "youtube:player_client=tv_embedded,android_vr,mweb"];
-  const cmd = YTDLP_BIN || PYTHON_BIN;
-  const extraArgs = [...BASE_YTDLP_ARGS, ...clientArgs, ...cookieArgs,
+  await runYtDlp([
     "-x", "--audio-format", "mp3", "--audio-quality", "5",
-    "--no-playlist", "--no-warnings", "-o", outputPath, url];
-  const cmdArgs = YTDLP_BIN ? extraArgs : ["-m", "yt_dlp", ...extraArgs];
-  return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, cmdArgs, { env: PYTHON_ENV });
-    let err = "";
-    proc.stderr?.on("data", (d: Buffer) => { err += d.toString(); });
-    proc.on("close", (code) => code === 0 ? resolve() : reject(new Error(err.slice(-2000) || `Audio download failed (exit ${code})`)));
-    proc.on("error", reject);
-  });
+    "--no-playlist", "--no-warnings", "-o", outputPath, url,
+  ]).then(() => undefined);
 }
 
 // ── Gemini timestamp generation ───────────────────────────────────────────────
@@ -680,9 +765,7 @@ async function runTimestampAnalysis(
       meta = await runYtDlpMetadata(url);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      const friendly = /sign.in|bot|blocked|403/i.test(msg)
-        ? "YouTube blocked server access. Try again later."
-        : "Could not load video info. Check the URL and try again.";
+      const friendly = getFriendlyYtError(msg);
       job.status = "error"; job.error = friendly;
       emit("error", { message: friendly });
       return;
@@ -802,10 +885,7 @@ async function runTimestampPipelineFromUrl(
     meta = await runYtDlpMetadata(url);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const friendly = /sign.in|bot|blocked|403/i.test(msg)
-      ? "YouTube blocked server access. Try again later."
-      : "Could not load video info. Check the URL and try again.";
-    throw new Error(friendly);
+    throw new Error(getFriendlyYtError(msg));
   }
 
   const videoTitle: string = meta.title ?? "";
@@ -879,6 +959,10 @@ export async function runTimestampWorker(event: TimestampWorkerEvent): Promise<v
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 // POST /api/youtube/timestamps — start analysis
+function routeParam(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+}
+
 router.post("/youtube/timestamps", async (req: Request, res: Response) => {
   const { url, instructions } = req.body as { url?: string; instructions?: string };
   if (!url || typeof url !== "string" || !url.trim()) {
@@ -952,7 +1036,7 @@ router.post("/youtube/timestamps", async (req: Request, res: Response) => {
 
 // GET /api/youtube/timestamps/stream/:jobId — SSE stream (both inline and Lambda modes)
 router.get("/youtube/timestamps/stream/:jobId", async (req: Request, res: Response) => {
-  const jobId = req.params.jobId ?? "";
+  const jobId = routeParam(req.params.jobId);
 
   // ── Lambda mode: poll DynamoDB ────────────────────────────────────────────
   if (!tsJobs.has(jobId) && ddb && JOB_TABLE) {
@@ -1071,7 +1155,7 @@ router.get("/youtube/timestamps/stream/:jobId", async (req: Request, res: Respon
 
 // GET /api/youtube/timestamps/status/:jobId — polling fallback
 router.get("/youtube/timestamps/status/:jobId", async (req: Request, res: Response) => {
-  const jobId = req.params.jobId ?? "";
+  const jobId = routeParam(req.params.jobId);
 
   // Try DynamoDB first (Lambda mode)
   if (ddb && JOB_TABLE && !tsJobs.has(jobId)) {
