@@ -234,13 +234,14 @@ Resources:
         ImageUri: !Ref ImageUri
       Role: !GetAtt ApiRole.Arn
       MemorySize: 1536
-      Timeout: 90
+      Timeout: 900
       EphemeralStorage:
         Size: 1024
       Environment:
         Variables:
           NODE_ENV: production
           PORT: "8080"
+          YTDLP_COOKIES_FILE: /tmp/yt-cookies.txt
           SESSION_SECRET: !Ref SessionSecret
           WEBSITE_AUTH_USER: !Ref WebsiteAuthUser
           WEBSITE_AUTH_PASSWORD: !Ref WebsiteAuthPassword
