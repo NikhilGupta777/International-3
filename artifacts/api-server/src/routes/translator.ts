@@ -201,15 +201,22 @@ router.get("/history", async (req: Request, res: Response) => {
     const limitParam = Number(req.query.limit ?? 20);
     const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(50, limitParam)) : 20;
 
-    const result = await ddb.send(new ScanCommand({
-      TableName: DDB_TABLE,
-      FilterExpression: "#type = :type",
-      ExpressionAttributeNames: { "#type": "type" },
-      ExpressionAttributeValues: { ":type": { S: "translator" } },
-      Limit: 100,
-    }));
+    const items = [];
+    let exclusiveStartKey: Record<string, any> | undefined;
+    for (let page = 0; page < 5; page += 1) {
+      const result = await ddb.send(new ScanCommand({
+        TableName: DDB_TABLE,
+        FilterExpression: "#type = :type",
+        ExpressionAttributeNames: { "#type": "type" },
+        ExpressionAttributeValues: { ":type": { S: "translator" } },
+        ExclusiveStartKey: exclusiveStartKey,
+      }));
+      items.push(...(result.Items ?? []));
+      exclusiveStartKey = result.LastEvaluatedKey;
+      if (!exclusiveStartKey || items.length >= 200) break;
+    }
 
-    const jobs = (result.Items ?? [])
+    const jobs = items
       .map((item) => ({
         jobId: item.jobId?.S,
         status: item.status?.S ?? "UNKNOWN",
