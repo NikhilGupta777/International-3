@@ -2,7 +2,6 @@
  * AI Studio Copilot Agent Route — Full Agentic Execution
  * POST /api/agent/chat
  *
- * Each tool call WAITS for job completion and returns real download links.
  * SSE events: text | tool_start | tool_progress | tool_done | artifact | navigate | error | done
  */
 
@@ -12,63 +11,47 @@ import { GoogleGenAI, Type } from "@google/genai";
 const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-// Use most capable model for the agentic loop (function calling + reasoning)
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.1-pro-preview";
-// Fast model for single-turn / lightweight tasks
-const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3-flash-preview";
-// Max time to wait for a job to complete (8 min)
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.0-flash";
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
 
 // ── Resolve base URL for internal API calls ───────────────────────────────────
 function getApiBase(req: any): string {
-  // Use env override first (for Lambda / container environments)
   if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
   const proto = req.headers["x-forwarded-proto"] ?? "http";
   const host  = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
   return `${proto}://${host}/api`;
 }
 
-// ── SSE helper ────────────────────────────────────────────────────────────────
+// ── SSE helper — writes and flushes immediately ───────────────────────────────
 function sseEvent(res: any, payload: object) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  // Node HTTP response buffers in some configurations; flush if available
+  if (typeof (res as any).flush === "function") (res as any).flush();
 }
 
-// ── Job poller: wait for a download/clip job to finish ───────────────────────
+// ── Job poller ────────────────────────────────────────────────────────────────
 async function pollJobUntilDone(
   res: any,
   toolName: string,
   progressUrl: string,
   jobId: string,
   headers: Record<string, string>,
-): Promise<{ status: string; filename?: string; filesize?: number; s3Key?: string }> {
+  isConnected: () => boolean,
+): Promise<{ status: string; filename?: string; filesize?: number }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && isConnected()) {
     const r = await fetch(progressUrl, { headers });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
     const data = await r.json() as any;
-
-    const { status, percent, message, filename, filesize } = data;
-
-    // Stream progress back
-    sseEvent(res, {
-      type: "tool_progress",
-      name: toolName,
-      status,
-      percent: percent ?? null,
-      message: message ?? status,
-      jobId,
-    });
-
-    if (status === "done") return { status, filename, filesize };
-    if (["error", "cancelled", "expired", "not_found"].includes(status)) {
+    const { status, percent, message, filename } = data;
+    sseEvent(res, { type: "tool_progress", name: toolName, status, percent: percent ?? null, message: message ?? status, jobId });
+    if (status === "done") return { status, filename };
+    if (["error", "cancelled", "expired", "not_found"].includes(status))
       throw new Error(`Job ${status}: ${message ?? ""}`);
-    }
-
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
-
+  if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Job timed out after 8 minutes");
 }
 
@@ -78,33 +61,20 @@ async function pollSubtitleUntilDone(
   statusUrl: string,
   jobId: string,
   headers: Record<string, string>,
-): Promise<{ status: string; srtFilename?: string; vttFilename?: string }> {
+  isConnected: () => boolean,
+): Promise<{ status: string; srtFilename?: string }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && isConnected()) {
     const r = await fetch(statusUrl, { headers });
     if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
     const data = await r.json() as any;
-
-    const { status, progressPct, message, srtFilename, vttFilename } = data;
-
-    sseEvent(res, {
-      type: "tool_progress",
-      name: "generate_subtitles",
-      status,
-      percent: progressPct ?? null,
-      message: message ?? status,
-      jobId,
-    });
-
-    if (status === "done") return { status, srtFilename, vttFilename };
-    if (["error", "cancelled"].includes(status)) {
-      throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
-    }
-
+    const { status, progressPct, message, srtFilename } = data;
+    sseEvent(res, { type: "tool_progress", name: "generate_subtitles", status, percent: progressPct ?? null, message: message ?? status, jobId });
+    if (status === "done") return { status, srtFilename };
+    if (["error", "cancelled"].includes(status)) throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
-
+  if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Subtitle job timed out after 8 minutes");
 }
 
@@ -114,33 +84,20 @@ async function pollTimestampsUntilDone(
   statusUrl: string,
   jobId: string,
   headers: Record<string, string>,
+  isConnected: () => boolean,
 ): Promise<{ status: string; timestamps?: any }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
-
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && isConnected()) {
     const r = await fetch(statusUrl, { headers });
     if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
     const data = await r.json() as any;
-
     const { status, progressPct, message, timestamps } = data;
-
-    sseEvent(res, {
-      type: "tool_progress",
-      name: "generate_timestamps",
-      status,
-      percent: progressPct ?? null,
-      message: message ?? status,
-      jobId,
-    });
-
+    sseEvent(res, { type: "tool_progress", name: "generate_timestamps", status, percent: progressPct ?? null, message: message ?? status, jobId });
     if (status === "done") return { status, timestamps };
-    if (["error", "cancelled"].includes(status)) {
-      throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
-    }
-
+    if (["error", "cancelled"].includes(status)) throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
-
+  if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Timestamp job timed out after 8 minutes");
 }
 
@@ -159,9 +116,7 @@ const STUDIO_TOOLS: any[] = [
     description: "Fetch metadata about a YouTube video (title, duration, uploader, view count). Always call this first if you don't already have the title.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        url: { type: Type.STRING, description: "YouTube video URL" },
-      },
+      properties: { url: { type: Type.STRING, description: "YouTube video URL" } },
       required: ["url"],
     },
   },
@@ -222,9 +177,7 @@ const STUDIO_TOOLS: any[] = [
     description: "Generate YouTube chapter timestamps from a video using AI. Returns the timestamps text directly.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        url: { type: Type.STRING, description: "YouTube video URL" },
-      },
+      properties: { url: { type: Type.STRING, description: "YouTube video URL" } },
       required: ["url"],
     },
   },
@@ -233,9 +186,7 @@ const STUDIO_TOOLS: any[] = [
     description: "List files in the public share gallery.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        limit: { type: Type.NUMBER, description: "Max files to return. Default: 12." },
-      },
+      properties: { limit: { type: Type.NUMBER, description: "Max files to return. Default: 12." } },
       required: [],
     },
   },
@@ -271,17 +222,30 @@ YOUR CAPABILITIES (via tools that actually execute server-side):
 STRICT RULES — NEVER VIOLATE:
 1. ALWAYS call a tool immediately when the user gives a URL + task. Never say you "can't" access YouTube or use tools.
 2. NEVER say "I don't have access to tools", "I cannot click links", or "I need the transcript". You have tools — USE THEM.
-3. For clip cutting: extract startTime and endTime from the user's message (e.g. "5:32 to 6:23" → startTime="5:32", endTime="6:23") and call cut_video_clip immediately.
+3. For clip cutting: extract startTime and endTime from the user's message and call cut_video_clip immediately.
 4. For subtitle requests: call generate_subtitles immediately. Do NOT ask for a transcript.
 5. Tools wait for completion and return real download URLs. Present the download button to the user.
 6. Be ultra-concise before calling tools. Say "On it!" or "Cutting clip now..." then call the tool.
 7. After a tool completes, summarize what was done in 1-2 sentences and offer follow-up actions.
-8. For Bhagwat/devotional content, be respectful.
-9. If a tool fails, explain the error clearly and suggest alternatives.
+8. If a tool fails, explain the error clearly and suggest alternatives.
 
-WHEN YOU SEE: [YouTube URL] + [task] → IMMEDIATELY call the right tool. No questions, no explanations, just execute.
+WHEN YOU SEE: [YouTube URL] + [task] → IMMEDIATELY call the right tool. No questions, no explanations, just execute.`;
 
-Download link format after tool completion: Present the link from the artifact card — the user gets a green download button automatically.`;
+// ── Build internal headers from request ───────────────────────────────────────
+function buildInternalHeaders(req: any): Record<string, string> {
+  const INTERNAL_SECRET = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Cookie: req.headers.cookie ?? "",
+    "x-internal-agent": INTERNAL_SECRET,
+  };
+  if (req.headers["x-forwarded-for"]) headers["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
+  else if (req.ip) headers["x-forwarded-for"] = req.ip;
+  if (req.headers["x-notify-client"]) headers["x-notify-client"] = String(req.headers["x-notify-client"]);
+  if (req.headers["x-client-id"]) headers["x-client-id"] = String(req.headers["x-client-id"]);
+  if (req.headers["x-device-id"]) headers["x-device-id"] = String(req.headers["x-device-id"]);
+  return headers;
+}
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 async function executeTool(
@@ -289,23 +253,10 @@ async function executeTool(
   args: Record<string, any>,
   req: any,
   res: any,
+  isConnected: () => boolean,
 ): Promise<{ result: any; artifact?: object }> {
   const apiBase = getApiBase(req);
-  const INTERNAL_SECRET = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
-
-  const internalHeaders: Record<string, string> = {
-    "Content-Type": "application/json",
-    Cookie: req.headers.cookie ?? "",
-    "x-internal-agent": INTERNAL_SECRET,
-  };
-
-  // Forward client identity so jobs created by the agent appear in the user's Activity panel
-  if (req.headers["x-forwarded-for"]) internalHeaders["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
-  else if (req.ip) internalHeaders["x-forwarded-for"] = req.ip;
-
-  if (req.headers["x-notify-client"]) internalHeaders["x-notify-client"] = String(req.headers["x-notify-client"]);
-  if (req.headers["x-client-id"]) internalHeaders["x-client-id"] = String(req.headers["x-client-id"]);
-  if (req.headers["x-device-id"]) internalHeaders["x-device-id"] = String(req.headers["x-device-id"]);
+  const internalHeaders = buildInternalHeaders(req);
 
   switch (name) {
 
@@ -324,102 +275,66 @@ async function executeTool(
       const startSecs = parseTimestamp(String(args.startTime));
       const endSecs   = parseTimestamp(String(args.endTime));
       const quality   = args.quality ?? "720p";
-
       sseEvent(res, { type: "tool_progress", name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
-
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url, startTime: startSecs, endTime: endSecs, quality }),
       });
-
       if (!r.ok) {
         const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Clip cut failed: ${r.status}`);
       }
-
       const { jobId } = await r.json() as any;
-
-      // Poll until done
-      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders);
-
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: { jobId, downloadUrl, startTime: args.startTime, endTime: args.endTime },
-        artifact: {
-          artifactType: "download",
-          label: `Clip ready: ${args.startTime} → ${args.endTime}`,
-          downloadUrl,
-          jobId,
-        },
+        artifact: { artifactType: "download", label: `Clip ready: ${args.startTime} → ${args.endTime}`, downloadUrl, jobId },
       };
     }
 
     case "download_video": {
       const quality = args.quality ?? "best";
-
       sseEvent(res, { type: "tool_progress", name, message: `Starting download (${quality})...` });
-
-      // Get info first to pick best format
-      let formatId = quality === "audio_only" ? "audio:bestaudio" : "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
+      let formatId = "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
+      if (quality === "audio_only") formatId = "audio:bestaudio";
       if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]";
       if (quality === "720p")  formatId = "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]";
       if (quality === "480p")  formatId = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]";
       if (quality === "360p")  formatId = "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]";
-
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url, formatId }),
       });
-
       if (!r.ok) {
         const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Download failed: ${r.status}`);
       }
-
       const { jobId } = await r.json() as any;
-
-      // Poll until done
-      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders);
+      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected);
       const downloadUrl = `/api/youtube/file/${jobId}`;
-
       return {
         result: { jobId, downloadUrl, filename: final.filename },
-        artifact: {
-          artifactType: "download",
-          label: `Video ready: ${final.filename ?? "video.mp4"}`,
-          downloadUrl,
-          jobId,
-        },
+        artifact: { artifactType: "download", label: `Video ready: ${final.filename ?? "video.mp4"}`, downloadUrl, jobId },
       };
     }
 
     case "generate_subtitles": {
       sseEvent(res, { type: "tool_progress", name, message: "Starting subtitle generation..." });
-
       const r = await fetch(`${apiBase}/subtitles/generate`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({
-          url: args.url,
-          language: args.language ?? "auto",
-          translateTo: args.translateTo ?? null,
-          source: "url",
-        }),
+        body: JSON.stringify({ url: args.url, language: args.language ?? "auto", translateTo: args.translateTo ?? null, source: "url" }),
       });
-
       if (!r.ok) {
         const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
       }
-
       const { id: jobId } = await r.json() as any;
-
-      // Poll until done
-      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${jobId}`, jobId, internalHeaders);
+      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${jobId}`, jobId, internalHeaders, isConnected);
       const srtUrl = `/api/subtitles/status/${jobId}/download?format=srt`;
-
       return {
         result: { jobId, srtFilename: final.srtFilename },
         artifact: {
@@ -433,54 +348,35 @@ async function executeTool(
 
     case "find_best_clips": {
       sseEvent(res, { type: "tool_progress", name, message: "Starting best clips analysis..." });
-
       const r = await fetch(`${apiBase}/youtube/clips`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({
-          url: args.url,
-          durationMode: args.durationMode ?? "auto",
-          instructions: args.instructions ?? "",
-        }),
+        body: JSON.stringify({ url: args.url, durationMode: args.durationMode ?? "auto", instructions: args.instructions ?? "" }),
       });
-
       if (!r.ok) {
         const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Best clips job failed: ${r.status}`);
       }
-
       const { jobId } = await r.json() as any;
-
       return {
         result: { jobId, message: "Best clips analysis started. Check the Best Clips tab for results." },
-        artifact: {
-          artifactType: "tab_link",
-          label: "Best Clips analysis started — open tab to see results",
-          tab: "clips",
-          jobId,
-        },
+        artifact: { artifactType: "tab_link", label: "Best Clips analysis started — open tab to see results", tab: "clips", jobId },
       };
     }
 
     case "generate_timestamps": {
       sseEvent(res, { type: "tool_progress", name, message: "Generating timestamps..." });
-
       const r = await fetch(`${apiBase}/youtube/timestamps`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
-
       if (!r.ok) {
         const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Timestamps failed: ${r.status}`);
       }
-
       const { jobId } = await r.json() as any;
-
-      // Poll until done
-      const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders);
-
+      const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders, isConnected);
       return {
         result: { jobId, timestamps: final.timestamps },
         artifact: final.timestamps ? {
@@ -490,17 +386,16 @@ async function executeTool(
         } : undefined,
       };
     }
+
     case "list_shared_files": {
       const limit = args.limit ?? 12;
-      const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, {
-        headers: { ...internalHeaders },
-      });
+      const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, { headers: internalHeaders });
       const data = await r.json().catch(() => ({ items: [] }));
       return { result: data };
     }
 
     case "navigate_to_tab": {
-      // Handled in the loop — just return ok
+      sseEvent(res, { type: "navigate", tab: args.tab });
       return { result: { navigated: true, tab: args.tab } };
     }
 
@@ -525,147 +420,130 @@ router.post("/agent/chat", async (req, res) => {
     return;
   }
 
-  // Setup SSE
+  // ── Setup SSE ──────────────────────────────────────────────────────────────
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  let isClientConnected = true;
-  req.on("close", () => {
-    isClientConnected = false;
-  });
+  let clientConnected = true;
+  req.on("close", () => { clientConnected = false; });
+  const isConnected = () => clientConnected;
 
-  // Keep connection alive against ALB/proxy idle timeouts (send SSE comment every 15s)
+  // Send SSE comment every 20s to keep proxy / ALB from closing idle connections
   const keepAlive = setInterval(() => {
-    if (isClientConnected) res.write(":\n\n");
-  }, 15000);
+    if (clientConnected) res.write(":\n\n");
+  }, 20000);
 
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-    const geminiContents = messages.map((m) => ({
-      role: m.role,
-      parts: [{ text: m.content }],
-    }));
+    // Build Gemini contents — only text parts to avoid confusing the model
+    let loopContents: any[] = messages
+      .filter(m => m.content.trim())
+      .map(m => ({ role: m.role, parts: [{ text: m.content }] }));
 
-    let continueLoop = true;
-    let loopContents: any[] = [...geminiContents];
     let iterations = 0;
     const MAX_ITERATIONS = 10;
 
-    while (continueLoop && iterations < MAX_ITERATIONS && isClientConnected) {
+    while (iterations < MAX_ITERATIONS && isConnected()) {
       iterations++;
 
+      // ── 1. Stream the AI response ─────────────────────────────────────────
       const stream = await ai.models.generateContentStream({
         model: AGENT_MODEL,
         contents: loopContents,
         config: {
           systemInstruction: SYSTEM_PROMPT,
           tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
-          toolConfig: {
-            functionCallingConfig: {
-              mode: "AUTO" as any,
-            },
-          },
+          toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
           temperature: 0.15,
           maxOutputTokens: 2048,
-        }
+        },
       });
 
-      const allParts: any[] = [];
-      let hasToolCall = false;
+      // Collect all chunks and stream text live to client
+      let fullText = "";
+      const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
 
       for await (const chunk of stream) {
-        if (!isClientConnected) break;
+        if (!isConnected()) break;
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
           if (p.text) {
+            fullText += p.text;
+            // Stream text token live immediately
             sseEvent(res, { type: "text", content: p.text });
           }
           if (p.functionCall) {
-            hasToolCall = true;
-            const { name, args } = p.functionCall;
-            const toolArgs = (args ?? {}) as Record<string, any>;
-            
-            sseEvent(res, { type: "tool_start", name, args: toolArgs });
-            if (name === "navigate_to_tab") {
-              sseEvent(res, { type: "navigate", tab: toolArgs.tab });
-            }
+            const fc = p.functionCall;
+            functionCalls.push({ name: fc.name!, args: (fc.args ?? {}) as Record<string, any> });
           }
-          allParts.push(p);
         }
       }
 
-      // Reconstruct final parts array, grouping text to avoid API errors
-      const finalParts: any[] = [];
-      let currentText = "";
-      for (const p of allParts) {
-        if (p.text) currentText += p.text;
-        else if (p.functionCall) {
-          if (currentText) {
-            finalParts.push({ text: currentText });
-            currentText = "";
-          }
-          finalParts.push(p);
-        }
-      }
-      if (currentText) {
-        finalParts.push({ text: currentText });
+      if (!isConnected()) break;
+
+      // ── 2. No function calls → final text response, done ─────────────────
+      if (functionCalls.length === 0) {
+        break;
       }
 
+      // ── 3. Execute each tool sequentially, streaming progress ─────────────
       const toolResults: any[] = [];
 
-      for (const part of finalParts) {
-        if (!isClientConnected) break;
-        if (part.functionCall) {
-          const { name, args } = part.functionCall;
-          const toolArgs = (args ?? {}) as Record<string, any>;
+      for (const fc of functionCalls) {
+        if (!isConnected()) break;
 
-          let toolResult: any;
-          let toolArtifact: object | undefined;
+        // Announce the tool is starting NOW (exactly once per tool)
+        sseEvent(res, { type: "tool_start", name: fc.name, args: fc.args });
 
-          try {
-            const { result, artifact } = await executeTool(name!, toolArgs, req, res);
-            toolResult = result;
-            toolArtifact = artifact;
-          } catch (toolErr: any) {
-            toolResult = { error: toolErr?.message ?? "Tool execution failed" };
-            sseEvent(res, { type: "tool_progress", name, status: "error", message: toolErr?.message ?? "Failed" });
-          }
+        let toolResult: any;
+        let toolArtifact: object | undefined;
 
-          sseEvent(res, { type: "tool_done", name, result: toolResult });
-
-          if (toolArtifact) {
-            sseEvent(res, { type: "artifact", ...toolArtifact });
-          }
-
-          toolResults.push({
-            functionResponse: {
-              name,
-              response: { result: toolResult },
-            },
-          });
+        try {
+          const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected);
+          toolResult = result;
+          toolArtifact = artifact;
+        } catch (toolErr: any) {
+          toolResult = { error: toolErr?.message ?? "Tool execution failed" };
+          sseEvent(res, { type: "tool_progress", name: fc.name, status: "error", message: toolErr?.message ?? "Failed" });
         }
+
+        sseEvent(res, { type: "tool_done", name: fc.name, result: toolResult });
+
+        if (toolArtifact) {
+          sseEvent(res, { type: "artifact", ...(toolArtifact as object) });
+        }
+
+        toolResults.push({
+          functionResponse: {
+            name: fc.name,
+            response: { result: toolResult },
+          },
+        });
       }
 
-      if (hasToolCall) {
-        loopContents = [
-          ...loopContents,
-          { role: "model" as const, parts: finalParts },
-          { role: "user" as const, parts: toolResults },
-        ];
-      } else {
-        continueLoop = false;
+      // ── 4. Build model + function response parts for next loop iteration ──
+      const modelParts: any[] = [];
+      if (fullText) modelParts.push({ text: fullText });
+      for (const fc of functionCalls) {
+        modelParts.push({ functionCall: { name: fc.name, args: fc.args } });
       }
+
+      loopContents = [
+        ...loopContents,
+        { role: "model" as const, parts: modelParts },
+        { role: "user" as const, parts: toolResults },
+      ];
     }
 
-    if (isClientConnected) {
+    if (isConnected()) {
       sseEvent(res, { type: "done" });
     }
   } catch (err: any) {
-    if (isClientConnected) {
+    if (isConnected()) {
       sseEvent(res, { type: "error", message: err?.message ?? "Unknown copilot error" });
     }
   } finally {

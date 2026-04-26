@@ -363,6 +363,9 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
+  // Stable ref to avoid stale closure captures during streaming
+  const currentSessionIdRef = useRef<string | null>(null);
+  const currentMessagesRef = useRef<Message[]>([]);
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -372,10 +375,19 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     setSessions(loaded);
     if (loaded.length > 0) {
       setCurrentSessionId(loaded[0].id);
+      currentSessionIdRef.current = loaded[0].id;
     }
   }, []);
 
   const currentMessages = sessions.find(s => s.id === currentSessionId)?.messages ?? [];
+
+  // Keep refs in sync
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
+  useEffect(() => {
+    currentMessagesRef.current = currentMessages;
+  }, [currentMessages]);
 
   // Save sessions to localStorage whenever they change
   useEffect(() => {
@@ -388,15 +400,12 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentMessages]);
 
-  const updateCurrentSession = useCallback((updater: (msgs: Message[]) => Message[]) => {
+  // Always uses the latest sessionId from ref — no stale closure
+  const updateSession = useCallback((sessionId: string, updater: (msgs: Message[]) => Message[]) => {
     setSessions(prev => {
-      const activeId = currentSessionId ?? crypto.randomUUID();
-      const existing = prev.find(s => s.id === activeId);
-
+      const existing = prev.find(s => s.id === sessionId);
       const oldMsgs = existing?.messages ?? [];
       const newMsgs = updater(oldMsgs);
-
-      // Extract title from first user message
       let title = existing?.title ?? "New Chat";
       if (!existing || existing.title === "New Chat") {
         const firstUser = newMsgs.find(m => m.role === "user")?.parts[0];
@@ -404,22 +413,20 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
           title = firstUser.content.slice(0, 40) + (firstUser.content.length > 40 ? "..." : "");
         }
       }
-
-      const updatedSession: ChatSession = {
-        id: activeId,
-        title,
-        updatedAt: new Date(),
-        messages: newMsgs
-      };
-
-      if (!existing && !currentSessionId) {
-        setTimeout(() => setCurrentSessionId(activeId), 0);
-      }
-
-      const filtered = prev.filter(s => s.id !== activeId);
-      return [updatedSession, ...filtered];
+      const updated: ChatSession = { id: sessionId, title, updatedAt: new Date(), messages: newMsgs };
+      return [updated, ...prev.filter(s => s.id !== sessionId)];
     });
-  }, [currentSessionId]);
+  }, []);
+
+  // Creates a new session if needed and returns its id
+  const ensureSession = useCallback((): string => {
+    const sid = currentSessionIdRef.current ?? crypto.randomUUID();
+    if (!currentSessionIdRef.current) {
+      currentSessionIdRef.current = sid;
+      setCurrentSessionId(sid);
+    }
+    return sid;
+  }, []);
 
   // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -434,9 +441,9 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     if (!trimmed || streaming) return;
 
     setInput("");
-    if (inputRef.current) {
-      inputRef.current.style.height = "auto";
-    }
+    if (inputRef.current) inputRef.current.style.height = "auto";
+
+    const sessionId = ensureSession();
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
@@ -444,27 +451,26 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       parts: [{ kind: "text", content: trimmed }],
       timestamp: new Date(),
     };
-
-    updateCurrentSession(prev => [...prev, userMsg]);
+    updateSession(sessionId, prev => [...prev, userMsg]);
     setStreaming(true);
 
-    // Build conversation history for API
-    const history = [...currentMessages, userMsg].map(m => ({
+    // Build history from the ref (not stale closure)
+    const history = [...currentMessagesRef.current, userMsg].map(m => ({
       role: m.role === "assistant" ? "model" : "user",
       content: m.parts.filter(p => p.kind === "text").map(p => (p as any).content).join("\n"),
-    }));
+    })).filter(m => m.content.trim());
 
-    // Create assistant message placeholder
     const assistantId = crypto.randomUUID();
-    const assistantMsg: Message = {
-      id: assistantId,
-      role: "assistant",
-      parts: [],
-      timestamp: new Date(),
-    };
-    updateCurrentSession(prev => [...prev, assistantMsg]);
+    updateSession(sessionId, prev => [...prev, {
+      id: assistantId, role: "assistant", parts: [], timestamp: new Date(),
+    }]);
 
     abortRef.current = new AbortController();
+
+    // Helper: patch the assistant message in place
+    const patchAssistant = (updater: (msg: Message) => Message) => {
+      updateSession(sessionId, msgs => msgs.map(m => m.id === assistantId ? updater(m) : m));
+    };
 
     try {
       const resp = await fetch(`${BASE}/api/agent/chat`, {
@@ -474,33 +480,30 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         signal: abortRef.current.signal,
       });
 
-      if (!resp.ok || !resp.body) {
-        throw new Error(`Server error: ${resp.status}`);
-      }
+      if (!resp.ok || !resp.body) throw new Error(`Server error: ${resp.status}`);
 
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
-
-      const updateAssistant = (updater: (prev: Message) => Message) => {
-        updateCurrentSession(msgs => msgs.map(m => m.id === assistantId ? updater(m) : m));
-      };
 
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
+        // Split on newlines; keep trailing partial line in buffer
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (!raw) continue;
           try {
-            const evt = JSON.parse(line.slice(6)) as SseEvent;
+            const evt = JSON.parse(raw) as SseEvent;
 
             if (evt.type === "text") {
-              updateAssistant(m => {
+              patchAssistant(m => {
                 const parts = [...m.parts];
                 const last = parts[parts.length - 1];
                 if (last?.kind === "text") {
@@ -511,26 +514,19 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             }
 
             else if (evt.type === "tool_start") {
-              updateAssistant(m => {
-                const existing = m.parts.find(p => p.kind === "tool_start" && p.name === evt.name && !p.done);
-                if (existing) {
-                  return {
-                    ...m,
-                    parts: m.parts.map(p => p === existing ? { ...p, args: evt.args } : p)
-                  };
-                }
-                return {
-                  ...m,
-                  parts: [...m.parts, { kind: "tool_start", name: evt.name, args: evt.args, done: false }],
-                };
+              // Insert tool card only once per tool name; ignore duplicates
+              patchAssistant(m => {
+                const hasPending = m.parts.some(p => p.kind === "tool_start" && (p as any).name === evt.name && !p.done);
+                if (hasPending) return m;
+                return { ...m, parts: [...m.parts, { kind: "tool_start", name: evt.name, args: evt.args, done: false }] };
               });
             }
 
             else if (evt.type === "tool_progress") {
-              updateAssistant(m => ({
+              patchAssistant(m => ({
                 ...m,
                 parts: m.parts.map(p =>
-                  p.kind === "tool_start" && p.name === evt.name && !p.done
+                  p.kind === "tool_start" && (p as any).name === evt.name && !p.done
                     ? { ...p, progress: evt.percent ?? null, progressMsg: evt.message ?? evt.status }
                     : p
                 ),
@@ -538,10 +534,10 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             }
 
             else if (evt.type === "tool_done") {
-              updateAssistant(m => ({
+              patchAssistant(m => ({
                 ...m,
                 parts: m.parts.map(p =>
-                  p.kind === "tool_start" && p.name === evt.name && !p.done
+                  p.kind === "tool_start" && (p as any).name === evt.name && !p.done
                     ? { ...p, done: true, result: evt.result, progress: 100 }
                     : p
                 ),
@@ -554,41 +550,30 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
             else if (evt.type === "artifact") {
               const e = evt as any;
-              updateAssistant(m => ({
+              patchAssistant(m => ({
                 ...m,
                 parts: [...m.parts, {
-                  kind: "artifact",
-                  artifactType: e.artifactType,
-                  label: e.label,
-                  tab: e.tab,
-                  jobId: e.jobId,
-                  downloadUrl: e.downloadUrl,
-                  content: e.content,
+                  kind: "artifact", artifactType: e.artifactType, label: e.label,
+                  tab: e.tab, jobId: e.jobId, downloadUrl: e.downloadUrl, content: e.content,
                 }],
               }));
             }
 
             else if (evt.type === "error") {
-              updateAssistant(m => ({
-                ...m,
-                parts: [...m.parts, { kind: "text", content: `⚠️ ${evt.message}` }],
-              }));
+              patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `⚠️ ${evt.message}` }] }));
             }
 
-          } catch { /* malformed SSE line, ignore */ }
+          } catch { /* malformed SSE line — skip */ }
         }
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
-        updateCurrentSession(msgs => msgs.map(m => m.id === assistantId
-          ? { ...m, parts: [...m.parts, { kind: "text", content: "⚠️ Connection error. Please try again." }] }
-          : m
-        ));
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "⚠️ Connection error. Please try again." }] }));
       }
     } finally {
       setStreaming(false);
     }
-  }, [currentMessages, streaming, BASE, onNavigate, updateCurrentSession, currentSessionId]);
+  }, [streaming, BASE, onNavigate, updateSession, ensureSession]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
