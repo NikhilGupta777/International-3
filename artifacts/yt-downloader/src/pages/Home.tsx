@@ -38,6 +38,7 @@ import {
   type ClipHistoryEntry,
 } from "@/lib/clip-history";
 import { loadBestClipsHistory as loadBestClipsHistoryForNotify } from "@/lib/best-clips-history";
+import { loadTranslatorHistory as loadTranslatorHistoryForNotify } from "@/lib/translator-history";
 import {
   enablePushNotifications,
   getPushConfig,
@@ -189,6 +190,7 @@ function buildCompletionSnapshot(): Set<string> {
   for (const x of loadClipHistoryForNotify()) keys.add(`clip:${x.jobId}`);
   for (const x of loadCompletedDownloadsForNotify()) keys.add(`download:${x.jobId}`);
   for (const x of loadBestClipsHistoryForNotify()) keys.add(`bestclips:${x.id}`);
+  for (const x of loadTranslatorHistoryForNotify()) keys.add(`translator:${x.jobId}`);
   return keys;
 }
 
@@ -544,6 +546,10 @@ export default function Home() {
           const id = key.slice("bestclips:".length);
           const entry = loadBestClipsHistoryForNotify().find((x) => x.id === id);
           if (entry) notifyBackgroundCompletion("Best clips", `${entry.clipCount} clips ready`);
+        } else if (key.startsWith("translator:")) {
+          const id = key.slice("translator:".length);
+          const entry = loadTranslatorHistoryForNotify().find((x) => x.jobId === id);
+          if (entry) notifyBackgroundCompletion("Translation", entry.filename);
         }
 
         playSoftCompletionChime();

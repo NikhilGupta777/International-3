@@ -19,6 +19,7 @@ import {
   DynamoDBClient,
   PutItemCommand,
   GetItemCommand,
+  ScanCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
   BatchClient,
@@ -83,6 +84,7 @@ router.post("/submit", async (req: Request, res: Response) => {
       multiSpeaker   = false,
       asrModel       = "large-v3-turbo",
       translationMode = "default",
+      filename,
     } = req.body;
 
     if (!jobId || !s3Key) {
@@ -101,8 +103,12 @@ router.post("/submit", async (req: Request, res: Response) => {
         progress:    { N: "0" },
         step:        { S: "Job queued, waiting for worker..." },
         s3InputKey:  { S: s3Key },
+        filename:    { S: typeof filename === "string" && filename.trim() ? filename.trim() : "video.mp4" },
         targetLang:  { S: targetLang },
         targetLangCode: { S: targetLangCode },
+        sourceLang:  { S: sourceLang },
+        voiceClone:  { BOOL: Boolean(voiceClone) },
+        lipSync:     { BOOL: Boolean(lipSync) },
         createdAt:   { N: String(now) },
         updatedAt:   { N: String(now) },
       },
@@ -174,10 +180,13 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       progress:     parseInt(item.progress?.N ?? "0"),
       step:         item.step?.S ?? "",
       error:        item.error?.S,
+      filename:     item.filename?.S,
       targetLang:   item.targetLang?.S,
+      targetLangCode: item.targetLangCode?.S,
+      sourceLang:   item.sourceLang?.S,
       segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
-      updatedAt:    item.updatedAt?.S,
-      createdAt:    item.createdAt?.S,
+      updatedAt:    item.updatedAt?.N ? parseInt(item.updatedAt.N) : item.updatedAt?.S,
+      createdAt:    item.createdAt?.N ? parseInt(item.createdAt.N) : item.createdAt?.S,
     });
   } catch (err: any) {
     console.error("[Translator] /status error:", err);
@@ -187,6 +196,46 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
 
 // ── GET /result/:jobId ────────────────────────────────────────────────────────
 // Returns presigned GET URLs for the final output files.
+router.get("/history", async (req: Request, res: Response) => {
+  try {
+    const limitParam = Number(req.query.limit ?? 20);
+    const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(50, limitParam)) : 20;
+
+    const result = await ddb.send(new ScanCommand({
+      TableName: DDB_TABLE,
+      FilterExpression: "#type = :type",
+      ExpressionAttributeNames: { "#type": "type" },
+      ExpressionAttributeValues: { ":type": { S: "translator" } },
+      Limit: 100,
+    }));
+
+    const jobs = (result.Items ?? [])
+      .map((item) => ({
+        jobId: item.jobId?.S,
+        status: item.status?.S ?? "UNKNOWN",
+        progress: parseInt(item.progress?.N ?? "0"),
+        step: item.step?.S ?? "",
+        error: item.error?.S,
+        filename: item.filename?.S ?? "video.mp4",
+        targetLang: item.targetLang?.S,
+        targetLangCode: item.targetLangCode?.S,
+        sourceLang: item.sourceLang?.S,
+        segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
+        createdAt: item.createdAt?.N ? parseInt(item.createdAt.N) : undefined,
+        updatedAt: item.updatedAt?.N ? parseInt(item.updatedAt.N) : item.updatedAt?.S,
+        outputKey: item.outputKey?.S,
+      }))
+      .filter((job) => job.jobId)
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+      .slice(0, limit);
+
+    return res.json({ jobs });
+  } catch (err: any) {
+    console.error("[Translator] /history error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 router.get("/result/:jobId", async (req: Request, res: Response) => {
   try {
     const { jobId } = req.params;

@@ -28,21 +28,32 @@ import {
   deleteFromBestClipsHistory,
   type BestClipsHistoryEntry,
 } from "@/lib/best-clips-history";
+import {
+  loadActiveTranslatorJobs,
+  saveActiveTranslatorJobs,
+  loadTranslatorHistory,
+  saveTranslatorHistory,
+  deleteTranslatorHistory,
+  clearTranslatorHistory,
+  type TranslatorHistoryEntry,
+} from "@/lib/translator-history";
 
-export type ActivityTabMode = "download" | "clips" | "subtitles" | "clipcutter";
+export type ActivityTabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator";
 
 export type ActivityCompletedEntry =
   | { kind: "subtitle"; data: SubtitleHistoryEntry }
   | { kind: "clip"; data: ClipHistoryEntry }
   | { kind: "bestclips"; data: BestClipsHistoryEntry }
-  | { kind: "download"; data: CompletedDownloadRecord };
+  | { kind: "download"; data: CompletedDownloadRecord }
+  | { kind: "translator"; data: TranslatorHistoryEntry };
 
 export interface ActivityActiveEntry {
-  kind: "subtitle" | "clipcutter" | "download";
+  kind: "subtitle" | "clipcutter" | "download" | "translator";
   label: string;
   sub: string;
   tab: ActivityTabMode;
   startedAt: number;
+  progress?: number;
 }
 
 interface ActivitySnapshot {
@@ -85,7 +96,10 @@ function loadAllCompleted(): ActivityCompletedEntry[] {
   const downloads = loadCompletedDownloads().map(
     (data): ActivityCompletedEntry => ({ kind: "download", data }),
   );
-  return [...subtitles, ...clips, ...bestClips, ...downloads].sort(
+  const translations = loadTranslatorHistory().map(
+    (data): ActivityCompletedEntry => ({ kind: "translator", data }),
+  );
+  return [...subtitles, ...clips, ...bestClips, ...downloads, ...translations].sort(
     (a, b) => b.data.createdAt - a.data.createdAt,
   );
 }
@@ -127,6 +141,17 @@ function loadAllActive(): ActivityActiveEntry[] {
       sub: shortActivityUrl(downloadJob.url),
       tab: "download",
       startedAt: downloadJob.savedAt,
+    });
+  }
+
+  for (const translatorJob of loadActiveTranslatorJobs()) {
+    active.push({
+      kind: "translator",
+      label: `Translating ${translatorJob.progress}%`,
+      sub: translatorJob.filename,
+      tab: "translator",
+      startedAt: translatorJob.startedAt,
+      progress: translatorJob.progress,
     });
   }
 
@@ -268,6 +293,71 @@ async function syncActiveWithServer() {
       }
     } catch {}
   }
+
+  const translatorJobs = loadActiveTranslatorJobs();
+  if (translatorJobs.length > 0) {
+    const kept = [] as typeof translatorJobs;
+    for (const job of translatorJobs) {
+      try {
+        const res = await fetch(
+          `${BASE}/api/translator/status/${encodeURIComponent(job.jobId)}`,
+        );
+        if (res.status === 404) {
+          if (Date.now() - job.startedAt < QUEUE_MISSING_GRACE_MS) kept.push(job);
+          continue;
+        }
+        if (!res.ok) {
+          kept.push(job);
+          continue;
+        }
+        const data = (await res.json()) as {
+          status?: string;
+          progress?: number;
+          step?: string;
+          filename?: string;
+          targetLang?: string;
+          targetLangCode?: string;
+          sourceLang?: string;
+          segmentCount?: number;
+          createdAt?: number | string;
+        };
+        const status = data.status ?? job.status;
+        if (status === "DONE") {
+          let urls: Partial<TranslatorHistoryEntry> = {};
+          try {
+            const result = await fetch(
+              `${BASE}/api/translator/result/${encodeURIComponent(job.jobId)}`,
+            );
+            if (result.ok) urls = await result.json();
+          } catch {}
+          saveTranslatorHistory({
+            jobId: job.jobId,
+            createdAt: typeof data.createdAt === "number" ? data.createdAt : job.startedAt,
+            filename: data.filename ?? job.filename,
+            targetLang: data.targetLang ?? job.targetLang,
+            targetLangCode: data.targetLangCode ?? job.targetLangCode,
+            sourceLang: data.sourceLang ?? job.sourceLang,
+            progress: 100,
+            segmentCount: data.segmentCount,
+            ...urls,
+          });
+          continue;
+        }
+        if (status === "FAILED" || status === "CANCELLED" || status === "EXPIRED") {
+          continue;
+        }
+        kept.push({
+          ...job,
+          status,
+          progress: data.progress ?? job.progress,
+          step: data.step ?? job.step,
+        });
+      } catch {
+        kept.push(job);
+      }
+    }
+    saveActiveTranslatorJobs(kept);
+  }
 }
 
 async function refreshShared() {
@@ -336,6 +426,8 @@ export function useActivityFeed(pollMs = 4000) {
     else if (entry.kind === "clip") deleteFromClipHistory(entry.data.jobId);
     else if (entry.kind === "download")
       deleteCompletedDownload(entry.data.jobId);
+    else if (entry.kind === "translator")
+      deleteTranslatorHistory(entry.data.jobId);
     else deleteFromBestClipsHistory(entry.data.id);
     await refreshShared();
   }, []);
@@ -346,6 +438,7 @@ export function useActivityFeed(pollMs = 4000) {
     loadBestClipsHistory().forEach((entry) =>
       deleteFromBestClipsHistory(entry.id),
     );
+    clearTranslatorHistory();
     clearCompletedDownloads();
     await refreshShared();
   }, []);

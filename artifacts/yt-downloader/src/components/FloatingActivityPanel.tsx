@@ -4,6 +4,7 @@ import {
   X, Loader2, Captions, Scissors, Sparkles, Film,
   Clock, ArrowRight, Download, Copy, ChevronDown,
   ChevronUp, ExternalLink, Trash2, Activity, CircleHelp, BellRing,
+  Languages,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -206,6 +207,7 @@ export function FloatingActivityPanel({
                         const icon =
                           e.kind === "subtitle" ? <Captions className="w-3.5 h-3.5 text-teal-400" /> :
                           e.kind === "clipcutter" ? <Scissors className="w-3.5 h-3.5 text-orange-400" /> :
+                          e.kind === "translator" ? <Languages className="w-3.5 h-3.5 text-red-400" /> :
                           <Film className="w-3.5 h-3.5 text-blue-400" />;
                         return (
                           <div
@@ -251,6 +253,7 @@ export function FloatingActivityPanel({
                           entry.kind === "subtitle" ? `sub-${entry.data.id}` :
                           entry.kind === "clip" ? `clip-${entry.data.jobId}` :
                           entry.kind === "download" ? `dl-${entry.data.jobId}` :
+                          entry.kind === "translator" ? `tr-${entry.data.jobId}` :
                           `best-${entry.data.id}`;
                         const isExpanded = expandedId === key;
                         const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -443,6 +446,50 @@ export function FloatingActivityPanel({
                                     <Download className="w-3 h-3" />
                                   </a>
                                 )}
+                                <button
+                                  onClick={() => handleDelete(entry)}
+                                  className="p-1.5 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (entry.kind === "translator") {
+                          const d = entry.data;
+                          return (
+                            <div key={key} className="rounded-xl border border-white/5 bg-white/3 flex items-center gap-2.5 px-3 py-2.5">
+                              <Languages className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-white/85 truncate">{d.filename}</p>
+                                <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-white/35">
+                                  <span className="text-red-400/70 font-medium">Translation</span>
+                                  <span>{"\u00b7"}</span>
+                                  <span>{d.targetLang}</span>
+                                  {d.segmentCount != null && <><span>{"\u00b7"}</span><span>{d.segmentCount} segments</span></>}
+                                  <span>{"\u00b7"}</span>
+                                  <span>{relativeTime(d.createdAt)}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-0.5 shrink-0">
+                                {d.videoUrl && (
+                                  <a
+                                    href={d.videoUrl}
+                                    className="p-1.5 rounded-lg text-white/30 hover:text-white hover:bg-white/10 transition-colors"
+                                    title="Download translated video"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                  </a>
+                                )}
+                                <button
+                                  onClick={() => navigate("translator")}
+                                  className="p-1.5 rounded-lg text-white/30 hover:text-white hover:bg-white/10 transition-colors"
+                                  title="Open translator"
+                                >
+                                  <ArrowRight className="w-3 h-3" />
+                                </button>
                                 <button
                                   onClick={() => handleDelete(entry)}
                                   className="p-1.5 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-colors"

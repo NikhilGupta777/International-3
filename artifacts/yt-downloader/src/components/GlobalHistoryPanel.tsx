@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   History, Captions, Scissors, Sparkles, Trash2, Download,
   Copy, ChevronDown, ChevronUp, Clock, X, ExternalLink,
-  Loader2, ArrowRight, Film,
+  Loader2, ArrowRight, Film, Languages,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -36,9 +36,13 @@ import {
   deleteFromBestClipsHistory,
   type BestClipsHistoryEntry,
 } from "@/lib/best-clips-history";
+import {
+  loadTranslatorHistory,
+  type TranslatorHistoryEntry,
+} from "@/lib/translator-history";
 import { useActivityFeed } from "@/hooks/use-activity-feed";
 
-type TabMode = "download" | "clips" | "subtitles" | "clipcutter";
+type TabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator";
 
 // ── Unified completed-entry type ─────────────────────────────────────────────
 
@@ -46,14 +50,16 @@ type AnyEntry =
   | { kind: "subtitle"; data: SubtitleHistoryEntry }
   | { kind: "clip"; data: ClipHistoryEntry }
   | { kind: "bestclips"; data: BestClipsHistoryEntry }
-  | { kind: "download"; data: CompletedDownloadRecord };
+  | { kind: "download"; data: CompletedDownloadRecord }
+  | { kind: "translator"; data: TranslatorHistoryEntry };
 
 function loadAll(): AnyEntry[] {
   const subs = loadSubtitleHistory().map((d): AnyEntry => ({ kind: "subtitle", data: d }));
   const clips = loadClipHistory().map((d): AnyEntry => ({ kind: "clip", data: d }));
   const best = loadBestClipsHistory().map((d): AnyEntry => ({ kind: "bestclips", data: d }));
   const dls = loadCompletedDownloads().map((d): AnyEntry => ({ kind: "download", data: d }));
-  return [...subs, ...clips, ...best, ...dls].sort((a, b) => {
+  const translations = loadTranslatorHistory().map((d): AnyEntry => ({ kind: "translator", data: d }));
+  return [...subs, ...clips, ...best, ...dls, ...translations].sort((a, b) => {
     const ta = a.data.createdAt;
     const tb = b.data.createdAt;
     return tb - ta;
@@ -63,7 +69,7 @@ function loadAll(): AnyEntry[] {
 // ── Active / in-progress entries ─────────────────────────────────────────────
 
 interface ActiveEntry {
-  kind: "subtitle" | "clipcutter" | "download";
+  kind: "subtitle" | "clipcutter" | "download" | "translator";
   label: string;
   sub: string;
   tab: TabMode;
@@ -157,11 +163,13 @@ function ActiveRow({
   const icon =
     entry.kind === "subtitle" ? <Captions className="w-4 h-4 text-red-400" /> :
     entry.kind === "clipcutter" ? <Scissors className="w-4 h-4 text-purple-400" /> :
+    entry.kind === "translator" ? <Languages className="w-4 h-4 text-red-400" /> :
     <Film className="w-4 h-4 text-blue-400" />;
 
   const ringColor =
     entry.kind === "subtitle" ? "bg-primary/20" :
     entry.kind === "clipcutter" ? "bg-purple-500/20" :
+    entry.kind === "translator" ? "bg-primary/20" :
     "bg-blue-500/20";
 
   return (
@@ -453,6 +461,55 @@ function DownloadRow({
   );
 }
 
+function TranslatorRow({
+  entry,
+  onDelete,
+  onView,
+}: {
+  entry: TranslatorHistoryEntry;
+  onDelete: (jobId: string) => void;
+  onView: (tab: TabMode) => void;
+}) {
+  return (
+    <div className="glass-panel rounded-xl border border-white/5 p-3 flex items-center gap-3">
+      <div className="shrink-0 w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center">
+        <Languages className="w-4 h-4 text-red-400" />
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-white/90 truncate max-w-[200px]">{entry.filename}</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/15 text-red-300 border border-primary/20 font-medium">
+            Translation
+          </span>
+          <span className="text-[10px] text-white/40 font-medium">{entry.targetLang}</span>
+        </div>
+        <div className="flex items-center gap-2 mt-0.5 text-[11px] text-white/40">
+          {entry.segmentCount != null && <span>{entry.segmentCount} segments</span>}
+          {entry.segmentCount != null && <span>{"\u00b7"}</span>}
+          <Clock className="w-3 h-3" />
+          <span>{relativeTime(entry.createdAt)}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        {entry.videoUrl && (
+          <a href={entry.videoUrl} title="Download translated video"
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
+            <Download className="w-3.5 h-3.5" />
+          </a>
+        )}
+        <button onClick={() => onView("translator")} title="Open translator"
+          className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
+          <ArrowRight className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={() => onDelete(entry.jobId)} title="Delete"
+          className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode) => void }) {
@@ -481,6 +538,12 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
   const handleDeleteDownload = (jobId: string) => {
     const entry = entries.find(
       (item) => item.kind === "download" && item.data.jobId === jobId,
+    );
+    if (entry) deleteEntry(entry);
+  };
+  const handleDeleteTranslator = (jobId: string) => {
+    const entry = entries.find(
+      (item) => item.kind === "translator" && item.data.jobId === jobId,
     );
     if (entry) deleteEntry(entry);
   };
@@ -613,6 +676,16 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
                           key={`dl-${entry.data.jobId}`}
                           entry={entry.data}
                           onDelete={handleDeleteDownload}
+                        />
+                      );
+                    }
+                    if (entry.kind === "translator") {
+                      return (
+                        <TranslatorRow
+                          key={`tr-${entry.data.jobId}`}
+                          entry={entry.data}
+                          onDelete={handleDeleteTranslator}
+                          onView={onSwitchTab}
                         />
                       );
                     }

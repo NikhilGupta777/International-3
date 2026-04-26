@@ -3,9 +3,19 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, Languages, Mic, MicOff, Play, Download, CheckCircle,
   Loader2, AlertCircle, X, ChevronDown, Subtitles, RefreshCw,
-  Film, Wand2, Volume2, Eye
+  Film, Wand2, Volume2, Eye, Share2, History, Trash2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
+import {
+  loadActiveTranslatorJobs,
+  upsertActiveTranslatorJob,
+  removeActiveTranslatorJob,
+  loadTranslatorHistory,
+  saveTranslatorHistory,
+  deleteTranslatorHistory,
+  type TranslatorHistoryEntry,
+} from "@/lib/translator-history";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API  = `${BASE}/api/translator`;
@@ -32,6 +42,29 @@ async function responseError(res: Response, fallback: string): Promise<Error> {
     }
   } catch {}
   return new Error(fallback);
+}
+
+function toEpoch(value: unknown, fallback = Date.now()): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber)) return asNumber;
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function formatRelative(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 7) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
 }
 
 // ── Step config ───────────────────────────────────────────────────────────────
@@ -186,6 +219,7 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
 
 // ── Main component ────────────────────────────────────────────────────────────
 export default function VideoTranslator() {
+  const { toast } = useToast();
   const [file, setFile]             = useState<File | null>(null);
   const [srcLang, setSrcLang]       = useState("auto");
   const [tgtLang, setTgtLang]       = useState("en");
@@ -197,7 +231,27 @@ export default function VideoTranslator() {
   const [uploading, setUploading]   = useState(false);
   const [error, setError]           = useState<string | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [history, setHistory]       = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const refreshHistory = useCallback(() => {
+    setHistory(loadTranslatorHistory());
+  }, []);
+
+  const fetchResult = useCallback(async (id: string) => {
+    const tr = await fetch(`${API}/result/${id}`);
+    if (!tr.ok) return null;
+    const result = await tr.json();
+    if (result.transcriptUrl) {
+      const tj = await fetch(result.transcriptUrl);
+      if (tj.ok) {
+        const parsed = await tj.json();
+        setTranscript(parsed.segments ?? []);
+      }
+    }
+    setJob((prev: any) => ({ ...prev, ...result }));
+    return result as { videoUrl?: string; srtUrl?: string; transcriptUrl?: string };
+  }, []);
 
   // Poll job status from DynamoDB via API
   const pollStatus = useCallback(async (id: string) => {
@@ -206,30 +260,48 @@ export default function VideoTranslator() {
       if (!r.ok) return;
       const data = await r.json();
       setJob(data);
+      const activeMeta = loadActiveTranslatorJobs().find((j) => j.jobId === id);
+      if (data.status !== "DONE" && data.status !== "FAILED") {
+        upsertActiveTranslatorJob({
+          jobId: id,
+          filename: data.filename ?? activeMeta?.filename ?? file?.name ?? "video.mp4",
+          targetLang: data.targetLang ?? activeMeta?.targetLang ?? TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
+          targetLangCode: data.targetLangCode ?? activeMeta?.targetLangCode ?? tgtLang,
+          sourceLang: data.sourceLang ?? activeMeta?.sourceLang ?? srcLang,
+          startedAt: activeMeta?.startedAt ?? toEpoch(data.createdAt),
+          progress: data.progress ?? activeMeta?.progress ?? 0,
+          step: data.step ?? activeMeta?.step ?? "",
+          status: data.status ?? activeMeta?.status ?? "QUEUED",
+        });
+      }
       if (data.status === "DONE") {
         clearInterval(pollRef.current!);
-        // Fetch transcript JSON
-        const tr = await fetch(`${API}/result/${id}`);
-        if (tr.ok) {
-          const result = await tr.json();
-          // Fetch and parse the transcript JSON from S3 presigned URL
-          if (result.transcriptUrl) {
-            const tj = await fetch(result.transcriptUrl);
-            if (tj.ok) {
-              const parsed = await tj.json();
-              setTranscript(parsed.segments ?? []);
-            }
-          }
-          setJob((prev: any) => ({ ...prev, ...result }));
-        }
+        const result = await fetchResult(id);
+        removeActiveTranslatorJob(id);
+        saveTranslatorHistory({
+          jobId: id,
+          createdAt: toEpoch(data.createdAt, activeMeta?.startedAt ?? Date.now()),
+          updatedAt: toEpoch(data.updatedAt, Date.now()),
+          filename: data.filename ?? activeMeta?.filename ?? file?.name ?? "video.mp4",
+          targetLang: data.targetLang ?? activeMeta?.targetLang ?? TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
+          targetLangCode: data.targetLangCode ?? activeMeta?.targetLangCode ?? tgtLang,
+          sourceLang: data.sourceLang ?? activeMeta?.sourceLang ?? srcLang,
+          progress: 100,
+          segmentCount: data.segmentCount,
+          videoUrl: result?.videoUrl,
+          srtUrl: result?.srtUrl,
+          transcriptUrl: result?.transcriptUrl,
+        });
+        refreshHistory();
       } else if (data.status === "FAILED") {
         clearInterval(pollRef.current!);
+        removeActiveTranslatorJob(id);
         setError(data.error ?? "Translation failed");
       }
     } catch (e: any) {
       setError(e?.message);
     }
-  }, []);
+  }, [fetchResult, file?.name, refreshHistory, srcLang, tgtLang]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -237,6 +309,58 @@ export default function VideoTranslator() {
     pollStatus(jobId);
     return () => clearInterval(pollRef.current!);
   }, [jobId, pollStatus]);
+
+  useEffect(() => {
+    const active = loadActiveTranslatorJobs();
+    if (!jobId && active.length > 0) {
+      const newest = active.sort((a, b) => b.startedAt - a.startedAt)[0];
+      setJobId(newest.jobId);
+      setJob({
+        jobId: newest.jobId,
+        status: newest.status,
+        progress: newest.progress,
+        step: newest.step,
+        filename: newest.filename,
+        targetLang: newest.targetLang,
+      });
+    }
+
+    let closed = false;
+    const loadServerHistory = async () => {
+      try {
+        const res = await fetch(`${API}/history?limit=20`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const jobs = Array.isArray(data.jobs) ? data.jobs : [];
+        for (const item of jobs) {
+          if (!item?.jobId) continue;
+          if (item.status === "DONE") {
+            const existing = loadTranslatorHistory().find((entry) => entry.jobId === item.jobId);
+            saveTranslatorHistory({
+              jobId: item.jobId,
+              createdAt: toEpoch(item.createdAt),
+              updatedAt: toEpoch(item.updatedAt, toEpoch(item.createdAt)),
+              filename: item.filename ?? existing?.filename ?? "video.mp4",
+              targetLang: item.targetLang ?? existing?.targetLang ?? "Unknown",
+              targetLangCode: item.targetLangCode ?? existing?.targetLangCode,
+              sourceLang: item.sourceLang ?? existing?.sourceLang,
+              progress: 100,
+              segmentCount: item.segmentCount,
+              videoUrl: existing?.videoUrl,
+              srtUrl: existing?.srtUrl,
+              transcriptUrl: existing?.transcriptUrl,
+            });
+          }
+        }
+        if (!closed) refreshHistory();
+      } catch {}
+    };
+
+    void loadServerHistory();
+    return () => {
+      closed = true;
+    };
+  }, [jobId, refreshHistory]);
 
   const handleUpload = async () => {
     if (!file) return;
@@ -271,6 +395,7 @@ export default function VideoTranslator() {
         body: JSON.stringify({
           jobId: newJobId,
           s3Key,
+          filename: file.name,
           targetLang: TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
           targetLangCode: tgtLang,
           sourceLang: srcLang,
@@ -285,7 +410,19 @@ export default function VideoTranslator() {
         throw new Error("Submit response was incomplete.");
       }
 
+      upsertActiveTranslatorJob({
+        jobId: newJobId,
+        filename: file.name,
+        targetLang: TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
+        targetLangCode: tgtLang,
+        sourceLang: srcLang,
+        startedAt: Date.now(),
+        progress: 0,
+        step: "Job queued, waiting for worker...",
+        status: "QUEUED",
+      });
       setJobId(newJobId);
+      refreshHistory();
     } catch (e: any) {
       setError(e?.message);
     } finally {
@@ -297,6 +434,50 @@ export default function VideoTranslator() {
     clearInterval(pollRef.current!);
     setFile(null); setJobId(null); setJob(null);
     setTranscript([]); setError(null); setShowTranscript(false);
+  };
+
+  const openHistoryEntry = async (entry: TranslatorHistoryEntry) => {
+    clearInterval(pollRef.current!);
+    setFile(null);
+    setError(null);
+    setTranscript([]);
+    setJobId(entry.jobId);
+    setJob({
+      jobId: entry.jobId,
+      status: "DONE",
+      progress: 100,
+      step: "Translation complete!",
+      filename: entry.filename,
+      targetLang: entry.targetLang,
+      segmentCount: entry.segmentCount,
+      videoUrl: entry.videoUrl,
+      srtUrl: entry.srtUrl,
+      transcriptUrl: entry.transcriptUrl,
+    });
+    const result = await fetchResult(entry.jobId);
+    if (result) {
+      const updated = { ...entry, ...result };
+      saveTranslatorHistory(updated);
+      refreshHistory();
+    }
+  };
+
+  const deleteHistoryEntry = (id: string) => {
+    deleteTranslatorHistory(id);
+    refreshHistory();
+    if (jobId === id) reset();
+  };
+
+  const shareUrl = async (url?: string) => {
+    if (!url) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: "Translated video", url });
+      } else {
+        await navigator.clipboard.writeText(url);
+        toast({ title: "Link copied" });
+      }
+    } catch {}
   };
 
   const isProcessing = job && !["DONE","FAILED"].includes(job.status);
@@ -434,7 +615,7 @@ export default function VideoTranslator() {
                   <CheckCircle className="w-6 h-6 text-green-400" />
                   <div>
                     <p className="font-bold text-green-300">Translation Complete!</p>
-                    <p className="text-xs text-white/40 mt-0.5">{file?.name}</p>
+                    <p className="text-xs text-white/40 mt-0.5">{job?.filename ?? file?.name ?? "Translated video"}</p>
                   </div>
                 </div>
                 {job?.videoUrl && (
@@ -462,6 +643,12 @@ export default function VideoTranslator() {
                     className="px-4 py-3 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-sm flex items-center gap-2 transition-colors">
                     <Eye className="w-4 h-4" /> Transcript
                   </button>
+                  {job?.videoUrl && (
+                    <button onClick={() => shareUrl(job.videoUrl)}
+                      className="px-4 py-3 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-sm flex items-center gap-2 transition-colors">
+                      <Share2 className="w-4 h-4" /> Share
+                    </button>
+                  )}
                 </div>
               </motion.div>
             )}
@@ -472,6 +659,68 @@ export default function VideoTranslator() {
               <TranscriptPanel segments={transcript} />
             )}
           </>
+        )}
+
+        {history.length > 0 && (
+          <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] overflow-hidden">
+            <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
+              <History className="w-4 h-4 text-white/50" />
+              <span className="text-sm font-semibold text-white/80">Translation History</span>
+              <span className="text-xs text-white/30 ml-auto">{history.length}</span>
+            </div>
+            <div className="divide-y divide-white/[0.05]">
+              {history.slice(0, 8).map((entry) => (
+                <div key={entry.jobId} className="px-4 py-3 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                    <Languages className="w-4 h-4 text-primary" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white/85 font-medium truncate">{entry.filename}</p>
+                    <div className="flex items-center gap-1.5 text-xs text-white/35 mt-0.5">
+                      <span>{entry.targetLang}</span>
+                      {entry.segmentCount != null && <><span>{"\u00b7"}</span><span>{entry.segmentCount} segments</span></>}
+                      <span>{"\u00b7"}</span>
+                      <span>{formatRelative(entry.createdAt)}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => void openHistoryEntry(entry)}
+                      className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+                      title="Preview"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                    {entry.videoUrl && (
+                      <a
+                        href={entry.videoUrl}
+                        download="translated_video.mp4"
+                        className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+                        title="Download"
+                      >
+                        <Download className="w-4 h-4" />
+                      </a>
+                    )}
+                    <button
+                      onClick={() => shareUrl(entry.videoUrl)}
+                      disabled={!entry.videoUrl}
+                      className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
+                      title="Share"
+                    >
+                      <Share2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => deleteHistoryEntry(entry.jobId)}
+                      className="p-2 rounded-lg text-white/25 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                      title="Remove"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </div>
