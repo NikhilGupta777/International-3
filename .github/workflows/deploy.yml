@@ -139,6 +139,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image_uri: ${{ steps.push.outputs.image_uri }}
+      batch_job_def: ${{ steps.register.outputs.batch_job_def }}
     steps:
       - uses: actions/checkout@v4
 
@@ -163,6 +164,32 @@ jobs:
             --push artifacts/video-translator-service/
           echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
           echo "✅ Translator image: ${URI}"
+
+      - name: Register new Batch job definition
+        id: register
+        run: |
+          TRANSLATOR_URI="${{ steps.push.outputs.image_uri }}"
+
+          # Get current active job definition
+          CURRENT=$(aws batch describe-job-definitions \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
+            --status ACTIVE \
+            --query 'sort_by(jobDefinitions, &revision)[-1]' \
+            --output json)
+
+          NEW_JSON=$(echo "$CURRENT" | jq \
+            --arg img "$TRANSLATOR_URI" \
+            'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
+             .containerProperties.image = $img')
+
+          RESULT=$(aws batch register-job-definition \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
+            --cli-input-json "$NEW_JSON")
+
+          REV=$(echo "$RESULT" | jq -r '.revision')
+          DEF="${{ env.CF_STACK_PREFIX }}-translator-job:${REV}"
+          echo "batch_job_def=${DEF}" >> "$GITHUB_OUTPUT"
+          echo "✅ Batch job def: ${DEF}"
 
   # ─── Job 4: Deploy full stack ─────────────────────────────────────────────────
   deploy:
@@ -228,6 +255,16 @@ jobs:
           else
             printf '\nYTDLP_COOKIES_FILE=/tmp/yt-cookies.txt\n' >> /tmp/.env.green
           fi
+          if grep -q '^TRANSLATOR_BATCH_JOB_DEFINITION=' /tmp/.env.green; then
+            sed -i "s|^TRANSLATOR_BATCH_JOB_DEFINITION=.*|TRANSLATOR_BATCH_JOB_DEFINITION=${{ needs.build-translator.outputs.batch_job_def }}|" /tmp/.env.green
+          else
+            printf '\nTRANSLATOR_BATCH_JOB_DEFINITION=${{ needs.build-translator.outputs.batch_job_def }}\n' >> /tmp/.env.green
+          fi
+          if grep -q '^TRANSLATOR_BATCH_JOB_QUEUE=' /tmp/.env.green; then
+            sed -i "s|^TRANSLATOR_BATCH_JOB_QUEUE=.*|TRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-gpu-queue|" /tmp/.env.green
+          else
+            printf '\nTRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-gpu-queue\n' >> /tmp/.env.green
+          fi
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.
@@ -260,4 +297,5 @@ jobs:
           echo "| **Worker image** | \`${{ needs.build-worker.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Batch job** | \`${{ needs.build-worker.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Translator image** | \`${{ needs.build-translator.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Translator Batch job** | \`${{ needs.build-translator.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Live** | https://videomaking.in |" >> $GITHUB_STEP_SUMMARY

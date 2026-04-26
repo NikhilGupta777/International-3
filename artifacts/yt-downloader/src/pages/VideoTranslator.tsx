@@ -188,19 +188,30 @@ export default function VideoTranslator() {
   const [showTranscript, setShowTranscript] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Poll job status
+  // Poll job status from DynamoDB via API
   const pollStatus = useCallback(async (id: string) => {
     try {
       const r = await fetch(`${API}/status/${id}`);
       if (!r.ok) return;
       const data = await r.json();
       setJob(data);
-      if (data.status === "completed") {
+      if (data.status === "DONE") {
         clearInterval(pollRef.current!);
-        // Fetch transcript
-        const tr = await fetch(`${API}/transcript/${id}`);
-        if (tr.ok) setTranscript((await tr.json()).segments ?? []);
-      } else if (data.status === "failed") {
+        // Fetch transcript JSON
+        const tr = await fetch(`${API}/result/${id}`);
+        if (tr.ok) {
+          const result = await tr.json();
+          // Fetch and parse the transcript JSON from S3 presigned URL
+          if (result.transcriptUrl) {
+            const tj = await fetch(result.transcriptUrl);
+            if (tj.ok) {
+              const parsed = await tj.json();
+              setTranscript(parsed.segments ?? []);
+            }
+          }
+          setJob((prev: any) => ({ ...prev, ...result }));
+        }
+      } else if (data.status === "FAILED") {
         clearInterval(pollRef.current!);
         setError(data.error ?? "Translation failed");
       }
@@ -211,7 +222,7 @@ export default function VideoTranslator() {
 
   useEffect(() => {
     if (!jobId) return;
-    pollRef.current = setInterval(() => pollStatus(jobId), 2500);
+    pollRef.current = setInterval(() => pollStatus(jobId), 3000);
     pollStatus(jobId);
     return () => clearInterval(pollRef.current!);
   }, [jobId, pollStatus]);
@@ -220,16 +231,41 @@ export default function VideoTranslator() {
     if (!file) return;
     setError(null); setUploading(true); setJob(null); setTranscript([]);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("sourceLang", srcLang);
-      fd.append("targetLang", tgtLang);
-      fd.append("voiceStyle", voiceStyle);
-      fd.append("lipSync", String(lipSync));
-      const r = await fetch(`${API}/upload`, { method: "POST", body: fd });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error ?? "Upload failed");
-      setJobId(data.jobId);
+      // Step 1: Get S3 presigned PUT URL
+      const ext = file.name.split(".").pop() ?? "mp4";
+      const presignRes = await fetch(
+        `${API}/presign?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type || "video/mp4")}`
+      );
+      const { jobId: newJobId, presignedUrl, s3Key } = await presignRes.json();
+      if (!presignRes.ok) throw new Error("Failed to get upload URL");
+
+      // Step 2: Upload directly to S3
+      const uploadRes = await fetch(presignedUrl, {
+        method: "PUT",
+        body: file,
+        headers: { "Content-Type": file.type || "video/mp4" },
+      });
+      if (!uploadRes.ok) throw new Error("S3 upload failed");
+
+      // Step 3: Submit Batch job
+      const submitRes = await fetch(`${API}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobId: newJobId,
+          s3Key,
+          targetLang: TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
+          targetLangCode: tgtLang,
+          sourceLang: srcLang,
+          voiceClone: voiceStyle === "original",
+          lipSync,
+          lipSyncQuality: "musetalk",
+        }),
+      });
+      const submitData = await submitRes.json();
+      if (!submitRes.ok) throw new Error(submitData.error ?? "Submit failed");
+
+      setJobId(newJobId);
     } catch (e: any) {
       setError(e?.message);
     } finally {
@@ -243,9 +279,10 @@ export default function VideoTranslator() {
     setTranscript([]); setError(null); setShowTranscript(false);
   };
 
-  const isProcessing = job && !["completed","failed"].includes(job.status);
-  const isDone       = job?.status === "completed";
-  const overallPct   = job?.overallProgress ?? 0;
+  const isProcessing = job && !["DONE","FAILED"].includes(job.status);
+  const isDone       = job?.status === "DONE";
+  const overallPct   = job?.progress ?? 0;
+
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -380,17 +417,27 @@ export default function VideoTranslator() {
                     <p className="text-xs text-white/40 mt-0.5">{file?.name}</p>
                   </div>
                 </div>
-                <video
-                  src={`${API}/preview/${jobId}`}
-                  controls
-                  className="w-full rounded-xl bg-black aspect-video"
-                />
+                {job?.videoUrl && (
+                  <video
+                    src={job.videoUrl}
+                    controls
+                    className="w-full rounded-xl bg-black aspect-video"
+                  />
+                )}
                 <div className="flex gap-3">
-                  <a href={`${API}/download/${jobId}`} download
-                    className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-white text-sm transition-all"
-                    style={{background:"linear-gradient(135deg,#16a34a,#15803d)",boxShadow:"0 4px 16px rgba(22,163,74,0.3)"}}>
-                    <Download className="w-4 h-4" /> Download Translated Video
-                  </a>
+                  {job?.videoUrl && (
+                    <a href={job.videoUrl} download="translated_video.mp4"
+                      className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-white text-sm transition-all"
+                      style={{background:"linear-gradient(135deg,#16a34a,#15803d)",boxShadow:"0 4px 16px rgba(22,163,74,0.3)"}}>
+                      <Download className="w-4 h-4" /> Download Video
+                    </a>
+                  )}
+                  {job?.srtUrl && (
+                    <a href={job.srtUrl} download="subtitles.srt"
+                      className="px-4 py-3 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-sm flex items-center gap-2 transition-colors">
+                      <Subtitles className="w-4 h-4" /> SRT
+                    </a>
+                  )}
                   <button onClick={() => setShowTranscript(!showTranscript)}
                     className="px-4 py-3 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-sm flex items-center gap-2 transition-colors">
                     <Eye className="w-4 h-4" /> Transcript
@@ -398,6 +445,7 @@ export default function VideoTranslator() {
                 </div>
               </motion.div>
             )}
+
 
             {/* Transcript */}
             {showTranscript && transcript.length > 0 && (

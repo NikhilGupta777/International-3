@@ -92,6 +92,12 @@ Parameters:
     Type: String
   YoutubeBatchJobDefinition:
     Type: String
+  TranslatorBatchJobQueue:
+    Type: String
+    Default: "ytgrabber-green-gpu-queue"
+  TranslatorBatchJobDefinition:
+    Type: String
+    Default: "ytgrabber-green-translator-job"
   YoutubeQueuePrimaryEnabled:
     Type: String
     Default: "true"
@@ -271,6 +277,8 @@ Resources:
           YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable
           YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue
           YOUTUBE_BATCH_JOB_DEFINITION: !Ref YoutubeBatchJobDefinition
+          TRANSLATOR_BATCH_JOB_QUEUE: !Ref TranslatorBatchJobQueue
+          TRANSLATOR_BATCH_JOB_DEFINITION: !Ref TranslatorBatchJobDefinition
           RATE_LIMIT_BYPASS_IPS: !Ref RateLimitBypassIps
           VAPID_PUBLIC_KEY: !Ref VapidPublicKey
           VAPID_PRIVATE_KEY: !Ref VapidPrivateKey

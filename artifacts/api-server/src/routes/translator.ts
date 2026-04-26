@@ -1,108 +1,229 @@
 /**
- * Video Translator Proxy Route
- * All /api/translator/* requests are forwarded to the Fargate service.
- * Video streams (preview/download) are piped byte-for-byte.
+ * Translator API routes — AWS Batch GPU Scale-to-Zero Architecture
+ *
+ * Routes:
+ *   GET  /api/translator/presign      → S3 presigned PUT URL for direct video upload
+ *   POST /api/translator/submit       → Creates DynamoDB job + submits AWS Batch GPU job
+ *   GET  /api/translator/status/:id   → Poll job status from DynamoDB
+ *   GET  /api/translator/result/:id   → Get presigned GET URL for final video/SRT/transcript
  */
 
-import { Router } from "express";
-import { Readable } from "stream";
+import { Router, Request, Response } from "express";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import {
+  DynamoDBClient,
+  PutItemCommand,
+  GetItemCommand,
+} from "@aws-sdk/client-dynamodb";
+import {
+  BatchClient,
+  SubmitJobCommand,
+} from "@aws-sdk/client-batch";
+import { v4 as uuidv4 } from "uuid";
 
 const router = Router();
 
-const TRANSLATOR_URL = (
-  process.env.TRANSLATOR_SERVICE_URL ?? "http://localhost:8000"
-).replace(/\/$/, "");
+const REGION       = process.env.YOUTUBE_QUEUE_REGION ?? "us-east-1";
+const S3_BUCKET    = process.env.S3_BUCKET!;
+const DDB_TABLE    = process.env.YOUTUBE_QUEUE_JOB_TABLE!;
+const BATCH_QUEUE  = process.env.TRANSLATOR_BATCH_JOB_QUEUE!;
+const BATCH_JOB_DEF = process.env.TRANSLATOR_BATCH_JOB_DEFINITION!;
+const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? "";
+const GEMINI_KEY_2 = process.env.GEMINI_API_KEY_2 ?? "";
+const GEMINI_KEY_3 = process.env.GEMINI_API_KEY_3 ?? "";
 
-// ── Generic JSON proxy ────────────────────────────────────────────────────────
+const s3    = new S3Client({ region: REGION });
+const ddb   = new DynamoDBClient({ region: REGION });
+const batch = new BatchClient({ region: REGION });
 
-async function proxyJson(req: any, res: any, path: string, method = "GET", body?: any) {
+// ── GET /presign ──────────────────────────────────────────────────────────────
+// Returns an S3 presigned PUT URL so the browser can upload directly to S3.
+router.get("/presign", async (req: Request, res: Response) => {
   try {
-    const opts: RequestInit = {
-      method,
-      headers: { "Content-Type": "application/json" },
-    };
-    if (body) opts.body = JSON.stringify(body);
-    const upstream = await fetch(`${TRANSLATOR_URL}${path}`, opts);
-    const data = await upstream.json().catch(() => ({}));
-    res.status(upstream.status).json(data);
-  } catch (err: any) {
-    res.status(502).json({ error: `Translator service unreachable: ${err?.message}` });
-  }
-}
+    const { filename = "input.mp4", contentType = "video/mp4" } = req.query as Record<string, string>;
+    const jobId = uuidv4();
+    const ext   = filename.split(".").pop() ?? "mp4";
+    const s3Key = `translator-jobs/${jobId}/input.${ext}`;
 
-// ── Multipart upload proxy (streams the file without buffering) ───────────────
-
-router.post("/upload", async (req, res) => {
-  try {
-    // Re-forward the raw multipart body
-    const upstream = await fetch(`${TRANSLATOR_URL}/upload`, {
-      method: "POST",
-      // @ts-ignore — node-fetch / undici accept Node streams
-      body: req as any,
-      headers: {
-        "content-type": req.headers["content-type"] ?? "multipart/form-data",
-        "content-length": req.headers["content-length"] ?? "",
-        "transfer-encoding": req.headers["transfer-encoding"] ?? "",
-      },
-      // @ts-ignore
-      duplex: "half",
+    const command = new PutObjectCommand({
+      Bucket:      S3_BUCKET,
+      Key:         s3Key,
+      ContentType: contentType,
     });
-    const data = await upstream.json().catch(() => ({}));
-    res.status(upstream.status).json(data);
+
+    const presignedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+
+    res.json({ jobId, presignedUrl, s3Key });
   } catch (err: any) {
-    res.status(502).json({ error: `Upload proxy failed: ${err?.message}` });
+    console.error("[Translator] /presign error:", err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ── Status / Transcript (JSON) ────────────────────────────────────────────────
-
-router.get("/status/:id",     (req, res) => proxyJson(req, res, `/status/${req.params.id}`));
-router.get("/transcript/:id", (req, res) => proxyJson(req, res, `/transcript/${req.params.id}`));
-router.get("/jobs",           (req, res) => proxyJson(req, res, "/jobs"));
-router.get("/system-status",  (req, res) => proxyJson(req, res, "/system-status"));
-router.get("/healthz",        (req, res) => proxyJson(req, res, "/healthz"));
-router.delete("/jobs/:id",    (req, res) => proxyJson(req, res, `/jobs/${req.params.id}`, "DELETE"));
-
-// ── Video stream proxy (preview + download) ────────────────────────────────────
-
-async function proxyVideoStream(req: any, res: any, path: string, isDownload = false) {
+// ── POST /submit ──────────────────────────────────────────────────────────────
+// Creates a DynamoDB job record and submits an AWS Batch GPU job.
+router.post("/submit", async (req: Request, res: Response) => {
   try {
-    const upstream = await fetch(`${TRANSLATOR_URL}${path}`, {
-      headers: req.headers["range"] ? { Range: req.headers["range"] } : {},
-    });
+    const {
+      jobId,
+      s3Key,
+      targetLang     = "Hindi",
+      targetLangCode = "hi",
+      sourceLang     = "auto",
+      voiceClone     = true,
+      lipSync        = false,
+      lipSyncQuality = "musetalk",
+      useDemucs      = false,
+      premiumAsr     = false,
+      multiSpeaker   = false,
+      asrModel       = "large-v3-turbo",
+      translationMode = "default",
+    } = req.body;
 
-    if (!upstream.ok || !upstream.body) {
-      const err = await upstream.text().catch(() => "");
-      return res.status(upstream.status).json({ error: err || "Not found" });
+    if (!jobId || !s3Key) {
+      return res.status(400).json({ error: "jobId and s3Key are required" });
     }
 
-    // Forward key headers
-    const ct = upstream.headers.get("content-type") ?? "video/mp4";
-    const cl = upstream.headers.get("content-length");
-    const cr = upstream.headers.get("content-range");
-    const ac = upstream.headers.get("accept-ranges");
+    const now = new Date().toISOString();
 
-    res.setHeader("Content-Type", ct);
-    if (cl) res.setHeader("Content-Length", cl);
-    if (cr) res.setHeader("Content-Range", cr);
-    if (ac) res.setHeader("Accept-Ranges", ac);
-    if (isDownload) {
-      const cd = upstream.headers.get("content-disposition") ?? `attachment; filename="translated.mp4"`;
-      res.setHeader("Content-Disposition", cd);
-    }
+    // Create DynamoDB job record
+    await ddb.send(new PutItemCommand({
+      TableName: DDB_TABLE,
+      Item: {
+        jobId:       { S: jobId },
+        type:        { S: "translator" },
+        status:      { S: "QUEUED" },
+        progress:    { N: "0" },
+        step:        { S: "Job queued, waiting for GPU..." },
+        s3InputKey:  { S: s3Key },
+        targetLang:  { S: targetLang },
+        targetLangCode: { S: targetLangCode },
+        createdAt:   { S: now },
+        updatedAt:   { S: now },
+      },
+    }));
 
-    res.status(upstream.status === 206 ? 206 : 200);
+    // Build environment variables for the Batch worker
+    const envVars = [
+      { name: "JOB_ID",            value: jobId },
+      { name: "S3_BUCKET",         value: S3_BUCKET },
+      { name: "S3_INPUT_KEY",      value: s3Key },
+      { name: "S3_OUTPUT_PREFIX",  value: `translator-jobs/${jobId}` },
+      { name: "DYNAMODB_TABLE",    value: DDB_TABLE },
+      { name: "DYNAMODB_REGION",   value: REGION },
+      { name: "GEMINI_API_KEY",    value: GEMINI_KEY },
+      { name: "GEMINI_API_KEY_2",  value: GEMINI_KEY_2 },
+      { name: "GEMINI_API_KEY_3",  value: GEMINI_KEY_3 },
+      { name: "TARGET_LANG",       value: targetLang },
+      { name: "TARGET_LANG_CODE",  value: targetLangCode },
+      { name: "SOURCE_LANG",       value: sourceLang },
+      { name: "VOICE_CLONE",       value: String(voiceClone) },
+      { name: "LIP_SYNC",          value: String(lipSync) },
+      { name: "LIP_SYNC_QUALITY",  value: lipSyncQuality },
+      { name: "USE_DEMUCS",        value: String(useDemucs) },
+      { name: "PREMIUM_ASR",       value: String(premiumAsr) },
+      { name: "MULTI_SPEAKER",     value: String(multiSpeaker) },
+      { name: "ASR_MODEL",         value: asrModel },
+      { name: "TRANSLATION_MODE",  value: translationMode },
+      { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
+    ];
 
-    // Pipe response body
-    const nodeStream = Readable.fromWeb(upstream.body as any);
-    nodeStream.pipe(res);
-    nodeStream.on("error", () => res.end());
+    // Submit AWS Batch job
+    const batchResult = await batch.send(new SubmitJobCommand({
+      jobName:          `translator-${jobId.slice(0, 8)}`,
+      jobQueue:         BATCH_QUEUE,
+      jobDefinition:    BATCH_JOB_DEF,
+      containerOverrides: {
+        environment: envVars,
+        resourceRequirements: [
+          { type: "VCPU",   value: "4" },
+          { type: "MEMORY", value: "16384" },
+          { type: "GPU",    value: "1" },
+        ],
+      },
+    }));
+
+    console.log(`[Translator] Submitted Batch job ${batchResult.jobId} for translator job ${jobId}`);
+
+    res.json({ jobId, batchJobId: batchResult.jobId, status: "QUEUED" });
   } catch (err: any) {
-    res.status(502).json({ error: `Video stream proxy failed: ${err?.message}` });
+    console.error("[Translator] /submit error:", err);
+    res.status(500).json({ error: err.message });
   }
-}
+});
 
-router.get("/preview/:id",  (req, res) => proxyVideoStream(req, res, `/preview/${req.params.id}`));
-router.get("/download/:id", (req, res) => proxyVideoStream(req, res, `/download/${req.params.id}`, true));
+// ── GET /status/:jobId ────────────────────────────────────────────────────────
+// Reads real-time job status from DynamoDB (updated by the Python worker).
+router.get("/status/:jobId", async (req: Request, res: Response) => {
+  try {
+    const { jobId } = req.params;
+
+    const result = await ddb.send(new GetItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: jobId } },
+    }));
+
+    if (!result.Item) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+
+    const item = result.Item;
+    res.json({
+      jobId,
+      status:       item.status?.S ?? "UNKNOWN",
+      progress:     parseInt(item.progress?.N ?? "0"),
+      step:         item.step?.S ?? "",
+      error:        item.error?.S,
+      targetLang:   item.targetLang?.S,
+      segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
+      updatedAt:    item.updatedAt?.S,
+      createdAt:    item.createdAt?.S,
+    });
+  } catch (err: any) {
+    console.error("[Translator] /status error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /result/:jobId ────────────────────────────────────────────────────────
+// Returns presigned GET URLs for the final output files.
+router.get("/result/:jobId", async (req: Request, res: Response) => {
+  try {
+    const { jobId } = req.params;
+
+    // Verify job is done
+    const result = await ddb.send(new GetItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: jobId } },
+    }));
+
+    if (!result.Item) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+
+    const status = result.Item.status?.S;
+    if (status !== "DONE") {
+      return res.status(409).json({ error: `Job is not complete. Status: ${status}` });
+    }
+
+    const prefix = `translator-jobs/${jobId}`;
+
+    const [videoUrl, srtUrl, transcriptUrl] = await Promise.all([
+      getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: `${prefix}/output.mp4` }), { expiresIn: 3600 }),
+      getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: `${prefix}/subtitles.srt` }), { expiresIn: 3600 }),
+      getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: `${prefix}/transcript.json` }), { expiresIn: 3600 }),
+    ]);
+
+    res.json({ jobId, videoUrl, srtUrl, transcriptUrl });
+  } catch (err: any) {
+    console.error("[Translator] /result error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;

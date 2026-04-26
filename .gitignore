@@ -79,5 +79,9 @@ archive/
 /*.log
 .pythonlibs/
 .venv/
+venv/
+
+# One-time AWS infrastructure setup scripts (run manually, not needed in CI)
+deploy_batch_gpu.ps1
 
 output/
