@@ -58,10 +58,10 @@ router.get("/presign", async (req: Request, res: Response) => {
 
     const presignedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
 
-    res.json({ jobId, presignedUrl, s3Key });
+    return res.json({ jobId, presignedUrl, s3Key });
   } catch (err: any) {
     console.error("[Translator] /presign error:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -150,10 +150,10 @@ router.post("/submit", async (req: Request, res: Response) => {
 
     console.log(`[Translator] Submitted Batch job ${batchResult.jobId} for translator job ${jobId}`);
 
-    res.json({ jobId, batchJobId: batchResult.jobId, status: "QUEUED" });
+    return res.json({ jobId, batchJobId: batchResult.jobId, status: "QUEUED" });
   } catch (err: any) {
     console.error("[Translator] /submit error:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -165,7 +165,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
 
     const result = await ddb.send(new GetItemCommand({
       TableName: DDB_TABLE,
-      Key: { jobId: { S: jobId } },
+      Key: { jobId: { S: String(jobId) } },
     }));
 
     if (!result.Item) {
@@ -173,7 +173,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
     }
 
     const item = result.Item;
-    res.json({
+    return res.json({
       jobId,
       status:       item.status?.S ?? "UNKNOWN",
       progress:     parseInt(item.progress?.N ?? "0"),
@@ -186,7 +186,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error("[Translator] /status error:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -199,7 +199,7 @@ router.get("/result/:jobId", async (req: Request, res: Response) => {
     // Verify job is done
     const result = await ddb.send(new GetItemCommand({
       TableName: DDB_TABLE,
-      Key: { jobId: { S: jobId } },
+      Key: { jobId: { S: String(jobId) } },
     }));
 
     if (!result.Item) {
@@ -219,10 +219,10 @@ router.get("/result/:jobId", async (req: Request, res: Response) => {
       getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: `${prefix}/transcript.json` }), { expiresIn: 3600 }),
     ]);
 
-    res.json({ jobId, videoUrl, srtUrl, transcriptUrl });
+    return res.json({ jobId, videoUrl, srtUrl, transcriptUrl });
   } catch (err: any) {
     console.error("[Translator] /result error:", err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
