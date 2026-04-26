@@ -24,7 +24,7 @@ import {
   BatchClient,
   SubmitJobCommand,
 } from "@aws-sdk/client-batch";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 
 const router = Router();
 
@@ -46,7 +46,7 @@ const batch = new BatchClient({ region: REGION });
 router.get("/presign", async (req: Request, res: Response) => {
   try {
     const { filename = "input.mp4", contentType = "video/mp4" } = req.query as Record<string, string>;
-    const jobId = uuidv4();
+    const jobId = randomUUID();
     const ext   = filename.split(".").pop() ?? "mp4";
     const s3Key = `translator-jobs/${jobId}/input.${ext}`;
 
