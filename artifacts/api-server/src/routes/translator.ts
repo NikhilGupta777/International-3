@@ -140,11 +140,6 @@ router.post("/submit", async (req: Request, res: Response) => {
       jobDefinition:    BATCH_JOB_DEF,
       containerOverrides: {
         environment: envVars,
-        resourceRequirements: [
-          { type: "VCPU",   value: "4" },
-          { type: "MEMORY", value: "15000" },
-          { type: "GPU",    value: "1" },
-        ],
       },
     }));
 
