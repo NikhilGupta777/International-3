@@ -106,7 +106,7 @@ $containerProps = @"
     "executionRoleArn": "$ExecutionRoleArn",
     "resourceRequirements": [
         { "type": "VCPU", "value": "4" },
-        { "type": "MEMORY", "value": "16384" },
+        { "type": "MEMORY", "value": "15000" },
         { "type": "GPU", "value": "1" }
     ]
 }

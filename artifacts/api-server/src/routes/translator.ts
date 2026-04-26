@@ -142,7 +142,7 @@ router.post("/submit", async (req: Request, res: Response) => {
         environment: envVars,
         resourceRequirements: [
           { type: "VCPU",   value: "4" },
-          { type: "MEMORY", value: "16384" },
+          { type: "MEMORY", value: "15000" },
           { type: "GPU",    value: "1" },
         ],
       },

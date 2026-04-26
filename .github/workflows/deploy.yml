@@ -180,7 +180,8 @@ jobs:
           NEW_JSON=$(echo "$CURRENT" | jq \
             --arg img "$TRANSLATOR_URI" \
             'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
-             .containerProperties.image = $img')
+             .containerProperties.image = $img |
+             (.containerProperties.resourceRequirements[] | select(.type == "MEMORY").value) = "15000"')
 
           RESULT=$(aws batch register-job-definition \
             --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
