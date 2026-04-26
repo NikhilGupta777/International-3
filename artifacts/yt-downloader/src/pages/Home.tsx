@@ -22,6 +22,7 @@ import { FileUpload } from "@/components/FileUpload";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
+import VideoTranslator from "./VideoTranslator";
 import {
   saveActiveDownload,
   loadActiveDownload,
@@ -43,7 +44,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot";
+type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator";
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -678,8 +679,11 @@ export default function Home() {
         <Sidebar mode={mode} onModeChange={switchMode} />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", mode === "copilot" && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", mode === "copilot" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", mode === "copilot" && "is-copilot", mode === "translator" && "is-copilot")}>
+
+            {/* Translator tab — full screen */}
+            {mode === "translator" && <VideoTranslator />}
 
             {/* Search bar â€” only for download + clips modes */}
             {showSearch && (

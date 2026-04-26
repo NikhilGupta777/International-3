@@ -1,11 +1,11 @@
 import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
-  ListVideo, AlarmClock, UploadCloud, Bot, Youtube, Menu, X,
+  ListVideo, AlarmClock, UploadCloud, Bot, Languages, Youtube, Menu, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot";
+type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator";
 
 interface NavItem {
   mode: Mode;
@@ -20,6 +20,7 @@ const NAV_ITEMS: NavItem[] = [
   { mode: "download",    icon: <Download className="w-4 h-4 shrink-0" />,   label: "Download" },
   { mode: "subtitles",   icon: <Captions className="w-4 h-4 shrink-0" />,   label: "Subtitles" },
   { mode: "clipcutter",  icon: <Scissors className="w-4 h-4 shrink-0" />,   label: "Clip Cut" },
+  { mode: "translator",  icon: <Languages className="w-4 h-4 shrink-0" />,  label: "Translator",   badge: "GPU" },
   { mode: "bhagwat",     icon: <Shield className="w-4 h-4 shrink-0" />,     label: "Bhagwat",      badge: "PRO" },
   { mode: "scenefinder", icon: <ListVideo className="w-4 h-4 shrink-0" />,  label: "Find Sabha",   badge: "AI" },
   { mode: "timestamps",  icon: <AlarmClock className="w-4 h-4 shrink-0" />, label: "Timestamps",   badge: "AI" },
