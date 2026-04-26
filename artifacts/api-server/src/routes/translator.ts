@@ -89,7 +89,7 @@ router.post("/submit", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "jobId and s3Key are required" });
     }
 
-    const now = new Date().toISOString();
+    const now = Date.now();
 
     // Create DynamoDB job record
     await ddb.send(new PutItemCommand({
@@ -103,8 +103,8 @@ router.post("/submit", async (req: Request, res: Response) => {
         s3InputKey:  { S: s3Key },
         targetLang:  { S: targetLang },
         targetLangCode: { S: targetLangCode },
-        createdAt:   { S: now },
-        updatedAt:   { S: now },
+        createdAt:   { N: String(now) },
+        updatedAt:   { N: String(now) },
       },
     }));
 

@@ -22,6 +22,17 @@ const LANGS = [
   {code:"fil",name:"Filipino"},{code:"fi",name:"Finnish"},
 ];
 const TARGET_LANGS = LANGS.filter(l => l.code !== "auto");
+const MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+
+async function responseError(res: Response, fallback: string): Promise<Error> {
+  try {
+    const data = await res.json();
+    if (typeof data?.error === "string" && data.error.trim()) {
+      return new Error(data.error);
+    }
+  } catch {}
+  return new Error(fallback);
+}
 
 // ── Step config ───────────────────────────────────────────────────────────────
 const STEP_ICONS: Record<string, React.ReactNode> = {
@@ -231,13 +242,19 @@ export default function VideoTranslator() {
     if (!file) return;
     setError(null); setUploading(true); setJob(null); setTranscript([]);
     try {
+      if (file.size > MAX_VIDEO_SIZE_BYTES) {
+        throw new Error("Video is larger than the 2GB upload limit.");
+      }
+
       // Step 1: Get S3 presigned PUT URL
-      const ext = file.name.split(".").pop() ?? "mp4";
       const presignRes = await fetch(
         `${API}/presign?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type || "video/mp4")}`
       );
+      if (!presignRes.ok) throw await responseError(presignRes, "Failed to get upload URL");
       const { jobId: newJobId, presignedUrl, s3Key } = await presignRes.json();
-      if (!presignRes.ok) throw new Error("Failed to get upload URL");
+      if (!newJobId || !presignedUrl || !s3Key) {
+        throw new Error("Upload URL response was incomplete.");
+      }
 
       // Step 2: Upload directly to S3
       const uploadRes = await fetch(presignedUrl, {
@@ -262,8 +279,11 @@ export default function VideoTranslator() {
           lipSyncQuality: "musetalk",
         }),
       });
+      if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");
       const submitData = await submitRes.json();
-      if (!submitRes.ok) throw new Error(submitData.error ?? "Submit failed");
+      if (!submitData?.jobId) {
+        throw new Error("Submit response was incomplete.");
+      }
 
       setJobId(newJobId);
     } catch (e: any) {

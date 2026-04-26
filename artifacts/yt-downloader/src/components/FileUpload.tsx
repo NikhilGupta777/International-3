@@ -556,6 +556,7 @@ export function FileUpload() {
 // ── Gallery card ─────────────────────────────────────────────────────────────
 function GalleryCard({ file, onDelete }: { file: PublicFile; onDelete: () => void }) {
   const BASE = () => (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+  const { toast } = useToast();
   const [downloading, setDownloading] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [previewing, setPreviewing] = useState(false);
