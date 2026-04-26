@@ -99,7 +99,7 @@ router.post("/submit", async (req: Request, res: Response) => {
         type:        { S: "translator" },
         status:      { S: "QUEUED" },
         progress:    { N: "0" },
-        step:        { S: "Job queued, waiting for GPU..." },
+        step:        { S: "Job queued, waiting for worker..." },
         s3InputKey:  { S: s3Key },
         targetLang:  { S: targetLang },
         targetLangCode: { S: targetLangCode },
