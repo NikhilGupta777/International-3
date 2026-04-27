@@ -1,46 +1,42 @@
-# AWS Batch GPU Worker — requirements.txt
-# NOTE: PyTorch + torchaudio are installed via CUDA wheel in Dockerfile, NOT listed here.
-# ──────────────────────────────────────────────────────────────────────────────
+# AWS Batch GPU Worker requirements
+# NOTE: PyTorch + torchaudio are installed via CUDA wheel in Dockerfile.
 
 # Base worker runtime
-boto3>=1.34.0
-google-genai>=1.73.0
-pydantic>=2.7.0
-httpx>=0.27.0
-aiofiles>=24.1.0
-python-dotenv>=1.0.1
+boto3==1.34.162
+google-genai==1.73.0
+pydantic==2.7.4
+httpx==0.27.0
+aiofiles==24.1.0
+python-dotenv==1.0.1
 
-# ASR — AssemblyAI API
-assemblyai>=0.30.0
-
-# Speaker diarization (optional, requires HF_TOKEN)
-pyannote.audio>=3.1.0
+# ASR
+assemblyai==0.30.0
 
 # Audio / Video processing
-soundfile>=0.12.1
-librosa>=0.10.2
-pydub>=0.25.1
-opencv-python-headless>=4.9.0
+soundfile==0.12.1
+librosa==0.10.2.post1
+pydub==0.25.1
+opencv-python-headless==4.10.0.84
 numpy==1.26.4
-numba>=0.59.0
+numba==0.59.1
+llvmlite==0.42.0
 
 # Vocal separation
-demucs>=4.0.1
+demucs==4.0.1
 
-# CosyVoice 3.0 dependencies (CosyVoice repo installed as editable from /model-cache/CosyVoice)
-# Pin transformers to avoid pip resolver backtracking across dozens of versions in CI.
+# CosyVoice / Lip-sync related deps
 transformers==4.48.3
-huggingface_hub>=0.23.0
-diffusers>=0.29.0
-accelerate>=0.30.0
-conformer>=0.3.2
-encodec>=0.1.1
-hyperpyyaml>=1.2.2
-inflect>=7.0.0
+huggingface_hub==0.24.6
+diffusers==0.29.2
+accelerate==0.31.0
+conformer==0.3.2
+encodec==0.1.1
+hyperpyyaml==1.2.2
+inflect==7.0.0
 
-# TTS fallbacks (used when voice_clone=false or CosyVoice fails)
-edge-tts>=6.1.9
-gtts>=2.5.0
+# TTS fallbacks
+edge-tts==6.1.9
+gtts==2.5.0
 
-# LatentSync 1.6 deps (installed from LatentSync/requirements.txt at runtime)
-# huggingface_hub already listed above for checkpoint download
+# pyannote.audio is optional and intentionally not in the base image to avoid
+# heavy dependency resolution/backtracking during CI image builds.

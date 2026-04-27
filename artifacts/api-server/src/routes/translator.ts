@@ -63,7 +63,7 @@ function getRequesterId(req: Request): string {
 function isOwnerMatch(req: Request, item: Record<string, any> | undefined): boolean {
   if (!item) return false;
   const ownerId = item.ownerId?.S;
-  if (!ownerId) return true; // backward compatibility for older jobs
+  if (!ownerId) return false; // deny access for legacy rows without owner scope
   return ownerId === getRequesterId(req);
 }
 

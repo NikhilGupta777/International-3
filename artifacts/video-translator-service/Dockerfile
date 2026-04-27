@@ -10,6 +10,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_CACHE_DIR=/model-cache
 ENV HF_HOME=/model-cache/huggingface
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1
+ENV PIP_DEFAULT_TIMEOUT=120
 
 # ── System dependencies ───────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -33,21 +35,22 @@ RUN pip install --no-cache-dir \
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt constraints.txt ./
+RUN pip install --no-cache-dir --prefer-binary --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir --prefer-binary -r requirements.txt -c constraints.txt
 
 # ── Model cache directory ─────────────────────────────────────────────────────
 RUN mkdir -p /model-cache/whisper /model-cache/huggingface
 
 # Preload model repos at build time to avoid runtime clone/install failures
 RUN git clone --depth 1 https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice \
-    && pip install --no-cache-dir -e /model-cache/CosyVoice/[all]
+    && pip install --no-cache-dir --prefer-binary -c /app/constraints.txt -e /model-cache/CosyVoice/[all]
 
 RUN git clone --depth 1 https://github.com/bytedance/LatentSync.git /model-cache/LatentSync \
-    && pip install --no-cache-dir -r /model-cache/LatentSync/requirements.txt
+    && pip install --no-cache-dir --prefer-binary -c /app/constraints.txt -r /model-cache/LatentSync/requirements.txt
 
 RUN git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git /model-cache/MuseTalk \
-    && if [ -f /model-cache/MuseTalk/requirements.txt ]; then pip install --no-cache-dir -r /model-cache/MuseTalk/requirements.txt; fi
+    && if [ -f /model-cache/MuseTalk/requirements.txt ]; then pip install --no-cache-dir --prefer-binary -c /app/constraints.txt -r /model-cache/MuseTalk/requirements.txt; fi
 
 
 
