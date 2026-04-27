@@ -716,17 +716,20 @@ export default function VideoTranslator() {
           <>
             {/* Overall progress */}
             {isProcessing && (
-              <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5">
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-sm font-semibold text-white/80">Translatingâ€¦</span>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-semibold text-white/88">Translating video…</span>
                   <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
                 </div>
+                {job?.step && (
+                  <p className="text-xs text-white/45 mb-3 flex items-center gap-2">
+                    <Loader2 className="w-3 h-3 animate-spin shrink-0 text-primary/60" />
+                    {job.step}
+                  </p>
+                )}
                 <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                   <motion.div className="h-full bg-gradient-to-r from-primary to-orange-400 rounded-full"
-                    animate={{ width: `${overallPct}%` }} transition={{ duration: 0.6 }} />
+                    animate={{ width: `${Math.max(2, overallPct)}%` }} transition={{ duration: 0.6 }} />
                 </div>
-              </div>
-            )}
 
             {/* Steps */}
             {job?.steps && (
