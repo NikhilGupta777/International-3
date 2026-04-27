@@ -85,3 +85,8 @@ venv/
 deploy_batch_gpu.ps1
 
 output/
+
+# Temp build/patch artifacts
+.tmp-latentsync/
+.tmp-musetalk/
+patch_worker.py
