@@ -4,6 +4,7 @@ import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, History, Square, Copy, Check, RotateCcw, Link,
+  ArrowLeft, Pencil, Share2, MoreHorizontal, SquarePen, Plus, Paperclip, AudioLines, Menu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -283,7 +284,17 @@ function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onN
 }
 
 // ── Main StudioCopilot ────────────────────────────────────────────────────────
-export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => void }) {
+export function StudioCopilot({
+  onNavigate,
+  pendingPrompt,
+  onPromptConsumed,
+  onBackToHome,
+}: {
+  onNavigate?: (tab: string) => void;
+  pendingPrompt?: string | null;
+  onPromptConsumed?: () => void;
+  onBackToHome?: () => void;
+}) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -317,6 +328,9 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   useEffect(() => { messagesRef.current = currentMessages; }, [currentMessages]);
   useEffect(() => { if (!streaming && sessions.length > 0) saveSessions(sessions); }, [sessions, streaming]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [currentMessages]);
+  // Editable session title state
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
 
   const updateSession = useCallback((sessionId: string, updater: (msgs: Message[]) => Message[]) => {
     setSessions(prev => {
@@ -522,6 +536,18 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     }
   }, [streaming, BASE, onNavigate, updateSession, ensureSession, upsertMsg]);
 
+  // Consume incoming pendingPrompt (sent from home screen)
+  const consumedPromptRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (pendingPrompt && pendingPrompt !== consumedPromptRef.current && !streaming) {
+      consumedPromptRef.current = pendingPrompt;
+      const prompt = pendingPrompt;
+      onPromptConsumed?.();
+      // Defer to next tick so state settles
+      setTimeout(() => { void sendMessage(prompt); }, 0);
+    }
+  }, [pendingPrompt, streaming, sendMessage, onPromptConsumed]);
+
   const handleStop = () => {
     abortRef.current?.abort();
     setStreaming(false); setThinking(false); setAgentStage("idle"); setAgentIteration(0);
@@ -544,6 +570,24 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const speechSupported = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
   const canSend = input.trim().length > 0 && !streaming;
 
+  const currentSession = sessions.find(s => s.id === currentSessionId);
+  const sessionTitle = currentSession?.title ?? "New chat";
+
+  const commitTitle = () => {
+    const t = draftTitle.trim();
+    if (currentSessionId && t && t !== sessionTitle) {
+      setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: t.slice(0, 80) } : s));
+    }
+    setEditingTitle(false);
+  };
+
+  const handleShare = () => {
+    const url = window.location.href;
+    if (navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(url);
+    }
+  };
+
   const handleNewChat = () => { if (streaming) return; setCurrentSessionId(null); sessionIdRef.current = null; setShowHistory(false); };
   const handleDeleteSession = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -553,19 +597,74 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
   return (
     <div className="copilot-wrap">
-      {/* ── Header ── */}
-      <div className="agent-header">
-        <div className="agent-header-brand">
-          <div className="agent-header-orb"><Bot className="w-3.5 h-3.5 text-primary" /></div>
-          <span className="agent-header-title">Studio Agent</span>
-          {currentRunId && <span className="agent-header-run">run {currentRunId.slice(0,6)}</span>}
-        </div>
-        <div className="flex items-center gap-1">
-          <button onClick={() => setShowHistory(h => !h)} className={cn("agent-hdr-btn", showHistory && "agent-hdr-btn-active")} title="Chat History">
-            <History className="w-4 h-4" />
+      {/* ── Genspark Header ── */}
+      <div className="gs-chat-header">
+        <div className="gs-chat-header-left">
+          <button
+            onClick={() => onBackToHome?.()}
+            className="gs-chat-icon-btn"
+            title="Back"
+            aria-label="Back to home"
+          >
+            <ArrowLeft className="w-4 h-4" />
           </button>
-          <button onClick={handleNewChat} disabled={streaming} className="agent-hdr-btn disabled:opacity-40" title="New Chat">
-            <Trash2 className="w-4 h-4" />
+          <button
+            onClick={() => setShowHistory(h => !h)}
+            className={cn("gs-chat-icon-btn", showHistory && "gs-chat-icon-btn-active")}
+            title="Chat history"
+            aria-label="Toggle history"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="gs-chat-header-title">
+          {!isEmpty && (
+            editingTitle ? (
+              <input
+                autoFocus
+                value={draftTitle}
+                onChange={e => setDraftTitle(e.target.value)}
+                onBlur={commitTitle}
+                onKeyDown={e => {
+                  if (e.key === "Enter") commitTitle();
+                  if (e.key === "Escape") setEditingTitle(false);
+                }}
+                className="gs-chat-title-input"
+                maxLength={80}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => { setDraftTitle(sessionTitle); setEditingTitle(true); }}
+                className="gs-chat-title-btn"
+                title="Rename chat"
+              >
+                <span className="gs-chat-title-text">{sessionTitle}</span>
+                <Pencil className="w-3 h-3 text-white/30 group-hover:text-white/60" />
+              </button>
+            )
+          )}
+        </div>
+
+        <div className="gs-chat-header-right">
+          {!isEmpty && (
+            <button onClick={handleShare} className="gs-chat-share-btn" title="Share chat">
+              <Share2 className="w-3.5 h-3.5" />
+              <span>Share</span>
+            </button>
+          )}
+          <button
+            onClick={handleNewChat}
+            disabled={streaming}
+            className="gs-chat-icon-btn disabled:opacity-40"
+            title="New chat"
+            aria-label="New chat"
+          >
+            <SquarePen className="w-4 h-4" />
+          </button>
+          <button className="gs-chat-icon-btn" title="More" aria-label="More options">
+            <MoreHorizontal className="w-4 h-4" />
           </button>
         </div>
       </div>
@@ -601,27 +700,25 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         )}
       </AnimatePresence>
 
-      {/* ── Hero (empty state) ── */}
+      {/* ── Genspark welcome (empty state) ── */}
       {isEmpty && (
-        <div className="flex-1 flex flex-col items-center justify-center px-6 pb-32">
-          <div className="agent-hero-inner text-center max-w-lg">
-            <div className="agent-orb mx-auto mb-6 w-14 h-14 rounded-2xl bg-primary/15 border border-primary/30 flex items-center justify-center">
-              <Bot className="w-7 h-7 text-primary" />
-            </div>
-            <h1 className="agent-hero-title mb-2">
-              <span className="agent-hero-gradient">Ask anything,</span>
-              <span className="text-white"> create anything</span>
-            </h1>
-            <p className="agent-hero-sub mb-6 sm:mb-8">Autonomous AI agent · Full studio access · Real-time execution</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left w-full">
-              {STARTERS.map((s, i) => (
-                <button key={i} onClick={() => void sendMessage(s.text)}
-                  className="flex items-start gap-2.5 px-3.5 py-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.07] hover:border-white/[0.12] transition-all text-left group">
-                  <span className="text-primary/70 group-hover:text-primary mt-0.5 shrink-0">{s.icon}</span>
-                  <span className="text-xs sm:text-sm text-white/60 group-hover:text-white/80 leading-snug transition-colors">{s.text}</span>
-                </button>
-              ))}
-            </div>
+        <div className="gs-welcome">
+          <h1 className="gs-welcome-title">
+            Super Agent
+            <span className="gs-welcome-dot" aria-hidden="true" />
+          </h1>
+          <p className="gs-welcome-sub">Ask anything — I can plan, run tools, and build for you.</p>
+          <div className="gs-welcome-starters">
+            {STARTERS.map((s, i) => (
+              <button
+                key={i}
+                onClick={() => void sendMessage(s.text)}
+                className="gs-starter"
+              >
+                <span className="gs-starter-icon">{s.icon}</span>
+                <span className="gs-starter-text">{s.text}</span>
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -640,18 +737,16 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
               })}
             </AnimatePresence>
 
-            {/* Thinking indicator — Genspark style: just animated dots, no stage labels */}
-            {streaming && (
+            {/* Thinking indicator — Genspark style: "Thinking..." + cursor block + pulse dot */}
+            {thinking && (
               <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                className="flex gap-3 items-center">
-                <div className="agent-avatar shrink-0"><Bot className="w-3.5 h-3.5 text-primary" /></div>
-                <div className="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-white/[0.05] border border-white/[0.08]">
-                  <span className="inline-flex gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: '300ms' }} />
-                  </span>
-                </div>
+                className="gs-thinking">
+                <span className="gs-thinking-text">Thinking</span>
+                <span className="gs-thinking-dots">
+                  <span>.</span><span>.</span><span>.</span>
+                </span>
+                <span className="gs-thinking-cursor" />
+                <span className="gs-thinking-pulse" />
               </motion.div>
             )}
             <div ref={bottomRef} />
@@ -659,33 +754,49 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         </div>
       )}
 
-      {/* ── Input bar ── */}
-      <div className="copilot-input-wrap">
-        {/* URL paste suggestion pill */}
+      {/* ── Genspark input bar ── */}
+      <div className="gs-input-wrap">
+        {/* Bottom tabs: Super Agent | AI works for you */}
+        <div className="gs-mode-tabs">
+          <button type="button" className="gs-mode-tab gs-mode-tab-active">
+            <span className="gs-mode-tab-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3">
+                <path d="M12 2 L14 9 L21 12 L14 15 L12 22 L10 15 L3 12 L10 9 Z" />
+              </svg>
+            </span>
+            Super Agent
+          </button>
+          <button type="button" className="gs-mode-tab">
+            <Sparkles className="w-3 h-3" />
+            <span>AI works for you</span>
+            <span className="gs-mode-tab-badge">75% off</span>
+          </button>
+        </div>
+
+        {/* URL paste pill */}
         {pasteUrl && !streaming && (
-          <div className="flex items-center gap-2 px-3 pb-1.5">
+          <div className="gs-paste-pill-row">
             <button
               type="button"
               onClick={() => { setInput(`What can you do with ${pasteUrl}?`); setPasteUrl(null); }}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/12 border border-primary/25 text-xs text-primary/80 hover:bg-primary/20 transition-all"
+              className="gs-paste-pill"
             >
               <Link className="w-3 h-3" />
-              <span className="truncate max-w-[200px]">Use {pasteUrl.slice(0, 40)}{pasteUrl.length > 40 ? '…' : ''}</span>
-              <X className="w-3 h-3 ml-0.5 opacity-50" onClick={e => { e.stopPropagation(); setPasteUrl(null); }} />
+              <span className="truncate max-w-[220px]">Use {pasteUrl.slice(0, 40)}{pasteUrl.length > 40 ? '…' : ''}</span>
+              <X className="w-3 h-3 ml-0.5 opacity-60" onClick={e => { e.stopPropagation(); setPasteUrl(null); }} />
             </button>
           </div>
         )}
-        <form onSubmit={e => { e.preventDefault(); void sendMessage(input); }} className="copilot-input-box">
-          <div className="flex items-center gap-2 px-3 py-1.5">
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white/8 border border-white/10 text-[11px] text-white/50 font-medium shrink-0">
-              <Bot className="w-3 h-3" /> Gemini
-            </span>
-          </div>
+
+        <form
+          onSubmit={e => { e.preventDefault(); void sendMessage(input); }}
+          className="gs-input-card"
+        >
           <textarea
+            className="gs-input-textarea"
             value={input}
             onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
             onFocus={() => {
-              // Detect YouTube URL in clipboard and offer to paste
               if (!input && navigator.clipboard?.readText) {
                 navigator.clipboard.readText().then(text => {
                   if (/(?:youtube\.com\/watch|youtu\.be\/)/i.test(text)) setPasteUrl(text.trim());
@@ -693,33 +804,57 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
               }
             }}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input); } }}
-            placeholder="Ask anything — cut a clip, best moments, download, subtitles…"
+            placeholder="Ask anything, create anything"
             rows={1}
-            className="agent-textarea"
-            style={{ resize: "none", overflow: "hidden", minHeight: 40 }}
+            style={{ resize: "none", overflow: "hidden", minHeight: 28 }}
           />
-          <div className="copilot-input-actions">
-            {speechSupported && (
-              <button type="button" onClick={toggleVoice} className={cn("agent-icon-btn", listening && "text-red-400")}>
-                {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+
+          <div className="gs-input-row">
+            <div className="gs-input-row-left">
+              <button type="button" className="gs-input-circle-btn" title="Add">
+                <Plus className="w-4 h-4" />
               </button>
-            )}
-            {streaming ? (
-              <button type="button" onClick={handleStop} className="agent-stop-btn" title="Stop">
-                <Square className="w-3.5 h-3.5 fill-current" />
+              <button type="button" className="gs-input-circle-btn" title="Attach">
+                <Paperclip className="w-4 h-4" />
               </button>
-            ) : (
-              <button type="submit" disabled={!canSend} className={cn("agent-send-btn", canSend ? "agent-send-active" : "agent-send-disabled")}>
-                <Send className="w-4 h-4" />
+              <button type="button" className="gs-pill-ultra" title="Ultra mode">
+                <span className="gs-pill-ultra-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
+                    <path d="M12 2 L14 9 L21 12 L14 15 L12 22 L10 15 L3 12 L10 9 Z" />
+                  </svg>
+                </span>
+                Ultra
               </button>
-            )}
+            </div>
+
+            <div className="gs-input-row-right">
+              {speechSupported && (
+                <button
+                  type="button"
+                  onClick={toggleVoice}
+                  className={cn("gs-input-circle-btn", listening && "text-red-400")}
+                  title={listening ? "Stop listening" : "Voice input"}
+                >
+                  {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+              )}
+              {streaming ? (
+                <button type="button" onClick={handleStop} className="gs-stop-btn" title="Stop">
+                  <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={!canSend}
+                  className={cn("gs-send-btn", canSend ? "gs-send-active" : "gs-send-disabled")}
+                  title="Send"
+                >
+                  <AudioLines className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
         </form>
-        <p className="agent-hint">
-          {streaming
-            ? `Working…`
-            : "Powered by Gemini · Enter to send · Shift+Enter for newline"}
-        </p>
       </div>
     </div>
   );

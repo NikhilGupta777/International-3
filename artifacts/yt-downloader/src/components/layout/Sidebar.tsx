@@ -1,71 +1,154 @@
 import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
-  ListVideo, AlarmClock, UploadCloud, Bot, Languages, Youtube, Menu, X,
+  ListVideo, AlarmClock, UploadCloud, Languages, Youtube, Menu, X,
+  Plus, Home as HomeIcon, Workflow, Users, HardDrive, MoreHorizontal, UserCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator";
+type Mode =
+  | "home" | "copilot" | "download" | "clips" | "subtitles"
+  | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
+  | "upload" | "translator";
 
 interface NavItem {
   mode: Mode;
   icon: React.ReactNode;
   label: string;
   badge?: string;
+  tone?: "default" | "accent";
 }
 
+// Top "Super Agent" item — special, always pinned above the main list
+const SUPER_AGENT_ITEM: NavItem = {
+  mode: "copilot",
+  icon: (
+    <svg viewBox="0 0 24 24" fill="none" className="gs-super-icon" aria-hidden="true">
+      <path
+        d="M12 3 L14.2 9.8 L21 12 L14.2 14.2 L12 21 L9.8 14.2 L3 12 L9.8 9.8 Z"
+        fill="currentColor"
+      />
+    </svg>
+  ),
+  label: "Super Agent",
+  tone: "accent",
+};
+
 const NAV_ITEMS: NavItem[] = [
-  { mode: "copilot",     icon: <Bot className="w-4 h-4 shrink-0" />,        label: "AI Copilot",   badge: "NEW" },
-  { mode: "clips",       icon: <Sparkles className="w-4 h-4 shrink-0" />,   label: "Best Clips",   badge: "AI" },
-  { mode: "download",    icon: <Download className="w-4 h-4 shrink-0" />,   label: "Download" },
-  { mode: "subtitles",   icon: <Captions className="w-4 h-4 shrink-0" />,   label: "Subtitles" },
-  { mode: "clipcutter",  icon: <Scissors className="w-4 h-4 shrink-0" />,   label: "Clip Cut" },
-  { mode: "translator",  icon: <Languages className="w-4 h-4 shrink-0" />,  label: "Translator",   badge: "GPU" },
-  { mode: "bhagwat",     icon: <Shield className="w-4 h-4 shrink-0" />,     label: "Bhagwat",      badge: "PRO" },
-  { mode: "scenefinder", icon: <ListVideo className="w-4 h-4 shrink-0" />,  label: "Find Sabha",   badge: "AI" },
-  { mode: "timestamps",  icon: <AlarmClock className="w-4 h-4 shrink-0" />, label: "Timestamps",   badge: "AI" },
-  { mode: "upload",      icon: <UploadCloud className="w-4 h-4 shrink-0" />, label: "Share" },
+  { mode: "home",        icon: <HomeIcon className="gs-icon" />,        label: "Home" },
+  { mode: "clips",       icon: <Sparkles className="gs-icon" />,        label: "Best Clips" },
+  { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
+  { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },
+  { mode: "translator",  icon: <Languages className="gs-icon" />,       label: "Translator" },
+  { mode: "timestamps",  icon: <AlarmClock className="gs-icon" />,      label: "Timestamps" },
+  { mode: "download",    icon: <Download className="gs-icon" />,        label: "Download" },
+  { mode: "scenefinder", icon: <ListVideo className="gs-icon" />,       label: "Find Sabha" },
+  { mode: "bhagwat",     icon: <Shield className="gs-icon" />,          label: "Bhagwat" },
+  { mode: "upload",      icon: <UploadCloud className="gs-icon" />,     label: "Share" },
 ];
 
-// ── Desktop sidebar nav list ────────────────────────────────────────────────
+// Decorative bottom items (not real modes — visual parity with Genspark)
+const FOOTER_ITEMS = [
+  { icon: <Workflow className="gs-icon" />,        label: "Workflows" },
+  { icon: <Users className="gs-icon" />,           label: "Teams" },
+  { icon: <HardDrive className="gs-icon" />,       label: "Drive" },
+  { icon: <MoreHorizontal className="gs-icon" />,  label: "More" },
+];
+
+function GsItem({
+  item,
+  active,
+  onClick,
+  className,
+}: {
+  item: { icon: React.ReactNode; label: string; badge?: string; tone?: "default" | "accent" };
+  active?: boolean;
+  onClick?: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "gs-nav-item",
+        active && "gs-nav-item-active",
+        item.tone === "accent" && "gs-nav-item-accent",
+        className,
+      )}
+      title={item.label}
+      aria-label={item.label}
+      aria-current={active ? "page" : undefined}
+    >
+      <span className="gs-nav-icon-wrap">
+        {item.icon}
+        {item.badge && <span className="gs-nav-badge">{item.badge}</span>}
+      </span>
+      <span className="gs-nav-label">{item.label}</span>
+    </button>
+  );
+}
+
 function NavList({
   mode,
   onModeChange,
   onClose,
+  onNewChat,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
   onClose?: () => void;
+  onNewChat?: () => void;
 }) {
+  const handle = (m: Mode) => () => { onModeChange(m); onClose?.(); };
+  const handleNew = () => { onNewChat?.(); onClose?.(); };
+
   return (
-    <div className="studio-nav-section flex-1">
+    <>
+      {/* + New */}
+      <GsItem
+        item={{
+          icon: <Plus className="gs-icon" strokeWidth={2.4} />,
+          label: "New",
+        }}
+        onClick={handleNew}
+        className="gs-nav-item-new"
+      />
+
+      {/* Super Agent — only highlighted/visible-style when in copilot mode */}
+      <GsItem
+        item={SUPER_AGENT_ITEM}
+        active={mode === "copilot"}
+        onClick={handle("copilot")}
+      />
+
+      {/* Main nav */}
       {NAV_ITEMS.map((item) => (
-        <button
+        <GsItem
           key={item.mode}
-          onClick={() => {
-            onModeChange(item.mode);
-            onClose?.();
-          }}
-          className={cn("nav-item", mode === item.mode && "nav-item-active")}
-          title={item.label}
-          aria-label={item.label}
-          aria-current={mode === item.mode ? "page" : undefined}
-        >
-          {item.icon}
-          <span className="nav-item-label">{item.label}</span>
-          {item.badge && <span className="nav-badge">{item.badge}</span>}
-        </button>
+          item={item}
+          active={mode === item.mode}
+          onClick={handle(item.mode)}
+        />
       ))}
-    </div>
+
+      {/* Decorative footer items */}
+      <div className="gs-nav-divider" />
+      {FOOTER_ITEMS.map((it) => (
+        <GsItem key={it.label} item={it} />
+      ))}
+    </>
   );
 }
 
 export function Sidebar({
   mode,
   onModeChange,
+  onNewChat,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
+  onNewChat?: () => void;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -74,22 +157,36 @@ export function Sidebar({
 
   return (
     <>
-      {/* ── Desktop sidebar (always visible ≥ md) ── */}
-      <nav className="studio-nav-rail" aria-label="Studio navigation">
-        {/* Top logo mark */}
-        <div className="flex items-center justify-center h-[44px] w-full shrink-0 border-b border-[#1a1a1e]">
+      {/* Desktop rail */}
+      <nav className="gs-rail" aria-label="Studio navigation">
+        {/* Profile / app tile */}
+        <div className="gs-rail-top">
           <div
-            className="p-1.5 rounded-md"
-            style={{ background: "rgba(185,28,28,0.15)", border: "1px solid rgba(185,28,28,0.25)" }}
+            className="gs-app-tile"
+            title="VideoMaking Studio"
+            aria-label="VideoMaking Studio"
           >
             <Youtube className="w-4 h-4 text-primary" />
           </div>
         </div>
 
-        <NavList mode={mode} onModeChange={onModeChange} />
+        <div className="gs-rail-list">
+          <NavList
+            mode={mode}
+            onModeChange={onModeChange}
+            onNewChat={onNewChat}
+          />
+        </div>
+
+        {/* Bottom avatar */}
+        <div className="gs-rail-foot">
+          <div className="gs-avatar" title="Account">
+            <UserCircle2 className="w-5 h-5 text-white/40" />
+          </div>
+        </div>
       </nav>
 
-      {/* ── Mobile hamburger button in topbar (injected via portal-less fixed btn) ── */}
+      {/* Mobile hamburger */}
       <button
         className="studio-hamburger"
         onClick={toggleDrawer}
@@ -98,27 +195,19 @@ export function Sidebar({
         <Menu className="w-5 h-5" />
       </button>
 
-      {/* ── Mobile drawer backdrop ── */}
       {drawerOpen && (
-        <div
-          className="studio-drawer-backdrop"
-          onClick={closeDrawer}
-          aria-hidden="true"
-        />
+        <div className="studio-drawer-backdrop" onClick={closeDrawer} aria-hidden="true" />
       )}
 
-      {/* ── Mobile drawer ── */}
-      <div className={cn("studio-drawer", drawerOpen && "studio-drawer-open")}>
-        {/* Drawer header */}
-        <div className="flex items-center justify-between px-4 h-[52px] border-b border-[#1a1a1e] shrink-0">
+      <div className={cn("gs-drawer", drawerOpen && "gs-drawer-open")}>
+        <div className="gs-drawer-header">
           <div className="flex items-center gap-2">
-            <div
-              className="p-1.5 rounded-md"
-              style={{ background: "rgba(185,28,28,0.15)", border: "1px solid rgba(185,28,28,0.25)" }}
-            >
+            <div className="gs-app-tile">
               <Youtube className="w-4 h-4 text-primary" />
             </div>
-            <span className="text-sm font-semibold text-white/90">VideoMaking <span className="text-primary">Studio</span></span>
+            <span className="text-sm font-semibold text-white/90">
+              VideoMaking <span className="text-primary">Studio</span>
+            </span>
           </div>
           <button
             onClick={closeDrawer}
@@ -129,9 +218,13 @@ export function Sidebar({
           </button>
         </div>
 
-        {/* Drawer nav items */}
-        <div className="flex-1 overflow-y-auto py-2">
-          <NavList mode={mode} onModeChange={onModeChange} onClose={closeDrawer} />
+        <div className="gs-drawer-list">
+          <NavList
+            mode={mode}
+            onModeChange={onModeChange}
+            onClose={closeDrawer}
+            onNewChat={onNewChat}
+          />
         </div>
       </div>
     </>

@@ -22,6 +22,7 @@ import { FileUpload } from "@/components/FileUpload";
 import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
+import { StudioHome } from "@/components/StudioHome";
 import VideoTranslator from "./VideoTranslator";
 import {
   saveActiveDownload,
@@ -45,7 +46,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator";
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -251,7 +252,9 @@ export default function Home() {
   const bestClipsRef = useRef<BestClipsHandle>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>("clips");
+  const [mode, setMode] = useState<Mode>("home");
+  const [pendingCopilotPrompt, setPendingCopilotPrompt] = useState<string | null>(null);
+  const [copilotResetKey, setCopilotResetKey] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [playerFormatId, setPlayerFormatId] = useState<string | undefined>();
   const [pushSupported, setPushSupported] = useState(false);
@@ -400,6 +403,7 @@ export default function Home() {
     return (b.filesize || 0) - (a.filesize || 0);
   }) || [];
 
+  const showHome = mode === "home";
   const showVideoInfo = mode === "download" && video && !jobId;
   const showSubtitles = mode === "subtitles";
   const showClipCutter = mode === "clipcutter";
@@ -682,11 +686,19 @@ export default function Home() {
       <div className="studio-body">
 
         {/* Sidebar */}
-        <Sidebar mode={mode} onModeChange={switchMode} />
+        <Sidebar
+          mode={mode}
+          onModeChange={switchMode}
+          onNewChat={() => {
+            setPendingCopilotPrompt(null);
+            setCopilotResetKey(k => k + 1);
+            switchMode("copilot");
+          }}
+        />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", mode === "copilot" && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "home") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "home") && "is-copilot", mode === "translator" && "is-copilot")}>
 
             {/* Translator tab â€” full screen */}
             {mode === "translator" && <VideoTranslator />}
@@ -1012,10 +1024,36 @@ export default function Home() {
                 </motion.div>
               )}
 
+              {/* Genspark-style Home workspace */}
+              {showHome && (
+                <motion.div
+                  key="home-panel"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.3 }}
+                  className="w-full h-full flex-1 flex flex-col"
+                >
+                  <StudioHome
+                    onSwitchMode={(m) => switchMode(m as Mode)}
+                    onLaunchAgent={(prompt) => {
+                      setPendingCopilotPrompt(prompt);
+                      switchMode("copilot");
+                    }}
+                  />
+                </motion.div>
+              )}
+
               {/* AI Copilot */}
               {showCopilot && (
                 <motion.div key="copilot-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
-                  <StudioCopilot onNavigate={(tab) => switchMode(tab as any)} />
+                  <StudioCopilot
+                    key={copilotResetKey}
+                    onNavigate={(tab) => switchMode(tab as any)}
+                    pendingPrompt={pendingCopilotPrompt}
+                    onPromptConsumed={() => setPendingCopilotPrompt(null)}
+                    onBackToHome={() => switchMode("home")}
+                  />
                 </motion.div>
               )}
 
