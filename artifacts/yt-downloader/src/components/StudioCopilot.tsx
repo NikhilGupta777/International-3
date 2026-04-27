@@ -725,7 +725,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
       if (evt.type === "error") {
         setThinking(false);
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `⚠️ ${evt.message}` }] }));
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `[Warning] ${evt.message}` }] }));
         return;
       }
 
@@ -770,75 +770,19 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             const evt = JSON.parse(raw) as SseEvent;
             handleEvent(evt);
             continue;
-
-            if (evt.type === "text") {
-              patchAssistant(m => {
-                const parts = [...m.parts];
-                const last = parts[parts.length - 1];
-                if (last?.kind === "text") {
-                  return { ...m, parts: [...parts.slice(0, -1), { kind: "text", content: last.content + evt.content }] };
-                }
-                return { ...m, parts: [...parts, { kind: "text", content: evt.content }] };
-              });
-            }
-
-            else if (evt.type === "tool_start") {
-              // Insert tool card only once per tool name; ignore duplicates
-              patchAssistant(m => {
-                const hasPending = m.parts.some(p => p.kind === "tool_start" && (p as any).name === evt.name && !p.done);
-                if (hasPending) return m;
-                return { ...m, parts: [...m.parts, { kind: "tool_start", name: evt.name, args: evt.args, done: false }] };
-              });
-            }
-
-            else if (evt.type === "tool_progress") {
-              patchAssistant(m => ({
-                ...m,
-                parts: m.parts.map(p =>
-                  p.kind === "tool_start" && (p as any).name === evt.name && !p.done
-                    ? { ...p, progress: evt.percent ?? null, progressMsg: evt.message ?? evt.status }
-                    : p
-                ),
-              }));
-            }
-
-            else if (evt.type === "tool_done") {
-              patchAssistant(m => ({
-                ...m,
-                parts: m.parts.map(p =>
-                  p.kind === "tool_start" && (p as any).name === evt.name && !p.done
-                    ? { ...p, done: true, result: evt.result, progress: 100 }
-                    : p
-                ),
-              }));
-            }
-
-            else if (evt.type === "navigate" && onNavigate) {
-              onNavigate(evt.tab);
-            }
-
-            else if (evt.type === "artifact") {
-              const e = evt as any;
-              patchAssistant(m => ({
-                ...m,
-                parts: [...m.parts, {
-                  kind: "artifact", artifactType: e.artifactType, label: e.label,
-                  tab: e.tab, jobId: e.jobId, downloadUrl: e.downloadUrl, content: e.content,
-                }],
-              }));
-            }
-
-            else if (evt.type === "error") {
-              patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `⚠️ ${evt.message}` }] }));
-            }
-
-          } catch { /* malformed SSE line — skip */ }
+          } catch {
+            // malformed SSE frame - skip
+          }
         }
       }
 
-      const trailing = buffer.trim();
-      if (trailing.startsWith("data:")) {
-        const raw = trailing.slice(5).trim();
+      // Parse any trailing complete "data:" lines left in the buffer.
+      const trailingLines = buffer
+        .split(/\r?\n/)
+        .filter(line => line.startsWith("data:"))
+        .map(line => line.slice(5).trimStart());
+      if (trailingLines.length) {
+        const raw = trailingLines.join("\n").trim();
         if (raw) {
           try {
             const evt = JSON.parse(raw) as SseEvent;
@@ -850,7 +794,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "⚠️ Connection interrupted. The job may still be running in Activity." }] }));
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "[Warning] Connection interrupted. The job may still be running in Activity." }] }));
       }
     } finally {
       setStreaming(false);
