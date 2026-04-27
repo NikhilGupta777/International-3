@@ -499,7 +499,8 @@ router.post("/agent/chat", async (req, res) => {
   const isConnected = () => clientConnected && !res.writableEnded;
 
   const runId = randomUUID();
-  sseEvent(res, { type: "run_start", runId, ts: Date.now() });
+  sseEvent(res, { type: "run_start", runId, ts: Date.now(), model: activeModel, ultra: requestedModel === "ultra" });
+  console.log(`[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${messages.length}`);
 
   // Heartbeat every 8s — below ALB (60s), nginx (75s), Cloudflare (100s) idle timeouts
   const keepAlive = setInterval(() => {
