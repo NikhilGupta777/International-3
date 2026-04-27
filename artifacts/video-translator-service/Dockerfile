@@ -38,12 +38,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ── Model cache directory ─────────────────────────────────────────────────────
 RUN mkdir -p /model-cache/whisper
 
-# Pre-download Whisper large-v3-turbo into the image layer to avoid cold-start
-# downloads on every job. Non-fatal if it fails (will download at runtime).
-RUN python -c "\
-from faster_whisper import WhisperModel; \
-WhisperModel('large-v3-turbo', device='cpu', compute_type='int8', download_root='/model-cache/whisper')" \
-    || echo "Whisper pre-download failed (non-fatal, will download at runtime)"
+
 
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .

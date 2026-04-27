@@ -37,6 +37,7 @@ const BATCH_JOB_DEF = process.env.TRANSLATOR_BATCH_JOB_DEFINITION!;
 const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? "";
 const GEMINI_KEY_2 = process.env.GEMINI_API_KEY_2 ?? "";
 const GEMINI_KEY_3 = process.env.GEMINI_API_KEY_3 ?? "";
+const ASSEMBLYAI_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
 
 const s3    = new S3Client({ region: REGION });
 const ddb   = new DynamoDBClient({ region: REGION });
@@ -95,7 +96,7 @@ router.post("/submit", async (req: Request, res: Response) => {
       sourceLang     = "auto",
       voiceClone     = true,
       lipSync        = false,
-      lipSyncQuality = "musetalk",
+      lipSyncQuality = "latentsync",
       useDemucs      = false,
       premiumAsr     = false,
       multiSpeaker   = false,
@@ -153,6 +154,7 @@ router.post("/submit", async (req: Request, res: Response) => {
       { name: "MULTI_SPEAKER",     value: String(multiSpeaker) },
       { name: "ASR_MODEL",         value: asrModel },
       { name: "TRANSLATION_MODE",  value: translationMode },
+      { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
       { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
     ];
 

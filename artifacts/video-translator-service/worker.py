@@ -65,6 +65,7 @@ LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
 USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
 PREMIUM_ASR         = os.environ.get("PREMIUM_ASR", "false").lower() == "true"
 MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "false").lower() == "true"
+ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
 LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | musetalk
 ASR_MODEL           = os.environ.get("ASR_MODEL", "large-v3-turbo")   # large-v3-turbo | large-v3
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget | premium
@@ -230,86 +231,94 @@ def run_demucs(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2: Transcription (faster-whisper + optional WhisperX)
+# Stage 2: Transcription (AssemblyAI)
 # ─────────────────────────────────────────────────────────────────────────────
+
+ASSEMBLYAI_LANG_MAP = {
+    "hi": "hi", "en": "en", "es": "es", "fr": "fr", "de": "de",
+    "it": "it", "pt": "pt", "nl": "nl", "ja": "ja", "ko": "ko",
+    "zh": "zh", "ru": "ru", "tr": "tr",
+}
 
 def transcribe(audio_path: Path) -> list[dict]:
     """
-    Transcribe audio to word-level timestamped segments.
+    Transcribe audio to word-level timestamped segments using AssemblyAI.
+    Groups words into sentences/segments by pauses.
     Returns list of: { id, start, end, text, words: [{word, start, end}] }
     """
-    import torch
-    from faster_whisper import WhisperModel
+    import assemblyai as aai
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
+    if not ASSEMBLYAI_API_KEY:
+        raise ValueError("ASSEMBLYAI_API_KEY environment variable is not set.")
 
-    model_name = ASR_MODEL  # e.g. "large-v3-turbo" or "large-v3"
-    cache = str(MODEL_CACHE_DIR / "whisper")
+    aai.settings.api_key = ASSEMBLYAI_API_KEY
 
-    log.info(f"[Whisper] Loading {model_name} on {device}...")
-    model = WhisperModel(model_name, device=device, compute_type=compute_type,
-                         download_root=cache)
+    log.info(f"[AssemblyAI] Uploading and transcribing {audio_path.name}...")
+    transcriber = aai.Transcriber()
+    config_args = {"speaker_labels": MULTI_SPEAKER}
 
-    lang = None if SOURCE_LANG == "auto" else SOURCE_LANG
-    segments_iter, info = model.transcribe(
-        str(audio_path),
-        language=lang,
-        word_timestamps=True,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 300},
-        beam_size=5,
-    )
+    if SOURCE_LANG != "auto" and SOURCE_LANG in ASSEMBLYAI_LANG_MAP:
+        config_args["language_code"] = ASSEMBLYAI_LANG_MAP[SOURCE_LANG]
+    else:
+        config_args["language_detection"] = True
+
+    config = aai.TranscriptionConfig(**config_args)
+    transcript = transcriber.transcribe(str(audio_path), config)
+
+    if transcript.error:
+        raise RuntimeError(f"AssemblyAI error: {transcript.error}")
+
+    log.info(f"[AssemblyAI] Transcribed. Detected language: {transcript.json_response.get('language_code', 'unknown')}")
+
+    # Group words into segments by pauses (>0.45s) or length (>8s)
+    words = transcript.words
+    if not words:
+        return []
 
     segments = []
-    for i, seg in enumerate(segments_iter):
-        words = []
-        if seg.words:
-            words = [{"word": w.word, "start": w.start, "end": w.end} for w in seg.words]
-        segments.append({
-            "id": i,
-            "start": seg.start,
-            "end": seg.end,
-            "text": seg.text.strip(),
-            "words": words,
+    current_seg_words = []
+    seg_start = words[0].start / 1000.0
+
+    def push_segment(end_time):
+        nonlocal current_seg_words, seg_start
+        if not current_seg_words: return
+        text = " ".join(w["word"] for w in current_seg_words).strip()
+        if text:
+            segments.append({
+                "id": len(segments),
+                "start": seg_start,
+                "end": end_time,
+                "text": text,
+                "words": current_seg_words
+            })
+        current_seg_words = []
+
+    for i, w in enumerate(words):
+        w_start = w.start / 1000.0
+        w_end = w.end / 1000.0
+        
+        # Check gap before this word
+        if current_seg_words:
+            prev_end = current_seg_words[-1]["end"]
+            gap = w_start - prev_end
+            dur = w_start - seg_start
+            
+            # Split if gap is large or segment is getting too long
+            if gap > 0.45 or dur > 8.0:
+                push_segment(prev_end)
+                seg_start = w_start
+        
+        current_seg_words.append({
+            "word": w.text,
+            "start": w_start,
+            "end": w_end
         })
+        
+    if current_seg_words:
+        push_segment(current_seg_words[-1]["end"])
 
-    log.info(f"[Whisper] Transcribed {len(segments)} segments. Language: {info.language}")
-
-    del model
-    torch.cuda.empty_cache()
-
-    # Optional: WhisperX forced alignment for tighter timing
-    if PREMIUM_ASR and len(segments) > 0:
-        segments = whisperx_align(segments, audio_path, info.language)
-
+    log.info(f"[AssemblyAI] Grouped into {len(segments)} segments.")
     return segments
-
-
-def whisperx_align(segments: list[dict], audio_path: Path, language: str) -> list[dict]:
-    """WhisperX forced alignment for more precise word timestamps."""
-    try:
-        import torch
-        import whisperx
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info(f"[WhisperX] Aligning {len(segments)} segments...")
-        align_model, metadata = whisperx.load_align_model(language_code=language, device=device)
-
-        # Convert to WhisperX format
-        wx_segments = [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in segments]
-        import soundfile as sf
-        audio_arr, sr = sf.read(str(audio_path))
-        result = whisperx.align(wx_segments, align_model, metadata, audio_arr, device)
-
-        aligned = result.get("segments", segments)
-        log.info(f"[WhisperX] Alignment complete.")
-        del align_model
-        torch.cuda.empty_cache()
-        return aligned
-    except Exception as e:
-        log.warning(f"[WhisperX] Alignment failed, using raw Whisper: {e}")
-        return segments
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,7 +392,7 @@ You are a professional video dubbing translator. Your task is to translate speec
 
 Rules:
 1. Translate meaning, emotion, and tone — NOT word-for-word literal text.
-2. Keep translated segment duration close to the original speaking duration.
+2. Keep translated segment duration close to the original speaking duration with time as .
 3. Match the speaking style (formal, casual, excited, sad, etc.).
 4. If the original is short and punchy, keep the translation short and punchy.
 5. Return ONLY valid JSON — no markdown, no explanation.
