@@ -1,4 +1,4 @@
-﻿import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
@@ -769,7 +769,7 @@ export default function Home() {
             {/* ═══════════════════════════════════════════════════════════════
                Genspark-style Studio Homepage — shown on fresh load
                ═══════════════════════════════════════════════════════════════ */}
-            {mode === "download" && !videoInfo && !jobId && !isSearchPending && (
+            {mode === "download" && !video && !jobId && !isSearchPending && (
               <motion.div
                 key="studio-home"
                 initial={{ opacity: 0, y: 24 }}

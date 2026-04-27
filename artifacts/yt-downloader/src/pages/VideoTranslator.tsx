@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, Languages, Mic, MicOff, Play, Download, CheckCircle,
@@ -716,6 +716,7 @@ export default function VideoTranslator() {
           <>
             {/* Overall progress */}
             {isProcessing && (
+              <>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-semibold text-white/88">Translating video…</span>
                   <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
@@ -730,7 +731,8 @@ export default function VideoTranslator() {
                   <motion.div className="h-full bg-gradient-to-r from-primary to-orange-400 rounded-full"
                     animate={{ width: `${Math.max(2, overallPct)}%` }} transition={{ duration: 0.6 }} />
                 </div>
-
+              </>
+            )}
             {/* Steps */}
             {job?.steps && (
               <div className="flex flex-col gap-2">

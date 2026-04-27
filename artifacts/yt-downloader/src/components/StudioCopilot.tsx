@@ -614,7 +614,6 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             </span>
           </div>
           <textarea
-            ref={inputRef}
             value={input}
             onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input); } }}
