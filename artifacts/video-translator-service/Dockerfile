@@ -36,7 +36,7 @@ RUN pip install --no-cache-dir \
 # ── Python dependencies ───────────────────────────────────────────────────────
 WORKDIR /app
 COPY requirements.txt constraints.txt ./
-RUN pip install --no-cache-dir --prefer-binary --upgrade pip setuptools wheel \
+RUN pip install --no-cache-dir --prefer-binary --upgrade "pip<26" "setuptools<81" wheel \
     && pip install --no-cache-dir --prefer-binary -r requirements.txt -c constraints.txt
 
 # ── Model cache directory ─────────────────────────────────────────────────────
