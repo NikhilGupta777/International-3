@@ -6,6 +6,7 @@ import {
   UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, Clock, History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { loadSessions, saveSession, deleteSession, createSession, type AgentSession } from "@/lib/session-history";
 
 const HISTORY_KEY = "copilot-sessions-v2";
 

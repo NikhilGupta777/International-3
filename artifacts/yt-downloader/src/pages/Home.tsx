@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+﻿import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
@@ -433,8 +433,8 @@ export default function Home() {
                   : "Find Sabha";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
-      ? `${modeLabel}: ${contentLabel} Â· ${appName}`
-      : `${modeLabel} Â· ${appName}`;
+      ? `${modeLabel}: ${contentLabel} Ã‚Â· ${appName}`
+      : `${modeLabel} Ã‚Â· ${appName}`;
   }, [mode, submittedUrl, video?.title]);
 
   useEffect(() => {
@@ -647,9 +647,9 @@ export default function Home() {
   return (
     <div className="studio-workspace">
 
-      {/* â”€â”€ Topbar â”€â”€ */}
+      {/* Ã¢â€â‚¬Ã¢â€â‚¬ Topbar Ã¢â€â‚¬Ã¢â€â‚¬ */}
       <header className="studio-topbar">
-        {/* Logo â€” expands on hover like the sidebar */}
+        {/* Logo Ã¢â‚¬â€ expands on hover like the sidebar */}
         <div className="studio-logo" title="VideoMaking Studio">
           <div
             className="p-1.5 rounded-md shrink-0"
@@ -678,7 +678,7 @@ export default function Home() {
         />
       </header>
 
-      {/* â”€â”€ Body: sidebar + content â”€â”€ */}
+      {/* Ã¢â€â‚¬Ã¢â€â‚¬ Body: sidebar + content Ã¢â€â‚¬Ã¢â€â‚¬ */}
       <div className="studio-body">
 
         {/* Sidebar */}
@@ -688,10 +688,10 @@ export default function Home() {
         <main className={cn("studio-content", (mode === "copilot" || mode === "translator") && "overflow-hidden")} id="studio-content">
           <div className={cn("studio-content-inner", mode === "copilot" && "is-copilot", mode === "translator" && "is-copilot")}>
 
-            {/* Translator tab — full screen */}
+            {/* Translator tab â€” full screen */}
             {mode === "translator" && <VideoTranslator />}
 
-            {/* Search bar â€” only for download + clips modes */}
+            {/* Search bar Ã¢â‚¬â€ only for download + clips modes */}
             {showSearch && (
               <div className="studio-search-wrap">
                 <form onSubmit={handleSearch}>
@@ -765,7 +765,67 @@ export default function Home() {
               </div>
             )}
 
-            {/* â”€â”€ Content panels â”€â”€ */}
+
+            {/* ═══════════════════════════════════════════════════════════════
+               Genspark-style Studio Homepage — shown on fresh load
+               ═══════════════════════════════════════════════════════════════ */}
+            {mode === "download" && !videoInfo && !jobId && !isSearchPending && (
+              <motion.div
+                key="studio-home"
+                initial={{ opacity: 0, y: 24 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ duration: 0.35 }}
+                className="studio-home-hero"
+              >
+                {/* Brand header */}
+                <div className="studio-home-brand">
+                  <div className="studio-home-orb">
+                    <Youtube className="w-7 h-7 text-primary" />
+                  </div>
+                  <h1 className="studio-home-title">
+                    <span className="studio-home-gradient">VideoMaking</span>
+                    <span className="text-white"> Studio</span>
+                  </h1>
+                  <p className="studio-home-sub">
+                    AI-powered video tools — Download, Clip, Subtitle, Translate, and more.
+                  </p>
+                </div>
+
+                {/* Tool bubbles — like Genspark AI workspace */}
+                <div className="studio-home-grid">
+                  {([
+                    { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
+                    { icon: <Scissors className="w-5 h-5" />, label: "Clip Cutter", desc: "Trim any range", mode: "clipcutter", color: "text-orange-400" },
+                    { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },
+                    { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
+                    { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
+                    { icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" },
+                    { icon: <UploadCloud className="w-5 h-5" />, label: "Upload", desc: "Share files", mode: "upload", color: "text-cyan-400" },
+                    { icon: <Bot className="w-5 h-5" />, label: "AI Agent", desc: "Ask anything", mode: "copilot", color: "text-emerald-400" },
+                  ] as Array<{ icon: React.ReactNode; label: string; desc: string; mode: string; color: string }>).map((tool) => (
+                    <button
+                      key={tool.mode}
+                      onClick={() => switchMode(tool.mode as Mode)}
+                      className="studio-home-tool"
+                    >
+                      <span className={tool.color}>{tool.icon}</span>
+                      <div className="studio-home-tool-text">
+                        <span className="studio-home-tool-label">{tool.label}</span>
+                        <span className="studio-home-tool-desc">{tool.desc}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Quick tip */}
+                <p className="studio-home-tip">
+                  💡 Paste a YouTube URL above to get started, or click <button onClick={() => switchMode("copilot")} className="text-primary hover:underline font-semibold">AI Agent</button> to chat.
+                </p>
+              </motion.div>
+            )}
+
+            {/* Ã¢â€â‚¬Ã¢â€â‚¬ Content panels Ã¢â€â‚¬Ã¢â€â‚¬ */}
 
             {/* Active download progress */}
             <AnimatePresence>
@@ -1042,7 +1102,7 @@ function GuideModal({
                 className="text-white/60 hover:text-white hover:bg-white/10 px-2.5 sm:px-4"
                 onClick={onClose}
               >
-                <span className="sm:hidden">âœ•</span>
+                <span className="sm:hidden">Ã¢Å“â€¢</span>
                 <span className="hidden sm:inline">Close</span>
               </Button>
             </div>
@@ -1267,7 +1327,7 @@ function SubtitleDownloadRow({ url }: { url: string }) {
           {fixing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Fixing with AIâ€¦
+              Fixing with AIÃ¢â‚¬Â¦
             </>
           ) : (
             <>
@@ -1280,7 +1340,7 @@ function SubtitleDownloadRow({ url }: { url: string }) {
 
       {fixing && (
         <p className="text-xs text-white/30 sm:ml-auto">
-          Downloading audio & running AI correction â€” this may take a minuteâ€¦
+          Downloading audio & running AI correction Ã¢â‚¬â€ this may take a minuteÃ¢â‚¬Â¦
         </p>
       )}
     </div>
@@ -1309,7 +1369,7 @@ function InlinePlayer({
       {loading && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/50 z-10">
           <Loader2 className="w-7 h-7 animate-spin" />
-          <span className="text-xs">Resolving streamâ€¦</span>
+          <span className="text-xs">Resolving streamÃ¢â‚¬Â¦</span>
         </div>
       )}
       {error && (
