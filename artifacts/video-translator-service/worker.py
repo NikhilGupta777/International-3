@@ -392,9 +392,9 @@ You are a professional video dubbing translator. Your task is to translate speec
 
 Rules:
 1. Translate meaning, emotion, and tone — NOT word-for-word literal text.
-2. Keep translated segment duration close to the original speaking duration with time as .
+2. Keep translated segment duration close to the original speaking duration with time as this is for a translated video translation so it should be best.
 3. Match the speaking style (formal, casual, excited, sad, etc.).
-4. If the original is short and punchy, keep the translation short and punchy.
+4. If the original is short and punchy, keep the translation short and punchy but not changing the meaning of the sentence.
 5. Return ONLY valid JSON — no markdown, no explanation.
 
 Output format (array of objects):
@@ -403,7 +403,7 @@ Output format (array of objects):
     "id": <segment_id>,
     "translated_text": "<translated text>",
     "emotion": "<neutral|happy|sad|excited|serious|questioning>",
-    "speaking_rate": <0.8 to 1.3, where 1.0 is normal speed>
+    "speaking_rate": <0.9 to 1.2, where 1.0 is normal speed keep between 0.9 to 1.2>
   }
 ]
 """
@@ -431,7 +431,7 @@ def translate_segments(segments: list[dict]) -> list[dict]:
     user_prompt = (
         f"Translate the following video segments from the source language to {TARGET_LANG}.\n"
         f"These are dubbing segments — preserve emotion, tone, and keep each translation "
-        f"close to the original duration.\n\n"
+        f"close to the original duration segments.\n\n"
         f"Segments JSON:\n{json.dumps(seg_payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -649,11 +649,12 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
         return audio_path  # close enough, no change needed
 
     ratio = actual_dur / max(target_duration, 0.1)
-    ratio = max(0.5, min(2.0, ratio))  # clamp to safe range
+    # Relax the clamp so we don't get chipmunk voices (max 1.25x speedup)
+    ratio = max(0.85, min(1.25, ratio))
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
 
-    # Chain atempo filters for values outside 0.5–2.0
+    # Chain atempo filters for values outside 0.5-2.0
     if ratio > 2.0:
         tempo_filters = "atempo=2.0,atempo=" + str(round(ratio / 2.0, 3))
     elif ratio < 0.5:
@@ -787,9 +788,9 @@ def assemble_dubbed_audio(
     import numpy as np
     import soundfile as sf
 
-    log.info("[Assemble] Assembling final dubbed audio track...")
-    total_samples = int(math.ceil(video_duration * SR))
-    mixed = np.zeros(total_samples, dtype=np.float32)
+    log.info("[Assemble] Assembling final dubbed audio track without overlaps...")
+    mixed_list = []
+    current_time = 0.0
 
     for seg, audio_path in zip(segments, seg_audio_paths):
         if not audio_path.exists():
@@ -805,10 +806,28 @@ def assemble_dubbed_audio(
             import librosa
             data = librosa.resample(data, orig_sr=sr, target_sr=SR)
 
-        start_sample = int(seg["start"] * SR)
-        end_sample = min(start_sample + len(data), total_samples)
-        actual_len = end_sample - start_sample
-        mixed[start_sample:end_sample] += data[:actual_len]
+        # Ensure segments don't overlap by pushing start_time forward if needed
+        start_time = max(seg["start"], current_time)
+        start_sample = int(start_time * SR)
+        current_sample = sum(len(x) for x in mixed_list)
+        
+        # Pad with silence if there's a gap between segments
+        if start_sample > current_sample:
+            mixed_list.append(np.zeros(start_sample - current_sample, dtype=np.float32))
+            
+        mixed_list.append(data)
+        current_time = start_time + (len(data) / SR)
+
+    # Combine all segments into one continuous array
+    if mixed_list:
+        mixed = np.concatenate(mixed_list)
+    else:
+        mixed = np.zeros(int(video_duration * SR), dtype=np.float32)
+
+    # If the combined audio is shorter than the original video, pad the end with silence
+    min_samples = int(math.ceil(video_duration * SR))
+    if len(mixed) < min_samples:
+        mixed = np.pad(mixed, (0, min_samples - len(mixed)))
 
     # Normalize dubbed audio
     peak = np.abs(mixed).max()
