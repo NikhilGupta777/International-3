@@ -10,7 +10,7 @@ Pipeline:
   1. Download source video from S3
   2. Extract audio (FFmpeg)
   3. Optional: Demucs vocal/background separation
-  4. Transcribe (faster-whisper large-v3-turbo / large-v3 + WhisperX)
+  4. Transcribe (AssemblyAI word-level timestamps)
   5. Optional: pyannote speaker diarization
   6. Translate segments (Gemini 3 Flash dubbing-aware)
   7. Voice clone (CosyVoice 3.0 → edge-tts fallback → gTTS emergency)
@@ -63,11 +63,9 @@ SOURCE_LANG         = os.environ.get("SOURCE_LANG", "auto")
 VOICE_CLONE         = os.environ.get("VOICE_CLONE", "true").lower() == "true"
 LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
 USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
-PREMIUM_ASR         = os.environ.get("PREMIUM_ASR", "false").lower() == "true"
 MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "false").lower() == "true"
 ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
 LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | musetalk
-ASR_MODEL           = os.environ.get("ASR_MODEL", "large-v3-turbo")   # large-v3-turbo | large-v3
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget | premium
 
 MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
@@ -188,6 +186,14 @@ def run_demucs(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
     Separate vocals from background using Demucs htdemucs model.
     Returns (vocals_path, background_path).
     """
+    # Lazy install demucs (stripped from base image to keep CI fast)
+    try:
+        import demucs  # noqa: F401
+    except ImportError:
+        import subprocess as _spd, sys as _sysd
+        _spd.run([_sysd.executable, '-m', 'pip', 'install',
+                  '--quiet', '--prefer-binary', 'demucs==4.0.1'], check=True)
+
     import torch
     from demucs.apply import apply_model
     from demucs.audio import AudioFile, save_audio
@@ -332,6 +338,14 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
     Requires HF_TOKEN env var for gated model access.
     """
     try:
+        # Lazy install pyannote (stripped from base image to keep CI fast)
+        try:
+            import pyannote.audio  # noqa: F401
+        except ImportError:
+            import subprocess as _spp, sys as _sysp
+            _spp.run([_sysp.executable, '-m', 'pip', 'install',
+                      '--quiet', '--prefer-binary', 'pyannote.audio>=3.1.0'], check=True)
+
         import torch
         from pyannote.audio import Pipeline
 
@@ -989,7 +1003,7 @@ def main():
                 log.warning(f"[Demucs] Skipped: {e}")
 
         # ── 4. Transcription ──────────────────────────────────────────────
-        update_progress("TRANSCRIBING", 18, f"Transcribing speech ({ASR_MODEL})...")
+        update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
         segments = transcribe(transcription_audio)
 
         if not segments:
