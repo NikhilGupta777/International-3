@@ -71,15 +71,22 @@ RUN pip install --no-cache-dir pyopenjtalk==0.3.4 || true
 RUN pip install --no-cache-dir onnxruntime-gpu==1.18.1 || true
 
 # ── Pre-download CosyVoice model weights into ModelScope cache ────────────────
-# Uses iic/CosyVoice2-0.5B — this is the PUBLIC model on ModelScope.
-# iic/CosyVoice3-0.5B does NOT exist publicly on ModelScope (returns 404).
-# The worker.py loading loop tries CosyVoice3 first then falls back to v2,
-# so with only v2 baked in the image, it will always use v2 from disk.
+# Uses iic/CosyVoice2-0.5B — publicly available on ModelScope.
+# CRITICAL: pass cache_dir explicitly — do NOT rely on MODELSCOPE_CACHE env var
+# alone, as some modelscope versions ignore it. This guarantees the model lands
+# at /model-cache/modelscope/hub/iic/CosyVoice2-0.5B which is what worker.py checks.
 RUN mkdir -p /model-cache/modelscope /model-cache/huggingface
 RUN python -c "\
+import os; \
 from modelscope import snapshot_download; \
-p = snapshot_download('iic/CosyVoice2-0.5B'); \
-print(f'CosyVoice2-0.5B downloaded OK -> {p}')"
+cache = '/model-cache/modelscope'; \
+os.makedirs(cache, exist_ok=True); \
+p = snapshot_download('iic/CosyVoice2-0.5B', cache_dir=cache); \
+print(f'[ModelScope] Downloaded to: {p}')"
+# Verify the weights actually landed where worker.py will look for them
+RUN ls -la /model-cache/modelscope/hub/iic/ && \
+    echo "CosyVoice2-0.5B weights verified OK" || \
+    (echo "ERROR: model not found at expected path" && exit 1)
 
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .
