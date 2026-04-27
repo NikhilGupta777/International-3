@@ -698,6 +698,17 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
             "Translator image is missing preloaded model dependencies."
         )
 
+    # Install LatentSync deps lazily on first run (not in CI build to keep image fast)
+    _latentsync_deps_flag = ls_dir / ".deps_installed"
+    if not _latentsync_deps_flag.exists():
+        log.info("[LatentSync] Installing runtime deps (first run only)...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary",
+             "-r", str(ls_dir / "requirements.txt")],
+            check=True
+        )
+        _latentsync_deps_flag.touch()
+
     # Download checkpoint from HuggingFace if missing
     ckpt_dir = ls_dir / "checkpoints"
     ckpt_dir.mkdir(exist_ok=True)
@@ -736,6 +747,18 @@ def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) ->
             f"MuseTalk repo not found at {musetalk_dir}. "
             "Translator image is missing preloaded model dependencies."
         )
+
+    # Install MuseTalk deps lazily on first run (not in CI build to keep image fast)
+    _musetalk_deps_flag = musetalk_dir / ".deps_installed"
+    if not _musetalk_deps_flag.exists():
+        log.info("[MuseTalk] Installing runtime deps (first run only)...")
+        if (musetalk_dir / "requirements.txt").exists():
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary",
+                 "-r", str(musetalk_dir / "requirements.txt")],
+                check=True
+            )
+        _musetalk_deps_flag.touch()
 
     result = subprocess.run([
         sys.executable, "inference.py",
