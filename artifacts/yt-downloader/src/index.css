@@ -1547,3 +1547,144 @@
   letter-spacing: 0.06em;
 }
 
+
+/* ═══════════════════════════════════════════════════════
+   REAL-TIME ToolCard — streaming live status + progress
+   ═══════════════════════════════════════════════════════ */
+
+.agent-tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.03);
+  overflow: hidden;
+  transition: border-color 0.2s;
+}
+.agent-tool-card-done {
+  border-color: rgba(52,211,153,0.25);
+  background: rgba(52,211,153,0.03);
+}
+
+/* Top row */
+.agent-tool-card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+}
+.agent-tool-using {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.22);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex-shrink: 0;
+}
+.agent-tool-divider {
+  width: 1px; height: 12px;
+  background: rgba(255,255,255,0.12);
+  flex-shrink: 0;
+}
+.agent-tool-icon { font-size: 0.85rem; }
+.agent-tool-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.agent-tool-args {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: rgba(255,255,255,0.28);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-tool-status-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.agent-tool-pct {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: rgba(255,255,255,0.45);
+  min-width: 28px;
+  text-align: right;
+}
+.agent-tool-trace-btn {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.03);
+  color: rgba(255,255,255,0.50);
+  cursor: pointer;
+  transition: all 0.14s;
+}
+.agent-tool-trace-btn:hover { background: rgba(255,255,255,0.09); color: rgba(255,255,255,0.85); }
+
+/* Live streaming status message */
+.agent-tool-live-msg {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 8px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+
+/* Pulsing green dot for live status */
+@keyframes live-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.8); }
+}
+.agent-tool-live-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #34d399;
+  flex-shrink: 0;
+  animation: live-dot 1.2s ease-in-out infinite;
+}
+.agent-tool-live-text {
+  font-size: 0.72rem;
+  color: rgba(255,255,255,0.55);
+  line-height: 1.4;
+  flex: 1;
+  /* Animate new text appearing */
+  animation: fade-slide-up 0.18s ease-out;
+}
+@keyframes fade-slide-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Progress track */
+.agent-tool-progress-track {
+  height: 3px;
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+  position: relative;
+}
+.agent-tool-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #dc2626, #f87171);
+  border-radius: 0 2px 2px 0;
+}
+
+/* Indeterminate shimmer when no % known */
+@keyframes shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.agent-tool-progress-shimmer {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(220,38,38,0.5), transparent);
+  animation: shimmer 1.8s ease-in-out infinite;
+}
+

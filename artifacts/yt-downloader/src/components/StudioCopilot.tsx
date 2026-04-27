@@ -171,53 +171,61 @@ function ToolCard({
   onInspect?: (toolId?: string) => void;
 }) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
+  const pct = part.progress;
+  const hasProgress = pct !== null && pct !== undefined;
+  const liveMsg = part.progressMsg;
 
   const argStr = Object.entries(part.args)
     .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${k}: ${String(v).length > 50 ? String(v).slice(0, 47) + "â€¦" : v}`)
-    .join(" Â· ");
-
-  const pct = part.progress;
-  const hasProgress = pct !== null && pct !== undefined;
+    .map(([k, v]) => `${k}: ${String(v).length > 48 ? String(v).slice(0, 45) + "..." : v}`)
+    .join("  ·  ");
 
   return (
-    <div className="copilot-tool-row">
-      {/* "Using Tool" label */}
-      <span className="text-white/25 text-[10px] font-medium shrink-0">Using Tool</span>
-      <span className="copilot-tool-divider" />
-      {/* Icon + name */}
-      <span className={cn("shrink-0", meta.color)}>{meta.icon}</span>
-      <span className={cn("copilot-tool-label", meta.color)}>{meta.label}</span>
-      {/* Args */}
-      {argStr && (
-        <>
-          <span className="copilot-tool-divider" />
-          <span className="copilot-tool-args">{argStr}</span>
-        </>
-      )}
-      {/* Status icon */}
-      <span className="copilot-tool-status flex items-center gap-2">
-        {part.done
-          ? <CheckCircle className="w-3.5 h-3.5 text-green-500" />
-          : hasProgress
-            ? <span className="text-[10px] text-white/40 font-mono">{pct}%</span>
-            : <Loader2 className="w-3.5 h-3.5 text-white/30 animate-spin" />
-        }
-        {onInspect && (
-          <button
-            type="button"
-            onClick={() => onInspect(part.toolId)}
-            className="text-[10px] px-2 py-0.5 rounded-md border border-white/12 bg-white/[0.03] hover:bg-white/[0.08] text-white/70"
-          >
-            View
-          </button>
+    <div className={cn("agent-tool-card", part.done && "agent-tool-card-done")}>
+      {/* Top row: icon + name + args + status */}
+      <div className="agent-tool-card-top">
+        <span className="agent-tool-using">Using</span>
+        <span className="agent-tool-divider" />
+        <span className={cn("agent-tool-icon shrink-0", meta.color)}>{meta.icon}</span>
+        <span className={cn("agent-tool-name", meta.color)}>{meta.label}</span>
+        {argStr && (
+          <>
+            <span className="agent-tool-divider" />
+            <span className="agent-tool-args">{argStr}</span>
+          </>
         )}
-      </span>
+        <span className="agent-tool-status-wrap">
+          {part.done
+            ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+            : hasProgress
+              ? <span className="agent-tool-pct">{pct}%</span>
+              : <Loader2 className="w-3.5 h-3.5 text-white/30 animate-spin" />
+          }
+          {onInspect && (
+            <button type="button" onClick={() => onInspect(part.toolId)} className="agent-tool-trace-btn">
+              Trace
+            </button>
+          )}
+        </span>
+      </div>
 
-      {/* Progress bar row below (when in progress) */}
-      {!part.done && hasProgress && (
-        <div className="absolute left-0 right-0 bottom-0 h-[2px] rounded-b-[8px] bg-white/5 overflow-hidden">
-          <div className="h-full bg-gradient-to-r from-red-600 to-red-400 transition-all duration-500" style={{ width: `${Math.max(2, pct!)}%` }} />
+      {/* Live status message — streams in real time from tool_progress events */}
+      {!part.done && liveMsg && (
+        <div className="agent-tool-live-msg">
+          <span className="agent-tool-live-dot" />
+          <span className="agent-tool-live-text">{liveMsg}</span>
+        </div>
+      )}
+
+      {/* Progress bar — always visible when percent known */}
+      {!part.done && (
+        <div className="agent-tool-progress-track">
+          <div
+            className="agent-tool-progress-fill"
+            style={{ width: hasProgress ? `${Math.max(3, pct!)}%` : "0%", transition: hasProgress ? "width 0.6s ease" : "none" }}
+          />
+          {/* Indeterminate shimmer when no % known */}
+          {!hasProgress && <div className="agent-tool-progress-shimmer" />}
         </div>
       )}
     </div>

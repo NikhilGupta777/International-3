@@ -73,7 +73,9 @@ async function pollSubtitleUntilDone(
     if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
     const data = await r.json() as any;
     const { status, progressPct, message, srtFilename } = data;
-    sseEvent(res, { type: "tool_progress", toolId, name: "generate_subtitles", status, percent: progressPct ?? null, message: message ?? status, jobId });
+    const subtitleMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
+    sseEvent(res, { type: "tool_progress", toolId, name: "generate_subtitles", status, percent: progressPct ?? null, message: subtitleMsg, jobId });
+    sseEvent(res, { type: "tool_log", toolId, name: "generate_subtitles", message: subtitleMsg, level: "info" });
     if (status === "done") return { status, srtFilename };
     if (["error", "cancelled"].includes(status)) throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
@@ -97,7 +99,9 @@ async function pollTimestampsUntilDone(
     if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
     const data = await r.json() as any;
     const { status, progressPct, message, timestamps } = data;
-    sseEvent(res, { type: "tool_progress", toolId, name: "generate_timestamps", status, percent: progressPct ?? null, message: message ?? status, jobId });
+    const tsMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
+    sseEvent(res, { type: "tool_progress", toolId, name: "generate_timestamps", status, percent: progressPct ?? null, message: tsMsg, jobId });
+    sseEvent(res, { type: "tool_log", toolId, name: "generate_timestamps", message: tsMsg, level: "info" });
     if (status === "done") return { status, timestamps };
     if (["error", "cancelled"].includes(status)) throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
