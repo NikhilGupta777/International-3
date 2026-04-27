@@ -28,8 +28,8 @@ numba>=0.59.0
 demucs>=4.0.1
 
 # CosyVoice 3.0 dependencies (CosyVoice repo installed as editable from /model-cache/CosyVoice)
-# These are required by CosyVoice internally:
-transformers>=4.41.0
+# Pin transformers to avoid pip resolver backtracking across dozens of versions in CI.
+transformers==4.48.3
 huggingface_hub>=0.23.0
 diffusers>=0.29.0
 accelerate>=0.30.0

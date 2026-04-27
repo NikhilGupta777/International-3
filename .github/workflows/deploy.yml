@@ -100,6 +100,8 @@ jobs:
             --platform linux/amd64 \
             -f artifacts/queue-worker/Dockerfile \
             -t "$URI" \
+            --cache-from type=gha,scope=worker-image \
+            --cache-to type=gha,mode=max,scope=worker-image \
             --push .
           echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
           echo "✅ Worker image: ${URI}"
@@ -161,6 +163,8 @@ jobs:
             --platform linux/amd64 \
             -f artifacts/video-translator-service/Dockerfile \
             -t "$URI" \
+            --cache-from type=gha,scope=translator-image \
+            --cache-to type=gha,mode=max,scope=translator-image \
             --push artifacts/video-translator-service/
           echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
           echo "✅ Translator image: ${URI}"
