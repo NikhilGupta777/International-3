@@ -705,6 +705,15 @@ def run_lipsync_wav2lip(video_path: Path, dubbed_audio: Path, out_dir: Path) -> 
         subprocess.run([
             "git", "clone", "https://github.com/Rudrabha/Wav2Lip", str(wav2lip_dir)
         ], check=True)
+    audio_py = wav2lip_dir / "audio.py"
+    if audio_py.exists():
+        text = audio_py.read_text(encoding="utf-8")
+        patched = text.replace(
+            "librosa.filters.mel(hp.sample_rate, hp.n_fft, n_mels=hp.num_mels,",
+            "librosa.filters.mel(sr=hp.sample_rate, n_fft=hp.n_fft, n_mels=hp.num_mels,",
+        )
+        if patched != text:
+            audio_py.write_text(patched, encoding="utf-8")
     if not checkpoint.exists():
         import urllib.request
         log.info("[Wav2Lip] Downloading GAN checkpoint...")
