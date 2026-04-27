@@ -507,19 +507,27 @@ router.post("/agent/chat", async (req, res) => {
       // Gemini can take 5-30s to start streaming (planning phase). Without
       // this, the proxy idle timer hits and drops the connection mid-wait.
       if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
-      const stream = await ai.models.generateContentStream({
-        model: AGENT_MODEL,
-        contents: loopContents,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
-          toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
-          temperature: 0.15,
-          maxOutputTokens: 4096,
-          // thinkingConfig: only supported on flash-thinking variants; omit for standard models
-          ...(AGENT_MODEL.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
-        },
-      });
+      console.log(`[agent ${runId}] iter=${iterations} calling generateContentStream model=${AGENT_MODEL} keyLen=${GEMINI_API_KEY.length}`);
+      const _t0 = Date.now();
+      let stream;
+      try {
+        stream = await ai.models.generateContentStream({
+          model: AGENT_MODEL,
+          contents: loopContents,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
+            toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
+            temperature: 0.15,
+            maxOutputTokens: 4096,
+            ...(AGENT_MODEL.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+          },
+        });
+        console.log(`[agent ${runId}] iter=${iterations} stream returned ${Date.now()-_t0}ms`);
+      } catch (e: any) {
+        console.error(`[agent ${runId}] iter=${iterations} stream THREW ${Date.now()-_t0}ms:`, e?.message?.slice(0,500));
+        throw e;
+      }
 
       let fullText = "";
       const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
