@@ -12,7 +12,7 @@ import { randomUUID } from "crypto";
 const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.0-flash-exp";
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3.1-flash-lite-preview";
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
