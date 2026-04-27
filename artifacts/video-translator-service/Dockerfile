@@ -9,11 +9,11 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_CACHE_DIR=/model-cache
-# HF_HOME = where huggingface_hub caches models in hub/ format
-# CosyVoice loads models by hub ID, so they must be here
+# CosyVoice uses ModelScope (Alibaba), not HuggingFace, for iic/ models
+ENV MODELSCOPE_CACHE=/model-cache/modelscope
+# We still set HF_HOME just in case other deps use it
 ENV HF_HOME=/model-cache/huggingface
-# CRITICAL: prevent any runtime HuggingFace network calls
-# All models are baked into the image at build time
+# CRITICAL: prevent any runtime network calls
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -72,18 +72,17 @@ RUN pip install --no-cache-dir \
     onnxruntime-gpu==1.18.1 \
     || true  # non-fatal: some packages are optional/platform-specific
 
-# ── Pre-download CosyVoice model weights into HF hub cache ────────────────────
-# CRITICAL: must use snapshot_download WITHOUT local_dir so files land in
-# the standard HF hub format: HF_HOME/hub/models--iic--CosyVoice3-0.5B/
-# CosyVoice's _CosyVoice("iic/CosyVoice3-0.5B") resolves from this path.
-# We temporarily allow network (disable offline mode just for this build step).
-RUN HF_HUB_OFFLINE=0 python -c "\
-from huggingface_hub import snapshot_download; \
+# ── Pre-download CosyVoice model weights into ModelScope cache ────────────────
+# CRITICAL: must use modelscope snapshot_download so files land in
+# the standard ModelScope hub format: MODELSCOPE_CACHE/hub/iic/CosyVoice3-0.5B/
+# CosyVoice's _CosyVoice("iic/CosyVoice3-0.5B") resolves from this path natively.
+RUN python -c "\
+from modelscope import snapshot_download; \
 p = snapshot_download('iic/CosyVoice3-0.5B'); \
 print(f'CosyVoice3-0.5B downloaded OK -> {p}')"
 
 # ── Model cache directory ─────────────────────────────────────────────────────
-RUN mkdir -p /model-cache/huggingface
+RUN mkdir -p /model-cache/modelscope /model-cache/huggingface
 
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .

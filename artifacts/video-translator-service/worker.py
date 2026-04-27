@@ -69,14 +69,15 @@ LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latent
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget | premium
 
 MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
+MODELSCOPE_CACHE    = Path(os.environ.get("MODELSCOPE_CACHE", str(MODEL_CACHE_DIR / "modelscope")))
 HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "huggingface")))
 
-# ── Force HuggingFace offline mode ────────────────────────────────────────────
+# ── Force HuggingFace/ModelScope offline mode ─────────────────────────────────
 # All model weights are baked into the Docker image at build time.
-# Setting these prevents CosyVoice/transformers from making network calls
-# at job runtime (which would fail inside AWS Batch VPC or be very slow).
+# Setting these prevents network calls at job runtime.
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("MODELSCOPE_CACHE", str(MODELSCOPE_CACHE))
 
 # â”€â”€ AWS Clients â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 s3 = boto3.client("s3", region_name=DYNAMODB_REGION)
@@ -404,16 +405,16 @@ def _ensure_cosyvoice() -> Path:
             "The Dockerfile uses --recurse-submodules but the submodule may not have initialized. "
             "Rebuild the Docker image."
         )
-    # Verify HF model weights are present (downloaded at build time via snapshot_download)
-    # Standard HF hub path: HF_HOME/hub/models--iic--CosyVoice3-0.5B/
-    hf_model_dir = HF_HOME / "hub" / "models--iic--CosyVoice3-0.5B"
-    if not hf_model_dir.exists():
+    # Verify model weights are present (downloaded at build time via modelscope)
+    # Standard ModelScope hub path: MODELSCOPE_CACHE/hub/iic/CosyVoice3-0.5B
+    ms_model_dir = MODELSCOPE_CACHE / "hub" / "iic" / "CosyVoice3-0.5B"
+    if not ms_model_dir.exists():
         raise RuntimeError(
-            f"CosyVoice3-0.5B model weights not found at {hf_model_dir}. "
+            f"CosyVoice3-0.5B model weights not found at {ms_model_dir}. "
             "The Docker image was built without the model weights. "
             "Rebuild the image — the snapshot_download step failed during docker build."
         )
-    log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {hf_model_dir} ✓")
+    log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {ms_model_dir} ✓")
     return cv_dir
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
