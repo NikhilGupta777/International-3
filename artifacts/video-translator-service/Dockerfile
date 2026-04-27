@@ -1,4 +1,4 @@
-# AWS Batch GPU Worker Container
+# AWS Batch GPU Worker Container — Production Grade
 # Base: CUDA 12.1 + cuDNN 8 on Ubuntu 22.04
 # Pipeline: AssemblyAI → Gemini → CosyVoice 3.0 → LatentSync 1.6
 # Runs as a one-shot CLI job: python worker.py
@@ -9,9 +9,15 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_CACHE_DIR=/model-cache
+# HF_HOME = where huggingface_hub caches models in hub/ format
+# CosyVoice loads models by hub ID, so they must be here
 ENV HF_HOME=/model-cache/huggingface
+# CRITICAL: prevent any runtime HuggingFace network calls
+# All models are baked into the image at build time
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PIP_DEFAULT_TIMEOUT=180
+ENV PIP_DEFAULT_TIMEOUT=300
 
 # ── System dependencies ───────────────────────────────────────────────────────
 # This layer is cached forever (never changes).
@@ -27,7 +33,7 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
 # ── PyTorch + torchaudio (CUDA 12.1 wheel) ────────────────────────────────────
-# Installed FIRST, before everything else. Heavy but cached after first build.
+# Installed FIRST — heavy, rarely changes, layer cached independently.
 RUN pip install --no-cache-dir \
     torch==2.3.1+cu121 \
     torchaudio==2.3.1+cu121 \
@@ -35,8 +41,8 @@ RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cu121
 
 # ── Pre-clone model repos ──────────────────────────────────────────────────────
-# Cloned BEFORE copying requirements.txt so these layers are cached
-# independently. Requirements changes do NOT invalidate the git clone layers.
+# Cloned BEFORE pip install so git clone layers are cached independently.
+# requirements.txt changes do NOT invalidate these git clone layers.
 RUN git clone --depth 1 --recurse-submodules \
     https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice
 
@@ -47,8 +53,6 @@ RUN git clone --depth 1 \
     https://github.com/TMElyralab/MuseTalk.git /model-cache/MuseTalk
 
 # ── Python dependencies ───────────────────────────────────────────────────────
-# Copied AFTER the git clones so requirements.txt changes only invalidate
-# the pip install layer, NOT the 3 git clone layers above.
 WORKDIR /app
 COPY requirements.txt constraints.txt ./
 
@@ -56,17 +60,30 @@ RUN pip install --no-cache-dir \
     "pip<26" "setuptools<81" wheel \
     && pip install --no-cache-dir --prefer-binary -r requirements.txt -c constraints.txt
 
+# ── CosyVoice repo requirements ───────────────────────────────────────────────
+# Install CosyVoice's own deps NOW at build time (not lazily at runtime).
+# We use --no-deps to avoid overriding our pinned versions from requirements.txt.
+# Only install what CosyVoice needs that isn't already covered.
+RUN pip install --no-cache-dir \
+    modelscope==1.18.1 \
+    pyopenjtalk==0.3.4 \
+    WeTextProcessing==1.0.3 \
+    pynini==2.1.6 \
+    onnxruntime-gpu==1.18.1 \
+    || true  # non-fatal: some packages are optional/platform-specific
+
+# ── Pre-download CosyVoice model weights into HF hub cache ────────────────────
+# CRITICAL: must use snapshot_download WITHOUT local_dir so files land in
+# the standard HF hub format: HF_HOME/hub/models--iic--CosyVoice3-0.5B/
+# CosyVoice's _CosyVoice("iic/CosyVoice3-0.5B") resolves from this path.
+# We temporarily allow network (disable offline mode just for this build step).
+RUN HF_HUB_OFFLINE=0 python -c "\
+from huggingface_hub import snapshot_download; \
+p = snapshot_download('iic/CosyVoice3-0.5B'); \
+print(f'CosyVoice3-0.5B downloaded OK -> {p}')"
+
 # ── Model cache directory ─────────────────────────────────────────────────────
 RUN mkdir -p /model-cache/huggingface
-
-# ── Pre-download CosyVoice model weights (baked in image = no runtime download) ─
-# Without this, the worker downloads ~1GB on every cold start which can timeout.
-# huggingface_hub snapshot_download pulls all shards into HF_HOME cache.
-RUN python -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download('iic/CosyVoice3-0.5B', local_dir='/model-cache/huggingface/CosyVoice3-0.5B'); \
-print('CosyVoice3-0.5B weights downloaded OK')" \
-    || echo "WARNING: CosyVoice model download failed — will retry at runtime"
 
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .

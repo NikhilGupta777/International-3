@@ -69,6 +69,14 @@ LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latent
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget | premium
 
 MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
+HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "huggingface")))
+
+# ── Force HuggingFace offline mode ────────────────────────────────────────────
+# All model weights are baked into the Docker image at build time.
+# Setting these prevents CosyVoice/transformers from making network calls
+# at job runtime (which would fail inside AWS Batch VPC or be very slow).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 # â”€â”€ AWS Clients â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 s3 = boto3.client("s3", region_name=DYNAMODB_REGION)
@@ -381,6 +389,33 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
         log.warning(f"[Diarize] Failed: {e}")
     return segments
 
+def _ensure_cosyvoice() -> Path:
+    """Verify CosyVoice repo and model weights are present in the Docker image."""
+    cv_dir = MODEL_CACHE_DIR / "CosyVoice"
+    if not cv_dir.exists():
+        raise RuntimeError(
+            f"CosyVoice repo not found at {cv_dir}. "
+            "Rebuild the Docker image — the git clone step failed."
+        )
+    matcha_dir = cv_dir / "third_party" / "Matcha-TTS" / "matcha"
+    if not matcha_dir.exists():
+        raise RuntimeError(
+            f"CosyVoice Matcha-TTS submodule missing at {matcha_dir}. "
+            "The Dockerfile uses --recurse-submodules but the submodule may not have initialized. "
+            "Rebuild the Docker image."
+        )
+    # Verify HF model weights are present (downloaded at build time via snapshot_download)
+    # Standard HF hub path: HF_HOME/hub/models--iic--CosyVoice3-0.5B/
+    hf_model_dir = HF_HOME / "hub" / "models--iic--CosyVoice3-0.5B"
+    if not hf_model_dir.exists():
+        raise RuntimeError(
+            f"CosyVoice3-0.5B model weights not found at {hf_model_dir}. "
+            "The Docker image was built without the model weights. "
+            "Rebuild the image — the snapshot_download step failed during docker build."
+        )
+    log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {hf_model_dir} ✓")
+    return cv_dir
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 3: Translation (Gemini dubbing-aware)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -515,22 +550,6 @@ LANG_TO_EDGE_TTS = {
     "ar": "ar-EG-SalmaNeural",
 }
 
-
-def _ensure_cosyvoice() -> Path:
-    """Ensure CosyVoice repo is preloaded in the image."""
-    cv_dir = MODEL_CACHE_DIR / "CosyVoice"
-    if not cv_dir.exists():
-        raise RuntimeError(
-            f"CosyVoice repo not found at {cv_dir}. "
-            "Rebuild the Docker image with CosyVoice preloaded."
-        )
-    matcha_dir = cv_dir / "third_party" / "Matcha-TTS" / "matcha"
-    if not matcha_dir.exists():
-        raise RuntimeError(
-            f"CosyVoice Matcha-TTS submodule missing at {matcha_dir}. "
-            "Run: git submodule update --init --recursive inside the CosyVoice repo."
-        )
-    return cv_dir
 
 
 def synthesize_segments_cosyvoice(
