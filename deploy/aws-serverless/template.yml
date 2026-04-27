@@ -94,10 +94,10 @@ Parameters:
     Type: String
   TranslatorBatchJobQueue:
     Type: String
-    Default: "ytgrabber-green-translator-cpu-queue"
+    Default: "ytgrabber-green-gpu-queue"
   TranslatorBatchJobDefinition:
     Type: String
-    Default: "ytgrabber-green-translator-cpu-job"
+    Default: "ytgrabber-green-translator-job"
   YoutubeQueuePrimaryEnabled:
     Type: String
     Default: "true"

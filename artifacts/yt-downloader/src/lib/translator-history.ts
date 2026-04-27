@@ -1,6 +1,8 @@
 const HISTORY_KEY = "ytgrabber_translator_history";
 const ACTIVE_KEY = "ytgrabber_active_translator_jobs";
+const DELETED_KEY = "ytgrabber_deleted_translator_jobs";
 const MAX_ENTRIES = 30;
+const MAX_DELETED = 200;
 
 export interface TranslatorHistoryEntry {
   jobId: string;
@@ -12,6 +14,7 @@ export interface TranslatorHistoryEntry {
   sourceLang?: string;
   progress: number;
   videoUrl?: string;
+  shareUrl?: string;
   srtUrl?: string;
   transcriptUrl?: string;
   segmentCount?: number;
@@ -41,10 +44,28 @@ function readArray<T>(key: string): T[] {
 }
 
 export function loadTranslatorHistory(): TranslatorHistoryEntry[] {
-  return readArray<TranslatorHistoryEntry>(HISTORY_KEY);
+  const deleted = new Set(loadDeletedTranslatorJobs());
+  return readArray<TranslatorHistoryEntry>(HISTORY_KEY).filter((entry) => !deleted.has(entry.jobId));
+}
+
+export function loadDeletedTranslatorJobs(): string[] {
+  return readArray<string>(DELETED_KEY).filter((id) => typeof id === "string" && id.length > 0);
+}
+
+export function isTranslatorHistoryDeleted(jobId: string): boolean {
+  return loadDeletedTranslatorJobs().includes(jobId);
+}
+
+function rememberDeletedTranslatorJob(jobId: string): void {
+  if (!jobId) return;
+  try {
+    const existing = loadDeletedTranslatorJobs().filter((id) => id !== jobId);
+    localStorage.setItem(DELETED_KEY, JSON.stringify([jobId, ...existing].slice(0, MAX_DELETED)));
+  } catch {}
 }
 
 export function saveTranslatorHistory(entry: TranslatorHistoryEntry): void {
+  if (isTranslatorHistoryDeleted(entry.jobId)) return;
   try {
     const existing = loadTranslatorHistory().filter((e) => e.jobId !== entry.jobId);
     localStorage.setItem(HISTORY_KEY, JSON.stringify([entry, ...existing].slice(0, MAX_ENTRIES)));
@@ -52,6 +73,7 @@ export function saveTranslatorHistory(entry: TranslatorHistoryEntry): void {
 }
 
 export function deleteTranslatorHistory(jobId: string): TranslatorHistoryEntry[] {
+  rememberDeletedTranslatorJob(jobId);
   const updated = loadTranslatorHistory().filter((e) => e.jobId !== jobId);
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
@@ -61,6 +83,7 @@ export function deleteTranslatorHistory(jobId: string): TranslatorHistoryEntry[]
 
 export function clearTranslatorHistory(): void {
   try {
+    for (const entry of loadTranslatorHistory()) rememberDeletedTranslatorJob(entry.jobId);
     localStorage.removeItem(HISTORY_KEY);
   } catch {}
 }

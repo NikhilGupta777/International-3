@@ -172,7 +172,7 @@ jobs:
 
           # Get current active job definition
           CURRENT=$(aws batch describe-job-definitions \
-            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-cpu-job \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
             --status ACTIVE \
             --query 'sort_by(jobDefinitions, &revision)[-1]' \
             --output json)
@@ -181,14 +181,15 @@ jobs:
             --arg img "$TRANSLATOR_URI" \
             'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
              .containerProperties.image = $img |
-             (.containerProperties.resourceRequirements[] | select(.type == "MEMORY").value) = "15000"')
+             (.containerProperties.resourceRequirements[] | select(.type == "MEMORY").value) = "15000" |
+             (.containerProperties.resourceRequirements[] | select(.type == "GPU").value) = "1"')
 
           RESULT=$(aws batch register-job-definition \
-            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-cpu-job \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
             --cli-input-json "$NEW_JSON")
 
           REV=$(echo "$RESULT" | jq -r '.revision')
-          DEF="${{ env.CF_STACK_PREFIX }}-translator-cpu-job:${REV}"
+          DEF="${{ env.CF_STACK_PREFIX }}-translator-job:${REV}"
           echo "batch_job_def=${DEF}" >> "$GITHUB_OUTPUT"
           echo "✅ Batch job def: ${DEF}"
 
@@ -262,9 +263,9 @@ jobs:
             printf '\nTRANSLATOR_BATCH_JOB_DEFINITION=${{ needs.build-translator.outputs.batch_job_def }}\n' >> /tmp/.env.green
           fi
           if grep -q '^TRANSLATOR_BATCH_JOB_QUEUE=' /tmp/.env.green; then
-            sed -i "s|^TRANSLATOR_BATCH_JOB_QUEUE=.*|TRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-translator-cpu-queue|" /tmp/.env.green
+            sed -i "s|^TRANSLATOR_BATCH_JOB_QUEUE=.*|TRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-gpu-queue|" /tmp/.env.green
           else
-            printf '\nTRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-translator-cpu-queue\n' >> /tmp/.env.green
+            printf '\nTRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-gpu-queue\n' >> /tmp/.env.green
           fi
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 

@@ -42,6 +42,19 @@ const s3    = new S3Client({ region: REGION });
 const ddb   = new DynamoDBClient({ region: REGION });
 const batch = new BatchClient({ region: REGION });
 
+function shareUrl(req: Request, jobId: string): string {
+  return `${req.protocol}://${req.get("host")}/api/translator/share/${encodeURIComponent(jobId)}`;
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // ── GET /presign ──────────────────────────────────────────────────────────────
 // Returns an S3 presigned PUT URL so the browser can upload directly to S3.
 router.get("/presign", async (req: Request, res: Response) => {
@@ -162,7 +175,7 @@ router.post("/submit", async (req: Request, res: Response) => {
 // Reads real-time job status from DynamoDB (updated by the Python worker).
 router.get("/status/:jobId", async (req: Request, res: Response) => {
   try {
-    const { jobId } = req.params;
+    const jobId = String(req.params.jobId);
 
     const result = await ddb.send(new GetItemCommand({
       TableName: DDB_TABLE,
@@ -184,6 +197,8 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       targetLang:   item.targetLang?.S,
       targetLangCode: item.targetLangCode?.S,
       sourceLang:   item.sourceLang?.S,
+      voiceClone:   item.voiceClone?.BOOL,
+      lipSync:      item.lipSync?.BOOL,
       segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
       updatedAt:    item.updatedAt?.N ? parseInt(item.updatedAt.N) : item.updatedAt?.S,
       createdAt:    item.createdAt?.N ? parseInt(item.createdAt.N) : item.createdAt?.S,
@@ -227,10 +242,13 @@ router.get("/history", async (req: Request, res: Response) => {
         targetLang: item.targetLang?.S,
         targetLangCode: item.targetLangCode?.S,
         sourceLang: item.sourceLang?.S,
+        voiceClone: item.voiceClone?.BOOL,
+        lipSync: item.lipSync?.BOOL,
         segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
         createdAt: item.createdAt?.N ? parseInt(item.createdAt.N) : undefined,
         updatedAt: item.updatedAt?.N ? parseInt(item.updatedAt.N) : item.updatedAt?.S,
         outputKey: item.outputKey?.S,
+        shareUrl: item.jobId?.S ? shareUrl(req, item.jobId.S) : undefined,
       }))
       .filter((job) => job.jobId)
       .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
@@ -243,9 +261,88 @@ router.get("/history", async (req: Request, res: Response) => {
   }
 });
 
+router.get("/share/:jobId", async (req: Request, res: Response) => {
+  try {
+    const jobId = String(req.params.jobId);
+
+    const result = await ddb.send(new GetItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: String(jobId) } },
+    }));
+
+    if (!result.Item) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    if (result.Item.status?.S !== "DONE") {
+      return res.status(409).json({ error: `Job is not complete. Status: ${result.Item.status?.S ?? "UNKNOWN"}` });
+    }
+
+    const filename = result.Item.filename?.S ?? "translated_video.mp4";
+    const prefix = `translator-jobs/${jobId}`;
+    const key = `${prefix}/output.mp4`;
+    const downloadUrl = await getSignedUrl(s3, new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      ResponseContentDisposition: `attachment; filename="${filename.replace(/"/g, "")}"`,
+    }), { expiresIn: 86400 });
+    const previewUrl = await getSignedUrl(s3, new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      ResponseContentDisposition: "inline",
+    }), { expiresIn: 86400 });
+
+    if (req.query.json === "1") {
+      return res.json({
+        jobId,
+        filename,
+        targetLang: result.Item.targetLang?.S,
+        createdAt: result.Item.createdAt?.N ? Number(result.Item.createdAt.N) : undefined,
+        shareUrl: shareUrl(req, jobId),
+        downloadUrl,
+        previewUrl,
+      });
+    }
+
+    if (req.query.download === "1") {
+      return res.redirect(downloadUrl);
+    }
+
+    const safeTitle = escapeHtml(filename);
+    const safeLang = escapeHtml(result.Item.targetLang?.S ?? "Translated video");
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${safeTitle}</title>
+  <style>
+    body{margin:0;background:#0a0a0a;color:white;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box}
+    .wrap{width:min(920px,100%)}
+    video{width:100%;aspect-ratio:16/9;background:#000;border-radius:14px;border:1px solid rgba(255,255,255,.1)}
+    h1{font-size:20px;line-height:1.35;margin:18px 0 6px;word-break:break-word}
+    p{margin:0 0 18px;color:rgba(255,255,255,.55);font-size:14px}
+    a{display:inline-flex;align-items:center;justify-content:center;background:white;color:#050505;text-decoration:none;border-radius:12px;padding:12px 18px;font-weight:700;font-size:14px}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <video src="${previewUrl}" controls playsinline></video>
+    <h1>${safeTitle}</h1>
+    <p>${safeLang} translation shared from VideoMaking.</p>
+    <a href="?download=1">Download Video</a>
+  </main>
+</body>
+</html>`;
+    return res.send(html);
+  } catch (err: any) {
+    console.error("[Translator] /share error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 router.get("/result/:jobId", async (req: Request, res: Response) => {
   try {
-    const { jobId } = req.params;
+    const jobId = String(req.params.jobId);
 
     // Verify job is done
     const result = await ddb.send(new GetItemCommand({
@@ -270,7 +367,7 @@ router.get("/result/:jobId", async (req: Request, res: Response) => {
       getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: `${prefix}/transcript.json` }), { expiresIn: 3600 }),
     ]);
 
-    return res.json({ jobId, videoUrl, srtUrl, transcriptUrl });
+    return res.json({ jobId, videoUrl, shareUrl: shareUrl(req, jobId), srtUrl, transcriptUrl });
   } catch (err: any) {
     console.error("[Translator] /result error:", err);
     return res.status(500).json({ error: err.message });

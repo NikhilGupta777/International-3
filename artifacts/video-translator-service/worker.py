@@ -579,7 +579,10 @@ def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -
         try:
             return synthesize_segments_xtts(segments, reference_audio, out_dir)
         except Exception as e:
-            log.warning(f"[TTS] XTTS failed: {e}. Falling back to edge-tts.")
+            raise RuntimeError(
+                "Voice cloning was requested but XTTS failed. "
+                "The job was stopped so it does not return the wrong voice."
+            ) from e
 
     # edge-tts for all
     log.info("[TTS] Using edge-tts for all segments.")
@@ -729,24 +732,29 @@ def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
     """Lip sync router: MuseTalk → LatentSync → Wav2Lip."""
     quality = LIP_SYNC_QUALITY
     log.info(f"[LipSync] Using mode: {quality}")
+    errors: list[str] = []
 
     if quality == "latentsync":
         try:
             return run_lipsync_latentsync(video_path, dubbed_audio, out_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"LatentSync: {e}")
         try:
             return run_lipsync_musetalk(video_path, dubbed_audio, out_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"MuseTalk: {e}")
     elif quality in ("musetalk", "default"):
         try:
             return run_lipsync_musetalk(video_path, dubbed_audio, out_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"MuseTalk: {e}")
 
     # Final fallback: Wav2Lip
-    return run_lipsync_wav2lip(video_path, dubbed_audio, out_dir)
+    try:
+        return run_lipsync_wav2lip(video_path, dubbed_audio, out_dir)
+    except Exception as e:
+        errors.append(f"Wav2Lip: {e}")
+        raise RuntimeError("Lip sync was requested but no backend produced output. " + " | ".join(errors)) from e
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 7: Assemble per-segment audio into one dubbed audio track
@@ -954,7 +962,8 @@ def main():
         update_progress("TRANSLATING", 48, f"Translation complete. Generating voice...")
 
         # ── 7. Voice synthesis ────────────────────────────────────────────
-        update_progress("CLONING", 52, "Cloning voice...")
+        voice_message = "Cloning original voice..." if VOICE_CLONE else "Generating neural voice..."
+        update_progress("CLONING", 52, voice_message)
         seg_dir = work_dir / "segments"
         seg_dir.mkdir()
         seg_audio_paths = synthesize_all(segments, transcription_audio, seg_dir)
@@ -978,16 +987,12 @@ def main():
 
         if LIP_SYNC:
             update_progress("LIPSYNC", 70, f"Running lip sync ({LIP_SYNC_QUALITY})...")
-            try:
-                lip_dir = work_dir / "lipsync"
-                lip_dir.mkdir()
-                lipsync_video = run_lipsync(video_path, dubbed_audio, lip_dir)
-                # Lipsync output has its own audio baked in, just copy
-                shutil.copy(lipsync_video, final_video_path)
-                update_progress("LIPSYNC", 82, "Lip sync complete.")
-            except Exception as e:
-                log.warning(f"[LipSync] All methods failed: {e}. Using standard dub without lip sync.")
-                mux_final_video(video_path, dubbed_audio, final_video_path)
+            lip_dir = work_dir / "lipsync"
+            lip_dir.mkdir()
+            lipsync_video = run_lipsync(video_path, dubbed_audio, lip_dir)
+            # Lipsync output has its own audio baked in, just copy
+            shutil.copy(lipsync_video, final_video_path)
+            update_progress("LIPSYNC", 82, "Lip sync complete.")
         else:
             update_progress("MERGING", 78, "Merging video and dubbed audio...")
             mux_final_video(video_path, dubbed_audio, final_video_path)
@@ -1016,6 +1021,9 @@ def main():
             "transcriptKey": json_key,
             "segmentCount": len(segments),
             "targetLang": TARGET_LANG,
+            "voiceClone": VOICE_CLONE,
+            "lipSync": LIP_SYNC,
+            "lipSyncApplied": LIP_SYNC,
         })
 
         log.info(f"=== Job {JOB_ID} complete. Output: s3://{S3_BUCKET}/{output_key} ===")

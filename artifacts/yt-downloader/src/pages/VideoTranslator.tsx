@@ -14,6 +14,7 @@ import {
   loadTranslatorHistory,
   saveTranslatorHistory,
   deleteTranslatorHistory,
+  isTranslatorHistoryDeleted,
   type TranslatorHistoryEntry,
 } from "@/lib/translator-history";
 
@@ -65,6 +66,12 @@ function formatRelative(ts: number): string {
   if (hours < 24) return `${hours}h ago`;
   if (days < 7) return `${days}d ago`;
   return new Date(ts).toLocaleDateString();
+}
+
+function translatorShareUrl(jobId: string): string {
+  const path = `${BASE}/api/translator/share/${encodeURIComponent(jobId)}`;
+  if (typeof window === "undefined") return path;
+  return `${window.location.origin}${path}`;
 }
 
 // ── Step config ───────────────────────────────────────────────────────────────
@@ -238,10 +245,16 @@ export default function VideoTranslator() {
     setHistory(loadTranslatorHistory());
   }, []);
 
-  const fetchResult = useCallback(async (id: string) => {
+  const fetchResultUrls = useCallback(async (id: string) => {
     const tr = await fetch(`${API}/result/${id}`);
     if (!tr.ok) return null;
     const result = await tr.json();
+    return result as { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string };
+  }, []);
+
+  const fetchResult = useCallback(async (id: string) => {
+    const result = await fetchResultUrls(id);
+    if (!result) return null;
     if (result.transcriptUrl) {
       const tj = await fetch(result.transcriptUrl);
       if (tj.ok) {
@@ -250,8 +263,8 @@ export default function VideoTranslator() {
       }
     }
     setJob((prev: any) => ({ ...prev, ...result }));
-    return result as { videoUrl?: string; srtUrl?: string; transcriptUrl?: string };
-  }, []);
+    return result;
+  }, [fetchResultUrls]);
 
   // Poll job status from DynamoDB via API
   const pollStatus = useCallback(async (id: string) => {
@@ -289,6 +302,7 @@ export default function VideoTranslator() {
           progress: 100,
           segmentCount: data.segmentCount,
           videoUrl: result?.videoUrl,
+          shareUrl: result?.shareUrl ?? translatorShareUrl(id),
           srtUrl: result?.srtUrl,
           transcriptUrl: result?.transcriptUrl,
         });
@@ -311,34 +325,76 @@ export default function VideoTranslator() {
   }, [jobId, pollStatus]);
 
   useEffect(() => {
-    const active = loadActiveTranslatorJobs();
-    if (!jobId && active.length > 0) {
-      const newest = active.sort((a, b) => b.startedAt - a.startedAt)[0];
-      setJobId(newest.jobId);
-      setJob({
-        jobId: newest.jobId,
-        status: newest.status,
-        progress: newest.progress,
-        step: newest.step,
-        filename: newest.filename,
-        targetLang: newest.targetLang,
-      });
-    }
-
     let closed = false;
-    const loadServerHistory = async () => {
+    const reconcileTranslatorJobs = async () => {
       try {
+        const activeJobs = loadActiveTranslatorJobs();
+        for (const activeJob of activeJobs) {
+          if (isTranslatorHistoryDeleted(activeJob.jobId)) {
+            removeActiveTranslatorJob(activeJob.jobId);
+            continue;
+          }
+
+          try {
+            const statusRes = await fetch(`${API}/status/${encodeURIComponent(activeJob.jobId)}`);
+            if (!statusRes.ok) continue;
+            const statusItem = await statusRes.json();
+            if (statusItem.status === "DONE") {
+              const urls = await fetchResultUrls(activeJob.jobId);
+              saveTranslatorHistory({
+                jobId: activeJob.jobId,
+                createdAt: toEpoch(statusItem.createdAt, activeJob.startedAt),
+                updatedAt: toEpoch(statusItem.updatedAt, Date.now()),
+                filename: statusItem.filename ?? activeJob.filename,
+                targetLang: statusItem.targetLang ?? activeJob.targetLang,
+                targetLangCode: statusItem.targetLangCode ?? activeJob.targetLangCode,
+                sourceLang: statusItem.sourceLang ?? activeJob.sourceLang,
+                progress: 100,
+                segmentCount: statusItem.segmentCount,
+                videoUrl: urls?.videoUrl,
+                shareUrl: urls?.shareUrl ?? translatorShareUrl(activeJob.jobId),
+                srtUrl: urls?.srtUrl,
+                transcriptUrl: urls?.transcriptUrl,
+              });
+              removeActiveTranslatorJob(activeJob.jobId);
+            } else if (statusItem.status === "FAILED" || statusItem.status === "CANCELLED" || statusItem.status === "EXPIRED") {
+              removeActiveTranslatorJob(activeJob.jobId);
+            } else {
+              upsertActiveTranslatorJob({
+                ...activeJob,
+                filename: statusItem.filename ?? activeJob.filename,
+                targetLang: statusItem.targetLang ?? activeJob.targetLang,
+                targetLangCode: statusItem.targetLangCode ?? activeJob.targetLangCode,
+                sourceLang: statusItem.sourceLang ?? activeJob.sourceLang,
+                progress: statusItem.progress ?? activeJob.progress,
+                step: statusItem.step ?? activeJob.step,
+                status: statusItem.status ?? activeJob.status,
+              });
+            }
+          } catch {}
+        }
+
         const res = await fetch(`${API}/history?limit=20`);
         if (!res.ok) return;
         const data = await res.json();
         const jobs = Array.isArray(data.jobs) ? data.jobs : [];
         for (const item of jobs) {
           if (!item?.jobId) continue;
+          if (isTranslatorHistoryDeleted(item.jobId)) {
+            removeActiveTranslatorJob(item.jobId);
+            continue;
+          }
+
+          const existingActive = loadActiveTranslatorJobs().find((entry) => entry.jobId === item.jobId);
           if (item.status === "DONE") {
             const existing = loadTranslatorHistory().find((entry) => entry.jobId === item.jobId);
+            let urls: { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string } | null = null;
+            try {
+              urls = await fetchResultUrls(item.jobId);
+            } catch {}
             saveTranslatorHistory({
               jobId: item.jobId,
-              createdAt: toEpoch(item.createdAt),
+              createdAt: toEpoch(item.createdAt, existingActive?.startedAt ?? Date.now()),
               updatedAt: toEpoch(item.updatedAt, toEpoch(item.createdAt)),
               filename: item.filename ?? existing?.filename ?? "video.mp4",
               targetLang: item.targetLang ?? existing?.targetLang ?? "Unknown",
@@ -346,21 +402,53 @@ export default function VideoTranslator() {
               sourceLang: item.sourceLang ?? existing?.sourceLang,
               progress: 100,
               segmentCount: item.segmentCount,
-              videoUrl: existing?.videoUrl,
-              srtUrl: existing?.srtUrl,
-              transcriptUrl: existing?.transcriptUrl,
+              videoUrl: urls?.videoUrl ?? existing?.videoUrl,
+              shareUrl: urls?.shareUrl ?? existing?.shareUrl ?? translatorShareUrl(item.jobId),
+              srtUrl: urls?.srtUrl ?? existing?.srtUrl,
+              transcriptUrl: urls?.transcriptUrl ?? existing?.transcriptUrl,
+            });
+            removeActiveTranslatorJob(item.jobId);
+          } else if (item.status === "FAILED" || item.status === "CANCELLED" || item.status === "EXPIRED") {
+            removeActiveTranslatorJob(item.jobId);
+          } else if (existingActive) {
+            upsertActiveTranslatorJob({
+              ...existingActive,
+              filename: item.filename ?? existingActive.filename,
+              targetLang: item.targetLang ?? existingActive.targetLang,
+              targetLangCode: item.targetLangCode ?? existingActive.targetLangCode,
+              sourceLang: item.sourceLang ?? existingActive.sourceLang,
+              progress: item.progress ?? existingActive.progress,
+              step: item.step ?? existingActive.step,
+              status: item.status ?? existingActive.status,
             });
           }
         }
-        if (!closed) refreshHistory();
+        if (!closed) {
+          refreshHistory();
+          if (!jobId) {
+            const active = loadActiveTranslatorJobs();
+            const newest = active.sort((a, b) => b.startedAt - a.startedAt)[0];
+            if (newest) {
+              setJobId(newest.jobId);
+              setJob({
+                jobId: newest.jobId,
+                status: newest.status,
+                progress: newest.progress,
+                step: newest.step,
+                filename: newest.filename,
+                targetLang: newest.targetLang,
+              });
+            }
+          }
+        }
       } catch {}
     };
 
-    void loadServerHistory();
+    void reconcileTranslatorJobs();
     return () => {
       closed = true;
     };
-  }, [jobId, refreshHistory]);
+  }, [fetchResultUrls, jobId, refreshHistory]);
 
   const handleUpload = async () => {
     if (!file) return;
@@ -453,6 +541,7 @@ export default function VideoTranslator() {
       videoUrl: entry.videoUrl,
       srtUrl: entry.srtUrl,
       transcriptUrl: entry.transcriptUrl,
+      shareUrl: entry.shareUrl ?? translatorShareUrl(entry.jobId),
     });
     const result = await fetchResult(entry.jobId);
     if (result) {
@@ -644,7 +733,7 @@ export default function VideoTranslator() {
                     <Eye className="w-4 h-4" /> Transcript
                   </button>
                   {job?.videoUrl && (
-                    <button onClick={() => shareUrl(job.videoUrl)}
+                    <button onClick={() => shareUrl(job.shareUrl ?? (job.jobId ? translatorShareUrl(job.jobId) : job.videoUrl))}
                       className="px-4 py-3 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-sm flex items-center gap-2 transition-colors">
                       <Share2 className="w-4 h-4" /> Share
                     </button>
@@ -702,8 +791,8 @@ export default function VideoTranslator() {
                       </a>
                     )}
                     <button
-                      onClick={() => shareUrl(entry.videoUrl)}
-                      disabled={!entry.videoUrl}
+                      onClick={() => shareUrl(entry.shareUrl ?? translatorShareUrl(entry.jobId))}
+                      disabled={!entry.jobId}
                       className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30 disabled:hover:bg-transparent"
                       title="Share"
                     >
