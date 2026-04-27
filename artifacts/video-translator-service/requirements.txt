@@ -1,6 +1,5 @@
-# 
-# AWS Batch GPU Worker — requireme──────────────────────────────────────────────────────────────────────────────nts.txt
-# NOTE: PyTorch is installed via CUDA wheel in Dockerfile, NOT listed here.
+# AWS Batch GPU Worker — requirements.txt
+# NOTE: PyTorch + torchaudio are installed via CUDA wheel in Dockerfile, NOT listed here.
 # ──────────────────────────────────────────────────────────────────────────────
 
 # Base worker runtime
@@ -21,8 +20,6 @@ whisperx>=3.3.0
 # Speaker diarization (optional, requires HF_TOKEN)
 pyannote.audio>=3.1.0
 
-# Translation runtime (google-genai already listed above)
-
 # Audio / Video processing
 soundfile>=0.12.1
 librosa>=0.10.2
@@ -33,14 +30,20 @@ numpy==1.26.4
 # Vocal separation
 demucs>=4.0.1
 
-# TTS — Coqui XTTS v2
-TTS==0.22.0
-phonemizer>=3.3.0
+# CosyVoice 3.0 dependencies (CosyVoice repo installed as editable from /model-cache/CosyVoice)
+# These are required by CosyVoice internally:
+transformers>=4.41.0
+huggingface_hub>=0.23.0
+diffusers>=0.29.0
+accelerate>=0.30.0
+conformer>=0.3.2
+encodec>=0.1.1
+hyperpyyaml>=1.2.2
+inflect>=7.0.0
 
-# TTS fallbacks
+# TTS fallbacks (used when voice_clone=false or CosyVoice fails)
 edge-tts>=6.1.9
 gtts>=2.5.0
 
-# Compatibility patches for Transformers + XTTS
-transformers==4.40.2
-tokenizers>=0.19.0
+# LatentSync 1.6 deps (installed from LatentSync/requirements.txt at runtime)
+# huggingface_hub already listed above for checkpoint download

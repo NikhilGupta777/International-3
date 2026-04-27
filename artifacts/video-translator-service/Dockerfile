@@ -1,5 +1,6 @@
 # AWS Batch GPU Worker Container
 # Base: CUDA 12.1 + cuDNN 8 on Ubuntu 22.04
+# Pipeline: faster-whisper → Gemini → CosyVoice 3.0 → LatentSync 1.6
 # Runs as a one-shot CLI job: python worker.py
 # No HTTP server, no EXPOSE, no HEALTHCHECK.
 
@@ -8,7 +9,6 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_CACHE_DIR=/model-cache
-ENV COQUI_TOS_AGREED=1
 
 # ── System dependencies ───────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
     && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
-# ── PyTorch (CUDA 12.1 wheel) — installed FIRST to avoid conflicts ────────────
+# ── PyTorch + torchaudio (CUDA 12.1 wheel) — installed FIRST to avoid conflicts
 RUN pip install --no-cache-dir \
     torch==2.3.1+cu121 \
     torchaudio==2.3.1+cu121 \
@@ -35,11 +35,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Model cache directory (mount EFS here in production) ─────────────────────
-RUN mkdir -p /model-cache/whisper /model-cache/tts
+# ── Model cache directory ─────────────────────────────────────────────────────
+RUN mkdir -p /model-cache/whisper
 
-# Pre-download Whisper large-v3-turbo model into image layer
-# (prevents cold-start model download on every job)
+# Pre-download Whisper large-v3-turbo into the image layer to avoid cold-start
+# downloads on every job. Non-fatal if it fails (will download at runtime).
 RUN python -c "\
 from faster_whisper import WhisperModel; \
 WhisperModel('large-v3-turbo', device='cpu', compute_type='int8', download_root='/model-cache/whisper')" \

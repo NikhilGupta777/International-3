@@ -13,8 +13,8 @@ Pipeline:
   4. Transcribe (faster-whisper large-v3-turbo / large-v3 + WhisperX)
   5. Optional: pyannote speaker diarization
   6. Translate segments (Gemini 3 Flash dubbing-aware)
-  7. Voice clone (XTTS v2 → edge-tts fallback → gTTS emergency)
-  8. Lip sync (MuseTalk default → LatentSync premium → Wav2Lip fallback)
+  7. Voice clone (CosyVoice 3.0 → edge-tts fallback → gTTS emergency)
+  8. Lip sync (LatentSync 1.6 default → MuseTalk fast fallback)
   9. Audio mix + normalize
  10. FFmpeg final mux
  11. Upload MP4 + SRT + transcript JSON to S3
@@ -65,7 +65,7 @@ LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
 USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
 PREMIUM_ASR         = os.environ.get("PREMIUM_ASR", "false").lower() == "true"
 MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "false").lower() == "true"
-LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "musetalk")  # musetalk | latentsync | wav2lip
+LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | musetalk
 ASR_MODEL           = os.environ.get("ASR_MODEL", "large-v3-turbo")   # large-v3-turbo | large-v3
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget | premium
 
@@ -470,15 +470,11 @@ def translate_segments(segments: list[dict]) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 4: Voice Cloning (XTTS v2 → edge-tts → gTTS)
+# Stage 4: Voice Cloning (CosyVoice 3.0 → edge-tts → gTTS)
 # ─────────────────────────────────────────────────────────────────────────────
 
-LANG_TO_XTTS = {
-    "hi": "hi", "en": "en", "es": "es", "fr": "fr", "de": "de",
-    "it": "it", "pt": "pt", "pl": "pl", "tr": "tr", "ru": "ru",
-    "nl": "nl", "cs": "cs", "ar": "ar", "zh-cn": "zh-cn", "ja": "ja",
-    "ko": "ko", "hu": "hu",
-}
+# CosyVoice 3.0 is zero-shot multilingual — no language mapping table needed.
+# It auto-handles 50+ languages via the prompt speech reference.
 
 LANG_TO_EDGE_TTS = {
     "hi": "hi-IN-SwaraNeural",
@@ -496,50 +492,81 @@ LANG_TO_EDGE_TTS = {
 }
 
 
-def synthesize_segments_xtts(segments: list[dict], reference_audio: Path, out_dir: Path) -> list[Path]:
+def _ensure_cosyvoice() -> Path:
+    """Clone and install CosyVoice repo if not already present."""
+    cv_dir = MODEL_CACHE_DIR / "CosyVoice"
+    if not cv_dir.exists():
+        log.info("[CosyVoice] Cloning CosyVoice repo...")
+        subprocess.run([
+            "git", "clone", "--depth", "1",
+            "https://github.com/FunAudioLLM/CosyVoice.git",
+            str(cv_dir)
+        ], check=True)
+        # Install editable so imports work
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", ".[all]", "--quiet"],
+            cwd=str(cv_dir), check=True
+        )
+    return cv_dir
+
+
+def synthesize_segments_cosyvoice(
+    segments: list[dict], reference_audio: Path, out_dir: Path
+) -> list[Path]:
     """
-    Clone voice for each segment using XTTS v2.
-    Returns list of per-segment audio file paths.
+    Zero-shot voice cloning via CosyVoice 3.0 (CosyVoice3-0.5B).
+    Each segment synthesised with the original speaker's voice in target lang.
     """
-    os.environ.setdefault("COQUI_TOS_AGREED", "1")
     import torch
-    from TTS.api import TTS
+    import torchaudio
+
+    cv_dir = _ensure_cosyvoice()
+    if str(cv_dir) not in sys.path:
+        sys.path.insert(0, str(cv_dir))
+
+    from cosyvoice.cli.cosyvoice import CosyVoice2  # type: ignore
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    xtts_lang = LANG_TO_XTTS.get(TARGET_LANG_CODE, "en")
-    cache = str(MODEL_CACHE_DIR / "tts")
+    log.info(f"[CosyVoice] Loading CosyVoice3-0.5B on {device}...")
+    model = CosyVoice2("iic/CosyVoice3-0.5B", load_jit=False, load_trt=False)
 
-    log.info(f"[XTTS] Loading XTTS v2 on {device} for lang={xtts_lang}...")
-    tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False).to(device)
+    # Prepare 16kHz mono reference clip (≤30 s)
+    ref_wav, ref_sr = torchaudio.load(str(reference_audio))
+    if ref_wav.shape[0] > 1:
+        ref_wav = ref_wav.mean(0, keepdim=True)
+    if ref_sr != 16000:
+        ref_wav = torchaudio.functional.resample(ref_wav, ref_sr, 16000)
+    ref_wav = ref_wav[:, : 16000 * 30]  # max 30 s reference
 
-    seg_audios = []
+    seg_audios: list[Path] = []
     for seg in segments:
         out_path = out_dir / f"seg_{seg['id']:04d}.wav"
         text = seg["translated_text"].strip()
         if not text:
-            # Create silence for empty segment
             duration = seg["end"] - seg["start"]
-            run_ffmpeg(
-                "-f", "lavfi", "-i", f"anullsrc=r=24000:cl=mono",
-                "-t", str(duration), str(out_path)
-            )
+            run_ffmpeg("-f", "lavfi", "-i", f"anullsrc=r=22050:cl=mono",
+                       "-t", str(duration), str(out_path))
         else:
             try:
-                tts.tts_to_file(
-                    text=text,
-                    file_path=str(out_path),
-                    speaker_wav=str(reference_audio),
-                    language=xtts_lang,
-                    speed=seg.get("speaking_rate", 1.0),
-                )
+                chunks = list(model.inference_zero_shot(
+                    tts_text=text,
+                    prompt_text="",           # model auto-transcribes reference
+                    prompt_speech_16k=ref_wav,
+                    stream=False,
+                    speed=float(seg.get("speaking_rate", 1.0)),
+                ))
+                audio_data = torch.cat([c["tts_speech"] for c in chunks], dim=1)
+                torchaudio.save(str(out_path), audio_data, 22050)
             except Exception as e:
-                raise RuntimeError(f"XTTS failed for segment {seg['id']}: {e}") from e
+                raise RuntimeError(
+                    f"CosyVoice failed for segment {seg['id']}: {e}"
+                ) from e
         seg_audios.append(out_path)
-        log.info(f"[XTTS] Segment {seg['id']}/{len(segments)} done.")
+        log.info(f"[CosyVoice] Segment {seg['id']}/{len(segments)} done.")
 
-    del tts
+    del model
     torch.cuda.empty_cache()
-    log.info("[XTTS] Voice cloning complete.")
+    log.info("[CosyVoice] Voice cloning complete.")
     return seg_audios
 
 
@@ -574,18 +601,18 @@ def synthesize_gtts_single(seg: dict, out_dir: Path) -> Path:
 
 
 def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -> list[Path]:
-    """Master TTS router: XTTS v2 → edge-tts → gTTS."""
+    """Master TTS router: CosyVoice 3.0 → edge-tts → gTTS."""
     if VOICE_CLONE:
         try:
-            return synthesize_segments_xtts(segments, reference_audio, out_dir)
+            return synthesize_segments_cosyvoice(segments, reference_audio, out_dir)
         except Exception as e:
             raise RuntimeError(
-                "Voice cloning was requested but XTTS failed. "
-                "The job was stopped so it does not return the wrong voice."
+                "Voice cloning was requested but CosyVoice 3.0 failed. "
+                "Job stopped to avoid returning the wrong voice."
             ) from e
 
-    # edge-tts for all
-    log.info("[TTS] Using edge-tts for all segments.")
+    # No-clone path: edge-tts for all segments
+    log.info("[TTS] Using edge-tts (no voice clone).")
     paths = []
     for seg in segments:
         try:
@@ -630,140 +657,107 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 6: Lip sync (MuseTalk → LatentSync → Wav2Lip)
+# Stage 6: Lip sync (LatentSync 1.6 → MuseTalk fallback)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """MuseTalk lip sync — default quality."""
-    try:
-        import torch
-        out_path = out_dir / "lipsync_output.mp4"
-
-        musetalk_dir = MODEL_CACHE_DIR / "musetalk"
-        if not musetalk_dir.exists():
-            log.info("[MuseTalk] Cloning MuseTalk repo...")
-            subprocess.run([
-                "git", "clone", "https://github.com/TMElyralab/MuseTalk",
-                str(musetalk_dir)
-            ], check=True)
-
-        result = subprocess.run([
-            sys.executable, "-m", "musetalk.inference",
-            "--video_path", str(video_path),
-            "--audio_path", str(dubbed_audio),
-            "--result_dir", str(out_dir),
-            "--fps", "25",
-        ], capture_output=True, text=True, cwd=str(musetalk_dir))
-
-        if result.returncode != 0:
-            raise RuntimeError(f"MuseTalk failed: {result.stderr[-1000:]}")
-
-        # MuseTalk writes to result_dir/input_video_name.mp4
-        candidates = list(out_dir.glob("*.mp4"))
-        if candidates:
-            return candidates[0]
-        raise FileNotFoundError("MuseTalk did not produce output")
-
-    except Exception as e:
-        log.warning(f"[MuseTalk] Failed: {e}. Trying LatentSync or Wav2Lip fallback.")
-        raise
-
-
 def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """LatentSync 1.6 lip sync — premium quality."""
-    try:
-        out_path = out_dir / "latentsync_output.mp4"
-        ls_dir = MODEL_CACHE_DIR / "latentsync"
-        if not ls_dir.exists():
-            subprocess.run([
-                "git", "clone", "https://github.com/bytedance/LatentSync",
-                str(ls_dir)
-            ], check=True)
+    """LatentSync 1.6 — best quality lip sync (diffusion-based, 512×512)."""
+    out_path = out_dir / "latentsync_output.mp4"
+    ls_dir = MODEL_CACHE_DIR / "LatentSync"
 
-        result = subprocess.run([
-            sys.executable, "inference.py",
-            "--video_path", str(video_path),
-            "--audio_path", str(dubbed_audio),
-            "--output_path", str(out_path),
-        ], capture_output=True, text=True, cwd=str(ls_dir))
-
-        if result.returncode != 0:
-            raise RuntimeError(f"LatentSync failed: {result.stderr[-1000:]}")
-        return out_path
-    except Exception as e:
-        log.warning(f"[LatentSync] Failed: {e}. Falling back to Wav2Lip.")
-        raise
-
-
-def run_lipsync_wav2lip(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """Wav2Lip GAN lip sync — legacy fallback."""
-    out_path = out_dir / "wav2lip_output.mp4"
-    wav2lip_dir = MODEL_CACHE_DIR / "Wav2Lip"
-    checkpoint = MODEL_CACHE_DIR / "wav2lip_gan.pth"
-
-    if not wav2lip_dir.exists():
+    if not ls_dir.exists():
+        log.info("[LatentSync] Cloning LatentSync 1.6 repo...")
         subprocess.run([
-            "git", "clone", "https://github.com/Rudrabha/Wav2Lip", str(wav2lip_dir)
+            "git", "clone", "--depth", "1",
+            "https://github.com/bytedance/LatentSync.git",
+            str(ls_dir)
         ], check=True)
-    audio_py = wav2lip_dir / "audio.py"
-    if audio_py.exists():
-        text = audio_py.read_text(encoding="utf-8")
-        patched = text.replace(
-            "librosa.filters.mel(hp.sample_rate, hp.n_fft, n_mels=hp.num_mels,",
-            "librosa.filters.mel(sr=hp.sample_rate, n_fft=hp.n_fft, n_mels=hp.num_mels,",
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--quiet"],
+            cwd=str(ls_dir), check=True
         )
-        if patched != text:
-            audio_py.write_text(patched, encoding="utf-8")
-    if not checkpoint.exists():
-        import urllib.request
-        log.info("[Wav2Lip] Downloading GAN checkpoint...")
-        urllib.request.urlretrieve(
-            "https://huggingface.co/camenduru/Wav2Lip/resolve/main/checkpoints/wav2lip_gan.pth",
-            str(checkpoint)
-        )
+
+    # Download checkpoint from HuggingFace if missing
+    ckpt_dir = ls_dir / "checkpoints"
+    ckpt_dir.mkdir(exist_ok=True)
+    ckpt_path = ckpt_dir / "latentsync_unet.pt"
+    if not ckpt_path.exists():
+        log.info("[LatentSync] Downloading checkpoint from HuggingFace...")
+        subprocess.run([
+            sys.executable, "-c",
+            "from huggingface_hub import hf_hub_download; "
+            f"hf_hub_download('ByteDance/LatentSync', 'latentsync_unet.pt', local_dir='{ckpt_dir}')"
+        ], check=True)
 
     result = subprocess.run([
-        sys.executable, "inference.py",
-        "--checkpoint_path", str(checkpoint),
-        "--face", str(video_path),
-        "--audio", str(dubbed_audio),
-        "--outfile", str(out_path),
-        "--pads", "0", "20", "0", "0",
-        "--resize_factor", "1",
-    ], capture_output=True, text=True, cwd=str(wav2lip_dir))
+        sys.executable, "scripts/inference.py",
+        "--unet_config", "configs/unet/stage2.yaml",
+        "--inference_ckpt", str(ckpt_path),
+        "--video_path", str(video_path),
+        "--audio_path", str(dubbed_audio),
+        "--video_out_path", str(out_path),
+    ], capture_output=True, text=True, cwd=str(ls_dir))
 
     if result.returncode != 0:
-        raise RuntimeError(f"Wav2Lip failed: {result.stderr[-1000:]}")
+        raise RuntimeError(f"LatentSync failed:\n{result.stderr[-1500:]}")
+    if not out_path.exists():
+        raise FileNotFoundError("LatentSync did not produce output file")
+    log.info(f"[LatentSync] Done → {out_path}")
     return out_path
 
 
+def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
+    """MuseTalk — fast real-time lip sync (30fps+), used as fallback."""
+    musetalk_dir = MODEL_CACHE_DIR / "MuseTalk"
+
+    if not musetalk_dir.exists():
+        log.info("[MuseTalk] Cloning MuseTalk repo...")
+        subprocess.run([
+            "git", "clone", "--depth", "1",
+            "https://github.com/TMElyralab/MuseTalk.git",
+            str(musetalk_dir)
+        ], check=True)
+
+    result = subprocess.run([
+        sys.executable, "-m", "musetalk.inference",
+        "--video_path", str(video_path),
+        "--audio_path", str(dubbed_audio),
+        "--result_dir", str(out_dir),
+        "--fps", "25",
+    ], capture_output=True, text=True, cwd=str(musetalk_dir))
+
+    if result.returncode != 0:
+        raise RuntimeError(f"MuseTalk failed:\n{result.stderr[-1000:]}")
+
+    candidates = list(out_dir.glob("*.mp4"))
+    if not candidates:
+        raise FileNotFoundError("MuseTalk did not produce output")
+    log.info(f"[MuseTalk] Done → {candidates[0]}")
+    return candidates[0]
+
+
 def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """Lip sync router: MuseTalk → LatentSync → Wav2Lip."""
+    """Lip sync router: LatentSync 1.6 (best) → MuseTalk (fast fallback)."""
     quality = LIP_SYNC_QUALITY
-    log.info(f"[LipSync] Using mode: {quality}")
+    log.info(f"[LipSync] Requested mode: {quality}")
     errors: list[str] = []
 
-    if quality == "latentsync":
+    # LatentSync is default (best quality)
+    if quality in ("latentsync", "default"):
         try:
             return run_lipsync_latentsync(video_path, dubbed_audio, out_dir)
         except Exception as e:
             errors.append(f"LatentSync: {e}")
-        try:
-            return run_lipsync_musetalk(video_path, dubbed_audio, out_dir)
-        except Exception as e:
-            errors.append(f"MuseTalk: {e}")
-    elif quality in ("musetalk", "default"):
-        try:
-            return run_lipsync_musetalk(video_path, dubbed_audio, out_dir)
-        except Exception as e:
-            errors.append(f"MuseTalk: {e}")
+            log.warning(f"[LipSync] LatentSync failed, falling back to MuseTalk: {e}")
 
-    # Final fallback: Wav2Lip
+    # MuseTalk as fast fallback or explicit choice
     try:
-        return run_lipsync_wav2lip(video_path, dubbed_audio, out_dir)
+        return run_lipsync_musetalk(video_path, dubbed_audio, out_dir)
     except Exception as e:
-        errors.append(f"Wav2Lip: {e}")
-        raise RuntimeError("Lip sync was requested but no backend produced output. " + " | ".join(errors)) from e
+        errors.append(f"MuseTalk: {e}")
+        raise RuntimeError(
+            "Lip sync failed on all backends: " + " | ".join(errors)
+        ) from e
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 7: Assemble per-segment audio into one dubbed audio track
