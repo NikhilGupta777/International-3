@@ -265,7 +265,7 @@ function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onN
             );
           }
           if (part.kind === "tool_start") return <ToolCard key={i} part={part} />;
-          if (part.kind === "plan") return <PlanCard key={i} part={part} />;
+          if (part.kind === "plan") return null; // Plan is internal — tool cards already show what's executing
           if (part.kind === "artifact") return <ArtifactCard key={i} part={part} onNavigate={onNavigate} />;
           return null;
         })}
@@ -640,32 +640,17 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
               })}
             </AnimatePresence>
 
-            {/* Thinking indicator */}
+            {/* Thinking indicator — Genspark style: just animated dots, no stage labels */}
             {streaming && (
               <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                 className="flex gap-3 items-center">
                 <div className="agent-avatar shrink-0"><Bot className="w-3.5 h-3.5 text-primary" /></div>
-                <div className="flex flex-col gap-1.5">
-                  {agentStage !== "idle" && (
-                    <div className="agent-stage-pills">
-                      {(["planning","executing","verifying"] as const).map(s => (
-                        <span key={s} className={cn("agent-stage-pill", agentStage === s && "agent-stage-pill-active")}>
-                          {s === "planning" ? "🧠 Plan" : s === "executing" ? "⚡ Execute" : "🔍 Judge"}
-                        </span>
-                      ))}
-                      {agentIteration > 0 && <span className="text-[10px] text-white/25 ml-1">iter {agentIteration}</span>}
-                    </div>
-                  )}
-                  <div className="agent-thinking-pill">
-                    <span className="agent-thinking-dot" />
-                    <span className="agent-thinking-text">
-                      {agentStage === "planning" ? "Planning next action" :
-                       agentStage === "executing" ? "Executing tools" :
-                       agentStage === "verifying" ? "Verifying results" :
-                       thinking ? "Thinking" : "Working"}
-                    </span>
-                    <span className="agent-thinking-cursor" />
-                  </div>
+                <div className="flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-white/[0.05] border border-white/[0.08]">
+                  <span className="inline-flex gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-1.5 h-1.5 rounded-full bg-white/50 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </span>
                 </div>
               </motion.div>
             )}
@@ -732,7 +717,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         </form>
         <p className="agent-hint">
           {streaming
-            ? `⚡ Running · Step ${agentIteration > 0 ? agentIteration : "…"} of ${12}`
+            ? `Working…`
             : "Powered by Gemini · Enter to send · Shift+Enter for newline"}
         </p>
       </div>
