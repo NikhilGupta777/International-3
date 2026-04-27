@@ -12,7 +12,7 @@ import { randomUUID } from "crypto";
 const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.5-flash";
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
@@ -475,9 +475,13 @@ router.post("/agent/chat", async (req, res) => {
   res.setHeader("Content-Encoding", "identity");
   res.flushHeaders();
 
+  // ⚠️ Use res.on("close") — req.on("close") fires when the request body
+  // finishes being consumed (Node http behaviour), which for a normal POST
+  // happens immediately after Express reads the body. That would falsely
+  // mark the client as disconnected before any streaming starts.
   let clientConnected = true;
-  req.on("close", () => { clientConnected = false; });
-  const isConnected = () => clientConnected;
+  res.on("close", () => { clientConnected = false; });
+  const isConnected = () => clientConnected && !res.writableEnded;
 
   const runId = randomUUID();
   sseEvent(res, { type: "run_start", runId, ts: Date.now() });
@@ -507,27 +511,19 @@ router.post("/agent/chat", async (req, res) => {
       // Gemini can take 5-30s to start streaming (planning phase). Without
       // this, the proxy idle timer hits and drops the connection mid-wait.
       if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
-      console.log(`[agent ${runId}] iter=${iterations} calling generateContentStream model=${AGENT_MODEL} keyLen=${GEMINI_API_KEY.length}`);
-      const _t0 = Date.now();
-      let stream;
-      try {
-        stream = await ai.models.generateContentStream({
-          model: AGENT_MODEL,
-          contents: loopContents,
-          config: {
-            systemInstruction: SYSTEM_PROMPT,
-            tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
-            toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
-            temperature: 0.15,
-            maxOutputTokens: 4096,
-            ...(AGENT_MODEL.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
-          },
-        });
-        console.log(`[agent ${runId}] iter=${iterations} stream returned ${Date.now()-_t0}ms`);
-      } catch (e: any) {
-        console.error(`[agent ${runId}] iter=${iterations} stream THREW ${Date.now()-_t0}ms:`, e?.message?.slice(0,500));
-        throw e;
-      }
+      const stream = await ai.models.generateContentStream({
+        model: AGENT_MODEL,
+        contents: loopContents,
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
+          toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
+          temperature: 0.15,
+          maxOutputTokens: 4096,
+          // thinkingConfig: only supported on flash-thinking variants; omit for standard models
+          ...(AGENT_MODEL.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+        },
+      });
 
       let fullText = "";
       const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];

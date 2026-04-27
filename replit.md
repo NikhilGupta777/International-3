@@ -54,6 +54,24 @@ Configured as a static site deployment:
 - Build: `pnpm --filter @workspace/yt-downloader run build`
 - Output: `artifacts/yt-downloader/dist/public`
 
+## Studio Agent (AI Copilot) — Streaming Fix (Apr 2026)
+
+The Studio Agent SSE route (`POST /api/agent/chat`) had two issues that made it
+appear to hang:
+
+1. **`req.on("close")` fired prematurely.** In Node 20 / Express 5, the request
+   "close" event fires when the request body is fully consumed, which on a
+   normal POST happens in milliseconds. The route used that signal to set
+   `clientConnected = false`, so the streaming loop bailed after the very first
+   chunk. Fixed by using `res.on("close")` plus `!res.writableEnded` instead.
+2. **Default model was `gemini-3-flash-preview`** which can take 20+ seconds on
+   cold start. Default switched to `gemini-2.5-flash` (override via
+   `COPILOT_MODEL` env var). Cold response is now under 1 second.
+
+After editing `artifacts/api-server/src/routes/agent.ts` always rebuild
+(`pnpm --filter @workspace/api-server run build`) and restart the **API
+Server** workflow — `start` runs the bundled `dist/index.mjs`, not the source.
+
 ## Bhagwat AI Editor — Render Resilience (Apr 2026)
 
 Render jobs use an in-memory `renderJobs` Map that is wiped when the API server restarts. To stop "Connection error during render" misreports:
