@@ -41,18 +41,22 @@ function saveSessions(sessions: ChatSession[]) {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type SseEvent =
-  | { type: "text"; content: string }
-  | { type: "tool_start"; name: string; args: Record<string, any> }
-  | { type: "tool_progress"; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
-  | { type: "tool_done"; name: string; result: any }
+  | { type: "run_start"; runId: string; ts?: number }
+  | { type: "thinking"; runId?: string; stage?: string; iteration?: number }
+  | { type: "heartbeat"; runId?: string; ts?: number }
+  | { type: "text"; content: string; runId?: string }
+  | { type: "tool_start"; runId?: string; toolId?: string; name: string; args: Record<string, any>; ts?: number }
+  | { type: "tool_log"; runId?: string; toolId?: string; name: string; message: string; details?: Record<string, any>; level?: "info" | "error" | "warn" }
+  | { type: "tool_progress"; runId?: string; toolId?: string; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
+  | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
-  | { type: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string }
+  | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string }
   | { type: "error"; message: string }
-  | { type: "done" };
+  | { type: "done"; runId?: string; ts?: number };
 
 type MessagePart =
   | { kind: "text"; content: string }
-  | { kind: "tool_start"; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
+  | { kind: "tool_start"; toolId?: string; runId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
   | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string };
 
 type Message = {
@@ -60,6 +64,27 @@ type Message = {
   role: "user" | "assistant";
   parts: MessagePart[];
   timestamp: Date;
+};
+
+type ToolTraceLog = {
+  ts: number;
+  message: string;
+  details?: Record<string, any>;
+  level?: "info" | "error" | "warn";
+};
+
+type ToolTrace = {
+  toolId: string;
+  runId?: string;
+  name: string;
+  args: Record<string, any>;
+  startedAt: number;
+  completedAt?: number;
+  status: "running" | "done" | "error";
+  progress?: number | null;
+  progressMsg?: string;
+  result?: any;
+  logs: ToolTraceLog[];
 };
 
 // ── Tool icon/label mapping ───────────────────────────────────────────────────
@@ -138,7 +163,13 @@ function renderMd(text: string): React.ReactNode {
 }
 
 // ── Genspark-style ToolCard (inline row) ────────────────────────────────────
-function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
+function ToolCard({
+  part,
+  onInspect,
+}: {
+  part: MessagePart & { kind: "tool_start" };
+  onInspect?: (toolId?: string) => void;
+}) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
 
   const argStr = Object.entries(part.args)
@@ -165,13 +196,22 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
         </>
       )}
       {/* Status icon */}
-      <span className="copilot-tool-status">
+      <span className="copilot-tool-status flex items-center gap-2">
         {part.done
           ? <CheckCircle className="w-3.5 h-3.5 text-green-500" />
           : hasProgress
             ? <span className="text-[10px] text-white/40 font-mono">{pct}%</span>
             : <Loader2 className="w-3.5 h-3.5 text-white/30 animate-spin" />
         }
+        {onInspect && (
+          <button
+            type="button"
+            onClick={() => onInspect(part.toolId)}
+            className="text-[10px] px-2 py-0.5 rounded-md border border-white/12 bg-white/[0.03] hover:bg-white/[0.08] text-white/70"
+          >
+            View
+          </button>
+        )}
       </span>
 
       {/* Progress bar row below (when in progress) */}
@@ -287,9 +327,11 @@ function ArtifactCard({
 function MessageBubble({
   message,
   onNavigate,
+  onInspectTool,
 }: {
   message: Message;
   onNavigate?: (tab: string) => void;
+  onInspectTool?: (toolId?: string) => void;
 }) {
   const isUser = message.role === "user";
 
@@ -327,7 +369,7 @@ function MessageBubble({
           }
 
           if (part.kind === "tool_start") {
-            return <ToolCard key={i} part={part} />;
+            return <ToolCard key={i} part={part} onInspect={onInspectTool} />;
           }
 
           if (part.kind === "artifact") {
@@ -359,6 +401,10 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [listening, setListening] = useState(false);
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [thinking, setThinking] = useState(false);
+  const [toolTraces, setToolTraces] = useState<Record<string, ToolTrace>>({});
+  const [activeToolId, setActiveToolId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -428,6 +474,13 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     return sid;
   }, []);
 
+  const upsertToolTrace = useCallback((toolId: string, updater: (prev?: ToolTrace) => ToolTrace) => {
+    setToolTraces(prev => {
+      const next = updater(prev[toolId]);
+      return { ...prev, [toolId]: next };
+    });
+  }, []);
+
   // Auto-resize textarea
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
@@ -453,6 +506,10 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     };
     updateSession(sessionId, prev => [...prev, userMsg]);
     setStreaming(true);
+    setCurrentRunId(null);
+    setThinking(true);
+    setToolTraces({});
+    setActiveToolId(null);
 
     // Build history from the ref (not stale closure)
     const history = [...currentMessagesRef.current, userMsg].map(m => ({
@@ -470,6 +527,211 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     // Helper: patch the assistant message in place
     const patchAssistant = (updater: (msg: Message) => Message) => {
       updateSession(sessionId, msgs => msgs.map(m => m.id === assistantId ? updater(m) : m));
+    };
+
+    const appendAssistantText = (content: string) => {
+      patchAssistant(m => {
+        const parts = [...m.parts];
+        const last = parts[parts.length - 1];
+        if (last?.kind === "text") {
+          return { ...m, parts: [...parts.slice(0, -1), { kind: "text", content: last.content + content }] };
+        }
+        return { ...m, parts: [...parts, { kind: "text", content }] };
+      });
+    };
+
+    const handleEvent = (evt: SseEvent) => {
+      if (evt.type === "run_start") {
+        setCurrentRunId(evt.runId);
+        return;
+      }
+
+      if (evt.type === "heartbeat") return;
+
+      if (evt.type === "thinking") {
+        setThinking(true);
+        return;
+      }
+
+      if (evt.type === "text") {
+        setThinking(false);
+        appendAssistantText(evt.content);
+        return;
+      }
+
+      if (evt.type === "tool_start") {
+        setThinking(false);
+        patchAssistant(m => {
+          const exists = m.parts.some(
+            p => p.kind === "tool_start" &&
+              ((evt.toolId && p.toolId === evt.toolId) || (!evt.toolId && p.name === evt.name && !p.done)),
+          );
+          if (exists) return m;
+          return {
+            ...m,
+            parts: [...m.parts, {
+              kind: "tool_start",
+              toolId: evt.toolId,
+              runId: evt.runId,
+              name: evt.name,
+              args: evt.args,
+              done: false,
+              progress: null,
+            }],
+          };
+        });
+
+        if (evt.toolId) {
+          upsertToolTrace(evt.toolId, prev => ({
+            toolId: evt.toolId!,
+            runId: evt.runId,
+            name: evt.name,
+            args: evt.args ?? {},
+            startedAt: evt.ts ?? Date.now(),
+            completedAt: prev?.completedAt,
+            status: prev?.status === "error" ? "error" : "running",
+            progress: prev?.progress,
+            progressMsg: prev?.progressMsg,
+            result: prev?.result,
+            logs: prev?.logs ?? [{ ts: Date.now(), message: "Tool execution started" }],
+          }));
+          setActiveToolId(current => current ?? evt.toolId!);
+        }
+        return;
+      }
+
+      if (evt.type === "tool_log") {
+        if (!evt.toolId) return;
+        upsertToolTrace(evt.toolId, prev => ({
+          toolId: evt.toolId!,
+          runId: evt.runId ?? prev?.runId,
+          name: evt.name ?? prev?.name ?? "tool",
+          args: prev?.args ?? {},
+          startedAt: prev?.startedAt ?? Date.now(),
+          completedAt: prev?.completedAt,
+          status: prev?.status ?? "running",
+          progress: prev?.progress,
+          progressMsg: prev?.progressMsg,
+          result: prev?.result,
+          logs: [...(prev?.logs ?? []), {
+            ts: Date.now(),
+            message: evt.message,
+            details: evt.details,
+            level: evt.level ?? "info",
+          }],
+        }));
+        return;
+      }
+
+      if (evt.type === "tool_progress") {
+        patchAssistant(m => ({
+          ...m,
+          parts: m.parts.map(p =>
+            p.kind === "tool_start" &&
+            ((evt.toolId && p.toolId === evt.toolId) || (!evt.toolId && p.name === evt.name && !p.done))
+              ? { ...p, progress: evt.percent ?? p.progress ?? null, progressMsg: evt.message ?? evt.status }
+              : p,
+          ),
+        }));
+
+        if (evt.toolId) {
+          upsertToolTrace(evt.toolId, prev => ({
+            toolId: evt.toolId!,
+            runId: evt.runId ?? prev?.runId,
+            name: evt.name ?? prev?.name ?? "tool",
+            args: prev?.args ?? {},
+            startedAt: prev?.startedAt ?? Date.now(),
+            completedAt: prev?.completedAt,
+            status: evt.status === "error" ? "error" : (prev?.status ?? "running"),
+            progress: evt.percent ?? prev?.progress,
+            progressMsg: evt.message ?? evt.status ?? prev?.progressMsg,
+            result: prev?.result,
+            logs: evt.message ? [...(prev?.logs ?? []), { ts: Date.now(), message: evt.message }] : (prev?.logs ?? []),
+          }));
+        }
+        return;
+      }
+
+      if (evt.type === "tool_done") {
+        setThinking(false);
+        patchAssistant(m => ({
+          ...m,
+          parts: m.parts.map(p =>
+            p.kind === "tool_start" &&
+            ((evt.toolId && p.toolId === evt.toolId) || (!evt.toolId && p.name === evt.name && !p.done))
+              ? { ...p, done: true, result: evt.result, progress: 100 }
+              : p,
+          ),
+        }));
+
+        if (evt.toolId) {
+          upsertToolTrace(evt.toolId, prev => ({
+            toolId: evt.toolId!,
+            runId: evt.runId ?? prev?.runId,
+            name: evt.name ?? prev?.name ?? "tool",
+            args: prev?.args ?? {},
+            startedAt: prev?.startedAt ?? Date.now(),
+            completedAt: evt.ts ?? Date.now(),
+            status: evt.result?.error ? "error" : "done",
+            progress: 100,
+            progressMsg: evt.result?.error ? "Failed" : "Completed",
+            result: evt.result,
+            logs: [...(prev?.logs ?? []), {
+              ts: Date.now(),
+              message: evt.result?.error ? "Tool finished with error" : "Tool completed",
+            }],
+          }));
+          setActiveToolId(evt.toolId);
+        }
+        return;
+      }
+
+      if (evt.type === "navigate") {
+        if (onNavigate) onNavigate(evt.tab);
+        return;
+      }
+
+      if (evt.type === "artifact") {
+        patchAssistant(m => ({
+          ...m,
+          parts: [...m.parts, {
+            kind: "artifact",
+            artifactType: evt.artifactType,
+            label: evt.label,
+            tab: evt.tab,
+            jobId: evt.jobId,
+            downloadUrl: evt.downloadUrl,
+            content: evt.content,
+          }],
+        }));
+
+        if (evt.toolId) {
+          upsertToolTrace(evt.toolId, prev => ({
+            toolId: evt.toolId!,
+            runId: evt.runId ?? prev?.runId,
+            name: prev?.name ?? "tool",
+            args: prev?.args ?? {},
+            startedAt: prev?.startedAt ?? Date.now(),
+            completedAt: prev?.completedAt,
+            status: prev?.status ?? "running",
+            progress: prev?.progress,
+            progressMsg: prev?.progressMsg,
+            result: prev?.result,
+            logs: [...(prev?.logs ?? []), { ts: Date.now(), message: `Artifact ready: ${evt.label}` }],
+          }));
+        }
+        return;
+      }
+
+      if (evt.type === "error") {
+        setThinking(false);
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `⚠️ ${evt.message}` }] }));
+        return;
+      }
+
+      if (evt.type === "done") {
+        setThinking(false);
+      }
     };
 
     try {
@@ -491,16 +753,23 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // Split on newlines; keep trailing partial line in buffer
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
+        // Parse complete SSE frames separated by blank lines.
+        const frames = buffer.split(/\r?\n\r?\n/);
+        buffer = frames.pop() ?? "";
 
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const raw = line.slice(6).trim();
+        for (const frame of frames) {
+          const dataLines = frame
+            .split(/\r?\n/)
+            .filter(line => line.startsWith("data:"))
+            .map(line => line.slice(5).trimStart());
+          if (!dataLines.length) continue;
+
+          const raw = dataLines.join("\n").trim();
           if (!raw) continue;
           try {
             const evt = JSON.parse(raw) as SseEvent;
+            handleEvent(evt);
+            continue;
 
             if (evt.type === "text") {
               patchAssistant(m => {
@@ -566,14 +835,28 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
           } catch { /* malformed SSE line — skip */ }
         }
       }
+
+      const trailing = buffer.trim();
+      if (trailing.startsWith("data:")) {
+        const raw = trailing.slice(5).trim();
+        if (raw) {
+          try {
+            const evt = JSON.parse(raw) as SseEvent;
+            handleEvent(evt);
+          } catch {
+            // Ignore malformed trailing payload
+          }
+        }
+      }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "⚠️ Connection error. Please try again." }] }));
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "⚠️ Connection interrupted. The job may still be running in Activity." }] }));
       }
     } finally {
       setStreaming(false);
+      setThinking(false);
     }
-  }, [streaming, BASE, onNavigate, updateSession, ensureSession]);
+  }, [streaming, BASE, onNavigate, updateSession, ensureSession, upsertToolTrace]);
 
   const handleSubmit = (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -591,6 +874,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const handleStop = () => {
     abortRef.current?.abort();
     setStreaming(false);
+    setThinking(false);
   };
 
   // Voice input
@@ -625,6 +909,9 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const speechSupported = !!(
     (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
   );
+  const toolTraceList = Object.values(toolTraces).sort((a, b) => b.startedAt - a.startedAt);
+  const activeToolTrace = activeToolId ? toolTraces[activeToolId] : (toolTraceList[0] ?? null);
+  const showInspector = !isEmpty && (streaming || toolTraceList.length > 0);
 
   const handleNewChat = () => {
     if (streaming) return;
@@ -738,10 +1025,16 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
       {/* ── Messages ── */}
       {!isEmpty && (
-        <div className="copilot-messages">
+        <div className="copilot-conversation-shell">
+          <div className="copilot-messages">
           <AnimatePresence initial={false}>
             {currentMessages.map(msg => (
-              <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                onNavigate={onNavigate}
+                onInspectTool={(toolId) => toolId && setActiveToolId(toolId)}
+              />
             ))}
           </AnimatePresence>
 
@@ -756,16 +1049,87 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
                 style={{ background: "rgba(220,38,38,0.15)", border: "1px solid rgba(220,38,38,0.3)" }}>
                 <Bot className="w-4 h-4 text-primary" />
               </div>
-              <div className="flex items-center gap-1 px-4 py-3 rounded-2xl rounded-tl-sm bg-white/[0.07] border border-white/8">
+              <div className="flex items-center gap-2 px-4 py-3 rounded-2xl rounded-tl-sm bg-white/[0.07] border border-white/8">
                 {[0, 0.15, 0.3].map((delay, i) => (
                   <span key={i} className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce"
                     style={{ animationDelay: `${delay}s`, animationDuration: "0.8s" }} />
                 ))}
+                {thinking && <span className="text-[11px] text-white/45 ml-1">Thinking...</span>}
               </div>
             </motion.div>
           )}
 
           <div ref={bottomRef} />
+          </div>
+
+          {showInspector && (
+            <aside className="copilot-inspector">
+              <div className="copilot-inspector-header">
+                <div className="copilot-inspector-title-wrap">
+                  <span className="copilot-inspector-title">Tool Execution</span>
+                  {currentRunId && <span className="copilot-inspector-run">Run {currentRunId.slice(0, 8)}</span>}
+                </div>
+              </div>
+
+              <div className="copilot-inspector-tools">
+                {toolTraceList.map(trace => (
+                  <button
+                    key={trace.toolId}
+                    type="button"
+                    onClick={() => setActiveToolId(trace.toolId)}
+                    className={cn(
+                      "copilot-inspector-tool",
+                      activeToolTrace?.toolId === trace.toolId && "copilot-inspector-tool-active",
+                    )}
+                  >
+                    <span className="copilot-inspector-tool-name">{TOOL_META[trace.name]?.label ?? trace.name}</span>
+                    <span
+                      className={cn(
+                        "copilot-inspector-tool-status",
+                        trace.status === "done" && "copilot-inspector-tool-status-done",
+                        trace.status === "error" && "copilot-inspector-tool-status-error",
+                      )}
+                    >
+                      {trace.status}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {activeToolTrace && (
+                <div className="copilot-inspector-body">
+                  <div className="copilot-inspector-section">
+                    <div className="copilot-inspector-section-title">Arguments</div>
+                    <pre className="copilot-inspector-code">{JSON.stringify(activeToolTrace.args ?? {}, null, 2)}</pre>
+                  </div>
+
+                  <div className="copilot-inspector-section">
+                    <div className="copilot-inspector-section-title">Live Logs</div>
+                    <div className="copilot-inspector-logs">
+                      {activeToolTrace.logs.length === 0 && (
+                        <div className="copilot-inspector-empty">Waiting for logs...</div>
+                      )}
+                      {activeToolTrace.logs.map((log, idx) => (
+                        <div key={`${activeToolTrace.toolId}-${idx}`} className="copilot-inspector-log-row">
+                          <span className="copilot-inspector-log-time">
+                            {new Date(log.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                          </span>
+                          <span
+                            className={cn(
+                              "copilot-inspector-log-msg",
+                              log.level === "error" && "copilot-inspector-log-msg-error",
+                            )}
+                          >
+                            {log.message}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </aside>
+          )}
         </div>
       )}
 
