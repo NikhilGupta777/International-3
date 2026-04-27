@@ -228,6 +228,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       progress:     parseInt(item.progress?.N ?? "0"),
       step:         item.step?.S ?? "",
       error:        item.error?.S,
+      lipsyncWarning: item.lipsync_warning?.S,
       filename:     item.filename?.S,
       targetLang:   item.targetLang?.S,
       targetLangCode: item.targetLangCode?.S,

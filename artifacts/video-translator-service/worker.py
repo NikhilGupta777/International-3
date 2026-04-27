@@ -1,4 +1,4 @@
-﻿"""
+"""
 AWS Batch GPU Worker â€” Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -806,9 +806,17 @@ def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
         return run_lipsync_musetalk(video_path, dubbed_audio, out_dir)
     except Exception as e:
         errors.append(f"MuseTalk: {e}")
-        raise RuntimeError(
-            "Lip sync failed on all backends: " + " | ".join(errors)
-        ) from e
+        warn_msg = "Lip sync failed on all backends: " + " | ".join(errors)
+        log.warning(f"[LipSync] {warn_msg}")
+        # AUTO-FALLBACK: Do NOT raise — continue with the dubbed-audio video
+        # (no mouth movement) so the translation still completes successfully.
+        update_progress(
+            "LIPSYNC", 82,
+            f"⚠️ Lip sync unavailable (model deps issue) — continuing without lip sync. Video will have dubbed audio only.",
+            {"lipsync_warning": warn_msg}
+        )
+        # Return the original (non-lip-synced) video so the rest of the pipeline continues
+        return video_path
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 7: Assemble per-segment audio into one dubbed audio track

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, Languages, Mic, MicOff, Play, Download, CheckCircle,
   Loader2, AlertCircle, X, ChevronDown, Subtitles, RefreshCw,
-  Film, Wand2, Volume2, Eye, Share2, History, Trash2
+  Film, Wand2, Volume2, Eye, Share2, History, Trash2, Terminal, ChevronUp
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -240,7 +240,12 @@ export default function VideoTranslator() {
   const [error, setError]           = useState<string | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
   const [history, setHistory]       = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
+  const [debugLog, setDebugLog]     = useState<{ts: number; level: "info"|"warn"|"error"; msg: string}[]>([]);
+  const [showDebug, setShowDebug]   = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const appendLog = (level: "info"|"warn"|"error", msg: string) =>
+    setDebugLog(prev => [...prev.slice(-49), { ts: Date.now(), level, msg }]);
 
   const refreshHistory = useCallback(() => {
     setHistory(loadTranslatorHistory());
@@ -277,6 +282,10 @@ export default function VideoTranslator() {
       if (!r.ok) return;
       const data = await r.json();
       setJob(data);
+      // Append real step/warning/error messages to debug log
+      if (data.step) appendLog(data.status === "FAILED" ? "error" : "info", `[${data.status}] ${data.step}`);
+      if (data.lipsyncWarning) appendLog("warn", `[LIPSYNC] ${data.lipsyncWarning}`);
+      if (data.error) appendLog("error", `[ERROR] ${data.error}`);
       const activeMeta = loadActiveTranslatorJobs().find((j) => j.jobId === id);
       if (data.status !== "DONE" && data.status !== "FAILED") {
         upsertActiveTranslatorJob({
@@ -323,7 +332,7 @@ export default function VideoTranslator() {
 
   useEffect(() => {
     if (!jobId) return;
-    pollRef.current = setInterval(() => pollStatus(jobId), 3000);
+    pollRef.current = setInterval(() => pollStatus(jobId), 2000);
     pollStatus(jobId);
     return () => clearInterval(pollRef.current!);
   }, [jobId, pollStatus]);
@@ -580,6 +589,42 @@ export default function VideoTranslator() {
   const isDone       = job?.status === "DONE";
   const overallPct   = job?.progress ?? 0;
 
+  // Derive step-by-step breakdown from real DynamoDB status + progress
+  // Worker status flow: QUEUED → STARTING → EXTRACTING → TRANSCRIBING →
+  //   TRANSLATING → CLONING → LIPSYNC → MERGING → UPLOADING → DONE
+  const PIPELINE_STEPS = [
+    { name: "download",       label: "Downloading video",         thresholdPct: 3,  status_keys: ["STARTING"] },
+    { name: "audio_extraction", label: "Extracting audio",        thresholdPct: 12, status_keys: ["EXTRACTING"] },
+    { name: "transcription",  label: "Transcribing speech",       thresholdPct: 28, status_keys: ["TRANSCRIBING"] },
+    { name: "translation",    label: "Translating text",          thresholdPct: 48, status_keys: ["TRANSLATING"] },
+    { name: "voice_generation", label: "Cloning voice",           thresholdPct: 65, status_keys: ["CLONING"] },
+    { name: "lip_sync",       label: "Running lip sync",          thresholdPct: 82, status_keys: ["LIPSYNC"] },
+    { name: "video_merge",    label: "Merging & generating SRT",  thresholdPct: 88, status_keys: ["MERGING"] },
+    { name: "upload",         label: "Uploading to cloud",        thresholdPct: 100, status_keys: ["UPLOADING","DONE"] },
+  ];
+
+  const derivedSteps = isProcessing || isDone
+    ? PIPELINE_STEPS.map((s) => {
+        const isCurrentStatus = s.status_keys.includes(job?.status ?? "");
+        const isPastThreshold = overallPct >= s.thresholdPct;
+        const isBeforeThreshold = overallPct < s.thresholdPct && !isCurrentStatus;
+        let stepStatus: string;
+        if (isDone || isPastThreshold) stepStatus = "completed";
+        else if (isCurrentStatus) stepStatus = "running";
+        else if (isBeforeThreshold) stepStatus = "pending";
+        else stepStatus = "completed";
+        return {
+          name: s.name,
+          label: s.label,
+          status: stepStatus,
+          // Show real step message from DynamoDB on the currently running step
+          message: isCurrentStatus ? (job?.step ?? "") : undefined,
+          // Show real sub-progress on the running step
+          progress: isCurrentStatus ? overallPct : undefined,
+        };
+      })
+    : null;
+
 
   return (
     <div className="flex flex-col h-full overflow-y-auto">
@@ -733,10 +778,53 @@ export default function VideoTranslator() {
                 </div>
               </>
             )}
-            {/* Steps */}
-            {job?.steps && (
-              <div className="flex flex-col gap-2">
-                {job.steps.map((s: any) => <StepCard key={s.name} step={s} />)}
+            {/* Steps + Debug log */}
+            {derivedSteps && (
+              <div className="flex flex-col gap-2 mt-3">
+                {derivedSteps.map((s) => <StepCard key={s.name} step={s} />)}
+              </div>
+            )}
+
+            {/* Debug Log — collapsible, always available during/after processing */}
+            {debugLog.length > 0 && (
+              <div className="mt-3 rounded-xl border border-white/[0.08] bg-black/30 overflow-hidden">
+                <button
+                  onClick={() => setShowDebug(v => !v)}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs text-white/50 hover:text-white/70 hover:bg-white/5 transition-colors"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Terminal className="w-3 h-3" />
+                    Debug log
+                    {debugLog.some(l => l.level === "error") && (
+                      <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-mono">
+                        {debugLog.filter(l => l.level === "error").length} error{debugLog.filter(l => l.level === "error").length > 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {debugLog.some(l => l.level === "warn") && (
+                      <span className="px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 font-mono">
+                        {debugLog.filter(l => l.level === "warn").length} warning{debugLog.filter(l => l.level === "warn").length > 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </span>
+                  {showDebug ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+                {showDebug && (
+                  <div className="px-3 pb-3 flex flex-col gap-0.5 max-h-52 overflow-y-auto font-mono text-[11px]">
+                    {debugLog.map((entry, i) => (
+                      <div key={i} className={cn(
+                        "flex gap-2 leading-5",
+                        entry.level === "error" ? "text-red-400" :
+                        entry.level === "warn"  ? "text-yellow-400" :
+                                                  "text-white/40"
+                      )}>
+                        <span className="shrink-0 text-white/20">
+                          {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                        </span>
+                        <span className="break-all">{entry.msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
