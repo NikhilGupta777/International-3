@@ -129,6 +129,10 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
 app.use(
   pinoHttp({
     logger,
+    // Skip auto-logging for SSE endpoint \u2014 avoids flush timing interference
+    autoLogging: {
+      ignore: (req: any) => req.url?.includes("/agent/chat") ?? false,
+    },
     serializers: {
       req(req) {
         return {
@@ -272,6 +276,16 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     return;
   }
   res.status(401).json({ error: "Authentication required" });
+});
+
+// ── SSE route prep: disable socket Nagle buffering for streaming responses ──
+// Must be registered before the main router so it applies to /api/agent/chat
+app.use("/api/agent", (_req: Request, res: Response, next: NextFunction) => {
+  const socket = (res as any).socket;
+  if (socket && typeof socket.setNoDelay === "function") {
+    socket.setNoDelay(true); // TCP_NODELAY — send data immediately
+  }
+  next();
 });
 
 app.use("/api", router);

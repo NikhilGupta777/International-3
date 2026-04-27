@@ -51,6 +51,31 @@ export default defineConfig({
       "/api": {
         target: `http://localhost:${process.env.API_PORT ?? 8080}`,
         changeOrigin: true,
+        // ── SSE / streaming fix ──────────────────────────────────────────
+        // Vite's http-proxy buffers responses by default. For Server-Sent
+        // Events (text/event-stream) we must disable buffering so chunks
+        // reach the browser as they are written — not all at once at the end.
+        configure: (proxy) => {
+          proxy.on("proxyRes", (proxyRes, req, res) => {
+            const contentType = proxyRes.headers["content-type"] ?? "";
+            if (contentType.includes("text/event-stream")) {
+              // Disable response buffering on the socket
+              res.setHeader("Content-Type", "text/event-stream");
+              res.setHeader("Cache-Control", "no-cache");
+              res.setHeader("Connection", "keep-alive");
+              res.setHeader("X-Accel-Buffering", "no");
+              // TCP_NODELAY — flush every write immediately without Nagle delay
+              (res.socket as any)?.setNoDelay?.(true);
+              proxyRes.pipe(res, { end: true });
+              // Prevent http-proxy from touching the response after we piped it
+              (res as any).__sse_piped = true;
+            }
+          });
+          proxy.on("proxyRes", (proxyRes, _req, res) => {
+            // Skip if we already piped it above
+            if ((res as any).__sse_piped) return;
+          });
+        },
       },
     },
   },
