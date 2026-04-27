@@ -737,18 +737,28 @@ export function StudioCopilot({
               })}
             </AnimatePresence>
 
-            {/* Thinking indicator — Genspark style: "Thinking..." + cursor block + pulse dot */}
-            {thinking && (
-              <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                className="gs-thinking">
-                <span className="gs-thinking-text">Thinking</span>
-                <span className="gs-thinking-dots">
-                  <span>.</span><span>.</span><span>.</span>
-                </span>
-                <span className="gs-thinking-cursor" />
-                <span className="gs-thinking-pulse" />
-              </motion.div>
-            )}
+            {/* Thinking indicator — shows live agent stage from SSE events */}
+            {thinking && (() => {
+              const stageLabel: Record<string, string> = {
+                planning:  "Planning",
+                executing: "Working",
+                verifying: "Checking",
+                idle:      "Thinking",
+              };
+              const label = stageLabel[agentStage] ?? "Thinking";
+              const iterSuffix = agentIteration > 0 ? ` · step ${agentIteration}` : "";
+              return (
+                <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                  className="gs-thinking">
+                  <span className="gs-thinking-text">{label}{iterSuffix}</span>
+                  <span className="gs-thinking-dots">
+                    <span>.</span><span>.</span><span>.</span>
+                  </span>
+                  <span className="gs-thinking-cursor" />
+                  <span className="gs-thinking-pulse" />
+                </motion.div>
+              );
+            })()}
             <div ref={bottomRef} />
           </div>
         </div>
