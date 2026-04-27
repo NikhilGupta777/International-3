@@ -656,19 +656,32 @@ export default function VideoTranslator() {
                             onChange={setTgtLang} options={TARGET_LANGS} />
               </div>
 
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-2">
                 <label className="text-xs text-white/40 font-medium uppercase tracking-wider">Voice Style</label>
                 <div className="flex gap-2">
-                  {(["original","female"] as const).map(s => (
-                    <button key={s} onClick={() => setVoiceStyle(s)}
-                      className={cn("flex-1 py-2.5 rounded-xl text-sm font-medium border transition-all",
-                        voiceStyle===s
-                          ? "bg-primary/20 border-primary/50 text-primary"
-                          : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}>
-                      {s==="original" ? "ðŸŽ¤ Clone Original" : "ðŸ‘© Neural Female"}
-                    </button>
-                  ))}
+                  <button
+                    onClick={() => setVoiceStyle("original")}
+                    className={cn("flex-1 py-3 rounded-xl text-sm font-medium border transition-all flex flex-col items-center gap-1",
+                      voiceStyle==="original" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
+                  >
+                    <span>🎤 Clone Voice</span>
+                    <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300/80 border border-amber-400/20">GPU Required</span>
+                  </button>
+                  <button
+                    onClick={() => setVoiceStyle("female")}
+                    className={cn("flex-1 py-3 rounded-xl text-sm font-medium border transition-all flex flex-col items-center gap-1",
+                      voiceStyle==="female" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
+                  >
+                    <span>👩 Neural Voice</span>
+                    <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300/80 border border-emerald-400/20">Always Available</span>
+                  </button>
                 </div>
+                {voiceStyle === "original" && (
+                  <p className="text-[11px] text-amber-300/60 flex items-center gap-1.5">
+                    <span>⚠️</span>
+                    Requires GPU worker. Auto-falls back to Neural Voice if unavailable.
+                  </p>
+                )}
               </div>
 
               <label className="flex items-center gap-3 cursor-pointer select-none">

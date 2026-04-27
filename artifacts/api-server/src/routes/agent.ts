@@ -475,13 +475,14 @@ router.post("/agent/chat", async (req, res) => {
       .map(m => ({ role: m.role, parts: [{ text: m.content }] }));
 
     let iterations = 0;
-    // MAX_ITERATIONS defined at top-level (12)
+    let iterations = 0;
 
     while (iterations < MAX_ITERATIONS && isConnected()) {
       iterations++;
-      sseEvent(res, { type: "thinking", runId, stage: "planning", iteration: iterations });
+      const stage = iterations === 1 ? "planning" : "executing";
+      sseEvent(res, { type: "thinking", runId, stage, iteration: iterations, total: MAX_ITERATIONS });
 
-      // â”€â”€ 1. Stream the AI response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── 1. Stream the AI response ─────────────────────────────────────────
       const stream = await ai.models.generateContentStream({
         model: AGENT_MODEL,
         contents: loopContents,
@@ -491,13 +492,10 @@ router.post("/agent/chat", async (req, res) => {
           toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
           temperature: 0.15,
           maxOutputTokens: 2048,
-          // Disable thinking to avoid thought_signature requirement in function call loops.
-          // If switching to a 2.5 thinking model, you must carry thought parts back in model history.
           thinkingConfig: { thinkingBudget: 0 } as any,
         },
       });
 
-      // Collect all chunks and stream text live to client
       let fullText = "";
       const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
 
@@ -507,73 +505,84 @@ router.post("/agent/chat", async (req, res) => {
         for (const p of parts) {
           if (p.text) {
             fullText += p.text;
-            // Stream text token live immediately
-            sseEvent(res, { type: "text", content: p.text });
+            sseEvent(res, { type: "text", content: p.text, runId });
           }
           if (p.functionCall) {
-            const fc = p.functionCall;
-            functionCalls.push({ name: fc.name!, args: (fc.args ?? {}) as Record<string, any> });
+            functionCalls.push({ name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
           }
         }
       }
 
       if (!isConnected()) break;
 
-      // â”€â”€ 2. No function calls â†’ final text response, done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-      if (functionCalls.length === 0) {
-        break;
-      }
+      // ── 2. No function calls → final answer, done ─────────────────────────
+      if (functionCalls.length === 0) break;
 
-      // â”€â”€ 3. Execute each tool sequentially, streaming progress â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── 3. Emit plan event — what tools are about to run ──────────────────
+      sseEvent(res, {
+        type: "plan",
+        runId,
+        iteration: iterations,
+        steps: functionCalls.map(fc => ({ tool: fc.name, args: fc.args })),
+      });
+
+      // ── 4. Execute tools sequentially ─────────────────────────────────────
       const toolResults: any[] = [];
+      let iterationHadError = false;
 
       for (const fc of functionCalls) {
         if (!isConnected()) break;
         const toolId = randomUUID().slice(0, 8);
 
-        // Announce the tool is starting NOW (exactly once per tool)
         sseEvent(res, { type: "tool_start", runId, toolId, name: fc.name, args: fc.args, ts: Date.now() });
-        sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: "Tool execution started" });
+        sseEvent(res, { type: "tool_log",   runId, toolId, name: fc.name, message: "Tool execution started", level: "info" });
 
         let toolResult: any;
         let toolArtifact: object | undefined;
 
         try {
           const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected, toolId);
-          toolResult = result;
+          toolResult   = result;
           toolArtifact = artifact;
+          if (toolResult?.error) iterationHadError = true;
         } catch (toolErr: any) {
+          iterationHadError = true;
           toolResult = { error: toolErr?.message ?? "Tool execution failed" };
           sseEvent(res, { type: "tool_progress", runId, toolId, name: fc.name, status: "error", message: toolErr?.message ?? "Failed" });
-          sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: toolErr?.message ?? "Tool failed", level: "error" });
+          sseEvent(res, { type: "tool_log",      runId, toolId, name: fc.name, message: toolErr?.message ?? "Tool failed", level: "error" });
         }
 
         sseEvent(res, { type: "tool_done", runId, toolId, name: fc.name, result: toolResult, ts: Date.now() });
-
-        if (toolArtifact) {
-          sseEvent(res, { type: "artifact", runId, toolId, ...(toolArtifact as object) });
-        }
+        if (toolArtifact) sseEvent(res, { type: "artifact", runId, toolId, ...(toolArtifact as object) });
 
         toolResults.push({
-          functionResponse: {
-            name: fc.name,
-            response: { result: toolResult },
-          },
+          functionResponse: { name: fc.name, response: { result: toolResult } },
         });
       }
 
-      // â”€â”€ 4. Build model + function response parts for next loop iteration â”€â”€
+      // ── 5. JUDGE — inject repair instruction on error ─────────────────────
+      if (iterationHadError) {
+        const failedTools = toolResults
+          .filter(tr => tr.functionResponse?.response?.result?.error)
+          .map(tr => `${tr.functionResponse.name}: ${tr.functionResponse.response.result.error}`)
+          .join("; ");
+        sseEvent(res, { type: "tool_log", name: "judge", message: `Errors detected: ${failedTools} — retrying`, level: "warn" });
+        toolResults.push({ text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.` });
+      }
+
+      // ── 6. Build history for next iteration ───────────────────────────────
       const modelParts: any[] = [];
       if (fullText) modelParts.push({ text: fullText });
-      for (const fc of functionCalls) {
-        modelParts.push({ functionCall: { name: fc.name, args: fc.args } });
-      }
+      for (const fc of functionCalls) modelParts.push({ functionCall: { name: fc.name, args: fc.args } });
 
       loopContents = [
         ...loopContents,
         { role: "model" as const, parts: modelParts },
-        { role: "user" as const, parts: toolResults },
+        { role: "user"  as const, parts: toolResults },
       ];
+
+      if (!isConnected()) break;
+    }
     }
 
     if (isConnected()) {
