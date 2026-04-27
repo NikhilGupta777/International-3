@@ -524,6 +524,10 @@ router.post("/agent/chat", async (req, res) => {
 
       let fullText = "";
       const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
+      // ⚠️ rawFcParts preserves thought_signature — Gemini API REQUIRES this
+      // to be passed back in history when thinking is active. Dropping it
+      // causes INVALID_ARGUMENT: "Function call is missing a thought_signature".
+      const rawFcParts: any[] = [];
 
       for await (const chunk of stream) {
         if (!isConnected()) break;
@@ -535,6 +539,8 @@ router.post("/agent/chat", async (req, res) => {
           }
           if (p.functionCall) {
             functionCalls.push({ name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
+            // Store the FULL functionCall object — includes thought_signature if present
+            rawFcParts.push({ functionCall: p.functionCall });
           }
         }
       }
@@ -599,9 +605,10 @@ router.post("/agent/chat", async (req, res) => {
       }
 
       // ── 6. Build history for next iteration ───────────────────────────────
+      // Use rawFcParts (not reconstructed) to preserve thought_signature
       const modelParts: any[] = [];
       if (fullText) modelParts.push({ text: fullText });
-      for (const fc of functionCalls) modelParts.push({ functionCall: { name: fc.name, args: fc.args } });
+      for (const rawFc of rawFcParts) modelParts.push(rawFc);
 
       loopContents = [
         ...loopContents,
@@ -622,7 +629,15 @@ router.post("/agent/chat", async (req, res) => {
     }
   } catch (err: any) {
     if (isConnected()) {
-      sseEvent(res, { type: "error", message: err?.message ?? "Unknown copilot error" });
+      // Parse Gemini API JSON error messages to show clean human-readable text
+      let errMsg: string = err?.message ?? "Unknown copilot error";
+      try {
+        const parsed = JSON.parse(errMsg);
+        const inner = parsed?.error?.message ?? parsed?.message ?? errMsg;
+        // Strip the long docs URL reference
+        errMsg = String(inner).split(/\.?\s*Please refer to https?:\/\//).shift()!.trim();
+      } catch { /* not JSON, use as-is */ }
+      sseEvent(res, { type: "error", message: errMsg });
     }
   } finally {
     clearInterval(keepAlive);

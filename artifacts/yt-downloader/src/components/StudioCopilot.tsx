@@ -464,7 +464,14 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       }
       if (evt.type === "error") {
         setThinking(false); setAgentStage("idle");
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `⚠️ ${evt.message}` }] }));
+        // Clean the error message — parse JSON if server forwarded raw API error
+        let cleanMsg = evt.message ?? "Something went wrong";
+        try {
+          const p = JSON.parse(cleanMsg);
+          const inner = p?.error?.message ?? p?.message ?? cleanMsg;
+          cleanMsg = String(inner).split(/\.?\s*Please refer to https?:\/\//).shift()!.trim();
+        } catch { /* not JSON */ }
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `⚠️ ${cleanMsg}` }] }));
         return;
       }
       if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); }
@@ -714,7 +721,11 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             )}
           </div>
         </form>
-        <p className="agent-hint">Powered by Gemini · Enter to send · Shift+Enter for newline</p>
+        <p className="agent-hint">
+          {streaming
+            ? `⚡ Running · Step ${agentIteration > 0 ? agentIteration : "…"} of ${12}`
+            : "Powered by Gemini · Enter to send · Shift+Enter for newline"}
+        </p>
       </div>
     </div>
   );
