@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
   Download, Scissors, Sparkles, Captions, AlarmClock,
-  UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, History, Square,
+  UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, History, Square, Copy, Check, RotateCcw, Link,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -222,7 +222,18 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
 }
 
 // ── MessageBubble ─────────────────────────────────────────────────────────────
-function MessageBubble({ message, onNavigate }: { message: Message; onNavigate?: (tab: string) => void }) {
+// ── CopyBubble — copy button for assistant text bubbles ─────────────────────
+function CopyBubble({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { void navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  return (
+    <button onClick={copy} title="Copy" className="shrink-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity p-1 rounded-md hover:bg-white/10 text-white/30 hover:text-white/70">
+      {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+    </button>
+  );
+}
+
+function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void }) {
   const isUser = message.role === "user";
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
@@ -233,10 +244,23 @@ function MessageBubble({ message, onNavigate }: { message: Message; onNavigate?:
       <div className={cn("flex flex-col gap-2 max-w-[88%] sm:max-w-[80%]", isUser && "items-end")}>
         {message.parts.map((part, i) => {
           if (part.kind === "text" && part.content.trim()) {
+            const isErrorMsg = !isUser && part.content.startsWith("⚠️");
             return (
-              <div key={i} className={cn("rounded-2xl px-4 py-3 text-sm leading-relaxed",
+              <div key={i} className={cn("group/bubble relative rounded-2xl px-4 py-3 text-sm leading-relaxed",
                 isUser ? "bg-[#dc2626] text-white rounded-tr-sm" : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md")}>
                 {isUser ? part.content : renderMd(part.content)}
+                {/* Copy button — assistant messages only, hover-reveal */}
+                {!isUser && (
+                  <div className="absolute top-2 right-2 flex gap-1">
+                    <CopyBubble text={part.content} />
+                    {/* Retry button on error messages */}
+                    {isErrorMsg && onRetry && (
+                      <button onClick={onRetry} title="Retry" className="opacity-0 group-hover/bubble:opacity-100 transition-opacity p-1 rounded-md hover:bg-white/10 text-white/30 hover:text-white/70">
+                        <RotateCcw className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             );
           }
@@ -270,12 +294,14 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const [thinking, setThinking] = useState(false);
   const [agentStage, setAgentStage] = useState<"idle"|"planning"|"executing"|"verifying">("idle");
   const [agentIteration, setAgentIteration] = useState(0);
+  const [pasteUrl, setPasteUrl] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   // inputRef removed — textarea is uncontrolled height, no programmatic focus needed
   const abortRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
   const sessionIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
+  const lastUserTextRef = useRef<string>("");
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   // Load sessions on mount
@@ -341,10 +367,33 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     setStreaming(true);
     setThinking(true);
     setAgentStage("planning");
+    setPasteUrl(null); // dismiss paste pill when message is sent
+    lastUserTextRef.current = text; // track for retry
     abortRef.current = new AbortController();
 
+    // Build history — include completed tool results as text so the agent
+    // has full multi-turn memory of what tools ran and what they returned.
     const history = [...(messagesRef.current), { id: userMsgId, role: "user" as const, parts: [{ kind: "text" as const, content: text }], timestamp: new Date() }]
-      .map(m => ({ role: m.role === "user" ? "user" : "model", content: m.parts.filter((p: any) => p.kind === "text").map((p: any) => p.content).join("") }))
+      .map(m => {
+        const textParts = m.parts
+          .filter((p: any) => p.kind === "text")
+          .map((p: any) => p.content)
+          .join("");
+        // For assistant messages: append a compact summary of completed tools
+        const toolSummary = m.role === "assistant"
+          ? m.parts
+              .filter((p: any) => p.kind === "tool_start" && p.done)
+              .map((p: any) => {
+                const resultStr = p.result?.error
+                  ? `ERROR: ${p.result.error}`
+                  : p.result?.message ?? p.result?.filename ?? p.result?.jobId ?? JSON.stringify(p.result ?? {}).slice(0, 120);
+                return `[Tool: ${p.name} | Result: ${resultStr}]`;
+              })
+              .join("\n")
+          : "";
+        const content = [textParts, toolSummary].filter(Boolean).join("\n").trim();
+        return { role: m.role === "user" ? "user" as const : "model" as const, content };
+      })
       .filter(m => m.content.trim());
 
     const patchAssistant = (updater: (m: Message) => Message) => {
@@ -566,9 +615,13 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         <div className="flex-1 overflow-y-auto px-4 py-4 copilot-messages">
           <div className="agent-msg-col">
             <AnimatePresence initial={false}>
-              {currentMessages.map(msg => (
-                <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} />
-              ))}
+              {currentMessages.map((msg, idx) => {
+                const isLastAssistant = msg.role === "assistant" && idx === currentMessages.length - 1;
+                const handleRetry = isLastAssistant && lastUserTextRef.current
+                  ? () => void sendMessage(lastUserTextRef.current)
+                  : undefined;
+                return <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} onRetry={handleRetry} />;
+              })}
             </AnimatePresence>
 
             {/* Thinking indicator */}
@@ -607,6 +660,20 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
       {/* ── Input bar ── */}
       <div className="copilot-input-wrap">
+        {/* URL paste suggestion pill */}
+        {pasteUrl && !streaming && (
+          <div className="flex items-center gap-2 px-3 pb-1.5">
+            <button
+              type="button"
+              onClick={() => { setInput(`What can you do with ${pasteUrl}?`); setPasteUrl(null); }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary/12 border border-primary/25 text-xs text-primary/80 hover:bg-primary/20 transition-all"
+            >
+              <Link className="w-3 h-3" />
+              <span className="truncate max-w-[200px]">Use {pasteUrl.slice(0, 40)}{pasteUrl.length > 40 ? '…' : ''}</span>
+              <X className="w-3 h-3 ml-0.5 opacity-50" onClick={e => { e.stopPropagation(); setPasteUrl(null); }} />
+            </button>
+          </div>
+        )}
         <form onSubmit={e => { e.preventDefault(); void sendMessage(input); }} className="copilot-input-box">
           <div className="flex items-center gap-2 px-3 py-1.5">
             <span className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white/8 border border-white/10 text-[11px] text-white/50 font-medium shrink-0">
@@ -616,6 +683,14 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
           <textarea
             value={input}
             onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
+            onFocus={() => {
+              // Detect YouTube URL in clipboard and offer to paste
+              if (!input && navigator.clipboard?.readText) {
+                navigator.clipboard.readText().then(text => {
+                  if (/(?:youtube\.com\/watch|youtu\.be\/)/i.test(text)) setPasteUrl(text.trim());
+                }).catch(() => {});
+              }
+            }}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input); } }}
             placeholder="Ask anything — cut a clip, best moments, download, subtitles…"
             rows={1}

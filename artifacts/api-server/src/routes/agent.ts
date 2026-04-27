@@ -612,6 +612,11 @@ router.post("/agent/chat", async (req, res) => {
       if (!isConnected()) break;
     }
 
+    // ── Graceful MAX_ITERATIONS exit ──────────────────────────────────────
+    if (iterations >= MAX_ITERATIONS && isConnected()) {
+      sseEvent(res, { type: "text", content: `\n⚠️ **Note:** Reached the maximum of ${MAX_ITERATIONS} steps. The task may be partially complete — check the results above and ask me to continue if needed.\n`, runId });
+    }
+
     if (isConnected()) {
       sseEvent(res, { type: "done", runId, ts: Date.now() });
     }
