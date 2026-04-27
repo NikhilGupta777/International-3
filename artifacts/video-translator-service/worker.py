@@ -405,16 +405,19 @@ def _ensure_cosyvoice() -> Path:
             "The Dockerfile uses --recurse-submodules but the submodule may not have initialized. "
             "Rebuild the Docker image."
         )
-    # Verify model weights are present (downloaded at build time via modelscope)
-    # Standard ModelScope hub path: MODELSCOPE_CACHE/hub/iic/CosyVoice3-0.5B
-    ms_model_dir = MODELSCOPE_CACHE / "hub" / "iic" / "CosyVoice3-0.5B"
-    if not ms_model_dir.exists():
+    # Verify model weights are present (downloaded at build time via modelscope).
+    # We accept either CosyVoice2-0.5B or CosyVoice3-0.5B — the Dockerfile
+    # downloads v2 (publicly available). v3 is tried at runtime but falls back to v2.
+    ms_v2 = MODELSCOPE_CACHE / "hub" / "iic" / "CosyVoice2-0.5B"
+    ms_v3 = MODELSCOPE_CACHE / "hub" / "iic" / "CosyVoice3-0.5B"
+    if not ms_v2.exists() and not ms_v3.exists():
         raise RuntimeError(
-            f"CosyVoice3-0.5B model weights not found at {ms_model_dir}. "
-            "The Docker image was built without the model weights. "
-            "Rebuild the image — the snapshot_download step failed during docker build."
+            f"CosyVoice model weights not found in {MODELSCOPE_CACHE}/hub/iic/. "
+            "Expected CosyVoice2-0.5B or CosyVoice3-0.5B. "
+            "Rebuild the Docker image — the snapshot_download step failed."
         )
-    log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {ms_model_dir} ✓")
+    found = ms_v3 if ms_v3.exists() else ms_v2
+    log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {found} ✓")
     return cv_dir
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -578,7 +581,9 @@ def synthesize_segments_cosyvoice(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = None
     last_err: Optional[Exception] = None
-    for model_id in ("iic/CosyVoice3-0.5B", "iic/CosyVoice2-0.5B"):
+    # Try v2 first — it's baked into the Docker image.
+    # v3 is attempted as an upgrade path if ever added to the image.
+    for model_id in ("iic/CosyVoice2-0.5B", "iic/CosyVoice3-0.5B"):
         try:
             log.info(f"[CosyVoice] Loading {model_id} on {device}...")
             model = _CosyVoice(model_id, load_jit=False, load_trt=False)
