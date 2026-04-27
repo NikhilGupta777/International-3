@@ -43,8 +43,9 @@ RUN pip install --no-cache-dir --prefer-binary --upgrade pip setuptools wheel \
 RUN mkdir -p /model-cache/whisper /model-cache/huggingface
 
 # Preload model repos at build time to avoid runtime clone/install failures
-RUN git clone --depth 1 https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice \
-    && pip install --no-cache-dir --prefer-binary -c /app/constraints.txt -e /model-cache/CosyVoice/[all]
+# CosyVoice no longer exposes root packaging metadata, so we preload code + submodules
+# and install runtime deps from pinned requirements instead of editable install.
+RUN git clone --depth 1 --recurse-submodules https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice
 
 RUN git clone --depth 1 https://github.com/bytedance/LatentSync.git /model-cache/LatentSync \
     && pip install --no-cache-dir --prefer-binary -c /app/constraints.txt -r /model-cache/LatentSync/requirements.txt

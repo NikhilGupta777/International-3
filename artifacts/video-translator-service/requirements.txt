@@ -33,6 +33,10 @@ conformer==0.3.2
 encodec==0.1.1
 hyperpyyaml==1.2.2
 inflect==7.0.0
+modelscope==1.20.0
+onnxruntime-gpu==1.18.0; sys_platform == "linux"
+openai-whisper==20231117
+x-transformers==2.11.24
 
 # TTS fallbacks
 edge-tts==6.1.9

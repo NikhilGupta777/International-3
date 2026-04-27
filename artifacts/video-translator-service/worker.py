@@ -510,6 +510,12 @@ def _ensure_cosyvoice() -> Path:
             f"CosyVoice repo not found at {cv_dir}. "
             "Translator image is missing preloaded model dependencies."
         )
+    matcha_dir = cv_dir / "third_party" / "Matcha-TTS" / "matcha"
+    if not matcha_dir.exists():
+        raise RuntimeError(
+            f"CosyVoice Matcha-TTS submodule missing at {matcha_dir}. "
+            "Rebuild translator image with CosyVoice submodules."
+        )
     return cv_dir
 
 
@@ -526,6 +532,9 @@ def synthesize_segments_cosyvoice(
     cv_dir = _ensure_cosyvoice()
     if str(cv_dir) not in sys.path:
         sys.path.insert(0, str(cv_dir))
+    matcha_root = cv_dir / "third_party" / "Matcha-TTS"
+    if str(matcha_root) not in sys.path:
+        sys.path.insert(0, str(matcha_root))
 
     try:
         from cosyvoice.cli.cosyvoice import CosyVoice2 as _CosyVoice  # type: ignore
