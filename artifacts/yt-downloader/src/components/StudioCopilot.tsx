@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
@@ -165,9 +165,23 @@ function PlanCard({ part }: { part: MessagePart & { kind: "plan" } }) {
   );
 }
 
+// ── TextArtifact (own component so useState is always at top level) ───────────
+function TextArtifact({ label, content }: { label: string; content: string }) {
+  const [copied, setCopied] = useState(false);
+  const copyText = () => { void navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  return (
+    <div className="rounded-xl border border-white/12 bg-white/[0.04] overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-white/8">
+        <span className="text-xs font-semibold text-white/70">{label}</span>
+        <button onClick={copyText} className="text-[10px] text-white/40 hover:text-white/80 px-2 py-0.5 rounded bg-white/6">{copied ? "✓ Copied" : "Copy"}</button>
+      </div>
+      <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-48 whitespace-pre-wrap">{content}</pre>
+    </div>
+  );
+}
+
 // ── ArtifactCard ──────────────────────────────────────────────────────────────
 function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artifact" }; onNavigate?: (tab: string) => void }) {
-  const [copied, setCopied] = useState(false);
   if (part.artifactType === "download" && part.downloadUrl) {
     return (
       <div className="rounded-2xl border border-green-500/25 bg-green-500/8 overflow-hidden">
@@ -191,16 +205,7 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
     );
   }
   if (part.artifactType === "text" && part.content) {
-    const copyText = () => { void navigator.clipboard.writeText(part.content!); setCopied(true); setTimeout(() => setCopied(false), 2000); };
-    return (
-      <div className="rounded-xl border border-white/12 bg-white/[0.04] overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-white/8">
-          <span className="text-xs font-semibold text-white/70">{part.label}</span>
-          <button onClick={copyText} className="text-[10px] text-white/40 hover:text-white/80 px-2 py-0.5 rounded bg-white/6">{copied ? "✓ Copied" : "Copy"}</button>
-        </div>
-        <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-48 whitespace-pre-wrap">{part.content}</pre>
-      </div>
-    );
+    return <TextArtifact label={part.label} content={part.content} />;
   }
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/8 px-3 py-2.5 flex items-center gap-3">
@@ -240,7 +245,9 @@ function MessageBubble({ message, onNavigate }: { message: Message; onNavigate?:
           if (part.kind === "artifact") return <ArtifactCard key={i} part={part} onNavigate={onNavigate} />;
           return null;
         })}
-        <span className="text-[10px] text-white/25 px-1">{message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        {message.parts.some(p => p.kind === "text" ? (p as any).content?.trim() : true) && (
+          <span className="text-[10px] text-white/25 px-1">{message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        )}
       </div>
       {isUser && (
         <div className="shrink-0 w-7 h-7 rounded-full bg-white/10 border border-white/15 flex items-center justify-center mt-0.5">
@@ -264,7 +271,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const [agentStage, setAgentStage] = useState<"idle"|"planning"|"executing"|"verifying">("idle");
   const [agentIteration, setAgentIteration] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // inputRef removed — textarea is uncontrolled height, no programmatic focus needed
   const abortRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -511,8 +518,10 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
               {sessions.length === 0 ? (
                 <div className="agent-history-empty">No previous chats</div>
               ) : sessions.map(s => (
-                <button key={s.id} onClick={() => { setCurrentSessionId(s.id); sessionIdRef.current = s.id; setShowHistory(false); }}
-                  className={cn("agent-history-item", currentSessionId === s.id && "agent-history-item-active")}>
+                <div key={s.id} role="button" tabIndex={0}
+                  onClick={() => { setCurrentSessionId(s.id); sessionIdRef.current = s.id; setShowHistory(false); }}
+                  onKeyDown={e => { if (e.key === "Enter") { setCurrentSessionId(s.id); sessionIdRef.current = s.id; setShowHistory(false); } }}
+                  className={cn("agent-history-item group cursor-pointer", currentSessionId === s.id && "agent-history-item-active")}>
                   <div className="flex-1 min-w-0 text-left">
                     <p className="agent-history-title">{s.title}</p>
                     <p className="agent-history-time">{s.updatedAt.toLocaleDateString([], { month:"short", day:"numeric" })}</p>
@@ -520,7 +529,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
                   <button onClick={e => handleDeleteSession(s.id, e)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white/70 p-1 rounded transition-all">
                     <X className="w-3 h-3" />
                   </button>
-                </button>
+                </div>
               ))}
             </div>
           </motion.div>

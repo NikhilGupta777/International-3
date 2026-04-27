@@ -13,7 +13,7 @@ const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
-const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3.1-flash-lite-preview";
+const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
 const MAX_ITERATIONS  = 12;  // Genspark-class: up to 12 agentic steps
@@ -291,8 +291,23 @@ async function executeTool(
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
-      const data = await r.json().catch(() => ({ error: "Failed to fetch info" }));
-      return { result: data };
+      const data = await r.json().catch(() => ({ error: "Failed to fetch info" })) as any;
+      // Build a readable summary for the artifact card
+      const infoLines: string[] = [];
+      if (data.title)    infoLines.push(`📹 ${data.title}`);
+      if (data.duration) infoLines.push(`⏱ Duration: ${data.duration}`);
+      if (data.uploader) infoLines.push(`👤 ${data.uploader}`);
+      if (data.view_count != null) infoLines.push(`👁 ${Number(data.view_count).toLocaleString()} views`);
+      return {
+        result: data,
+        ...(infoLines.length > 0 ? {
+          artifact: {
+            artifactType: "text",
+            label: "Video Info",
+            content: infoLines.join("\n"),
+          },
+        } : {}),
+      };
     }
 
     case "cut_video_clip": {
@@ -502,7 +517,8 @@ router.post("/agent/chat", async (req, res) => {
           toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
           temperature: 0.15,
           maxOutputTokens: 4096,
-          thinkingConfig: { thinkingBudget: 0 } as any,
+          // thinkingConfig: only supported on flash-thinking variants; omit for standard models
+          ...(AGENT_MODEL.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
         },
       });
 
@@ -570,13 +586,15 @@ router.post("/agent/chat", async (req, res) => {
         });
       }
 
-      // ── 5. JUDGE — inject repair instruction on error ─────────────────────
+      // ── 5. JUDGE — verify results, emit stage, surface errors ────────────
+      sseEvent(res, { type: "thinking", runId, stage: "verifying", iteration: iterations, total: MAX_ITERATIONS });
       if (iterationHadError) {
         const failedTools = toolResults
           .filter(tr => tr.functionResponse?.response?.result?.error)
           .map(tr => `${tr.functionResponse.name}: ${tr.functionResponse.response.result.error}`)
           .join("; ");
-        sseEvent(res, { type: "tool_log", name: "judge", message: `Errors detected: ${failedTools} — retrying`, level: "warn" });
+        // Surface judge warning as visible text so user sees it (tool_log with no toolId is dropped by UI)
+        sseEvent(res, { type: "text", content: `\n🔍 **Judge:** Detected errors — ${failedTools}. Retrying…\n`, runId });
         toolResults.push({ text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.` });
       }
 
