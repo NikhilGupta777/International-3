@@ -487,10 +487,10 @@ router.post("/agent/chat", async (req, res) => {
   const runId = randomUUID();
   sseEvent(res, { type: "run_start", runId, ts: Date.now() });
 
-  // Send heartbeat event every 12s to keep proxy / ALB from closing idle connections
+  // Heartbeat every 8s — below ALB (60s), nginx (75s), Cloudflare (100s) idle timeouts
   const keepAlive = setInterval(() => {
     if (clientConnected) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
-  }, 12000);
+  }, 8000);
 
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
@@ -508,6 +508,10 @@ router.post("/agent/chat", async (req, res) => {
       sseEvent(res, { type: "thinking", runId, stage, iteration: iterations, total: MAX_ITERATIONS });
 
       // ── 1. Stream the AI response ─────────────────────────────────────────
+      // Send an immediate heartbeat NOW before the Gemini API call blocks.
+      // Gemini can take 5-30s to start streaming (planning phase). Without
+      // this, the proxy idle timer hits and drops the connection mid-wait.
+      if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
       const stream = await ai.models.generateContentStream({
         model: AGENT_MODEL,
         contents: loopContents,

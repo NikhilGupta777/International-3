@@ -504,7 +504,16 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
       if (raw) { try { handleEvent(JSON.parse(raw) as SseEvent); } catch {} }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "⚠️ Connection interrupted. The job may still be running." }] }));
+        // Distinguish common failure modes for better user feedback
+        let msg = "⚠️ Connection interrupted. The job may still be running — try asking again.";
+        if (err?.message?.includes("401") || err?.message?.includes("403")) {
+          msg = "⚠️ Authentication error — please refresh the page and try again.";
+        } else if (err?.message?.includes("503") || err?.message?.includes("502")) {
+          msg = "⚠️ Server is starting up — please wait a moment and try again.";
+        } else if (err?.message?.includes("Server error:")) {
+          msg = `⚠️ ${err.message}`;
+        }
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: msg }] }));
       }
     } finally {
       setStreaming(false);
