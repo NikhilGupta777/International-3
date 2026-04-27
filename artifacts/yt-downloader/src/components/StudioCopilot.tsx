@@ -6,7 +6,6 @@ import {
   UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, Clock, History,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { loadSessions, saveSession, deleteSession, createSession, type AgentSession } from "@/lib/session-history";
 
 const HISTORY_KEY = "copilot-sessions-v2";
 
@@ -43,22 +42,39 @@ function saveSessions(sessions: ChatSession[]) {
 // â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 type SseEvent =
   | { type: "run_start"; runId: string; ts?: number }
-  | { type: "thinking"; runId?: string; stage?: string; iteration?: number }
-  | { type: "heartbeat"; runId?: string; ts?: number }
-  | { type: "text"; content: string; runId?: string }
-  | { type: "tool_start"; runId?: string; toolId?: string; name: string; args: Record<string, any>; ts?: number }
+      if (evt.type === "thinking") {
+        setThinking(true);
+        if (evt.stage) setAgentStage(evt.stage as "idle" | "planning" | "executing" | "verifying");
+        if (evt.iteration !== undefined) setAgentIteration(evt.iteration);
+        return;
+      }
+
+      if (evt.type === "plan") {
+        // Render a PlanCard into the chat immediately before tools execute
+        patchAssistant(m => ({
+          ...m,
+          parts: [...m.parts, {
+            kind: "plan",
+            steps: evt.steps,
+            iteration: evt.iteration,
+          }],
+        }));
+        return;
+      }
+
   | { type: "tool_log"; runId?: string; toolId?: string; name: string; message: string; details?: Record<string, any>; level?: "info" | "error" | "warn" }
   | { type: "tool_progress"; runId?: string; toolId?: string; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
   | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
   | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string }
   | { type: "error"; message: string }
-  | { type: "done"; runId?: string; ts?: number };
+  | { type: "done"; runId?: string; ts?: number }
+  | { type: "plan"; runId?: string; iteration?: number; steps: Array<{ tool: string; args: Record<string, any> }> };
 
 type MessagePart =
   | { kind: "text"; content: string }
   | { kind: "tool_start"; toolId?: string; runId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
-  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string };
+  | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number };
 
 type Message = {
   id: string;
@@ -643,27 +659,46 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         }
         return;
       }
+      if (evt.type === "plan") {
+        patchAssistant(m => ({
+          ...m,
+          parts: [...m.parts, { kind: "plan", steps: evt.steps, iteration: evt.iteration }],
+        }));
+        return;
+      }
+
 
       if (evt.type === "tool_log") {
-        if (!evt.toolId) return;
-        upsertToolTrace(evt.toolId, prev => ({
-          toolId: evt.toolId!,
-          runId: evt.runId ?? prev?.runId,
-          name: evt.name ?? prev?.name ?? "tool",
-          args: prev?.args ?? {},
-          startedAt: prev?.startedAt ?? Date.now(),
-          completedAt: prev?.completedAt,
-          status: prev?.status ?? "running",
-          progress: prev?.progress,
-          progressMsg: prev?.progressMsg,
-          result: prev?.result,
-          logs: [...(prev?.logs ?? []), {
-            ts: Date.now(),
-            message: evt.message,
-            details: evt.details,
-            level: evt.level ?? "info",
-          }],
-        }));
+        // Update Agent Trace panel
+        if (evt.toolId) {
+          upsertToolTrace(evt.toolId, prev => ({
+            toolId: evt.toolId!,
+            runId: evt.runId ?? prev?.runId,
+            name: evt.name ?? prev?.name ?? "tool",
+            args: prev?.args ?? {},
+            startedAt: prev?.startedAt ?? Date.now(),
+            completedAt: prev?.completedAt,
+            status: prev?.status ?? "running",
+            progress: prev?.progress,
+            progressMsg: evt.message ?? prev?.progressMsg,
+            result: prev?.result,
+            logs: [...(prev?.logs ?? []), {
+              ts: Date.now(),
+              message: evt.message,
+              details: evt.details,
+              level: evt.level ?? "info",
+            }],
+          }));
+          // ALSO update inline ToolCard live status text
+          patchAssistant(m => ({
+            ...m,
+            parts: m.parts.map(p =>
+              p.kind === "tool_start" && p.toolId === evt.toolId && !p.done
+                ? { ...p, progressMsg: evt.message }
+                : p,
+            ),
+          }));
+        }
         return;
       }
 
