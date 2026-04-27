@@ -37,6 +37,7 @@ import {
   clearTranslatorHistory,
   type TranslatorHistoryEntry,
 } from "@/lib/translator-history";
+import { translatorAuthHeaders } from "@/lib/translator-client-id";
 
 export type ActivityTabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator";
 
@@ -301,6 +302,7 @@ async function syncActiveWithServer() {
       try {
         const res = await fetch(
           `${BASE}/api/translator/status/${encodeURIComponent(job.jobId)}`,
+          { headers: translatorAuthHeaders() },
         );
         if (res.status === 404) {
           if (Date.now() - job.startedAt < QUEUE_MISSING_GRACE_MS) kept.push(job);
@@ -327,6 +329,7 @@ async function syncActiveWithServer() {
           try {
             const result = await fetch(
               `${BASE}/api/translator/result/${encodeURIComponent(job.jobId)}`,
+              { headers: translatorAuthHeaders() },
             );
             if (result.ok) urls = await result.json();
           } catch {}

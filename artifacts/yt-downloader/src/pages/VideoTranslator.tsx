@@ -17,6 +17,7 @@ import {
   isTranslatorHistoryDeleted,
   type TranslatorHistoryEntry,
 } from "@/lib/translator-history";
+import { translatorAuthHeaders } from "@/lib/translator-client-id";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API  = `${BASE}/api/translator`;
@@ -246,7 +247,7 @@ export default function VideoTranslator() {
   }, []);
 
   const fetchResultUrls = useCallback(async (id: string) => {
-    const tr = await fetch(`${API}/result/${id}`);
+    const tr = await fetch(`${API}/result/${id}`, { headers: translatorAuthHeaders() });
     if (!tr.ok) return null;
     const result = await tr.json();
     return {
@@ -272,7 +273,7 @@ export default function VideoTranslator() {
   // Poll job status from DynamoDB via API
   const pollStatus = useCallback(async (id: string) => {
     try {
-      const r = await fetch(`${API}/status/${id}`);
+      const r = await fetch(`${API}/status/${id}`, { headers: translatorAuthHeaders() });
       if (!r.ok) return;
       const data = await r.json();
       setJob(data);
@@ -339,7 +340,9 @@ export default function VideoTranslator() {
           }
 
           try {
-            const statusRes = await fetch(`${API}/status/${encodeURIComponent(activeJob.jobId)}`);
+            const statusRes = await fetch(`${API}/status/${encodeURIComponent(activeJob.jobId)}`, {
+              headers: translatorAuthHeaders(),
+            });
             if (!statusRes.ok) continue;
             const statusItem = await statusRes.json();
             if (statusItem.status === "DONE") {
@@ -377,7 +380,7 @@ export default function VideoTranslator() {
           } catch {}
         }
 
-        const res = await fetch(`${API}/history?limit=20`);
+        const res = await fetch(`${API}/history?limit=20`, { headers: translatorAuthHeaders() });
         if (!res.ok) return;
         const data = await res.json();
         const jobs = Array.isArray(data.jobs) ? data.jobs : [];
@@ -463,7 +466,8 @@ export default function VideoTranslator() {
 
       // Step 1: Get S3 presigned PUT URL
       const presignRes = await fetch(
-        `${API}/presign?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type || "video/mp4")}`
+        `${API}/presign?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type || "video/mp4")}`,
+        { headers: translatorAuthHeaders() },
       );
       if (!presignRes.ok) throw await responseError(presignRes, "Failed to get upload URL");
       const { jobId: newJobId, presignedUrl, s3Key } = await presignRes.json();
@@ -482,7 +486,7 @@ export default function VideoTranslator() {
       // Step 3: Submit Batch job
       const submitRes = await fetch(`${API}/submit`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...translatorAuthHeaders() },
         body: JSON.stringify({
           jobId: newJobId,
           s3Key,

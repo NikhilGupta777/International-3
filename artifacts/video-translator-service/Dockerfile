@@ -9,6 +9,7 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV MODEL_CACHE_DIR=/model-cache
+ENV HF_HOME=/model-cache/huggingface
 
 # ── System dependencies ───────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -36,7 +37,17 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Model cache directory ─────────────────────────────────────────────────────
-RUN mkdir -p /model-cache/whisper
+RUN mkdir -p /model-cache/whisper /model-cache/huggingface
+
+# Preload model repos at build time to avoid runtime clone/install failures
+RUN git clone --depth 1 https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice \
+    && pip install --no-cache-dir -e /model-cache/CosyVoice/[all]
+
+RUN git clone --depth 1 https://github.com/bytedance/LatentSync.git /model-cache/LatentSync \
+    && pip install --no-cache-dir -r /model-cache/LatentSync/requirements.txt
+
+RUN git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git /model-cache/MuseTalk \
+    && if [ -f /model-cache/MuseTalk/requirements.txt ]; then pip install --no-cache-dir -r /model-cache/MuseTalk/requirements.txt; fi
 
 
 

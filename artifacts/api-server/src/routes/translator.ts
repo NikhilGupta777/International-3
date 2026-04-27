@@ -25,7 +25,7 @@ import {
   BatchClient,
   SubmitJobCommand,
 } from "@aws-sdk/client-batch";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 
 const router = Router();
 
@@ -50,6 +50,21 @@ function parseEpoch(value: string | undefined): number | undefined {
   const asDate = Date.parse(value);
   if (Number.isFinite(asDate) && asDate > 0) return asDate;
   return undefined;
+}
+
+function getRequesterId(req: Request): string {
+  const explicit = String(req.headers["x-client-id"] ?? "").trim();
+  if (explicit) return explicit.slice(0, 120);
+  const ip = String(req.headers["x-forwarded-for"] ?? req.ip ?? "").split(",")[0].trim();
+  const ua = String(req.headers["user-agent"] ?? "");
+  return createHash("sha256").update(`${ip}|${ua}`).digest("hex").slice(0, 32);
+}
+
+function isOwnerMatch(req: Request, item: Record<string, any> | undefined): boolean {
+  if (!item) return false;
+  const ownerId = item.ownerId?.S;
+  if (!ownerId) return true; // backward compatibility for older jobs
+  return ownerId === getRequesterId(req);
 }
 
 function shareUrl(req: Request, jobId: string): string {
@@ -97,6 +112,7 @@ router.get("/presign", async (req: Request, res: Response) => {
 // Creates a DynamoDB job record and submits an AWS Batch GPU job.
 router.post("/submit", async (req: Request, res: Response) => {
   try {
+    const ownerId = getRequesterId(req);
     const {
       jobId,
       s3Key,
@@ -134,6 +150,7 @@ router.post("/submit", async (req: Request, res: Response) => {
         targetLang:  { S: targetLang },
         targetLangCode: { S: targetLangCode },
         sourceLang:  { S: sourceLang },
+        ownerId:     { S: ownerId },
         voiceClone:  { BOOL: Boolean(voiceClone) },
         lipSync:     { BOOL: Boolean(lipSync) },
         createdAt:   { N: String(now) },
@@ -200,6 +217,9 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
     if (!result.Item) {
       return res.status(404).json({ error: "Job not found" });
     }
+    if (!isOwnerMatch(req, result.Item)) {
+      return res.status(404).json({ error: "Job not found" });
+    }
 
     const item = result.Item;
     return res.json({
@@ -228,6 +248,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
 // Returns presigned GET URLs for the final output files.
 router.get("/history", async (req: Request, res: Response) => {
   try {
+    const ownerId = getRequesterId(req);
     const limitParam = Number(req.query.limit ?? 20);
     const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(50, limitParam)) : 20;
 
@@ -236,9 +257,9 @@ router.get("/history", async (req: Request, res: Response) => {
     for (let page = 0; page < 5; page += 1) {
       const result = await ddb.send(new ScanCommand({
         TableName: DDB_TABLE,
-        FilterExpression: "#type = :type",
-        ExpressionAttributeNames: { "#type": "type" },
-        ExpressionAttributeValues: { ":type": { S: "translator" } },
+        FilterExpression: "#type = :type AND #ownerId = :ownerId",
+        ExpressionAttributeNames: { "#type": "type", "#ownerId": "ownerId" },
+        ExpressionAttributeValues: { ":type": { S: "translator" }, ":ownerId": { S: ownerId } },
         ExclusiveStartKey: exclusiveStartKey,
       }));
       items.push(...(result.Items ?? []));
@@ -286,6 +307,9 @@ router.get("/share/:jobId", async (req: Request, res: Response) => {
     }));
 
     if (!result.Item) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    if (!isOwnerMatch(req, result.Item)) {
       return res.status(404).json({ error: "Job not found" });
     }
     if (result.Item.status?.S !== "DONE") {
@@ -366,6 +390,9 @@ router.get("/result/:jobId", async (req: Request, res: Response) => {
     }));
 
     if (!result.Item) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    if (!isOwnerMatch(req, result.Item)) {
       return res.status(404).json({ error: "Job not found" });
     }
 

@@ -503,23 +503,13 @@ LANG_TO_EDGE_TTS = {
 
 
 def _ensure_cosyvoice() -> Path:
-    """Clone and install CosyVoice repo if not already present."""
+    """Ensure CosyVoice repo is preloaded in the image."""
     cv_dir = MODEL_CACHE_DIR / "CosyVoice"
-    install_marker = cv_dir / ".codex_installed"
     if not cv_dir.exists():
-        log.info("[CosyVoice] Cloning CosyVoice repo...")
-        subprocess.run([
-            "git", "clone", "--depth", "1",
-            "https://github.com/FunAudioLLM/CosyVoice.git",
-            str(cv_dir)
-        ], check=True)
-    if not install_marker.exists():
-        # Install editable so imports work
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-e", ".[all]", "--quiet"],
-            cwd=str(cv_dir), check=True
+        raise RuntimeError(
+            f"CosyVoice repo not found at {cv_dir}. "
+            "Translator image is missing preloaded model dependencies."
         )
-        install_marker.touch()
     return cv_dir
 
 
@@ -543,8 +533,18 @@ def synthesize_segments_cosyvoice(
         from cosyvoice.cli.cosyvoice import CosyVoice as _CosyVoice  # type: ignore
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    log.info(f"[CosyVoice] Loading CosyVoice3-0.5B on {device}...")
-    model = _CosyVoice("iic/CosyVoice3-0.5B", load_jit=False, load_trt=False)
+    model = None
+    last_err: Optional[Exception] = None
+    for model_id in ("iic/CosyVoice3-0.5B", "iic/CosyVoice2-0.5B"):
+        try:
+            log.info(f"[CosyVoice] Loading {model_id} on {device}...")
+            model = _CosyVoice(model_id, load_jit=False, load_trt=False)
+            break
+        except Exception as e:
+            last_err = e
+            log.warning(f"[CosyVoice] Failed loading {model_id}: {e}")
+    if model is None:
+        raise RuntimeError(f"CosyVoice model load failed: {last_err}")
 
     # Prepare 16kHz mono reference clip (≤30 s)
     ref_wav, ref_sr = torchaudio.load(str(reference_audio))
@@ -553,6 +553,13 @@ def synthesize_segments_cosyvoice(
     if ref_sr != 16000:
         ref_wav = torchaudio.functional.resample(ref_wav, ref_sr, 16000)
     ref_wav = ref_wav[:, : 16000 * 30]  # max 30 s reference
+
+    prompt_text = ""
+    for seg in segments:
+        source_text = str(seg.get("text", "")).strip()
+        if source_text:
+            prompt_text = source_text[:200]
+            break
 
     seg_audios: list[Path] = []
     for seg in segments:
@@ -566,7 +573,7 @@ def synthesize_segments_cosyvoice(
             try:
                 chunks = list(model.inference_zero_shot(
                     tts_text=text,
-                    prompt_text="",           # model auto-transcribes reference
+                    prompt_text=prompt_text,
                     prompt_speech_16k=ref_wav,
                     stream=False,
                     speed=float(seg.get("speaking_rate", 1.0)),
@@ -677,15 +684,9 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
     ls_dir = MODEL_CACHE_DIR / "LatentSync"
 
     if not ls_dir.exists():
-        log.info("[LatentSync] Cloning LatentSync 1.6 repo...")
-        subprocess.run([
-            "git", "clone", "--depth", "1",
-            "https://github.com/bytedance/LatentSync.git",
-            str(ls_dir)
-        ], check=True)
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--quiet"],
-            cwd=str(ls_dir), check=True
+        raise RuntimeError(
+            f"LatentSync repo not found at {ls_dir}. "
+            "Translator image is missing preloaded model dependencies."
         )
 
     # Download checkpoint from HuggingFace if missing
@@ -722,15 +723,13 @@ def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) ->
     musetalk_dir = MODEL_CACHE_DIR / "MuseTalk"
 
     if not musetalk_dir.exists():
-        log.info("[MuseTalk] Cloning MuseTalk repo...")
-        subprocess.run([
-            "git", "clone", "--depth", "1",
-            "https://github.com/TMElyralab/MuseTalk.git",
-            str(musetalk_dir)
-        ], check=True)
+        raise RuntimeError(
+            f"MuseTalk repo not found at {musetalk_dir}. "
+            "Translator image is missing preloaded model dependencies."
+        )
 
     result = subprocess.run([
-        sys.executable, "-m", "musetalk.inference",
+        sys.executable, "inference.py",
         "--video_path", str(video_path),
         "--audio_path", str(dubbed_audio),
         "--result_dir", str(out_dir),
