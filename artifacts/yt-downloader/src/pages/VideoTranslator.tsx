@@ -285,6 +285,7 @@ export default function VideoTranslator() {
       // Append real step/warning/error messages to debug log
       if (data.step) appendLog(data.status === "FAILED" ? "error" : "info", `[${data.status}] ${data.step}`);
       if (data.lipsyncWarning) appendLog("warn", `[LIPSYNC] ${data.lipsyncWarning}`);
+      if (data.voiceCloneWarning) appendLog("warn", `[VOICE CLONE] ${data.voiceCloneWarning}`);
       if (data.error) appendLog("error", `[ERROR] ${data.error}`);
       const activeMeta = loadActiveTranslatorJobs().find((j) => j.jobId === id);
       if (data.status !== "DONE" && data.status !== "FAILED") {

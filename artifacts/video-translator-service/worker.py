@@ -520,12 +520,16 @@ def _ensure_cosyvoice() -> Path:
     """Ensure CosyVoice repo is preloaded in the image."""
     cv_dir = MODEL_CACHE_DIR / "CosyVoice"
     if not cv_dir.exists():
-        log.warning(f"CosyVoice repo not found at {cv_dir}. voice cloning disabled.")
-        return None
+        raise RuntimeError(
+            f"CosyVoice repo not found at {cv_dir}. "
+            "Rebuild the Docker image with CosyVoice preloaded."
+        )
     matcha_dir = cv_dir / "third_party" / "Matcha-TTS" / "matcha"
     if not matcha_dir.exists():
-        log.warning(f"CosyVoice Matcha-TTS submodule missing — voice cloning disabled.")
-        return None
+        raise RuntimeError(
+            f"CosyVoice Matcha-TTS submodule missing at {matcha_dir}. "
+            "Run: git submodule update --init --recursive inside the CosyVoice repo."
+        )
     return cv_dir
 
 
@@ -640,16 +644,25 @@ def synthesize_gtts_single(seg: dict, out_dir: Path) -> Path:
     gTTS(text=seg["translated_text"], lang=TARGET_LANG_CODE).save(str(out_path))
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
-def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -> list[Path]:
-    """Master TTS router: CosyVoice 3.0 -> edge-tts -> gTTS (auto-fallback at every level)."""
+def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -> tuple[list[Path], bool]:
+    """
+    Master TTS router: CosyVoice 3.0 -> edge-tts -> gTTS (auto-fallback at every level).
+    Returns (seg_audio_paths, voice_was_cloned).
+    """
     if VOICE_CLONE:
         try:
-            return synthesize_segments_cosyvoice(segments, reference_audio, out_dir)
+            paths = synthesize_segments_cosyvoice(segments, reference_audio, out_dir)
+            log.info("[TTS] CosyVoice voice cloning succeeded.")
+            return paths, True  # ← clone succeeded
         except Exception as cv_err:
-            # AUTO-FALLBACK: Do NOT raise. Log the failure and continue with edge-tts.
-            # This ensures the job always completes even if GPU/CosyVoice is unavailable.
-            log.warning(
-                f"[TTS] CosyVoice failed ({cv_err}). Auto-fallback to edge-tts neural voice."
+            # AUTO-FALLBACK: CosyVoice unavailable (model not in image, CUDA OOM, etc.)
+            # Write warning to DynamoDB so frontend can show yellow alert instead of green tick.
+            clone_fail_msg = f"Voice clone failed ({cv_err}). Using neural TTS voice instead."
+            log.warning(f"[TTS] {clone_fail_msg}")
+            update_progress(
+                "CLONING", 55,
+                "⚠️ Voice clone unavailable — using neural voice instead.",
+                {"voice_clone_warning": clone_fail_msg}
             )
 
     # Shared path: edge-tts for all segments, gTTS emergency
@@ -661,7 +674,7 @@ def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -
         except Exception as e:
             log.warning(f"[TTS] edge-tts seg {seg['id']} failed: {e}. Falling back to gTTS.")
             paths.append(synthesize_gtts_single(seg, out_dir))
-    return paths
+    return paths, False  # ← clone was NOT used
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1029,7 +1042,13 @@ def main():
         update_progress("CLONING", 52, voice_message)
         seg_dir = work_dir / "segments"
         seg_dir.mkdir()
-        seg_audio_paths = synthesize_all(segments, transcription_audio, seg_dir)
+        seg_audio_paths, voice_was_cloned = synthesize_all(segments, transcription_audio, seg_dir)
+
+        # Report actual voice mode used (may differ from what user requested if clone failed)
+        if VOICE_CLONE and not voice_was_cloned:
+            log.warning("[Main] Voice clone was requested but CosyVoice fell back to edge-tts.")
+        elif voice_was_cloned:
+            log.info("[Main] Voice cloning successful — CosyVoice used.")
 
         # â”€â”€ 7b. Timing fit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("CLONING", 60, "Fitting audio timing to video...")
