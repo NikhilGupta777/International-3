@@ -63,9 +63,13 @@ RUN pip install --no-cache-dir \
 # ── CosyVoice repo requirements ───────────────────────────────────────────────
 # Install CosyVoice's own deps NOW at build time (not lazily at runtime).
 # We use --no-deps to avoid overriding our pinned versions from requirements.txt.
+# modelscope is strictly required for downloading the model.
+RUN pip install --no-cache-dir modelscope==1.18.1
+
 # Only install what CosyVoice needs that isn't already covered.
+# Some of these (like pynini/pyopenjtalk) can fail to compile on some platforms,
+# so we separate them from the critical modelscope install.
 RUN pip install --no-cache-dir \
-    modelscope==1.18.1 \
     pyopenjtalk==0.3.4 \
     WeTextProcessing==1.0.3 \
     pynini==2.1.6 \
