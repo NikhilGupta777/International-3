@@ -1459,3 +1459,91 @@
   flex-direction: column;
   gap: 18px;
 }
+
+/* ═══════════════════════════════════════════════════════
+   PHASE 2 — Plan card, stage pills, agent trace
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Plan card ────────────────────────────────────────── */
+.agent-plan-card {
+  border: 1px solid rgba(56,189,248,0.18);
+  border-radius: 12px;
+  background: rgba(56,189,248,0.05);
+  overflow: hidden;
+}
+.agent-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(56,189,248,0.12);
+  background: rgba(56,189,248,0.04);
+}
+.agent-plan-icon { font-size: 0.8rem; }
+.agent-plan-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(56,189,248,0.85);
+  letter-spacing: 0.01em;
+}
+.agent-plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.agent-plan-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  font-size: 0.78rem;
+}
+.agent-plan-step:last-child { border-bottom: none; }
+.agent-plan-step-name {
+  font-weight: 600;
+  color: rgba(255,255,255,0.75);
+}
+.agent-plan-step-arg {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: rgba(255,255,255,0.32);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Stage pipeline pills (Router → Executor → Judge) ── */
+.agent-stage-pills {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.agent-stage-pill {
+  font-size: 0.63rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.25);
+  background: rgba(255,255,255,0.03);
+  transition: all 0.25s ease;
+}
+.agent-stage-pill-active {
+  color: #38bdf8;
+  border-color: rgba(56,189,248,0.40);
+  background: rgba(56,189,248,0.10);
+  box-shadow: 0 0 12px rgba(56,189,248,0.20);
+}
+
+/* ── Agent Trace inspector panel (renamed from Tool Execution) ── */
+.copilot-inspector-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: rgba(255,255,255,0.92);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+

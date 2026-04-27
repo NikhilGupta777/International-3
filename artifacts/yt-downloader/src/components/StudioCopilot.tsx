@@ -323,6 +323,36 @@ function ArtifactCard({
   );
 }
 
+// Plan card — shows upcoming tool execution plan
+function PlanCard({ part }: { part: MessagePart & { kind: "plan" } }) {
+  return (
+    <div className="agent-plan-card">
+      <div className="agent-plan-header">
+        <span className="agent-plan-icon">⚡</span>
+        <span className="agent-plan-title">
+          {part.iteration ? `Step ${part.iteration} — ` : ""}Executing plan
+        </span>
+      </div>
+      <div className="agent-plan-steps">
+        {part.steps.map((s, i) => {
+          const meta = (TOOL_META as any)[s.tool];
+          return (
+            <div key={i} className="agent-plan-step">
+              <span className={meta?.color ?? "text-white/50"}>{meta?.icon}</span>
+              <span className="agent-plan-step-name">{meta?.label ?? s.tool}</span>
+              {s.args.url && (
+                <span className="agent-plan-step-arg">
+                  {String(s.args.url).length > 42 ? String(s.args.url).slice(0, 39) + "..." : s.args.url}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // â”€â”€ MessageBubble â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function MessageBubble({
   message,
@@ -371,6 +401,10 @@ function MessageBubble({
             return <ToolCard key={i} part={part} onInspect={onInspectTool} />;
           }
 
+          if (part.kind === "plan") {
+            return <PlanCard key={i} part={part} />;
+          }
+
           if (part.kind === "artifact") {
             return <ArtifactCard key={i} part={part} onNavigate={onNavigate} />;
           }
@@ -402,6 +436,8 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
   const [listening, setListening] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
+  const [agentStage, setAgentStage] = useState<"idle" | "planning" | "executing" | "verifying">("idle");
+  const [agentIteration, setAgentIteration] = useState(0);
   const [toolTraces, setToolTraces] = useState<Record<string, ToolTrace>>({});
   const [activeToolId, setActiveToolId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -1017,7 +1053,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
             <aside className="copilot-inspector">
               <div className="copilot-inspector-header">
                 <div className="copilot-inspector-title-wrap">
-                  <span className="copilot-inspector-title">Tool Execution</span>
+                  <span className="copilot-inspector-title">Agent Trace</span>
                   {currentRunId && <span className="copilot-inspector-run">Run {currentRunId.slice(0, 8)}</span>}
                 </div>
               </div>

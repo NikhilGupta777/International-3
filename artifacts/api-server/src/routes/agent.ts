@@ -12,8 +12,8 @@ import { randomUUID } from "crypto";
 const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.0-flash";
-const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-2.0-flash-lite";
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
+const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3.1-flash-lite-preview";
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
 
@@ -471,7 +471,7 @@ router.post("/agent/chat", async (req, res) => {
       .map(m => ({ role: m.role, parts: [{ text: m.content }] }));
 
     let iterations = 0;
-    const MAX_ITERATIONS = 10;
+    // MAX_ITERATIONS defined at top-level (12)
 
     while (iterations < MAX_ITERATIONS && isConnected()) {
       iterations++;
