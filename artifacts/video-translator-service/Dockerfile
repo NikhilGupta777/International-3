@@ -59,6 +59,15 @@ RUN pip install --no-cache-dir \
 # ── Model cache directory ─────────────────────────────────────────────────────
 RUN mkdir -p /model-cache/huggingface
 
+# ── Pre-download CosyVoice model weights (baked in image = no runtime download) ─
+# Without this, the worker downloads ~1GB on every cold start which can timeout.
+# huggingface_hub snapshot_download pulls all shards into HF_HOME cache.
+RUN python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download('iic/CosyVoice3-0.5B', local_dir='/model-cache/huggingface/CosyVoice3-0.5B'); \
+print('CosyVoice3-0.5B weights downloaded OK')" \
+    || echo "WARNING: CosyVoice model download failed — will retry at runtime"
+
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .
 
