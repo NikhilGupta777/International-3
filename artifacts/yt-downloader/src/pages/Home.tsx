@@ -651,36 +651,19 @@ export default function Home() {
   return (
     <div className="studio-workspace">
 
-      {/* Ã¢â€â‚¬Ã¢â€â‚¬ Topbar Ã¢â€â‚¬Ã¢â€â‚¬ */}
-      <header className="studio-topbar">
-        {/* Logo Ã¢â‚¬â€ expands on hover like the sidebar */}
-        <div className="studio-logo" title="VideoMaking Studio">
-          <div
-            className="p-1.5 rounded-md shrink-0"
-            style={{ background: "rgba(185,28,28,0.15)", border: "1px solid rgba(185,28,28,0.25)" }}
-          >
-            <Youtube className="w-4 h-4 text-primary" />
-          </div>
-          <span className="studio-logo-text">VideoMaking <span className="text-primary">Studio</span></span>
-        </div>
-
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Inline activity panel controls */}
-        <FloatingActivityPanel
-          inline
-          onSwitchTab={switchMode}
-          onOpenGuide={openGuide}
-          pushProps={{
-            supported: pushSupported,
-            configured: pushConfigured,
-            permission: pushPermission,
-            enabling: pushEnabling,
-            onEnable: handleEnablePush,
-          }}
-        />
-      </header>
+      {/* Floating Help / Activity panel — pinned to top-right since the
+          old topbar is removed in the new sidebar-based layout */}
+      <FloatingActivityPanel
+        onSwitchTab={switchMode}
+        onOpenGuide={openGuide}
+        pushProps={{
+          supported: pushSupported,
+          configured: pushConfigured,
+          permission: pushPermission,
+          enabling: pushEnabling,
+          onEnable: handleEnablePush,
+        }}
+      />
 
       {/* Ã¢â€â‚¬Ã¢â€â‚¬ Body: sidebar + content Ã¢â€â‚¬Ã¢â€â‚¬ */}
       <div className="studio-body">
