@@ -1,4 +1,4 @@
-﻿/**
+/**
  * AI Studio Copilot Agent Route â€” Full Agentic Execution
  * POST /api/agent/chat
  *
@@ -12,7 +12,7 @@ import { randomUUID } from "crypto";
 const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.0-flash-exp";
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3.1-flash-lite-preview";
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
@@ -378,7 +378,7 @@ async function executeTool(
 
     case "find_best_clips": {
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clips" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Starting best clips analysis..." });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Starting best clips AI analysis..." });
       const r = await fetch(`${apiBase}/youtube/clips`, {
         method: "POST",
         headers: internalHeaders,
@@ -389,10 +389,12 @@ async function executeTool(
         throw new Error(err.error ?? `Best clips job failed: ${r.status}`);
       }
       const { jobId } = await r.json() as any;
-      logTool("Best clips job accepted", { jobId });
+      logTool("Best clips job accepted — polling for results...", { jobId });
+      // Poll until analysis is done (same pattern as clip/download)
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
       return {
-        result: { jobId, message: "Best clips analysis started. Check the Best Clips tab for results." },
-        artifact: { artifactType: "tab_link", label: "Best Clips analysis started â€” open tab to see results", tab: "clips", jobId },
+        result: { jobId, message: "Best clips analysis complete. View results in the Best Clips tab." },
+        artifact: { artifactType: "tab_link", label: "✅ Best Clips ready — open tab to download", tab: "clips", jobId },
       };
     }
 
@@ -499,7 +501,7 @@ router.post("/agent/chat", async (req, res) => {
           tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
           toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
           temperature: 0.15,
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
           thinkingConfig: { thinkingBudget: 0 } as any,
         },
       });
