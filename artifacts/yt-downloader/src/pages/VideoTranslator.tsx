@@ -656,7 +656,7 @@ export default function VideoTranslator() {
                     lipSync ? "left-[18px]" : "left-0.5")} />
                 </div>
                 <div>
-                  <p className="text-sm text-white/80 font-medium">Lip Sync (Wav2Lip)</p>
+                  <p className="text-sm text-white/80 font-medium">Lip Sync (LatentSync)</p>
                   <p className="text-xs text-white/40">Match mouth movements to translated audio</p>
                 </div>
               </label>

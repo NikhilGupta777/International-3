@@ -85,11 +85,12 @@ table = ddb.Table(DYNAMODB_TABLE)
 def update_progress(status: str, progress: int, step: str, extra: dict = {}):
     """Write progress to DynamoDB so the frontend can poll it."""
     try:
+        now_ms = int(time.time() * 1000)
         item = {
             "status": status,
             "progress": progress,
             "step": step,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
+            "updatedAt": now_ms,
             **extra,
         }
         table.update_item(
@@ -392,7 +393,7 @@ You are a professional video dubbing translator. Your task is to translate speec
 
 Rules:
 1. Translate meaning, emotion, and tone — NOT word-for-word literal text.
-2. Keep translated segment duration close to the original speaking duration with time as this is for a translated video translation so it should be best.
+2. Keep translated segment duration close to the original speaking duration.
 3. Match the speaking style (formal, casual, excited, sad, etc.).
 4. If the original is short and punchy, keep the translation short and punchy but not changing the meaning of the sentence.
 5. Return ONLY valid JSON — no markdown, no explanation.
@@ -504,6 +505,7 @@ LANG_TO_EDGE_TTS = {
 def _ensure_cosyvoice() -> Path:
     """Clone and install CosyVoice repo if not already present."""
     cv_dir = MODEL_CACHE_DIR / "CosyVoice"
+    install_marker = cv_dir / ".codex_installed"
     if not cv_dir.exists():
         log.info("[CosyVoice] Cloning CosyVoice repo...")
         subprocess.run([
@@ -511,11 +513,13 @@ def _ensure_cosyvoice() -> Path:
             "https://github.com/FunAudioLLM/CosyVoice.git",
             str(cv_dir)
         ], check=True)
+    if not install_marker.exists():
         # Install editable so imports work
         subprocess.run(
             [sys.executable, "-m", "pip", "install", "-e", ".[all]", "--quiet"],
             cwd=str(cv_dir), check=True
         )
+        install_marker.touch()
     return cv_dir
 
 
@@ -533,11 +537,14 @@ def synthesize_segments_cosyvoice(
     if str(cv_dir) not in sys.path:
         sys.path.insert(0, str(cv_dir))
 
-    from cosyvoice.cli.cosyvoice import CosyVoice2  # type: ignore
+    try:
+        from cosyvoice.cli.cosyvoice import CosyVoice2 as _CosyVoice  # type: ignore
+    except Exception:
+        from cosyvoice.cli.cosyvoice import CosyVoice as _CosyVoice  # type: ignore
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"[CosyVoice] Loading CosyVoice3-0.5B on {device}...")
-    model = CosyVoice2("iic/CosyVoice3-0.5B", load_jit=False, load_trt=False)
+    model = _CosyVoice("iic/CosyVoice3-0.5B", load_jit=False, load_trt=False)
 
     # Prepare 16kHz mono reference clip (≤30 s)
     ref_wav, ref_sr = torchaudio.load(str(reference_audio))
@@ -654,13 +661,7 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
 
-    # Chain atempo filters for values outside 0.5-2.0
-    if ratio > 2.0:
-        tempo_filters = "atempo=2.0,atempo=" + str(round(ratio / 2.0, 3))
-    elif ratio < 0.5:
-        tempo_filters = "atempo=0.5,atempo=" + str(round(ratio / 0.5, 3))
-    else:
-        tempo_filters = f"atempo={round(ratio, 3)}"
+    tempo_filters = f"atempo={round(ratio, 3)}"
 
     run_ffmpeg("-i", str(audio_path), "-filter:a", tempo_filters, str(out_path))
     return out_path
@@ -788,9 +789,9 @@ def assemble_dubbed_audio(
     import numpy as np
     import soundfile as sf
 
-    log.info("[Assemble] Assembling final dubbed audio track without overlaps...")
-    mixed_list = []
-    current_time = 0.0
+    log.info("[Assemble] Assembling final dubbed audio track...")
+    min_samples = int(math.ceil(video_duration * SR))
+    mixed = np.zeros(min_samples, dtype=np.float32)
 
     for seg, audio_path in zip(segments, seg_audio_paths):
         if not audio_path.exists():
@@ -806,28 +807,11 @@ def assemble_dubbed_audio(
             import librosa
             data = librosa.resample(data, orig_sr=sr, target_sr=SR)
 
-        # Ensure segments don't overlap by pushing start_time forward if needed
-        start_time = max(seg["start"], current_time)
-        start_sample = int(start_time * SR)
-        current_sample = sum(len(x) for x in mixed_list)
-        
-        # Pad with silence if there's a gap between segments
-        if start_sample > current_sample:
-            mixed_list.append(np.zeros(start_sample - current_sample, dtype=np.float32))
-            
-        mixed_list.append(data)
-        current_time = start_time + (len(data) / SR)
-
-    # Combine all segments into one continuous array
-    if mixed_list:
-        mixed = np.concatenate(mixed_list)
-    else:
-        mixed = np.zeros(int(video_duration * SR), dtype=np.float32)
-
-    # If the combined audio is shorter than the original video, pad the end with silence
-    min_samples = int(math.ceil(video_duration * SR))
-    if len(mixed) < min_samples:
-        mixed = np.pad(mixed, (0, min_samples - len(mixed)))
+        start_sample = max(0, int(seg["start"] * SR))
+        end_sample = start_sample + len(data)
+        if end_sample > len(mixed):
+            mixed = np.pad(mixed, (0, end_sample - len(mixed)))
+        mixed[start_sample:end_sample] += data
 
     # Normalize dubbed audio
     peak = np.abs(mixed).max()

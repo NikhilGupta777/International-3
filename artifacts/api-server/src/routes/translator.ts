@@ -43,6 +43,15 @@ const s3    = new S3Client({ region: REGION });
 const ddb   = new DynamoDBClient({ region: REGION });
 const batch = new BatchClient({ region: REGION });
 
+function parseEpoch(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const asNumber = Number(value);
+  if (Number.isFinite(asNumber) && asNumber > 0) return asNumber;
+  const asDate = Date.parse(value);
+  if (Number.isFinite(asDate) && asDate > 0) return asDate;
+  return undefined;
+}
+
 function shareUrl(req: Request, jobId: string): string {
   const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0].trim();
   const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
@@ -207,7 +216,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       lipSync:      item.lipSync?.BOOL,
       segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
       updatedAt:    item.updatedAt?.N ? parseInt(item.updatedAt.N) : item.updatedAt?.S,
-      createdAt:    item.createdAt?.N ? parseInt(item.createdAt.N) : item.createdAt?.S,
+      createdAt:    item.createdAt?.N ? parseInt(item.createdAt.N) : (parseEpoch(item.createdAt?.S) ?? item.createdAt?.S),
     });
   } catch (err: any) {
     console.error("[Translator] /status error:", err);
@@ -251,8 +260,8 @@ router.get("/history", async (req: Request, res: Response) => {
         voiceClone: item.voiceClone?.BOOL,
         lipSync: item.lipSync?.BOOL,
         segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
-        createdAt: item.createdAt?.N ? parseInt(item.createdAt.N) : undefined,
-        updatedAt: item.updatedAt?.N ? parseInt(item.updatedAt.N) : item.updatedAt?.S,
+        createdAt: item.createdAt?.N ? parseInt(item.createdAt.N) : parseEpoch(item.createdAt?.S),
+        updatedAt: item.updatedAt?.N ? parseInt(item.updatedAt.N) : parseEpoch(item.updatedAt?.S),
         outputKey: item.outputKey?.S,
         shareUrl: item.jobId?.S ? shareUrl(req, item.jobId.S) : undefined,
       }))
