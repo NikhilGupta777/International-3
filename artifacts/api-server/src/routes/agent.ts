@@ -13,7 +13,12 @@ const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.5-flash";
+const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-pro";
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
+const ALLOWED_MODELS = new Set([
+  "gemini-2.5-flash", "gemini-2.5-pro",
+  "gemini-2.5-flash-thinking", "gemini-1.5-flash", "gemini-1.5-pro",
+]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
 const MAX_ITERATIONS  = 12;  // Genspark-class: up to 12 agentic steps
@@ -458,13 +463,23 @@ router.post("/agent/chat", async (req, res) => {
     return;
   }
 
-  const { messages = [] } = req.body as {
+  const { messages = [], model: requestedModel } = req.body as {
     messages: Array<{ role: "user" | "model"; content: string }>;
+    model?: string;
   };
 
   if (!messages.length) {
     res.status(400).json({ error: "messages array is required" });
     return;
+  }
+
+  // Resolve model: "ultra" → ULTRA_MODEL, "default"/undefined → AGENT_MODEL,
+  // explicit Gemini model id → use only if allow-listed.
+  let activeModel = AGENT_MODEL;
+  if (requestedModel === "ultra") {
+    activeModel = ULTRA_MODEL;
+  } else if (requestedModel && requestedModel !== "default" && ALLOWED_MODELS.has(requestedModel)) {
+    activeModel = requestedModel;
   }
 
   // â”€â”€ Setup SSE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -512,7 +527,7 @@ router.post("/agent/chat", async (req, res) => {
       // this, the proxy idle timer hits and drops the connection mid-wait.
       if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
       const stream = await ai.models.generateContentStream({
-        model: AGENT_MODEL,
+        model: activeModel,
         contents: loopContents,
         config: {
           systemInstruction: SYSTEM_PROMPT,
@@ -521,7 +536,7 @@ router.post("/agent/chat", async (req, res) => {
           temperature: 0.15,
           maxOutputTokens: 4096,
           // thinkingConfig: only supported on flash-thinking variants; omit for standard models
-          ...(AGENT_MODEL.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+          ...(activeModel.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
         },
       });
 

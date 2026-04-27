@@ -3,10 +3,16 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
   Download, Scissors, Sparkles, Captions, AlarmClock,
-  UploadCloud, Shield, ListVideo, X, Mic, MicOff, Trash2, History, Square, Copy, Check, RotateCcw, Link,
-  ArrowLeft, Pencil, Share2, MoreHorizontal, SquarePen, Plus, Paperclip, AudioLines, Menu,
+  UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
+  ArrowLeft, Pencil, Share2, MoreHorizontal, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/use-toast";
+
+const ULTRA_KEY = "studio-ultra-mode";
+function readUltraInitial(): boolean {
+  try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
+}
 
 const HISTORY_KEY = "copilot-sessions-v2";
 
@@ -306,6 +312,11 @@ export function StudioCopilot({
   const [agentStage, setAgentStage] = useState<"idle"|"planning"|"executing"|"verifying">("idle");
   const [agentIteration, setAgentIteration] = useState(0);
   const [pasteUrl, setPasteUrl] = useState<string | null>(null);
+  const [ultra, setUltra] = useState<boolean>(readUltraInitial);
+  const { toast } = useToast();
+  useEffect(() => {
+    try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch {}
+  }, [ultra]);
   const bottomRef = useRef<HTMLDivElement>(null);
   // inputRef removed — textarea is uncontrolled height, no programmatic focus needed
   const abortRef = useRef<AbortController | null>(null);
@@ -494,7 +505,7 @@ export function StudioCopilot({
     try {
       const resp = await fetch(`${BASE}/api/agent/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, model: ultra ? "ultra" : "default" }),
         signal: abortRef.current.signal,
       });
       if (!resp.ok || !resp.body) throw new Error(`Server error: ${resp.status}`);
@@ -534,7 +545,7 @@ export function StudioCopilot({
       setThinking(false);
       setAgentStage("idle");
     }
-  }, [streaming, BASE, onNavigate, updateSession, ensureSession, upsertMsg]);
+  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg]);
 
   // Consume incoming pendingPrompt (sent from home screen)
   const consumedPromptRef = useRef<string | null>(null);
@@ -821,13 +832,34 @@ export function StudioCopilot({
 
           <div className="gs-input-row">
             <div className="gs-input-row-left">
-              <button type="button" className="gs-input-circle-btn" title="Add">
+              <button
+                type="button"
+                className="gs-input-circle-btn"
+                title="Clear text"
+                aria-label="Clear input"
+                onClick={() => setInput("")}
+              >
                 <Plus className="w-4 h-4" />
               </button>
-              <button type="button" className="gs-input-circle-btn" title="Attach">
+              <button
+                type="button"
+                className="gs-input-circle-btn"
+                title="Attach file (coming soon)"
+                aria-label="Attach"
+                onClick={() => toast({
+                  title: "Attachments coming soon",
+                  description: "Tell us what you'd like to attach: image, audio, document, or YouTube URL.",
+                })}
+              >
                 <Paperclip className="w-4 h-4" />
               </button>
-              <button type="button" className="gs-pill-ultra" title="Ultra mode">
+              <button
+                type="button"
+                className={cn("gs-pill-ultra", ultra && "gs-pill-ultra-active")}
+                title={ultra ? "Ultra mode ON — uses Pro model" : "Ultra mode OFF — uses default model"}
+                aria-pressed={ultra}
+                onClick={() => setUltra(u => !u)}
+              >
                 <span className="gs-pill-ultra-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
                     <path d="M12 2 L14 9 L21 12 L14 15 L12 22 L10 15 L3 12 L10 9 Z" />
@@ -842,10 +874,12 @@ export function StudioCopilot({
                 <button
                   type="button"
                   onClick={toggleVoice}
-                  className={cn("gs-input-circle-btn", listening && "text-red-400")}
-                  title={listening ? "Stop listening" : "Voice input"}
+                  className={cn("gs-pill-speak", listening && "gs-pill-speak-active")}
+                  title={listening ? "Stop listening" : "Speak"}
+                  aria-pressed={listening}
                 >
-                  {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                  <AudioLines className="w-3.5 h-3.5" />
+                  <span>{listening ? "Listening…" : "Speak"}</span>
                 </button>
               )}
               {streaming ? (
@@ -858,8 +892,9 @@ export function StudioCopilot({
                   disabled={!canSend}
                   className={cn("gs-send-btn", canSend ? "gs-send-active" : "gs-send-disabled")}
                   title="Send"
+                  aria-label="Send"
                 >
-                  <AudioLines className="w-4 h-4" />
+                  <ArrowUp className="w-4 h-4" />
                 </button>
               )}
             </div>

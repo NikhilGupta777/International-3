@@ -2331,6 +2331,22 @@
 .gs-pill-speak:hover {
   background: rgba(255,255,255,0.10);
 }
+.gs-pill-speak-active {
+  background: rgba(239,68,68,0.18);
+  border-color: rgba(239,68,68,0.55);
+  color: #fca5a5;
+  animation: gs-pulse-soft 1.4s ease-in-out infinite;
+}
+.gs-pill-ultra-active {
+  background: rgba(56,189,248,0.18);
+  border-color: rgba(56,189,248,0.85);
+  color: #e0f2fe;
+  box-shadow: 0 0 0 1px rgba(56,189,248,0.45) inset, 0 0 12px rgba(56,189,248,0.30);
+}
+@keyframes gs-pulse-soft {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.65; }
+}
 
 /* Send button & stop button (chat) */
 .gs-send-btn {
