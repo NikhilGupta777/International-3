@@ -649,7 +649,7 @@ export default function VideoTranslator() {
 
             {/* Settings */}
             <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 flex flex-col gap-4">
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 vt-options-grid">
                 <LangSelect id="src-lang" label="Source Language" value={srcLang}
                             onChange={setSrcLang} options={LANGS} />
                 <LangSelect id="tgt-lang" label="Target Language" value={tgtLang}

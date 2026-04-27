@@ -230,7 +230,7 @@ function MessageBubble({ message, onNavigate }: { message: Message; onNavigate?:
       {!isUser && (
         <div className="agent-avatar shrink-0 mt-0.5"><Bot className="w-3.5 h-3.5 text-primary" /></div>
       )}
-      <div className={cn("flex flex-col gap-2 max-w-[80%]", isUser && "items-end")}>
+      <div className={cn("flex flex-col gap-2 max-w-[88%] sm:max-w-[80%]", isUser && "items-end")}>
         {message.parts.map((part, i) => {
           if (part.kind === "text" && part.content.trim()) {
             return (
@@ -547,13 +547,13 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
               <span className="agent-hero-gradient">Ask anything,</span>
               <span className="text-white"> create anything</span>
             </h1>
-            <p className="agent-hero-sub mb-8">Autonomous AI agent · Full studio access · Real-time execution</p>
-            <div className="grid grid-cols-2 gap-2 text-left">
+            <p className="agent-hero-sub mb-6 sm:mb-8">Autonomous AI agent · Full studio access · Real-time execution</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left w-full">
               {STARTERS.map((s, i) => (
                 <button key={i} onClick={() => void sendMessage(s.text)}
                   className="flex items-start gap-2.5 px-3.5 py-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] border border-white/[0.07] hover:border-white/[0.12] transition-all text-left group">
                   <span className="text-primary/70 group-hover:text-primary mt-0.5 shrink-0">{s.icon}</span>
-                  <span className="text-xs text-white/60 group-hover:text-white/80 leading-snug transition-colors">{s.text}</span>
+                  <span className="text-xs sm:text-sm text-white/60 group-hover:text-white/80 leading-snug transition-colors">{s.text}</span>
                 </button>
               ))}
             </div>
