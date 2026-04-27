@@ -501,6 +501,7 @@ def synthesize_segments_xtts(segments: list[dict], reference_audio: Path, out_di
     Clone voice for each segment using XTTS v2.
     Returns list of per-segment audio file paths.
     """
+    os.environ.setdefault("COQUI_TOS_AGREED", "1")
     import torch
     from TTS.api import TTS
 
@@ -532,8 +533,7 @@ def synthesize_segments_xtts(segments: list[dict], reference_audio: Path, out_di
                     speed=seg.get("speaking_rate", 1.0),
                 )
             except Exception as e:
-                log.warning(f"[XTTS] Segment {seg['id']} failed: {e}. Using edge-tts fallback.")
-                out_path = synthesize_edge_tts_single(seg, out_dir)
+                raise RuntimeError(f"XTTS failed for segment {seg['id']}: {e}") from e
         seg_audios.append(out_path)
         log.info(f"[XTTS] Segment {seg['id']}/{len(segments)} done.")
 
