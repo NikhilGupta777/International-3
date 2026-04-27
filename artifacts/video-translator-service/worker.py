@@ -709,7 +709,7 @@ def run_lipsync_wav2lip(video_path: Path, dubbed_audio: Path, out_dir: Path) -> 
         import urllib.request
         log.info("[Wav2Lip] Downloading GAN checkpoint...")
         urllib.request.urlretrieve(
-            "https://huggingface.co/wsad93/wav2lip/resolve/main/wav2lip_gan.pth",
+            "https://huggingface.co/camenduru/Wav2Lip/resolve/main/checkpoints/wav2lip_gan.pth",
             str(checkpoint)
         )
 

@@ -492,7 +492,7 @@ export default function VideoTranslator() {
           sourceLang: srcLang,
           voiceClone: voiceStyle === "original",
           lipSync,
-          lipSyncQuality: "musetalk",
+          lipSyncQuality: "wav2lip",
         }),
       });
       if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");
