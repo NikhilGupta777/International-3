@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+﻿import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, Languages, Mic, MicOff, Play, Download, CheckCircle,
@@ -22,7 +22,7 @@ import { translatorAuthHeaders } from "@/lib/translator-client-id";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API  = `${BASE}/api/translator`;
 
-// ── Language options ──────────────────────────────────────────────────────────
+// â”€â”€ Language options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const LANGS = [
   {code:"auto",name:"Auto-detect"},
   {code:"en",name:"English"},{code:"es",name:"Spanish"},{code:"fr",name:"French"},
@@ -75,7 +75,7 @@ function translatorShareUrl(jobId: string): string {
   return `${window.location.origin}${path}`;
 }
 
-// ── Step config ───────────────────────────────────────────────────────────────
+// â”€â”€ Step config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const STEP_ICONS: Record<string, React.ReactNode> = {
   audio_extraction: <Volume2 className="w-4 h-4" />,
   transcription:    <Subtitles className="w-4 h-4" />,
@@ -92,7 +92,7 @@ const STEP_COLORS: Record<string, string> = {
   pending:   "text-white/40  border-white/10     bg-white/3",
 };
 
-// ── Select component ──────────────────────────────────────────────────────────
+// â”€â”€ Select component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function LangSelect({ value, onChange, options, label, id }: {
   value: string; onChange: (v: string) => void;
   options: typeof LANGS; label: string; id: string;
@@ -119,7 +119,7 @@ function LangSelect({ value, onChange, options, label, id }: {
   );
 }
 
-// ── Step card ─────────────────────────────────────────────────────────────────
+// â”€â”€ Step card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function StepCard({ step }: { step: any }) {
   const colorClass = STEP_COLORS[step.status] ?? STEP_COLORS.pending;
   return (
@@ -160,7 +160,7 @@ function StepCard({ step }: { step: any }) {
   );
 }
 
-// ── Transcript panel ──────────────────────────────────────────────────────────
+// â”€â”€ Transcript panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function TranscriptPanel({ segments }: { segments: any[] }) {
   if (!segments.length) return null;
   return (
@@ -189,7 +189,7 @@ function TranscriptPanel({ segments }: { segments: any[] }) {
   );
 }
 
-// ── Drop zone ─────────────────────────────────────────────────────────────────
+// â”€â”€ Drop zone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: boolean }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -217,7 +217,7 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
       </div>
       <div className="text-center">
         <p className="text-base font-semibold text-white/80">Drop your video here</p>
-        <p className="text-sm text-white/40 mt-1">MP4, MOV, MKV, AVI, WebM · Max 2GB</p>
+        <p className="text-sm text-white/40 mt-1">MP4, MOV, MKV, AVI, WebM Â· Max 2GB</p>
       </div>
       <input ref={inputRef} type="file" accept=".mp4,.mov,.mkv,.avi,.webm" className="hidden"
              onChange={e => e.target.files?.[0] && onFile(e.target.files[0])} />
@@ -225,7 +225,7 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// â”€â”€ Main component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function VideoTranslator() {
   const { toast } = useToast();
   const [file, setFile]             = useState<File | null>(null);
@@ -592,7 +592,7 @@ export default function VideoTranslator() {
           </div>
           <div>
             <h1 className="text-xl font-bold text-white">Video Translator</h1>
-            <p className="text-sm text-white/40">GPU-powered voice cloning · 20 languages</p>
+            <p className="text-sm text-white/40">GPU-powered voice cloning Â· 20 languages</p>
           </div>
           {jobId && (
             <button onClick={reset} className="ml-auto p-2 rounded-xl bg-white/6 hover:bg-white/10 text-white/50 hover:text-white transition-colors">
@@ -605,10 +605,29 @@ export default function VideoTranslator() {
         <AnimatePresence>
           {error && (
             <motion.div initial={{opacity:0,y:-8}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-8}}
-              className="flex items-start gap-3 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/25 text-red-300 text-sm">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span className="flex-1">{error}</span>
-              <button onClick={() => setError(null)}><X className="w-4 h-4" /></button>
+              className="flex flex-col gap-3 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/25 text-red-300 text-sm">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="flex-1">{error}</span>
+                <button onClick={() => setError(null)}><X className="w-4 h-4" /></button>
+              </div>
+              {/* Quick-fix actions */}
+              <div className="flex gap-2 pl-7">
+                {error.toLowerCase().includes("cosyvoice") || error.toLowerCase().includes("voice clon") ? (
+                  <button
+                    onClick={() => { setVoiceStyle("female"); setError(null); setJobId(null); setJob(null); }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/10 hover:bg-white/15 text-white/80 transition-colors border border-white/12"
+                  >
+                    👩 Switch to Neural Voice &amp; Retry
+                  </button>
+                ) : null}
+                <button
+                  onClick={() => { setError(null); setJobId(null); setJob(null); }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white/06 hover:bg-white/10 text-white/50 transition-colors border border-white/08"
+                >
+                  Start Over
+                </button>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -646,7 +665,7 @@ export default function VideoTranslator() {
                         voiceStyle===s
                           ? "bg-primary/20 border-primary/50 text-primary"
                           : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}>
-                      {s==="original" ? "🎤 Clone Original" : "👩 Neural Female"}
+                      {s==="original" ? "ðŸŽ¤ Clone Original" : "ðŸ‘© Neural Female"}
                     </button>
                   ))}
                 </div>
@@ -677,7 +696,7 @@ export default function VideoTranslator() {
                   : "bg-white/10 text-white/30 cursor-not-allowed"
               )}
             >
-              {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploading…</> : <><Languages className="w-5 h-5" /> Translate Video</>}
+              {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploadingâ€¦</> : <><Languages className="w-5 h-5" /> Translate Video</>}
             </button>
           </>
         ) : (
@@ -686,7 +705,7 @@ export default function VideoTranslator() {
             {isProcessing && (
               <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-5">
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-sm font-semibold text-white/80">Translating…</span>
+                  <span className="text-sm font-semibold text-white/80">Translatingâ€¦</span>
                   <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
                 </div>
                 <div className="h-2 bg-white/10 rounded-full overflow-hidden">

@@ -1,5 +1,5 @@
-"""
-AWS Batch GPU Worker — Video Translator
+﻿"""
+AWS Batch GPU Worker â€” Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
     CMD ["python", "worker.py"]
@@ -13,12 +13,12 @@ Pipeline:
   4. Transcribe (AssemblyAI word-level timestamps)
   5. Optional: pyannote speaker diarization
   6. Translate segments (Gemini 3 Flash dubbing-aware)
-  7. Voice clone (CosyVoice 3.0 → edge-tts fallback → gTTS emergency)
-  8. Lip sync (LatentSync 1.6 default → MuseTalk fast fallback)
+  7. Voice clone (CosyVoice 3.0 â†’ edge-tts fallback â†’ gTTS emergency)
+  8. Lip sync (LatentSync 1.6 default â†’ MuseTalk fast fallback)
   9. Audio mix + normalize
  10. FFmpeg final mux
  11. Upload MP4 + SRT + transcript JSON to S3
- 12. Update DynamoDB → DONE
+ 12. Update DynamoDB â†’ DONE
 """
 
 import os
@@ -38,7 +38,7 @@ from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 
-# ── Logging ──────────────────────────────────────────────────────────────────
+# â”€â”€ Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -46,7 +46,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("translator-worker")
 
-# ── Environment config ────────────────────────────────────────────────────────
+# â”€â”€ Environment config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 JOB_ID              = os.environ["JOB_ID"]
 S3_BUCKET           = os.environ["S3_BUCKET"]
 S3_INPUT_KEY        = os.environ["S3_INPUT_KEY"]          # translator-jobs/{jobId}/input.mp4
@@ -70,15 +70,15 @@ TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default 
 
 MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
 
-# ── AWS Clients ───────────────────────────────────────────────────────────────
+# â”€â”€ AWS Clients â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 s3 = boto3.client("s3", region_name=DYNAMODB_REGION)
 ddb = boto3.resource("dynamodb", region_name=DYNAMODB_REGION)
 table = ddb.Table(DYNAMODB_TABLE)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DynamoDB progress helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def update_progress(status: str, progress: int, step: str, extra: dict = {}):
     """Write progress to DynamoDB so the frontend can poll it."""
@@ -107,7 +107,7 @@ def update_progress(status: str, progress: int, step: str, extra: dict = {}):
                 **{f":{k}": v for k, v in extra.items()},
             },
         )
-        log.info(f"[DDB] {status} {progress}% — {step}")
+        log.info(f"[DDB] {status} {progress}% â€” {step}")
     except Exception as e:
         log.warning(f"[DDB] Failed to update progress: {e}")
 
@@ -116,18 +116,18 @@ def mark_failed(error: str):
     update_progress("FAILED", 0, f"Error: {error}", {"error": error})
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # S3 helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def download_from_s3(key: str, dest: Path) -> Path:
-    log.info(f"[S3] Downloading s3://{S3_BUCKET}/{key} → {dest}")
+    log.info(f"[S3] Downloading s3://{S3_BUCKET}/{key} â†’ {dest}")
     s3.download_file(S3_BUCKET, key, str(dest))
     return dest
 
 
 def upload_to_s3(local_path: Path, key: str, content_type: str = "application/octet-stream"):
-    log.info(f"[S3] Uploading {local_path} → s3://{S3_BUCKET}/{key}")
+    log.info(f"[S3] Uploading {local_path} â†’ s3://{S3_BUCKET}/{key}")
     s3.upload_file(
         str(local_path), S3_BUCKET, key,
         ExtraArgs={"ContentType": content_type},
@@ -143,9 +143,9 @@ def presigned_url(key: str, expires: int = 3600) -> str:
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # FFmpeg helpers
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_ffmpeg(*args, check: bool = True):
     cmd = ["ffmpeg", "-y", *args]
@@ -177,9 +177,9 @@ def get_video_duration(video_path: Path) -> float:
     return float(result.stdout.strip())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 1: Demucs vocal separation (optional)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_demucs(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
     """
@@ -237,9 +237,9 @@ def run_demucs(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
     return vocals_path, bg_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 2: Transcription (AssemblyAI)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 ASSEMBLYAI_LANG_MAP = {
     "hi": "hi", "en": "en", "es": "es", "fr": "fr", "de": "de",
@@ -328,9 +328,9 @@ def transcribe(audio_path: Path) -> list[dict]:
     return segments
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 2b: Optional speaker diarization (pyannote)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
     """
@@ -381,9 +381,9 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
         log.warning(f"[Diarize] Failed: {e}")
     return segments
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 3: Translation (Gemini dubbing-aware)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 GEMINI_KEYS = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3] if k]
 _gemini_key_idx = 0
@@ -406,11 +406,11 @@ TRANSLATION_SYSTEM_PROMPT = """
 You are a professional video dubbing translator. Your task is to translate speech segments for dubbing.
 
 Rules:
-1. Translate meaning, emotion, and tone — NOT word-for-word literal text.
+1. Translate meaning, emotion, and tone â€” NOT word-for-word literal text.
 2. Keep translated segment duration close to the original speaking duration.
 3. Match the speaking style (formal, casual, excited, sad, etc.).
 4. If the original is short and punchy, keep the translation short and punchy but not changing the meaning of the sentence.
-5. Return ONLY valid JSON — no markdown, no explanation.
+5. Return ONLY valid JSON â€” no markdown, no explanation.
 
 Output format (array of objects):
 [
@@ -445,7 +445,7 @@ def translate_segments(segments: list[dict]) -> list[dict]:
 
     user_prompt = (
         f"Translate the following video segments from the source language to {TARGET_LANG}.\n"
-        f"These are dubbing segments — preserve emotion, tone, and keep each translation "
+        f"These are dubbing segments â€” preserve emotion, tone, and keep each translation "
         f"close to the original duration segments.\n\n"
         f"Segments JSON:\n{json.dumps(seg_payload, ensure_ascii=False, indent=2)}"
     )
@@ -493,11 +493,11 @@ def translate_segments(segments: list[dict]) -> list[dict]:
     return segments
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 4: Voice Cloning (CosyVoice 3.0 → edge-tts → gTTS)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Stage 4: Voice Cloning (CosyVoice 3.0 â†’ edge-tts â†’ gTTS)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-# CosyVoice 3.0 is zero-shot multilingual — no language mapping table needed.
+# CosyVoice 3.0 is zero-shot multilingual â€” no language mapping table needed.
 # It auto-handles 50+ languages via the prompt speech reference.
 
 LANG_TO_EDGE_TTS = {
@@ -520,16 +520,12 @@ def _ensure_cosyvoice() -> Path:
     """Ensure CosyVoice repo is preloaded in the image."""
     cv_dir = MODEL_CACHE_DIR / "CosyVoice"
     if not cv_dir.exists():
-        raise RuntimeError(
-            f"CosyVoice repo not found at {cv_dir}. "
-            "Translator image is missing preloaded model dependencies."
-        )
+        log.warning(f"CosyVoice repo not found at {cv_dir}. voice cloning disabled.")
+        return None
     matcha_dir = cv_dir / "third_party" / "Matcha-TTS" / "matcha"
     if not matcha_dir.exists():
-        raise RuntimeError(
-            f"CosyVoice Matcha-TTS submodule missing at {matcha_dir}. "
-            "Rebuild translator image with CosyVoice submodules."
-        )
+        log.warning(f"CosyVoice Matcha-TTS submodule missing — voice cloning disabled.")
+        return None
     return cv_dir
 
 
@@ -569,7 +565,7 @@ def synthesize_segments_cosyvoice(
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
 
-    # Prepare 16kHz mono reference clip (≤30 s)
+    # Prepare 16kHz mono reference clip (â‰¤30 s)
     ref_wav, ref_sr = torchaudio.load(str(reference_audio))
     if ref_wav.shape[0] > 1:
         ref_wav = ref_wav.mean(0, keepdim=True)
@@ -630,7 +626,7 @@ def synthesize_edge_tts_single(seg: dict, out_dir: Path) -> Path:
 
     asyncio.run(_run())
 
-    # Convert mp3 → wav
+    # Convert mp3 â†’ wav
     wav_path = out_path.with_suffix(".wav")
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
@@ -644,39 +640,38 @@ def synthesize_gtts_single(seg: dict, out_dir: Path) -> Path:
     gTTS(text=seg["translated_text"], lang=TARGET_LANG_CODE).save(str(out_path))
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
-
-
 def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -> list[Path]:
-    """Master TTS router: CosyVoice 3.0 → edge-tts → gTTS."""
+    """Master TTS router: CosyVoice 3.0 -> edge-tts -> gTTS (auto-fallback at every level)."""
     if VOICE_CLONE:
         try:
             return synthesize_segments_cosyvoice(segments, reference_audio, out_dir)
-        except Exception as e:
-            raise RuntimeError(
-                "Voice cloning was requested but CosyVoice 3.0 failed. "
-                "Job stopped to avoid returning the wrong voice."
-            ) from e
+        except Exception as cv_err:
+            # AUTO-FALLBACK: Do NOT raise. Log the failure and continue with edge-tts.
+            # This ensures the job always completes even if GPU/CosyVoice is unavailable.
+            log.warning(
+                f"[TTS] CosyVoice failed ({cv_err}). Auto-fallback to edge-tts neural voice."
+            )
 
-    # No-clone path: edge-tts for all segments
-    log.info("[TTS] Using edge-tts (no voice clone).")
+    # Shared path: edge-tts for all segments, gTTS emergency
+    log.info("[TTS] Using edge-tts neural voice (no voice clone).")
     paths = []
     for seg in segments:
         try:
             paths.append(synthesize_edge_tts_single(seg, out_dir))
         except Exception as e:
-            log.warning(f"[TTS] edge-tts seg {seg['id']} failed: {e}. gTTS fallback.")
+            log.warning(f"[TTS] edge-tts seg {seg['id']} failed: {e}. Falling back to gTTS.")
             paths.append(synthesize_gtts_single(seg, out_dir))
     return paths
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 5: Timing adapter — fit TTS audio to original segment duration
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Stage 5: Timing adapter â€” fit TTS audio to original segment duration
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Path) -> Path:
     """
     Speed-up or slow-down audio to match target_duration.
-    Uses FFmpeg atempo filter (0.5x – 2.0x range, chained for extremes).
+    Uses FFmpeg atempo filter (0.5x â€“ 2.0x range, chained for extremes).
     """
     import soundfile as sf
     data, sr = sf.read(str(audio_path))
@@ -697,12 +692,12 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
     return out_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 6: Lip sync (LatentSync 1.6 → MuseTalk fallback)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Stage 6: Lip sync (LatentSync 1.6 â†’ MuseTalk fallback)
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """LatentSync 1.6 — best quality lip sync (diffusion-based, 512×512)."""
+    """LatentSync 1.6 â€” best quality lip sync (diffusion-based, 512Ã—512)."""
     out_path = out_dir / "latentsync_output.mp4"
     ls_dir = MODEL_CACHE_DIR / "LatentSync"
 
@@ -748,12 +743,12 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
         raise RuntimeError(f"LatentSync failed:\n{result.stderr[-1500:]}")
     if not out_path.exists():
         raise FileNotFoundError("LatentSync did not produce output file")
-    log.info(f"[LatentSync] Done → {out_path}")
+    log.info(f"[LatentSync] Done â†’ {out_path}")
     return out_path
 
 
 def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """MuseTalk — fast real-time lip sync (30fps+), used as fallback."""
+    """MuseTalk â€” fast real-time lip sync (30fps+), used as fallback."""
     musetalk_dir = MODEL_CACHE_DIR / "MuseTalk"
 
     if not musetalk_dir.exists():
@@ -788,12 +783,12 @@ def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) ->
     candidates = list(out_dir.glob("*.mp4"))
     if not candidates:
         raise FileNotFoundError("MuseTalk did not produce output")
-    log.info(f"[MuseTalk] Done → {candidates[0]}")
+    log.info(f"[MuseTalk] Done â†’ {candidates[0]}")
     return candidates[0]
 
 
 def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """Lip sync router: LatentSync 1.6 (best) → MuseTalk (fast fallback)."""
+    """Lip sync router: LatentSync 1.6 (best) â†’ MuseTalk (fast fallback)."""
     quality = LIP_SYNC_QUALITY
     log.info(f"[LipSync] Requested mode: {quality}")
     errors: list[str] = []
@@ -815,9 +810,9 @@ def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
             "Lip sync failed on all backends: " + " | ".join(errors)
         ) from e
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 7: Assemble per-segment audio into one dubbed audio track
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def assemble_dubbed_audio(
     segments: list[dict],
@@ -845,7 +840,7 @@ def assemble_dubbed_audio(
 
         data, sr = sf.read(str(audio_path))
         if data.ndim > 1:
-            data = data.mean(axis=1)  # stereo → mono
+            data = data.mean(axis=1)  # stereo â†’ mono
 
         # Resample if needed
         if sr != SR:
@@ -884,9 +879,9 @@ def assemble_dubbed_audio(
     return dubbed_path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 8: Generate SRT subtitle file
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _fmt_timestamp(seconds: float) -> str:
     h = int(seconds // 3600)
@@ -909,12 +904,12 @@ def generate_srt(segments: list[dict], out_path: Path):
         lines.append("")
         idx += 1
     out_path.write_text("\n".join(lines), encoding="utf-8")
-    log.info(f"[SRT] Written {idx - 1} subtitle entries → {out_path}")
+    log.info(f"[SRT] Written {idx - 1} subtitle entries â†’ {out_path}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 9: Final video mux (video + dubbed audio)
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def mux_final_video(
     video_path: Path,
@@ -936,9 +931,9 @@ def mux_final_video(
     log.info(f"[Mux] Final video: {out_path}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 10: Generate transcript JSON
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def generate_transcript_json(segments: list[dict], out_path: Path):
     transcript = {
@@ -961,12 +956,12 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
         ],
     }
     out_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
-    log.info(f"[Transcript] Written → {out_path}")
+    log.info(f"[Transcript] Written â†’ {out_path}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Main entrypoint
-# ─────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def main():
     log.info(f"=== Translator Worker starting. JobId={JOB_ID} ===")
@@ -976,7 +971,7 @@ def main():
     log.info(f"Working directory: {work_dir}")
 
     try:
-        # ── 1. Download video from S3 ─────────────────────────────────────
+        # â”€â”€ 1. Download video from S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("STARTING", 3, "Downloading video from cloud...")
         input_ext = Path(S3_INPUT_KEY).suffix or ".mp4"
         video_path = work_dir / f"input{input_ext}"
@@ -985,11 +980,11 @@ def main():
         video_duration = get_video_duration(video_path)
         log.info(f"Video duration: {video_duration:.1f}s")
 
-        # ── 2. Extract audio ──────────────────────────────────────────────
+        # â”€â”€ 2. Extract audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("EXTRACTING", 8, "Extracting audio...")
         full_audio = extract_audio(video_path, work_dir)
 
-        # ── 3. Optional Demucs ────────────────────────────────────────────
+        # â”€â”€ 3. Optional Demucs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         background_audio = None
         transcription_audio = full_audio
 
@@ -1002,33 +997,33 @@ def main():
             except Exception as e:
                 log.warning(f"[Demucs] Skipped: {e}")
 
-        # ── 4. Transcription ──────────────────────────────────────────────
+        # â”€â”€ 4. Transcription â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
         segments = transcribe(transcription_audio)
 
         if not segments:
             raise RuntimeError("No speech detected in the video.")
 
-        # ── 5. Optional Diarization ───────────────────────────────────────
+        # â”€â”€ 5. Optional Diarization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if MULTI_SPEAKER:
             update_progress("TRANSCRIBING", 28, "Identifying speakers...")
             segments = diarize(transcription_audio, segments)
 
         log.info(f"Transcription: {len(segments)} segments")
 
-        # ── 6. Translation ────────────────────────────────────────────────
+        # â”€â”€ 6. Translation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("TRANSLATING", 35, f"Translating to {TARGET_LANG}...")
         segments = translate_segments(segments)
         update_progress("TRANSLATING", 48, f"Translation complete. Generating voice...")
 
-        # ── 7. Voice synthesis ────────────────────────────────────────────
+        # â”€â”€ 7. Voice synthesis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         voice_message = "Cloning original voice..." if VOICE_CLONE else "Generating neural voice..."
         update_progress("CLONING", 52, voice_message)
         seg_dir = work_dir / "segments"
         seg_dir.mkdir()
         seg_audio_paths = synthesize_all(segments, transcription_audio, seg_dir)
 
-        # ── 7b. Timing fit ────────────────────────────────────────────────
+        # â”€â”€ 7b. Timing fit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("CLONING", 60, "Fitting audio timing to video...")
         fitted_paths = []
         for seg, audio_path in zip(segments, seg_audio_paths):
@@ -1036,13 +1031,13 @@ def main():
             fitted = fit_audio_to_duration(audio_path, target_dur, seg_dir)
             fitted_paths.append(fitted)
 
-        # ── 8. Assemble dubbed audio track ────────────────────────────────
+        # â”€â”€ 8. Assemble dubbed audio track â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("CLONING", 65, "Assembling dubbed audio track...")
         dubbed_audio = assemble_dubbed_audio(
             segments, fitted_paths, video_duration, work_dir, background_audio
         )
 
-        # ── 9. Lip sync (optional) ────────────────────────────────────────
+        # â”€â”€ 9. Lip sync (optional) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         final_video_path = work_dir / "output.mp4"
 
         if LIP_SYNC:
@@ -1057,14 +1052,14 @@ def main():
             update_progress("MERGING", 78, "Merging video and dubbed audio...")
             mux_final_video(video_path, dubbed_audio, final_video_path)
 
-        # ── 10. Generate SRT and transcript ──────────────────────────────
+        # â”€â”€ 10. Generate SRT and transcript â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("MERGING", 88, "Generating subtitles...")
         srt_path = work_dir / "subtitles.srt"
         transcript_path = work_dir / "transcript.json"
         generate_srt(segments, srt_path)
         generate_transcript_json(segments, transcript_path)
 
-        # ── 11. Upload to S3 ──────────────────────────────────────────────
+        # â”€â”€ 11. Upload to S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("UPLOADING", 93, "Uploading translated video to cloud...")
         output_key  = f"{S3_OUTPUT_PREFIX}/output.mp4"
         srt_key     = f"{S3_OUTPUT_PREFIX}/subtitles.srt"
@@ -1074,7 +1069,7 @@ def main():
         upload_to_s3(srt_path, srt_key, "text/plain")
         upload_to_s3(transcript_path, json_key, "application/json")
 
-        # ── 12. Mark complete ─────────────────────────────────────────────
+        # â”€â”€ 12. Mark complete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("DONE", 100, "Translation complete!", {
             "outputKey": output_key,
             "srtKey": srt_key,
