@@ -2739,3 +2739,179 @@
 /* Push hamburger placement when on chat (sidebar hidden on mobile) */
 .studio-hamburger { z-index: 50; }
 
+/* ═══════════════════════════════════════════════════════════════
+   MOBILE UI FIXES — top safe-area, hamburger visibility, layout
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Make the hamburger visible on any dark content (was transparent) */
+@media (max-width: 768px) {
+  .studio-hamburger {
+    width: 40px;
+    height: 40px;
+    background: rgba(20, 20, 24, 0.78) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    color: rgba(255, 255, 255, 0.92) !important;
+    backdrop-filter: blur(8px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  }
+  .studio-hamburger:hover {
+    background: rgba(40, 40, 46, 0.92) !important;
+    color: #fff !important;
+  }
+  .studio-hamburger:active {
+    transform: scale(0.96);
+  }
+
+  /* Safe-area at the top of every plain content tab so the
+     hamburger no longer covers headings, search inputs, etc. */
+  .studio-content-inner:not(.is-copilot) {
+    padding-top: 60px;
+  }
+
+  /* Search bar (download / clips modes): clear hamburger and breathe */
+  .studio-search-wrap {
+    margin-top: 4px;
+    margin-bottom: 18px;
+  }
+
+  /* Genspark home: push title below the floating hamburger */
+  .gs-home {
+    padding: 64px 14px 90px;
+    align-items: flex-start;
+  }
+  .gs-home-center {
+    gap: 22px;
+  }
+  .gs-home-title {
+    font-size: 1.35rem;
+  }
+
+  /* Download-tab landing hero: tighten and clear the hamburger */
+  .studio-home-hero {
+    padding: 28px 16px 24px;
+    gap: 24px;
+  }
+  .studio-home-orb {
+    width: 60px;
+    height: 60px;
+    border-radius: 18px;
+  }
+  .studio-home-sub {
+    font-size: 0.92rem;
+  }
+
+  /* Copilot chat header: leave room on the left for hamburger so the
+     back / history icons no longer sit underneath it */
+  .gs-chat-header {
+    padding-left: 56px;
+  }
+  .gs-chat-header-title {
+    /* Title can ellipsize to whatever space remains */
+    min-width: 0;
+  }
+  .gs-chat-title-btn,
+  .gs-chat-title-input {
+    max-width: min(180px, 42vw);
+  }
+  .gs-chat-share-btn span {
+    display: none; /* keep just the icon to save space */
+  }
+  .gs-chat-share-btn {
+    padding: 6px 8px;
+  }
+
+  /* Genspark big input card: prevent the pill row from overflowing
+     when both Ultra and Speak pills are visible on a narrow screen */
+  .gs-input-card {
+    padding: 12px 12px 8px;
+    border-radius: 18px;
+  }
+  .gs-input-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .gs-input-row-left,
+  .gs-input-row-right {
+    gap: 5px;
+  }
+  .gs-input-circle-btn {
+    width: 30px;
+    height: 30px;
+  }
+  .gs-pill-ultra,
+  .gs-pill-speak {
+    padding: 5px 10px;
+    font-size: 0.76rem;
+  }
+
+  /* Mode tabs above input — allow horizontal scroll on tiny screens */
+  .gs-mode-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+  }
+  .gs-mode-tabs::-webkit-scrollbar { display: none; }
+  .gs-mode-tab {
+    flex-shrink: 0;
+  }
+
+  /* Quick agents row spacing tighter on mobile */
+  .gs-agents-row {
+    gap: 10px;
+  }
+  .gs-agent {
+    width: 70px;
+  }
+
+  /* Welcome (chat empty state) — reduce vertical padding */
+  .gs-welcome {
+    padding: 20px 14px 14px;
+    gap: 14px;
+  }
+}
+
+/* Cap the drawer width on very small phones (was 270px → too wide on 320px) */
+@media (max-width: 360px) {
+  .gs-drawer,
+  .studio-drawer {
+    width: 85vw;
+    max-width: 270px;
+  }
+  .gs-home {
+    padding: 56px 12px 80px;
+  }
+  .gs-home-title {
+    font-size: 1.2rem;
+  }
+  .studio-home-grid {
+    gap: 6px;
+  }
+  .studio-home-tool {
+    padding: 11px 12px;
+    gap: 9px;
+  }
+  .studio-home-tool-label {
+    font-size: 0.78rem;
+  }
+  .studio-home-tool-desc {
+    font-size: 0.66rem;
+  }
+}
+
+/* Avoid double-scrollbar on iOS when the body already scrolls */
+@media (max-width: 768px) {
+  .studio-workspace {
+    height: 100dvh;
+    min-height: -webkit-fill-available;
+  }
+}
+
+/* Respect iOS bottom safe-area for fixed-bottom inputs across the app */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  @media (max-width: 768px) {
+    .gs-input-wrap {
+      padding-bottom: max(18px, env(safe-area-inset-bottom));
+    }
+  }
+}
+
