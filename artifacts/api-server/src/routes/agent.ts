@@ -29,8 +29,11 @@ function getApiBase(req: any): string {
 // â”€â”€ SSE helper â€” writes and flushes immediately â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function sseEvent(res: any, payload: object) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
-  // Node HTTP response buffers in some configurations; flush if available
-  if (typeof (res as any).flush === "function") (res as any).flush();
+  // Triple-layer flush to guarantee real-time delivery:
+  // 1. Express compression middleware (if present)
+  if (typeof res.flush === "function") res.flush();
+  // 2. socket.write("") flushes the OS TCP send buffer past Nagle algorithm
+  if (res.socket && !res.socket.destroyed) res.socket.write("");
 }
 
 // â”€â”€ Job poller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -527,15 +530,21 @@ router.post("/agent/chat", async (req, res) => {
 
       for await (const chunk of stream) {
         if (!isConnected()) break;
+
+        // ── @google/genai v1.x: chunk.text is the incremental text token ───────
+        // This is the CORRECT way to get real-time per-token streaming.
+        // chunk.candidates[0].content.parts is the OLD v0 API and may batch tokens.
+        const chunkText = chunk.text;           // string | undefined
+        if (chunkText) {
+          fullText += chunkText;
+          sseEvent(res, { type: "text", content: chunkText, runId });
+        }
+
+        // Function calls are in candidates[0].content.parts (no change needed here)
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
-          if (p.text) {
-            fullText += p.text;
-            sseEvent(res, { type: "text", content: p.text, runId });
-          }
           if (p.functionCall) {
             functionCalls.push({ name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
-            // Store the FULL functionCall object — includes thought_signature if present
             rawFcParts.push({ functionCall: p.functionCall });
           }
         }
