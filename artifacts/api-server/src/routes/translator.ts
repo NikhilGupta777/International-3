@@ -43,7 +43,11 @@ const ddb   = new DynamoDBClient({ region: REGION });
 const batch = new BatchClient({ region: REGION });
 
 function shareUrl(req: Request, jobId: string): string {
-  return `${req.protocol}://${req.get("host")}/api/translator/share/${encodeURIComponent(jobId)}`;
+  const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0].trim();
+  const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
+  const host = forwardedHost || req.get("host");
+  const proto = forwardedProto || req.protocol;
+  return `${proto}://${host}/api/translator/share/${encodeURIComponent(jobId)}`;
 }
 
 function escapeHtml(value: unknown): string {

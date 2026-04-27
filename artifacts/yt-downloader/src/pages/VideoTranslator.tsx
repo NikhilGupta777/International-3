@@ -249,7 +249,10 @@ export default function VideoTranslator() {
     const tr = await fetch(`${API}/result/${id}`);
     if (!tr.ok) return null;
     const result = await tr.json();
-    return result as { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string };
+    return {
+      ...(result as { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string }),
+      shareUrl: translatorShareUrl(id),
+    };
   }, []);
 
   const fetchResult = useCallback(async (id: string) => {
@@ -302,7 +305,7 @@ export default function VideoTranslator() {
           progress: 100,
           segmentCount: data.segmentCount,
           videoUrl: result?.videoUrl,
-          shareUrl: result?.shareUrl ?? translatorShareUrl(id),
+          shareUrl: translatorShareUrl(id),
           srtUrl: result?.srtUrl,
           transcriptUrl: result?.transcriptUrl,
         });
@@ -352,7 +355,7 @@ export default function VideoTranslator() {
                 progress: 100,
                 segmentCount: statusItem.segmentCount,
                 videoUrl: urls?.videoUrl,
-                shareUrl: urls?.shareUrl ?? translatorShareUrl(activeJob.jobId),
+                shareUrl: translatorShareUrl(activeJob.jobId),
                 srtUrl: urls?.srtUrl,
                 transcriptUrl: urls?.transcriptUrl,
               });
@@ -403,7 +406,7 @@ export default function VideoTranslator() {
               progress: 100,
               segmentCount: item.segmentCount,
               videoUrl: urls?.videoUrl ?? existing?.videoUrl,
-              shareUrl: urls?.shareUrl ?? existing?.shareUrl ?? translatorShareUrl(item.jobId),
+              shareUrl: translatorShareUrl(item.jobId),
               srtUrl: urls?.srtUrl ?? existing?.srtUrl,
               transcriptUrl: urls?.transcriptUrl ?? existing?.transcriptUrl,
             });
@@ -545,7 +548,7 @@ export default function VideoTranslator() {
     });
     const result = await fetchResult(entry.jobId);
     if (result) {
-      const updated = { ...entry, ...result };
+      const updated = { ...entry, ...result, shareUrl: translatorShareUrl(entry.jobId) };
       saveTranslatorHistory(updated);
       refreshHistory();
     }

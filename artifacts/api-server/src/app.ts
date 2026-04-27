@@ -254,6 +254,13 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     next();
     return;
   }
+  if (
+    req.method === "GET" &&
+    (req.path.startsWith("/uploads/file/") || req.path.startsWith("/translator/share/"))
+  ) {
+    next();
+    return;
+  }
   // Internal server-to-server agent calls bypass cookie auth
   const internalSecret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
   if (req.headers["x-internal-agent"] === internalSecret) {
