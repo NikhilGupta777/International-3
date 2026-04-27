@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+﻿import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
@@ -39,7 +39,7 @@ function saveSessions(sessions: ChatSession[]) {
   } catch { /* storage full */ }
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 type SseEvent =
   | { type: "run_start"; runId: string; ts?: number }
   | { type: "thinking"; runId?: string; stage?: string; iteration?: number }
@@ -87,7 +87,7 @@ type ToolTrace = {
   logs: ToolTraceLog[];
 };
 
-// ── Tool icon/label mapping ───────────────────────────────────────────────────
+// â”€â”€ Tool icon/label mapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
   get_video_info:      { icon: <Bot className="w-3.5 h-3.5" />,       label: "Fetching video info",       color: "text-blue-400"   },
   download_video:      { icon: <Download className="w-3.5 h-3.5" />,   label: "Downloading video",         color: "text-green-400"  },
@@ -110,7 +110,7 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
   upload:      <UploadCloud className="w-3.5 h-3.5" />,
 };
 
-// ── Starter prompts ───────────────────────────────────────────────────────────
+// â”€â”€ Starter prompts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const STARTERS = [
   { icon: <Scissors className="w-4 h-4" />, text: "Cut a clip from 5:32 to 6:23" },
   { icon: <Sparkles className="w-4 h-4" />, text: "Find the best clips from this video" },
@@ -120,7 +120,7 @@ const STARTERS = [
   { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
 
-// ── Simple inline Markdown renderer ─────────────────────────────────────────
+// â”€â”€ Simple inline Markdown renderer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function renderMd(text: string): React.ReactNode {
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
@@ -151,7 +151,7 @@ function renderMd(text: string): React.ReactNode {
     if (olMatch) {
       result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/40 shrink-0">{olMatch[1]}.</span><span>{inlineRender(olMatch[2], `ol${li}`)}</span></div>);
     } else if (ulMatch) {
-      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">•</span><span>{inlineRender(ulMatch[1], `ul${li}`)}</span></div>);
+      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">â€¢</span><span>{inlineRender(ulMatch[1], `ul${li}`)}</span></div>);
     } else if (line.trim() === "") {
       if (li < lines.length - 1) result.push(<div key={li} className="h-2" />);
     } else {
@@ -162,7 +162,7 @@ function renderMd(text: string): React.ReactNode {
   return result;
 }
 
-// ── Genspark-style ToolCard (inline row) ────────────────────────────────────
+// â”€â”€ Genspark-style ToolCard (inline row) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ToolCard({
   part,
   onInspect,
@@ -174,8 +174,8 @@ function ToolCard({
 
   const argStr = Object.entries(part.args)
     .filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${k}: ${String(v).length > 50 ? String(v).slice(0, 47) + "…" : v}`)
-    .join(" · ");
+    .map(([k, v]) => `${k}: ${String(v).length > 50 ? String(v).slice(0, 47) + "â€¦" : v}`)
+    .join(" Â· ");
 
   const pct = part.progress;
   const hasProgress = pct !== null && pct !== undefined;
@@ -224,7 +224,7 @@ function ToolCard({
   );
 }
 
-// ── ArtifactCard sub-component ────────────────────────────────────────────────
+// â”€â”€ ArtifactCard sub-component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ArtifactCard({
   part,
   onNavigate,
@@ -241,7 +241,7 @@ function ArtifactCard({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // Download artifact — real file link
+  // Download artifact â€” real file link
   if (part.artifactType === "download" && part.downloadUrl) {
     return (
       <div className="rounded-2xl border border-green-500/25 bg-green-500/8 overflow-hidden">
@@ -250,7 +250,7 @@ function ArtifactCard({
             <CheckCircle className="w-5 h-5 text-green-400" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-green-300">✅ Ready to download</p>
+            <p className="text-sm font-bold text-green-300">âœ… Ready to download</p>
             <p className="text-xs text-white/50 truncate mt-0.5">{part.label}</p>
           </div>
         </div>
@@ -287,7 +287,7 @@ function ArtifactCard({
             onClick={copyText}
             className="text-[10px] text-white/40 hover:text-white/80 transition-colors px-2 py-0.5 rounded bg-white/6"
           >
-            {copied ? "✓ Copied" : "Copy"}
+            {copied ? "âœ“ Copied" : "Copy"}
           </button>
         </div>
         <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-48 whitespace-pre-wrap">
@@ -316,14 +316,14 @@ function ArtifactCard({
           onClick={() => onNavigate(part.tab!)}
           className="shrink-0 px-2.5 py-1 rounded-lg bg-primary/20 hover:bg-primary/30 text-primary text-xs font-semibold transition-colors"
         >
-          Open →
+          Open â†’
         </button>
       )}
     </div>
   );
 }
 
-// ── MessageBubble ─────────────────────────────────────────────────────────────
+// â”€â”€ MessageBubble â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function MessageBubble({
   message,
   onNavigate,
@@ -343,9 +343,8 @@ function MessageBubble({
       className={cn("flex gap-3 w-full", isUser ? "justify-end" : "justify-start")}
     >
       {!isUser && (
-        <div className="shrink-0 w-7 h-7 rounded-full flex items-center justify-center mt-0.5"
-          style={{ background: "rgba(220,38,38,0.15)", border: "1px solid rgba(220,38,38,0.3)" }}>
-          <Bot className="w-4 h-4 text-primary" />
+        <div className="agent-avatar shrink-0 mt-0.5">
+          <Bot className="w-3.5 h-3.5 text-primary" />
         </div>
       )}
 
@@ -392,7 +391,7 @@ function MessageBubble({
   );
 }
 
-// ── Main StudioCopilot component ──────────────────────────────────────────────
+// â”€â”€ Main StudioCopilot component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -446,7 +445,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentMessages]);
 
-  // Always uses the latest sessionId from ref — no stale closure
+  // Always uses the latest sessionId from ref â€” no stale closure
   const updateSession = useCallback((sessionId: string, updater: (msgs: Message[]) => Message[]) => {
     setSessions(prev => {
       const existing = prev.find(s => s.id === sessionId);
@@ -871,16 +870,21 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
 
   return (
     <div className="copilot-wrap">
-      {/* ── Top Header Bar ── */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.06] bg-[#111111]/80 shrink-0 z-10 sticky top-0 backdrop-blur-md">
-        <div className="flex items-center gap-2">
-          <Bot className="w-4 h-4 text-primary" />
-          <span className="text-sm font-semibold text-white/90">Copilot</span>
+      {/* â”€â”€ Genspark-style top header â”€â”€ */}
+      <div className="agent-header">
+        <div className="agent-header-brand">
+          <div className="agent-header-orb">
+            <Bot className="w-3.5 h-3.5 text-primary" />
+          </div>
+          <span className="agent-header-title">Studio Agent</span>
+          {currentRunId && (
+            <span className="agent-header-run">runÂ {currentRunId.slice(0, 6)}</span>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1">
           <button
             onClick={() => setShowHistory(!showHistory)}
-            className={cn("p-2 rounded-lg transition-colors", showHistory ? "bg-white/10 text-white" : "text-white/40 hover:bg-white/5 hover:text-white/80")}
+            className={cn("agent-hdr-btn", showHistory && "agent-hdr-btn-active")}
             title="Chat History"
           >
             <History className="w-4 h-4" />
@@ -888,7 +892,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
           <button
             onClick={handleNewChat}
             disabled={streaming}
-            className="p-2 rounded-lg text-white/40 hover:bg-white/5 hover:text-white/80 transition-colors disabled:opacity-40"
+            className="agent-hdr-btn disabled:opacity-40"
             title="New Chat"
           >
             <Trash2 className="w-4 h-4" />
@@ -896,7 +900,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         </div>
       </div>
 
-      {/* ── History Panel Overlay ── */}
+      {/* â”€â”€ History Panel Overlay â”€â”€ */}
       <AnimatePresence>
         {showHistory && (
           <motion.div
@@ -940,70 +944,73 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         )}
       </AnimatePresence>
 
-      {/* ── Empty state / Welcome ── */}
+      {/* â”€â”€ Empty state / Genspark Hero â”€â”€ */}
       {isEmpty && (
-        <div className="copilot-welcome">
-          <div className="copilot-orb">
-            <Bot className="w-8 h-8 text-primary" />
-          </div>
-          <h2 className="copilot-welcome-title">AI Studio Copilot</h2>
-          <p className="copilot-welcome-sub">
-            Autonomous AI agent with full access to every studio tool.<br />
-            Just give me a YouTube URL and a task — I'll handle everything.
-          </p>
-
-          <div className="copilot-starters">
-            {STARTERS.map((s, i) => (
-              <button
-                key={i}
-                onClick={() => void sendMessage(s.text)}
-                className="copilot-starter-btn"
-              >
-                <span className="copilot-starter-icon">{s.icon}</span>
-                <span>{s.text}</span>
-              </button>
-            ))}
+        <div className="agent-hero">
+          <div className="agent-hero-inner">
+            <div className="agent-orb">
+              <Bot className="w-6 h-6 text-primary" />
+            </div>
+            <h1 className="agent-hero-title">
+              <span className="agent-hero-gradient">Ask anything,</span>
+              <span className="text-white"> create anything</span>
+            </h1>
+            <p className="agent-hero-sub">
+              Autonomous AI agent &middot; Full studio access &middot; Real-time execution
+            </p>
+            <div className="agent-bubbles">
+              {STARTERS.map((s, i) => (
+                <button
+                  key={i}
+                  onClick={() => void sendMessage(s.text)}
+                  className="agent-bubble"
+                >
+                  <span className="agent-bubble-icon">{s.icon}</span>
+                  <span className="agent-bubble-label">{s.text}</span>
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
-      {/* ── Messages ── */}
+      {/* â”€â”€ Messages â”€â”€ */}
       {!isEmpty && (
         <div className="copilot-conversation-shell">
           <div className="copilot-messages">
-          <AnimatePresence initial={false}>
-            {currentMessages.map(msg => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                onNavigate={onNavigate}
-                onInspectTool={(toolId) => toolId && setActiveToolId(toolId)}
-              />
-            ))}
-          </AnimatePresence>
-
-          {/* Streaming indicator */}
-          {streaming && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="flex gap-3 items-center"
-            >
-              <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
-                style={{ background: "rgba(220,38,38,0.15)", border: "1px solid rgba(220,38,38,0.3)" }}>
-                <Bot className="w-4 h-4 text-primary" />
-              </div>
-              <div className="flex items-center gap-2 px-4 py-3 rounded-2xl rounded-tl-sm bg-white/[0.07] border border-white/8">
-                {[0, 0.15, 0.3].map((delay, i) => (
-                  <span key={i} className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce"
-                    style={{ animationDelay: `${delay}s`, animationDuration: "0.8s" }} />
+            <div className="agent-msg-col">
+              <AnimatePresence initial={false}>
+                {currentMessages.map(msg => (
+                  <MessageBubble
+                    key={msg.id}
+                    message={msg}
+                    onNavigate={onNavigate}
+                    onInspectTool={(toolId) => toolId && setActiveToolId(toolId)}
+                  />
                 ))}
-                {thinking && <span className="text-[11px] text-white/45 ml-1">Thinking...</span>}
-              </div>
-            </motion.div>
-          )}
+              </AnimatePresence>
 
-          <div ref={bottomRef} />
+              {streaming && (
+                <motion.div
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.18 }}
+                  className="flex gap-3 items-start"
+                >
+                  <div className="agent-avatar shrink-0">
+                    <Bot className="w-3.5 h-3.5 text-primary" />
+                  </div>
+                  <div className="agent-thinking-pill">
+                    <span className="agent-thinking-dot" />
+                    <span className="agent-thinking-text">
+                      {thinking ? "Thinking" : "Working"}
+                    </span>
+                    <span className="agent-thinking-cursor" />
+                  </div>
+                </motion.div>
+              )}
+              <div ref={bottomRef} />
+            </div>
           </div>
 
           {showInspector && (
@@ -1077,38 +1084,42 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
         </div>
       )}
 
-      {/* ── Input area ── */}
-      <div className="copilot-input-wrap">
-        <form onSubmit={handleSubmit} className="copilot-input-form">
-          <div className="copilot-input-box">
+      {/* â”€â”€ Input area â€” Genspark style â”€â”€ */}
+      <div className="agent-input-wrap">
+        <form onSubmit={handleSubmit} className="agent-input-form">
+          <div className="agent-input-box">
+            {/* Left actions */}
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <span className="agent-model-badge">Gemini</span>
+            </div>
+
             <textarea
               ref={inputRef}
               value={input}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
-              placeholder="Ask anything — cut a clip, find best moments, download, subtitle…"
+              placeholder="Ask anything â€” cut a clip, best moments, download, subtitlesâ€¦"
               rows={1}
-              className="copilot-textarea"
+              className="agent-textarea"
               disabled={streaming}
             />
 
-            <div className="copilot-input-actions">
+            <div className="flex items-center gap-1.5 flex-shrink-0">
               {speechSupported && (
                 <button
                   type="button"
                   onClick={toggleVoice}
-                  className={cn("copilot-action-btn", listening && "text-red-400")}
+                  className={cn("agent-icon-btn", listening && "text-red-400")}
                   title={listening ? "Stop listening" : "Voice input"}
                 >
                   {listening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
                 </button>
               )}
-
               {streaming ? (
                 <button
                   type="button"
                   onClick={handleStop}
-                  className="copilot-action-btn text-red-400"
+                  className="agent-stop-btn"
                   title="Stop"
                 >
                   <X className="w-4 h-4" />
@@ -1117,10 +1128,7 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
                 <button
                   type="submit"
                   disabled={!input.trim()}
-                  className={cn(
-                    "copilot-send-btn",
-                    input.trim() ? "copilot-send-btn-active" : "copilot-send-btn-disabled"
-                  )}
+                  className={cn("agent-send-btn", input.trim() ? "agent-send-active" : "agent-send-disabled")}
                   title="Send"
                 >
                   <Send className="w-4 h-4" />
@@ -1128,9 +1136,8 @@ export function StudioCopilot({ onNavigate }: { onNavigate?: (tab: string) => vo
               )}
             </div>
           </div>
-
-          <p className="copilot-hint">
-            Powered by Gemini · Press Enter to send, Shift+Enter for newline
+          <p className="agent-hint">
+            Powered by Gemini Â· Enter to sendÂ Â·Â Shift+Enter for newline
           </p>
         </form>
       </div>

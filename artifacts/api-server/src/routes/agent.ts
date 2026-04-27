@@ -1,5 +1,5 @@
-/**
- * AI Studio Copilot Agent Route — Full Agentic Execution
+﻿/**
+ * AI Studio Copilot Agent Route â€” Full Agentic Execution
  * POST /api/agent/chat
  *
  * SSE events: text | tool_start | tool_progress | tool_done | artifact | navigate | error | done
@@ -12,12 +12,12 @@ import { randomUUID } from "crypto";
 const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
-const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-3.1-flash-lite-preview";
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.0-flash";
+const _FAST_MODEL = process.env.COPILOT_FAST_MODEL ?? "gemini-2.0-flash-lite";
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 2500;
 
-// ── Resolve base URL for internal API calls ───────────────────────────────────
+// â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getApiBase(req: any): string {
   if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
   const proto = req.headers["x-forwarded-proto"] ?? "http";
@@ -25,14 +25,14 @@ function getApiBase(req: any): string {
   return `${proto}://${host}/api`;
 }
 
-// ── SSE helper — writes and flushes immediately ───────────────────────────────
+// â”€â”€ SSE helper â€” writes and flushes immediately â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function sseEvent(res: any, payload: object) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
   // Node HTTP response buffers in some configurations; flush if available
   if (typeof (res as any).flush === "function") (res as any).flush();
 }
 
-// ── Job poller ────────────────────────────────────────────────────────────────
+// â”€â”€ Job poller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function pollJobUntilDone(
   res: any,
   toolName: string,
@@ -58,7 +58,7 @@ async function pollJobUntilDone(
   throw new Error("Job timed out after 8 minutes");
 }
 
-// ── Subtitle job poller ───────────────────────────────────────────────────────
+// â”€â”€ Subtitle job poller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function pollSubtitleUntilDone(
   res: any,
   statusUrl: string,
@@ -82,7 +82,7 @@ async function pollSubtitleUntilDone(
   throw new Error("Subtitle job timed out after 8 minutes");
 }
 
-// ── Timestamps job poller ─────────────────────────────────────────────────────
+// â”€â”€ Timestamps job poller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function pollTimestampsUntilDone(
   res: any,
   statusUrl: string,
@@ -106,7 +106,7 @@ async function pollTimestampsUntilDone(
   throw new Error("Timestamp job timed out after 8 minutes");
 }
 
-// ── Parse timestamps like "5:32" or "1:22:10" into seconds ───────────────────
+// â”€â”€ Parse timestamps like "5:32" or "1:22:10" into seconds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function parseTimestamp(ts: string): number {
   const parts = ts.trim().split(":").map(Number);
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
@@ -114,7 +114,7 @@ function parseTimestamp(ts: string): number {
   return parts[0];
 }
 
-// ── Tool definitions ──────────────────────────────────────────────────────────
+// â”€â”€ Tool definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const STUDIO_TOOLS: any[] = [
   {
     name: "get_video_info",
@@ -211,7 +211,7 @@ const STUDIO_TOOLS: any[] = [
   },
 ];
 
-const SYSTEM_PROMPT = `You are the VideoMaking Studio AI Copilot — an autonomous, action-first agent with DIRECT access to powerful studio tools.
+const SYSTEM_PROMPT = `You are the VideoMaking Studio AI Copilot â€” an autonomous, action-first agent with DIRECT access to powerful studio tools.
 
 YOU HAVE REAL TOOLS. When the user gives you a YouTube URL and a task, you MUST immediately call the appropriate tool. You do NOT need to ask for more information or explain limitations.
 
@@ -224,9 +224,9 @@ YOUR CAPABILITIES (via tools that actually execute server-side):
 - get_video_info: Fetch video metadata (title, duration, etc).
 - navigate_to_tab: Switch the studio UI to a specific tool only on explicit request.
 
-STRICT RULES — NEVER VIOLATE:
+STRICT RULES â€” NEVER VIOLATE:
 1. ALWAYS call a tool immediately when the user gives a URL + task. Never say you "can't" access YouTube or use tools.
-2. NEVER say "I don't have access to tools", "I cannot click links", or "I need the transcript". You have tools — USE THEM.
+2. NEVER say "I don't have access to tools", "I cannot click links", or "I need the transcript". You have tools â€” USE THEM.
 3. For clip cutting: extract startTime and endTime from the user's message and call cut_video_clip immediately.
 4. For subtitle requests: call generate_subtitles immediately. Do NOT ask for a transcript.
 5. Tools wait for completion and return real download URLs. Present the download button to the user.
@@ -235,9 +235,9 @@ STRICT RULES — NEVER VIOLATE:
 8. If a tool fails, explain the error clearly and suggest alternatives.
 9. Keep the user in Copilot chat by default. Do NOT switch tabs unless the user explicitly asks.
 
-WHEN YOU SEE: [YouTube URL] + [task] → IMMEDIATELY call the right tool. No questions, no explanations, just execute.`;
+WHEN YOU SEE: [YouTube URL] + [task] â†’ IMMEDIATELY call the right tool. No questions, no explanations, just execute.`;
 
-// ── Build internal headers from request ───────────────────────────────────────
+// â”€â”€ Build internal headers from request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function buildInternalHeaders(req: any): Record<string, string> {
   const INTERNAL_SECRET = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
   const headers: Record<string, string> = {
@@ -253,7 +253,7 @@ function buildInternalHeaders(req: any): Record<string, string> {
   return headers;
 }
 
-// ── Tool executor ─────────────────────────────────────────────────────────────
+// â”€â”€ Tool executor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function executeTool(
   name: string,
   args: Record<string, any>,
@@ -287,7 +287,7 @@ async function executeTool(
       const endSecs   = parseTimestamp(String(args.endTime));
       const quality   = args.quality ?? "720p";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} â†’ ${args.endTime})...` });
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
         method: "POST",
         headers: internalHeaders,
@@ -303,7 +303,7 @@ async function executeTool(
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: { jobId, downloadUrl, startTime: args.startTime, endTime: args.endTime },
-        artifact: { artifactType: "download", label: `Clip ready: ${args.startTime} → ${args.endTime}`, downloadUrl, jobId },
+        artifact: { artifactType: "download", label: `Clip ready: ${args.startTime} â†’ ${args.endTime}`, downloadUrl, jobId },
       };
     }
 
@@ -379,7 +379,7 @@ async function executeTool(
       logTool("Best clips job accepted", { jobId });
       return {
         result: { jobId, message: "Best clips analysis started. Check the Best Clips tab for results." },
-        artifact: { artifactType: "tab_link", label: "Best Clips analysis started — open tab to see results", tab: "clips", jobId },
+        artifact: { artifactType: "tab_link", label: "Best Clips analysis started â€” open tab to see results", tab: "clips", jobId },
       };
     }
 
@@ -426,10 +426,10 @@ async function executeTool(
   }
 }
 
-// ── POST /api/agent/chat ──────────────────────────────────────────────────────
+// â”€â”€ POST /api/agent/chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post("/agent/chat", async (req, res) => {
   if (!GEMINI_API_KEY) {
-    res.status(503).json({ error: "AI Copilot not configured — add GEMINI_API_KEY to environment." });
+    res.status(503).json({ error: "AI Copilot not configured â€” add GEMINI_API_KEY to environment." });
     return;
   }
 
@@ -442,7 +442,7 @@ router.post("/agent/chat", async (req, res) => {
     return;
   }
 
-  // ── Setup SSE ──────────────────────────────────────────────────────────────
+  // â”€â”€ Setup SSE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
@@ -465,7 +465,7 @@ router.post("/agent/chat", async (req, res) => {
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-    // Build Gemini contents — only text parts to avoid confusing the model
+    // Build Gemini contents â€” only text parts to avoid confusing the model
     let loopContents: any[] = messages
       .filter(m => m.content.trim())
       .map(m => ({ role: m.role, parts: [{ text: m.content }] }));
@@ -477,7 +477,7 @@ router.post("/agent/chat", async (req, res) => {
       iterations++;
       sseEvent(res, { type: "thinking", runId, stage: "planning", iteration: iterations });
 
-      // ── 1. Stream the AI response ─────────────────────────────────────────
+      // â”€â”€ 1. Stream the AI response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       const stream = await ai.models.generateContentStream({
         model: AGENT_MODEL,
         contents: loopContents,
@@ -487,6 +487,9 @@ router.post("/agent/chat", async (req, res) => {
           toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
           temperature: 0.15,
           maxOutputTokens: 2048,
+          // Disable thinking to avoid thought_signature requirement in function call loops.
+          // If switching to a 2.5 thinking model, you must carry thought parts back in model history.
+          thinkingConfig: { thinkingBudget: 0 } as any,
         },
       });
 
@@ -512,12 +515,12 @@ router.post("/agent/chat", async (req, res) => {
 
       if (!isConnected()) break;
 
-      // ── 2. No function calls → final text response, done ─────────────────
+      // â”€â”€ 2. No function calls â†’ final text response, done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       if (functionCalls.length === 0) {
         break;
       }
 
-      // ── 3. Execute each tool sequentially, streaming progress ─────────────
+      // â”€â”€ 3. Execute each tool sequentially, streaming progress â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       const toolResults: any[] = [];
 
       for (const fc of functionCalls) {
@@ -555,7 +558,7 @@ router.post("/agent/chat", async (req, res) => {
         });
       }
 
-      // ── 4. Build model + function response parts for next loop iteration ──
+      // â”€â”€ 4. Build model + function response parts for next loop iteration â”€â”€
       const modelParts: any[] = [];
       if (fullText) modelParts.push({ text: fullText });
       for (const fc of functionCalls) {
