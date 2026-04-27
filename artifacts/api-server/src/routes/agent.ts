@@ -20,7 +20,7 @@ const ALLOWED_MODELS = new Set([
   "gemini-2.5-flash-thinking", "gemini-1.5-flash", "gemini-1.5-pro",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
-const POLL_INTERVAL_MS = 2500;
+const POLL_INTERVAL_MS = 300;
 const MAX_ITERATIONS  = 12;  // Genspark-class: up to 12 agentic steps
 
 // â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

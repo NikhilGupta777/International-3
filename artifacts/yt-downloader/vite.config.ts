@@ -51,29 +51,45 @@ export default defineConfig({
       "/api": {
         target: `http://localhost:${process.env.API_PORT ?? 8080}`,
         changeOrigin: true,
-        // ── SSE / streaming fix ──────────────────────────────────────────
-        // Vite's http-proxy buffers responses by default. For Server-Sent
-        // Events (text/event-stream) we must disable buffering so chunks
-        // reach the browser as they are written — not all at once at the end.
+        // ── SSE / streaming FIX ──────────────────────────────────────────────
+        // Root cause of "everything appears at once": Vite's http-proxy
+        // auto-pipes proxyRes → res by default, PLUS our old configure handler
+        // was calling proxyRes.pipe(res) a SECOND time. Double-consuming a
+        // readable causes Node.js to buffer the whole stream and flush at end.
+        //
+        // The CORRECT fix: selfHandleResponse: true
+        //   → tells http-proxy "do NOT auto-pipe the response body"
+        //   → we pipe it ourselves in the proxyRes handler
+        //   → for SSE, we also set TCP_NODELAY so every sseEvent() write
+        //     bypasses Nagle's algorithm and hits the browser immediately.
+        selfHandleResponse: true,
         configure: (proxy) => {
-          proxy.on("proxyRes", (proxyRes, req, res) => {
-            const contentType = proxyRes.headers["content-type"] ?? "";
-            if (contentType.includes("text/event-stream")) {
-              // Disable response buffering on the socket
-              res.setHeader("Content-Type", "text/event-stream");
-              res.setHeader("Cache-Control", "no-cache");
-              res.setHeader("Connection", "keep-alive");
-              res.setHeader("X-Accel-Buffering", "no");
-              // TCP_NODELAY — flush every write immediately without Nagle delay
-              (res.socket as any)?.setNoDelay?.(true);
-              proxyRes.pipe(res, { end: true });
-              // Prevent http-proxy from touching the response after we piped it
-              (res as any).__sse_piped = true;
+          proxy.on("proxyRes", (proxyRes, _req, res: any) => {
+            const ct = proxyRes.headers["content-type"] ?? "";
+
+            if (ct.includes("text/event-stream")) {
+              // SSE: set real-time headers, disable Nagle, pipe directly
+              res.writeHead(proxyRes.statusCode ?? 200, {
+                "Content-Type":          "text/event-stream",
+                "Cache-Control":         "no-cache, no-transform",
+                "Connection":            "keep-alive",
+                "X-Accel-Buffering":     "no",
+                "Transfer-Encoding":     "identity",
+                "Access-Control-Allow-Origin": "*",
+              });
+              // TCP_NODELAY: flush every write() immediately (no Nagle batching)
+              res.socket?.setNoDelay?.(true);
+              proxyRes.pipe(res);
+            } else {
+              // All other routes: forward status + headers normally, pipe body
+              res.writeHead(proxyRes.statusCode ?? 200, proxyRes.headers);
+              proxyRes.pipe(res);
             }
           });
-          proxy.on("proxyRes", (proxyRes, _req, res) => {
-            // Skip if we already piped it above
-            if ((res as any).__sse_piped) return;
+
+          proxy.on("error", (err, _req, res: any) => {
+            if (!res.headersSent) res.writeHead(502);
+            res.end(`Proxy error: ${err.message}`);
           });
         },
       },
