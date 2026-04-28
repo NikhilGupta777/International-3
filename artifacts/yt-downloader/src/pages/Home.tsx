@@ -19,7 +19,9 @@ import { ClipCutter } from "@/components/ClipCutter";
 import { KathaSceneFinder } from "@/components/KathaSceneFinder";
 import { Timestamps } from "@/components/Timestamps";
 import { FileUpload } from "@/components/FileUpload";
-import { FloatingActivityPanel } from "@/components/FloatingActivityPanel";
+import { HelpPanel } from "@/components/HelpPanel";
+import { ActivityPanel } from "@/components/ActivityPanel";
+import { GUIDE_TABS, type GuideMode } from "@/lib/guide-tabs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
 import { StudioHome } from "@/components/StudioHome";
@@ -46,7 +48,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "help" | "activity";
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -59,101 +61,8 @@ type ClientAccessConfig = {
 const GUIDE_SEEN_KEY = "videomaking-guide-seen-v1";
 const CLIP_JOB_MISSING_GRACE_MS = 15 * 60 * 1000;
 
-const GUIDE_TABS: Array<{
-  mode: Mode;
-  title: string;
-  summary: string;
-  steps: string[];
-}> = [
-  {
-    mode: "download",
-    title: "Download Tab",
-    summary: "Download complete videos or audio from a source URL.",
-    steps: [
-      "Paste the video URL and click Start.",
-      "Pick quality/audio option from available formats.",
-      "Track progress in Active Download and Activity panel.",
-      "Use Save when the job is completed.",
-    ],
-  },
-  {
-    mode: "clips",
-    title: "Best Clips Tab",
-    summary: "Use AI to find high-value segments from a long video.",
-    steps: [
-      "Paste URL and choose duration mode (Auto / 1m / 3m / 8-10m).",
-      "Add optional AI instructions for topic-specific clips.",
-      "Click Find Best Clips and follow step progress.",
-      "Download or retry each suggested clip card.",
-    ],
-  },
-  {
-    mode: "subtitles",
-    title: "Subtitles Tab",
-    summary: "Generate SRT subtitles from URL or uploaded media.",
-    steps: [
-      "Choose YouTube URL or Upload File mode.",
-      "Select source language and optional translation language.",
-      "Start generation and monitor the stage tracker.",
-      "Download SRT or copy text when completed.",
-    ],
-  },
-  {
-    mode: "clipcutter",
-    title: "Clip Cut Tab",
-    summary: "Cut an exact time range and download only that segment.",
-    steps: [
-      "Paste URL and set Start / End timestamps.",
-      "Choose output quality and click Cut & Download.",
-      "Watch queue/progress status in job cards.",
-      "Use Save when clip status becomes done.",
-    ],
-  },
-  {
-    mode: "bhagwat",
-    title: "Bhagwat Studio Tab",
-    summary: "Build devotional story videos with AI scene planning and rendering.",
-    steps: [
-      "Open Bhagwat Studio and unlock access with your password.",
-      "Paste a URL or upload audio, then run Analyze to create timeline scenes.",
-      "Review and improve AI prompt suggestions before render.",
-      "Render final video and download from history when done.",
-    ],
-  },
-  {
-    mode: "scenefinder",
-    title: "Find Sabha Tab",
-    summary: "Identify a Katha sabha venue by matching photos against your saved reference library.",
-    steps: [
-      "Upload reference photos for every known sabha venue in the Library.",
-      "Add place name, location/date, and visual notes for each batch.",
-      "Upload a query photo in Identify.",
-      "Review AI-ranked sabha matches with shared visual features.",
-    ],
-  },
-  {
-    mode: "timestamps",
-    title: "Timestamps Tab",
-    summary: "Generate YouTube chapter timestamps from any video using AI.",
-    steps: [
-      "Paste a YouTube URL and click Generate Timestamps.",
-      "AI fetches the transcript automatically (or uses AssemblyAI if no subtitles).",
-      "Gemini 2.5 Pro creates meaningful chapter markers.",
-      "Copy the timestamps directly into your YouTube description.",
-    ],
-  },
-  {
-    mode: "upload",
-    title: "Share Tab",
-    summary: "Upload files and share them via public gallery.",
-    steps: [
-      "Navigate to the Share tab.",
-      "Select a file to upload from your local device.",
-      "Set its visibility to Public to show it in the gallery.",
-      "Share the direct link or let others browse the public gallery.",
-    ],
-  },
-];
+// GUIDE_TABS now lives in @/lib/guide-tabs and is imported above so the
+// dedicated Help sidebar tab and any inline guide stay in sync.
 
 function playSoftCompletionChime() {
   try {
@@ -262,8 +171,7 @@ export default function Home() {
   const [pushPermission, setPushPermission] = useState<NotificationPermission | "unsupported">("unsupported");
   const [pushEnabling, setPushEnabling] = useState(false);
   const [telegramUrl, setTelegramUrl] = useState("https://t.me/c/2852263933/3");
-  const [showGuide, setShowGuide] = useState(false);
-  const [activeGuideMode, setActiveGuideMode] = useState<Mode>("download");
+  const [helpInitialMode, setHelpInitialMode] = useState<GuideMode>("download");
   const seenCompletionRef = useRef<Set<string>>(new Set());
   const initializedCompletionsRef = useRef(false);
   const { toast } = useToast();
@@ -282,12 +190,13 @@ export default function Home() {
     try {
       const seen = localStorage.getItem(GUIDE_SEEN_KEY);
       if (!seen) {
-        setShowGuide(true);
-        setActiveGuideMode("download");
+        setHelpInitialMode("download");
+        setMode("help");
+        try { localStorage.setItem(GUIDE_SEEN_KEY, "1"); } catch { /* ignore */ }
       }
     } catch {
-      setShowGuide(true);
-      setActiveGuideMode("download");
+      setHelpInitialMode("download");
+      setMode("help");
     }
   }, []);
 
@@ -504,15 +413,13 @@ export default function Home() {
   };
 
   const openGuide = () => {
-    setActiveGuideMode(mode);
-    setShowGuide(true);
-  };
-
-  const closeGuide = () => {
-    setShowGuide(false);
-    try {
-      localStorage.setItem(GUIDE_SEEN_KEY, "1");
-    } catch {}
+    // Help is now a sidebar tab — switch into it and remember the user's
+    // current tab so the guide opens to the relevant section by default.
+    if (mode !== "help" && mode !== "activity" && mode !== "home" && mode !== "copilot" && mode !== "translator") {
+      setHelpInitialMode(mode as GuideMode);
+    }
+    setMode("help");
+    try { localStorage.setItem(GUIDE_SEEN_KEY, "1"); } catch { /* ignore */ }
   };
 
   // Background completion notifications across all tabs/history sources.
@@ -653,17 +560,9 @@ export default function Home() {
 
       {/* Floating Help / Activity panel — pinned to top-right since the
           old topbar is removed in the new sidebar-based layout */}
-      <FloatingActivityPanel
-        onSwitchTab={switchMode}
-        onOpenGuide={openGuide}
-        pushProps={{
-          supported: pushSupported,
-          configured: pushConfigured,
-          permission: pushPermission,
-          enabling: pushEnabling,
-          onEnable: handleEnablePush,
-        }}
-      />
+      {/* Help and Activity are now first-class sidebar tabs (rendered below)
+          instead of a floating top-right panel. */}
+      {(() => { void pushSupported; void pushConfigured; void pushPermission; void pushEnabling; void handleEnablePush; void openGuide; return null; })()}
 
       {/* Ã¢â€â‚¬Ã¢â€â‚¬ Body: sidebar + content Ã¢â€â‚¬Ã¢â€â‚¬ */}
       <div className="studio-body">
@@ -680,11 +579,26 @@ export default function Home() {
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "home") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "home") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "home" || mode === "help" || mode === "activity") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "home" || mode === "help" || mode === "activity") && "is-copilot", mode === "translator" && "is-copilot")}>
 
             {/* Translator tab â€” full screen */}
             {mode === "translator" && <VideoTranslator />}
+
+            {/* Help tab — dedicated page (replaces old GuideModal) */}
+            {mode === "help" && (
+              <HelpPanel
+                initialMode={helpInitialMode}
+                onSwitchTab={(next) => switchMode(next as Mode)}
+              />
+            )}
+
+            {/* Activity tab — dedicated page (replaces old floating panel) */}
+            {mode === "activity" && (
+              <ActivityPanel
+                onSwitchTab={(next) => switchMode(next as Mode)}
+              />
+            )}
 
             {/* Search bar Ã¢â‚¬â€ only for download + clips modes */}
             {showSearch && (
@@ -1046,159 +960,12 @@ export default function Home() {
         </main>
       </div>
 
-      <GuideModal
-        open={showGuide}
-        activeMode={activeGuideMode as any}
-        onSelectMode={setActiveGuideMode as any}
-        onSwitchTab={(nextMode) => {
-          switchMode(nextMode as Mode);
-          setActiveGuideMode(nextMode);
-          closeGuide();
-        }}
-        onClose={closeGuide}
-      />
-
     </div>
   );
 }
 
-function GuideModal({
-  open,
-  activeMode,
-  onSelectMode,
-  onSwitchTab,
-  onClose,
-}: {
-  open: boolean;
-  activeMode: Mode;
-  onSelectMode: (mode: Mode) => void;
-  onSwitchTab: (mode: Mode) => void;
-  onClose: () => void;
-}) {
-  const activeIndex = Math.max(
-    0,
-    GUIDE_TABS.findIndex((x) => x.mode === activeMode),
-  );
-  const active = GUIDE_TABS[activeIndex];
-  const isLast = activeIndex === GUIDE_TABS.length - 1;
-
-  const handleNext = () => {
-    if (isLast) {
-      onSwitchTab("clips");
-      return;
-    }
-    onSelectMode(GUIDE_TABS[activeIndex + 1].mode);
-  };
-
-  return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-sm p-4 sm:p-6 flex items-start sm:items-center justify-center overflow-y-auto"
-        >
-          <motion.div
-            initial={{ opacity: 0, y: 18, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 14, scale: 0.98 }}
-            className="w-full max-w-3xl my-4 sm:my-0 max-h-[92vh] glass-panel rounded-3xl border border-white/15 overflow-hidden flex flex-col"
-          >
-            <div className="px-5 sm:px-7 py-5 border-b border-white/10 flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-teal-300/80 font-semibold">
-                  Welcome Guide
-                </p>
-                <h3 className="text-xl sm:text-2xl font-display font-bold text-white mt-1">
-                  How VideoMaking Studio Works
-                </h3>
-                <p className="text-sm text-white/55 mt-1">
-                  Quick walkthrough of each tab so new users can start confidently.
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                className="text-white/60 hover:text-white hover:bg-white/10 px-2.5 sm:px-4"
-                onClick={onClose}
-              >
-                <span className="sm:hidden">Ã¢Å“â€¢</span>
-                <span className="hidden sm:inline">Close</span>
-              </Button>
-            </div>
-
-            <div className="p-4 sm:p-7 grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4 sm:gap-5 overflow-y-auto">
-              <div className="hidden md:block space-y-2">
-                {GUIDE_TABS.map((tab) => (
-                  <button
-                    key={tab.mode}
-                    type="button"
-                    onClick={() => onSelectMode(tab.mode)}
-                    className={cn(
-                      "w-full text-left rounded-xl border px-3.5 py-3 transition-colors",
-                      activeMode === tab.mode
-                        ? "bg-primary/15 border-primary/40 text-white"
-                        : "bg-white/5 border-white/10 text-white/60 hover:text-white hover:border-white/20",
-                    )}
-                  >
-                    <p className="font-semibold text-sm">{tab.title}</p>
-                    <p className="text-xs mt-1 opacity-80">{tab.summary}</p>
-                  </button>
-                ))}
-              </div>
-
-              <div className="md:hidden -mt-1 flex gap-2 overflow-x-auto no-scrollbar pb-1">
-                {GUIDE_TABS.map((tab) => (
-                  <button
-                    key={`mobile-${tab.mode}`}
-                    type="button"
-                    onClick={() => onSelectMode(tab.mode)}
-                    className={cn(
-                      "shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap",
-                      activeMode === tab.mode
-                        ? "bg-primary/20 border-primary/50 text-white"
-                        : "bg-white/5 border-white/15 text-white/70",
-                    )}
-                  >
-                    {tab.title.replace(" Tab", "")}
-                  </button>
-                ))}
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-black/20 p-4 sm:p-5">
-                <h4 className="text-lg sm:text-xl font-display font-semibold text-white">{active.title}</h4>
-                <p className="text-sm text-white/60 mt-1">{active.summary}</p>
-                <div className="mt-3 sm:mt-4 space-y-2.5">
-                  {active.steps.map((step, idx) => (
-                    <div
-                      key={`${active.mode}-step-${idx}`}
-                      className="flex items-start gap-2.5 text-sm text-white/80"
-                    >
-                      <span className="w-5 h-5 shrink-0 rounded-full bg-primary/20 border border-primary/40 text-[11px] text-primary flex items-center justify-center font-semibold">
-                        {idx + 1}
-                      </span>
-                      <span>{step}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 sm:mt-5 pt-4 border-t border-white/10 flex flex-wrap gap-2">
-                  <Button
-                    type="button"
-                    onClick={handleNext}
-                    className="bg-primary hover:bg-primary/90 text-white w-full sm:w-auto"
-                  >
-                    {isLast ? "Start Making" : "Next"}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-}
+// GuideModal has been replaced by HelpPanel (a full sidebar tab).
+// Keep this stub so any older import sites compile; safe to delete later.
 
 function FormatCard({ 
   format, 

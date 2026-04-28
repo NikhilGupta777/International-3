@@ -11,7 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator";
+  | "upload" | "translator" | "help" | "activity";
 
 type AgentTile = {
   key: string;

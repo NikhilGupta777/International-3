@@ -2,14 +2,14 @@ import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
   ListVideo, AlarmClock, UploadCloud, Languages, Youtube, Menu, X,
-  Plus, Home as HomeIcon, Workflow, Users, HardDrive, MoreHorizontal, UserCircle2,
+  Plus, Home as HomeIcon, CircleHelp, Activity, UserCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator";
+  | "upload" | "translator" | "help" | "activity";
 
 interface NavItem {
   mode: Mode;
@@ -47,12 +47,10 @@ const NAV_ITEMS: NavItem[] = [
   { mode: "upload",      icon: <UploadCloud className="gs-icon" />,     label: "Share" },
 ];
 
-// Decorative bottom items (not real modes — visual parity with Genspark)
-const FOOTER_ITEMS = [
-  { icon: <Workflow className="gs-icon" />,        label: "Workflows" },
-  { icon: <Users className="gs-icon" />,           label: "Teams" },
-  { icon: <HardDrive className="gs-icon" />,       label: "Drive" },
-  { icon: <MoreHorizontal className="gs-icon" />,  label: "More" },
+// Utility nav (Help / Activity) — pinned below the main list, separated by a divider.
+const UTILITY_ITEMS: NavItem[] = [
+  { mode: "activity",    icon: <Activity className="gs-icon" />,        label: "Activity" },
+  { mode: "help",        icon: <CircleHelp className="gs-icon" />,      label: "Help" },
 ];
 
 function GsItem({
@@ -132,10 +130,15 @@ function NavList({
         />
       ))}
 
-      {/* Decorative footer items */}
+      {/* Utility nav: Activity + Help */}
       <div className="gs-nav-divider" />
-      {FOOTER_ITEMS.map((it) => (
-        <GsItem key={it.label} item={it} />
+      {UTILITY_ITEMS.map((item) => (
+        <GsItem
+          key={item.mode}
+          item={item}
+          active={mode === item.mode}
+          onClick={handle(item.mode)}
+        />
       ))}
     </>
   );

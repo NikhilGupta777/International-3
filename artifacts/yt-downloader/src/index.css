@@ -1110,7 +1110,9 @@
   position: fixed; inset: 0;
   background: rgba(0,0,0,0.65);
   backdrop-filter: blur(6px);
-  z-index: 100;
+  /* Sit *under* .gs-drawer (z-index: 60) so the drawer + its labels
+     are not visually swallowed by the dim overlay on mobile. */
+  z-index: 55;
   animation: fade-in 0.18s ease-out forwards;
 }
 @keyframes fade-in {
@@ -2176,11 +2178,19 @@
   align-items: center;
   gap: 12px;
   padding: 8px 10px;
+  /* Brighter base so labels are clearly visible against the dark
+     drawer background (was inheriting 0.55 from desktop sidebar). */
+  color: rgba(255,255,255,0.88);
+}
+.gs-drawer .gs-nav-item:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.06);
 }
 .gs-drawer .gs-nav-label {
   font-size: 13px;
   max-width: none;
   text-align: left;
+  color: inherit;
 }
 
 /* Hide app's existing legacy drawer */
@@ -2933,3 +2943,271 @@
   }
 }
 
+
+/* ───────────────────────────────────────────────────────────
+   Help + Activity sidebar tabs (full-page panels, replace the
+   old floating top-right Help/Activity panel)
+   ─────────────────────────────────────────────────────────── */
+.help-page,
+.activity-page {
+  flex: 1;
+  min-height: 0;
+  background: #0a0a0c;
+  overflow-y: auto;
+}
+.help-page-inner,
+.activity-page-inner {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Help page header */
+.help-page-header,
+.activity-page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  justify-content: space-between;
+}
+.help-page-icon,
+.activity-page-icon {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.10);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.help-page-icon {
+  background: linear-gradient(135deg, rgba(45,212,191,0.18), rgba(20,184,166,0.06));
+  border-color: rgba(45,212,191,0.35);
+}
+.activity-page-icon {
+  background: linear-gradient(135deg, rgba(251,191,36,0.18), rgba(245,158,11,0.06));
+  border-color: rgba(251,191,36,0.35);
+}
+
+/* Help page grid */
+.help-page-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+@media (min-width: 768px) {
+  .help-page-grid {
+    grid-template-columns: 240px 1fr;
+  }
+}
+.help-page-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.help-page-list-btn {
+  text-align: left;
+  width: 100%;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.65);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.help-page-list-btn:hover {
+  color: #fff;
+  border-color: rgba(255,255,255,0.18);
+}
+.help-page-list-btn-active {
+  background: rgba(56,189,248,0.12);
+  border-color: rgba(56,189,248,0.45);
+  color: #fff;
+}
+.help-page-mobile-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.help-page-mobile-tabs::-webkit-scrollbar { display: none; }
+.help-page-pill {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.72);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.help-page-pill-active {
+  background: rgba(56,189,248,0.18);
+  border-color: rgba(56,189,248,0.5);
+  color: #fff;
+}
+.help-page-detail {
+  border-radius: 18px;
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.08);
+  padding: 18px 20px;
+}
+.help-page-steps {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.help-page-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: rgba(255,255,255,0.82);
+}
+.help-page-step-num {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: rgba(56,189,248,0.18);
+  border: 1px solid rgba(56,189,248,0.45);
+  color: #67e8f9;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.help-page-footer {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+/* Activity page */
+.activity-page-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.activity-page-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: rgba(255,255,255,0.45);
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+.activity-page-section-title.amber { color: rgba(251,191,36,0.8); }
+.activity-page-empty {
+  text-align: center;
+  padding: 60px 20px;
+  border-radius: 18px;
+  border: 1px dashed rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.02);
+}
+.activity-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+.activity-row-card {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  overflow: hidden;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.activity-row-card:hover {
+  border-color: rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.04);
+}
+.activity-row-active {
+  background: rgba(251,191,36,0.06);
+  border: 1px solid rgba(251,191,36,0.25);
+  border-radius: 14px;
+}
+.activity-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  margin-top: 2px;
+  align-items: center;
+}
+.activity-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.activity-icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,0.55);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.activity-icon-btn:hover {
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  border-color: rgba(255,255,255,0.12);
+}
+.activity-icon-btn-danger:hover {
+  background: rgba(239,68,68,0.12);
+  color: #fca5a5;
+  border-color: rgba(239,68,68,0.35);
+}
+
+/* ───────────────────────────────────────────────────────────
+   Mobile fixes: hide duplicate Menu icon in chat header and
+   add stronger top clearance on home title so it doesn't sit
+   behind the floating hamburger.
+   ─────────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Chat header: hide the secondary chat-history toggle on mobile.
+     The drawer hamburger occupies that slot — keeping the Menu icon
+     created a visually crowded "two-menu" header. The history pane is
+     still reachable from the desktop sidebar. */
+  .gs-chat-history-toggle { display: none !important; }
+
+  /* Home title: ensure adequate top space below the floating
+     hamburger so the title isn't clipped or overlapped. */
+  .gs-home-title {
+    margin-top: 8px;
+    padding-left: 4px;
+    padding-right: 4px;
+    text-align: center;
+  }
+
+  /* Help / Activity page padding tweak so tabs don't hug the edges */
+  .help-page-inner,
+  .activity-page-inner {
+    padding: 64px 14px 90px;
+    gap: 16px;
+  }
+}

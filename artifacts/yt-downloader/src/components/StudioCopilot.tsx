@@ -621,7 +621,10 @@ export function StudioCopilot({
           </button>
           <button
             onClick={() => setShowHistory(h => !h)}
-            className={cn("gs-chat-icon-btn", showHistory && "gs-chat-icon-btn-active")}
+            className={cn(
+              "gs-chat-icon-btn gs-chat-history-toggle",
+              showHistory && "gs-chat-icon-btn-active",
+            )}
             title="Chat history"
             aria-label="Toggle history"
           >
