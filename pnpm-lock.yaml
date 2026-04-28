@@ -506,15 +506,6 @@ importers:
         specifier: ~5.9.2
         version: 5.9.3
 
-  artifacts/video-translation-src:
-    devDependencies:
-      prettier:
-        specifier: ^3.8.1
-        version: 3.8.1
-      typescript:
-        specifier: ~5.9.2
-        version: 5.9.3
-
   artifacts/yt-downloader:
     devDependencies:
       '@hookform/resolvers':
