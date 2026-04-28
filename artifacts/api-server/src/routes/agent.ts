@@ -31,9 +31,25 @@ function getApiBase(req: any): string {
   return `${proto}://${host}/api`;
 }
 
-// â”€â”€ SSE helper â€” writes and flushes immediately â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Strip model-internal reasoning tags before sending to client ───────────
+// Some Gemini variants emit [REASONING]...[/REASONING] blocks in text output.
+// These are internal chain-of-thought traces — never show them to the user.
+function stripReasoningTags(text: string): string {
+  return text
+    .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
+    .replace(/\[reasoning\][\s\S]*?\[\/reasoning\]/gi, "")
+    .trim();
+}
+
+// ── SSE helper — writes and flushes immediately ───────────────────────────
 function sseEvent(res: any, payload: object) {
-  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  // Strip reasoning traces from text events
+  const safePayload = (payload as any).type === "text" && (payload as any).content
+    ? { ...(payload as any), content: stripReasoningTags((payload as any).content) }
+    : payload;
+  // Skip empty text events (after stripping)
+  if ((safePayload as any).type === "text" && !(safePayload as any).content) return;
+  res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
   // Triple-layer flush to guarantee real-time delivery:
   // 1. Express compression middleware (if present)
   if (typeof res.flush === "function") res.flush();

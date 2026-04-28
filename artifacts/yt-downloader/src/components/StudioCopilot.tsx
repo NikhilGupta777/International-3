@@ -757,11 +757,10 @@ export function StudioCopilot({
                 idle:      "Thinking",
               };
               const label = stageLabel[agentStage] ?? "Thinking";
-              const iterSuffix = agentIteration > 0 ? ` · step ${agentIteration}` : "";
               return (
                 <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                   className="gs-thinking">
-                  <span className="gs-thinking-text">{label}{iterSuffix}</span>
+                  <span className="gs-thinking-text">{label}</span>
                   <span className="gs-thinking-dots">
                     <span>.</span><span>.</span><span>.</span>
                   </span>
