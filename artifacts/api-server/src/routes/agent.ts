@@ -14,10 +14,11 @@ const router = Router();
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-pro";
+const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash"; // for grounded web search
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const ALLOWED_MODELS = new Set([
   "gemini-3-flash-preview", "gemini-2.5-flash",
-  "gemini-2.5-pro",
+  "gemini-2.5-pro", "gemini-2.5-flash-lite",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 300;
@@ -320,6 +321,18 @@ const STUDIO_TOOLS: any[] = [
       required: ["query"],
     },
   },
+  {
+    name: "analyze_youtube_video",
+    description: "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: { type: Type.STRING, description: "YouTube video URL (must be public)" },
+        question: { type: Type.STRING, description: "What you want to know about the video. Be specific for best results." },
+      },
+      required: ["url", "question"],
+    },
+  },
 ];
 const SYSTEM_PROMPT = `You are the VideoMaking Studio AI Copilot — a friendly, fast, action-first assistant.
 
@@ -342,6 +355,7 @@ Never say "I cannot access YouTube" or "I don't have tools". You have tools — 
 - find_best_clips: AI highlight extraction from long videos. Args: url
 - generate_timestamps: Generate chapter timestamps. Args: url
 - get_video_info: Fetch video metadata. Args: url
+- analyze_youtube_video: Watch + listen to a YouTube video with AI and answer any question about it (summarize, find moments, extract quotes, analyze speech, review content). Args: url, question
 - web_search: Search the web for real-time info, channel details, trends, anything current. Args: query
 - cancel_job: Cancel any running job. Args: jobId
 - check_job_status: Check progress of any job. Args: jobId
@@ -687,7 +701,7 @@ async function executeTool(
         // in the same request, so we use a separate AI client call here.
         const searchAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
         const searchResp = await searchAi.models.generateContent({
-          model: "gemini-2.0-flash",
+          model: SEARCH_MODEL, // gemini-2.5-flash — supports grounding + is free tier
           contents: [{ role: "user", parts: [{ text: `Search the web and answer this query concisely with facts and sources: ${query}` }] }],
           config: {
             tools: [{ googleSearch: {} }] as any,
@@ -742,6 +756,50 @@ async function executeTool(
         // All methods failed
         throw new Error(`Search unavailable: ${groundingErr?.message}`);
       }
+    }
+
+    case "analyze_youtube_video": {
+      const videoUrl = String(args.url ?? "").trim();
+      const question = String(args.question ?? "Summarize this video comprehensively.").trim();
+
+      // Validate it's a YouTube URL
+      const isYouTubeUrl = /(?:youtube\.com\/watch|youtu\.be\/)/i.test(videoUrl);
+      if (!isYouTubeUrl) throw new Error("URL must be a public YouTube video link.");
+
+      logTool("Analyzing YouTube video with Gemini Vision+Audio", { videoUrl, question });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Loading video... Gemini is watching and listening" });
+
+      // Use Gemini's native YouTube video understanding via file_data.
+      // The model receives the actual video frames + audio — it truly watches the video.
+      const videoAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const videoResp = await videoAi.models.generateContent({
+        model: ULTRA_MODEL, // Use Pro/Ultra for best video understanding
+        contents: [{
+          role: "user",
+          parts: [
+            { text: question },
+            { fileData: { fileUri: videoUrl } } as any,
+          ],
+        }],
+        config: {
+          temperature: 0.2,
+          maxOutputTokens: 4096,
+        },
+      });
+
+      const analysis = (videoResp.candidates?.[0]?.content?.parts ?? [])
+        .map((p: any) => p.text ?? "").join("").trim();
+
+      if (!analysis) throw new Error("Model returned no analysis. The video may be private or age-restricted.");
+
+      return {
+        result: { url: videoUrl, question, analysis },
+        artifact: {
+          artifactType: "text",
+          label: "Video Analysis",
+          content: analysis,
+        },
+      };
     }
 
     default:

@@ -71,6 +71,7 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   fix_subtitles:       { icon: <Captions className="w-3.5 h-3.5" />,   label: "Fixing subtitles",     color: "text-amber-400"  },
   cancel_job:          { icon: <X className="w-3.5 h-3.5" />,           label: "Cancelling job",       color: "text-red-400"    },
   check_job_status:    { icon: <Loader2 className="w-3.5 h-3.5" />,    label: "Checking status",      color: "text-white/60"   },
+  analyze_youtube_video: { icon: <span className="text-[13px]">👁️</span>, label: "Watching video",    color: "text-fuchsia-400" },
 };
 const TAB_ICONS: Record<string, React.ReactNode> = {
   download: <Download className="w-3.5 h-3.5" />, clips: <Sparkles className="w-3.5 h-3.5" />,
