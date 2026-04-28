@@ -299,49 +299,25 @@ Resources:
           VAPID_SUBJECT: !Ref VapidSubject
           DISABLE_STATIC_SERVE: "true"
 
-  HttpApi:
-    Type: AWS::ApiGatewayV2::Api
+  # ── Lambda Function URL with response streaming ──────────────────────────
+  # Replaces the previous API Gateway HTTP API. Function URLs invoked with
+  # InvokeMode=RESPONSE_STREAM forward chunked responses straight to the
+  # caller (no 30s gateway timeout, no full-response buffering) — which is
+  # what makes SSE deliver token-by-token like Replit.
+  ApiFunctionUrl:
+    Type: AWS::Lambda::Url
     Properties:
-      Name: !Sub "${Prefix}-http-api"
-      ProtocolType: HTTP
+      TargetFunctionArn: !GetAtt ApiFunction.Arn
+      AuthType: NONE
+      InvokeMode: RESPONSE_STREAM
 
-  HttpApiIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref HttpApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      PayloadFormatVersion: "2.0"
-      IntegrationUri: !GetAtt ApiFunction.Arn
-
-  HttpApiRouteApiRoot:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref HttpApi
-      RouteKey: "ANY /api"
-      Target: !Sub "integrations/${HttpApiIntegration}"
-
-  HttpApiRouteApiProxy:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref HttpApi
-      RouteKey: "ANY /api/{proxy+}"
-      Target: !Sub "integrations/${HttpApiIntegration}"
-
-  HttpApiStage:
-    Type: AWS::ApiGatewayV2::Stage
-    Properties:
-      ApiId: !Ref HttpApi
-      StageName: "$default"
-      AutoDeploy: true
-
-  ApiInvokePermission:
+  ApiFunctionUrlPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      Action: lambda:InvokeFunction
+      Action: lambda:InvokeFunctionUrl
       FunctionName: !Ref ApiFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*"
+      Principal: "*"
+      FunctionUrlAuthType: NONE
 
   StaticBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -381,12 +357,18 @@ Resources:
             S3OriginConfig: {}
             OriginAccessControlId: !GetAtt CloudFrontOac.Id
           - Id: api-origin
-            DomainName: !Select [2, !Split ["/", !GetAtt HttpApi.ApiEndpoint]]
+            DomainName: !Select [2, !Split ["/", !GetAtt ApiFunctionUrl.FunctionUrl]]
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               HTTPSPort: 443
               OriginSSLProtocols:
                 - TLSv1.2
+              # Long enough for the SSE heartbeats (every 8s in agent.ts) to
+              # keep the upstream connection alive while a long agent run
+              # streams. The default is 30s; bumping to 60 keeps us safely
+              # under CloudFront's hard 60s read timeout limit.
+              OriginReadTimeout: 60
+              OriginKeepaliveTimeout: 5
         DefaultCacheBehavior:
           TargetOriginId: static-origin
           ViewerProtocolPolicy: redirect-to-https
@@ -403,9 +385,14 @@ Resources:
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
             CachedMethods: [GET, HEAD, OPTIONS]
-            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
-            Compress: true
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad   # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac # Managed-AllViewer
+            # CRITICAL: Compress MUST be false on streaming paths.
+            # CloudFront's gzip pipeline buffers the entire response before
+            # sending — that re-introduces the very latency we're fixing by
+            # moving off API Gateway. Lambda Function URL streaming + this
+            # flag = true millisecond-level chunked SSE delivery.
+            Compress: false
         ViewerCertificate: !If
           - UseCustomDomain
           - AcmCertificateArn: !Ref CloudFrontCertificateArn
@@ -420,7 +407,8 @@ Outputs:
     Value: !Ref CloudFrontDistribution
   CloudFrontDomainName:
     Value: !GetAtt CloudFrontDistribution.DomainName
-  HttpApiEndpoint:
-    Value: !GetAtt HttpApi.ApiEndpoint
+  ApiFunctionUrl:
+    Description: Lambda Function URL (response-stream mode) sitting behind CloudFront
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
   ApiFunctionName:
     Value: !Ref ApiFunction
