@@ -916,24 +916,36 @@ router.post("/agent/chat", async (req, res) => {
       const stage = iterations === 1 ? "planning" : "executing";
       sseEvent(res, { type: "thinking", runId, stage, iteration: iterations, total: MAX_ITERATIONS });
 
-      // ── 1. Stream the AI response ─────────────────────────────────────────
-      // Send an immediate heartbeat NOW before the Gemini API call blocks.
-      // Gemini can take 5-30s to start streaming (planning phase). Without
-      // this, the proxy idle timer hits and drops the connection mid-wait.
-      if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
-      const stream = await ai.models.generateContentStream({
-        model: activeModel,
-        contents: loopContents,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
-          toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
-          temperature: 0.15,
-          maxOutputTokens: 4096,
-          // thinkingConfig: only supported on flash-thinking variants; omit for standard models
-          ...(activeModel.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
-        },
-      });
+      // ── 1. Call Gemini API — with retry on transient empty-output errors ───
+      // The error 'model output must contain either output text or tool calls'
+      // is a Gemini transient condition. We retry up to 3x before giving up.
+      let stream: AsyncIterable<any>;
+      let streamErr: Error | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1000));
+          if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
+          stream = await ai.models.generateContentStream({
+            model: activeModel,
+            contents: loopContents,
+            config: {
+              systemInstruction: SYSTEM_PROMPT,
+              tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
+              toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
+              temperature: 0.15,
+              maxOutputTokens: 4096,
+              ...(activeModel.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+            },
+          });
+          streamErr = null;
+          break; // success
+        } catch (e: any) {
+          streamErr = e;
+          const isEmptyOutputErr = /model output must contain|both be empty/i.test(e?.message ?? "");
+          if (!isEmptyOutputErr || attempt === 2) break; // non-retryable or max attempts
+        }
+      }
+      if (streamErr) throw streamErr;
 
       let fullText = "";
       const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
@@ -966,20 +978,19 @@ router.post("/agent/chat", async (req, res) => {
 
       if (!isConnected()) break;
 
-      // ── 2a. Empty response guard — retry once silently ────────────────────
+      // ── 2a. Empty response guard — retry up to 3 times silently ──────────
       // Gemini occasionally returns no text AND no function calls (e.g. quota
-      // edge cases, mid-stream interruptions). Without this guard the loop
-      // breaks with zero output, producing the "model output must contain
-      // either output text or tool calls" error the user sees.
+      // edge cases, mid-stream interruptions, or the 'model output must contain
+      // either output text or tool calls' condition). Retry silently.
       if (fullText.trim() === "" && functionCalls.length === 0) {
-        if (emptyResponseRetries < 1) {
+        if (emptyResponseRetries < 3) {
           emptyResponseRetries++;
           iterations--; // don't count against MAX_ITERATIONS
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, emptyResponseRetries * 800));
           continue;
         }
-        // Second empty response — give a graceful message and stop
-        sseEvent(res, { type: "text", content: "I hit a momentary snag — please try sending that again.", runId });
+        // Three empty responses — give graceful message and stop
+        sseEvent(res, { type: "text", content: "Hmm, I'm having trouble responding right now. Please try again in a moment.", runId });
         break;
       }
 
@@ -1074,15 +1085,25 @@ router.post("/agent/chat", async (req, res) => {
     }
   } catch (err: any) {
     if (isConnected()) {
-      // Parse Gemini API JSON error messages to show clean human-readable text
       let errMsg: string = err?.message ?? "Unknown copilot error";
+      // Specific: Gemini 'empty output' transient error — always show clean message
+      if (/model output must contain|both be empty/i.test(errMsg)) {
+        sseEvent(res, { type: "text", content: "I hit a brief connection issue — just send that again and I'll be right on it.", runId });
+        sseEvent(res, { type: "done", runId, ts: Date.now() });
+        return;
+      }
       try {
         const parsed = JSON.parse(errMsg);
         const inner = parsed?.error?.message ?? parsed?.message ?? errMsg;
         // Strip the long docs URL reference
         errMsg = String(inner).split(/\.?\s*Please refer to https?:\/\//).shift()!.trim();
       } catch { /* not JSON, use as-is */ }
-      sseEvent(res, { type: "error", message: errMsg });
+      // Also sanitize other known internal Gemini error patterns
+      errMsg = errMsg
+        .replace(/\[JUDGE\][^\]]*\]/gi, "")
+        .replace(/thought_signature/gi, "")
+        .trim();
+      sseEvent(res, { type: "error", message: errMsg || "Something went wrong — please try again." });
     }
   } finally {
     clearInterval(keepAlive);
