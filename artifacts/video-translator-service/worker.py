@@ -71,13 +71,22 @@ TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default 
 MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
 MODELSCOPE_CACHE    = Path(os.environ.get("MODELSCOPE_CACHE", str(MODEL_CACHE_DIR / "modelscope")))
 HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "huggingface")))
+ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "1").lower() == "1"
+COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "iic/CosyVoice2-0.5B")
+LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")
+LATENTSYNC_CHECKPOINT = os.environ.get("LATENTSYNC_CHECKPOINT", "latentsync_unet.pt")
 
 # ── Force HuggingFace/ModelScope offline mode ─────────────────────────────────
 # All model weights are baked into the Docker image at build time.
 # Setting these prevents network calls at job runtime.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+if ALLOW_RUNTIME_MODEL_DOWNLOADS:
+    os.environ.setdefault("HF_HUB_OFFLINE", "0")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "0")
+else:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("MODELSCOPE_CACHE", str(MODELSCOPE_CACHE))
+os.environ.setdefault("HF_HOME", str(HF_HOME))
 
 # â”€â”€ AWS Clients â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 s3 = boto3.client("s3", region_name=DYNAMODB_REGION)
@@ -390,6 +399,39 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
         log.warning(f"[Diarize] Failed: {e}")
     return segments
 
+def _find_cosyvoice_model() -> Optional[Path]:
+    for root in [
+        MODELSCOPE_CACHE / "hub" / "iic",
+        MODELSCOPE_CACHE / "hub" / "models" / "iic",
+    ]:
+        for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
+            p = root / model_name
+            if p.exists():
+                return p
+    return None
+
+
+def _link_cosyvoice_legacy_path(target: Path) -> None:
+    legacy = MODELSCOPE_CACHE / "hub" / "iic" / target.name
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    if legacy.exists() or legacy.is_symlink():
+        return
+    legacy.symlink_to(target.resolve(), target_is_directory=True)
+
+
+def _download_cosyvoice_model() -> Optional[Path]:
+    if not ALLOW_RUNTIME_MODEL_DOWNLOADS:
+        return None
+    log.info(f"[CosyVoice] Downloading {COSYVOICE_MODEL_ID} into {MODELSCOPE_CACHE}...")
+    from modelscope import snapshot_download
+
+    MODELSCOPE_CACHE.mkdir(parents=True, exist_ok=True)
+    downloaded = Path(snapshot_download(COSYVOICE_MODEL_ID, cache_dir=str(MODELSCOPE_CACHE))).resolve()
+    _link_cosyvoice_legacy_path(downloaded)
+    log.info(f"[CosyVoice] Model cache ready at {downloaded}")
+    return downloaded
+
+
 def _ensure_cosyvoice() -> Path:
     """Verify CosyVoice repo and model weights are present in the Docker image."""
     cv_dir = MODEL_CACHE_DIR / "CosyVoice"
@@ -414,27 +456,16 @@ def _ensure_cosyvoice() -> Path:
     #   modelscope <1.16  → <cache>/hub/iic/<model>
     # The Dockerfile symlinks the legacy path → the real one, but we also
     # check both here so the worker is robust to any layout drift.
-    candidate_roots = [
-        MODELSCOPE_CACHE / "hub" / "iic",
-        MODELSCOPE_CACHE / "hub" / "models" / "iic",
-    ]
-    found = None
-    for root in candidate_roots:
-        v3 = root / "CosyVoice3-0.5B"
-        v2 = root / "CosyVoice2-0.5B"
-        if v3.exists():
-            found = v3
-            break
-        if v2.exists():
-            found = v2
-            break
+    found = _find_cosyvoice_model()
+    if found is None:
+        found = _download_cosyvoice_model()
     if found is None:
         raise RuntimeError(
             f"CosyVoice model weights not found under {MODELSCOPE_CACHE}/hub/(iic|models/iic)/. "
             "Expected CosyVoice2-0.5B or CosyVoice3-0.5B. "
-            "Rebuild the Docker image — the snapshot_download step failed."
+            "Set ALLOW_RUNTIME_MODEL_DOWNLOADS=1 or rebuild with DOWNLOAD_MODELS_AT_BUILD=true."
         )
-    log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {found} ✓")
+    log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {found} verified OK")
     return cv_dir
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -768,6 +799,31 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
 # Stage 6: Lip sync (LatentSync 1.6 — graceful fallback to dubbed-audio-only)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+def _ensure_latentsync_checkpoint(ckpt_dir: Path) -> Path:
+    ckpt_path = ckpt_dir / LATENTSYNC_CHECKPOINT
+    if ckpt_path.exists():
+        return ckpt_path
+    if not ALLOW_RUNTIME_MODEL_DOWNLOADS:
+        raise RuntimeError(
+            f"LatentSync checkpoint not found at {ckpt_path}. "
+            "Set ALLOW_RUNTIME_MODEL_DOWNLOADS=1 or rebuild with DOWNLOAD_MODELS_AT_BUILD=true."
+        )
+
+    log.info(f"[LatentSync] Downloading {LATENTSYNC_CHECKPOINT} from {LATENTSYNC_REPO_ID}...")
+    from huggingface_hub import hf_hub_download
+
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    path = Path(
+        hf_hub_download(
+            LATENTSYNC_REPO_ID,
+            LATENTSYNC_CHECKPOINT,
+            local_dir=str(ckpt_dir),
+        )
+    )
+    log.info(f"[LatentSync] Checkpoint ready at {path}")
+    return path
+
+
 def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
     """LatentSync 1.6 â€” best quality lip sync (diffusion-based, 512Ã—512)."""
     out_path = out_dir / "latentsync_output.mp4"
@@ -798,7 +854,7 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
     # HF_HUB_OFFLINE=1 is set at runtime — network downloads will fail.
     # If the checkpoint is missing, the image must be rebuilt.
     ckpt_dir = ls_dir / "checkpoints"
-    ckpt_path = ckpt_dir / "latentsync_unet.pt"
+    ckpt_path = _ensure_latentsync_checkpoint(ckpt_dir)
     if not ckpt_path.exists():
         raise RuntimeError(
             f"LatentSync checkpoint not found at {ckpt_path}. "

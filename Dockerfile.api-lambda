@@ -1,6 +1,9 @@
-FROM public.ecr.aws/lambda/nodejs:20
+FROM public.ecr.aws/lambda/nodejs:22
 
-RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux" -o /usr/local/bin/yt-dlp \
+# Pin yt-dlp version for stable Docker layer caching.
+# To upgrade: bump YTDLP_VERSION here AND in deploy.yml env.YTDLP_VERSION
+ARG YTDLP_VERSION=2026.03.17
+RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" -o /usr/local/bin/yt-dlp \
     && chmod +x /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 

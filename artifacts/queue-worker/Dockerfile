@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 WORKDIR /app
 
@@ -15,13 +15,23 @@ RUN pip3 install --break-system-packages --upgrade \
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 
+# Copy only the files needed for dependency resolution first (layer cache efficiency)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+
+# Copy workspace package.json files so pnpm can resolve the graph
+# The queue-worker dynamically imports api-server modules at runtime,
+# so api-server and its dependencies must also be installed.
+COPY artifacts/queue-worker/package.json ./artifacts/queue-worker/
+COPY artifacts/api-server/package.json ./artifacts/api-server/
+
+# Install only the worker plus API packages needed by bundled dynamic imports.
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm config set network-concurrency 4 && \
+    pnpm --filter @workspace/queue-worker... --filter @workspace/api-server... install --frozen-lockfile
+
+# Copy source after dependencies are installed (maximize cache reuse)
 COPY . .
 
-RUN pnpm config set network-concurrency 1 && pnpm config set child-concurrency 1
-# Install workspace deps recursively — the worker dynamically imports
-# api-server route modules at runtime, so api-server runtime deps
-# (express, multer, etc.) must exist in this image.
-RUN pnpm -r install --frozen-lockfile
 RUN pnpm --filter @workspace/queue-worker run build
 
-CMD ["node", "artifacts/queue-worker/dist/index.cjs"]
+CMD ["node", "artifacts/queue-worker/dist/index.mjs"]

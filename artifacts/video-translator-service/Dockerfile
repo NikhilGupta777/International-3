@@ -14,8 +14,9 @@ ENV MODEL_CACHE_DIR=/model-cache
 # CosyVoice uses ModelScope (Alibaba) for iic/ model IDs — NOT HuggingFace
 ENV MODELSCOPE_CACHE=/model-cache/modelscope
 ENV HF_HOME=/model-cache/huggingface
-# NOTE: HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE are set AFTER all model downloads
-# below. Setting them here would block CosyVoice/LatentSync from downloading weights.
+ENV ALLOW_RUNTIME_MODEL_DOWNLOADS=1
+
+ARG DOWNLOAD_MODELS_AT_BUILD=false
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_DEFAULT_TIMEOUT=300
@@ -106,17 +107,23 @@ if legacy.exists() or legacy.is_symlink():
 legacy.symlink_to(target, target_is_directory=True)
 print(f"[ModelScope] Legacy path: {legacy} -> {target}")
 PY
-RUN python /tmp/download_cosyvoice.py && rm -f /tmp/download_cosyvoice.py
+RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      python /tmp/download_cosyvoice.py; \
+    else \
+      echo "Skipping CosyVoice model download during Docker build"; \
+    fi && rm -f /tmp/download_cosyvoice.py
 # Verify the weights actually landed where worker.py will look for them.
 # Accept either the legacy iic/ path or the new models/iic/ path.
-RUN (ls -la /model-cache/modelscope/hub/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (legacy path) verified OK") || \
-    (ls -la /model-cache/modelscope/hub/models/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (new path) verified OK") || \
-    (echo "ERROR: CosyVoice2-0.5B not found at either /model-cache/modelscope/hub/iic/ or /model-cache/modelscope/hub/models/iic/" && \
-     echo "--- /model-cache/modelscope tree ---" && find /model-cache/modelscope -maxdepth 5 -type d 2>/dev/null && \
-     exit 1)
+RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      (ls -la /model-cache/modelscope/hub/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (legacy path) verified OK") || \
+      (ls -la /model-cache/modelscope/hub/models/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (new path) verified OK") || \
+      (echo "ERROR: CosyVoice2-0.5B not found at either /model-cache/modelscope/hub/iic/ or /model-cache/modelscope/hub/models/iic/" && \
+       echo "--- /model-cache/modelscope tree ---" && find /model-cache/modelscope -maxdepth 5 -type d 2>/dev/null && \
+       exit 1); \
+    fi
 
 # ── Pre-download LatentSync checkpoint (~700 MB) ─────────────────────────────
-# Must happen BEFORE HF_HUB_OFFLINE=1 is set below.
+# Optional build-time cache warmup; runtime can download if this is skipped.
 # The worker checks for this file at runtime and skips the download if present.
 COPY <<'PY' /tmp/download_latentsync.py
 from huggingface_hub import hf_hub_download
@@ -127,12 +134,11 @@ print('[LatentSync] Downloading latentsync_unet.pt ...')
 path = hf_hub_download('ByteDance/LatentSync', 'latentsync_unet.pt', local_dir=str(ckpt_dir))
 print(f'[LatentSync] Checkpoint saved to {path}')
 PY
-RUN python /tmp/download_latentsync.py && rm -f /tmp/download_latentsync.py
-
-# ── Lock down all runtime network access — must be LAST before COPY ──────────
-# All model weights are now baked in. No internet access allowed at job runtime.
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
+RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      python /tmp/download_latentsync.py; \
+    else \
+      echo "Skipping LatentSync checkpoint download during Docker build"; \
+    fi && rm -f /tmp/download_latentsync.py
 
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .

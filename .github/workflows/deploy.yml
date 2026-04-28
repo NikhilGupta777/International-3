@@ -4,7 +4,24 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch: # allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      rebuild_translator:
+        description: "Rebuild the translator image"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      download_models_at_build:
+        description: "Bake CosyVoice/LatentSync model weights into translator image"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: deploy-production
@@ -17,8 +34,40 @@ env:
   ECR_WORKER_REPO: ytgrabber-green-worker
   ECR_TRANSLATOR_REPO: ytgrabber-green-translator
   CF_STACK_PREFIX: ytgrabber-green
+  YTDLP_VERSION: "2026.03.17"
 
 jobs:
+  detect-translator-changes:
+    name: Detect Translator Changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Detect translator image inputs
+        id: detect
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=${{ github.event.inputs.rebuild_translator }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="HEAD~1"
+          fi
+
+          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^artifacts/video-translator-service/(Dockerfile|requirements\.txt|constraints\.txt|worker\.py)$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # ─── Job 1: Build & push API Lambda image ────────────────────────────────────
   build-api:
     name: Build API Lambda Image
@@ -27,6 +76,8 @@ jobs:
       image_uri: ${{ steps.push.outputs.image_uri }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: false   # no submodules needed for API build
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -36,8 +87,11 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@v2
 
+      # Add buildx for layer caching support on API job (Issue 6)
+      - uses: docker/setup-buildx-action@v3
+
       - uses: pnpm/action-setup@v4
-        with: { version: latest }
+        with: { version: 10.33.0 }
 
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
@@ -50,12 +104,16 @@ jobs:
         run: |
           TAG="${GITHUB_SHA::8}"
           URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_API_REPO }}:${TAG}"
-          docker build \
+          # Pass pinned yt-dlp version so Dockerfile layer cache is stable
+          docker buildx build \
             --platform linux/amd64 \
             -f Dockerfile.api-lambda \
+            --build-arg YTDLP_VERSION=${{ env.YTDLP_VERSION }} \
+            --cache-from type=gha,scope=api-image \
+            --cache-to type=gha,mode=max,scope=api-image \
             -t "$URI" \
+            --push \
             .
-          docker push "$URI"
 
           DIGEST=$(aws ecr batch-get-image \
             --region "${{ env.AWS_REGION }}" \
@@ -81,6 +139,8 @@ jobs:
       batch_job_def: ${{ steps.register.outputs.batch_job_def }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: false
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -136,14 +196,37 @@ jobs:
           echo "✅ Batch job def: ${DEF}"
 
   # ─── Job 3: Build & push Translator Fargate image ─────────────────────────────
+  # IMPORTANT: The translator image (~20 GB) is SKIPPED on every code push.
+  # It must be triggered manually via workflow_dispatch or when the Dockerfile
+  # or requirements.txt actually changes. This prevents 60-minute builds on
+  # every commit. The deployed image tag is stored in ECR and re-used.
+  # To rebuild manually: Actions → Deploy to Production → Run workflow → check "rebuild_translator"
   build-translator:
     name: Build Translator Image
     runs-on: ubuntu-latest
+    needs: [detect-translator-changes]
+    if: ${{ needs.detect-translator-changes.outputs.changed == 'true' }}
     outputs:
       image_uri: ${{ steps.push.outputs.image_uri }}
       batch_job_def: ${{ steps.register.outputs.batch_job_def }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # Free up GitHub runner disk space before the heavy build (Issue 1 mitigation)
+      - name: Free disk space
+        run: |
+          echo "Disk before cleanup:"
+          df -h
+          # Remove large pre-installed tools not needed for translator build
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo docker system prune -af || true
+          echo "Disk after cleanup:"
+          df -h
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -159,9 +242,11 @@ jobs:
         run: |
           TAG="${GITHUB_SHA::8}"
           URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:${TAG}"
+          DOWNLOAD_MODELS="${{ github.event.inputs.download_models_at_build || 'false' }}"
           docker buildx build \
             --platform linux/amd64 \
             -f artifacts/video-translator-service/Dockerfile \
+            --build-arg DOWNLOAD_MODELS_AT_BUILD="$DOWNLOAD_MODELS" \
             -t "$URI" \
             --cache-from type=gha,scope=translator-image \
             --cache-to type=gha,mode=max,scope=translator-image \
@@ -195,16 +280,55 @@ jobs:
           REV=$(echo "$RESULT" | jq -r '.revision')
           DEF="${{ env.CF_STACK_PREFIX }}-translator-job:${REV}"
           echo "batch_job_def=${DEF}" >> "$GITHUB_OUTPUT"
-          echo "✅ Batch job def: ${DEF}"
+          echo "✅ Translator Batch job def: ${DEF}"
+
+  # ─── Job to resolve the current translator image tag (when not rebuilt) ──────
+  # When build-translator is skipped, we look up the most recent ECR image tag
+  # and use that for the Batch job definition, avoiding "job not found" errors.
+  resolve-translator:
+    name: Resolve Translator Image
+    runs-on: ubuntu-latest
+    outputs:
+      batch_job_def: ${{ steps.resolve.outputs.batch_job_def }}
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve current active translator Batch job definition
+        id: resolve
+        run: |
+          DEF=$(aws batch describe-job-definitions \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
+            --status ACTIVE \
+            --query 'sort_by(jobDefinitions, &revision)[-1].jobDefinitionName' \
+            --output text 2>/dev/null || echo "")
+          REV=$(aws batch describe-job-definitions \
+            --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
+            --status ACTIVE \
+            --query 'sort_by(jobDefinitions, &revision)[-1].revision' \
+            --output text 2>/dev/null || echo "1")
+          FULL="${DEF}:${REV}"
+          if [ -z "$DEF" ] || [ "$DEF" = "None" ] || [ -z "$REV" ] || [ "$REV" = "None" ]; then
+            echo "No active translator job definition found"
+            exit 1
+          fi
+          echo "batch_job_def=${FULL}" >> "$GITHUB_OUTPUT"
+          echo "ℹ️ Reusing existing translator job def: ${FULL}"
 
   # ─── Job 4: Deploy full stack ─────────────────────────────────────────────────
   deploy:
     name: Deploy to AWS
     runs-on: ubuntu-latest
-    needs: [build-api, build-worker, build-translator]
+    needs: [build-api, build-worker, build-translator, resolve-translator]
+    if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' && needs.resolve-translator.result == 'success' && (needs.build-translator.result == 'success' || needs.build-translator.result == 'skipped') }}
     # No environment gate — secrets are repo-level, no approval required
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: false
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -216,7 +340,7 @@ jobs:
 
       # pnpm + node needed because deploy-serverless.ps1 runs pnpm build internally
       - uses: pnpm/action-setup@v4
-        with: { version: latest }
+        with: { version: 10.33.0 }
 
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
@@ -224,53 +348,41 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       # Write env file and inject fresh runtime settings.
+      # SECURITY: All sensitive values read from GitHub Secrets — no plaintext passwords.
       - name: Write .env.green
+        env:
+          ENV_GREEN_CONTENT_SECRET: ${{ secrets.ENV_GREEN_CONTENT }}
+          GEMINI_API_KEY_SECRET: ${{ secrets.GEMINI_API_KEY }}
+          WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
+          BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
         run: |
-          printf '%s' "${{ secrets.ENV_GREEN_CONTENT }}" > /tmp/.env.green
-          sed -i "s|^YOUTUBE_BATCH_JOB_DEFINITION=.*|YOUTUBE_BATCH_JOB_DEFINITION=${{ needs.build-worker.outputs.batch_job_def }}|" /tmp/.env.green
-          sed -i '/^GEMINI_API_KEY_[2-9]=/d;/^GEMINI_API_KEY_10=/d' /tmp/.env.green
-          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
-            if grep -q '^GEMINI_API_KEY=' /tmp/.env.green; then
-              sed -i 's|^GEMINI_API_KEY=.*|GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}|' /tmp/.env.green
-            else
-              printf '\nGEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}\n' >> /tmp/.env.green
+          printf '%s' "$ENV_GREEN_CONTENT_SECRET" > /tmp/.env.green
+          upsert_env() {
+            local key="$1"
+            local value="$2"
+            if [ -z "$value" ]; then
+              return 0
             fi
-          fi
-          if grep -q '^WEBSITE_AUTH_PASSWORD=' /tmp/.env.green; then
-            sed -i 's|^WEBSITE_AUTH_PASSWORD=.*|WEBSITE_AUTH_PASSWORD=kalkiavatar@2026#vm|' /tmp/.env.green
-          else
-            printf '\nWEBSITE_AUTH_PASSWORD=kalkiavatar@2026#vm\n' >> /tmp/.env.green
-          fi
-          if grep -q '^BHAGWAT_PASSWORD=' /tmp/.env.green; then
-            sed -i 's|^BHAGWAT_PASSWORD=.*|BHAGWAT_PASSWORD=bhagwat@2026clips|' /tmp/.env.green
-          else
-            printf '\nBHAGWAT_PASSWORD=bhagwat@2026clips\n' >> /tmp/.env.green
-          fi
-          if grep -q '^YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=' /tmp/.env.green; then
-            sed -i 's|^YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=.*|YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=clip-cut,best-clips,bhagwat-analyze,bhagwat-render|' /tmp/.env.green
-          else
-            printf '\nYOUTUBE_QUEUE_PRIMARY_JOB_TYPES=clip-cut,best-clips,bhagwat-analyze,bhagwat-render\n' >> /tmp/.env.green
-          fi
-          if grep -q '^SUBTITLES_FORCE_LAMBDA=' /tmp/.env.green; then
-            sed -i 's|^SUBTITLES_FORCE_LAMBDA=.*|SUBTITLES_FORCE_LAMBDA=true|' /tmp/.env.green
-          else
-            printf '\nSUBTITLES_FORCE_LAMBDA=true\n' >> /tmp/.env.green
-          fi
-          if grep -q '^YTDLP_COOKIES_FILE=' /tmp/.env.green; then
-            sed -i 's|^YTDLP_COOKIES_FILE=.*|YTDLP_COOKIES_FILE=/tmp/yt-cookies.txt|' /tmp/.env.green
-          else
-            printf '\nYTDLP_COOKIES_FILE=/tmp/yt-cookies.txt\n' >> /tmp/.env.green
-          fi
-          if grep -q '^TRANSLATOR_BATCH_JOB_DEFINITION=' /tmp/.env.green; then
-            sed -i "s|^TRANSLATOR_BATCH_JOB_DEFINITION=.*|TRANSLATOR_BATCH_JOB_DEFINITION=${{ needs.build-translator.outputs.batch_job_def }}|" /tmp/.env.green
-          else
-            printf '\nTRANSLATOR_BATCH_JOB_DEFINITION=${{ needs.build-translator.outputs.batch_job_def }}\n' >> /tmp/.env.green
-          fi
-          if grep -q '^TRANSLATOR_BATCH_JOB_QUEUE=' /tmp/.env.green; then
-            sed -i "s|^TRANSLATOR_BATCH_JOB_QUEUE=.*|TRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-gpu-queue|" /tmp/.env.green
-          else
-            printf '\nTRANSLATOR_BATCH_JOB_QUEUE=${{ env.CF_STACK_PREFIX }}-gpu-queue\n' >> /tmp/.env.green
-          fi
+            local escaped
+            escaped=$(printf '%s' "$value" | sed -e 's/[\/&|]/\\&/g')
+            if grep -q "^${key}=" /tmp/.env.green; then
+              sed -i "s|^${key}=.*|${key}=${escaped}|" /tmp/.env.green
+            else
+              printf '\n%s=%s\n' "$key" "$value" >> /tmp/.env.green
+            fi
+          }
+          upsert_env "YOUTUBE_BATCH_JOB_DEFINITION" "${{ needs.build-worker.outputs.batch_job_def }}"
+          sed -i '/^GEMINI_API_KEY_[2-9]=/d;/^GEMINI_API_KEY_10=/d' /tmp/.env.green
+          upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
+          upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
+          upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"
+          upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,best-clips,bhagwat-analyze,bhagwat-render"
+          upsert_env "SUBTITLES_FORCE_LAMBDA" "true"
+          upsert_env "YTDLP_COOKIES_FILE" "/tmp/yt-cookies.txt"
+          # Use the newly built translator job def if available, otherwise use the resolved existing one
+          TRANSLATOR_JOB_DEF="${{ needs.build-translator.outputs.batch_job_def || needs.resolve-translator.outputs.batch_job_def }}"
+          upsert_env "TRANSLATOR_BATCH_JOB_DEFINITION" "$TRANSLATOR_JOB_DEF"
+          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE" "${{ env.CF_STACK_PREFIX }}-gpu-queue"
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.
@@ -292,6 +404,17 @@ jobs:
             throw
           }
 
+      - name: Apply ECR lifecycle policy to all repos
+        run: |
+          POLICY='{"rules":[{"rulePriority":1,"description":"Keep last 5 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
+          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }}; do
+            aws ecr put-lifecycle-policy \
+              --repository-name "$REPO" \
+              --lifecycle-policy-text "$POLICY" \
+              --region "${{ env.AWS_REGION }}" \
+              2>/dev/null && echo "✅ Lifecycle policy applied to $REPO" || echo "⚠️ Could not apply lifecycle policy to $REPO (repo may not exist yet)"
+          done
+
       - name: Summary
         run: |
           echo "## ✅ Deployed to Production" >> $GITHUB_STEP_SUMMARY
@@ -301,7 +424,7 @@ jobs:
           echo "| **Commit** | \`${GITHUB_SHA::8}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **API image** | \`${{ needs.build-api.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Worker image** | \`${{ needs.build-worker.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Batch job** | \`${{ needs.build-worker.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Translator image** | \`${{ needs.build-translator.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Translator Batch job** | \`${{ needs.build-translator.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
+          TRANSLATOR_JOB_DEF="${{ needs.build-translator.outputs.batch_job_def || needs.resolve-translator.outputs.batch_job_def }}"
+          echo "| **Worker Batch job** | \`${{ needs.build-worker.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Translator Batch job** | \`${TRANSLATOR_JOB_DEF}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Live** | https://videomaking.in |" >> $GITHUB_STEP_SUMMARY

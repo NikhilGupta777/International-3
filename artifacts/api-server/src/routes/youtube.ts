@@ -15,6 +15,7 @@ import {
   chmodSync,
   unlinkSync,
   rmdirSync,
+  rmSync,
   statSync,
   createReadStream,
   readFileSync,
@@ -273,13 +274,17 @@ const MAX_FILE_AGE_MS = 3 * 60 * 60 * 1000;
 function cleanupOldFiles() {
   try {
     const now = Date.now();
-    const files = readdirSync(DOWNLOAD_DIR);
-    for (const file of files) {
-      const filePath = join(DOWNLOAD_DIR, file);
+    const entries = readdirSync(DOWNLOAD_DIR);
+    for (const entry of entries) {
+      const filePath = join(DOWNLOAD_DIR, entry);
       try {
         const stat = statSync(filePath);
         if (now - stat.mtimeMs > MAX_FILE_AGE_MS) {
-          unlinkSync(filePath);
+          if (stat.isDirectory()) {
+            rmSync(filePath, { recursive: true, force: true });
+          } else {
+            unlinkSync(filePath);
+          }
         }
       } catch {}
     }

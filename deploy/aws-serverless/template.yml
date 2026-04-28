@@ -151,6 +151,12 @@ Resources:
           - ObjectOwnership: BucketOwnerEnforced
       VersioningConfiguration:
         Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-site-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
 
   CloudFrontOac:
     Type: AWS::CloudFront::OriginAccessControl
@@ -256,7 +262,7 @@ Resources:
       MemorySize: 1536
       Timeout: 900
       EphemeralStorage:
-        Size: 1024
+        Size: 5120
       Environment:
         Variables:
           NODE_ENV: production
