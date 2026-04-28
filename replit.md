@@ -131,6 +131,65 @@ The yt-downloader frontend was redesigned to mirror Genspark AI's look:
 - **Page state (`pages/Home.tsx`)**: Mode union now includes `"home"` and is the default; Sidebar's `onNewChat` increments `copilotResetKey` and routes back to "home". Home renders `<StudioHome>` for the new mode and keeps all existing modes intact.
 - **Styles**: ~770 lines of `gs-*` classes appended to `src/index.css` (rail, drawer, home, input card, agents row, chat header, welcome, thinking indicator, mode tabs, paste pill, send/stop). Old `studio-nav-rail` and `studio-topbar` are hidden via `display:none`. Backend, SSE streaming, and default Gemini model (`gemini-2.5-flash`) were not touched.
 
+## Production SSE Streaming via Lambda Function URL (Apr 2026)
+
+The production site (videomaking.in, AWS Lambda + CloudFront) was buffering all
+agent SSE responses and timing out at 30 s, while Replit dev was streaming
+chunk-by-chunk in milliseconds. Root causes were API Gateway HTTP API (buffers
+the entire Lambda response and enforces a hard 30 s timeout), `serverless-http`
+(buffers `res.write()` chunks), and CloudFront `Compress: true` on `/api*`
+(gzip pipeline holds the whole body).
+
+**Fix — switch the API Lambda from API Gateway to a Lambda Function URL with
+`InvokeMode: RESPONSE_STREAM`**, fronted by the same CloudFront distribution
+with compression disabled on the `/api*` behavior:
+
+- `artifacts/api-server/src/lib/lambda-stream.ts` (new): Express ↔ Lambda
+  streaming bridge. Spins up a tiny `http.createServer(app)` bound to
+  `127.0.0.1:0` once per cold start, then per invocation translates the
+  Function URL event into a real `http.request()` to that server and pipes
+  response chunks straight into `awslambda.HttpResponseStream`. Real Node
+  http machinery handles parsing, headers, keep-alive, and backpressure —
+  we just forward bytes. Also seeds `process.env.INTERNAL_API_BASE` to
+  `http://127.0.0.1:<port>` so the agent's internal tool calls hit the
+  in-process server instead of recursively invoking another Lambda via the
+  public Function URL host.
+- `artifacts/api-server/src/lambda.ts`: replaced `serverless-http` with a
+  single `awslambda.streamifyResponse(...)` handler that routes
+  `event.source === "videomaking.timestamps" | "videomaking.subtitles"` to
+  the existing async workers (response stream is discarded by Lambda for
+  `InvocationType: Event`) and everything else through the streaming bridge.
+- `deploy/aws-serverless/template.yml`: removed `HttpApi`,
+  `HttpApiIntegration`, the two routes, `HttpApiStage`, and the
+  `apigateway.amazonaws.com` invoke permission. Added `ApiFunctionUrl`
+  (`AWS::Lambda::Url`, `AuthType: NONE`, `InvokeMode: RESPONSE_STREAM`) and
+  `ApiFunctionUrlPermission` (`lambda:InvokeFunctionUrl` for everyone — the
+  function still requires the cookie-based Express auth). CloudFront
+  `api-origin` now points at the Function URL hostname; the `/api*` cache
+  behavior sets `Compress: false` (critical — gzip would re-buffer the
+  stream) and `OriginReadTimeout: 60` (the agent's 8 s heartbeats keep the
+  upstream alive indefinitely under that ceiling). The `HttpApiEndpoint`
+  output is replaced by `ApiFunctionUrl`.
+- `Dockerfile.api-lambda`, `.github/workflows/deploy.yml`, and
+  `deploy/aws-serverless/deploy-serverless.ps1` did not need changes — the
+  CMD still points at `lambda.handler`, the build pipeline is unchanged,
+  and the deploy script reads no API-Gateway-specific outputs.
+
+## Studio Agent System Prompt Rewrite (Apr 2026)
+
+Replaced the loose "be friendly" `SYSTEM_PROMPT` in
+`artifacts/api-server/src/routes/agent.ts` with a structured prompt covering:
+voice rules (one short sentence before each tool call, no internal-stage
+leaks), iron rules (never refuse, never invent timestamps/URLs, respect what
+the user already supplied), a tool-selection heuristics table mapping common
+user phrasings to the cheapest tool, multi-step reasoning examples (chain up
+to MAX_ITERATIONS calls in one turn), per-tool quality defaults, an explicit
+uploaded-file branch (use the attached URL — do not ask for a YouTube link),
+and a concrete failure-handling protocol (retry transient errors once, otherwise
+say what specifically failed and offer the next-best option). The trailing
+`[SUGGESTIONS: "a" | "b" | "c"]` parser contract is preserved exactly so the
+existing extraction in the SSE loop keeps working.
+
 ## Mobile UI Fixes + Help/Activity Sidebar Tabs (Apr 2026)
 
 Mobile drawer + chat-header crowding cleanup, plus a refactor of Help and Activity from a floating top-right panel into proper sidebar tabs:
