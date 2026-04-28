@@ -1077,11 +1077,7 @@ router.get("/youtube/timestamps/stream/:jobId", async (req: Request, res: Respon
 
   // ── Lambda mode: poll DynamoDB ────────────────────────────────────────────
   if (!tsJobs.has(jobId) && ddb && JOB_TABLE) {
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders();
+    setupSse(res);
 
     const send = (data: object) => {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -1147,11 +1143,7 @@ router.get("/youtube/timestamps/stream/:jobId", async (req: Request, res: Respon
     return;
   }
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders();
+  setupSse(res);
 
   const send = (data: object) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
