@@ -1,6 +1,6 @@
 # AWS Batch GPU Worker requirements
 # NOTE: PyTorch + torchaudio are installed via CUDA wheel in Dockerfile.
-# NOTE: LatentSync and MuseTalk deps are installed lazily at first runtime.
+# NOTE: LatentSync deps are installed lazily at first runtime.
 # NOTE: demucs and pyannote are optional and installed lazily too (USE_DEMUCS / MULTI_SPEAKER flags).
 
 # ── Core worker runtime ───────────────────────────────────────────────────────
@@ -34,7 +34,6 @@ encodec==0.1.1
 hyperpyyaml==1.2.2
 inflect==7.0.0
 omegaconf==2.3.0
-openai-whisper==20231117
 
 # ── TTS fallbacks ─────────────────────────────────────────────────────────────
 edge-tts==6.1.9

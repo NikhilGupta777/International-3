@@ -14,9 +14,9 @@ ENV MODEL_CACHE_DIR=/model-cache
 # CosyVoice uses ModelScope (Alibaba) for iic/ model IDs — NOT HuggingFace
 ENV MODELSCOPE_CACHE=/model-cache/modelscope
 ENV HF_HOME=/model-cache/huggingface
-# Prevent any runtime HuggingFace/Transformers network calls
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
+# NOTE: HF_HUB_OFFLINE and TRANSFORMERS_OFFLINE are set AFTER all model downloads
+# below. Setting them here would block CosyVoice/LatentSync from downloading weights.
+
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_DEFAULT_TIMEOUT=300
 
@@ -48,9 +48,6 @@ RUN git clone --depth 1 --recurse-submodules \
 
 RUN git clone --depth 1 \
     https://github.com/bytedance/LatentSync.git /model-cache/LatentSync
-
-RUN git clone --depth 1 \
-    https://github.com/TMElyralab/MuseTalk.git /model-cache/MuseTalk
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 WORKDIR /app
@@ -117,6 +114,24 @@ RUN (ls -la /model-cache/modelscope/hub/iic/CosyVoice2-0.5B 2>/dev/null && echo 
     (echo "ERROR: CosyVoice2-0.5B not found at either /model-cache/modelscope/hub/iic/ or /model-cache/modelscope/hub/models/iic/" && \
      echo "--- /model-cache/modelscope tree ---" && find /model-cache/modelscope -maxdepth 5 -type d 2>/dev/null && \
      exit 1)
+
+# ── Pre-download LatentSync checkpoint (~700 MB) ─────────────────────────────
+# Must happen BEFORE HF_HUB_OFFLINE=1 is set below.
+# The worker checks for this file at runtime and skips the download if present.
+RUN python -c "
+from huggingface_hub import hf_hub_download
+import pathlib
+ckpt_dir = pathlib.Path('/model-cache/LatentSync/checkpoints')
+ckpt_dir.mkdir(parents=True, exist_ok=True)
+print('[LatentSync] Downloading latentsync_unet.pt ...')
+path = hf_hub_download('ByteDance/LatentSync', 'latentsync_unet.pt', local_dir=str(ckpt_dir))
+print(f'[LatentSync] Checkpoint saved to {path}')
+"
+
+# ── Lock down all runtime network access — must be LAST before COPY ──────────
+# All model weights are now baked in. No internet access allowed at job runtime.
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .

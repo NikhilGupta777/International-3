@@ -1,5 +1,5 @@
 """
-AWS Batch GPU Worker â€” Video Translator
+AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
     CMD ["python", "worker.py"]
@@ -14,7 +14,7 @@ Pipeline:
   5. Optional: pyannote speaker diarization
   6. Translate segments (Gemini 3 Flash dubbing-aware)
   7. Voice clone (CosyVoice 3.0 â†’ edge-tts fallback â†’ gTTS emergency)
-  8. Lip sync (LatentSync 1.6 default â†’ MuseTalk fast fallback)
+  8. Lip sync (LatentSync 1.6 -- graceful fallback to dubbed-audio-only on failure)
   9. Audio mix + normalize
  10. FFmpeg final mux
  11. Upload MP4 + SRT + transcript JSON to S3
@@ -65,7 +65,7 @@ LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
 USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
 MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "false").lower() == "true"
 ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
-LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | musetalk
+LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync (only supported mode)
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget | premium
 
 MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
@@ -598,20 +598,37 @@ def synthesize_segments_cosyvoice(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = None
     last_err: Optional[Exception] = None
-    # Try v2 first — it's baked into the Docker image.
-    # v3 is attempted as an upgrade path if ever added to the image.
-    for model_id in ("iic/CosyVoice2-0.5B", "iic/CosyVoice3-0.5B"):
+
+    # Resolve the actual on-disk path from the ModelScope cache.
+    # CosyVoice2 constructor expects a directory path, NOT a ModelScope model ID.
+    # We check both the legacy and new cache layouts baked in by the Dockerfile.
+    def _resolve_model_path(model_name: str) -> Optional[Path]:
+        for root in [
+            MODELSCOPE_CACHE / "hub" / "iic",
+            MODELSCOPE_CACHE / "hub" / "models" / "iic",
+        ]:
+            p = root / model_name
+            if p.exists():
+                return p
+        return None
+
+    # Try v2 first (baked into Docker image), then v3 if ever added.
+    for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
+        model_path = _resolve_model_path(model_name)
+        if model_path is None:
+            log.warning(f"[CosyVoice] {model_name} not found in cache, skipping.")
+            continue
         try:
-            log.info(f"[CosyVoice] Loading {model_id} on {device}...")
-            model = _CosyVoice(model_id, load_jit=False, load_trt=False)
+            log.info(f"[CosyVoice] Loading {model_name} from {model_path} on {device}...")
+            model = _CosyVoice(str(model_path), load_jit=False, load_trt=False)
             break
         except Exception as e:
             last_err = e
-            log.warning(f"[CosyVoice] Failed loading {model_id}: {e}")
+            log.warning(f"[CosyVoice] Failed loading {model_name}: {e}")
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
 
-    # Prepare 16kHz mono reference clip (â‰¤30 s)
+    # Prepare 16kHz mono reference clip (≤30 s)
     ref_wav, ref_sr = torchaudio.load(str(reference_audio))
     if ref_wav.shape[0] > 1:
         ref_wav = ref_wav.mean(0, keepdim=True)
@@ -632,7 +649,7 @@ def synthesize_segments_cosyvoice(
         text = seg["translated_text"].strip()
         if not text:
             duration = seg["end"] - seg["start"]
-            run_ffmpeg("-f", "lavfi", "-i", f"anullsrc=r=22050:cl=mono",
+            run_ffmpeg("-f", "lavfi", "-i", f"anullsrc=r=24000:cl=mono",
                        "-t", str(duration), str(out_path))
         else:
             try:
@@ -641,10 +658,10 @@ def synthesize_segments_cosyvoice(
                     prompt_text=prompt_text,
                     prompt_speech_16k=ref_wav,
                     stream=False,
-                    speed=float(seg.get("speaking_rate", 1.0)),
                 ))
                 audio_data = torch.cat([c["tts_speech"] for c in chunks], dim=1)
-                torchaudio.save(str(out_path), audio_data, 22050)
+                # CosyVoice2 native sample rate is 24000 Hz
+                torchaudio.save(str(out_path), audio_data, 24000)
             except Exception as e:
                 raise RuntimeError(
                     f"CosyVoice failed for segment {seg['id']}: {e}"
@@ -672,7 +689,7 @@ def synthesize_edge_tts_single(seg: dict, out_dir: Path) -> Path:
 
     asyncio.run(_run())
 
-    # Convert mp3 â†’ wav
+    # Convert mp3 → wav
     wav_path = out_path.with_suffix(".wav")
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
@@ -719,9 +736,9 @@ def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -
     return paths, False  # ← clone was NOT used
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Stage 5: Timing adapter â€” fit TTS audio to original segment duration
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ——————————————————————————————————————————————————————————————————————————————————————————————————
+# Stage 5: Timing adapter — fit TTS audio to original segment duration
+# ——————————————————————————————————————————————————————————————————————————————————————————————————
 
 def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Path) -> Path:
     """
@@ -748,7 +765,7 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Stage 6: Lip sync (LatentSync 1.6 â†’ MuseTalk fallback)
+# Stage 6: Lip sync (LatentSync 1.6 — graceful fallback to dubbed-audio-only)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
@@ -777,17 +794,16 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
             log.warning(f"[LatentSync] pip install had errors (ignoring): {result.stderr[-500:]}")
         _latentsync_deps_flag.touch()
 
-    # Download checkpoint from HuggingFace if missing
+    # Checkpoint is pre-downloaded into the Docker image at build time.
+    # HF_HUB_OFFLINE=1 is set at runtime — network downloads will fail.
+    # If the checkpoint is missing, the image must be rebuilt.
     ckpt_dir = ls_dir / "checkpoints"
-    ckpt_dir.mkdir(exist_ok=True)
     ckpt_path = ckpt_dir / "latentsync_unet.pt"
     if not ckpt_path.exists():
-        log.info("[LatentSync] Downloading checkpoint from HuggingFace...")
-        subprocess.run([
-            sys.executable, "-c",
-            "from huggingface_hub import hf_hub_download; "
-            f"hf_hub_download('ByteDance/LatentSync', 'latentsync_unet.pt', local_dir='{ckpt_dir}')"
-        ], check=True)
+        raise RuntimeError(
+            f"LatentSync checkpoint not found at {ckpt_path}. "
+            "Rebuild the Docker image — the build-time checkpoint download step failed."
+        )
 
     result = subprocess.run([
         sys.executable, "scripts/inference.py",
@@ -806,82 +822,26 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
     return out_path
 
 
-def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """MuseTalk â€” fast real-time lip sync (30fps+), used as fallback."""
-    musetalk_dir = MODEL_CACHE_DIR / "MuseTalk"
 
-    if not musetalk_dir.exists():
-        raise RuntimeError(
-            f"MuseTalk repo not found at {musetalk_dir}. "
-            "Translator image is missing preloaded model dependencies."
-        )
-
-    # Install MuseTalk deps lazily on first run (not in CI build to keep image fast)
-    _musetalk_deps_flag = musetalk_dir / ".deps_installed"
-    if not _musetalk_deps_flag.exists():
-        log.info("[MuseTalk] Installing runtime deps (first run only)...")
-        if (musetalk_dir / "requirements.txt").exists():
-            result = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary",
-                 "-r", str(musetalk_dir / "requirements.txt")],
-                check=False,
-                capture_output=True,
-                text=True
-            )
-            if result.returncode != 0:
-                log.warning(f"[MuseTalk] pip install had errors (ignoring): {result.stderr[-500:]}")
-        _musetalk_deps_flag.touch()
-
-    result = subprocess.run([
-        sys.executable, "inference.py",
-        "--video_path", str(video_path),
-        "--audio_path", str(dubbed_audio),
-        "--result_dir", str(out_dir),
-        "--fps", "25",
-    ], capture_output=True, text=True, cwd=str(musetalk_dir))
-
-    if result.returncode != 0:
-        raise RuntimeError(f"MuseTalk failed:\n{result.stderr[-1000:]}")
-
-    candidates = list(out_dir.glob("*.mp4"))
-    if not candidates:
-        raise FileNotFoundError("MuseTalk did not produce output")
-    log.info(f"[MuseTalk] Done â†’ {candidates[0]}")
-    return candidates[0]
-
-
-def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """Lip sync router: LatentSync 1.6 (best) â†’ MuseTalk (fast fallback)."""
-    quality = LIP_SYNC_QUALITY
-    log.info(f"[LipSync] Requested mode: {quality}")
-    errors: list[str] = []
-
-    # LatentSync is default (best quality)
-    if quality in ("latentsync", "default"):
-        try:
-            return run_lipsync_latentsync(video_path, dubbed_audio, out_dir)
-        except Exception as e:
-            errors.append(f"LatentSync: {e}")
-            log.warning(f"[LipSync] LatentSync failed, falling back to MuseTalk: {e}")
-
-    # MuseTalk as fast fallback or explicit choice
+def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Optional[Path]:
+    """
+    Lip sync via LatentSync 1.6.
+    Returns lipsync output path on success, or None on failure.
+    Caller is responsible for falling back to plain audio mux.
+    """
+    log.info("[LipSync] Running LatentSync...")
     try:
-        return run_lipsync_musetalk(video_path, dubbed_audio, out_dir)
+        return run_lipsync_latentsync(video_path, dubbed_audio, out_dir)
     except Exception as e:
-        errors.append(f"MuseTalk: {e}")
-        warn_msg = "Lip sync failed on all backends: " + " | ".join(errors)
-        log.warning(f"[LipSync] {warn_msg}")
-        # AUTO-FALLBACK: Do NOT raise — continue with the dubbed-audio video
-        # (no mouth movement) so the translation still completes successfully.
+        warn_msg = f"LatentSync failed: {e}"
+        log.warning(f"[LipSync] {warn_msg} -- continuing with dubbed audio only.")
         update_progress(
             "LIPSYNC", 82,
-            f"⚠️ Lip sync unavailable (model deps issue) — continuing without lip sync. Video will have dubbed audio only.",
+            "Lip sync unavailable -- video will have dubbed audio only.",
             {"lipsync_warning": warn_msg}
         )
-        # Return the original (non-lip-synced) video so the rest of the pipeline continues
-        return video_path
+        return None  # Caller will mux dubbed audio into original video
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 7: Assemble per-segment audio into one dubbed audio track
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -1122,9 +1082,15 @@ def main():
             lip_dir = work_dir / "lipsync"
             lip_dir.mkdir()
             lipsync_video = run_lipsync(video_path, dubbed_audio, lip_dir)
-            # Lipsync output has its own audio baked in, just copy
-            shutil.copy(lipsync_video, final_video_path)
-            update_progress("LIPSYNC", 82, "Lip sync complete.")
+            if lipsync_video is not None:
+                # Lipsync output has dubbed audio baked in — just copy
+                shutil.copy(lipsync_video, final_video_path)
+                update_progress("LIPSYNC", 82, "Lip sync complete.")
+            else:
+                # Lipsync failed gracefully — mux dubbed audio into original video
+                log.warning("[Main] Lip sync failed, muxing dubbed audio without lip sync.")
+                update_progress("MERGING", 78, "Merging video and dubbed audio (no lip sync)...")
+                mux_final_video(video_path, dubbed_audio, final_video_path)
         else:
             update_progress("MERGING", 78, "Merging video and dubbed audio...")
             mux_final_video(video_path, dubbed_audio, final_video_path)

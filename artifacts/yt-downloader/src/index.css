@@ -2727,6 +2727,31 @@
 }
 .gs-paste-pill:hover { background: rgba(56,189,248,0.16); }
 
+/* ── Suggestion chips (follow-up actions after agent response) ──────────── */
+.gs-suggestion-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.68);
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+.gs-suggestion-chip:hover {
+  background: rgba(56,189,248,0.10);
+  border-color: rgba(56,189,248,0.32);
+  color: #e0f9ff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(56,189,248,0.12);
+}
+
 /* ── Thinking indicator (Genspark exact) ──────────────── */
 .gs-thinking {
   display: inline-flex;

@@ -43,6 +43,7 @@ type SseEvent =
   | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
   | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string }
+  | { type: "suggestions"; items: string[]; runId?: string }
   | { type: "error"; message: string }
   | { type: "done"; runId?: string; ts?: number };
 
@@ -64,6 +65,12 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   generate_timestamps: { icon: <AlarmClock className="w-3.5 h-3.5" />, label: "Timestamps",           color: "text-orange-400" },
   list_shared_files:   { icon: <UploadCloud className="w-3.5 h-3.5" />,label: "Shared files",         color: "text-pink-400"   },
   navigate_to_tab:     { icon: <ChevronRight className="w-3.5 h-3.5" />,label: "Navigating",          color: "text-white/60"   },
+  web_search:          { icon: <span className="text-[13px]">🔍</span>,  label: "Searching the web",   color: "text-sky-400"    },
+  translate_video:     { icon: <span className="text-[13px]">🎙️</span>,  label: "Translating video",   color: "text-violet-400" },
+  get_youtube_captions:{ icon: <Captions className="w-3.5 h-3.5" />,   label: "Getting captions",     color: "text-teal-400"   },
+  fix_subtitles:       { icon: <Captions className="w-3.5 h-3.5" />,   label: "Fixing subtitles",     color: "text-amber-400"  },
+  cancel_job:          { icon: <X className="w-3.5 h-3.5" />,           label: "Cancelling job",       color: "text-red-400"    },
+  check_job_status:    { icon: <Loader2 className="w-3.5 h-3.5" />,    label: "Checking status",      color: "text-white/60"   },
 };
 const TAB_ICONS: Record<string, React.ReactNode> = {
   download: <Download className="w-3.5 h-3.5" />, clips: <Sparkles className="w-3.5 h-3.5" />,
@@ -79,6 +86,22 @@ const STARTERS = [
   { icon: <Download className="w-4 h-4" />, text: "Download this YouTube video in 1080p" },
   { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
+
+// ── Client-side tag stripper ───────────────────────────────────────────────────
+function clientStripTags(text: string): string {
+  return text
+    .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
+    .replace(/\[THOUGHT\][\s\S]*?\[\/THOUGHT\]/gi, "")
+    .replace(/\[RESPONSE\][\s\S]*?\[\/RESPONSE\]/gi, "")
+    .replace(/\[JUDGE\][\s\S]*?\[\/JUDGE\]/gi, "")
+    .replace(/^\[THOUGHT\].*$/gim, "")
+    .replace(/^\[RESPONSE\].*$/gim, "")
+    .replace(/^\[JUDGE\].*$/gim, "")
+    .replace(/\[SUGGESTIONS:[^\]]*\]/gi, "")
+    .replace(/\[SUGOESTIONS:[^\]]*\]/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
 function renderMd(text: string): React.ReactNode {
@@ -251,11 +274,14 @@ function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onN
       <div className={cn("flex flex-col gap-2 max-w-[88%] sm:max-w-[80%]", isUser && "items-end")}>
         {message.parts.map((part, i) => {
           if (part.kind === "text" && part.content.trim()) {
-            const isErrorMsg = !isUser && part.content.startsWith("⚠️");
+            // Strip internal model tags on the client side as a safety net
+            const cleanContent = clientStripTags(part.content);
+            if (!cleanContent.trim()) return null;
+            const isErrorMsg = !isUser && cleanContent.startsWith("⚠️");
             return (
               <div key={i} className={cn("group/bubble relative rounded-2xl px-4 py-3 text-sm leading-relaxed",
                 isUser ? "bg-[#dc2626] text-white rounded-tr-sm" : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md")}>
-                {isUser ? part.content : renderMd(part.content)}
+                {isUser ? cleanContent : renderMd(cleanContent)}
                 {/* Copy button — assistant messages only, hover-reveal */}
                 {!isUser && (
                   <div className="absolute top-2 right-2 flex gap-1">
@@ -313,6 +339,7 @@ export function StudioCopilot({
   const [agentIteration, setAgentIteration] = useState(0);
   const [pasteUrl, setPasteUrl] = useState<string | null>(null);
   const [ultra, setUltra] = useState<boolean>(readUltraInitial);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const { toast } = useToast();
   useEffect(() => {
     try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch {}
@@ -320,54 +347,119 @@ export function StudioCopilot({
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<Array<{
+    type: "image" | "video" | "audio" | "document";
+    name: string;
+    mimeType: string;
+    data?: string;   // base64 for images (no data: prefix)
+    url?: string;    // S3 URL for video/audio/docs
+    previewUrl?: string; // object URL for image preview chip
+  }>>([]);
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    const MAX_MB = 50;
+    if (file.size > MAX_MB * 1024 * 1024) {
+      toast({ title: "File too large", description: `Max ${MAX_MB} MB for agent attachments.`, variant: "destructive" });
+      return;
+    }
+
+    // Classify file type
+    const isImage = file.type.startsWith("image/");
+    const isVideo = file.type.startsWith("video/");
+    const isAudio = file.type.startsWith("audio/");
+    const isText = file.type.startsWith("text/") || /\.(srt|vtt|txt|md|csv|json)$/i.test(file.name);
+    const attachType: "image" | "video" | "audio" | "document" =
+      isImage ? "image" : isVideo ? "video" : isAudio ? "audio" : "document";
+
+    if (isImage) {
+      // Images: read locally with FileReader — instant, no network, goes to Gemini Vision
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
+        const base64 = dataUrl.split(",")[1];
+        const previewUrl = URL.createObjectURL(file);
+        setPendingAttachments(prev => [...prev, {
+          type: "image", name: file.name, mimeType: file.type,
+          data: base64, previewUrl,
+        }]);
+        toast({ title: "Image attached", description: `${file.name} — agent can see it` });
+      };
+      reader.onerror = () => toast({ title: "Could not read image", variant: "destructive" });
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    if (isText) {
+      // Text/SRT/TXT: read content locally and inject as document attachment — instant, no upload
+      const reader = new FileReader();
+      reader.onload = () => {
+        const content = reader.result as string;
+        // Inject directly as a text attachment so agent can read the full content
+        setPendingAttachments(prev => [...prev, {
+          type: "document", name: file.name, mimeType: "text/plain",
+          url: `data:text/plain,${encodeURIComponent(content.slice(0, 32000))}`,
+        }]);
+        toast({ title: "File attached", description: `${file.name} — agent will read the content` });
+      };
+      reader.onerror = () => toast({ title: "Could not read file", variant: "destructive" });
+      reader.readAsText(file);
+      return;
+    }
+
+    // Video / audio / docs: upload to S3 so agent tools can use the URL
     try {
       setUploading(true);
-      const res = await fetch(`${BASE}/api/uploads/presign`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          size: file.size,
-          mimeType: file.type || "application/octet-stream",
-          visibility: "public"
-        })
+      const presignRes = await fetch(`${BASE}/api/uploads/presign`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, size: file.size, mimeType: file.type, visibility: "public" }),
       });
-      if (!res.ok) throw new Error("Presign failed");
-      const { fileId, uploadType, presignedUrl, uploadId, parts } = await res.json();
-      
-      if (uploadType === "single") {
-        const putRes = await fetch(presignedUrl, {
-          method: "PUT",
-          body: file,
-          headers: { "Content-Type": file.type || "application/octet-stream" }
-        });
-        if (!putRes.ok) throw new Error("Upload to S3 failed");
-      } else {
-        throw new Error("Multipart upload not implemented for simple attachment");
+      if (!presignRes.ok) {
+        const e = await presignRes.json().catch(() => ({})) as any;
+        const errMsg = e?.error ?? `Server error ${presignRes.status}`;
+        // Give a more helpful error message when S3 isn't configured locally
+        const friendlyMsg = errMsg.includes("credentials") || errMsg.includes("bucket") || errMsg.includes("S3")
+          ? "File upload requires cloud storage (not available in local dev). Use a YouTube URL instead."
+          : errMsg;
+        throw new Error(friendlyMsg);
       }
+      const { fileId, uploadType, presignedUrl } = await presignRes.json() as any;
+      if (uploadType !== "single") throw new Error(`File too large for quick attach (max ${MAX_MB} MB).`);
+
+      const putRes = await fetch(presignedUrl, {
+        method: "PUT", body: file,
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+      });
+      if (!putRes.ok) throw new Error(`S3 upload failed (${putRes.status})`);
 
       const compRes = await fetch(`${BASE}/api/uploads/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileId, parts: [] })
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId, parts: [] }),
       });
-      if (!compRes.ok) throw new Error("Complete failed");
-      const comp = await compRes.json();
-      
-      const newText = input + (input ? "\n" : "") + comp.shareUrl;
-      setInput(newText);
-      toast({ title: "File attached", description: file.name });
+      if (!compRes.ok) throw new Error("Could not finalize upload");
+      const comp = await compRes.json() as any;
+
+      setPendingAttachments(prev => [...prev, {
+        type: attachType, name: file.name, mimeType: file.type, url: comp.shareUrl,
+      }]);
+      toast({ title: `${isVideo ? "Video" : isAudio ? "Audio" : "File"} attached ✓`, description: `${file.name} — agent tools can use this` });
     } catch (err: any) {
-      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+      toast({ title: "Attachment failed", description: err.message, variant: "destructive" });
     } finally {
       setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  };
+
+  const removeAttachment = (idx: number) => {
+    setPendingAttachments(prev => {
+      const a = prev[idx];
+      if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+      return prev.filter((_, i) => i !== idx);
+    });
   };
 
   // inputRef removed — textarea is uncontrolled height, no programmatic focus needed
@@ -427,10 +519,13 @@ export function StudioCopilot({
     });
   }, [updateSession]);
 
-  const sendMessage = useCallback(async (text: string) => {
-    if (!text.trim() || streaming) return;
-    setInput("");
+  const sendMessage = useCallback(async (text: string, attachmentsArg?: Array<{ type: string; name: string; mimeType: string; data?: string; url?: string }>) => {
+    const snapshotAttachments = attachmentsArg ?? pendingAttachments;
+    if ((!text.trim() && snapshotAttachments.length === 0) || streaming) return;
     const sessionId = ensureSession();
+    setInput("");
+    setPendingAttachments([]);
+    setSuggestions([]); // clear suggestions on new send
     const userMsgId = crypto.randomUUID();
     const assistantMsgId = crypto.randomUUID();
 
@@ -469,9 +564,13 @@ export function StudioCopilot({
               .join("\n")
           : "";
         const content = [textParts, toolSummary].filter(Boolean).join("\n").trim();
-        return { role: m.role === "user" ? "user" as const : "model" as const, content };
+        const isNewUserMsg = m.role === "user" && m.id === userMsgId;
+        const msgAttachments = isNewUserMsg && snapshotAttachments.length > 0
+          ? snapshotAttachments.map(a => ({ type: a.type, name: a.name, mimeType: a.mimeType, data: a.data, url: a.url }))
+          : undefined;
+        return { role: m.role === "user" ? "user" as const : "model" as const, content, ...(msgAttachments ? { attachments: msgAttachments } : {}) };
       })
-      .filter(m => m.content.trim());
+      .filter(m => m.content.trim() || (m as any).attachments?.length > 0);
 
     const patchAssistant = (updater: (m: Message) => Message) => {
       upsertMsg(sessionId, assistantMsgId, updater);
@@ -552,6 +651,7 @@ export function StudioCopilot({
         return;
       }
       if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); }
+      if (evt.type === "suggestions") { setSuggestions((evt as any).items ?? []); }
     };
 
     try {
@@ -597,7 +697,7 @@ export function StudioCopilot({
       setThinking(false);
       setAgentStage("idle");
     }
-  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg]);
+  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg, pendingAttachments]);
 
   // Consume incoming pendingPrompt (sent from home screen)
   const consumedPromptRef = useRef<string | null>(null);
@@ -631,7 +731,7 @@ export function StudioCopilot({
 
   const isEmpty = currentMessages.length === 0;
   const speechSupported = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
-  const canSend = input.trim().length > 0 && !streaming;
+  const canSend = (input.trim().length > 0 || pendingAttachments.length > 0) && !streaming;
 
   const currentSession = sessions.find(s => s.id === currentSessionId);
   const sessionTitle = currentSession?.title ?? "New chat";
@@ -829,6 +929,23 @@ export function StudioCopilot({
         </div>
       )}
 
+      {/* ── Suggestions chips ── */}
+      {suggestions.length > 0 && !streaming && (
+        <div className="px-4 pb-1 flex flex-wrap gap-2">
+          {suggestions.map((s, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => { setSuggestions([]); void sendMessage(s); }}
+              className="gs-suggestion-chip"
+            >
+              <span className="text-[11px] text-white/50 mr-1">↗</span>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* ── Genspark input bar ── */}
       <div className="gs-input-wrap">
         {/* Bottom tabs: Super Agent | AI works for you */}
@@ -862,9 +979,27 @@ export function StudioCopilot({
         )}
 
         <form
-          onSubmit={e => { e.preventDefault(); void sendMessage(input); }}
+          onSubmit={e => { e.preventDefault(); void sendMessage(input, pendingAttachments); }}
           className="gs-input-card"
         >
+          {/* Attachment preview chips */}
+          {pendingAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+              {pendingAttachments.map((a, i) => (
+                <div key={i} className="flex items-center gap-1.5 bg-white/10 border border-white/15 rounded-lg px-2 py-1 text-xs text-white/80">
+                  {a.previewUrl ? (
+                    <img src={a.previewUrl} alt={a.name} className="w-6 h-6 rounded object-cover" />
+                  ) : (
+                    <span className="text-white/50">{a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "📎"}</span>
+                  )}
+                  <span className="max-w-[120px] truncate">{a.name}</span>
+                  <button type="button" onClick={() => removeAttachment(i)} className="ml-0.5 text-white/40 hover:text-white/80 transition-colors">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
             className="gs-input-textarea"
             value={input}
@@ -876,7 +1011,7 @@ export function StudioCopilot({
                 }).catch(() => {});
               }
             }}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input); } }}
+            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); } }}
             placeholder="Ask anything, create anything"
             rows={1}
             style={{ resize: "none", overflow: "hidden", minHeight: 28 }}
@@ -888,6 +1023,7 @@ export function StudioCopilot({
                 type="file"
                 ref={fileInputRef}
                 className="hidden"
+                accept="image/*,video/*,audio/*,.srt,.vtt,.txt,.md,.csv,.json,.pdf,.doc,.docx"
                 onChange={handleFileUpload}
               />
               <button
@@ -926,12 +1062,22 @@ export function StudioCopilot({
             </div>
 
             <div className="gs-input-row-right">
+              {/* Speak button: always shown; dimmed with tooltip when browser doesn't support Web Speech API */}
               <button
                 type="button"
                 onClick={toggleVoice}
-                className={cn("gs-pill-speak", listening && "gs-pill-speak-active")}
-                title={listening ? "Stop listening" : "Speak"}
+                className={cn(
+                  "gs-pill-speak",
+                  listening && "gs-pill-speak-active",
+                  !speechSupported && "opacity-40 cursor-not-allowed",
+                )}
+                title={
+                  !speechSupported
+                    ? "Voice input requires Chrome, Edge, or Safari"
+                    : listening ? "Stop listening" : "Speak"
+                }
                 aria-pressed={listening}
+                aria-disabled={!speechSupported}
               >
                 <AudioLines className="w-3.5 h-3.5" />
                 <span>{listening ? "Listening…" : "Speak"}</span>

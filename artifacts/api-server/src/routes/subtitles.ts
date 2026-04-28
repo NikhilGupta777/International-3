@@ -2383,6 +2383,152 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
   });
 });
 
+// ── POST /subtitles/generate-from-url ────────────────────────────────────────
+// Accepts a public media URL (e.g., S3 presigned URL from uploads API).
+// Transcribes the media using AssemblyAI (works with any public audio/video URL)
+// without needing yt-dlp. Used by the agent when user uploads a file directly.
+router.post("/subtitles/generate-from-url", subtitlesGenerateRateLimiter, async (req: Request, res: Response) => {
+  const { fileUrl, language = "auto", translateTo = null } = req.body as {
+    fileUrl?: string;
+    language?: string;
+    translateTo?: string | null;
+  };
+
+  if (!fileUrl || typeof fileUrl !== "string") {
+    return res.status(400).json({ error: "fileUrl is required" });
+  }
+  if (!ASSEMBLYAI_API_KEY) {
+    return res.status(503).json({ error: "AssemblyAI not configured — add ASSEMBLYAI_API_KEY to environment" });
+  }
+
+  const jobId = randomUUID();
+  const urlObj = new URL(fileUrl);
+  const rawName = urlObj.pathname.split("/").pop() ?? "upload";
+  const baseName = rawName.split("?")[0];
+  const jobFilename = baseName.endsWith(".srt") ? baseName.replace(".srt", ".txt") : baseName;
+
+  const job = trackSubtitleJob(jobId, {
+    status: "pending",
+    message: "Submitting to AssemblyAI for transcription...",
+    filename: jobFilename.replace(/\.[^.]+$/, ".srt"),
+    createdAt: Date.now(),
+    translateTo: translateTo ?? undefined,
+  });
+
+  return res.status(202).json({ id: jobId });
+
+  // Run transcription in background
+  void enqueueSubtitleJob(jobId, async () => {
+    try {
+      job.status = "audio";
+      job.message = "Sending file URL to AssemblyAI...";
+
+      // Submit to AssemblyAI using URL upload (they download it directly)
+      const submitResp = await fetch("https://api.assemblyai.com/v2/transcript", {
+        method: "POST",
+        headers: { "authorization": ASSEMBLYAI_API_KEY, "content-type": "application/json" },
+        body: JSON.stringify({
+          audio_url: fileUrl,
+          language_code: language === "auto" ? undefined : language,
+          language_detection: language === "auto",
+          punctuate: true,
+          format_text: true,
+        }),
+      });
+      if (!submitResp.ok) {
+        const errBody = await submitResp.json().catch(() => ({})) as any;
+        throw new Error(errBody?.error ?? `AssemblyAI submit failed: ${submitResp.status}`);
+      }
+      const { id: transcriptId } = await submitResp.json() as any;
+      job.status = "generating";
+      job.message = "Transcribing... (this may take a moment)";
+      job.progressPct = 10;
+
+      // Poll AssemblyAI for completion
+      let transcriptData: any = null;
+      for (let attempt = 0; attempt < 180; attempt++) {
+        if (job.cancelled) { job.status = "cancelled"; job.message = CANCELLED_BY_USER; job.completedAt = Date.now(); return; }
+        await new Promise(r => setTimeout(r, 3000));
+        const pollResp = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
+          headers: { "authorization": ASSEMBLYAI_API_KEY },
+        });
+        if (!pollResp.ok) throw new Error(`AssemblyAI poll failed: ${pollResp.status}`);
+        transcriptData = await pollResp.json() as any;
+        if (transcriptData.status === "completed") break;
+        if (transcriptData.status === "error") throw new Error(`AssemblyAI error: ${transcriptData.error ?? "Unknown"}`);
+        const progressPct = 10 + Math.min(80, attempt * 1.5);
+        job.progressPct = Math.round(progressPct);
+        job.message = `Transcribing... ${Math.round(progressPct)}%`;
+      }
+      if (!transcriptData || transcriptData.status !== "completed") {
+        throw new Error("AssemblyAI transcription timed out");
+      }
+
+      // Convert words to SRT format
+      const words: Array<{ text: string; start: number; end: number }> = transcriptData.words ?? [];
+      if (words.length === 0 && transcriptData.text) {
+        // No word timestamps — create a single subtitle from the full text
+        const durMs = (transcriptData.audio_duration ?? 10) * 1000;
+        const toSrtTime = (ms: number) => {
+          const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000);
+          const s = Math.floor((ms % 60000) / 1000); const ms2 = ms % 1000;
+          return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms2).padStart(3,"0")}`;
+        };
+        job.srt = `1\n${toSrtTime(0)} --> ${toSrtTime(durMs)}\n${transcriptData.text}\n\n`;
+      } else {
+        // Build SRT from word-level timestamps (groups of 6 words)
+        const GROUP = 6;
+        const toSrtTime = (ms: number) => {
+          const h = Math.floor(ms / 3600000); const m = Math.floor((ms % 3600000) / 60000);
+          const s = Math.floor((ms % 60000) / 1000); const ms2 = ms % 1000;
+          return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")},${String(ms2).padStart(3,"0")}`;
+        };
+        const chunks: string[] = [];
+        for (let i = 0; i < words.length; i += GROUP) {
+          const chunk = words.slice(i, i + GROUP);
+          const start = chunk[0].start; const end = chunk[chunk.length - 1].end;
+          const text = chunk.map(w => w.text).join(" ");
+          chunks.push(`${chunks.length + 1}\n${toSrtTime(start)} --> ${toSrtTime(end)}\n${text}`);
+        }
+        job.srt = chunks.join("\n\n") + "\n\n";
+      }
+
+      // Optional translation pass using Gemini
+      if (translateTo && job.srt) {
+        job.status = "translating";
+        job.message = `Translating to ${translateTo}...`;
+        job.originalSrt = job.srt;
+        job.originalFilename = `original-${job.filename}`;
+        try {
+          job.srt = await generateWithKeyRotation(
+            (model) => ({
+              model,
+              contents: [{ role: "user", parts: [{ text: `Translate this SRT file to ${translateTo}. Keep ALL timestamps exactly as-is. Only translate the subtitle text lines. Return the complete SRT file.\n\n${job.srt}` }] }],
+            }),
+            `translate-from-url-to-${translateTo}`,
+          );
+        } catch (translErr) {
+          logger.warn({ err: translErr }, "Translation pass failed — returning original transcription");
+          job.srt = job.originalSrt; // fallback: return original
+        }
+      }
+
+      job.status = "done";
+      job.message = "Subtitles ready";
+      job.progressPct = 100;
+      job.completedAt = Date.now();
+      notifySubtitleReady(jobId, job);
+    } catch (err: any) {
+      logger.error({ err, jobId }, "generate-from-url job failed");
+      job.status = "error";
+      job.error = err.message ?? "Transcription failed";
+      job.message = err.message ?? "Transcription failed";
+      job.completedAt = Date.now();
+    }
+  });
+});
+
+
 // ── Route: Generate from uploaded file ──────────────────────────────────────
 router.post("/subtitles/upload/init", subtitlesUploadRateLimiter, async (req: Request, res: Response) => {
   const { filename, contentType, size } = req.body as {

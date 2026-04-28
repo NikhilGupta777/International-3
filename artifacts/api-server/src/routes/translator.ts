@@ -203,9 +203,125 @@ router.post("/submit", async (req: Request, res: Response) => {
   }
 });
 
+// ── POST /submit-from-url ──────────────────────────────────────────────────────
+// Accepts a public file URL (e.g., S3 presigned URL from the uploads API).
+// Downloads the file, copies it to the translator-jobs S3 prefix, then submits.
+// This is the path used when a user uploads a video directly in the agent chat.
+router.post("/submit-from-url", async (req: Request, res: Response) => {
+  try {
+    const ownerId = getRequesterId(req);
+    const {
+      fileUrl,
+      targetLang     = "Hindi",
+      targetLangCode = "hi",
+      sourceLang     = "auto",
+      voiceClone     = true,
+      lipSync        = false,
+      lipSyncQuality = "latentsync",
+      useDemucs      = false,
+      premiumAsr     = false,
+      multiSpeaker   = false,
+      asrModel       = "large-v3-turbo",
+      translationMode = "default",
+      filename       = "uploaded-video.mp4",
+    } = req.body;
+
+    if (!fileUrl) {
+      return res.status(400).json({ error: "fileUrl is required" });
+    }
+
+    const jobId = randomUUID();
+    const ext   = (filename as string).split(".").pop() ?? "mp4";
+    const s3Key = `translator-jobs/${jobId}/input.${ext}`;
+
+    // Download the file from the public URL and upload to translator S3 prefix
+    console.log(`[Translator] /submit-from-url downloading ${fileUrl}`);
+    const downloadRes = await fetch(fileUrl as string);
+    if (!downloadRes.ok) {
+      return res.status(400).json({ error: `Failed to download file from URL: ${downloadRes.status}` });
+    }
+    const fileBuffer = Buffer.from(await downloadRes.arrayBuffer());
+
+    // Determine content type from response or filename
+    const contentType = downloadRes.headers.get("content-type") ?? "video/mp4";
+
+    // Upload to translator S3 prefix
+    await s3.send(new PutObjectCommand({
+      Bucket:      S3_BUCKET,
+      Key:         s3Key,
+      Body:        fileBuffer,
+      ContentType: contentType,
+    }));
+    console.log(`[Translator] Copied uploaded file to s3://${S3_BUCKET}/${s3Key} (${fileBuffer.length} bytes)`);
+
+    const now = Date.now();
+    await ddb.send(new PutItemCommand({
+      TableName: DDB_TABLE,
+      Item: {
+        jobId:       { S: jobId },
+        type:        { S: "translator" },
+        status:      { S: "QUEUED" },
+        progress:    { N: "0" },
+        step:        { S: "Job queued, waiting for worker..." },
+        s3InputKey:  { S: s3Key },
+        filename:    { S: typeof filename === "string" && filename.trim() ? filename.trim() : "uploaded-video.mp4" },
+        targetLang:  { S: targetLang },
+        targetLangCode: { S: targetLangCode },
+        sourceLang:  { S: sourceLang },
+        ownerId:     { S: ownerId },
+        voiceClone:  { BOOL: Boolean(voiceClone) },
+        lipSync:     { BOOL: Boolean(lipSync) },
+        createdAt:   { N: String(now) },
+        updatedAt:   { N: String(now) },
+      },
+    }));
+
+    const envVars = [
+      { name: "JOB_ID",            value: jobId },
+      { name: "S3_BUCKET",         value: S3_BUCKET },
+      { name: "S3_INPUT_KEY",      value: s3Key },
+      { name: "S3_OUTPUT_PREFIX",  value: `translator-jobs/${jobId}` },
+      { name: "DYNAMODB_TABLE",    value: DDB_TABLE },
+      { name: "DYNAMODB_REGION",   value: REGION },
+      { name: "GEMINI_API_KEY",    value: GEMINI_KEY },
+      { name: "GEMINI_API_KEY_2",  value: GEMINI_KEY_2 },
+      { name: "GEMINI_API_KEY_3",  value: GEMINI_KEY_3 },
+      { name: "TARGET_LANG",       value: targetLang },
+      { name: "TARGET_LANG_CODE",  value: targetLangCode },
+      { name: "SOURCE_LANG",       value: sourceLang },
+      { name: "VOICE_CLONE",       value: String(voiceClone) },
+      { name: "LIP_SYNC",          value: String(lipSync) },
+      { name: "LIP_SYNC_QUALITY",  value: lipSyncQuality },
+      { name: "USE_DEMUCS",        value: String(useDemucs) },
+      { name: "PREMIUM_ASR",       value: String(premiumAsr) },
+      { name: "MULTI_SPEAKER",     value: String(multiSpeaker) },
+      { name: "ASR_MODEL",         value: asrModel },
+      { name: "TRANSLATION_MODE",  value: translationMode },
+      { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
+      { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
+    ];
+
+    const { BatchClient, SubmitJobCommand: SJC } = await import("@aws-sdk/client-batch");
+    const batchClient = new BatchClient({ region: REGION });
+    const batchResult = await batchClient.send(new SJC({
+      jobName:        `translator-${jobId.slice(0, 8)}`,
+      jobQueue:       BATCH_QUEUE,
+      jobDefinition:  BATCH_JOB_DEF,
+      containerOverrides: { environment: envVars },
+    }));
+
+    console.log(`[Translator] submit-from-url: Batch job ${batchResult.jobId} for translator job ${jobId}`);
+    return res.json({ jobId, batchJobId: batchResult.jobId, status: "QUEUED" });
+  } catch (err: any) {
+    console.error("[Translator] /submit-from-url error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ── GET /status/:jobId ────────────────────────────────────────────────────────
 // Reads real-time job status from DynamoDB (updated by the Python worker).
 router.get("/status/:jobId", async (req: Request, res: Response) => {
+
   try {
     const jobId = String(req.params.jobId);
 
