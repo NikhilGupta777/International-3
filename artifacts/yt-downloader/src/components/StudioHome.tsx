@@ -4,7 +4,7 @@ import {
   Plus, AudioLines, ArrowUp, Loader2,
   Download, Sparkles, Captions, Scissors,
   ListVideo, AlarmClock, UploadCloud, Languages,
-  Film,
+  Film, Paperclip, ImagePlus, Music2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -91,7 +91,20 @@ export function StudioHome({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  useEffect(() => {
+    if (!showPlusMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
+        setShowPlusMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showPlusMenu]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -198,16 +211,39 @@ export function StudioHome({
                 className="hidden"
                 onChange={handleFileUpload}
               />
-              <button
-                type="button"
-                className="gs-input-circle-btn"
-                title="Attach file"
-                aria-label="Attach file"
-                disabled={uploading}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              </button>
+              <div className="relative" ref={plusMenuRef}>
+                <button
+                  type="button"
+                  className={cn("gs-input-circle-btn", showPlusMenu && "gs-input-circle-btn-active")}
+                  title="More options"
+                  aria-label="More options"
+                  onClick={() => setShowPlusMenu(v => !v)}
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+                {showPlusMenu && (
+                  <div className="gs-plus-menu">
+                    <button
+                      className="gs-plus-menu-item"
+                      disabled={uploading}
+                      onClick={() => { fileInputRef.current?.click(); setShowPlusMenu(false); }}
+                    >
+                      {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+                      <span>Upload Files</span>
+                    </button>
+                    <button className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                      <ImagePlus className="w-4 h-4" />
+                      <span>Create Images</span>
+                      <span className="gs-plus-menu-badge">Soon</span>
+                    </button>
+                    <button className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                      <Music2 className="w-4 h-4" />
+                      <span>Create Music</span>
+                      <span className="gs-plus-menu-badge gs-plus-menu-badge-new">New</span>
+                    </button>
+                  </div>
+                )}
+              </div>
               <button
                 type="button"
                 className={cn("gs-pill-ultra", ultra && "gs-pill-ultra-active")}
