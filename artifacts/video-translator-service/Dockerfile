@@ -118,7 +118,7 @@ RUN (ls -la /model-cache/modelscope/hub/iic/CosyVoice2-0.5B 2>/dev/null && echo 
 # ── Pre-download LatentSync checkpoint (~700 MB) ─────────────────────────────
 # Must happen BEFORE HF_HUB_OFFLINE=1 is set below.
 # The worker checks for this file at runtime and skips the download if present.
-RUN python -c "
+COPY <<'PY' /tmp/download_latentsync.py
 from huggingface_hub import hf_hub_download
 import pathlib
 ckpt_dir = pathlib.Path('/model-cache/LatentSync/checkpoints')
@@ -126,7 +126,8 @@ ckpt_dir.mkdir(parents=True, exist_ok=True)
 print('[LatentSync] Downloading latentsync_unet.pt ...')
 path = hf_hub_download('ByteDance/LatentSync', 'latentsync_unet.pt', local_dir=str(ckpt_dir))
 print(f'[LatentSync] Checkpoint saved to {path}')
-"
+PY
+RUN python /tmp/download_latentsync.py && rm -f /tmp/download_latentsync.py
 
 # ── Lock down all runtime network access — must be LAST before COPY ──────────
 # All model weights are now baked in. No internet access allowed at job runtime.

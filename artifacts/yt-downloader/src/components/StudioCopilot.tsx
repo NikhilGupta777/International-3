@@ -49,6 +49,7 @@ type SseEvent =
 
 type MessagePart =
   | { kind: "text"; content: string }
+  | { kind: "image"; previewUrl: string; name: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
   | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number|null; progressMsg?: string }
   | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string };
@@ -88,7 +89,7 @@ const STARTERS = [
   { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
 
-// ── Client-side tag stripper ───────────────────────────────────────────────────
+// ── Client-side tag stripper ──────────────────────────────────────────────────
 function clientStripTags(text: string): string {
   return text
     .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
@@ -98,6 +99,11 @@ function clientStripTags(text: string): string {
     .replace(/^\[THOUGHT\].*$/gim, "")
     .replace(/^\[RESPONSE\].*$/gim, "")
     .replace(/^\[JUDGE\].*$/gim, "")
+    .replace(/^\[PLAN\].*$/gim, "")
+    .replace(/^\[EXECUTE\].*$/gim, "")
+    .replace(/^\[SAY\].*$/gim, "")
+    .replace(/^\[WAIT\].*$/gim, "")
+    .replace(/^\[TOOL\].*$/gim, "")
     .replace(/\[SUGGESTIONS:[^\]]*\]/gi, "")
     .replace(/\[SUGOESTIONS:[^\]]*\]/gi, "")
     .replace(/\n{3,}/g, "\n\n")
@@ -274,6 +280,14 @@ function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onN
       )}
       <div className={cn("flex flex-col gap-2 max-w-[88%] sm:max-w-[80%]", isUser && "items-end")}>
         {message.parts.map((part, i) => {
+          // Image thumbnail in user message
+          if (part.kind === "image") {
+            return (
+              <div key={i} className="rounded-xl overflow-hidden border border-white/10 max-w-[200px]">
+                <img src={(part as any).previewUrl} alt={(part as any).name} className="w-full h-auto object-cover max-h-[180px]" />
+              </div>
+            );
+          }
           if (part.kind === "text" && part.content.trim()) {
             // Strip internal model tags on the client side as a safety net
             const cleanContent = clientStripTags(part.content);
@@ -530,9 +544,16 @@ export function StudioCopilot({
     const userMsgId = crypto.randomUUID();
     const assistantMsgId = crypto.randomUUID();
 
+    // Build user message parts — include image previews so they show in the bubble
+    const userParts: MessagePart[] = [{ kind: "text", content: text }];
+    for (const att of snapshotAttachments) {
+      if (att.type === "image" && att.previewUrl) {
+        userParts.push({ kind: "image", previewUrl: att.previewUrl, name: att.name });
+      }
+    }
     updateSession(sessionId, msgs => [...msgs, {
       id: userMsgId, role: "user",
-      parts: [{ kind: "text", content: text }],
+      parts: userParts,
       timestamp: new Date(),
     }]);
 
@@ -949,18 +970,13 @@ export function StudioCopilot({
 
       {/* ── Genspark input bar ── */}
       <div className="gs-input-wrap">
-        {/* Bottom tabs: Super Agent | AI works for you */}
+        {/* Bottom tab: Super Agent only — removed 'AI works for you 75% off' */}
         <div className="gs-mode-tabs">
           <button type="button" className="gs-mode-tab gs-mode-tab-active">
             <span className="gs-mode-tab-icon" aria-hidden="true">
               <img src="/agent-logo.png" alt="" className="w-3.5 h-3.5 object-contain" />
             </span>
             Super Agent
-          </button>
-          <button type="button" className="gs-mode-tab">
-            <Sparkles className="w-3 h-3" />
-            <span>AI works for you</span>
-            <span className="gs-mode-tab-badge">75% off</span>
           </button>
         </div>
 
@@ -1013,6 +1029,16 @@ export function StudioCopilot({
               }
             }}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); } }}
+            onPaste={async e => {
+              // Support pasting images from clipboard (Ctrl+V)
+              const items = Array.from(e.clipboardData?.items ?? []);
+              const imgItem = items.find(it => it.type.startsWith("image/"));
+              if (imgItem) {
+                e.preventDefault();
+                const file = imgItem.getAsFile();
+                if (file) await handleFileUpload({ target: { files: [file] } } as any);
+              }
+            }}
             placeholder="Ask anything, create anything"
             rows={1}
             style={{ resize: "none", overflow: "hidden", minHeight: 28 }}

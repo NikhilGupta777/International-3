@@ -47,6 +47,11 @@ function stripReasoningTags(text: string): string {
     .replace(/^\[THOUGHT\].*$/gim, "")
     .replace(/^\[RESPONSE\].*$/gim, "")
     .replace(/^\[JUDGE\].*$/gim, "")
+    .replace(/^\[PLAN\].*$/gim, "")
+    .replace(/^\[EXECUTE\].*$/gim, "")
+    .replace(/^\[SAY\].*$/gim, "")
+    .replace(/^\[WAIT\].*$/gim, "")
+    .replace(/^\[TOOL\].*$/gim, "")
     // [SUGGESTIONS: "a" | "b" | "c"] — parsed separately, must not render
     .replace(/\[SUGGESTIONS:[^\]]*\]/gi, "")
     .replace(/\[SUGOESTIONS:[^\]]*\]/gi, "") // typo variant the model emits
@@ -71,7 +76,7 @@ function sseEvent(res: any, payload: object) {
   if (res.socket && !res.socket.destroyed) res.socket.write("");
 }
 
-// â”€â”€ Job poller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Job poller ────────────────────────────────────────────────────────────
 async function pollJobUntilDone(
   res: any,
   toolName: string,
@@ -97,7 +102,7 @@ async function pollJobUntilDone(
   throw new Error("Job timed out after 8 minutes");
 }
 
-// â”€â”€ Subtitle job poller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Subtitle job poller ───────────────────────────────────────────────────
 async function pollSubtitleUntilDone(
   res: any,
   statusUrl: string,
@@ -123,7 +128,7 @@ async function pollSubtitleUntilDone(
   throw new Error("Subtitle job timed out after 8 minutes");
 }
 
-// â”€â”€ Timestamps job poller â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Timestamps job poller ─────────────────────────────────────────────────
 async function pollTimestampsUntilDone(
   res: any,
   statusUrl: string,
@@ -149,7 +154,7 @@ async function pollTimestampsUntilDone(
   throw new Error("Timestamp job timed out after 8 minutes");
 }
 
-// â”€â”€ Parse timestamps like "5:32" or "1:22:10" into seconds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Parse timestamps like "5:32" or "1:22:10" into seconds ───────────────
 function parseTimestamp(ts: string): number {
   const parts = ts.trim().split(":").map(Number);
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
@@ -157,7 +162,7 @@ function parseTimestamp(ts: string): number {
   return parts[0];
 }
 
-// â”€â”€ Tool definitions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Tool definitions ──────────────────────────────────────────────────────
 const STUDIO_TOOLS: any[] = [
   {
     name: "get_video_info",
@@ -374,7 +379,7 @@ Never say "I cannot access YouTube" or "I don't have tools". You have tools — 
 After completing any task, add a final line in this exact format (replace with 2-3 real suggestions based on what was just done):
 [SUGGESTIONS: "suggestion one" | "suggestion two" | "suggestion three"]`;
 
-// â”€â”€ Build internal headers from request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Build internal headers from request ───────────────────────────────────
 function buildInternalHeaders(req: any): Record<string, string> {
   const INTERNAL_SECRET = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
   const headers: Record<string, string> = {
@@ -390,7 +395,7 @@ function buildInternalHeaders(req: any): Record<string, string> {
   return headers;
 }
 
-// â”€â”€ Tool executor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Tool executor ─────────────────────────────────────────────────────────
 async function executeTool(
   name: string,
   args: Record<string, any>,
@@ -439,7 +444,7 @@ async function executeTool(
       const endSecs = parseTimestamp(String(args.endTime));
       const quality = args.quality ?? "720p";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} â†’ ${args.endTime})...` });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
         method: "POST",
         headers: internalHeaders,
@@ -455,7 +460,7 @@ async function executeTool(
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: { jobId, downloadUrl, startTime: args.startTime, endTime: args.endTime },
-        artifact: { artifactType: "download", label: `Clip ready: ${args.startTime} â†’ ${args.endTime}`, downloadUrl, jobId },
+        artifact: { artifactType: "download", label: `Clip ready: ${args.startTime} → ${args.endTime}`, downloadUrl, jobId },
       };
     }
 
@@ -783,7 +788,7 @@ async function executeTool(
         }],
         config: {
           temperature: 0.2,
-          maxOutputTokens: 4096,
+          maxOutputTokens: 8192,
         },
       });
 
