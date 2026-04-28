@@ -130,13 +130,14 @@ export function StudioHome({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
       setUploading(true);
-      const res = await fetch("/api/uploads/presign", {
+      const res = await fetch(`${BASE}/api/uploads/presign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -160,7 +161,7 @@ export function StudioHome({
         throw new Error("Multipart upload not implemented for simple attachment");
       }
 
-      const compRes = await fetch("/api/uploads/complete", {
+      const compRes = await fetch(`${BASE}/api/uploads/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fileId, parts: [] })
