@@ -953,7 +953,7 @@ export function StudioCopilot({
 
       {/* ── Suggestions chips ── */}
       {suggestions.length > 0 && !streaming && (
-        <div className="px-4 pb-1 flex flex-wrap gap-2">
+        <div className="w-full max-w-[720px] mx-auto px-[14px] pb-2 flex flex-wrap gap-2">
           {suggestions.map((s, i) => (
             <button
               key={i}
