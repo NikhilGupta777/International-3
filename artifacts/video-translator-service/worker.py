@@ -766,11 +766,15 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
     _latentsync_deps_flag = ls_dir / ".deps_installed"
     if not _latentsync_deps_flag.exists():
         log.info("[LatentSync] Installing runtime deps (first run only)...")
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary",
              "-r", str(ls_dir / "requirements.txt")],
-            check=True
+            check=False,
+            capture_output=True,
+            text=True
         )
+        if result.returncode != 0:
+            log.warning(f"[LatentSync] pip install had errors (ignoring): {result.stderr[-500:]}")
         _latentsync_deps_flag.touch()
 
     # Download checkpoint from HuggingFace if missing
@@ -817,11 +821,15 @@ def run_lipsync_musetalk(video_path: Path, dubbed_audio: Path, out_dir: Path) ->
     if not _musetalk_deps_flag.exists():
         log.info("[MuseTalk] Installing runtime deps (first run only)...")
         if (musetalk_dir / "requirements.txt").exists():
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary",
                  "-r", str(musetalk_dir / "requirements.txt")],
-                check=True
+                check=False,
+                capture_output=True,
+                text=True
             )
+            if result.returncode != 0:
+                log.warning(f"[MuseTalk] pip install had errors (ignoring): {result.stderr[-500:]}")
         _musetalk_deps_flag.touch()
 
     result = subprocess.run([
