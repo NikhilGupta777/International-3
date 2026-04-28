@@ -107,6 +107,8 @@ jobs:
           # Pass pinned yt-dlp version so Dockerfile layer cache is stable
           docker buildx build \
             --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             -f Dockerfile.api-lambda \
             --build-arg YTDLP_VERSION=${{ env.YTDLP_VERSION }} \
             --cache-from type=gha,scope=api-image \
@@ -158,6 +160,8 @@ jobs:
           URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_WORKER_REPO }}:${TAG}"
           docker buildx build \
             --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             -f artifacts/queue-worker/Dockerfile \
             -t "$URI" \
             --cache-from type=gha,scope=worker-image \
@@ -245,6 +249,8 @@ jobs:
           DOWNLOAD_MODELS="${{ github.event.inputs.download_models_at_build || 'false' }}"
           docker buildx build \
             --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
             -f artifacts/video-translator-service/Dockerfile \
             --build-arg DOWNLOAD_MODELS_AT_BUILD="$DOWNLOAD_MODELS" \
             -t "$URI" \
