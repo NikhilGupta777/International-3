@@ -924,7 +924,7 @@ router.post("/agent/chat", async (req, res) => {
       // ── 1. Call Gemini API — with retry on transient empty-output errors ───
       // The error 'model output must contain either output text or tool calls'
       // is a Gemini transient condition. We retry up to 3x before giving up.
-      let stream: AsyncIterable<any>;
+      let stream: AsyncIterable<any> | undefined;
       let streamErr: Error | null = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -959,7 +959,7 @@ router.post("/agent/chat", async (req, res) => {
       // causes INVALID_ARGUMENT: "Function call is missing a thought_signature".
       const rawFcParts: any[] = [];
 
-      for await (const chunk of stream) {
+      for await (const chunk of stream!) {
         if (!isConnected()) break;
 
         // ── @google/genai v1.x: chunk.text is the incremental text token ───────
