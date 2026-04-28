@@ -311,7 +311,8 @@ router.get("/share/:jobId", async (req: Request, res: Response) => {
     if (!result.Item) {
       return res.status(404).json({ error: "Job not found" });
     }
-    if (!isOwnerMatch(req, result.Item)) {
+    // NOTE: No owner check here — share links are intentionally public
+    if (result.Item.type?.S !== "translator") {
       return res.status(404).json({ error: "Job not found" });
     }
     if (result.Item.status?.S !== "DONE") {

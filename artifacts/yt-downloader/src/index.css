@@ -1286,8 +1286,7 @@
   width: 26px; height: 26px;
   border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(220,38,38,0.12);
-  border: 1px solid rgba(220,38,38,0.20);
+  background: transparent;
   margin-top: 2px;
 }
 
@@ -2011,8 +2010,7 @@
   width: 36px; height: 36px;
   border-radius: 9px;
   display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(135deg, rgba(220,38,38,0.18), rgba(127,29,29,0.10));
-  border: 1px solid rgba(220,38,38,0.25);
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -2031,7 +2029,7 @@
 
 .gs-rail-foot {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
   padding: 6px 0 0;
   border-top: 1px solid rgba(255,255,255,0.04);
   margin-top: 4px;
@@ -2173,6 +2171,13 @@
   flex-direction: column;
   gap: 2px;
 }
+.gs-drawer-foot {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
 .gs-drawer .gs-nav-item {
   flex-direction: row;
   align-items: center;
@@ -2218,43 +2223,63 @@
   gap: 28px;
 }
 
+@keyframes title-entrance {
+  0% { opacity: 0; transform: translateY(20px) scale(0.92); filter: blur(12px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes animate-background {
+  0% {
+    background-position: 0 50%;
+  }
+  100% {
+    background-position: 100% 50%;
+  }
+}
+
 .gs-home-title {
-  font-size: clamp(1.4rem, 2.4vw, 1.85rem);
-  font-weight: 600;
-  color: #fff;
+  font-size: clamp(1.6rem, 2.8vw, 2.1rem);
+  font-weight: 800;
   letter-spacing: -0.02em;
   text-align: center;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
   margin: 0;
+  animation: title-entrance 1.2s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-.gs-home-dot {
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  background: #38bdf8;
+
+.gs-home-title-text {
+  color: transparent;
+  background-image: url('https://images.unsplash.com/photo-1732535725600-f805d8b33c9c?q=80&w=1470&auto=format&fit=crop&ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D'); 
+  background-size: 200%;
+  background-position: 0 50%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: animate-background 5s infinite alternate linear;
   display: inline-block;
-  box-shadow: 0 0 10px rgba(56,189,248,0.6);
+  padding: 4px 10px;
 }
 
 /* ── Big input card (used on home + chat) ─────────────────── */
 .gs-input-card {
   width: 100%;
-  max-width: 720px;
-  background: rgba(255,255,255,0.045);
+  max-width: 740px;
+  background: #2b2c2f;
   border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 22px;
-  padding: 14px 14px 10px;
+  border-radius: 12px;
+  padding: 16px 20px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 24px;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.5);
   transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
   margin: 0 auto;
 }
 .gs-input-card:focus-within {
-  border-color: rgba(56,189,248,0.35);
-  box-shadow: 0 0 0 4px rgba(56,189,248,0.08), 0 12px 40px rgba(0,0,0,0.35);
-  background: rgba(255,255,255,0.055);
+  border-color: rgba(255,255,255,0.15);
+  box-shadow: 0 0 12px rgba(255,255,255,0.04), 0 16px 40px rgba(0,0,0,0.5);
 }
 
 .gs-input-textarea {
@@ -2263,14 +2288,15 @@
   border: none;
   outline: none;
   color: rgba(255,255,255,0.95);
-  font-size: 0.95rem;
+  font-size: 1.05rem;
   line-height: 1.55;
   font-family: inherit;
-  padding: 4px 4px;
+  padding: 8px 4px;
+  min-height: 42px;
   scrollbar-width: none;
 }
 .gs-input-textarea::-webkit-scrollbar { display: none; }
-.gs-input-textarea::placeholder { color: rgba(255,255,255,0.30); }
+.gs-input-textarea::placeholder { color: #8A8A8C; }
 
 .gs-input-row {
   display: flex;
@@ -2281,16 +2307,16 @@
 .gs-input-row-left, .gs-input-row-right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
 }
 
 .gs-input-circle-btn {
   width: 32px; height: 32px;
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.55);
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.65);
   cursor: pointer;
   transition: all 0.15s;
 }

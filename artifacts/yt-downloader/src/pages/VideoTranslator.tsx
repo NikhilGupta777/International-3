@@ -20,18 +20,18 @@ import {
 import { translatorAuthHeaders } from "@/lib/translator-client-id";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
-const API  = `${BASE}/api/translator`;
+const API = `${BASE}/api/translator`;
 
 // â”€â”€ Language options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const LANGS = [
-  {code:"auto",name:"Auto-detect"},
-  {code:"en",name:"English"},{code:"es",name:"Spanish"},{code:"fr",name:"French"},
-  {code:"de",name:"German"},{code:"pt",name:"Portuguese"},{code:"it",name:"Italian"},
-  {code:"ja",name:"Japanese"},{code:"ko",name:"Korean"},{code:"zh",name:"Chinese"},
-  {code:"ar",name:"Arabic"},{code:"ru",name:"Russian"},{code:"hi",name:"Hindi"},
-  {code:"nl",name:"Dutch"},{code:"pl",name:"Polish"},{code:"tr",name:"Turkish"},
-  {code:"uk",name:"Ukrainian"},{code:"vi",name:"Vietnamese"},{code:"id",name:"Indonesian"},
-  {code:"fil",name:"Filipino"},{code:"fi",name:"Finnish"},
+  { code: "auto", name: "Auto-detect" },
+  { code: "en", name: "English" }, { code: "es", name: "Spanish" }, { code: "fr", name: "French" },
+  { code: "de", name: "German" }, { code: "pt", name: "Portuguese" }, { code: "it", name: "Italian" },
+  { code: "ja", name: "Japanese" }, { code: "ko", name: "Korean" }, { code: "zh", name: "Chinese" },
+  { code: "ar", name: "Arabic" }, { code: "ru", name: "Russian" }, { code: "hi", name: "Hindi" },
+  { code: "nl", name: "Dutch" }, { code: "pl", name: "Polish" }, { code: "tr", name: "Turkish" },
+  { code: "uk", name: "Ukrainian" }, { code: "vi", name: "Vietnamese" }, { code: "id", name: "Indonesian" },
+  { code: "fil", name: "Filipino" }, { code: "fi", name: "Finnish" },
 ];
 const TARGET_LANGS = LANGS.filter(l => l.code !== "auto");
 const MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
@@ -42,7 +42,7 @@ async function responseError(res: Response, fallback: string): Promise<Error> {
     if (typeof data?.error === "string" && data.error.trim()) {
       return new Error(data.error);
     }
-  } catch {}
+  } catch { }
   return new Error(fallback);
 }
 
@@ -78,18 +78,18 @@ function translatorShareUrl(jobId: string): string {
 // â”€â”€ Step config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const STEP_ICONS: Record<string, React.ReactNode> = {
   audio_extraction: <Volume2 className="w-4 h-4" />,
-  transcription:    <Subtitles className="w-4 h-4" />,
-  translation:      <Languages className="w-4 h-4" />,
+  transcription: <Subtitles className="w-4 h-4" />,
+  translation: <Languages className="w-4 h-4" />,
   voice_generation: <Mic className="w-4 h-4" />,
-  lip_sync:         <Film className="w-4 h-4" />,
-  video_merge:      <Wand2 className="w-4 h-4" />,
+  lip_sync: <Film className="w-4 h-4" />,
+  video_merge: <Wand2 className="w-4 h-4" />,
 };
 const STEP_COLORS: Record<string, string> = {
   completed: "text-green-400 border-green-500/30 bg-green-500/8",
-  running:   "text-blue-400  border-blue-500/30  bg-blue-500/8",
-  failed:    "text-red-400   border-red-500/30   bg-red-500/8",
-  skipped:   "text-white/30  border-white/10     bg-white/3",
-  pending:   "text-white/40  border-white/10     bg-white/3",
+  running: "text-blue-400  border-blue-500/30  bg-blue-500/8",
+  failed: "text-red-400   border-red-500/30   bg-red-500/8",
+  skipped: "text-white/30  border-white/10     bg-white/3",
+  pending: "text-white/40  border-white/10     bg-white/3",
 };
 
 // â”€â”€ Select component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -129,7 +129,7 @@ function StepCard({ step }: { step: any }) {
       animate={{ opacity: 1, y: 0 }}
       className={cn("flex items-center gap-3 px-4 py-3 rounded-xl border transition-all", colorClass)}
     >
-      <span className="shrink-0">{STEP_ICONS[step.name] ?? <Wand2 className="w-4 h-4"/>}</span>
+      <span className="shrink-0">{STEP_ICONS[step.name] ?? <Wand2 className="w-4 h-4" />}</span>
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
           <span className="text-sm font-medium">{step.label}</span>
@@ -153,8 +153,8 @@ function StepCard({ step }: { step: any }) {
       </div>
       <span className="shrink-0">
         {step.status === "completed" && <CheckCircle className="w-4 h-4 text-green-400" />}
-        {step.status === "running"   && <Loader2 className="w-4 h-4 animate-spin text-blue-400" />}
-        {step.status === "failed"    && <AlertCircle className="w-4 h-4 text-red-400" />}
+        {step.status === "running" && <Loader2 className="w-4 h-4 animate-spin text-blue-400" />}
+        {step.status === "failed" && <AlertCircle className="w-4 h-4 text-red-400" />}
       </span>
     </motion.div>
   );
@@ -175,7 +175,7 @@ function TranscriptPanel({ segments }: { segments: any[] }) {
           <div key={i} className="px-4 py-2 border-b border-white/[0.04] last:border-0">
             <div className="flex items-start gap-3">
               <span className="text-[10px] text-white/30 font-mono shrink-0 mt-0.5">
-                {String(Math.floor(s.start/60)).padStart(2,"0")}:{String(Math.floor(s.start%60)).padStart(2,"0")}
+                {String(Math.floor(s.start / 60)).padStart(2, "0")}:{String(Math.floor(s.start % 60)).padStart(2, "0")}
               </span>
               <div className="flex-1 min-w-0 space-y-0.5">
                 <p className="text-xs text-white/50 line-through">{s.originalText}</p>
@@ -208,7 +208,7 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
         "relative flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed",
         "cursor-pointer transition-all duration-200 py-16 px-8",
         dragging ? "border-primary/70 bg-primary/8 scale-[1.01]"
-                 : "border-white/[0.12] hover:border-white/25 bg-white/[0.02] hover:bg-white/[0.04]",
+          : "border-white/[0.12] hover:border-white/25 bg-white/[0.02] hover:bg-white/[0.04]",
         disabled && "opacity-50 cursor-not-allowed"
       )}
     >
@@ -220,7 +220,7 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
         <p className="text-sm text-white/40 mt-1">MP4, MOV, MKV, AVI, WebM Â· Max 2GB</p>
       </div>
       <input ref={inputRef} type="file" accept=".mp4,.mov,.mkv,.avi,.webm" className="hidden"
-             onChange={e => e.target.files?.[0] && onFile(e.target.files[0])} />
+        onChange={e => e.target.files?.[0] && onFile(e.target.files[0])} />
     </div>
   );
 }
@@ -228,23 +228,23 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
 // â”€â”€ Main component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function VideoTranslator() {
   const { toast } = useToast();
-  const [file, setFile]             = useState<File | null>(null);
-  const [srcLang, setSrcLang]       = useState("auto");
-  const [tgtLang, setTgtLang]       = useState("en");
-  const [voiceStyle, setVoiceStyle] = useState<"original"|"female">("original");
-  const [lipSync, setLipSync]       = useState(false);
-  const [jobId, setJobId]           = useState<string | null>(null);
-  const [job, setJob]               = useState<any>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [srcLang, setSrcLang] = useState("auto");
+  const [tgtLang, setTgtLang] = useState("en");
+  const [voiceStyle, setVoiceStyle] = useState<"original" | "female">("original");
+  const [lipSync, setLipSync] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [job, setJob] = useState<any>(null);
   const [transcript, setTranscript] = useState<any[]>([]);
-  const [uploading, setUploading]   = useState(false);
-  const [error, setError]           = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
-  const [history, setHistory]       = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
-  const [debugLog, setDebugLog]     = useState<{ts: number; level: "info"|"warn"|"error"; msg: string}[]>([]);
-  const [showDebug, setShowDebug]   = useState(false);
+  const [history, setHistory] = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
+  const [debugLog, setDebugLog] = useState<{ ts: number; level: "info" | "warn" | "error"; msg: string }[]>([]);
+  const [showDebug, setShowDebug] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const appendLog = (level: "info"|"warn"|"error", msg: string) =>
+  const appendLog = (level: "info" | "warn" | "error", msg: string) =>
     setDebugLog(prev => [...prev.slice(-49), { ts: Date.now(), level, msg }]);
 
   const refreshHistory = useCallback(() => {
@@ -387,7 +387,7 @@ export default function VideoTranslator() {
                 status: statusItem.status ?? activeJob.status,
               });
             }
-          } catch {}
+          } catch { }
         }
 
         const res = await fetch(`${API}/history?limit=20`, { headers: translatorAuthHeaders() });
@@ -407,7 +407,7 @@ export default function VideoTranslator() {
             let urls: { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string } | null = null;
             try {
               urls = await fetchResultUrls(item.jobId);
-            } catch {}
+            } catch { }
             saveTranslatorHistory({
               jobId: item.jobId,
               createdAt: toEpoch(item.createdAt, existingActive?.startedAt ?? Date.now()),
@@ -457,7 +457,7 @@ export default function VideoTranslator() {
             }
           }
         }
-      } catch {}
+      } catch { }
     };
 
     void reconcileTranslatorJobs();
@@ -583,47 +583,47 @@ export default function VideoTranslator() {
         await navigator.clipboard.writeText(url);
         toast({ title: "Link copied" });
       }
-    } catch {}
+    } catch { }
   };
 
-  const isProcessing = job && !["DONE","FAILED"].includes(job.status);
-  const isDone       = job?.status === "DONE";
-  const overallPct   = job?.progress ?? 0;
+  const isProcessing = job && !["DONE", "FAILED"].includes(job.status);
+  const isDone = job?.status === "DONE";
+  const overallPct = job?.progress ?? 0;
 
   // Derive step-by-step breakdown from real DynamoDB status + progress
   // Worker status flow: QUEUED → STARTING → EXTRACTING → TRANSCRIBING →
   //   TRANSLATING → CLONING → LIPSYNC → MERGING → UPLOADING → DONE
   const PIPELINE_STEPS = [
-    { name: "download",       label: "Downloading video",         thresholdPct: 3,  status_keys: ["STARTING"] },
-    { name: "audio_extraction", label: "Extracting audio",        thresholdPct: 12, status_keys: ["EXTRACTING"] },
-    { name: "transcription",  label: "Transcribing speech",       thresholdPct: 28, status_keys: ["TRANSCRIBING"] },
-    { name: "translation",    label: "Translating text",          thresholdPct: 48, status_keys: ["TRANSLATING"] },
-    { name: "voice_generation", label: "Cloning voice",           thresholdPct: 65, status_keys: ["CLONING"] },
-    { name: "lip_sync",       label: "Running lip sync",          thresholdPct: 82, status_keys: ["LIPSYNC"] },
-    { name: "video_merge",    label: "Merging & generating SRT",  thresholdPct: 88, status_keys: ["MERGING"] },
-    { name: "upload",         label: "Uploading to cloud",        thresholdPct: 100, status_keys: ["UPLOADING","DONE"] },
+    { name: "download", label: "Downloading video", thresholdPct: 3, status_keys: ["STARTING"] },
+    { name: "audio_extraction", label: "Extracting audio", thresholdPct: 12, status_keys: ["EXTRACTING"] },
+    { name: "transcription", label: "Transcribing speech", thresholdPct: 28, status_keys: ["TRANSCRIBING"] },
+    { name: "translation", label: "Translating text", thresholdPct: 48, status_keys: ["TRANSLATING"] },
+    { name: "voice_generation", label: "Cloning voice", thresholdPct: 65, status_keys: ["CLONING"] },
+    { name: "lip_sync", label: "Running lip sync", thresholdPct: 82, status_keys: ["LIPSYNC"] },
+    { name: "video_merge", label: "Merging & generating SRT", thresholdPct: 88, status_keys: ["MERGING"] },
+    { name: "upload", label: "Uploading to cloud", thresholdPct: 100, status_keys: ["UPLOADING", "DONE"] },
   ];
 
   const derivedSteps = isProcessing || isDone
     ? PIPELINE_STEPS.map((s) => {
-        const isCurrentStatus = s.status_keys.includes(job?.status ?? "");
-        const isPastThreshold = overallPct >= s.thresholdPct;
-        const isBeforeThreshold = overallPct < s.thresholdPct && !isCurrentStatus;
-        let stepStatus: string;
-        if (isDone || isPastThreshold) stepStatus = "completed";
-        else if (isCurrentStatus) stepStatus = "running";
-        else if (isBeforeThreshold) stepStatus = "pending";
-        else stepStatus = "completed";
-        return {
-          name: s.name,
-          label: s.label,
-          status: stepStatus,
-          // Show real step message from DynamoDB on the currently running step
-          message: isCurrentStatus ? (job?.step ?? "") : undefined,
-          // Show real sub-progress on the running step
-          progress: isCurrentStatus ? overallPct : undefined,
-        };
-      })
+      const isCurrentStatus = s.status_keys.includes(job?.status ?? "");
+      const isPastThreshold = overallPct >= s.thresholdPct;
+      const isBeforeThreshold = overallPct < s.thresholdPct && !isCurrentStatus;
+      let stepStatus: string;
+      if (isDone || isPastThreshold) stepStatus = "completed";
+      else if (isCurrentStatus) stepStatus = "running";
+      else if (isBeforeThreshold) stepStatus = "pending";
+      else stepStatus = "completed";
+      return {
+        name: s.name,
+        label: s.label,
+        status: stepStatus,
+        // Show real step message from DynamoDB on the currently running step
+        message: isCurrentStatus ? (job?.step ?? "") : undefined,
+        // Show real sub-progress on the running step
+        progress: isCurrentStatus ? overallPct : undefined,
+      };
+    })
     : null;
 
 
@@ -650,7 +650,7 @@ export default function VideoTranslator() {
         {/* Error */}
         <AnimatePresence>
           {error && (
-            <motion.div initial={{opacity:0,y:-8}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-8}}
+            <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
               className="flex flex-col gap-3 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/25 text-red-300 text-sm">
               <div className="flex items-start gap-3">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -686,7 +686,7 @@ export default function VideoTranslator() {
               <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08]">
                 <Film className="w-4 h-4 text-primary shrink-0" />
                 <span className="text-sm text-white/80 flex-1 truncate">{file.name}</span>
-                <span className="text-xs text-white/40">{(file.size/1024/1024).toFixed(1)} MB</span>
+                <span className="text-xs text-white/40">{(file.size / 1024 / 1024).toFixed(1)} MB</span>
                 <button onClick={() => setFile(null)} className="text-white/30 hover:text-white/70 transition-colors">
                   <X className="w-4 h-4" />
                 </button>
@@ -697,9 +697,9 @@ export default function VideoTranslator() {
             <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-5 flex flex-col gap-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 vt-options-grid">
                 <LangSelect id="src-lang" label="Source Language" value={srcLang}
-                            onChange={setSrcLang} options={LANGS} />
+                  onChange={setSrcLang} options={LANGS} />
                 <LangSelect id="tgt-lang" label="Target Language" value={tgtLang}
-                            onChange={setTgtLang} options={TARGET_LANGS} />
+                  onChange={setTgtLang} options={TARGET_LANGS} />
               </div>
 
               <div className="flex flex-col gap-2">
@@ -708,7 +708,7 @@ export default function VideoTranslator() {
                   <button
                     onClick={() => setVoiceStyle("original")}
                     className={cn("flex-1 py-3 rounded-xl text-sm font-medium border transition-all flex flex-col items-center gap-1",
-                      voiceStyle==="original" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
+                      voiceStyle === "original" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
                   >
                     <span>🎤 Clone Voice</span>
                     <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300/80 border border-amber-400/20">GPU Required</span>
@@ -716,7 +716,7 @@ export default function VideoTranslator() {
                   <button
                     onClick={() => setVoiceStyle("female")}
                     className={cn("flex-1 py-3 rounded-xl text-sm font-medium border transition-all flex flex-col items-center gap-1",
-                      voiceStyle==="female" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
+                      voiceStyle === "female" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
                   >
                     <span>👩 Neural Voice</span>
                     <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300/80 border border-emerald-400/20">Always Available</span>
@@ -815,8 +815,8 @@ export default function VideoTranslator() {
                       <div key={i} className={cn(
                         "flex gap-2 leading-5",
                         entry.level === "error" ? "text-red-400" :
-                        entry.level === "warn"  ? "text-yellow-400" :
-                                                  "text-white/40"
+                          entry.level === "warn" ? "text-yellow-400" :
+                            "text-white/40"
                       )}>
                         <span className="shrink-0 text-white/20">
                           {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
@@ -831,7 +831,7 @@ export default function VideoTranslator() {
 
             {/* Done */}
             {isDone && (
-              <motion.div initial={{opacity:0,scale:0.97}} animate={{opacity:1,scale:1}}
+              <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
                 className="rounded-2xl border border-green-500/25 bg-green-500/8 p-5 flex flex-col gap-4">
                 <div className="flex items-center gap-3">
                   <CheckCircle className="w-6 h-6 text-green-400" />
@@ -851,7 +851,7 @@ export default function VideoTranslator() {
                   {job?.videoUrl && (
                     <a href={job.videoUrl} download="translated_video.mp4"
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-white text-sm transition-all"
-                      style={{background:"linear-gradient(135deg,#16a34a,#15803d)",boxShadow:"0 4px 16px rgba(22,163,74,0.3)"}}>
+                      style={{ background: "linear-gradient(135deg,#16a34a,#15803d)", boxShadow: "0 4px 16px rgba(22,163,74,0.3)" }}>
                       <Download className="w-4 h-4" /> Download Video
                     </a>
                   )}

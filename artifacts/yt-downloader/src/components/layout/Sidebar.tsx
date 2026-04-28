@@ -23,12 +23,7 @@ interface NavItem {
 const SUPER_AGENT_ITEM: NavItem = {
   mode: "copilot",
   icon: (
-    <svg viewBox="0 0 24 24" fill="none" className="gs-super-icon" aria-hidden="true">
-      <path
-        d="M12 3 L14.2 9.8 L21 12 L14.2 14.2 L12 21 L9.8 14.2 L3 12 L9.8 9.8 Z"
-        fill="currentColor"
-      />
-    </svg>
+    <img src="/agent-logo.png" alt="" className="w-5 h-5 object-contain" aria-hidden="true" />
   ),
   label: "Super Agent",
   tone: "accent",
@@ -36,6 +31,7 @@ const SUPER_AGENT_ITEM: NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { mode: "home",        icon: <HomeIcon className="gs-icon" />,        label: "Home" },
+  SUPER_AGENT_ITEM,
   { mode: "clips",       icon: <Sparkles className="gs-icon" />,        label: "Best Clips" },
   { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
   { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },
@@ -92,34 +88,19 @@ function NavList({
   onModeChange,
   onClose,
   onNewChat,
+  hideUtility,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
   onClose?: () => void;
   onNewChat?: () => void;
+  hideUtility?: boolean;
 }) {
   const handle = (m: Mode) => () => { onModeChange(m); onClose?.(); };
   const handleNew = () => { onNewChat?.(); onClose?.(); };
 
   return (
     <>
-      {/* + New */}
-      <GsItem
-        item={{
-          icon: <Plus className="gs-icon" strokeWidth={2.4} />,
-          label: "New",
-        }}
-        onClick={handleNew}
-        className="gs-nav-item-new"
-      />
-
-      {/* Super Agent — only highlighted/visible-style when in copilot mode */}
-      <GsItem
-        item={SUPER_AGENT_ITEM}
-        active={mode === "copilot"}
-        onClick={handle("copilot")}
-      />
-
       {/* Main nav */}
       {NAV_ITEMS.map((item) => (
         <GsItem
@@ -131,15 +112,19 @@ function NavList({
       ))}
 
       {/* Utility nav: Activity + Help */}
-      <div className="gs-nav-divider" />
-      {UTILITY_ITEMS.map((item) => (
-        <GsItem
-          key={item.mode}
-          item={item}
-          active={mode === item.mode}
-          onClick={handle(item.mode)}
-        />
-      ))}
+      {!hideUtility && (
+        <>
+          <div className="gs-nav-divider" />
+          {UTILITY_ITEMS.map((item) => (
+            <GsItem
+              key={item.mode}
+              item={item}
+              active={mode === item.mode}
+              onClick={handle(item.mode)}
+            />
+          ))}
+        </>
+      )}
     </>
   );
 }
@@ -169,7 +154,7 @@ export function Sidebar({
             title="VideoMaking Studio"
             aria-label="VideoMaking Studio"
           >
-            <Youtube className="w-4 h-4 text-primary" />
+            <img src="/app-logo.png" alt="App Logo" className="w-6 h-6 object-contain" />
           </div>
         </div>
 
@@ -178,14 +163,20 @@ export function Sidebar({
             mode={mode}
             onModeChange={onModeChange}
             onNewChat={onNewChat}
+            hideUtility={true}
           />
         </div>
 
-        {/* Bottom avatar */}
+        {/* Bottom pinned utility items */}
         <div className="gs-rail-foot">
-          <div className="gs-avatar" title="Account">
-            <UserCircle2 className="w-5 h-5 text-white/40" />
-          </div>
+          {UTILITY_ITEMS.map((item) => (
+            <GsItem
+              key={item.mode}
+              item={item}
+              active={mode === item.mode}
+              onClick={() => onModeChange(item.mode)}
+            />
+          ))}
         </div>
       </nav>
 
@@ -206,7 +197,7 @@ export function Sidebar({
         <div className="gs-drawer-header">
           <div className="flex items-center gap-2">
             <div className="gs-app-tile">
-              <Youtube className="w-4 h-4 text-primary" />
+              <img src="/app-logo.png" alt="App Logo" className="w-5 h-5 object-contain" />
             </div>
             <span className="text-sm font-semibold text-white/90">
               VideoMaking <span className="text-primary">Studio</span>
@@ -227,7 +218,22 @@ export function Sidebar({
             onModeChange={onModeChange}
             onClose={closeDrawer}
             onNewChat={onNewChat}
+            hideUtility={true}
           />
+        </div>
+
+        <div className="gs-drawer-foot">
+          {UTILITY_ITEMS.map((item) => (
+            <GsItem
+              key={item.mode}
+              item={item}
+              active={mode === item.mode}
+              onClick={() => {
+                onModeChange(item.mode);
+                closeDrawer();
+              }}
+            />
+          ))}
         </div>
       </div>
     </>

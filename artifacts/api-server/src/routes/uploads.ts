@@ -31,16 +31,16 @@ const logger = pino({ name: "uploads" });
 const router = Router();
 
 // ── Config ─────────────────────────────────────────────────────────────────
-const BUCKET         = process.env.S3_BUCKET_NAME ?? "malikaeditorr";
-const REGION         = process.env.AWS_REGION ?? "ap-south-1";
-const UPLOADS_TABLE  = process.env.UPLOADS_TABLE ?? "";
-const MAX_BYTES      = 3 * 1024 * 1024 * 1024; // 3 GB
-const PART_SIZE      = 10 * 1024 * 1024;        // 10 MB per part
-const SINGLE_LIMIT   = 50 * 1024 * 1024;        // use single PUT for < 50 MB
-const TTL_UPLOAD     = 7_200;                   // 2h presigned upload URL
-const TTL_DOWNLOAD   = 86_400;                  // 24h presigned download URL
+const BUCKET = process.env.S3_BUCKET_NAME ?? "malikaeditorr";
+const REGION = process.env.AWS_REGION ?? "ap-south-1";
+const UPLOADS_TABLE = process.env.UPLOADS_TABLE ?? "";
+const MAX_BYTES = 3 * 1024 * 1024 * 1024; // 3 GB
+const PART_SIZE = 10 * 1024 * 1024;        // 10 MB per part
+const SINGLE_LIMIT = 50 * 1024 * 1024;        // use single PUT for < 50 MB
+const TTL_UPLOAD = 7_200;                   // 2h presigned upload URL
+const TTL_DOWNLOAD = 86_400;                  // 24h presigned download URL
 
-const s3  = new S3Client({ region: REGION });
+const s3 = new S3Client({ region: REGION });
 const ddb = UPLOADS_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 
 // ── In-memory fallback & Rate Limiting ───────────────────────────────────────
@@ -62,16 +62,16 @@ function checkRateLimit(ip: string): boolean {
 
 // ── DynamoDB helpers ───────────────────────────────────────────────────────
 function toDb(v: any) {
-  if (typeof v === "string")  return { S: v };
-  if (typeof v === "number")  return { N: String(v) };
+  if (typeof v === "string") return { S: v };
+  if (typeof v === "number") return { N: String(v) };
   if (typeof v === "boolean") return { BOOL: v };
   return { S: String(v) };
 }
 function fromDb(item: Record<string, any>) {
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(item)) {
-    if      (v.S    !== undefined) out[k] = v.S;
-    else if (v.N    !== undefined) out[k] = Number(v.N);
+    if (v.S !== undefined) out[k] = v.S;
+    else if (v.N !== undefined) out[k] = Number(v.N);
     else if (v.BOOL !== undefined) out[k] = v.BOOL;
   }
   return out;
@@ -100,7 +100,7 @@ async function dbGet(fileId: string) {
 async function dbUpdate(fileId: string, updates: Record<string, any>) {
   if (ddb) {
     const names: Record<string, string> = {};
-    const values: Record<string, any>  = {};
+    const values: Record<string, any> = {};
     const sets: string[] = [];
     let i = 0;
     for (const [k, v] of Object.entries(updates)) {
@@ -122,7 +122,7 @@ async function dbListPublic(limit = 24, cursor?: string) {
   if (ddb) {
     let collected: Record<string, any>[] = [];
     let currentCursor: Record<string, any> | undefined = cursor ? { fileId: { S: cursor } } : undefined;
-    
+
     while (collected.length < limit) {
       const res = await ddb.send(new ScanCommand({
         TableName: UPLOADS_TABLE,
@@ -139,7 +139,7 @@ async function dbListPublic(limit = 24, cursor?: string) {
 
     const sliced = collected.slice(0, limit);
     let nextCursorStr: string | undefined = undefined;
-    
+
     if (collected.length > limit) {
       nextCursorStr = sliced[sliced.length - 1].fileId.S;
     } else if (currentCursor) {
@@ -182,10 +182,10 @@ router.post("/presign", async (req: Request, res: Response) => {
     if (size > MAX_BYTES) return res.status(400).json({ error: "File exceeds 3 GB limit." });
     if (size < 1) return res.status(400).json({ error: "Invalid file size." });
 
-    const fileId      = randomUUID();
-    const safeName    = String(filename).replace(/[^\w.\-]/g, "_").slice(0, 200);
-    const vis         = visibility === "private" ? "private" : "public";
-    const s3Key       = `share/${vis}/${fileId}/${safeName}`;
+    const fileId = randomUUID();
+    const safeName = String(filename).replace(/[^\w.\-]/g, "_").slice(0, 200);
+    const vis = visibility === "private" ? "private" : "public";
+    const s3Key = `share/${vis}/${fileId}/${safeName}`;
     const contentType = String(mimeType || "application/octet-stream").slice(0, 200);
 
     await dbPut({
@@ -263,7 +263,7 @@ router.get("/file/:fileId", async (req: Request, res: Response) => {
   try {
     const record = await dbGet(String(req.params.fileId));
     if (!record || record.status !== "done") return res.status(404).json({ error: "File not found." });
-    
+
     const isPreview = req.query.preview === "1";
     const wantsJson = req.query.json === "1";
     const wantsDownload = req.query.download === "1";
@@ -279,7 +279,7 @@ router.get("/file/:fileId", async (req: Request, res: Response) => {
 
     // If they actually download or preview, increment count
     if (!isPreview && (wantsJson || wantsDownload)) {
-      dbUpdate(record.fileId, { downloadCount: (record.downloadCount ?? 0) + 1 }).catch(() => {});
+      dbUpdate(record.fileId, { downloadCount: (record.downloadCount ?? 0) + 1 }).catch(() => { });
     }
 
     const { s3Key: _, multipartUploadId: __, ...safe } = record;
@@ -344,7 +344,7 @@ router.get("/file/:fileId", async (req: Request, res: Response) => {
 // ── GET /api/uploads/public ───────────────────────────────────────────────
 router.get("/public", async (req: Request, res: Response) => {
   try {
-    const limit  = Math.min(parseInt(String(req.query.limit ?? "24")), 50);
+    const limit = Math.min(parseInt(String(req.query.limit ?? "24")), 50);
     const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
     const { files, nextCursor } = await dbListPublic(limit, cursor);
     const safe = files.map(({ s3Key: _, multipartUploadId: __, ...f }) => f);
@@ -360,7 +360,7 @@ router.delete("/file/:fileId", async (req: Request, res: Response) => {
   try {
     const record = await dbGet(String(req.params.fileId));
     if (!record) return res.status(404).json({ error: "File not found." });
-    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: record.s3Key })).catch(() => {});
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: record.s3Key })).catch(() => { });
     await dbDelete(record.fileId);
     return res.json({ ok: true });
   } catch (err) {

@@ -246,7 +246,7 @@ function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onN
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
       className={cn("flex gap-3 w-full", isUser ? "justify-end" : "justify-start")}>
       {!isUser && (
-        <div className="agent-avatar shrink-0 mt-0.5"><Bot className="w-3.5 h-3.5 text-primary" /></div>
+        <div className="agent-avatar shrink-0 mt-0.5"><img src="/agent-logo.png" className="w-4 h-4 object-contain" alt="" /></div>
       )}
       <div className={cn("flex flex-col gap-2 max-w-[88%] sm:max-w-[80%]", isUser && "items-end")}>
         {message.parts.map((part, i) => {
@@ -783,9 +783,7 @@ export function StudioCopilot({
         <div className="gs-mode-tabs">
           <button type="button" className="gs-mode-tab gs-mode-tab-active">
             <span className="gs-mode-tab-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3">
-                <path d="M12 2 L14 9 L21 12 L14 15 L12 22 L10 15 L3 12 L10 9 Z" />
-              </svg>
+              <img src="/agent-logo.png" alt="" className="w-3.5 h-3.5 object-contain" />
             </span>
             Super Agent
           </button>

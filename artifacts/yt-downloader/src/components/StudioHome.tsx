@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  Plus, Paperclip, AudioLines, ArrowUp,
-  Scissors, Sparkles, Captions, Languages, AlarmClock,
-  Download, ListVideo, Shield, UploadCloud, Bot, Star,
+  Plus, AudioLines, ArrowUp,
+  Download, Sparkles, Captions, Scissors, Shield,
+  ListVideo, AlarmClock, UploadCloud, Languages, Youtube, Menu, X,
+  Home as HomeIcon, CircleHelp, Activity, UserCircle2, Wrench,
+  Film,
+  Star,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -30,17 +33,17 @@ function readUltraInitial(): boolean {
 }
 
 const AGENTS: AgentTile[] = [
-  { key: "clips",       label: "Best Clips",  icon: <Sparkles className="w-5 h-5 text-white" />,    bg: "linear-gradient(135deg,#dc2626 0%,#7f1d1d 100%)", badge: { text: "AI",  color: "#dc2626" }, mode: "clips" },
-  { key: "clipcutter",  label: "Clip Cut",    icon: <Scissors className="w-5 h-5 text-white" />,    bg: "linear-gradient(135deg,#475569,#1f2937)",                                                  mode: "clipcutter" },
-  { key: "subtitles",   label: "Subtitles",   icon: <Captions className="w-5 h-5 text-white" />,    bg: "linear-gradient(135deg,#16a34a,#14532d)",                                                  mode: "subtitles" },
-  { key: "translator",  label: "Translator",  icon: <Languages className="w-5 h-5 text-white" />,   bg: "linear-gradient(135deg,#2563eb,#1e3a8a)",         badge: { text: "GPU", color: "#2563eb" }, mode: "translator" },
-  { key: "timestamps",  label: "Timestamps",  icon: <AlarmClock className="w-5 h-5 text-white" />,  bg: "linear-gradient(135deg,#f59e0b,#92400e)",         badge: { text: "AI",  color: "#f59e0b" }, mode: "timestamps" },
-  { key: "download",    label: "Download",    icon: <Download className="w-5 h-5 text-white" />,    bg: "linear-gradient(135deg,#a855f7,#581c87)",                                                  mode: "download" },
-  { key: "scenefinder", label: "Find Sabha",  icon: <ListVideo className="w-5 h-5 text-white" />,   bg: "linear-gradient(135deg,#0ea5e9,#0c4a6e)",                                                  mode: "scenefinder" },
-  { key: "bhagwat",     label: "Bhagwat",     icon: <Shield className="w-5 h-5 text-white" />,      bg: "linear-gradient(135deg,#ec4899,#831843)",         badge: { text: "PRO", color: "#ec4899" }, mode: "bhagwat" },
-  { key: "upload",      label: "Share",       icon: <UploadCloud className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#14b8a6,#134e4a)",                                                  mode: "upload" },
-  { key: "agent",       label: "Super Agent", icon: <Bot className="w-5 h-5 text-white" />,         bg: "linear-gradient(135deg,#0284c7,#082f49)",                                                  mode: "copilot" },
-  { key: "all",         label: "All Agents",  icon: <Star className="w-5 h-5 text-white" />,        bg: "linear-gradient(135deg,#1f2937,#0f172a)", ring: "rgba(255,255,255,0.18)",                  mode: "copilot" },
+  { key: "clips", label: "Best Clips", icon: <Sparkles className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#dc2626 0%,#7f1d1d 100%)", badge: { text: "AI", color: "#dc2626" }, mode: "clips" },
+  { key: "clipcutter", label: "Clip Cut", icon: <Scissors className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#475569,#1f2937)", mode: "clipcutter" },
+  { key: "subtitles", label: "Subtitles", icon: <Captions className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#16a34a,#14532d)", mode: "subtitles" },
+  { key: "translator", label: "Translator", icon: <Languages className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#2563eb,#1e3a8a)", badge: { text: "GPU", color: "#2563eb" }, mode: "translator" },
+  { key: "timestamps", label: "Timestamps", icon: <AlarmClock className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#f59e0b,#92400e)", badge: { text: "AI", color: "#f59e0b" }, mode: "timestamps" },
+  { key: "download", label: "Download", icon: <Download className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#a855f7,#581c87)", mode: "download" },
+  { key: "scenefinder", label: "Find Sabha", icon: <ListVideo className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#0ea5e9,#0c4a6e)", mode: "scenefinder" },
+  { key: "bhagwat", label: "Bhagwat", icon: <Shield className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#ec4899,#831843)", badge: { text: "PRO", color: "#ec4899" }, mode: "bhagwat" },
+  { key: "upload", label: "Share", icon: <UploadCloud className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#14b8a6,#134e4a)", mode: "upload" },
+  { key: "agent", label: "Super Agent", icon: <img src="/agent-logo.png" alt="Agent" className="w-6 h-6 object-contain" style={{ filter: 'brightness(0) invert(1)' }} />, bg: "linear-gradient(135deg,#0284c7,#082f49)", mode: "copilot" },
+  { key: "all", label: "All Agents", icon: <Star className="w-5 h-5 text-white" />, bg: "linear-gradient(135deg,#1f2937,#0f172a)", ring: "rgba(255,255,255,0.18)", mode: "copilot" },
 ];
 
 export function StudioHome({
@@ -61,11 +64,11 @@ export function StudioHome({
     !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
   useEffect(() => {
-    try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch {}
+    try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch { }
   }, [ultra]);
 
   // Stop recognition if the component unmounts mid-listen.
-  useEffect(() => () => { try { recognitionRef.current?.stop(); } catch {} }, []);
+  useEffect(() => () => { try { recognitionRef.current?.stop(); } catch { } }, []);
 
   const submit = () => {
     const t = text.trim();
@@ -97,7 +100,7 @@ export function StudioHome({
       return;
     }
     if (listening) {
-      try { recognitionRef.current?.stop(); } catch {}
+      try { recognitionRef.current?.stop(); } catch { }
       setListening(false);
       return;
     }
@@ -130,8 +133,7 @@ export function StudioHome({
       <div className="gs-home-center">
         {/* Title */}
         <h1 className="gs-home-title">
-          VideoMaking Studio Workspace 4.0
-          <span className="gs-home-dot" aria-hidden="true" />
+          <span className="gs-home-title-text">VideoMaking Studio Workspace 2.0</span>
         </h1>
 
         {/* Big input box */}
@@ -172,11 +174,11 @@ export function StudioHome({
               <button
                 type="button"
                 className="gs-input-circle-btn"
-                title="Attach file (coming soon)"
-                aria-label="Attach"
-                onClick={onAttach}
+                title="Tools"
+                aria-label="Tools"
+                onClick={() => { }}
               >
-                <Paperclip className="w-4 h-4" />
+                <Wrench className="w-4 h-4" />
               </button>
               <button
                 type="button"
@@ -219,32 +221,29 @@ export function StudioHome({
           </div>
         </form>
 
-        {/* Agent quick row */}
-        <div className="gs-agents-row no-scrollbar">
-          {AGENTS.map(a => (
-            <motion.button
-              key={a.key}
-              whileHover={{ y: -3 }}
-              whileTap={{ scale: 0.96 }}
-              className="gs-agent"
-              onClick={() => a.mode && onSwitchMode(a.mode)}
+        {/* Tool bubbles — grid layout */}
+        <div className="studio-home-grid mt-4">
+          {([
+            { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },
+            { icon: <Scissors className="w-5 h-5" />, label: "Clip Cutter", desc: "Trim any range", mode: "clipcutter", color: "text-orange-400" },
+            { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
+            { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
+            { icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" },
+            { icon: <ListVideo className="w-5 h-5" />, label: "Find Sabha", desc: "Search within videos", mode: "scenefinder", color: "text-sky-400" },
+            { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
+            { icon: <UploadCloud className="w-5 h-5" />, label: "Share", desc: "Share files", mode: "upload", color: "text-cyan-400" },
+          ] as Array<{ icon: React.ReactNode; label: string; desc: string; mode: string; color: string }>).map((tool) => (
+            <button
+              key={tool.mode}
+              onClick={() => onSwitchMode(tool.mode as Mode)}
+              className="studio-home-tool"
             >
-              <span
-                className={cn("gs-agent-circle", a.ring && "gs-agent-ring")}
-                style={{ background: a.bg, ...(a.ring ? { boxShadow: `inset 0 0 0 1px ${a.ring}` } : null) }}
-              >
-                {a.icon}
-              </span>
-              <span className="gs-agent-label">{a.label}</span>
-              {a.badge && (
-                <span
-                  className="gs-agent-badge"
-                  style={{ background: a.badge.color }}
-                >
-                  {a.badge.text}
-                </span>
-              )}
-            </motion.button>
+              <span className={tool.color}>{tool.icon}</span>
+              <div className="studio-home-tool-text">
+                <span className="studio-home-tool-label">{tool.label}</span>
+                <span className="studio-home-tool-desc">{tool.desc}</span>
+              </div>
+            </button>
           ))}
         </div>
       </div>

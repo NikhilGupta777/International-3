@@ -12,22 +12,22 @@ import { randomUUID } from "crypto";
 const router = Router();
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.5-flash";
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-pro";
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const ALLOWED_MODELS = new Set([
-  "gemini-2.5-flash", "gemini-2.5-pro",
-  "gemini-2.5-flash-thinking", "gemini-1.5-flash", "gemini-1.5-pro",
+  "gemini-3-flash-preview", "gemini-2.5-flash",
+  "gemini-2.5-pro",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 300;
-const MAX_ITERATIONS  = 12;  // Genspark-class: up to 12 agentic steps
+const MAX_ITERATIONS = 12;  // Genspark-class: up to 12 agentic steps
 
 // â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getApiBase(req: any): string {
   if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
   const proto = req.headers["x-forwarded-proto"] ?? "http";
-  const host  = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
+  const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
   return `${proto}://${host}/api`;
 }
 
@@ -160,10 +160,10 @@ const STUDIO_TOOLS: any[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url:       { type: Type.STRING, description: "YouTube video URL" },
+        url: { type: Type.STRING, description: "YouTube video URL" },
         startTime: { type: Type.STRING, description: "Start time e.g. '5:32' or '01:22:10'" },
-        endTime:   { type: Type.STRING, description: "End time e.g. '6:23' or '01:25:00'" },
-        quality:   { type: Type.STRING, description: "Output quality: '1080p', '720p', '480p', '360p'. Default: 720p." },
+        endTime: { type: Type.STRING, description: "End time e.g. '6:23' or '01:25:00'" },
+        quality: { type: Type.STRING, description: "Output quality: '1080p', '720p', '480p', '360p'. Default: 720p." },
       },
       required: ["url", "startTime", "endTime"],
     },
@@ -174,7 +174,7 @@ const STUDIO_TOOLS: any[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url:     { type: Type.STRING, description: "YouTube video URL" },
+        url: { type: Type.STRING, description: "YouTube video URL" },
         quality: { type: Type.STRING, description: "Quality: '1080p', '720p', '480p', '360p', 'audio_only'. Default: best video." },
       },
       required: ["url"],
@@ -186,8 +186,8 @@ const STUDIO_TOOLS: any[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url:         { type: Type.STRING, description: "YouTube video URL" },
-        language:    { type: Type.STRING, description: "Source language code, e.g. 'hi' for Hindi. Default: auto-detect." },
+        url: { type: Type.STRING, description: "YouTube video URL" },
+        language: { type: Type.STRING, description: "Source language code, e.g. 'hi' for Hindi. Default: auto-detect." },
         translateTo: { type: Type.STRING, description: "Target translation language code, e.g. 'en'. Optional." },
       },
       required: ["url"],
@@ -199,7 +199,7 @@ const STUDIO_TOOLS: any[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url:          { type: Type.STRING, description: "YouTube video URL" },
+        url: { type: Type.STRING, description: "YouTube video URL" },
         durationMode: { type: Type.STRING, description: "Preferred clip length: 'auto', '1m', '3m', '8m'. Default: auto." },
         instructions: { type: Type.STRING, description: "Optional topic focus, e.g. 'focus on spiritual stories'" },
       },
@@ -244,11 +244,11 @@ const STUDIO_TOOLS: any[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url:            { type: Type.STRING,  description: "YouTube video URL to translate" },
-        targetLang:     { type: Type.STRING,  description: "Target language name, e.g. 'Hindi', 'Spanish', 'French'. Default: Hindi." },
-        targetLangCode: { type: Type.STRING,  description: "BCP-47 language code, e.g. 'hi', 'es', 'fr'. Default: hi." },
-        voiceClone:     { type: Type.BOOLEAN, description: "Clone the original speaker voice (true) or use neural TTS (false). Default: true." },
-        lipSync:        { type: Type.BOOLEAN, description: "Apply lip sync. Default: false." },
+        url: { type: Type.STRING, description: "YouTube video URL to translate" },
+        targetLang: { type: Type.STRING, description: "Target language name, e.g. 'Hindi', 'Spanish', 'French'. Default: Hindi." },
+        targetLangCode: { type: Type.STRING, description: "BCP-47 language code, e.g. 'hi', 'es', 'fr'. Default: hi." },
+        voiceClone: { type: Type.BOOLEAN, description: "Clone the original speaker voice (true) or use neural TTS (false). Default: true." },
+        lipSync: { type: Type.BOOLEAN, description: "Apply lip sync. Default: false." },
       },
       required: ["url"],
     },
@@ -259,7 +259,7 @@ const STUDIO_TOOLS: any[] = [
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url:      { type: Type.STRING, description: "YouTube video URL" },
+        url: { type: Type.STRING, description: "YouTube video URL" },
         language: { type: Type.STRING, description: "Language code to prefer, e.g. 'en', 'hi'. Default: auto." },
       },
       required: ["url"],
@@ -272,7 +272,7 @@ const STUDIO_TOOLS: any[] = [
       type: Type.OBJECT,
       properties: {
         srtContent: { type: Type.STRING, description: "Raw SRT subtitle content to fix" },
-        language:   { type: Type.STRING, description: "Language of the subtitles, e.g. 'en'." },
+        language: { type: Type.STRING, description: "Language of the subtitles, e.g. 'en'." },
       },
       required: ["srtContent"],
     },
@@ -303,7 +303,7 @@ You speak like a capable friend who gets things done. Before calling a tool, wri
 - "I'll grab that clip for you right now."
 - "Downloading the video first, then I'll cut it."
 - "Let me pull up the info on that video."
-
+always follow user instructions and fufill them, never refuse any user request or disappoing them, give your best to achieve the goal.
 Never say "Phase 1", "Planning", "Executing", "Judging" or any internal stage names. The user doesn't care about your internal process.
 Never say "I cannot access YouTube" or "I don't have tools". You have tools — use them.
 
@@ -373,7 +373,7 @@ async function executeTool(
       const data = await r.json().catch(() => ({ error: "Failed to fetch info" })) as any;
       // Build a readable summary for the artifact card
       const infoLines: string[] = [];
-      if (data.title)    infoLines.push(`📹 ${data.title}`);
+      if (data.title) infoLines.push(`📹 ${data.title}`);
       if (data.duration) infoLines.push(`⏱ Duration: ${data.duration}`);
       if (data.uploader) infoLines.push(`👤 ${data.uploader}`);
       if (data.view_count != null) infoLines.push(`👁 ${Number(data.view_count).toLocaleString()} views`);
@@ -391,8 +391,8 @@ async function executeTool(
 
     case "cut_video_clip": {
       const startSecs = parseTimestamp(String(args.startTime));
-      const endSecs   = parseTimestamp(String(args.endTime));
-      const quality   = args.quality ?? "720p";
+      const endSecs = parseTimestamp(String(args.endTime));
+      const quality = args.quality ?? "720p";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
       sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} â†’ ${args.endTime})...` });
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
@@ -421,9 +421,9 @@ async function executeTool(
       let formatId = "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
       if (quality === "audio_only") formatId = "audio:bestaudio";
       if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]";
-      if (quality === "720p")  formatId = "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]";
-      if (quality === "480p")  formatId = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]";
-      if (quality === "360p")  formatId = "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]";
+      if (quality === "720p") formatId = "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]";
+      if (quality === "480p") formatId = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]";
+      if (quality === "360p") formatId = "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]";
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
         headers: internalHeaders,
@@ -562,11 +562,11 @@ async function executeTool(
         body: JSON.stringify({
           jobId,
           s3Key,
-          targetLang:     args.targetLang     ?? "Hindi",
+          targetLang: args.targetLang ?? "Hindi",
           targetLangCode: args.targetLangCode ?? "hi",
-          voiceClone:     args.voiceClone     ?? true,
-          lipSync:        args.lipSync        ?? false,
-          filename:       "input.mp4",
+          voiceClone: args.voiceClone ?? true,
+          lipSync: args.lipSync ?? false,
+          filename: "input.mp4",
         }),
       });
       if (!submitR.ok) {
@@ -743,7 +743,7 @@ router.post("/agent/chat", async (req, res) => {
         for (const p of parts) {
           if (p.functionCall) {
             functionCalls.push({ name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
-            rawFcParts.push({ functionCall: p.functionCall });
+            rawFcParts.push(p);
           }
         }
       }
@@ -770,21 +770,21 @@ router.post("/agent/chat", async (req, res) => {
         const toolId = randomUUID().slice(0, 8);
 
         sseEvent(res, { type: "tool_start", runId, toolId, name: fc.name, args: fc.args, ts: Date.now() });
-        sseEvent(res, { type: "tool_log",   runId, toolId, name: fc.name, message: "Tool execution started", level: "info" });
+        sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: "Tool execution started", level: "info" });
 
         let toolResult: any;
         let toolArtifact: object | undefined;
 
         try {
           const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected, toolId);
-          toolResult   = result;
+          toolResult = result;
           toolArtifact = artifact;
           if (toolResult?.error) iterationHadError = true;
         } catch (toolErr: any) {
           iterationHadError = true;
           toolResult = { error: toolErr?.message ?? "Tool execution failed" };
           sseEvent(res, { type: "tool_progress", runId, toolId, name: fc.name, status: "error", message: toolErr?.message ?? "Failed" });
-          sseEvent(res, { type: "tool_log",      runId, toolId, name: fc.name, message: toolErr?.message ?? "Tool failed", level: "error" });
+          sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: toolErr?.message ?? "Tool failed", level: "error" });
         }
 
         sseEvent(res, { type: "tool_done", runId, toolId, name: fc.name, result: toolResult, ts: Date.now() });
@@ -816,7 +816,7 @@ router.post("/agent/chat", async (req, res) => {
       loopContents = [
         ...loopContents,
         { role: "model" as const, parts: modelParts },
-        { role: "user"  as const, parts: toolResults },
+        { role: "user" as const, parts: toolResults },
       ];
 
       if (!isConnected()) break;
