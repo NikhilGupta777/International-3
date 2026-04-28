@@ -1,8 +1,10 @@
+# syntax=docker/dockerfile:1.7
 # AWS Batch GPU Worker Container — Production Grade
 # Base: CUDA 12.1 + cuDNN 8 on Ubuntu 22.04
 # Pipeline: AssemblyAI → Gemini → CosyVoice 2.0 → LatentSync 1.6
 # Runs as a one-shot CLI job: python worker.py
 # No HTTP server, no EXPOSE, no HEALTHCHECK.
+# Requires BuildKit (heredoc COPY) — the deploy workflow uses `docker buildx build`.
 
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
@@ -73,20 +75,48 @@ RUN pip install --no-cache-dir onnxruntime-gpu==1.18.1 || true
 # ── Pre-download CosyVoice model weights into ModelScope cache ────────────────
 # Uses iic/CosyVoice2-0.5B — publicly available on ModelScope.
 # CRITICAL: pass cache_dir explicitly — do NOT rely on MODELSCOPE_CACHE env var
-# alone, as some modelscope versions ignore it. This guarantees the model lands
-# at /model-cache/modelscope/hub/iic/CosyVoice2-0.5B which is what worker.py checks.
+# alone, as some modelscope versions ignore it.
+#
+# modelscope >=1.16 lays the cache out at:
+#     <cache>/hub/models/iic/CosyVoice2-0.5B
+# older modelscope laid it out at:
+#     <cache>/hub/iic/CosyVoice2-0.5B
+# worker.py historically checked the OLD layout, so we capture the real
+# download path and symlink the canonical legacy path to it. That way both
+# layouts work for any future modelscope upgrade or downgrade.
 RUN mkdir -p /model-cache/modelscope /model-cache/huggingface
-RUN python -c "\
-import os; \
-from modelscope import snapshot_download; \
-cache = '/model-cache/modelscope'; \
-os.makedirs(cache, exist_ok=True); \
-p = snapshot_download('iic/CosyVoice2-0.5B', cache_dir=cache); \
-print(f'[ModelScope] Downloaded to: {p}')"
-# Verify the weights actually landed where worker.py will look for them
-RUN ls -la /model-cache/modelscope/hub/iic/ && \
-    echo "CosyVoice2-0.5B weights verified OK" || \
-    (echo "ERROR: model not found at expected path" && exit 1)
+COPY <<'PY' /tmp/download_cosyvoice.py
+import os, pathlib, shutil
+from modelscope import snapshot_download
+
+cache = "/model-cache/modelscope"
+os.makedirs(cache, exist_ok=True)
+p = snapshot_download("iic/CosyVoice2-0.5B", cache_dir=cache)
+print(f"[ModelScope] Downloaded to: {p}")
+
+target = pathlib.Path(p).resolve()
+legacy = pathlib.Path(cache) / "hub" / "iic" / "CosyVoice2-0.5B"
+legacy.parent.mkdir(parents=True, exist_ok=True)
+
+if legacy.exists() or legacy.is_symlink():
+    if legacy.is_symlink() or legacy.is_file():
+        legacy.unlink()
+    elif legacy.is_dir():
+        # Already a real dir from a prior layout — leave it alone.
+        print(f"[ModelScope] Legacy dir already exists at {legacy}; skipping symlink")
+        raise SystemExit(0)
+
+legacy.symlink_to(target, target_is_directory=True)
+print(f"[ModelScope] Legacy path: {legacy} -> {target}")
+PY
+RUN python /tmp/download_cosyvoice.py && rm -f /tmp/download_cosyvoice.py
+# Verify the weights actually landed where worker.py will look for them.
+# Accept either the legacy iic/ path or the new models/iic/ path.
+RUN (ls -la /model-cache/modelscope/hub/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (legacy path) verified OK") || \
+    (ls -la /model-cache/modelscope/hub/models/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (new path) verified OK") || \
+    (echo "ERROR: CosyVoice2-0.5B not found at either /model-cache/modelscope/hub/iic/ or /model-cache/modelscope/hub/models/iic/" && \
+     echo "--- /model-cache/modelscope tree ---" && find /model-cache/modelscope -maxdepth 5 -type d 2>/dev/null && \
+     exit 1)
 
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py .

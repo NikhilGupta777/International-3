@@ -408,15 +408,32 @@ def _ensure_cosyvoice() -> Path:
     # Verify model weights are present (downloaded at build time via modelscope).
     # We accept either CosyVoice2-0.5B or CosyVoice3-0.5B — the Dockerfile
     # downloads v2 (publicly available). v3 is tried at runtime but falls back to v2.
-    ms_v2 = MODELSCOPE_CACHE / "hub" / "iic" / "CosyVoice2-0.5B"
-    ms_v3 = MODELSCOPE_CACHE / "hub" / "iic" / "CosyVoice3-0.5B"
-    if not ms_v2.exists() and not ms_v3.exists():
+    #
+    # modelscope cache layout differs by version:
+    #   modelscope >=1.16 → <cache>/hub/models/iic/<model>
+    #   modelscope <1.16  → <cache>/hub/iic/<model>
+    # The Dockerfile symlinks the legacy path → the real one, but we also
+    # check both here so the worker is robust to any layout drift.
+    candidate_roots = [
+        MODELSCOPE_CACHE / "hub" / "iic",
+        MODELSCOPE_CACHE / "hub" / "models" / "iic",
+    ]
+    found = None
+    for root in candidate_roots:
+        v3 = root / "CosyVoice3-0.5B"
+        v2 = root / "CosyVoice2-0.5B"
+        if v3.exists():
+            found = v3
+            break
+        if v2.exists():
+            found = v2
+            break
+    if found is None:
         raise RuntimeError(
-            f"CosyVoice model weights not found in {MODELSCOPE_CACHE}/hub/iic/. "
+            f"CosyVoice model weights not found under {MODELSCOPE_CACHE}/hub/(iic|models/iic)/. "
             "Expected CosyVoice2-0.5B or CosyVoice3-0.5B. "
             "Rebuild the Docker image — the snapshot_download step failed."
         )
-    found = ms_v3 if ms_v3.exists() else ms_v2
     log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {found} ✓")
     return cv_dir
 
