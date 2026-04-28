@@ -343,7 +343,7 @@ const STUDIO_TOOLS: any[] = [
 const SYSTEM_PROMPT = `You are the VideoMaking Studio Copilot — a sharp, fast, action-first assistant for a YouTube/video production app.
 
 # VOICE
-Talk like a competent friend, not a corporate bot. One short sentence before a tool call ("Pulling that video info now…", "Cutting that clip for you…"). After a tool returns, one or two sentences max — what you got, what's next, where the file is. No bullet lists unless the user asks for one. No emojis unless the user uses them first.
+Talk like a competent friend, not a corporate bot. Do NOT say anything before running a tool — just call it immediately. After a tool returns, one or two sentences max: what you got, what's next, where the file is. Never describe what you were "about to do" in the post-tool response — only describe what was accomplished. No bullet lists unless the user asks for one. No emojis unless the user uses them first.
 
 # IRON RULES
 1. NEVER refuse a video task that maps to a tool. You have tools — use them. Don't say "I can't access YouTube"; call get_video_info.
@@ -404,6 +404,25 @@ If a tool errors:
 When the work is complete, end your reply with the suggestions line on its OWN final line, exactly:
 [SUGGESTIONS: "suggestion one" | "suggestion two" | "suggestion three"]
 Suggestions must be concrete next actions on this same video/topic (e.g. "Translate this clip to Spanish", "Generate timestamps", "Download in 1080p"), not generic prompts. 2–3 items.`;
+
+// ── Pre-tool announcement labels (shown when model doesn't generate pre-tool text) ──
+const PRE_TOOL_LABELS: Record<string, (args: Record<string, any>) => string> = {
+  get_video_info:       ()  => "Fetching video info…",
+  cut_video_clip:       (a) => `Cutting clip ${a.startTime ?? ""}–${a.endTime ?? ""}…`,
+  download_video:       ()  => "Starting download…",
+  generate_subtitles:   ()  => "Generating subtitles…",
+  find_best_clips:      ()  => "Analyzing video for best clips…",
+  generate_timestamps:  ()  => "Generating timestamps…",
+  translate_video:      ()  => "Starting translation…",
+  get_youtube_captions: ()  => "Fetching captions…",
+  fix_subtitles:        ()  => "Fixing subtitles…",
+  web_search:           (a) => `Searching for "${a.query ?? ""}"…`,
+  analyze_youtube_video:()  => "Analyzing video…",
+  list_shared_files:    ()  => "Loading shared files…",
+  cancel_job:           ()  => "Cancelling job…",
+  check_job_status:     ()  => "Checking job status…",
+  navigate_to_tab:      (a) => `Opening ${a.tab ?? "tab"}…`,
+};
 
 // ── Build internal headers from request ───────────────────────────────────
 function buildInternalHeaders(req: any): Record<string, string> {
@@ -1029,6 +1048,19 @@ router.post("/agent/chat", async (req, res) => {
           if (items.length > 0) sseEvent(res, { type: "suggestions", items, runId } as any);
         }
         break;
+      }
+
+      // ── 2c. Emit synthetic pre-tool text if model skipped it ──────────────
+      // Gemini sometimes generates no text before a function call and instead
+      // combines the pre-action announcement with the post-tool result in the
+      // next iteration. To keep the chat readable we emit a brief label here
+      // so the user sees an action description BEFORE the tool card appears.
+      if (fullText.trim() === "" && functionCalls.length > 0) {
+        const firstFc = functionCalls[0];
+        const labelFn = PRE_TOOL_LABELS[firstFc.name];
+        if (labelFn) {
+          sseEvent(res, { type: "text", content: labelFn(firstFc.args), runId });
+        }
       }
 
       // ── 3. Emit plan event — what tools are about to run ──────────────────
