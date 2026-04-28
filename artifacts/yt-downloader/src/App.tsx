@@ -120,7 +120,7 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <div className="relative min-h-screen">
+        <div className="relative h-full w-full">
           {!authChecked ? (
             <AuthOverlay
               eyebrow="Secure Access"
