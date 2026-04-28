@@ -45,7 +45,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "S3_BUCKET=malikaeditorr S3_REGION=us-east-1 S3_OBJECT_PREFIX=ytgrabber-green YTDLP_COOKIES_S3_KEY=ytgrabber-green/secrets/ytdlp-cookies-base64.txt YTDLP_BIN=/home/runner/workspace/.pythonlibs/bin/yt-dlp PORT=8080 NODE_ENV=development pnpm --filter @workspace/api-server run start"
+args = "S3_BUCKET=malikaeditorr S3_REGION=us-east-1 S3_OBJECT_PREFIX=ytgrabber-green YTDLP_COOKIES_S3_KEY=ytgrabber-green/secrets/ytdlp-cookies-base64.txt YTDLP_BIN=/home/runner/workspace/.pythonlibs/bin/yt-dlp PORT=8080 NODE_ENV=development pnpm --filter @workspace/api-server run dev"
 waitForPort = 8080
 
 [[ports]]
@@ -67,10 +67,6 @@ externalPort = 3000
 [[ports]]
 localPort = 8080
 externalPort = 8080
-
-[[ports]]
-localPort = 8081
-externalPort = 8081
 
 [deployment]
 deploymentTarget = "static"
