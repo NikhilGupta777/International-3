@@ -2687,10 +2687,23 @@
   color: rgba(255,255,255,0.92);
 }
 .gs-mode-tab-active {
-  background: #2b2c2f !important; /* matches gs-input-card exactly to hide the seam */
+  background: rgba(255,255,255,0.06) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   color: #fff !important;
-  border-color: rgba(255,255,255,0.08); /* matches gs-input-card border */
+  border-color: rgba(255,255,255,0.12);
   z-index: 1;
+}
+/* This pseudo-element perfectly covers the input card's top border just beneath the tab, erasing the 'black line' while keeping the tab transparent */
+.gs-mode-tab-active::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: #2b2c2f;
+  z-index: 2;
 }
 .gs-mode-tab-icon {
   display: inline-flex;
