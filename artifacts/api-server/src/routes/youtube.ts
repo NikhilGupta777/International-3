@@ -5,6 +5,7 @@ import {
   type Response,
   type NextFunction,
 } from "express";
+import { setupSse } from "../lib/sse";
 import { spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
 import {
@@ -2225,10 +2226,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
       res.status(404).json({ error: "Job not found" });
       return;
     }
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders();
+    setupSse(res);
 
     const send = (payload: object) => {
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -2286,10 +2284,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
     return;
   }
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
+  setupSse(res);
 
   const send = (payload: object) => {
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -3422,10 +3417,7 @@ router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
       res.status(404).json({ error: "Job not found" });
       return;
     }
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders();
+    setupSse(res);
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     const pollQueue = async (): Promise<boolean> => {
@@ -3503,10 +3495,7 @@ router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
     return;
   }
 
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
+  setupSse(res);
 
   const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 

@@ -8,6 +8,7 @@
 import { Router } from "express";
 import { GoogleGenAI, Type } from "@google/genai";
 import { randomUUID } from "crypto";
+import { setupSse } from "../lib/sse";
 
 const router = Router();
 
@@ -852,13 +853,8 @@ router.post("/agent/chat", async (req, res) => {
     activeModel = requestedModel;
   }
 
-  // â”€â”€ Setup SSE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.setHeader("Content-Encoding", "identity");
-  res.flushHeaders();
+  // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
+  setupSse(res);
 
   // ⚠️ Use res.on("close") — req.on("close") fires when the request body
   // finishes being consumed (Node http behaviour), which for a normal POST

@@ -1,4 +1,5 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
+import { setupSse } from "../lib/sse";
 import {
   existsSync,
   mkdirSync,
@@ -1603,10 +1604,7 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
       return;
     }
 
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders?.();
+    setupSse(res);
     const send = (event: string, data: object) =>
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
@@ -1692,10 +1690,7 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
       });
     return;
   }
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders?.();
+  setupSse(res);
   const send = (event: string, data: object) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   if (job.status === "done") {
@@ -1856,10 +1851,7 @@ router.get("/bhagwat/review-status/:jobId", (req: Request, res: Response) => {
     res.status(404).json({ error: "Job not found" });
     return;
   }
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders?.();
+  setupSse(res);
   const send = (event: string, data: object) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   const onChunk  = (d: object) => send("chunk", d);
@@ -2206,10 +2198,7 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
       return;
     }
 
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.flushHeaders?.();
+    setupSse(res);
     const send = (event: string, data: object) =>
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
@@ -2279,10 +2268,7 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
       });
     return;
   }
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders?.();
+  setupSse(res);
   const send = (event: string, data: object) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   if (job.status === "done") {

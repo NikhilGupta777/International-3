@@ -68,17 +68,28 @@ export default defineConfig({
             const ct = proxyRes.headers["content-type"] ?? "";
 
             if (ct.includes("text/event-stream")) {
-              // SSE: set real-time headers, disable Nagle, pipe directly
+              // SSE: set real-time headers, disable Nagle, pipe directly.
+              // CRITICAL: do NOT set "Transfer-Encoding: identity". That
+              // disables chunked encoding, and without Content-Length the
+              // Replit edge proxy then buffers the entire body until the
+              // upstream socket closes — so the browser only receives the
+              // full response at the end. Letting Node default to
+              // "Transfer-Encoding: chunked" lets each write flush through.
+              // Also drop any upstream Content-Length to avoid a length
+              // mismatch on a streaming body.
               res.writeHead(proxyRes.statusCode ?? 200, {
-                "Content-Type":          "text/event-stream",
-                "Cache-Control":         "no-cache, no-transform",
+                "Content-Type":          "text/event-stream; charset=utf-8",
+                "Cache-Control":         "no-cache, no-store, no-transform, must-revalidate",
                 "Connection":            "keep-alive",
                 "X-Accel-Buffering":     "no",
-                "Transfer-Encoding":     "identity",
                 "Access-Control-Allow-Origin": "*",
               });
               // TCP_NODELAY: flush every write() immediately (no Nagle batching)
               res.socket?.setNoDelay?.(true);
+              // 2KB comment padding tells some intermediaries to start
+              // streaming immediately instead of waiting for a buffer to fill.
+              res.write(":" + " ".repeat(2048) + "\n\n");
+              if (typeof (res as any).flush === "function") (res as any).flush();
               proxyRes.pipe(res);
             } else {
               // All other routes: forward status + headers normally, pipe body

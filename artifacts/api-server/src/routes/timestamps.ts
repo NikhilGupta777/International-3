@@ -13,6 +13,7 @@
  */
 
 import { Router, type Request, type Response } from "express";
+import { setupSse } from "../lib/sse";
 import { spawn } from "child_process";
 import { EventEmitter } from "events";
 import {
