@@ -927,13 +927,7 @@ export function StudioCopilot({
 
             {/* Thinking indicator — shows live agent stage from SSE events */}
             {thinking && (() => {
-              const stageLabel: Record<string, string> = {
-                planning:  "Planning",
-                executing: "Working",
-                verifying: "Checking",
-                idle:      "Thinking",
-              };
-              const label = stageLabel[agentStage] ?? "Thinking";
+              const label = "Thinking";
               return (
                 <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                   className="gs-thinking">
