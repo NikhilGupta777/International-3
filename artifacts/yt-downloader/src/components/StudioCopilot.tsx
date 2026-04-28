@@ -318,6 +318,57 @@ export function StudioCopilot({
     try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch {}
   }, [ultra]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setUploading(true);
+      const res = await fetch("/api/uploads/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          size: file.size,
+          mimeType: file.type || "application/octet-stream",
+          visibility: "public"
+        })
+      });
+      if (!res.ok) throw new Error("Presign failed");
+      const { fileId, uploadType, presignedUrl, uploadId, parts } = await res.json();
+      
+      if (uploadType === "single") {
+        const putRes = await fetch(presignedUrl, {
+          method: "PUT",
+          body: file,
+          headers: { "Content-Type": file.type || "application/octet-stream" }
+        });
+        if (!putRes.ok) throw new Error("Upload to S3 failed");
+      } else {
+        throw new Error("Multipart upload not implemented for simple attachment");
+      }
+
+      const compRes = await fetch("/api/uploads/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId, parts: [] })
+      });
+      if (!compRes.ok) throw new Error("Complete failed");
+      const comp = await compRes.json();
+      
+      const newText = input + (input ? "\n" : "") + comp.shareUrl;
+      setInput(newText);
+      toast({ title: "File attached", description: file.name });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   // inputRef removed — textarea is uncontrolled height, no programmatic focus needed
   const abortRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
@@ -832,6 +883,12 @@ export function StudioCopilot({
 
           <div className="gs-input-row">
             <div className="gs-input-row-left">
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={handleFileUpload}
+              />
               <button
                 type="button"
                 className="gs-input-circle-btn"
@@ -844,14 +901,12 @@ export function StudioCopilot({
               <button
                 type="button"
                 className="gs-input-circle-btn"
-                title="Attach file (coming soon)"
+                title="Attach file"
                 aria-label="Attach"
-                onClick={() => toast({
-                  title: "Attachments coming soon",
-                  description: "Tell us what you'd like to attach: image, audio, document, or YouTube URL.",
-                })}
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
               >
-                <Paperclip className="w-4 h-4" />
+                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
               </button>
               <button
                 type="button"
@@ -870,18 +925,16 @@ export function StudioCopilot({
             </div>
 
             <div className="gs-input-row-right">
-              {speechSupported && (
-                <button
-                  type="button"
-                  onClick={toggleVoice}
-                  className={cn("gs-pill-speak", listening && "gs-pill-speak-active")}
-                  title={listening ? "Stop listening" : "Speak"}
-                  aria-pressed={listening}
-                >
-                  <AudioLines className="w-3.5 h-3.5" />
-                  <span>{listening ? "Listening…" : "Speak"}</span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={toggleVoice}
+                className={cn("gs-pill-speak", listening && "gs-pill-speak-active")}
+                title={listening ? "Stop listening" : "Speak"}
+                aria-pressed={listening}
+              >
+                <AudioLines className="w-3.5 h-3.5" />
+                <span>{listening ? "Listening…" : "Speak"}</span>
+              </button>
               {streaming ? (
                 <button type="button" onClick={handleStop} className="gs-stop-btn" title="Stop">
                   <Square className="w-3.5 h-3.5 fill-current" />

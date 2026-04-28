@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  Plus, AudioLines, ArrowUp,
+  Plus, AudioLines, ArrowUp, Loader2,
   Download, Sparkles, Captions, Scissors, Shield,
   ListVideo, AlarmClock, UploadCloud, Languages, Youtube, Menu, X,
   Home as HomeIcon, CircleHelp, Activity, UserCircle2, Wrench,
@@ -128,6 +128,57 @@ export function StudioHome({
 
   const canSend = text.trim().length > 0;
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      setUploading(true);
+      const res = await fetch("/api/uploads/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          size: file.size,
+          mimeType: file.type || "application/octet-stream",
+          visibility: "public"
+        })
+      });
+      if (!res.ok) throw new Error("Presign failed");
+      const { fileId, uploadType, presignedUrl, uploadId, parts } = await res.json();
+      
+      if (uploadType === "single") {
+        const putRes = await fetch(presignedUrl, {
+          method: "PUT",
+          body: file,
+          headers: { "Content-Type": file.type || "application/octet-stream" }
+        });
+        if (!putRes.ok) throw new Error("Upload to S3 failed");
+      } else {
+        throw new Error("Multipart upload not implemented for simple attachment");
+      }
+
+      const compRes = await fetch("/api/uploads/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileId, parts: [] })
+      });
+      if (!compRes.ok) throw new Error("Complete failed");
+      const comp = await compRes.json();
+      
+      const newText = text + (text ? "\n" : "") + comp.shareUrl;
+      setText(newText);
+      toast({ title: "File attached", description: file.name });
+    } catch (err: any) {
+      toast({ title: "Upload failed", description: err.message, variant: "destructive" });
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
   return (
     <div className="gs-home">
       <div className="gs-home-center">
@@ -162,23 +213,21 @@ export function StudioHome({
 
           <div className="gs-input-row">
             <div className="gs-input-row-left">
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
+                onChange={handleFileUpload}
+              />
               <button
                 type="button"
                 className="gs-input-circle-btn"
-                title="Clear text"
-                aria-label="Clear input"
-                onClick={clearText}
+                title="Attach file"
+                aria-label="Attach file"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
               >
-                <Plus className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                className="gs-input-circle-btn"
-                title="Tools"
-                aria-label="Tools"
-                onClick={() => { }}
-              >
-                <Wrench className="w-4 h-4" />
+                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
               </button>
               <button
                 type="button"
@@ -196,18 +245,16 @@ export function StudioHome({
               </button>
             </div>
             <div className="gs-input-row-right">
-              {speechSupported && (
-                <button
-                  type="button"
-                  className={cn("gs-pill-speak", listening && "gs-pill-speak-active")}
-                  title={listening ? "Stop listening" : "Speak"}
-                  aria-pressed={listening}
-                  onClick={toggleVoice}
-                >
-                  <AudioLines className="w-3.5 h-3.5" />
-                  <span>{listening ? "Listening…" : "Speak"}</span>
-                </button>
-              )}
+              <button
+                type="button"
+                className={cn("gs-pill-speak", listening && "gs-pill-speak-active")}
+                title={listening ? "Stop listening" : "Speak"}
+                aria-pressed={listening}
+                onClick={toggleVoice}
+              >
+                <AudioLines className="w-3.5 h-3.5" />
+                <span>{listening ? "Listening…" : "Speak"}</span>
+              </button>
               <button
                 type="submit"
                 disabled={!canSend}
