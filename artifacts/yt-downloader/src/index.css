@@ -2687,9 +2687,9 @@
   color: rgba(255,255,255,0.92);
 }
 .gs-mode-tab-active {
-  background: rgba(255,255,255,0.06) !important;
+  background: #2b2c2f !important; /* matches gs-input-card exactly to hide the seam */
   color: #fff !important;
-  border-color: rgba(255,255,255,0.12);
+  border-color: rgba(255,255,255,0.08); /* matches gs-input-card border */
   z-index: 1;
 }
 .gs-mode-tab-icon {
