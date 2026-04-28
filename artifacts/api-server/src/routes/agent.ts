@@ -232,10 +232,67 @@ const STUDIO_TOOLS: any[] = [
       properties: {
         tab: {
           type: Type.STRING,
-          description: "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload'",
+          description: "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
         },
       },
       required: ["tab"],
+    },
+  },
+  {
+    name: "translate_video",
+    description: "Translate a YouTube video into another language with AI voice cloning. Downloads the video, transcribes, translates, clones the voice, and delivers the result. Use when the user wants to dub or translate a video.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url:            { type: Type.STRING,  description: "YouTube video URL to translate" },
+        targetLang:     { type: Type.STRING,  description: "Target language name, e.g. 'Hindi', 'Spanish', 'French'. Default: Hindi." },
+        targetLangCode: { type: Type.STRING,  description: "BCP-47 language code, e.g. 'hi', 'es', 'fr'. Default: hi." },
+        voiceClone:     { type: Type.BOOLEAN, description: "Clone the original speaker voice (true) or use neural TTS (false). Default: true." },
+        lipSync:        { type: Type.BOOLEAN, description: "Apply lip sync. Default: false." },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "get_youtube_captions",
+    description: "Fetch existing auto-generated or manual captions directly from YouTube. Faster than transcribing — use this first if the user just wants the original-language subtitles.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url:      { type: Type.STRING, description: "YouTube video URL" },
+        language: { type: Type.STRING, description: "Language code to prefer, e.g. 'en', 'hi'. Default: auto." },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "fix_subtitles",
+    description: "Fix and clean up garbled or mistimed SRT subtitle content. Pass the raw SRT as a string.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        srtContent: { type: Type.STRING, description: "Raw SRT subtitle content to fix" },
+        language:   { type: Type.STRING, description: "Language of the subtitles, e.g. 'en'." },
+      },
+      required: ["srtContent"],
+    },
+  },
+  {
+    name: "cancel_job",
+    description: "Cancel a running or queued job. Use if the user asks to stop a download, clip cut, or subtitle job.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: { jobId: { type: Type.STRING, description: "Job ID to cancel" } },
+      required: ["jobId"],
+    },
+  },
+  {
+    name: "check_job_status",
+    description: "Check status and progress of any background job by ID. Returns status, percent complete, and messages.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: { jobId: { type: Type.STRING, description: "Job ID to check" } },
+      required: ["jobId"],
     },
   },
 ];
@@ -251,12 +308,17 @@ Never say "Phase 1", "Planning", "Executing", "Judging" or any internal stage na
 Never say "I cannot access YouTube" or "I don't have tools". You have tools — use them.
 
 ## YOUR TOOLS (use immediately — never ask for permission)
-- cut_video_clip: Cut any time range from a YouTube video. Args: url, startTime (HH:MM:SS), endTime (HH:MM:SS)
+- cut_video_clip: Cut any time range from a YouTube video. Args: url, startTime, endTime
 - download_video: Download full video at any quality. Args: url, quality
-- generate_subtitles: Generate SRT subtitles with optional translation. Args: url, language
+- translate_video: Translate + AI voice clone a YouTube video into another language. Args: url, targetLang, targetLangCode
+- generate_subtitles: Generate SRT subtitles with optional translation (uses Whisper ASR). Args: url, language, translateTo
+- get_youtube_captions: Fetch existing YouTube captions instantly (no ASR). Args: url, language
+- fix_subtitles: Fix/clean garbled SRT content. Args: srtContent
 - find_best_clips: AI highlight extraction from long videos. Args: url
 - generate_timestamps: Generate chapter timestamps. Args: url
 - get_video_info: Fetch video metadata. Args: url
+- cancel_job: Cancel any running job. Args: jobId
+- check_job_status: Check progress of any job. Args: jobId
 - navigate_to_tab: Switch UI tab. Args: tab
 
 ## RULES
@@ -264,7 +326,8 @@ Never say "I cannot access YouTube" or "I don't have tools". You have tools — 
 2. After a tool succeeds, briefly confirm what happened and share the result.
 3. If a tool fails, say what went wrong in plain English and try again or explain why it can't be done.
 4. Keep all responses short. The tools do the work — you narrate, not lecture.
-5. When done, highlight the download link or result clearly.`;
+5. When done, highlight the download link or result clearly.
+6. For translate_video: navigate to 'translator' tab after starting so the user can track GPU job progress.`;
 
 // â”€â”€ Build internal headers from request â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function buildInternalHeaders(req: any): Record<string, string> {
@@ -465,6 +528,105 @@ async function executeTool(
     case "navigate_to_tab": {
       sseEvent(res, { type: "navigate", tab: args.tab });
       return { result: { navigated: true, tab: args.tab } };
+    }
+
+    case "translate_video": {
+      // Step 1: download the video to S3 via presign + submit
+      logTool("Starting video translation job", { url: args.url });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Downloading video for translation..." });
+
+      // Get a presigned S3 URL for the input
+      const presignR = await fetch(`${apiBase}/translator/presign?filename=input.mp4&contentType=video/mp4`, { headers: internalHeaders });
+      if (!presignR.ok) throw new Error(`Failed to get upload URL: ${presignR.status}`);
+      const { jobId, presignedUrl, s3Key } = await presignR.json() as any;
+
+      // Download the YouTube video content via the youtube/stream endpoint and pipe to S3
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Uploading video to GPU worker queue..." });
+      const ytStreamR = await fetch(`${apiBase}/youtube/stream?url=${encodeURIComponent(args.url)}`, { headers: internalHeaders });
+      if (!ytStreamR.ok) throw new Error(`YouTube stream failed: ${ytStreamR.status}`);
+      const videoBuffer = Buffer.from(await ytStreamR.arrayBuffer());
+
+      // Upload to S3 via presigned URL
+      const uploadR = await fetch(presignedUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "video/mp4" },
+        body: videoBuffer,
+      });
+      if (!uploadR.ok) throw new Error(`S3 upload failed: ${uploadR.status}`);
+
+      // Step 2: Submit the translation batch job
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Submitting GPU translation job (${args.targetLang ?? "Hindi"})...` });
+      const submitR = await fetch(`${apiBase}/translator/submit`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify({
+          jobId,
+          s3Key,
+          targetLang:     args.targetLang     ?? "Hindi",
+          targetLangCode: args.targetLangCode ?? "hi",
+          voiceClone:     args.voiceClone     ?? true,
+          lipSync:        args.lipSync        ?? false,
+          filename:       "input.mp4",
+        }),
+      });
+      if (!submitR.ok) {
+        const err = await submitR.json().catch(() => ({})) as any;
+        throw new Error(err.error ?? `Translation submit failed: ${submitR.status}`);
+      }
+      logTool("Translation job submitted", { jobId });
+      // Navigate to translator tab so user can track GPU progress
+      sseEvent(res, { type: "navigate", tab: "translator" });
+      return {
+        result: { jobId, message: "Translation job queued on GPU worker. Track progress in the Translator tab." },
+        artifact: { artifactType: "tab_link", label: `🌐 Translating to ${args.targetLang ?? "Hindi"} — open Translator tab`, tab: "translator", jobId },
+      };
+    }
+
+    case "get_youtube_captions": {
+      logTool("Fetching YouTube captions", { url: args.url });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fetching captions from YouTube..." });
+      const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${args.language ?? "en"}`, { headers: internalHeaders });
+      if (!r.ok) throw new Error(`Captions fetch failed: ${r.status}`);
+      const data = await r.json() as any;
+      return {
+        result: data,
+        ...(data.content ? {
+          artifact: { artifactType: "text", label: "YouTube Captions", content: data.content },
+        } : {}),
+      };
+    }
+
+    case "fix_subtitles": {
+      logTool("Fixing subtitle content");
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fixing subtitles..." });
+      const r = await fetch(`${apiBase}/youtube/subtitles/fix`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify({ srtContent: args.srtContent, language: args.language ?? "en" }),
+      });
+      if (!r.ok) throw new Error(`Subtitle fix failed: ${r.status}`);
+      const data = await r.json() as any;
+      return {
+        result: data,
+        ...(data.fixed ? {
+          artifact: { artifactType: "text", label: "Fixed Subtitles (.srt)", content: data.fixed },
+        } : {}),
+      };
+    }
+
+    case "cancel_job": {
+      logTool("Cancelling job", { jobId: args.jobId });
+      const r = await fetch(`${apiBase}/youtube/cancel/${args.jobId}`, { method: "POST", headers: internalHeaders });
+      const data = await r.json().catch(() => ({})) as any;
+      return { result: data };
+    }
+
+    case "check_job_status": {
+      logTool("Checking job status", { jobId: args.jobId });
+      const r = await fetch(`${apiBase}/youtube/progress/${args.jobId}`, { headers: internalHeaders });
+      if (!r.ok) throw new Error(`Status check failed: ${r.status}`);
+      const data = await r.json() as any;
+      return { result: data };
     }
 
     default:
