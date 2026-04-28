@@ -1081,8 +1081,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   .studio-search-wrap { max-width: 100%; }
   .studio-hamburger { display: flex !important; }
   .copilot-wrap {
-    
-    max-
+    flex: 1;
   }
   .copilot-messages { padding: 16px 12px 8px; gap: 16px; }
   .copilot-input-wrap { padding: 6px 12px 12px; }
