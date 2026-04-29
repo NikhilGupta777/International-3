@@ -59,7 +59,11 @@ function safeEnd(stream: any): void {
 }
 
 export const handler = awslambda.streamifyResponse(
-  async (event: any, responseStream: any, _context: any) => {
+  async (event: any, responseStream: any, context: any) => {
+    if (context) {
+      context.callbackWaitsForEmptyEventLoop = false;
+    }
+
     // ── Timestamps Lambda worker (async invocation) ─────────────────────
     if (event?.source === "videomaking.timestamps") {
       const e = event as WorkerEvent;
