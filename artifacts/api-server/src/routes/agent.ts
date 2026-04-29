@@ -95,7 +95,10 @@ async function pollJobUntilDone(
 ): Promise<{ status: string; filename?: string; filesize?: number }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   while (Date.now() < deadline && isConnected()) {
-    const r = await fetch(progressUrl, { headers });
+    const r = await fetch(progressUrl, {
+      headers: { ...headers, "Cache-Control": "no-cache" },
+      cache: "no-store",
+    });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
     const data = await r.json() as any;
     const { status, percent, message, filename } = data;
@@ -120,7 +123,10 @@ async function pollSubtitleUntilDone(
 ): Promise<{ status: string; srtFilename?: string }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   while (Date.now() < deadline && isConnected()) {
-    const r = await fetch(statusUrl, { headers });
+    const r = await fetch(statusUrl, {
+      headers: { ...headers, "Cache-Control": "no-cache" },
+      cache: "no-store",
+    });
     if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
     const data = await r.json() as any;
     const { status, progressPct, message, srtFilename } = data;
@@ -146,7 +152,10 @@ async function pollTimestampsUntilDone(
 ): Promise<{ status: string; timestamps?: any }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   while (Date.now() < deadline && isConnected()) {
-    const r = await fetch(statusUrl, { headers });
+    const r = await fetch(statusUrl, {
+      headers: { ...headers, "Cache-Control": "no-cache" },
+      cache: "no-store",
+    });
     if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
     const data = await r.json() as any;
     const { status, progressPct, message, timestamps } = data;

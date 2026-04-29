@@ -2216,7 +2216,14 @@ function buildProgressPayload(jobId: string, job: DownloadJob) {
   };
 }
 
+function disableProgressCache(res: Response): void {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+}
+
 router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
+  disableProgressCache(res);
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
@@ -2278,6 +2285,7 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
 });
 
 router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
+  disableProgressCache(res);
   const jobId = pickFirst(req.params.jobId);
   if (!jobId) {
     res.status(400).json({ error: "jobId is required" });
