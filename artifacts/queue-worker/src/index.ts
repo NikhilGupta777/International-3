@@ -52,6 +52,12 @@ const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
 const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || join(tmpdir(), ".yt-cookies-worker.txt");
 const S3_BUCKET = process.env.S3_BUCKET ?? "";
 const S3_OBJECT_PREFIX = (process.env.S3_OBJECT_PREFIX ?? "ytgrabber-green").replace(/^\/+|\/+$/g, "");
+const DEFAULT_VIDEO_FORMAT_SELECTOR =
+  "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
+  "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/" +
+  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
+  "best[ext=mp4][vcodec^=avc1]/" +
+  "best[ext=mp4]";
 
 const ddb = JOB_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 const s3 = S3_BUCKET ? new S3Client({ region: REGION }) : null;
@@ -463,9 +469,19 @@ function qualityToFormatSelector(quality: string): string {
     normalized === "best" || !Number.isFinite(parsedHeight) || parsedHeight <= 0 ? null : parsedHeight;
 
   if (!maxHeight) {
-    return "bestvideo+bestaudio/best[ext=mp4]/best";
+    return DEFAULT_VIDEO_FORMAT_SELECTOR;
   }
-  return `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`;
+  return `bestvideo[height<=${maxHeight}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${maxHeight}][ext=mp4]`;
+}
+
+function normalizeVideoDownloadFormat(formatId: string | null): string | null {
+  const requested = formatId?.trim();
+  if (!requested) return null;
+  if (requested === "bestvideo+bestaudio/best") return DEFAULT_VIDEO_FORMAT_SELECTOR;
+  if (requested === "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best") {
+    return DEFAULT_VIDEO_FORMAT_SELECTOR;
+  }
+  return requested;
 }
 
 function qualityToFormatCandidates(quality: string): string[] {
@@ -594,7 +610,7 @@ async function downloadS3ObjectToLocal(key: string, localPath: string): Promise<
 }
 
 async function handleDownload(payload: WorkerPayload): Promise<void> {
-  const formatId = getMetaString(payload.meta, "formatId");
+  const formatId = normalizeVideoDownloadFormat(getMetaString(payload.meta, "formatId"));
   const audioOnly = getMetaBool(payload.meta, "audioOnly", false);
   const outputTemplate = join(tmpdir(), `${payload.jobId}.%(ext)s`);
   const cmdArgs: string[] = [
@@ -609,7 +625,7 @@ async function handleDownload(payload: WorkerPayload): Promise<void> {
     if (!formatId) cmdArgs.push("-f", "bestaudio/best");
     cmdArgs.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
   } else {
-    if (!formatId) cmdArgs.push("-f", "best[ext=mp4]/best");
+    if (!formatId) cmdArgs.push("-f", DEFAULT_VIDEO_FORMAT_SELECTOR);
     if (formatId) {
       cmdArgs.push("--merge-output-format", "mp4");
     }
@@ -641,7 +657,8 @@ async function handleDownload(payload: WorkerPayload): Promise<void> {
       lastErr = err instanceof Error ? err : new Error("yt-dlp download failed");
       if (formatId && isFormatUnavailableError(lastErr)) {
         await updateJobState(payload.jobId, "running", "Retrying with fallback format");
-        const retryCmd = stripArgWithValue(stripFormatArg(cmdArgs), "--merge-output-format");
+        const retryCmd = stripFormatArg(cmdArgs);
+        retryCmd.unshift("-f", audioOnly ? "bestaudio/best" : DEFAULT_VIDEO_FORMAT_SELECTOR);
         await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...retryCmd]);
         lastErr = null;
         break;

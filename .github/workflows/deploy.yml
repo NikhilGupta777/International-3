@@ -385,6 +385,7 @@ jobs:
           upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
           upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"
           upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,best-clips,bhagwat-analyze,bhagwat-render"
+          upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "480"
           upsert_env "SUBTITLES_FORCE_LAMBDA" "true"
           upsert_env "YTDLP_COOKIES_FILE" "/tmp/yt-cookies.txt"
           # Use the newly built translator job def if available, otherwise use the resolved existing one

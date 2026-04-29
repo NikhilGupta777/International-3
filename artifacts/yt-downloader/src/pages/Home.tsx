@@ -279,7 +279,9 @@ export default function Home() {
 
   const video = getInfo.data;
   
-  const videoFormats = video?.formats?.filter(f => f.hasVideo && f.hasAudio)?.sort((a, b) => {
+  const videoFormats = video?.formats?.filter(
+    f => f.hasVideo && f.hasAudio && (f.ext === "mp4" || f.formatId.includes("+")),
+  )?.sort((a, b) => {
     const resA = parseInt(a.resolution?.split('x')[1] || '0');
     const resB = parseInt(b.resolution?.split('x')[1] || '0');
     if (resB !== resA) return resB - resA;
@@ -287,13 +289,13 @@ export default function Home() {
   }) || [];
 
   const hasSyntheticBest = videoFormats.some(
-    (f) => f.formatId === "bestvideo+bestaudio/best",
+    (f) => f.formatId === "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
   );
   const displayVideoFormats: VideoFormat[] = hasSyntheticBest
     ? videoFormats
     : [
         {
-          formatId: "bestvideo+bestaudio/best",
+          formatId: "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
           ext: "mp4",
           resolution: "source",
           fps: null,

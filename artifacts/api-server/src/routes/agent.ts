@@ -24,6 +24,12 @@ const ALLOWED_MODELS = new Set([
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 300;
 const MAX_ITERATIONS = 12;  // Genspark-class: up to 12 agentic steps
+const DEFAULT_VIDEO_FORMAT_SELECTOR =
+  "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
+  "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/" +
+  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
+  "best[ext=mp4][vcodec^=avc1]/" +
+  "best[ext=mp4]";
 
 // â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getApiBase(req: any): string {
@@ -497,12 +503,12 @@ async function executeTool(
       const quality = args.quality ?? "best";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/download" });
       sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting download (${quality})...` });
-      let formatId = "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
+      let formatId = DEFAULT_VIDEO_FORMAT_SELECTOR;
       if (quality === "audio_only") formatId = "audio:bestaudio";
-      if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]";
-      if (quality === "720p") formatId = "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]";
-      if (quality === "480p") formatId = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]";
-      if (quality === "360p") formatId = "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]";
+      if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]";
+      if (quality === "720p") formatId = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]";
+      if (quality === "480p") formatId = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]";
+      if (quality === "360p") formatId = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]";
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
         headers: internalHeaders,

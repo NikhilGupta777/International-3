@@ -635,6 +635,34 @@ const legacyDownloadClipRateLimiter = createIpRateLimiter(
 const downloadRateLimiter = createIpRateLimiter("POST /youtube/download");
 const clipsRateLimiter = createIpRateLimiter("POST /youtube/clips");
 const cancelRateLimiter = createIpRateLimiter("POST /youtube/cancel/:jobId");
+const LAMBDA_CLIP_MAX_DURATION_SECONDS = Number(
+  process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 8 * 60,
+);
+const DEFAULT_VIDEO_FORMAT_SELECTOR =
+  "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
+  "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/" +
+  "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
+  "best[ext=mp4][vcodec^=avc1]/" +
+  "best[ext=mp4]";
+
+function shouldRunClipInLambda(startTime: number, endTime: number): boolean {
+  const duration = endTime - startTime;
+  return (
+    Number.isFinite(LAMBDA_CLIP_MAX_DURATION_SECONDS) &&
+    LAMBDA_CLIP_MAX_DURATION_SECONDS > 0 &&
+    duration <= LAMBDA_CLIP_MAX_DURATION_SECONDS
+  );
+}
+
+function normalizeVideoDownloadFormat(formatId: string | undefined): string {
+  const requested = formatId?.trim();
+  if (!requested) return DEFAULT_VIDEO_FORMAT_SELECTOR;
+  if (requested === "bestvideo+bestaudio/best") return DEFAULT_VIDEO_FORMAT_SELECTOR;
+  if (requested === "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best") {
+    return DEFAULT_VIDEO_FORMAT_SELECTOR;
+  }
+  return requested;
+}
 
 // Base args applied to every yt-dlp call.
 // Keep extractor client selection on yt-dlp defaults for best compatibility.
@@ -1537,7 +1565,7 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
     res.status(400).json({ error: "URL is required" });
     return;
   }
-  const requestedFormatId = formatId?.trim() || "bestvideo+bestaudio/best";
+  const requestedFormatId = normalizeVideoDownloadFormat(formatId);
 
   const jobId = randomUUID();
   const normalizedUrl = normalizeInputUrl(url);
@@ -1813,7 +1841,7 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
   const normalizedUrl = normalizeInputUrl(url);
   const notifyClientKey = getNotifyClientKey(req);
 
-  if (isYoutubeQueuePrimaryEnabledFor("clip-cut")) {
+  if (isYoutubeQueuePrimaryEnabledFor("clip-cut") && !shouldRunClipInLambda(startTime, endTime)) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,
@@ -4118,7 +4146,7 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
   const jobId = randomUUID();
   const notifyClientKey = getNotifyClientKey(req);
 
-  if (isYoutubeQueuePrimaryEnabledFor("clip-cut")) {
+  if (isYoutubeQueuePrimaryEnabledFor("clip-cut") && !shouldRunClipInLambda(startSec, endSec)) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,
