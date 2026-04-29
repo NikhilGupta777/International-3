@@ -1133,6 +1133,7 @@ function pickBestSubtitleUrl(
   subtitles: Record<string, any[]>,
   automaticCaptions: Record<string, any[]>,
   videoLanguage?: string,
+  preferredLanguage?: string,
 ): string | null {
   const findVttUrl = (tracks: any[]): string | null => {
     if (!Array.isArray(tracks)) return null;
@@ -1147,6 +1148,7 @@ function pickBestSubtitleUrl(
 
   // Language priority: detected video language first, then Hindi variants, then English, then anything
   const preferredLangs = [
+    ...(preferredLanguage ? [preferredLanguage, `${preferredLanguage}-orig`] : []),
     ...(videoLanguage ? [videoLanguage] : []),
     "hi",
     "hi-IN",
@@ -2794,7 +2796,7 @@ function vttToSrt(vtt: string): string {
 }
 
 router.get("/youtube/subtitles", async (req: Request, res: Response) => {
-  const { url, format } = req.query as { url?: string; format?: string };
+  const { url, format, lang } = req.query as { url?: string; format?: string; lang?: string };
 
   if (!url) {
     res.status(400).json({ error: "url query param is required" });
@@ -2822,7 +2824,7 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
       const meta = JSON.parse(metaJson);
       const subs: Record<string, any[]> = meta.subtitles ?? {};
       const autoCaps: Record<string, any[]> = meta.automatic_captions ?? {};
-      const directUrl = pickBestSubtitleUrl(subs, autoCaps, meta.language);
+      const directUrl = pickBestSubtitleUrl(subs, autoCaps, meta.language, lang);
       if (directUrl) {
         const raw = await fetchUrl(directUrl);
         if (raw.includes("WEBVTT") || raw.includes("-->")) vttContent = raw;
@@ -2834,7 +2836,7 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
       await runYtDlpForSubs([
         "--write-subs",
         "--write-auto-subs",
-        "--sub-lang", "hi.*,en.*",
+        "--sub-lang", lang ? `${lang},${lang}.*,hi.*,en.*` : "hi.*,en.*",
         "--sub-format", "vtt",
         "--skip-download",
         "--no-warnings",

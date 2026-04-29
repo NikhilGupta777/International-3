@@ -370,7 +370,7 @@ Talk like a competent friend, not a corporate bot. One short sentence before a t
 7. Respect what the user already gave you. If they pasted SRT text, use fix_subtitles directly — don't re-ask for the file.
 
 # DOWNLOAD OUTPUTS
-For download_video, cut_video_clip, and generate_subtitles, never print raw internal /api/... file URLs in final chat text. The UI renders download buttons automatically; say "Done - use the download button above."
+For download_video, cut_video_clip, generate_subtitles, and get_youtube_captions, never print raw internal /api/... file URLs in final chat text. The UI renders download buttons automatically; say "Done - use the download button above."
 
 # TOOL SELECTION HEURISTICS
 Pick the cheapest tool that solves the request:
@@ -707,14 +707,21 @@ async function executeTool(
     case "get_youtube_captions": {
       logTool("Fetching YouTube captions", { url: args.url });
       sseEvent(res, { type: "tool_progress", toolId, name, message: "Fetching captions from YouTube..." });
-      const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${args.language ?? "en"}`, { headers: internalHeaders });
-      if (!r.ok) throw new Error(`Captions fetch failed: ${r.status}`);
-      const data = await r.json() as any;
+      const language = args.language ?? "en";
+      const downloadUrl = `/api/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`;
+      const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`, { headers: internalHeaders });
+      const content = await r.text();
+      if (!r.ok) {
+        let message = content || `Captions fetch failed: ${r.status}`;
+        try {
+          const parsed = JSON.parse(content) as { error?: string };
+          message = parsed.error ?? message;
+        } catch {}
+        throw new Error(message);
+      }
       return {
-        result: data,
-        ...(data.content ? {
-          artifact: { artifactType: "text", label: "YouTube Captions", content: data.content },
-        } : {}),
+        result: { filename: "subtitles.srt", language, bytes: Buffer.byteLength(content, "utf8") },
+        artifact: { artifactType: "download", label: "YouTube captions: subtitles.srt", downloadUrl },
       };
     }
 
