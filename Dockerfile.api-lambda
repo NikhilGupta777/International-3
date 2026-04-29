@@ -15,7 +15,7 @@ RUN mkdir -p /opt/bin /opt/ffmpeg \
     && cp /opt/ffmpeg/node_modules/ffmpeg-static/ffmpeg /opt/bin/ffmpeg \
     && cp /opt/ffmpeg/node_modules/ffprobe-static/bin/linux/x64/ffprobe /opt/bin/ffprobe \
     && chmod +x /opt/bin/ffmpeg /opt/bin/ffprobe \
-    && PATH="/opt/bin:${PATH}" which ffmpeg \
+    && PATH="/opt/bin:${PATH}" command -v ffmpeg \
     && PATH="/opt/bin:${PATH}" ffmpeg -version \
     && ls -l /opt/bin \
     && echo "$PATH"
