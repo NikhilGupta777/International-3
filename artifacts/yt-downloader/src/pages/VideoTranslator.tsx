@@ -38,12 +38,26 @@ const MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
 
 async function responseError(res: Response, fallback: string): Promise<Error> {
   try {
-    const data = await res.json();
+    const data = await readJsonResponse<{ error?: string }>(res);
     if (typeof data?.error === "string" && data.error.trim()) {
       return new Error(data.error);
     }
   } catch { }
   return new Error(fallback);
+}
+
+async function readJsonResponse<T = any>(res: Response, fallback?: T): Promise<T> {
+  const text = await res.text();
+  if (!text.trim()) {
+    if (fallback !== undefined) return fallback;
+    throw new Error(`Server returned an empty response (${res.status})`);
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    if (fallback !== undefined) return fallback;
+    throw new Error(`Server returned invalid JSON (${res.status})`);
+  }
 }
 
 function toEpoch(value: unknown, fallback = Date.now()): number {
@@ -254,7 +268,7 @@ export default function VideoTranslator() {
   const fetchResultUrls = useCallback(async (id: string) => {
     const tr = await fetch(`${API}/result/${id}`, { headers: translatorAuthHeaders() });
     if (!tr.ok) return null;
-    const result = await tr.json();
+    const result = await readJsonResponse(tr);
     return {
       ...(result as { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string }),
       shareUrl: translatorShareUrl(id),
@@ -267,7 +281,7 @@ export default function VideoTranslator() {
     if (result.transcriptUrl) {
       const tj = await fetch(result.transcriptUrl);
       if (tj.ok) {
-        const parsed = await tj.json();
+        const parsed = await readJsonResponse(tj, { segments: [] });
         setTranscript(parsed.segments ?? []);
       }
     }
@@ -280,7 +294,7 @@ export default function VideoTranslator() {
     try {
       const r = await fetch(`${API}/status/${id}`, { headers: translatorAuthHeaders() });
       if (!r.ok) return;
-      const data = await r.json();
+      const data = await readJsonResponse(r);
       setJob(data);
       // Append real step/warning/error messages to debug log
       if (data.step) appendLog(data.status === "FAILED" ? "error" : "info", `[${data.status}] ${data.step}`);
@@ -354,7 +368,7 @@ export default function VideoTranslator() {
               headers: translatorAuthHeaders(),
             });
             if (!statusRes.ok) continue;
-            const statusItem = await statusRes.json();
+            const statusItem = await readJsonResponse(statusRes, { status: "UNKNOWN" });
             if (statusItem.status === "DONE") {
               const urls = await fetchResultUrls(activeJob.jobId);
               saveTranslatorHistory({
@@ -392,7 +406,7 @@ export default function VideoTranslator() {
 
         const res = await fetch(`${API}/history?limit=20`, { headers: translatorAuthHeaders() });
         if (!res.ok) return;
-        const data = await res.json();
+        const data = await readJsonResponse(res, { jobs: [] });
         const jobs = Array.isArray(data.jobs) ? data.jobs : [];
         for (const item of jobs) {
           if (!item?.jobId) continue;
@@ -480,7 +494,7 @@ export default function VideoTranslator() {
         { headers: translatorAuthHeaders() },
       );
       if (!presignRes.ok) throw await responseError(presignRes, "Failed to get upload URL");
-      const { jobId: newJobId, presignedUrl, s3Key } = await presignRes.json();
+      const { jobId: newJobId, presignedUrl, s3Key } = await readJsonResponse(presignRes);
       if (!newJobId || !presignedUrl || !s3Key) {
         throw new Error("Upload URL response was incomplete.");
       }
@@ -510,7 +524,7 @@ export default function VideoTranslator() {
         }),
       });
       if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");
-      const submitData = await submitRes.json();
+      const submitData = await readJsonResponse(submitRes);
       if (!submitData?.jobId) {
         throw new Error("Submit response was incomplete.");
       }

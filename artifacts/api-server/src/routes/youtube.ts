@@ -640,10 +640,10 @@ const LAMBDA_CLIP_MAX_DURATION_SECONDS = Number(
 );
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
-  "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/" +
   "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
-  "best[ext=mp4][vcodec^=avc1]/" +
-  "best[ext=mp4]";
+  "bestvideo[vcodec!=none]+bestaudio[acodec!=none]/" +
+  "best[ext=mp4][vcodec!=none][acodec!=none]/" +
+  "best[vcodec!=none][acodec!=none]";
 
 function shouldRunClipInLambda(startTime: number, endTime: number): boolean {
   const duration = endTime - startTime;
@@ -662,6 +662,11 @@ function normalizeVideoDownloadFormat(formatId: string | undefined): string {
     return DEFAULT_VIDEO_FORMAT_SELECTOR;
   }
   return requested;
+}
+
+function hasAllowedOutputExtension(filePath: string, allowedExts: string[]): boolean {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  return !!ext && allowedExts.includes(ext);
 }
 
 // Base args applied to every yt-dlp call.
@@ -1668,10 +1673,10 @@ function qualityToFormatCandidates(quality: string): string[] {
       `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio`,
       `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
       `bestvideo[height<=${maxHeight}]+bestaudio`,
-      `best[ext=mp4][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
-      `best[height<=${maxHeight}][height>=${minProgressiveHeight}]`,
-      `best[ext=mp4][height<=${maxHeight}]`,
-      `best[height<=${maxHeight}]`,
+      `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
+      `best[vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
+      `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}]`,
+      `best[vcodec!=none][acodec!=none][height<=${maxHeight}]`,
     ];
   }
 
@@ -1679,10 +1684,10 @@ function qualityToFormatCandidates(quality: string): string[] {
     "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]",
     "bestvideo[vcodec^=avc1]+bestaudio",
     "bestvideo+bestaudio",
-    "best[ext=mp4][height>=360]",
-    "best[height>=360]",
-    "best[ext=mp4]",
-    "best",
+    "best[ext=mp4][vcodec!=none][acodec!=none][height>=360]",
+    "best[vcodec!=none][acodec!=none][height>=360]",
+    "best[ext=mp4][vcodec!=none][acodec!=none]",
+    "best[vcodec!=none][acodec!=none]",
   ];
 }
 
@@ -1790,13 +1795,20 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   if (lastErr) throw lastErr;
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
-  const possibleExts = ["mp4", "mkv", "webm"];
+  const possibleExts = ["mp4"];
   let finalPath: string | null = null;
   for (const e of possibleExts) {
     const p = join(DOWNLOAD_DIR, `${jobId}.${e}`);
     if (existsSync(p)) { finalPath = p; jobRef.ext = e; break; }
   }
-  if (!finalPath && jobRef.filePath && existsSync(jobRef.filePath)) finalPath = jobRef.filePath;
+  if (
+    !finalPath &&
+    jobRef.filePath &&
+    existsSync(jobRef.filePath) &&
+    hasAllowedOutputExtension(jobRef.filePath, possibleExts)
+  ) {
+    finalPath = jobRef.filePath;
+  }
   if (!finalPath) throw new Error("Clip file not found on disk");
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
@@ -1941,6 +1953,10 @@ function spawnDownloadOnce(
     const commandArgs = YTDLP_BIN
       ? [...BASE_YTDLP_ARGS, ...extraArgs, ...cmdArgs]
       : ["-m", "yt_dlp", ...BASE_YTDLP_ARGS, ...extraArgs, ...cmdArgs];
+    logger.info(
+      { command, args: commandArgs, ffmpegPath: FFMPEG_PATH, path: PYTHON_ENV.PATH },
+      "Starting yt-dlp download command",
+    );
     const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
     jobRef.activeProc = proc;
     let stderr = "";
@@ -2026,10 +2042,15 @@ function spawnDownloadOnce(
       if (jobRef.cancelled) {
         reject(new Error(CANCELLED_BY_USER));
       } else if (code === 0) resolve();
-      else
+      else {
+        logger.warn(
+          { code, command, args: commandArgs, stderr: stderr.slice(-2000), ffmpegPath: FFMPEG_PATH },
+          "yt-dlp download command failed",
+        );
         reject(
           new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`),
         );
+      }
     });
 
     proc.on("error", (err: Error) => {
@@ -2136,7 +2157,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   // Find the output file (yt-dlp may change extension)
-  const possibleExts = isAudioOnly ? ["mp3"] : ["mp4", "mkv", "webm"];
+  const possibleExts = isAudioOnly ? ["mp3", "m4a"] : ["mp4"];
   let finalPath: string | null = null;
 
   for (const e of possibleExts) {
@@ -2149,12 +2170,21 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   }
 
   // If not found by ext, try to use the path set from stdout
-  if (!finalPath && jobRef.filePath && existsSync(jobRef.filePath)) {
+  if (
+    !finalPath &&
+    jobRef.filePath &&
+    existsSync(jobRef.filePath) &&
+    hasAllowedOutputExtension(jobRef.filePath, possibleExts)
+  ) {
     finalPath = jobRef.filePath;
   }
 
   if (!finalPath) {
-    throw new Error("Downloaded file not found on disk");
+    throw new Error(
+      isAudioOnly
+        ? "Downloaded audio file not found on disk"
+        : "Downloaded video file not found on disk. The selected format resolved to audio-only, so no video file was returned.",
+    );
   }
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 

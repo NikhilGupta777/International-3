@@ -612,12 +612,19 @@ export function StudioCopilot({
     const patchAssistant = (updater: (m: Message) => Message) => {
       upsertMsg(sessionId, assistantMsgId, updater);
     };
+    const cleanAssistantText = (content: string) =>
+      content.replace(
+        /\[?\/api\/(?:youtube\/file|subtitles\/status|translator\/share)\/[^\]\s)]+(?:\]\(\/api\/(?:youtube\/file|subtitles\/status|translator\/share)\/[^)]+\))?/g,
+        "the button above",
+      );
     const appendText = (content: string) => {
+      const cleaned = cleanAssistantText(content);
+      if (!cleaned.trim()) return;
       patchAssistant(m => {
         const parts = [...m.parts];
         const last = parts[parts.length - 1];
-        if (last?.kind === "text") return { ...m, parts: [...parts.slice(0, -1), { kind: "text", content: last.content + content }] };
-        return { ...m, parts: [...parts, { kind: "text", content }] };
+        if (last?.kind === "text") return { ...m, parts: [...parts.slice(0, -1), { kind: "text", content: last.content + cleaned }] };
+        return { ...m, parts: [...parts, { kind: "text", content: cleaned }] };
       });
     };
 

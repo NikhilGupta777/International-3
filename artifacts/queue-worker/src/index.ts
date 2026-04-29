@@ -54,10 +54,10 @@ const S3_BUCKET = process.env.S3_BUCKET ?? "";
 const S3_OBJECT_PREFIX = (process.env.S3_OBJECT_PREFIX ?? "ytgrabber-green").replace(/^\/+|\/+$/g, "");
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
-  "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/" +
   "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
-  "best[ext=mp4][vcodec^=avc1]/" +
-  "best[ext=mp4]";
+  "bestvideo[vcodec!=none]+bestaudio[acodec!=none]/" +
+  "best[ext=mp4][vcodec!=none][acodec!=none]/" +
+  "best[vcodec!=none][acodec!=none]";
 
 const ddb = JOB_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 const s3 = S3_BUCKET ? new S3Client({ region: REGION }) : null;
@@ -471,7 +471,7 @@ function qualityToFormatSelector(quality: string): string {
   if (!maxHeight) {
     return DEFAULT_VIDEO_FORMAT_SELECTOR;
   }
-  return `bestvideo[height<=${maxHeight}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${maxHeight}][ext=mp4]`;
+  return `bestvideo[height<=${maxHeight}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=${maxHeight}][vcodec!=none]+bestaudio[acodec!=none]/best[height<=${maxHeight}][ext=mp4][vcodec!=none][acodec!=none]`;
 }
 
 function normalizeVideoDownloadFormat(formatId: string | null): string | null {
@@ -496,20 +496,20 @@ function qualityToFormatCandidates(quality: string): string[] {
       `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio`,
       `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
       `bestvideo[height<=${maxHeight}]+bestaudio`,
-      `best[ext=mp4][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
-      `best[height<=${maxHeight}][height>=${minProgressiveHeight}]`,
-      `best[ext=mp4][height<=${maxHeight}]`,
-      `best[height<=${maxHeight}]`,
+      `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
+      `best[vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
+      `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}]`,
+      `best[vcodec!=none][acodec!=none][height<=${maxHeight}]`,
     ];
   }
   return [
     "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]",
     "bestvideo[vcodec^=avc1]+bestaudio",
     "bestvideo+bestaudio",
-    "best[ext=mp4][height>=360]",
-    "best[height>=360]",
-    "best[ext=mp4]",
-    "best",
+    "best[ext=mp4][vcodec!=none][acodec!=none][height>=360]",
+    "best[vcodec!=none][acodec!=none][height>=360]",
+    "best[ext=mp4][vcodec!=none][acodec!=none]",
+    "best[vcodec!=none][acodec!=none]",
   ];
 }
 
@@ -517,11 +517,14 @@ const MAX_CLIP_FORMAT_CANDIDATES = 6;
 const MAX_CLIP_CLIENT_FALLBACKS = 3;
 const MAX_CLIP_DOWNLOAD_ATTEMPTS = 8;
 
-function findOutputFile(jobId: string, preferredExts: string[]): string {
+function findOutputFile(jobId: string, preferredExts: string[], allowOtherExt = false): string {
   const temp = tmpdir();
   for (const ext of preferredExts) {
     const path = join(temp, `${jobId}.${ext}`);
     if (existsSync(path)) return path;
+  }
+  if (!allowOtherExt) {
+    throw new Error(`Output file not found after yt-dlp run (${preferredExts.join(", ")})`);
   }
   const startsWith = `${jobId}.`;
   const match = readdirSync(temp).find((name) => name.startsWith(startsWith));
@@ -688,7 +691,11 @@ async function handleDownload(payload: WorkerPayload): Promise<void> {
   }
 
   if (lastErr) throw lastErr;
-  const outputPath = findOutputFile(payload.jobId, ["mp4", "mkv", "webm", "mp3", "m4a"]);
+  const outputPath = findOutputFile(
+    payload.jobId,
+    audioOnly ? ["mp3", "m4a"] : ["mp4"],
+    audioOnly,
+  );
   const uploaded = await uploadIfConfigured(outputPath, payload.jobId, "youtube/downloads");
 
   await updateJobState(payload.jobId, "done", "Download complete", {
@@ -793,7 +800,7 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
     throw new Error(`Clip cut failed after ${attemptsUsed} attempts: ${lastErr.message}`);
   }
   if (lastErr) throw lastErr;
-  const outputPath = findOutputFile(payload.jobId, ["mp4", "mkv", "webm"]);
+  const outputPath = findOutputFile(payload.jobId, ["mp4"]);
   const uploaded = await uploadIfConfigured(outputPath, payload.jobId, "youtube/clips");
 
   await updateJobState(payload.jobId, "done", "Clip ready", {

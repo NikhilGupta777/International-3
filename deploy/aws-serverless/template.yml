@@ -106,7 +106,7 @@ Parameters:
     Default: "false"
   YoutubeQueuePrimaryJobTypes:
     Type: String
-    Default: clip-cut,best-clips,bhagwat-analyze,bhagwat-render
+    Default: clip-cut,best-clips,bhagwat-analyze,bhagwat-render,subtitles
   YoutubeQueueShadowJobTypes:
     Type: String
     Default: download,clip-cut
@@ -115,7 +115,10 @@ Parameters:
     Default: 480
   SubtitlesForceLambda:
     Type: String
-    Default: "true"
+    Default: "false"
+  SubtitlesLambdaMaxDurationSeconds:
+    Type: Number
+    Default: 600
   RateLimitBypassIps:
     Type: String
     Default: ""
@@ -297,6 +300,7 @@ Resources:
           YOUTUBE_QUEUE_SHADOW_JOB_TYPES: !Ref YoutubeQueueShadowJobTypes
           LAMBDA_CLIP_MAX_DURATION_SECONDS: !Ref LambdaClipMaxDurationSeconds
           SUBTITLES_FORCE_LAMBDA: !Ref SubtitlesForceLambda
+          SUBTITLES_LAMBDA_MAX_DURATION_SECONDS: !Ref SubtitlesLambdaMaxDurationSeconds
           YOUTUBE_QUEUE_REGION: !Ref YoutubeQueueRegion
           YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable
           YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue

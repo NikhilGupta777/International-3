@@ -65,12 +65,25 @@ function envBool(value: string | undefined, fallback: boolean): boolean {
   return fallback;
 }
 
-// Default ON as requested: subtitles run directly on API Lambda path.
+// When enabled, all subtitle jobs stay on the API Lambda path.
+// Production sets this false so long URL jobs can use the primary worker queue.
 const SUBTITLES_FORCE_LAMBDA = envBool(process.env.SUBTITLES_FORCE_LAMBDA, true);
+const SUBTITLES_LAMBDA_MAX_DURATION_SECONDS = Number(
+  process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600,
+);
+const SUBTITLES_QUEUE_UPLOADS = envBool(process.env.SUBTITLES_QUEUE_UPLOADS, false);
 const isSubtitlesQueuePrimaryEnabled = (): boolean =>
   !SUBTITLES_FORCE_LAMBDA && isYoutubeQueuePrimaryEnabledFor("subtitles");
 const isSubtitlesQueueEnabled = (): boolean =>
   !SUBTITLES_FORCE_LAMBDA && isYoutubeQueueEnabledFor("subtitles");
+
+function shouldQueueSubtitleUrlJob(durationSecs: number | null): boolean {
+  if (!isSubtitlesQueuePrimaryEnabled()) return false;
+  if (!Number.isFinite(SUBTITLES_LAMBDA_MAX_DURATION_SECONDS) || SUBTITLES_LAMBDA_MAX_DURATION_SECONDS <= 0) {
+    return true;
+  }
+  return durationSecs != null && durationSecs > SUBTITLES_LAMBDA_MAX_DURATION_SECONDS;
+}
 
 // ── Python / yt-dlp environment (mirrors setup in youtube.ts) ────────────────
 // Make yt-dlp visible to Python without overriding system PATH in environments
@@ -113,6 +126,16 @@ const YTDLP_BIN =
         (candidate) => existsSync(candidate),
       ) ?? "");
 
+function resolveYtdlpFfmpegLocation(): string | null {
+  const explicit = process.env.FFMPEG_BIN;
+  if (explicit && existsSync(explicit)) return dirname(explicit);
+  for (const dir of ["/opt/bin", "/usr/local/bin", "/usr/bin"]) {
+    if (existsSync(join(dir, "ffmpeg"))) return dir;
+  }
+  if (ffmpegStatic && existsSync(String(ffmpegStatic))) return dirname(String(ffmpegStatic));
+  return null;
+}
+
 // ── yt-dlp config (mirrors youtube.ts / bhagwat.ts) ─────────────────────────
 const YTDLP_PROXY        = process.env.YTDLP_PROXY ?? "";
 const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
@@ -150,7 +173,8 @@ const YTDLP_BASE_ARGS: string[] = [
   "--sleep-interval",  "2",
 ];
 
-if (ffmpegStatic) YTDLP_BASE_ARGS.push("--ffmpeg-location", ffmpegStatic);
+const YTDLP_FFMPEG_LOCATION = resolveYtdlpFfmpegLocation();
+if (YTDLP_FFMPEG_LOCATION) YTDLP_BASE_ARGS.push("--ffmpeg-location", YTDLP_FFMPEG_LOCATION);
 if (YTDLP_PROXY) YTDLP_BASE_ARGS.push("--proxy", YTDLP_PROXY);
 
 if (HAS_DYNAMIC_POT_PROVIDER) {
@@ -428,6 +452,61 @@ async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Prom
 }
 
 // ── In-memory job store ──────────────────────────────────────────────────────
+async function probeUrlDurationSecs(url: string): Promise<number | null> {
+  function spawnProbe(extraArgs: string[]): Promise<number | null> {
+    return new Promise((resolve, reject) => {
+      const command = YTDLP_BIN || PYTHON_BIN;
+      const probeArgs = [
+        ...YTDLP_BASE_ARGS,
+        ...extraArgs,
+        "--dump-single-json",
+        "--skip-download",
+        "--no-playlist",
+        url,
+      ];
+      const commandArgs = YTDLP_BIN ? probeArgs : ["-m", "yt_dlp", ...probeArgs];
+      const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
+      proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
+      proc.on("close", (code) => {
+        if (code !== 0) {
+          reject(new Error(stderr.slice(-400) || `yt-dlp probe exited ${code}`));
+          return;
+        }
+        try {
+          const data = JSON.parse(stdout);
+          const duration = Number(data?.duration ?? 0);
+          resolve(Number.isFinite(duration) && duration > 0 ? duration : null);
+        } catch {
+          resolve(null);
+        }
+      });
+      proc.on("error", reject);
+    });
+  }
+
+  await ensureYtdlpCookiesLoaded();
+  const cookieArgs = getSrtCookieArgs();
+  const defaultYoutubeArgs = getDefaultSrtYoutubeExtractorArgs();
+  const plans: string[][] = [];
+  if (cookieArgs.length) plans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  plans.push(defaultYoutubeArgs);
+
+  let lastErr: Error | null = null;
+  for (const extra of plans) {
+    try {
+      return await spawnProbe(extra);
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp probe failed");
+      if (!isSrtYtBlocked(lastErr.message)) break;
+    }
+  }
+  logger.warn({ err: lastErr, url }, "Could not probe subtitle URL duration");
+  return null;
+}
+
 type JobStatus = "pending" | "audio" | "uploading" | "generating" | "correcting" | "translating" | "verifying" | "done" | "error" | "cancelled";
 export interface SrtJob {
   status: JobStatus;
@@ -2191,8 +2270,12 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
   const normalizedUrl = normalizeInputUrl(url);
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
   const notifyClientKey = getNotifyClientKey(req);
+  const durationSecs = await probeUrlDurationSecs(normalizedUrl).catch((err) => {
+    logger.warn({ err, jobId, url: normalizedUrl }, "Failed to probe subtitle source duration");
+    return null;
+  });
 
-  if (isSubtitlesQueuePrimaryEnabled()) {
+  if (shouldQueueSubtitleUrlJob(durationSecs)) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,
@@ -2203,6 +2286,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
           translateTo: translateLang ?? null,
           notifyClientKey: notifyClientKey ?? null,
           inputMode: "url",
+          durationSecs: durationSecs ?? null,
         },
       });
       res.json({ jobId, status: "queued", message: "Subtitle generation queued" });
@@ -2601,7 +2685,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
   const jobId = randomUUID();
   const notifyClientKey = getNotifyClientKey(req);
 
-  if (isSubtitlesQueuePrimaryEnabled()) {
+  if (SUBTITLES_QUEUE_UPLOADS && isSubtitlesQueuePrimaryEnabled()) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,

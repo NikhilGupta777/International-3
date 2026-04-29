@@ -7,6 +7,19 @@ RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}
     && chmod +x /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 
+# yt-dlp needs ffmpeg for merged video downloads and partial clip downloads.
+# Install Linux x86_64 static binaries inside the final Lambda image and verify
+# the exact runtime lookup path during Docker build.
+RUN mkdir -p /opt/bin /opt/ffmpeg \
+    && npm install --omit=dev --prefix /opt/ffmpeg ffmpeg-static@5.3.0 ffprobe-static@3.1.0 \
+    && cp /opt/ffmpeg/node_modules/ffmpeg-static/ffmpeg /opt/bin/ffmpeg \
+    && cp /opt/ffmpeg/node_modules/ffprobe-static/bin/linux/x64/ffprobe /opt/bin/ffprobe \
+    && chmod +x /opt/bin/ffmpeg /opt/bin/ffprobe \
+    && PATH="/opt/bin:${PATH}" which ffmpeg \
+    && PATH="/opt/bin:${PATH}" ffmpeg -version \
+    && ls -l /opt/bin \
+    && echo "$PATH"
+
 WORKDIR ${LAMBDA_TASK_ROOT}
 
 COPY artifacts/api-server/dist ./artifacts/api-server/dist
@@ -14,5 +27,7 @@ COPY artifacts/api-server/dist ./artifacts/api-server/dist
 ENV NODE_ENV=production
 ENV PORT=8080
 ENV YTDLP_BIN=/usr/local/bin/yt-dlp
+ENV FFMPEG_BIN=/opt/bin/ffmpeg
+ENV PATH="/opt/bin:${PATH}"
 
 CMD ["artifacts/api-server/dist/lambda.handler"]

@@ -26,10 +26,10 @@ const POLL_INTERVAL_MS = 300;
 const MAX_ITERATIONS = 12;  // Genspark-class: up to 12 agentic steps
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
-  "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/" +
   "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
-  "best[ext=mp4][vcodec^=avc1]/" +
-  "best[ext=mp4]";
+  "bestvideo[vcodec!=none]+bestaudio[acodec!=none]/" +
+  "best[ext=mp4][vcodec!=none][acodec!=none]/" +
+  "best[vcodec!=none][acodec!=none]";
 
 // â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getApiBase(req: any): string {
@@ -360,6 +360,9 @@ Talk like a competent friend, not a corporate bot. One short sentence before a t
 6. If a YouTube URL is missing and clearly required, ask for it in one sentence. Otherwise infer.
 7. Respect what the user already gave you. If they pasted SRT text, use fix_subtitles directly — don't re-ask for the file.
 
+# DOWNLOAD OUTPUTS
+For download_video, cut_video_clip, and generate_subtitles, never print raw internal /api/... file URLs in final chat text. The UI renders download buttons automatically; say "Done - use the download button above."
+
 # TOOL SELECTION HEURISTICS
 Pick the cheapest tool that solves the request:
 
@@ -505,10 +508,10 @@ async function executeTool(
       sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting download (${quality})...` });
       let formatId = DEFAULT_VIDEO_FORMAT_SELECTOR;
       if (quality === "audio_only") formatId = "audio:bestaudio";
-      if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]";
-      if (quality === "720p") formatId = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]";
-      if (quality === "480p") formatId = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]";
-      if (quality === "360p") formatId = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]";
+      if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec!=none]+bestaudio[acodec!=none]/best[height<=1080][ext=mp4][vcodec!=none][acodec!=none]";
+      if (quality === "720p") formatId = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][vcodec!=none]+bestaudio[acodec!=none]/best[height<=720][ext=mp4][vcodec!=none][acodec!=none]";
+      if (quality === "480p") formatId = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480][vcodec!=none]+bestaudio[acodec!=none]/best[height<=480][ext=mp4][vcodec!=none][acodec!=none]";
+      if (quality === "360p") formatId = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360][vcodec!=none]+bestaudio[acodec!=none]/best[height<=360][ext=mp4][vcodec!=none][acodec!=none]";
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
         headers: internalHeaders,
