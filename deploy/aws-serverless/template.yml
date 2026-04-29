@@ -110,6 +110,9 @@ Parameters:
   YoutubeQueueShadowJobTypes:
     Type: String
     Default: download,clip-cut
+  LambdaClipMaxDurationSeconds:
+    Type: Number
+    Default: 480
   SubtitlesForceLambda:
     Type: String
     Default: "true"
@@ -292,6 +295,7 @@ Resources:
           YOUTUBE_QUEUE_SHADOW_ENABLED: !Ref YoutubeQueueShadowEnabled
           YOUTUBE_QUEUE_PRIMARY_JOB_TYPES: !Ref YoutubeQueuePrimaryJobTypes
           YOUTUBE_QUEUE_SHADOW_JOB_TYPES: !Ref YoutubeQueueShadowJobTypes
+          LAMBDA_CLIP_MAX_DURATION_SECONDS: !Ref LambdaClipMaxDurationSeconds
           SUBTITLES_FORCE_LAMBDA: !Ref SubtitlesForceLambda
           YOUTUBE_QUEUE_REGION: !Ref YoutubeQueueRegion
           YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable

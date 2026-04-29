@@ -219,6 +219,7 @@ $parameterOverrides = @(
   "YoutubeQueueShadowEnabled=$(Get-OptionalEnv $envMap 'YOUTUBE_QUEUE_SHADOW_ENABLED' 'false')"
   "YoutubeQueuePrimaryJobTypes=$primaryJobTypes"
   "YoutubeQueueShadowJobTypes=$(Get-OptionalEnv $envMap 'YOUTUBE_QUEUE_SHADOW_JOB_TYPES' 'download,clip-cut')"
+  "LambdaClipMaxDurationSeconds=$(Get-OptionalEnv $envMap 'LAMBDA_CLIP_MAX_DURATION_SECONDS' '480')"
   "SubtitlesForceLambda=$(Get-OptionalEnv $envMap 'SUBTITLES_FORCE_LAMBDA' 'true')"
   "RateLimitBypassIps=$(Get-OptionalEnv $envMap 'RATE_LIMIT_BYPASS_IPS')"
   "VapidPublicKey=$(Get-OptionalEnv $envMap 'VAPID_PUBLIC_KEY')"
