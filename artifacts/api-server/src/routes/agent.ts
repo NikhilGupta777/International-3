@@ -12,29 +12,24 @@ import { setupSse } from "../lib/sse";
 
 const router = Router();
 
-const GEMINI_API_KEY =
-  process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.5-flash";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-pro";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash"; // for grounded web search
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const ALLOWED_MODELS = new Set([
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-3-flash-preview",
-  "gemini-2.5-flash-lite",
+  "gemini-3-flash-preview", "gemini-2.5-flash",
+  "gemini-2.5-pro", "gemini-2.5-flash-lite",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
-const POLL_INTERVAL_MS = 200;
-const MAX_ITERATIONS = 15; // Genspark-class: up to 12 agentic steps
+const POLL_INTERVAL_MS = 300;
+const MAX_ITERATIONS = 12;  // Genspark-class: up to 12 agentic steps
 
 // â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getApiBase(req: any): string {
-  if (process.env.INTERNAL_API_BASE)
-    return process.env.INTERNAL_API_BASE + "/api";
+  if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
   const proto = req.headers["x-forwarded-proto"] ?? "http";
-  const host =
-    req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
+  const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
   return `${proto}://${host}/api`;
 }
 
@@ -42,45 +37,38 @@ function getApiBase(req: any): string {
 // Gemini 3 Flash / Pro can emit reasoning, thought, response wrappers, and our
 // own [SUGGESTIONS:] marker. None of these should reach the browser as raw text.
 function stripReasoningTags(text: string): string {
-  return (
-    text
-      // Paired tags with content
-      .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
-      .replace(/\[reasoning\][\s\S]*?\[\/reasoning\]/gi, "")
-      .replace(/\[THOUGHT\][\s\S]*?\[\/THOUGHT\]/gi, "")
-      .replace(/\[RESPONSE\][\s\S]*?\[\/RESPONSE\]/gi, "")
-      .replace(/\[JUDGE\][\s\S]*?\[\/JUDGE\]/gi, "")
-      // Single-line opaque tags (model leaks these as raw text sometimes)
-      .replace(/^\[THOUGHT\].*$/gim, "")
-      .replace(/^\[RESPONSE\].*$/gim, "")
-      .replace(/^\[JUDGE\].*$/gim, "")
-      .replace(/^\[PLAN\].*$/gim, "")
-      .replace(/^\[EXECUTE\].*$/gim, "")
-      .replace(/^\[SAY\].*$/gim, "")
-      .replace(/^\[WAIT\].*$/gim, "")
-      .replace(/^\[TOOL\].*$/gim, "")
-      // [SUGGESTIONS: "a" | "b" | "c"] — parsed separately, must not render
-      .replace(/\[SUGGESTIONS:[^\]]*\]/gi, "")
-      .replace(/\[SUGOESTIONS:[^\]]*\]/gi, "") // typo variant the model emits
-      // Collapse excess blank lines left by stripping
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-  );
+  return text
+    // Paired tags with content
+    .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
+    .replace(/\[reasoning\][\s\S]*?\[\/reasoning\]/gi, "")
+    .replace(/\[THOUGHT\][\s\S]*?\[\/THOUGHT\]/gi, "")
+    .replace(/\[RESPONSE\][\s\S]*?\[\/RESPONSE\]/gi, "")
+    .replace(/\[JUDGE\][\s\S]*?\[\/JUDGE\]/gi, "")
+    // Single-line opaque tags (model leaks these as raw text sometimes)
+    .replace(/^\[THOUGHT\].*$/gim, "")
+    .replace(/^\[RESPONSE\].*$/gim, "")
+    .replace(/^\[JUDGE\].*$/gim, "")
+    .replace(/^\[PLAN\].*$/gim, "")
+    .replace(/^\[EXECUTE\].*$/gim, "")
+    .replace(/^\[SAY\].*$/gim, "")
+    .replace(/^\[WAIT\].*$/gim, "")
+    .replace(/^\[TOOL\].*$/gim, "")
+    // [SUGGESTIONS: "a" | "b" | "c"] — parsed separately, must not render
+    .replace(/\[SUGGESTIONS:[^\]]*\]/gi, "")
+    .replace(/\[SUGOESTIONS:[^\]]*\]/gi, "") // typo variant the model emits
+    // Collapse excess blank lines left by stripping
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // ── SSE helper — writes and flushes immediately ───────────────────────────
 function sseEvent(res: any, payload: object) {
   // Strip reasoning traces from text events
-  const safePayload =
-    (payload as any).type === "text" && (payload as any).content
-      ? {
-          ...(payload as any),
-          content: stripReasoningTags((payload as any).content),
-        }
-      : payload;
+  const safePayload = (payload as any).type === "text" && (payload as any).content
+    ? { ...(payload as any), content: stripReasoningTags((payload as any).content) }
+    : payload;
   // Skip empty text events (after stripping)
-  if ((safePayload as any).type === "text" && !(safePayload as any).content)
-    return;
+  if ((safePayload as any).type === "text" && !(safePayload as any).content) return;
   res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
   // Triple-layer flush to guarantee real-time delivery:
   // 1. Express compression middleware (if present)
@@ -103,21 +91,13 @@ async function pollJobUntilDone(
   while (Date.now() < deadline && isConnected()) {
     const r = await fetch(progressUrl, { headers });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
-    const data = (await r.json()) as any;
+    const data = await r.json() as any;
     const { status, percent, message, filename } = data;
-    sseEvent(res, {
-      type: "tool_progress",
-      toolId,
-      name: toolName,
-      status,
-      percent: percent ?? null,
-      message: message ?? status,
-      jobId,
-    });
+    sseEvent(res, { type: "tool_progress", toolId, name: toolName, status, percent: percent ?? null, message: message ?? status, jobId });
     if (status === "done") return { status, filename };
     if (["error", "cancelled", "expired", "not_found"].includes(status))
       throw new Error(`Job ${status}: ${message ?? ""}`);
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Job timed out after 8 minutes");
@@ -136,32 +116,14 @@ async function pollSubtitleUntilDone(
   while (Date.now() < deadline && isConnected()) {
     const r = await fetch(statusUrl, { headers });
     if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
-    const data = (await r.json()) as any;
+    const data = await r.json() as any;
     const { status, progressPct, message, srtFilename } = data;
-    const subtitleMsg =
-      progressPct != null
-        ? `${message ?? status} (${progressPct}%)`
-        : (message ?? status);
-    sseEvent(res, {
-      type: "tool_progress",
-      toolId,
-      name: "generate_subtitles",
-      status,
-      percent: progressPct ?? null,
-      message: subtitleMsg,
-      jobId,
-    });
-    sseEvent(res, {
-      type: "tool_log",
-      toolId,
-      name: "generate_subtitles",
-      message: subtitleMsg,
-      level: "info",
-    });
+    const subtitleMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
+    sseEvent(res, { type: "tool_progress", toolId, name: "generate_subtitles", status, percent: progressPct ?? null, message: subtitleMsg, jobId });
+    sseEvent(res, { type: "tool_log", toolId, name: "generate_subtitles", message: subtitleMsg, level: "info" });
     if (status === "done") return { status, srtFilename };
-    if (["error", "cancelled"].includes(status))
-      throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    if (["error", "cancelled"].includes(status)) throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Subtitle job timed out after 8 minutes");
@@ -180,32 +142,14 @@ async function pollTimestampsUntilDone(
   while (Date.now() < deadline && isConnected()) {
     const r = await fetch(statusUrl, { headers });
     if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
-    const data = (await r.json()) as any;
+    const data = await r.json() as any;
     const { status, progressPct, message, timestamps } = data;
-    const tsMsg =
-      progressPct != null
-        ? `${message ?? status} (${progressPct}%)`
-        : (message ?? status);
-    sseEvent(res, {
-      type: "tool_progress",
-      toolId,
-      name: "generate_timestamps",
-      status,
-      percent: progressPct ?? null,
-      message: tsMsg,
-      jobId,
-    });
-    sseEvent(res, {
-      type: "tool_log",
-      toolId,
-      name: "generate_timestamps",
-      message: tsMsg,
-      level: "info",
-    });
+    const tsMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
+    sseEvent(res, { type: "tool_progress", toolId, name: "generate_timestamps", status, percent: progressPct ?? null, message: tsMsg, jobId });
+    sseEvent(res, { type: "tool_log", toolId, name: "generate_timestamps", message: tsMsg, level: "info" });
     if (status === "done") return { status, timestamps };
-    if (["error", "cancelled"].includes(status))
-      throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    if (["error", "cancelled"].includes(status)) throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Timestamp job timed out after 8 minutes");
@@ -223,110 +167,71 @@ function parseTimestamp(ts: string): number {
 const STUDIO_TOOLS: any[] = [
   {
     name: "get_video_info",
-    description:
-      "Fetch metadata about a YouTube video (title, duration, uploader, view count). Always call this first if you don't already have the title.",
+    description: "Fetch metadata about a YouTube video (title, duration, uploader, view count). Always call this first if you don't already have the title.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        url: { type: Type.STRING, description: "YouTube video URL" },
-      },
+      properties: { url: { type: Type.STRING, description: "YouTube video URL" } },
       required: ["url"],
     },
   },
   {
     name: "cut_video_clip",
-    description:
-      "Cut an exact time range from a YouTube video and deliver a download link. Provide startTime and endTime as 'MM:SS' or 'HH:MM:SS'. WAITS for completion and returns a download link.",
+    description: "Cut an exact time range from a YouTube video and deliver a download link. Provide startTime and endTime as 'MM:SS' or 'HH:MM:SS'. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        startTime: {
-          type: Type.STRING,
-          description: "Start time e.g. '5:32' or '01:22:10'",
-        },
-        endTime: {
-          type: Type.STRING,
-          description: "End time e.g. '6:23' or '01:25:00'",
-        },
-        quality: {
-          type: Type.STRING,
-          description:
-            "Output quality: '1080p', '720p', '480p', '360p'. Default: 720p.",
-        },
+        startTime: { type: Type.STRING, description: "Start time e.g. '5:32' or '01:22:10'" },
+        endTime: { type: Type.STRING, description: "End time e.g. '6:23' or '01:25:00'" },
+        quality: { type: Type.STRING, description: "Output quality: '1080p', '720p', '480p', '360p'. Default: 720p." },
       },
       required: ["url", "startTime", "endTime"],
     },
   },
   {
     name: "download_video",
-    description:
-      "Download a full YouTube video and deliver a download link. WAITS for completion and returns a download link.",
+    description: "Download a full YouTube video and deliver a download link. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        quality: {
-          type: Type.STRING,
-          description:
-            "Quality: '1080p', '720p', '480p', '360p', 'audio_only'. Default: best video.",
-        },
+        quality: { type: Type.STRING, description: "Quality: '1080p', '720p', '480p', '360p', 'audio_only'. Default: best video." },
       },
       required: ["url"],
     },
   },
   {
     name: "generate_subtitles",
-    description:
-      "Generate SRT subtitle file from a YouTube video, optionally translated. WAITS for completion and returns a download link.",
+    description: "Generate SRT subtitle file from a YouTube video, optionally translated. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        language: {
-          type: Type.STRING,
-          description:
-            "Source language code, e.g. 'hi' for Hindi. Default: auto-detect.",
-        },
-        translateTo: {
-          type: Type.STRING,
-          description: "Target translation language code, e.g. 'en'. Optional.",
-        },
+        language: { type: Type.STRING, description: "Source language code, e.g. 'hi' for Hindi. Default: auto-detect." },
+        translateTo: { type: Type.STRING, description: "Target translation language code, e.g. 'en'. Optional." },
       },
       required: ["url"],
     },
   },
   {
     name: "find_best_clips",
-    description:
-      "Use AI to find the most valuable segments from a long YouTube video. Starts the analysis job.",
+    description: "Use AI to find the most valuable segments from a long YouTube video. Starts the analysis job.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        durationMode: {
-          type: Type.STRING,
-          description:
-            "Preferred clip length: 'auto', '1m', '3m', '8m'. Default: auto.",
-        },
-        instructions: {
-          type: Type.STRING,
-          description:
-            "Optional topic focus, e.g. 'focus on spiritual stories'",
-        },
+        durationMode: { type: Type.STRING, description: "Preferred clip length: 'auto', '1m', '3m', '8m'. Default: auto." },
+        instructions: { type: Type.STRING, description: "Optional topic focus, e.g. 'focus on spiritual stories'" },
       },
       required: ["url"],
     },
   },
   {
     name: "generate_timestamps",
-    description:
-      "Generate YouTube chapter timestamps from a video using AI. Returns the timestamps text directly.",
+    description: "Generate YouTube chapter timestamps from a video using AI. Returns the timestamps text directly.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        url: { type: Type.STRING, description: "YouTube video URL" },
-      },
+      properties: { url: { type: Type.STRING, description: "YouTube video URL" } },
       required: ["url"],
     },
   },
@@ -335,26 +240,19 @@ const STUDIO_TOOLS: any[] = [
     description: "List files in the public share gallery.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        limit: {
-          type: Type.NUMBER,
-          description: "Max files to return. Default: 12.",
-        },
-      },
+      properties: { limit: { type: Type.NUMBER, description: "Max files to return. Default: 12." } },
       required: [],
     },
   },
   {
     name: "navigate_to_tab",
-    description:
-      "Switch the studio UI to a specific tool tab. Use only when the user explicitly asks to open/switch tabs.",
+    description: "Switch the studio UI to a specific tool tab. Use only when the user explicitly asks to open/switch tabs.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         tab: {
           type: Type.STRING,
-          description:
-            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
+          description: "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
         },
       },
       required: ["tab"],
@@ -362,130 +260,81 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "translate_video",
-    description:
-      "Translate a YouTube video into another language with AI voice cloning. Downloads the video, transcribes, translates, clones the voice, and delivers the result. Use when the user wants to dub or translate a video.",
+    description: "Translate a YouTube video into another language with AI voice cloning. Downloads the video, transcribes, translates, clones the voice, and delivers the result. Use when the user wants to dub or translate a video.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: {
-          type: Type.STRING,
-          description: "YouTube video URL to translate",
-        },
-        targetLang: {
-          type: Type.STRING,
-          description:
-            "Target language name, e.g. 'Hindi', 'Spanish', 'French'. Default: Hindi.",
-        },
-        targetLangCode: {
-          type: Type.STRING,
-          description:
-            "BCP-47 language code, e.g. 'hi', 'es', 'fr'. Default: hi.",
-        },
-        voiceClone: {
-          type: Type.BOOLEAN,
-          description:
-            "Clone the original speaker voice (true) or use neural TTS (false). Default: true.",
-        },
-        lipSync: {
-          type: Type.BOOLEAN,
-          description: "Apply lip sync. Default: false.",
-        },
+        url: { type: Type.STRING, description: "YouTube video URL to translate" },
+        targetLang: { type: Type.STRING, description: "Target language name, e.g. 'Hindi', 'Spanish', 'French'. Default: Hindi." },
+        targetLangCode: { type: Type.STRING, description: "BCP-47 language code, e.g. 'hi', 'es', 'fr'. Default: hi." },
+        voiceClone: { type: Type.BOOLEAN, description: "Clone the original speaker voice (true) or use neural TTS (false). Default: true." },
+        lipSync: { type: Type.BOOLEAN, description: "Apply lip sync. Default: false." },
       },
       required: ["url"],
     },
   },
   {
     name: "get_youtube_captions",
-    description:
-      "Fetch existing auto-generated or manual captions directly from YouTube. Faster than transcribing — use this first if the user just wants the original-language subtitles.",
+    description: "Fetch existing auto-generated or manual captions directly from YouTube. Faster than transcribing — use this first if the user just wants the original-language subtitles.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        language: {
-          type: Type.STRING,
-          description:
-            "Language code to prefer, e.g. 'en', 'hi'. Default: auto.",
-        },
+        language: { type: Type.STRING, description: "Language code to prefer, e.g. 'en', 'hi'. Default: auto." },
       },
       required: ["url"],
     },
   },
   {
     name: "fix_subtitles",
-    description:
-      "Fix and clean up garbled or mistimed SRT subtitle content. Pass the raw SRT as a string.",
+    description: "Fix and clean up garbled or mistimed SRT subtitle content. Pass the raw SRT as a string.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        srtContent: {
-          type: Type.STRING,
-          description: "Raw SRT subtitle content to fix",
-        },
-        language: {
-          type: Type.STRING,
-          description: "Language of the subtitles, e.g. 'en'.",
-        },
+        srtContent: { type: Type.STRING, description: "Raw SRT subtitle content to fix" },
+        language: { type: Type.STRING, description: "Language of the subtitles, e.g. 'en'." },
       },
       required: ["srtContent"],
     },
   },
   {
     name: "cancel_job",
-    description:
-      "Cancel a running or queued job. Use if the user asks to stop a download, clip cut, or subtitle job.",
+    description: "Cancel a running or queued job. Use if the user asks to stop a download, clip cut, or subtitle job.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        jobId: { type: Type.STRING, description: "Job ID to cancel" },
-      },
+      properties: { jobId: { type: Type.STRING, description: "Job ID to cancel" } },
       required: ["jobId"],
     },
   },
   {
     name: "check_job_status",
-    description:
-      "Check status and progress of any background job by ID. Returns status, percent complete, and messages.",
+    description: "Check status and progress of any background job by ID. Returns status, percent complete, and messages.",
     parameters: {
       type: Type.OBJECT,
-      properties: {
-        jobId: { type: Type.STRING, description: "Job ID to check" },
-      },
+      properties: { jobId: { type: Type.STRING, description: "Job ID to check" } },
       required: ["jobId"],
     },
   },
   {
     name: "web_search",
-    description:
-      "Search the web for real-time information. Use when the user asks about current events, video details not in metadata, trends, or anything requiring up-to-date knowledge. Returns top search results with titles, snippets, and URLs.",
+    description: "Search the web for real-time information. Use when the user asks about current events, video details not in metadata, trends, or anything requiring up-to-date knowledge. Returns top search results with titles, snippets, and URLs.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         query: { type: Type.STRING, description: "Search query string" },
-        maxResults: {
-          type: Type.NUMBER,
-          description: "Max results to return (1-5). Default: 3.",
-        },
+        maxResults: { type: Type.NUMBER, description: "Max results to return (1-5). Default: 3." },
       },
       required: ["query"],
     },
   },
   {
     name: "analyze_youtube_video",
-    description:
-      "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video.",
+    description: "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: {
-          type: Type.STRING,
-          description: "YouTube video URL (must be public)",
-        },
-        question: {
-          type: Type.STRING,
-          description:
-            "What you want to know about the video. Be specific for best results.",
-        },
+        url: { type: Type.STRING, description: "YouTube video URL (must be public)" },
+        question: { type: Type.STRING, description: "What you want to know about the video. Be specific for best results." },
       },
       required: ["url", "question"],
     },
@@ -494,7 +343,7 @@ const STUDIO_TOOLS: any[] = [
 const SYSTEM_PROMPT = `You are the VideoMaking Studio Copilot — a sharp, fast, action-first assistant for a YouTube/video production app.
 
 # VOICE
-Talk like a competent friend, not a corporate bot. One sentence before a tool call to inform user however u like to. After a tool returns, tell user — what you got, what's next, where the file is.
+Talk like a competent friend, not a corporate bot. One short sentence before a tool call ("Pulling that video info now…", "Cutting that clip for you…"). After a tool returns, one or two sentences max — what you got, what's next, where the file is. No bullet lists unless the user asks for one. No emojis unless the user uses them first.
 
 # IRON RULES
 1. NEVER refuse a video task that maps to a tool. You have tools — use them. Don't say "I can't access YouTube"; call get_video_info.
@@ -502,8 +351,8 @@ Talk like a competent friend, not a corporate bot. One sentence before a tool ca
 3. NEVER reveal internals: no "planning", "phase 1", "executing", "judging", "thought", "tool_call", "function call", JSON of args, raw error stacks, [JUDGE], [REASONING], or model names.
 4. NEVER invent timestamps, durations, or video facts. If you need them, call get_video_info or analyze_youtube_video first.
 5. NEVER fabricate a download URL — only quote URLs the tools returned.
-6. If a YouTube URL is missing and really required, ask for it. Otherwise infer.
-7. Respect what the user already gave you. 
+6. If a YouTube URL is missing and clearly required, ask for it in one sentence. Otherwise infer.
+7. Respect what the user already gave you. If they pasted SRT text, use fix_subtitles directly — don't re-ask for the file.
 
 # TOOL SELECTION HEURISTICS
 Pick the cheapest tool that solves the request:
@@ -511,7 +360,7 @@ Pick the cheapest tool that solves the request:
 | User wants | Use |
 |---|---|
 | "what's this video about / who made it" | get_video_info (metadata only — fast) |
-| "summarize / explain / find the moment when / quote what they said" | analyze_youtube_video (AI watches + listens, give best prompt to ai full to do the task watch listen describe fully everything you u can tell user everything user requires) |
+| "summarize / explain / find the moment when / quote what they said" | analyze_youtube_video (AI watches + listens) |
 | "give me the captions / subtitles already on YouTube" | get_youtube_captions (instant, no transcription) |
 | "transcribe / generate subtitles / translate subtitles" | generate_subtitles |
 | "fix / clean my .srt" (user provided text) | fix_subtitles |
@@ -538,42 +387,37 @@ You can chain up to ${MAX_ITERATIONS} tool calls per turn. Use that:
 Always pass startTime/endTime as 'MM:SS' or 'HH:MM:SS' strings exactly as the user typed them. Don't convert to seconds, don't pad zeros unnecessarily. The backend parses both formats.
 
 # QUALITY DEFAULTS
-- cut_video_clip: default highest unless user asks otherwise.
-- download_video: default 1080 unless user picked one. For "audio" / "mp3" requests use quality='audio_only'.
+- cut_video_clip: default 720p unless user asks otherwise.
+- download_video: default best (omit quality) unless user picked one. For "audio" / "mp3" requests use quality='audio_only'.
 - translate_video: voiceClone defaults to true (preserves original speaker), lipSync defaults to false (slow + GPU-heavy).
 
 # UPLOADED FILES
-If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], pass that URL straight to generate_subtitles or translate_video — do NOT ask for a YouTube link (analyse ans ask user if they want to do any task on the uploaded file, if they already told then do it).
+If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], pass that URL straight to generate_subtitles or translate_video — do NOT ask for a YouTube link.
 
 # FAILURE HANDLING
 If a tool errors:
 1. Read the error string. If it's a transient/rate issue, retry once with the same args.
-2. If it's a real failure ("video private", "no captions found", "duration too long for clip"), tell the user and offer the next-best option ("the captions tool didn't find any — want me to transcribe it instead?").
+2. If it's a real failure ("video private", "no captions found", "duration too long for clip"), tell the user in one short sentence and offer the next-best option ("the captions tool didn't find any — want me to transcribe it instead?").
 3. Never apologise more than once. Never blame "the system" — say what specifically failed.
 
 # FINAL ANSWER FORMAT
 When the work is complete, end your reply with the suggestions line on its OWN final line, exactly:
-[SUGGESTIONS: "suggestion one" | "suggestion two"]
-Suggestions must be concrete next actions on this same video/topic`;
+[SUGGESTIONS: "suggestion one" | "suggestion two" | "suggestion three"]
+Suggestions must be concrete next actions on this same video/topic (e.g. "Translate this clip to Spanish", "Generate timestamps", "Download in 1080p"), not generic prompts. 2–3 items.`;
 
 // ── Build internal headers from request ───────────────────────────────────
 function buildInternalHeaders(req: any): Record<string, string> {
-  const INTERNAL_SECRET =
-    process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const INTERNAL_SECRET = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Cookie: req.headers.cookie ?? "",
     "x-internal-agent": INTERNAL_SECRET,
   };
-  if (req.headers["x-forwarded-for"])
-    headers["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
+  if (req.headers["x-forwarded-for"]) headers["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
   else if (req.ip) headers["x-forwarded-for"] = req.ip;
-  if (req.headers["x-notify-client"])
-    headers["x-notify-client"] = String(req.headers["x-notify-client"]);
-  if (req.headers["x-client-id"])
-    headers["x-client-id"] = String(req.headers["x-client-id"]);
-  if (req.headers["x-device-id"])
-    headers["x-device-id"] = String(req.headers["x-device-id"]);
+  if (req.headers["x-notify-client"]) headers["x-notify-client"] = String(req.headers["x-notify-client"]);
+  if (req.headers["x-client-id"]) headers["x-client-id"] = String(req.headers["x-client-id"]);
+  if (req.headers["x-device-id"]) headers["x-device-id"] = String(req.headers["x-device-id"]);
   return headers;
 }
 
@@ -589,53 +433,35 @@ async function executeTool(
   const apiBase = getApiBase(req);
   const internalHeaders = buildInternalHeaders(req);
   const logTool = (message: string, details?: Record<string, any>) => {
-    sseEvent(res, {
-      type: "tool_log",
-      toolId,
-      name,
-      message,
-      ...(details ? { details } : {}),
-    });
+    sseEvent(res, { type: "tool_log", toolId, name, message, ...(details ? { details } : {}) });
   };
 
   switch (name) {
+
     case "get_video_info": {
-      logTool("Calling internal API", {
-        method: "POST",
-        endpoint: "/api/youtube/info",
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: "Fetching video metadata...",
-      });
+      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/info" });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fetching video metadata..." });
       const r = await fetch(`${apiBase}/youtube/info`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
-      const data = (await r
-        .json()
-        .catch(() => ({ error: "Failed to fetch info" }))) as any;
+      const data = await r.json().catch(() => ({ error: "Failed to fetch info" })) as any;
       // Build a readable summary for the artifact card
       const infoLines: string[] = [];
       if (data.title) infoLines.push(`📹 ${data.title}`);
       if (data.duration) infoLines.push(`⏱ Duration: ${data.duration}`);
       if (data.uploader) infoLines.push(`👤 ${data.uploader}`);
-      if (data.view_count != null)
-        infoLines.push(`👁 ${Number(data.view_count).toLocaleString()} views`);
+      if (data.view_count != null) infoLines.push(`👁 ${Number(data.view_count).toLocaleString()} views`);
       return {
         result: data,
-        ...(infoLines.length > 0
-          ? {
-              artifact: {
-                artifactType: "text",
-                label: "Video Info",
-                content: infoLines.join("\n"),
-              },
-            }
-          : {}),
+        ...(infoLines.length > 0 ? {
+          artifact: {
+            artifactType: "text",
+            label: "Video Info",
+            content: infoLines.join("\n"),
+          },
+        } : {}),
       };
     }
 
@@ -643,113 +469,59 @@ async function executeTool(
       const startSecs = parseTimestamp(String(args.startTime));
       const endSecs = parseTimestamp(String(args.endTime));
       const quality = args.quality ?? "720p";
-      logTool("Calling internal API", {
-        method: "POST",
-        endpoint: "/api/youtube/clip-cut",
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: `Starting clip cut (${args.startTime} → ${args.endTime})...`,
-      });
+      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({
-          url: args.url,
-          startTime: startSecs,
-          endTime: endSecs,
-          quality,
-        }),
+        body: JSON.stringify({ url: args.url, startTime: startSecs, endTime: endSecs, quality }),
       });
       if (!r.ok) {
-        const err = (await r.json().catch(() => ({}))) as any;
+        const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Clip cut failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const { jobId } = await r.json() as any;
       logTool("Clip cut job accepted", { jobId });
-      await pollJobUntilDone(
-        res,
-        name,
-        `${apiBase}/youtube/progress/${jobId}`,
-        jobId,
-        internalHeaders,
-        isConnected,
-        toolId,
-      );
+      // Emit initial progress so frontend can track in Activity Panel
+      sseEvent(res, { type: "tool_progress", toolId, name, status: "processing", message: "Starting clip cut...", jobId, url: args.url } as any);
+
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
-        result: {
-          jobId,
-          downloadUrl,
-          startTime: args.startTime,
-          endTime: args.endTime,
-        },
-        artifact: {
-          artifactType: "download",
-          label: `Clip ready: ${args.startTime} → ${args.endTime}`,
-          downloadUrl,
-          jobId,
-        },
+        result: { jobId, downloadUrl, startTime: args.startTime, endTime: args.endTime, url: args.url, quality },
+        artifact: { artifactType: "download", label: `Clip ready: ${args.startTime} → ${args.endTime}`, downloadUrl, jobId },
       };
     }
 
     case "download_video": {
       const quality = args.quality ?? "best";
-      logTool("Calling internal API", {
-        method: "POST",
-        endpoint: "/api/youtube/download",
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: `Starting download (${quality})...`,
-      });
+      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/download" });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting download (${quality})...` });
       let formatId = "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
       if (quality === "audio_only") formatId = "audio:bestaudio";
-      if (quality === "1080p")
-        formatId =
-          "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]";
-      if (quality === "720p")
-        formatId =
-          "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]";
-      if (quality === "480p")
-        formatId =
-          "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]";
-      if (quality === "360p")
-        formatId =
-          "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]";
+      if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio/best[height<=1080]";
+      if (quality === "720p") formatId = "bestvideo[height<=720][ext=mp4]+bestaudio/best[height<=720]";
+      if (quality === "480p") formatId = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]";
+      if (quality === "360p") formatId = "bestvideo[height<=360][ext=mp4]+bestaudio/best[height<=360]";
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url, formatId }),
       });
       if (!r.ok) {
-        const err = (await r.json().catch(() => ({}))) as any;
+        const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Download failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const { jobId } = await r.json() as any;
       logTool("Download job accepted", { jobId });
-      const final = await pollJobUntilDone(
-        res,
-        name,
-        `${apiBase}/youtube/progress/${jobId}`,
-        jobId,
-        internalHeaders,
-        isConnected,
-        toolId,
-      );
+      // Emit initial progress so frontend can track in Activity Panel
+      sseEvent(res, { type: "tool_progress", toolId, name, status: "processing", message: "Starting download...", jobId, url: args.url } as any);
+
+      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
-        result: { jobId, downloadUrl, filename: final.filename },
-        artifact: {
-          artifactType: "download",
-          label: `Video ready: ${final.filename ?? "video.mp4"}`,
-          downloadUrl,
-          jobId,
-        },
+        result: { jobId, downloadUrl, filename: final.filename, url: args.url, quality },
+        artifact: { artifactType: "download", label: `Video ready: ${final.filename ?? "video.mp4"}`, downloadUrl, jobId },
       };
     }
 
@@ -758,70 +530,34 @@ async function executeTool(
       // Uploaded files: POST to /subtitles/generate-from-url (direct media URL → transcription).
       // YouTube URLs: POST to /subtitles/generate (yt-dlp download path).
       const inputUrl = (args.url ?? args.fileUrl ?? "") as string;
-      const isUploadedFile =
-        !!inputUrl &&
-        !inputUrl.includes("youtube.com") &&
-        !inputUrl.includes("youtu.be");
-      logTool("Starting subtitle generation", {
-        url: inputUrl,
-        mode: isUploadedFile ? "uploaded-file" : "youtube",
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: isUploadedFile
-          ? "Transcribing uploaded file..."
-          : "Starting subtitle generation...",
-      });
+      const isUploadedFile = !!inputUrl && !inputUrl.includes("youtube.com") && !inputUrl.includes("youtu.be");
+      logTool("Starting subtitle generation", { url: inputUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: isUploadedFile ? "Transcribing uploaded file..." : "Starting subtitle generation..." });
 
       let subtitleJobId: string;
       if (isUploadedFile) {
         const r = await fetch(`${apiBase}/subtitles/generate-from-url`, {
-          method: "POST",
-          headers: internalHeaders,
-          body: JSON.stringify({
-            fileUrl: inputUrl,
-            language: args.language ?? "auto",
-            translateTo: args.translateTo ?? null,
-          }),
+          method: "POST", headers: internalHeaders,
+          body: JSON.stringify({ fileUrl: inputUrl, language: args.language ?? "auto", translateTo: args.translateTo ?? null }),
         });
-        if (!r.ok) {
-          const err = (await r.json().catch(() => ({}))) as any;
-          throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
-        }
-        const d = (await r.json()) as any;
-        subtitleJobId = d.id ?? d.jobId;
+        if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Subtitle job failed: ${r.status}`); }
+        const d = await r.json() as any; subtitleJobId = d.id ?? d.jobId;
       } else {
         const r = await fetch(`${apiBase}/subtitles/generate`, {
-          method: "POST",
-          headers: internalHeaders,
-          body: JSON.stringify({
-            url: inputUrl,
-            language: args.language ?? "auto",
-            translateTo: args.translateTo ?? null,
-            source: "url",
-          }),
+          method: "POST", headers: internalHeaders,
+          body: JSON.stringify({ url: inputUrl, language: args.language ?? "auto", translateTo: args.translateTo ?? null, source: "url" }),
         });
-        if (!r.ok) {
-          const err = (await r.json().catch(() => ({}))) as any;
-          throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
-        }
-        const d = (await r.json()) as any;
-        subtitleJobId = d.id ?? d.jobId;
+        if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Subtitle job failed: ${r.status}`); }
+        const d = await r.json() as any; subtitleJobId = d.id ?? d.jobId;
       }
       logTool("Subtitles job accepted", { jobId: subtitleJobId });
-      const final = await pollSubtitleUntilDone(
-        res,
-        `${apiBase}/subtitles/status/${subtitleJobId}`,
-        subtitleJobId,
-        internalHeaders,
-        isConnected,
-        toolId,
-      );
+      // Emit initial progress so frontend can track in Activity Panel
+      sseEvent(res, { type: "tool_progress", toolId, name: "generate_subtitles", status: "processing", message: "Starting subtitle generation...", jobId: subtitleJobId, url: args.url } as any);
+
+      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${subtitleJobId}`, subtitleJobId, internalHeaders, isConnected, toolId);
       const srtUrl = `/api/subtitles/status/${subtitleJobId}/download?format=srt`;
       return {
-        result: { jobId: subtitleJobId, srtFilename: final.srtFilename },
+        result: { jobId: subtitleJobId, srtFilename: final.srtFilename, url: args.url, language: args.language, translateTo: args.translateTo },
         artifact: {
           artifactType: "download",
           label: `Subtitles ready${args.translateTo ? ` (${args.translateTo})` : ""}: ${final.srtFilename ?? "subtitles.srt"}`,
@@ -832,110 +568,62 @@ async function executeTool(
     }
 
     case "find_best_clips": {
-      logTool("Calling internal API", {
-        method: "POST",
-        endpoint: "/api/youtube/clips",
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: "Starting best clips AI analysis...",
-      });
+      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clips" });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Starting best clips AI analysis..." });
       const r = await fetch(`${apiBase}/youtube/clips`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({
-          url: args.url,
-          durationMode: args.durationMode ?? "auto",
-          instructions: args.instructions ?? "",
-        }),
+        body: JSON.stringify({ url: args.url, durationMode: args.durationMode ?? "auto", instructions: args.instructions ?? "" }),
       });
       if (!r.ok) {
-        const err = (await r.json().catch(() => ({}))) as any;
+        const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Best clips job failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const { jobId } = await r.json() as any;
       logTool("Best clips job accepted — polling for results...", { jobId });
+      // Emit initial progress so frontend can track in Activity Panel
+      sseEvent(res, { type: "tool_progress", toolId, name: "find_best_clips", status: "processing", message: "Starting best clips analysis...", jobId, url: args.url } as any);
+
       // Poll until analysis is done (same pattern as clip/download)
-      await pollJobUntilDone(
-        res,
-        name,
-        `${apiBase}/youtube/progress/${jobId}`,
-        jobId,
-        internalHeaders,
-        isConnected,
-        toolId,
-      );
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
       return {
-        result: {
-          jobId,
-          message:
-            "Best clips analysis complete. View results in the Best Clips tab.",
-        },
-        artifact: {
-          artifactType: "tab_link",
-          label: "✅ Best Clips ready — open tab to download",
-          tab: "clips",
-          jobId,
-        },
+        result: { jobId, message: "Best clips analysis complete. View results in the Best Clips tab." },
+        artifact: { artifactType: "tab_link", label: "✅ Best Clips ready — open tab to download", tab: "clips", jobId },
       };
     }
 
     case "generate_timestamps": {
-      logTool("Calling internal API", {
-        method: "POST",
-        endpoint: "/api/youtube/timestamps",
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: "Generating timestamps...",
-      });
+      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/timestamps" });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Generating timestamps..." });
       const r = await fetch(`${apiBase}/youtube/timestamps`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
       if (!r.ok) {
-        const err = (await r.json().catch(() => ({}))) as any;
+        const err = await r.json().catch(() => ({})) as any;
         throw new Error(err.error ?? `Timestamps failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const { jobId } = await r.json() as any;
       logTool("Timestamps job accepted", { jobId });
-      const final = await pollTimestampsUntilDone(
-        res,
-        `${apiBase}/youtube/timestamps/status/${jobId}`,
-        jobId,
-        internalHeaders,
-        isConnected,
-        toolId,
-      );
+      // Emit initial progress so frontend can track in Activity Panel
+      sseEvent(res, { type: "tool_progress", toolId, name: "generate_timestamps", status: "processing", message: "Starting timestamp generation...", jobId, url: args.url } as any);
+
+      const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders, isConnected, toolId);
       return {
         result: { jobId, timestamps: final.timestamps },
-        artifact: final.timestamps
-          ? {
-              artifactType: "text",
-              label: "Timestamps generated",
-              content:
-                typeof final.timestamps === "string"
-                  ? final.timestamps
-                  : JSON.stringify(final.timestamps, null, 2),
-            }
-          : undefined,
+        artifact: final.timestamps ? {
+          artifactType: "text",
+          label: "Timestamps generated",
+          content: typeof final.timestamps === "string" ? final.timestamps : JSON.stringify(final.timestamps, null, 2),
+        } : undefined,
       };
     }
 
     case "list_shared_files": {
       const limit = args.limit ?? 12;
-      logTool("Calling internal API", {
-        method: "GET",
-        endpoint: `/api/uploads/public?limit=${limit}`,
-      });
-      const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, {
-        headers: internalHeaders,
-      });
+      logTool("Calling internal API", { method: "GET", endpoint: `/api/uploads/public?limit=${limit}` });
+      const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, { headers: internalHeaders });
       const data = await r.json().catch(() => ({ items: [] }));
       return { result: data };
     }
@@ -950,210 +638,105 @@ async function executeTool(
       // Uploaded files: POST to /translator/submit-from-url — no YouTube download needed.
       // YouTube URLs: download via youtube/stream → S3 → submit.
       const videoUrl = (args.url ?? args.fileUrl ?? "") as string;
-      const isUploadedFile =
-        !!videoUrl &&
-        !videoUrl.includes("youtube.com") &&
-        !videoUrl.includes("youtu.be");
-      logTool("Starting video translation job", {
-        url: videoUrl,
-        mode: isUploadedFile ? "uploaded-file" : "youtube",
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: isUploadedFile
-          ? "Registering uploaded file for GPU translation..."
-          : "Downloading video for translation...",
-      });
+      const isUploadedFile = !!videoUrl && !videoUrl.includes("youtube.com") && !videoUrl.includes("youtu.be");
+      logTool("Starting video translation job", { url: videoUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: isUploadedFile ? "Registering uploaded file for GPU translation..." : "Downloading video for translation..." });
 
       let tvJobId: string;
       if (isUploadedFile) {
         const submitR = await fetch(`${apiBase}/translator/submit-from-url`, {
-          method: "POST",
-          headers: internalHeaders,
+          method: "POST", headers: internalHeaders,
           body: JSON.stringify({
             fileUrl: videoUrl,
             targetLang: args.targetLang ?? "Hindi",
             targetLangCode: args.targetLangCode ?? "hi",
             voiceClone: args.voiceClone ?? true,
             lipSync: args.lipSync ?? false,
-            filename:
-              videoUrl.split("/").pop()?.split("?")[0] ?? "uploaded-video.mp4",
+            filename: videoUrl.split("/").pop()?.split("?")[0] ?? "uploaded-video.mp4",
           }),
         });
-        if (!submitR.ok) {
-          const err = (await submitR.json().catch(() => ({}))) as any;
-          throw new Error(
-            err.error ?? `Translation submit failed: ${submitR.status}`,
-          );
-        }
-        const d = (await submitR.json()) as any;
-        tvJobId = d.jobId;
+        if (!submitR.ok) { const err = await submitR.json().catch(() => ({})) as any; throw new Error(err.error ?? `Translation submit failed: ${submitR.status}`); }
+        const d = await submitR.json() as any; tvJobId = d.jobId;
       } else {
-        const presignR = await fetch(
-          `${apiBase}/translator/presign?filename=input.mp4&contentType=video/mp4`,
-          { headers: internalHeaders },
-        );
-        if (!presignR.ok)
-          throw new Error(`Failed to get upload URL: ${presignR.status}`);
-        const {
-          jobId: pJobId,
-          presignedUrl,
-          s3Key,
-        } = (await presignR.json()) as any;
+        const presignR = await fetch(`${apiBase}/translator/presign?filename=input.mp4&contentType=video/mp4`, { headers: internalHeaders });
+        if (!presignR.ok) throw new Error(`Failed to get upload URL: ${presignR.status}`);
+        const { jobId: pJobId, presignedUrl, s3Key } = await presignR.json() as any;
         tvJobId = pJobId;
-        sseEvent(res, {
-          type: "tool_progress",
-          toolId,
-          name,
-          message: "Uploading video to GPU worker queue...",
-        });
-        const ytStreamR = await fetch(
-          `${apiBase}/youtube/stream?url=${encodeURIComponent(videoUrl)}`,
-          { headers: internalHeaders },
-        );
-        if (!ytStreamR.ok)
-          throw new Error(`YouTube stream failed: ${ytStreamR.status}`);
+        sseEvent(res, { type: "tool_progress", toolId, name, message: "Uploading video to GPU worker queue..." });
+        const ytStreamR = await fetch(`${apiBase}/youtube/stream?url=${encodeURIComponent(videoUrl)}`, { headers: internalHeaders });
+        if (!ytStreamR.ok) throw new Error(`YouTube stream failed: ${ytStreamR.status}`);
         const videoBuffer = Buffer.from(await ytStreamR.arrayBuffer());
-        const uploadR = await fetch(presignedUrl, {
-          method: "PUT",
-          headers: { "Content-Type": "video/mp4" },
-          body: videoBuffer,
-        });
+        const uploadR = await fetch(presignedUrl, { method: "PUT", headers: { "Content-Type": "video/mp4" }, body: videoBuffer });
         if (!uploadR.ok) throw new Error(`S3 upload failed: ${uploadR.status}`);
-        sseEvent(res, {
-          type: "tool_progress",
-          toolId,
-          name,
-          message: `Submitting GPU translation job (${args.targetLang ?? "Hindi"})...`,
-        });
+        sseEvent(res, { type: "tool_progress", toolId, name, message: `Submitting GPU translation job (${args.targetLang ?? "Hindi"})...` });
         const submitR = await fetch(`${apiBase}/translator/submit`, {
-          method: "POST",
-          headers: internalHeaders,
-          body: JSON.stringify({
-            jobId: tvJobId,
-            s3Key,
-            targetLang: args.targetLang ?? "Hindi",
-            targetLangCode: args.targetLangCode ?? "hi",
-            voiceClone: args.voiceClone ?? true,
-            lipSync: args.lipSync ?? false,
-            filename: "input.mp4",
-          }),
+          method: "POST", headers: internalHeaders,
+          body: JSON.stringify({ jobId: tvJobId, s3Key, targetLang: args.targetLang ?? "Hindi", targetLangCode: args.targetLangCode ?? "hi", voiceClone: args.voiceClone ?? true, lipSync: args.lipSync ?? false, filename: "input.mp4" }),
         });
-        if (!submitR.ok) {
-          const err = (await submitR.json().catch(() => ({}))) as any;
-          throw new Error(
-            err.error ?? `Translation submit failed: ${submitR.status}`,
-          );
-        }
+        if (!submitR.ok) { const err = await submitR.json().catch(() => ({})) as any; throw new Error(err.error ?? `Translation submit failed: ${submitR.status}`); }
       }
       logTool("Translation job submitted", { jobId: tvJobId });
+      // Emit initial progress so frontend can track in Activity Panel
+      sseEvent(res, { type: "tool_progress", toolId, name: "translate_video", status: "processing", message: "Job submitted to GPU worker...", jobId: tvJobId, url: videoUrl } as any);
+
       sseEvent(res, { type: "navigate", tab: "translator" });
       return {
-        result: {
-          jobId: tvJobId,
-          message:
-            "Translation job queued on GPU worker. Track progress in the Translator tab.",
-        },
-        artifact: {
-          artifactType: "tab_link",
-          label: `Translating to ${args.targetLang ?? "Hindi"} — open Translator tab`,
-          tab: "translator",
-          jobId: tvJobId,
-        },
+        result: { jobId: tvJobId, message: "Translation job queued on GPU worker. Track progress in the Translator tab." },
+        artifact: { artifactType: "tab_link", label: `Translating to ${args.targetLang ?? "Hindi"} — open Translator tab`, tab: "translator", jobId: tvJobId },
       };
     }
 
     case "get_youtube_captions": {
       logTool("Fetching YouTube captions", { url: args.url });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: "Fetching captions from YouTube...",
-      });
-      const r = await fetch(
-        `${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${args.language ?? "en"}`,
-        { headers: internalHeaders },
-      );
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fetching captions from YouTube..." });
+      const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${args.language ?? "en"}`, { headers: internalHeaders });
       if (!r.ok) throw new Error(`Captions fetch failed: ${r.status}`);
-      const data = (await r.json()) as any;
+      const data = await r.json() as any;
       return {
         result: data,
-        ...(data.content
-          ? {
-              artifact: {
-                artifactType: "text",
-                label: "YouTube Captions",
-                content: data.content,
-              },
-            }
-          : {}),
+        ...(data.content ? {
+          artifact: { artifactType: "text", label: "YouTube Captions", content: data.content },
+        } : {}),
       };
     }
 
     case "fix_subtitles": {
       logTool("Fixing subtitle content");
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: "Fixing subtitles...",
-      });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fixing subtitles..." });
       const r = await fetch(`${apiBase}/youtube/subtitles/fix`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({
-          srtContent: args.srtContent,
-          language: args.language ?? "en",
-        }),
+        body: JSON.stringify({ srtContent: args.srtContent, language: args.language ?? "en" }),
       });
       if (!r.ok) throw new Error(`Subtitle fix failed: ${r.status}`);
-      const data = (await r.json()) as any;
+      const data = await r.json() as any;
       return {
         result: data,
-        ...(data.fixed
-          ? {
-              artifact: {
-                artifactType: "text",
-                label: "Fixed Subtitles (.srt)",
-                content: data.fixed,
-              },
-            }
-          : {}),
+        ...(data.fixed ? {
+          artifact: { artifactType: "text", label: "Fixed Subtitles (.srt)", content: data.fixed },
+        } : {}),
       };
     }
 
     case "cancel_job": {
       logTool("Cancelling job", { jobId: args.jobId });
-      const r = await fetch(`${apiBase}/youtube/cancel/${args.jobId}`, {
-        method: "POST",
-        headers: internalHeaders,
-      });
-      const data = (await r.json().catch(() => ({}))) as any;
+      const r = await fetch(`${apiBase}/youtube/cancel/${args.jobId}`, { method: "POST", headers: internalHeaders });
+      const data = await r.json().catch(() => ({})) as any;
       return { result: data };
     }
 
     case "check_job_status": {
       logTool("Checking job status", { jobId: args.jobId });
-      const r = await fetch(`${apiBase}/youtube/progress/${args.jobId}`, {
-        headers: internalHeaders,
-      });
+      const r = await fetch(`${apiBase}/youtube/progress/${args.jobId}`, { headers: internalHeaders });
       if (!r.ok) throw new Error(`Status check failed: ${r.status}`);
-      const data = (await r.json()) as any;
+      const data = await r.json() as any;
       return { result: data };
     }
 
     case "web_search": {
       const query = String(args.query ?? "").trim();
       logTool("Searching the web via Gemini grounding", { query });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: `Searching: "${query}"...`,
-      });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Searching: "${query}"...` });
 
       // Strategy: Use Gemini's native Google Search grounding tool.
       // This works with the existing GEMINI_API_KEY — no extra keys required.
@@ -1168,103 +751,54 @@ async function executeTool(
         const searchAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
         const searchResp = await searchAi.models.generateContent({
           model: SEARCH_MODEL, // gemini-2.5-flash — supports grounding + is free tier
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: `Search the web and answer this query concisely with facts and sources: ${query}`,
-                },
-              ],
-            },
-          ],
+          contents: [{ role: "user", parts: [{ text: `Search the web and answer this query concisely with facts and sources: ${query}` }] }],
           config: {
             tools: [{ googleSearch: {} }] as any,
             temperature: 0.1,
             maxOutputTokens: 1024,
           },
         });
-        const groundedAnswer = (
-          searchResp.candidates?.[0]?.content?.parts ?? []
-        )
-          .map((p: any) => p.text ?? "")
-          .join("")
-          .trim();
+        const groundedAnswer = (searchResp.candidates?.[0]?.content?.parts ?? [])
+          .map((p: any) => p.text ?? "").join("").trim();
         // Extract grounding metadata citations if present
-        const groundingMeta = searchResp.candidates?.[0]
-          ?.groundingMetadata as any;
+        const groundingMeta = searchResp.candidates?.[0]?.groundingMetadata as any;
         const sources: string[] = [];
         (groundingMeta?.groundingChunks ?? []).forEach((chunk: any) => {
           const uri = chunk?.web?.uri;
           const title = chunk?.web?.title;
           if (uri) sources.push(title ? `${title} — ${uri}` : uri);
         });
-        const sourcesText =
-          sources.length > 0
-            ? `\n\nSources:\n${sources.map((s, i) => `[${i + 1}] ${s}`).join("\n")}`
-            : "";
-        return {
-          result: {
-            query,
-            answer: groundedAnswer + sourcesText,
-            grounded: true,
-          },
-        };
+        const sourcesText = sources.length > 0 ? `\n\nSources:\n${sources.map((s, i) => `[${i+1}] ${s}`).join("\n")}` : "";
+        return { result: { query, answer: groundedAnswer + sourcesText, grounded: true } };
       } catch (groundingErr: any) {
-        logTool(
-          `Grounding failed (${groundingErr?.message}), trying fallbacks`,
-          {},
-        );
+        logTool(`Grounding failed (${groundingErr?.message}), trying fallbacks`, {});
         // Fallback 1: Tavily
         if (TAVILY_KEY) {
           const r = await fetch("https://api.tavily.com/search", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${TAVILY_KEY}`,
-            },
-            body: JSON.stringify({
-              query,
-              max_results: 3,
-              search_depth: "basic",
-              include_answer: true,
-            }),
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${TAVILY_KEY}` },
+            body: JSON.stringify({ query, max_results: 3, search_depth: "basic", include_answer: true }),
           });
           if (r.ok) {
-            const data = (await r.json()) as any;
-            const results = (data.results ?? [])
-              .map(
-                (item: any, i: number) =>
-                  `[${i + 1}] ${item.title}\n${item.content ?? item.snippet ?? ""}\nSource: ${item.url}`,
-              )
-              .join("\n\n");
-            return {
-              result: {
-                query,
-                answer: (data.answer ? `${data.answer}\n\n` : "") + results,
-              },
-            };
+            const data = await r.json() as any;
+            const results = (data.results ?? []).map((item: any, i: number) =>
+              `[${i + 1}] ${item.title}\n${item.content ?? item.snippet ?? ""}\nSource: ${item.url}`
+            ).join("\n\n");
+            return { result: { query, answer: (data.answer ? `${data.answer}\n\n` : "") + results } };
           }
         }
         // Fallback 2: Serper
         if (SERPER_KEY) {
           const r = await fetch("https://google.serper.dev/search", {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-API-KEY": SERPER_KEY,
-            },
+            headers: { "Content-Type": "application/json", "X-API-KEY": SERPER_KEY },
             body: JSON.stringify({ q: query, num: 3 }),
           });
           if (r.ok) {
-            const data = (await r.json()) as any;
-            const results = ((data.organic ?? []) as any[])
-              .slice(0, 3)
-              .map(
-                (item: any, i: number) =>
-                  `[${i + 1}] ${item.title}\n${item.snippet ?? ""}\nSource: ${item.link}`,
-              )
-              .join("\n\n");
+            const data = await r.json() as any;
+            const results = ((data.organic ?? []) as any[]).slice(0, 3).map((item: any, i: number) =>
+              `[${i + 1}] ${item.title}\n${item.snippet ?? ""}\nSource: ${item.link}`
+            ).join("\n\n");
             return { result: { query, answer: results } };
           }
         }
@@ -1275,42 +809,27 @@ async function executeTool(
 
     case "analyze_youtube_video": {
       const videoUrl = String(args.url ?? "").trim();
-      const question = String(
-        args.question ?? "Summarize this video comprehensively.",
-      ).trim();
+      const question = String(args.question ?? "Summarize this video comprehensively.").trim();
 
       // Validate it's a YouTube URL
-      const isYouTubeUrl = /(?:youtube\.com\/watch|youtu\.be\/)/i.test(
-        videoUrl,
-      );
-      if (!isYouTubeUrl)
-        throw new Error("URL must be a public YouTube video link.");
+      const isYouTubeUrl = /(?:youtube\.com\/watch|youtu\.be\/)/i.test(videoUrl);
+      if (!isYouTubeUrl) throw new Error("URL must be a public YouTube video link.");
 
-      logTool("Analyzing YouTube video with Gemini Vision+Audio", {
-        videoUrl,
-        question,
-      });
-      sseEvent(res, {
-        type: "tool_progress",
-        toolId,
-        name,
-        message: "Loading video... Gemini is watching and listening",
-      });
+      logTool("Analyzing YouTube video with Gemini Vision+Audio", { videoUrl, question });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Loading video... Gemini is watching and listening" });
 
       // Use Gemini's native YouTube video understanding via file_data.
       // The model receives the actual video frames + audio — it truly watches the video.
       const videoAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
       const videoResp = await videoAi.models.generateContent({
         model: ULTRA_MODEL, // Use Pro/Ultra for best video understanding
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: question },
-              { fileData: { fileUri: videoUrl } } as any,
-            ],
-          },
-        ],
+        contents: [{
+          role: "user",
+          parts: [
+            { text: question },
+            { fileData: { fileUri: videoUrl } } as any,
+          ],
+        }],
         config: {
           temperature: 0.2,
           maxOutputTokens: 8192,
@@ -1318,14 +837,9 @@ async function executeTool(
       });
 
       const analysis = (videoResp.candidates?.[0]?.content?.parts ?? [])
-        .map((p: any) => p.text ?? "")
-        .join("")
-        .trim();
+        .map((p: any) => p.text ?? "").join("").trim();
 
-      if (!analysis)
-        throw new Error(
-          "Model returned no analysis. The video may be private or age-restricted.",
-        );
+      if (!analysis) throw new Error("Model returned no analysis. The video may be private or age-restricted.");
 
       return {
         result: { url: videoUrl, question, analysis },
@@ -1342,12 +856,11 @@ async function executeTool(
   }
 }
 
+
 // â”€â”€ POST /api/agent/chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post("/agent/chat", async (req, res) => {
   if (!GEMINI_API_KEY) {
-    res.status(503).json({
-      error: "AI Copilot not configured â€” add GEMINI_API_KEY to environment.",
-    });
+    res.status(503).json({ error: "AI Copilot not configured â€” add GEMINI_API_KEY to environment." });
     return;
   }
 
@@ -1379,11 +892,7 @@ router.post("/agent/chat", async (req, res) => {
   let activeModel = AGENT_MODEL;
   if (requestedModel === "ultra") {
     activeModel = ULTRA_MODEL;
-  } else if (
-    requestedModel &&
-    requestedModel !== "default" &&
-    ALLOWED_MODELS.has(requestedModel)
-  ) {
+  } else if (requestedModel && requestedModel !== "default" && ALLOWED_MODELS.has(requestedModel)) {
     activeModel = requestedModel;
   }
 
@@ -1395,27 +904,16 @@ router.post("/agent/chat", async (req, res) => {
   // happens immediately after Express reads the body. That would falsely
   // mark the client as disconnected before any streaming starts.
   let clientConnected = true;
-  res.on("close", () => {
-    clientConnected = false;
-  });
+  res.on("close", () => { clientConnected = false; });
   const isConnected = () => clientConnected && !res.writableEnded;
 
   const runId = randomUUID();
-  sseEvent(res, {
-    type: "run_start",
-    runId,
-    ts: Date.now(),
-    model: activeModel,
-    ultra: requestedModel === "ultra",
-  });
-  console.log(
-    `[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${messages.length}`,
-  );
+  sseEvent(res, { type: "run_start", runId, ts: Date.now(), model: activeModel, ultra: requestedModel === "ultra" });
+  console.log(`[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${messages.length}`);
 
   // Heartbeat every 8s — below ALB (60s), nginx (75s), Cloudflare (100s) idle timeouts
   const keepAlive = setInterval(() => {
-    if (clientConnected)
-      sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
+    if (clientConnected) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
   }, 8000);
 
   try {
@@ -1425,54 +923,31 @@ router.post("/agent/chat", async (req, res) => {
     // Images ? inlineData bytes (Gemini Vision sees actual pixels, same as Claude/ChatGPT).
     // Video/audio/docs ? structured [ATTACHED ...] context injected into text so tools use URL.
     let loopContents: any[] = messages
-      .filter(
-        (m) => m.content.trim() || (m.attachments && m.attachments.length > 0),
-      )
-      .map((m) => {
+      .filter(m => m.content.trim() || (m.attachments && m.attachments.length > 0))
+      .map(m => {
         const parts: any[] = [];
         const textContent = m.content.trim();
         const attachments = (m as any).attachments ?? [];
-        const mediaAttachments = attachments.filter(
-          (a: any) => a.type !== "image",
-        );
-        const imageAttachments = attachments.filter(
-          (a: any) => a.type === "image",
-        );
+        const mediaAttachments = attachments.filter((a: any) => a.type !== 'image');
+        const imageAttachments  = attachments.filter((a: any) => a.type === 'image');
 
         if (mediaAttachments.length > 0) {
-          const ctxLines = mediaAttachments
-            .map((a: any) => {
-              const typeLabel =
-                a.type === "video"
-                  ? "VIDEO"
-                  : a.type === "audio"
-                    ? "AUDIO"
-                    : "FILE";
-              return `[ATTACHED ${typeLabel}: "${a.name}" | URL: ${a.url} | MIME: ${a.mimeType}]\nThe user uploaded this file. Use its URL directly with tools (generate_subtitles, translate_video, etc.) � do NOT ask for a YouTube link.`;
-            })
-            .join("\n");
-          parts.push({
-            text:
-              ctxLines +
-              (textContent ? "\n\nUser message: " + textContent : ""),
-          });
+          const ctxLines = mediaAttachments.map((a: any) => {
+            const typeLabel = a.type === 'video' ? 'VIDEO' : a.type === 'audio' ? 'AUDIO' : 'FILE';
+            return `[ATTACHED ${typeLabel}: "${a.name}" | URL: ${a.url} | MIME: ${a.mimeType}]\nThe user uploaded this file. Use its URL directly with tools (generate_subtitles, translate_video, etc.) � do NOT ask for a YouTube link.`;
+          }).join('\n');
+          parts.push({ text: ctxLines + (textContent ? '\n\nUser message: ' + textContent : '') });
         } else if (textContent) {
           parts.push({ text: textContent });
         }
 
         for (const img of imageAttachments) {
           if ((img as any).data) {
-            parts.push({
-              inlineData: { mimeType: img.mimeType, data: (img as any).data },
-            });
+            parts.push({ inlineData: { mimeType: img.mimeType, data: (img as any).data } });
           }
         }
-        if (
-          imageAttachments.length > 0 &&
-          !textContent &&
-          !mediaAttachments.length
-        ) {
-          parts.unshift({ text: "The user attached the following image(s):" });
+        if (imageAttachments.length > 0 && !textContent && !mediaAttachments.length) {
+          parts.unshift({ text: 'The user attached the following image(s):' });
         }
         return { role: m.role, parts };
       });
@@ -1483,13 +958,7 @@ router.post("/agent/chat", async (req, res) => {
     while (iterations < MAX_ITERATIONS && isConnected()) {
       iterations++;
       const stage = iterations === 1 ? "planning" : "executing";
-      sseEvent(res, {
-        type: "thinking",
-        runId,
-        stage,
-        iteration: iterations,
-        total: MAX_ITERATIONS,
-      });
+      sseEvent(res, { type: "thinking", runId, stage, iteration: iterations, total: MAX_ITERATIONS });
 
       // ── 1. Call Gemini API — with retry on transient empty-output errors ───
       // The error 'model output must contain either output text or tool calls'
@@ -1498,10 +967,8 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          if (attempt > 0)
-            await new Promise((r) => setTimeout(r, attempt * 1000));
-          if (isConnected())
-            sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
+          if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1000));
+          if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
           stream = await ai.models.generateContentStream({
             model: activeModel,
             contents: loopContents,
@@ -1511,25 +978,21 @@ router.post("/agent/chat", async (req, res) => {
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               temperature: 0.15,
               maxOutputTokens: 4096,
-              ...(activeModel.includes("thinking")
-                ? { thinkingConfig: { thinkingBudget: 0 } }
-                : {}),
+              ...(activeModel.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
             },
           });
           streamErr = null;
           break; // success
         } catch (e: any) {
           streamErr = e;
-          const isEmptyOutputErr =
-            /model output must contain|both be empty/i.test(e?.message ?? "");
+          const isEmptyOutputErr = /model output must contain|both be empty/i.test(e?.message ?? "");
           if (!isEmptyOutputErr || attempt === 2) break; // non-retryable or max attempts
         }
       }
       if (streamErr) throw streamErr;
 
       let fullText = "";
-      const functionCalls: Array<{ name: string; args: Record<string, any> }> =
-        [];
+      const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
       // ⚠️ rawFcParts preserves thought_signature — Gemini API REQUIRES this
       // to be passed back in history when thinking is active. Dropping it
       // causes INVALID_ARGUMENT: "Function call is missing a thought_signature".
@@ -1541,7 +1004,7 @@ router.post("/agent/chat", async (req, res) => {
         // ── @google/genai v1.x: chunk.text is the incremental text token ───────
         // This is the CORRECT way to get real-time per-token streaming.
         // chunk.candidates[0].content.parts is the OLD v0 API and may batch tokens.
-        const chunkText = chunk.text; // string | undefined
+        const chunkText = chunk.text;           // string | undefined
         if (chunkText) {
           fullText += chunkText;
           sseEvent(res, { type: "text", content: chunkText, runId });
@@ -1551,10 +1014,7 @@ router.post("/agent/chat", async (req, res) => {
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
           if (p.functionCall) {
-            functionCalls.push({
-              name: p.functionCall.name!,
-              args: (p.functionCall.args ?? {}) as Record<string, any>,
-            });
+            functionCalls.push({ name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
             rawFcParts.push(p);
           }
         }
@@ -1570,16 +1030,11 @@ router.post("/agent/chat", async (req, res) => {
         if (emptyResponseRetries < 3) {
           emptyResponseRetries++;
           iterations--; // don't count against MAX_ITERATIONS
-          await new Promise((r) => setTimeout(r, emptyResponseRetries * 800));
+          await new Promise(r => setTimeout(r, emptyResponseRetries * 800));
           continue;
         }
         // Three empty responses — give graceful message and stop
-        sseEvent(res, {
-          type: "text",
-          content:
-            "Hmm, I'm having trouble responding right now. Please try again in a moment.",
-          runId,
-        });
+        sseEvent(res, { type: "text", content: "Hmm, I'm having trouble responding right now. Please try again in a moment.", runId });
         break;
       }
 
@@ -1588,12 +1043,8 @@ router.post("/agent/chat", async (req, res) => {
         // Extract [SUGGESTIONS: "a" | "b" | "c"] from the final text
         const sugMatch = fullText.match(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s);
         if (sugMatch) {
-          const items = sugMatch[1]
-            .split("|")
-            .map((s) => s.trim().replace(/^"|"$/g, ""))
-            .filter(Boolean);
-          if (items.length > 0)
-            sseEvent(res, { type: "suggestions", items, runId } as any);
+          const items = sugMatch[1].split("|").map(s => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
+          if (items.length > 0) sseEvent(res, { type: "suggestions", items, runId } as any);
         }
         break;
       }
@@ -1603,7 +1054,7 @@ router.post("/agent/chat", async (req, res) => {
         type: "plan",
         runId,
         iteration: iterations,
-        steps: functionCalls.map((fc) => ({ tool: fc.name, args: fc.args })),
+        steps: functionCalls.map(fc => ({ tool: fc.name, args: fc.args })),
       });
 
       // ── 4. Execute tools sequentially ─────────────────────────────────────
@@ -1614,74 +1065,26 @@ router.post("/agent/chat", async (req, res) => {
         if (!isConnected()) break;
         const toolId = randomUUID().slice(0, 8);
 
-        sseEvent(res, {
-          type: "tool_start",
-          runId,
-          toolId,
-          name: fc.name,
-          args: fc.args,
-          ts: Date.now(),
-        });
-        sseEvent(res, {
-          type: "tool_log",
-          runId,
-          toolId,
-          name: fc.name,
-          message: "Tool execution started",
-          level: "info",
-        });
+        sseEvent(res, { type: "tool_start", runId, toolId, name: fc.name, args: fc.args, ts: Date.now() });
+        sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: "Tool execution started", level: "info" });
 
         let toolResult: any;
         let toolArtifact: object | undefined;
 
         try {
-          const { result, artifact } = await executeTool(
-            fc.name,
-            fc.args,
-            req,
-            res,
-            isConnected,
-            toolId,
-          );
+          const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected, toolId);
           toolResult = result;
           toolArtifact = artifact;
           if (toolResult?.error) iterationHadError = true;
         } catch (toolErr: any) {
           iterationHadError = true;
           toolResult = { error: toolErr?.message ?? "Tool execution failed" };
-          sseEvent(res, {
-            type: "tool_progress",
-            runId,
-            toolId,
-            name: fc.name,
-            status: "error",
-            message: toolErr?.message ?? "Failed",
-          });
-          sseEvent(res, {
-            type: "tool_log",
-            runId,
-            toolId,
-            name: fc.name,
-            message: toolErr?.message ?? "Tool failed",
-            level: "error",
-          });
+          sseEvent(res, { type: "tool_progress", runId, toolId, name: fc.name, status: "error", message: toolErr?.message ?? "Failed" });
+          sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: toolErr?.message ?? "Tool failed", level: "error" });
         }
 
-        sseEvent(res, {
-          type: "tool_done",
-          runId,
-          toolId,
-          name: fc.name,
-          result: toolResult,
-          ts: Date.now(),
-        });
-        if (toolArtifact)
-          sseEvent(res, {
-            type: "artifact",
-            runId,
-            toolId,
-            ...(toolArtifact as object),
-          });
+        sseEvent(res, { type: "tool_done", runId, toolId, name: fc.name, result: toolResult, ts: Date.now() });
+        if (toolArtifact) sseEvent(res, { type: "artifact", runId, toolId, ...(toolArtifact as object) });
 
         toolResults.push({
           functionResponse: { name: fc.name, response: { result: toolResult } },
@@ -1691,25 +1094,15 @@ router.post("/agent/chat", async (req, res) => {
       // \u2500\u2500 5. JUDGE \u2014 verify results, feed correction context to model (hidden) \u2500\u2500
       // Do NOT emit visible text \u2014 the tool card already shows error state.
       // Just push a hidden correction turn so the model self-heals.
-      sseEvent(res, {
-        type: "thinking",
-        runId,
-        stage: "verifying",
-        iteration: iterations,
-        total: MAX_ITERATIONS,
-      });
+      sseEvent(res, { type: "thinking", runId, stage: "verifying", iteration: iterations, total: MAX_ITERATIONS });
       if (iterationHadError) {
         const failedTools = toolResults
-          .filter((tr) => tr.functionResponse?.response?.result?.error)
-          .map(
-            (tr) =>
-              `${tr.functionResponse.name}: ${tr.functionResponse.response.result.error}`,
-          )
+          .filter(tr => tr.functionResponse?.response?.result?.error)
+          .map(tr => `${tr.functionResponse.name}: ${tr.functionResponse.response.result.error}`)
           .join("; ");
-        toolResults.push({
-          text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.`,
-        });
+        toolResults.push({ text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.` });
       }
+
 
       // ── 6. Build history for next iteration ───────────────────────────────
       // Use rawFcParts (not reconstructed) to preserve thought_signature
@@ -1728,11 +1121,7 @@ router.post("/agent/chat", async (req, res) => {
 
     // ── Graceful MAX_ITERATIONS exit ──────────────────────────────────────
     if (iterations >= MAX_ITERATIONS && isConnected()) {
-      sseEvent(res, {
-        type: "text",
-        content: `\n⚠️ **Note:** Reached the maximum of ${MAX_ITERATIONS} steps. The task may be partially complete — check the results above and ask me to continue if needed.\n`,
-        runId,
-      });
+      sseEvent(res, { type: "text", content: `\n⚠️ **Note:** Reached the maximum of ${MAX_ITERATIONS} steps. The task may be partially complete — check the results above and ask me to continue if needed.\n`, runId });
     }
 
     if (isConnected()) {
@@ -1743,12 +1132,7 @@ router.post("/agent/chat", async (req, res) => {
       let errMsg: string = err?.message ?? "Unknown copilot error";
       // Specific: Gemini 'empty output' transient error — always show clean message
       if (/model output must contain|both be empty/i.test(errMsg)) {
-        sseEvent(res, {
-          type: "text",
-          content:
-            "I hit a brief connection issue — just send that again and I'll be right on it.",
-          runId,
-        });
+        sseEvent(res, { type: "text", content: "I hit a brief connection issue — just send that again and I'll be right on it.", runId });
         sseEvent(res, { type: "done", runId, ts: Date.now() });
         return;
       }
@@ -1756,22 +1140,14 @@ router.post("/agent/chat", async (req, res) => {
         const parsed = JSON.parse(errMsg);
         const inner = parsed?.error?.message ?? parsed?.message ?? errMsg;
         // Strip the long docs URL reference
-        errMsg = String(inner)
-          .split(/\.?\s*Please refer to https?:\/\//)
-          .shift()!
-          .trim();
-      } catch {
-        /* not JSON, use as-is */
-      }
+        errMsg = String(inner).split(/\.?\s*Please refer to https?:\/\//).shift()!.trim();
+      } catch { /* not JSON, use as-is */ }
       // Also sanitize other known internal Gemini error patterns
       errMsg = errMsg
         .replace(/\[JUDGE\][^\]]*\]/gi, "")
         .replace(/thought_signature/gi, "")
         .trim();
-      sseEvent(res, {
-        type: "error",
-        message: errMsg || "Something went wrong — please try again.",
-      });
+      sseEvent(res, { type: "error", message: errMsg || "Something went wrong — please try again." });
     }
   } finally {
     clearInterval(keepAlive);

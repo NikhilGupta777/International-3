@@ -5,7 +5,6 @@ import {
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
   ArrowLeft, Pencil, Share2, MoreHorizontal, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
-  ImagePlus, Music2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -28,7 +27,7 @@ function loadSessions(): ChatSession[] {
   } catch { return []; }
 }
 function saveSessions(sessions: ChatSession[]) {
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(sessions.slice(0, 30))); } catch {}
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(sessions.slice(0, 30))); } catch { }
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -39,8 +38,8 @@ type SseEvent =
   | { type: "text"; content: string; runId?: string }
   | { type: "plan"; runId?: string; iteration?: number; steps: Array<{ tool: string; args: Record<string, any> }> }
   | { type: "tool_start"; runId?: string; toolId?: string; name: string; args: Record<string, any>; ts?: number }
-  | { type: "tool_log"; runId?: string; toolId?: string; name: string; message: string; level?: "info"|"error"|"warn" }
-  | { type: "tool_progress"; runId?: string; toolId?: string; name: string; status?: string; percent?: number|null; message?: string; jobId?: string }
+  | { type: "tool_log"; runId?: string; toolId?: string; name: string; message: string; level?: "info" | "error" | "warn" }
+  | { type: "tool_progress"; runId?: string; toolId?: string; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
   | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
   | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string }
@@ -52,28 +51,28 @@ type MessagePart =
   | { kind: "text"; content: string }
   | { kind: "image"; previewUrl: string; name: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
-  | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number|null; progressMsg?: string }
+  | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
   | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string };
 
-type Message = { id: string; role: "user"|"assistant"; parts: MessagePart[]; timestamp: Date };
+type Message = { id: string; role: "user" | "assistant"; parts: MessagePart[]; timestamp: Date };
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
 const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
-  get_video_info:      { icon: <Bot className="w-3.5 h-3.5" />,        label: "Fetching info",        color: "text-blue-400"   },
-  download_video:      { icon: <Download className="w-3.5 h-3.5" />,   label: "Downloading video",    color: "text-green-400"  },
-  cut_video_clip:      { icon: <Scissors className="w-3.5 h-3.5" />,   label: "Cutting clip",         color: "text-yellow-400" },
-  find_best_clips:     { icon: <Sparkles className="w-3.5 h-3.5" />,   label: "Finding best clips",   color: "text-purple-400" },
-  generate_subtitles:  { icon: <Captions className="w-3.5 h-3.5" />,   label: "Generating subtitles", color: "text-teal-400"   },
-  generate_timestamps: { icon: <AlarmClock className="w-3.5 h-3.5" />, label: "Timestamps",           color: "text-orange-400" },
-  list_shared_files:   { icon: <UploadCloud className="w-3.5 h-3.5" />,label: "Shared files",         color: "text-pink-400"   },
-  navigate_to_tab:     { icon: <ChevronRight className="w-3.5 h-3.5" />,label: "Navigating",          color: "text-white/60"   },
-  web_search:          { icon: <span className="text-[13px]">🔍</span>,  label: "Searching the web",   color: "text-sky-400"    },
-  translate_video:     { icon: <span className="text-[13px]">🎙️</span>,  label: "Translating video",   color: "text-violet-400" },
-  get_youtube_captions:{ icon: <Captions className="w-3.5 h-3.5" />,   label: "Getting captions",     color: "text-teal-400"   },
-  fix_subtitles:       { icon: <Captions className="w-3.5 h-3.5" />,   label: "Fixing subtitles",     color: "text-amber-400"  },
-  cancel_job:          { icon: <X className="w-3.5 h-3.5" />,           label: "Cancelling job",       color: "text-red-400"    },
-  check_job_status:    { icon: <Loader2 className="w-3.5 h-3.5" />,    label: "Checking status",      color: "text-white/60"   },
-  analyze_youtube_video: { icon: <span className="text-[13px]">👁️</span>, label: "Watching video",    color: "text-fuchsia-400" },
+  get_video_info: { icon: <Bot className="w-3.5 h-3.5" />, label: "Fetching info", color: "text-blue-400" },
+  download_video: { icon: <Download className="w-3.5 h-3.5" />, label: "Downloading video", color: "text-green-400" },
+  cut_video_clip: { icon: <Scissors className="w-3.5 h-3.5" />, label: "Cutting clip", color: "text-yellow-400" },
+  find_best_clips: { icon: <Sparkles className="w-3.5 h-3.5" />, label: "Finding best clips", color: "text-purple-400" },
+  generate_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Generating subtitles", color: "text-teal-400" },
+  generate_timestamps: { icon: <AlarmClock className="w-3.5 h-3.5" />, label: "Timestamps", color: "text-orange-400" },
+  list_shared_files: { icon: <UploadCloud className="w-3.5 h-3.5" />, label: "Shared files", color: "text-pink-400" },
+  navigate_to_tab: { icon: <ChevronRight className="w-3.5 h-3.5" />, label: "Navigating", color: "text-white/60" },
+  web_search: { icon: <span className="text-[13px]">🔍</span>, label: "Searching the web", color: "text-sky-400" },
+  translate_video: { icon: <span className="text-[13px]">🎙️</span>, label: "Translating video", color: "text-violet-400" },
+  get_youtube_captions: { icon: <Captions className="w-3.5 h-3.5" />, label: "Getting captions", color: "text-teal-400" },
+  fix_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Fixing subtitles", color: "text-amber-400" },
+  cancel_job: { icon: <X className="w-3.5 h-3.5" />, label: "Cancelling job", color: "text-red-400" },
+  check_job_status: { icon: <Loader2 className="w-3.5 h-3.5" />, label: "Checking status", color: "text-white/60" },
+  analyze_youtube_video: { icon: <span className="text-[13px]">👁️</span>, label: "Watching video", color: "text-fuchsia-400" },
 };
 const TAB_ICONS: Record<string, React.ReactNode> = {
   download: <Download className="w-3.5 h-3.5" />, clips: <Sparkles className="w-3.5 h-3.5" />,
@@ -125,8 +124,8 @@ function renderMd(text: string): React.ReactNode {
       while ((m = re.exec(str)) !== null) {
         if (m.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, m.index)}</span>);
         const tok = m[0];
-        if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2,-2)}</strong>);
-        else parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1,-1)}</code>);
+        if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2, -2)}</strong>);
+        else parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1, -1)}</code>);
         last = m.index + tok.length;
       }
       if (last < str.length) parts.push(<span key={`${key}-e`}>{str.slice(last)}</span>);
@@ -145,8 +144,8 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
   const pct = part.progress;
   const hasProgress = pct !== null && pct !== undefined;
-  const argStr = Object.entries(part.args).filter(([,v]) => v !== undefined && v !== "")
-    .map(([k,v]) => `${k}: ${String(v).length > 40 ? String(v).slice(0,37)+"..." : v}`).join("  ·  ");
+  const argStr = Object.entries(part.args).filter(([, v]) => v !== undefined && v !== "")
+    .map(([k, v]) => `${k}: ${String(v).length > 40 ? String(v).slice(0, 37) + "..." : v}`).join("  ·  ");
   return (
     <div className={cn("agent-tool-card", part.done && "agent-tool-card-done")}>
       <div className="agent-tool-card-top">
@@ -171,7 +170,7 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
       )}
       {!part.done && (
         <div className="agent-tool-progress-track">
-          <div className="agent-tool-progress-fill" style={{ width: hasProgress ? `${Math.max(3,pct!)}%` : "0%", transition: hasProgress ? "width 0.6s ease" : "none" }} />
+          <div className="agent-tool-progress-fill" style={{ width: hasProgress ? `${Math.max(3, pct!)}%` : "0%", transition: hasProgress ? "width 0.6s ease" : "none" }} />
           {!hasProgress && <div className="agent-tool-progress-shimmer" />}
         </div>
       )}
@@ -194,7 +193,7 @@ function PlanCard({ part }: { part: MessagePart & { kind: "plan" } }) {
             <div key={i} className="agent-plan-step">
               <span className={meta?.color ?? "text-white/50"}>{meta?.icon}</span>
               <span className="agent-plan-step-name">{meta?.label ?? s.tool}</span>
-              {s.args.url && <span className="agent-plan-step-arg">{String(s.args.url).length > 42 ? String(s.args.url).slice(0,39)+"..." : s.args.url}</span>}
+              {s.args.url && <span className="agent-plan-step-arg">{String(s.args.url).length > 42 ? String(s.args.url).slice(0, 39) + "..." : s.args.url}</span>}
             </div>
           );
         })}
@@ -351,31 +350,18 @@ export function StudioCopilot({
   const [listening, setListening] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
-  const [agentStage, setAgentStage] = useState<"idle"|"planning"|"executing"|"verifying">("idle");
+  const [agentStage, setAgentStage] = useState<"idle" | "planning" | "executing" | "verifying">("idle");
   const [agentIteration, setAgentIteration] = useState(0);
   const [pasteUrl, setPasteUrl] = useState<string | null>(null);
   const [ultra, setUltra] = useState<boolean>(readUltraInitial);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const { toast } = useToast();
   useEffect(() => {
-    try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch {}
+    try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch { }
   }, [ultra]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
-  const [showPlusMenu, setShowPlusMenu] = useState(false);
-  const plusMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!showPlusMenu) return;
-    const handler = (e: MouseEvent) => {
-      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
-        setShowPlusMenu(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showPlusMenu]);
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
     type: "image" | "video" | "audio" | "document";
     name: string;
@@ -548,7 +534,7 @@ export function StudioCopilot({
     });
   }, [updateSession]);
 
-  const sendMessage = useCallback(async (text: string, attachmentsArg?: Array<{ type: string; name: string; mimeType: string; data?: string; url?: string }>) => {
+  const sendMessage = useCallback(async (text: string, attachmentsArg?: Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>) => {
     const snapshotAttachments = attachmentsArg ?? pendingAttachments;
     if ((!text.trim() && snapshotAttachments.length === 0) || streaming) return;
     const sessionId = ensureSession();
@@ -590,14 +576,14 @@ export function StudioCopilot({
         // For assistant messages: append a compact summary of completed tools
         const toolSummary = m.role === "assistant"
           ? m.parts
-              .filter((p: any) => p.kind === "tool_start" && p.done)
-              .map((p: any) => {
-                const resultStr = p.result?.error
-                  ? `ERROR: ${p.result.error}`
-                  : p.result?.message ?? p.result?.filename ?? p.result?.jobId ?? JSON.stringify(p.result ?? {}).slice(0, 120);
-                return `[Tool: ${p.name} | Result: ${resultStr}]`;
-              })
-              .join("\n")
+            .filter((p: any) => p.kind === "tool_start" && p.done)
+            .map((p: any) => {
+              const resultStr = p.result?.error
+                ? `ERROR: ${p.result.error}`
+                : p.result?.message ?? p.result?.filename ?? p.result?.jobId ?? JSON.stringify(p.result ?? {}).slice(0, 120);
+              return `[Tool: ${p.name} | Result: ${resultStr}]`;
+            })
+            .join("\n")
           : "";
         const content = [textParts, toolSummary].filter(Boolean).join("\n").trim();
         const isNewUserMsg = m.role === "user" && m.id === userMsgId;
@@ -615,7 +601,7 @@ export function StudioCopilot({
       patchAssistant(m => {
         const parts = [...m.parts];
         const last = parts[parts.length - 1];
-        if (last?.kind === "text") return { ...m, parts: [...parts.slice(0,-1), { kind: "text", content: last.content + content }] };
+        if (last?.kind === "text") return { ...m, parts: [...parts.slice(0, -1), { kind: "text", content: last.content + content }] };
         return { ...m, parts: [...parts, { kind: "text", content }] };
       });
     };
@@ -625,7 +611,7 @@ export function StudioCopilot({
       if (evt.type === "heartbeat") return;
       if (evt.type === "thinking") {
         setThinking(true);
-        if (evt.stage) setAgentStage(evt.stage as "idle"|"planning"|"executing"|"verifying");
+        if (evt.stage) setAgentStage(evt.stage as "idle" | "planning" | "executing" | "verifying");
         if (evt.iteration !== undefined) setAgentIteration(evt.iteration);
         return;
       }
@@ -658,6 +644,60 @@ export function StudioCopilot({
             p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done))
               ? { ...p, progress: evt.percent ?? (p as any).progress ?? null, progressMsg: evt.message ?? evt.status } : p),
         }));
+
+        // Register active job in global history tracking
+        if (evt.jobId) {
+          const url = (evt as any).url || "";
+          if (evt.name === "cut_video_clip" || evt.name === "find_best_clips") {
+            import("@/lib/clip-history").then(({ loadActiveClipJobs, saveActiveClipJobs }) => {
+              const active = loadActiveClipJobs();
+              if (!active.some(j => j.jobId === evt.jobId)) {
+                saveActiveClipJobs([...active, {
+                  jobId: evt.jobId!,
+                  url: url,
+                  label: evt.name === "cut_video_clip" ? "AI Clip" : "AI Analysis",
+                  startSecs: 0, endSecs: 0, quality: "720p",
+                  startedAt: Date.now()
+                }]);
+              }
+            });
+          } else if (evt.name === "download_video") {
+            import("@/lib/download-history").then(({ saveActiveDownload, loadActiveDownload }) => {
+              if (loadActiveDownload()?.jobId !== evt.jobId) {
+                saveActiveDownload({
+                  jobId: evt.jobId!,
+                  url: url,
+                  savedAt: Date.now()
+                });
+              }
+            });
+          } else if (evt.name === "generate_subtitles") {
+            import("@/lib/subtitle-history").then(({ saveActiveJob, loadActiveJob }) => {
+              if (loadActiveJob()?.jobId !== evt.jobId) {
+                saveActiveJob({
+                  jobId: evt.jobId!,
+                  mode: "url",
+                  url: url,
+                  language: "auto",
+                  translateTo: "",
+                  startedAt: Date.now()
+                });
+              }
+            });
+          } else if (evt.name === "translate_video") {
+            import("@/lib/translator-history").then(({ upsertActiveTranslatorJob }) => {
+              upsertActiveTranslatorJob({
+                jobId: evt.jobId!,
+                filename: "input.mp4",
+                targetLang: "Hindi",
+                startedAt: Date.now(),
+                progress: 0,
+                step: "Starting",
+                status: "processing"
+              });
+            });
+          }
+        }
         return;
       }
       if (evt.type === "tool_done") {
@@ -667,6 +707,47 @@ export function StudioCopilot({
             p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done))
               ? { ...p, done: true, result: evt.result, progress: 100 } : p),
         }));
+
+        // Sync to Activity History
+        if (evt.name === "cut_video_clip" && evt.result?.jobId) {
+          import("@/lib/clip-history").then(({ saveToClipHistory }) => {
+            saveToClipHistory({
+              jobId: evt.result.jobId,
+              createdAt: Date.now(),
+              label: `AI Clip: ${evt.result.startTime || ""} to ${evt.result.endTime || ""}`,
+              url: evt.result.url || "",
+              quality: evt.result.quality || "720p",
+              filename: "clip.mp4",
+              filesize: null,
+              durationSecs: 0,
+            });
+          });
+        } else if (evt.name === "download_video" && evt.result?.jobId) {
+          import("@/lib/download-history").then(({ saveCompletedDownload }) => {
+            saveCompletedDownload({
+              jobId: evt.result.jobId,
+              url: evt.result.url || "",
+              filename: evt.result.filename || "video.mp4",
+              filesize: null,
+              createdAt: Date.now(),
+            });
+          });
+        } else if (evt.name === "generate_subtitles" && evt.result?.jobId) {
+          import("@/lib/subtitle-history").then(({ saveToHistory }) => {
+            saveToHistory({
+              id: evt.result.jobId,
+              createdAt: Date.now(),
+              mode: "url",
+              url: evt.result.url || "",
+              srtFilename: evt.result.srtFilename || "subtitles.srt",
+              language: evt.result.language || "auto",
+              translateTo: evt.result.translateTo || "",
+              srt: "",
+              entryCount: 0,
+            });
+          });
+        }
+
         return;
       }
       if (evt.type === "navigate") { if (onNavigate) onNavigate(evt.tab); return; }
@@ -709,12 +790,12 @@ export function StudioCopilot({
         for (const frame of frames) {
           const raw = frame.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n").trim();
           if (!raw) continue;
-          try { handleEvent(JSON.parse(raw) as SseEvent); } catch {}
+          try { handleEvent(JSON.parse(raw) as SseEvent); } catch { }
         }
       }
       // trailing buffer
       const raw = buf.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n").trim();
-      if (raw) { try { handleEvent(JSON.parse(raw) as SseEvent); } catch {} }
+      if (raw) { try { handleEvent(JSON.parse(raw) as SseEvent); } catch { } }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         // Distinguish common failure modes for better user feedback
@@ -890,7 +971,7 @@ export function StudioCopilot({
                   className={cn("agent-history-item group cursor-pointer", currentSessionId === s.id && "agent-history-item-active")}>
                   <div className="flex-1 min-w-0 text-left">
                     <p className="agent-history-title">{s.title}</p>
-                    <p className="agent-history-time">{s.updatedAt.toLocaleDateString([], { month:"short", day:"numeric" })}</p>
+                    <p className="agent-history-time">{s.updatedAt.toLocaleDateString([], { month: "short", day: "numeric" })}</p>
                   </div>
                   <button onClick={e => handleDeleteSession(s.id, e)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white/70 p-1 rounded transition-all">
                     <X className="w-3 h-3" />
@@ -942,10 +1023,10 @@ export function StudioCopilot({
             {/* Thinking indicator — shows live agent stage from SSE events */}
             {thinking && (() => {
               const stageLabel: Record<string, string> = {
-                planning:  "Thinking",
+                planning: "Planning",
                 executing: "Working",
                 verifying: "Checking",
-                idle:      "Thinking",
+                idle: "Thinking",
               };
               const label = stageLabel[agentStage] ?? "Thinking";
               return (
@@ -1039,7 +1120,7 @@ export function StudioCopilot({
               if (!input && navigator.clipboard?.readText) {
                 navigator.clipboard.readText().then(text => {
                   if (/(?:youtube\.com\/watch|youtu\.be\/)/i.test(text)) setPasteUrl(text.trim());
-                }).catch(() => {});
+                }).catch(() => { });
               }
             }}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); } }}
@@ -1067,39 +1148,25 @@ export function StudioCopilot({
                 accept="image/*,video/*,audio/*,.srt,.vtt,.txt,.md,.csv,.json,.pdf,.doc,.docx"
                 onChange={handleFileUpload}
               />
-              <div className="relative" ref={plusMenuRef}>
-                <button
-                  type="button"
-                  className={cn("gs-input-circle-btn", showPlusMenu && "gs-input-circle-btn-active")}
-                  title="More options"
-                  aria-label="More options"
-                  onClick={() => setShowPlusMenu(v => !v)}
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
-                {showPlusMenu && (
-                  <div className="gs-plus-menu">
-                    <button
-                      className="gs-plus-menu-item"
-                      disabled={uploading}
-                      onClick={() => { fileInputRef.current?.click(); setShowPlusMenu(false); }}
-                    >
-                      {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
-                      <span>Upload Files</span>
-                    </button>
-                    <button className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
-                      <ImagePlus className="w-4 h-4" />
-                      <span>Create Images</span>
-                      <span className="gs-plus-menu-badge">Soon</span>
-                    </button>
-                    <button className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
-                      <Music2 className="w-4 h-4" />
-                      <span>Create Music</span>
-                      <span className="gs-plus-menu-badge gs-plus-menu-badge-new">New</span>
-                    </button>
-                  </div>
-                )}
-              </div>
+              <button
+                type="button"
+                className="gs-input-circle-btn"
+                title="Clear text"
+                aria-label="Clear input"
+                onClick={() => setInput("")}
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                className="gs-input-circle-btn"
+                title="Attach file"
+                aria-label="Attach"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+              </button>
               <button
                 type="button"
                 className={cn("gs-pill-ultra", ultra && "gs-pill-ultra-active")}
