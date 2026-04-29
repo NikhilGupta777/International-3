@@ -852,7 +852,7 @@ function isYouTubeUrl(url: string): boolean {
 }
 
 function isYouTubeBlockedError(message: string): boolean {
-  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable.*country|precondition.*failed|http error 401|requested format is not available|format.*not available|not made this video available|not available in your country|geo.*restrict/i.test(
+  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable|this video is unavailable|precondition.*failed|http error 401|requested format is not available|format.*not available|not made this video available|not available in your country|geo.*restrict/i.test(
     message,
   );
 }
@@ -1711,6 +1711,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.status = "downloading";
   jobRef.message = "Cutting clip...";
 
+  await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = isYouTubeUrl(job.url);
   const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
