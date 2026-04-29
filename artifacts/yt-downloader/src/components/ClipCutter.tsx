@@ -523,7 +523,7 @@ export function ClipCutter() {
         throw new Error((err as { error?: string }).error || "Failed to start clip cut");
       }
 
-      const data = (await res.json()) as { jobId: string };
+      const data = (await res.json()) as { jobId: string; status?: string; message?: string };
       const label = `${secsToLabel(startSecs)} → ${secsToLabel(endSecs)}`;
 
       const newJob: ActiveJob = {
@@ -533,13 +533,13 @@ export function ClipCutter() {
         quality,
         startSecs,
         endSecs,
-        status: "pending",
+        status: normalizeJobStatus(data.status, "pending"),
         percent: 0,
         speed: null,
         eta: null,
         filename: null,
         filesize: null,
-        message: null,
+        message: data.message ?? "Clip cut queued...",
         downloaded: false,
         savedToHistory: false,
         startedAt: Date.now(),

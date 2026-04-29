@@ -1131,13 +1131,6 @@ export function StudioCopilot({
             className="gs-input-textarea"
             value={input}
             onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
-            onFocus={() => {
-              if (!input && navigator.clipboard?.readText) {
-                navigator.clipboard.readText().then(text => {
-                  if (/(?:youtube\.com\/watch|youtu\.be\/)/i.test(text)) setPasteUrl(text.trim());
-                }).catch(() => { });
-              }
-            }}
             onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); } }}
             onPaste={async e => {
               // Support pasting images from clipboard (Ctrl+V)

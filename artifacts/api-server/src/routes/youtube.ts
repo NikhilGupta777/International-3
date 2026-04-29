@@ -2281,7 +2281,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
         clearInterval(timer);
         res.end();
       });
-    }, 2000);
+    }, 1000);
 
     req.on("close", () => {
       clearInterval(timer);
