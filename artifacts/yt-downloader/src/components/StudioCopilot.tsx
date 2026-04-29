@@ -5,6 +5,7 @@ import {
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
   ArrowLeft, Pencil, Share2, MoreHorizontal, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
+  ImagePlus, Music2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -362,6 +363,20 @@ export function StudioCopilot({
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const plusMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showPlusMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (plusMenuRef.current && !plusMenuRef.current.contains(e.target as Node)) {
+        setShowPlusMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showPlusMenu]);
+
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
     type: "image" | "video" | "audio" | "document";
     name: string;
@@ -1148,25 +1163,40 @@ export function StudioCopilot({
                 accept="image/*,video/*,audio/*,.srt,.vtt,.txt,.md,.csv,.json,.pdf,.doc,.docx"
                 onChange={handleFileUpload}
               />
-              <button
-                type="button"
-                className="gs-input-circle-btn"
-                title="Clear text"
-                aria-label="Clear input"
-                onClick={() => setInput("")}
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                className="gs-input-circle-btn"
-                title="Attach file"
-                aria-label="Attach"
-                disabled={uploading}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
-              </button>
+              <div className="relative" ref={plusMenuRef}>
+                <button
+                  type="button"
+                  className={cn("gs-input-circle-btn", showPlusMenu && "gs-input-circle-btn-active")}
+                  title="More options"
+                  aria-label="More options"
+                  onClick={() => setShowPlusMenu(v => !v)}
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+                {showPlusMenu && (
+                  <div className="gs-plus-menu">
+                    <button
+                      type="button"
+                      className="gs-plus-menu-item"
+                      disabled={uploading}
+                      onClick={() => { fileInputRef.current?.click(); setShowPlusMenu(false); }}
+                    >
+                      {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+                      <span>Upload Files</span>
+                    </button>
+                    <button type="button" className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                      <ImagePlus className="w-4 h-4" />
+                      <span>Create Images</span>
+                      <span className="gs-plus-menu-badge">Soon</span>
+                    </button>
+                    <button type="button" className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                      <Music2 className="w-4 h-4" />
+                      <span>Create Music</span>
+                      <span className="gs-plus-menu-badge gs-plus-menu-badge-new">New</span>
+                    </button>
+                  </div>
+                )}
+              </div>
               <button
                 type="button"
                 className={cn("gs-pill-ultra", ultra && "gs-pill-ultra-active")}

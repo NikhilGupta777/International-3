@@ -80,8 +80,6 @@ archive/
 .pythonlibs/
 .venv/
 venv/
-__pycache__/
-*.pyc
 
 # One-time AWS infrastructure setup scripts (run manually, not needed in CI)
 deploy_batch_gpu.ps1
