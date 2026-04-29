@@ -325,6 +325,14 @@ Resources:
       Principal: "*"
       FunctionUrlAuthType: NONE
 
+  ApiFunctionUrlInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
   StaticBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
