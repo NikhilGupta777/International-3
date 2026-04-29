@@ -35,6 +35,8 @@ env:
   ECR_TRANSLATOR_REPO: ytgrabber-green-translator
   CF_STACK_PREFIX: ytgrabber-green
   YTDLP_VERSION: "2026.03.17"
+  SITE_DOMAIN_NAME: videomaking.in
+  CLOUDFRONT_CERTIFICATE_ARN: arn:aws:acm:us-east-1:596596146505:certificate/62ff8b55-8a4b-4634-97e8-75924181c9f5
 
 jobs:
   detect-translator-changes:
@@ -401,6 +403,8 @@ jobs:
               -Prefix "${{ env.CF_STACK_PREFIX }}" `
               -SkipImageBuild `
               -ImageUri "${{ needs.build-api.outputs.image_uri }}" `
+              -SiteDomainName "${{ env.SITE_DOMAIN_NAME }}" `
+              -CloudFrontCertificateArn "${{ env.CLOUDFRONT_CERTIFICATE_ARN }}" `
               -EnvFilePath "/tmp/.env.green"
           } catch {
             Write-Host "::error::DEPLOY_SCRIPT_ERROR $($_.Exception.Message)"
