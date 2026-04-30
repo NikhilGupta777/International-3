@@ -1671,37 +1671,29 @@ function qualityToFormatCandidates(quality: string): string[] {
       : parsedHeight;
 
   if (maxHeight) {
-    const minProgressiveHeight = Math.min(360, maxHeight);
     return [
-      `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
-      `best[vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
       `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}]`,
+      `best[ext=mp4][vcodec!=none][acodec!=none]`,
       `best[vcodec!=none][acodec!=none][height<=${maxHeight}]`,
-      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio[ext=m4a]`,
-      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio`,
-      `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
-      `bestvideo[height<=${maxHeight}]+bestaudio`,
     ];
   }
 
   return [
-    "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]",
-    "bestvideo[vcodec^=avc1]+bestaudio",
-    "bestvideo+bestaudio",
-    "best[ext=mp4][vcodec!=none][acodec!=none][height>=360]",
     "best[vcodec!=none][acodec!=none][height>=360]",
     "best[ext=mp4][vcodec!=none][acodec!=none]",
     "best[vcodec!=none][acodec!=none]",
   ];
 }
 
-const MAX_CLIP_FORMAT_CANDIDATES = 6;
-const MAX_CLIP_CLIENT_FALLBACKS = 5;
-const MAX_CLIP_DOWNLOAD_ATTEMPTS = 8;
+const MAX_CLIP_FORMAT_CANDIDATES = 3;
+const MAX_CLIP_CLIENT_FALLBACKS = 2;
+const MAX_CLIP_DOWNLOAD_ATTEMPTS = 3;
 const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
   30_000,
-  Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "150000", 10) || 150_000,
+  Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "60000", 10) || 60_000,
 );
+const LAMBDA_CLIP_FORCE_KEYFRAMES =
+  process.env.LAMBDA_CLIP_FORCE_KEYFRAMES === "true";
 
 async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   const jobRef = jobs.get(jobId)!;
@@ -1748,11 +1740,13 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       "-f", formatSelector,
       "--merge-output-format", "mp4",
       "--download-sections", section,
-      "--force-keyframes-at-cuts",
       "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
       "-o", outputPath,
       job.url,
     ];
+    if (LAMBDA_CLIP_FORCE_KEYFRAMES) {
+      cmdArgs.splice(cmdArgs.indexOf("--downloader-args"), 0, "--force-keyframes-at-cuts");
+    }
 
     const attemptPlans: string[][] = [];
     if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
