@@ -5,7 +5,7 @@ import {
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
   ArrowLeft, Pencil, Share2, MoreHorizontal, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
-  ImagePlus, Music2,
+  ImagePlus, Music2, Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -43,7 +43,7 @@ type SseEvent =
   | { type: "tool_progress"; runId?: string; toolId?: string; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
   | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
-  | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string }
+  | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string }
   | { type: "suggestions"; items: string[]; runId?: string }
   | { type: "error"; message: string }
   | { type: "done"; runId?: string; ts?: number };
@@ -53,7 +53,7 @@ type MessagePart =
   | { kind: "image"; previewUrl: string; name: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
   | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
-  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; content?: string };
+  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string };
 
 type Message = { id: string; role: "user" | "assistant"; parts: MessagePart[]; timestamp: Date };
 
@@ -69,6 +69,23 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   navigate_to_tab: { icon: <ChevronRight className="w-3.5 h-3.5" />, label: "Navigating", color: "text-white/60" },
   web_search: { icon: <span className="text-[13px]">🔍</span>, label: "Searching the web", color: "text-sky-400" },
   translate_video: { icon: <span className="text-[13px]">🎙️</span>, label: "Translating video", color: "text-violet-400" },
+  create_image: { icon: <ImagePlus className="w-3.5 h-3.5" />, label: "Creating image", color: "text-pink-400" },
+  enhance_image: { icon: <Sparkles className="w-3.5 h-3.5" />, label: "Enhancing image", color: "text-cyan-400" },
+  edit_image: { icon: <Pencil className="w-3.5 h-3.5" />, label: "Editing image", color: "text-fuchsia-400" },
+  describe_image: { icon: <Bot className="w-3.5 h-3.5" />, label: "Inspecting image", color: "text-indigo-400" },
+  extract_text_from_image: { icon: <Captions className="w-3.5 h-3.5" />, label: "Reading image text", color: "text-teal-400" },
+  write_video_script: { icon: <SquarePen className="w-3.5 h-3.5" />, label: "Writing script", color: "text-amber-400" },
+  generate_seo_pack: { icon: <Sparkles className="w-3.5 h-3.5" />, label: "SEO pack", color: "text-lime-400" },
+  do_full_package: { icon: <Sparkles className="w-3.5 h-3.5" />, label: "Full package", color: "text-purple-300" },
+  repeat_last_artifact: { icon: <Download className="w-3.5 h-3.5" />, label: "Restoring result", color: "text-green-400" },
+  check_active_jobs: { icon: <Loader2 className="w-3.5 h-3.5" />, label: "Checking jobs", color: "text-blue-300" },
+  cancel_active_jobs: { icon: <X className="w-3.5 h-3.5" />, label: "Cancelling jobs", color: "text-red-400" },
+  send_result_to_tab: { icon: <ChevronRight className="w-3.5 h-3.5" />, label: "Opening tab", color: "text-white/60" },
+  read_uploaded_file: { icon: <Paperclip className="w-3.5 h-3.5" />, label: "Reading file", color: "text-sky-300" },
+  convert_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Converting subtitles", color: "text-teal-300" },
+  compare_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Comparing subtitles", color: "text-cyan-300" },
+  export_text_file: { icon: <Download className="w-3.5 h-3.5" />, label: "Exporting file", color: "text-emerald-300" },
+  run_code_analysis: { icon: <Terminal className="w-3.5 h-3.5" />, label: "Code analysis", color: "text-orange-300" },
   get_youtube_captions: { icon: <Captions className="w-3.5 h-3.5" />, label: "Getting captions", color: "text-teal-400" },
   fix_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Fixing subtitles", color: "text-amber-400" },
   cancel_job: { icon: <X className="w-3.5 h-3.5" />, label: "Cancelling job", color: "text-red-400" },
@@ -220,6 +237,24 @@ function TextArtifact({ label, content }: { label: string; content: string }) {
 
 // ── ArtifactCard ──────────────────────────────────────────────────────────────
 function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artifact" }; onNavigate?: (tab: string) => void }) {
+  if (part.artifactType === "image" && part.imageUrl) {
+    return (
+      <div className="rounded-2xl border border-pink-500/25 bg-pink-500/8 overflow-hidden">
+        <div className="p-3">
+          <img src={part.imageUrl} alt={part.label} className="w-full max-h-[360px] object-contain rounded-xl border border-white/10 bg-black/20" />
+        </div>
+        <div className="px-4 pb-3 flex items-center gap-2">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-pink-200 truncate">{part.label}</p>
+            {part.content && <p className="text-xs text-white/45 truncate mt-0.5">{part.content}</p>}
+          </div>
+          <a href={part.downloadUrl ?? part.imageUrl} download className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-xs text-white bg-pink-600 hover:bg-pink-500 transition-colors">
+            <Download className="w-4 h-4" /> Download
+          </a>
+        </div>
+      </div>
+    );
+  }
   if (part.artifactType === "download" && part.downloadUrl) {
     return (
       <div className="rounded-2xl border border-green-500/25 bg-green-500/8 overflow-hidden">
@@ -600,7 +635,24 @@ export function StudioCopilot({
             })
             .join("\n")
           : "";
-        const content = [textParts, toolSummary].filter(Boolean).join("\n").trim();
+        const artifactSummary = m.role === "assistant"
+          ? m.parts
+            .filter((p: any) => p.kind === "artifact")
+            .map((p: any) => {
+              if (p.artifactType === "text" && p.content) return `[TextArtifact: ${p.label}] ${String(p.content).slice(0, 4000)}`;
+              const fields = [
+                `Artifact: ${p.artifactType}`,
+                `Label: ${p.label}`,
+                p.downloadUrl ? `URL: ${p.downloadUrl}` : "",
+                p.imageUrl ? `Image: ${p.imageUrl}` : "",
+                p.tab ? `Tab: ${p.tab}` : "",
+                p.jobId ? `Job: ${p.jobId}` : "",
+              ].filter(Boolean).join(" | ");
+              return `[${fields}]`;
+            })
+            .join("\n")
+          : "";
+        const content = [textParts, toolSummary, artifactSummary].filter(Boolean).join("\n").trim();
         const isNewUserMsg = m.role === "user" && m.id === userMsgId;
         const msgAttachments = isNewUserMsg && snapshotAttachments.length > 0
           ? snapshotAttachments.map(a => ({ type: a.type, name: a.name, mimeType: a.mimeType, data: a.data, url: a.url }))
@@ -774,7 +826,7 @@ export function StudioCopilot({
       }
       if (evt.type === "navigate") { if (onNavigate) onNavigate(evt.tab); return; }
       if (evt.type === "artifact") {
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, content: evt.content }] }));
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, content: evt.content }] }));
         return;
       }
       if (evt.type === "error") {

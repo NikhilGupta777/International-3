@@ -368,7 +368,7 @@ export default function VideoTranslator() {
               headers: translatorAuthHeaders(),
             });
             if (!statusRes.ok) continue;
-            const statusItem = await readJsonResponse(statusRes, { status: "UNKNOWN" });
+            const statusItem = await readJsonResponse<any>(statusRes, { status: "UNKNOWN" });
             if (statusItem.status === "DONE") {
               const urls = await fetchResultUrls(activeJob.jobId);
               saveTranslatorHistory({
@@ -406,7 +406,7 @@ export default function VideoTranslator() {
 
         const res = await fetch(`${API}/history?limit=20`, { headers: translatorAuthHeaders() });
         if (!res.ok) return;
-        const data = await readJsonResponse(res, { jobs: [] });
+        const data = await readJsonResponse<any>(res, { jobs: [] });
         const jobs = Array.isArray(data.jobs) ? data.jobs : [];
         for (const item of jobs) {
           if (!item?.jobId) continue;

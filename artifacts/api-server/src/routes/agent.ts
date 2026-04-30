@@ -6,9 +6,10 @@
  */
 
 import { Router } from "express";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { randomUUID } from "crypto";
 import { setupSse } from "../lib/sse";
+import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3 } from "../lib/s3-storage";
 
 const router = Router();
 
@@ -23,7 +24,8 @@ const ALLOWED_MODELS = new Set([
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const POLL_INTERVAL_MS = 300;
-const MAX_ITERATIONS = 12;  // Genspark-class: up to 12 agentic steps
+const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "24", 10) || 24;
+const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
   "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
@@ -343,6 +345,189 @@ const STUDIO_TOOLS: any[] = [
     },
   },
   {
+    name: "do_full_package",
+    description: "Run a complete production package for a YouTube video: metadata, download, summary, timestamps, SEO, subtitles/captions, and best clips.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: { type: Type.STRING, description: "YouTube video URL" },
+        language: { type: Type.STRING, description: "Subtitle/caption language to prefer. Default: en." },
+        quality: { type: Type.STRING, description: "Download quality. Default: best." },
+        instructions: { type: Type.STRING, description: "Optional content focus for summary/clips/SEO." },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "repeat_last_artifact",
+    description: "Render the last download/image/tab result from conversation memory again, so the user can click it.",
+    parameters: { type: Type.OBJECT, properties: {}, required: [] },
+  },
+  {
+    name: "check_active_jobs",
+    description: "Check active jobs from IDs remembered in the conversation. Use when the user asks what is running or to continue jobs.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        jobIds: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Known job IDs. If omitted, the tool scans conversation memory." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "cancel_active_jobs",
+    description: "Cancel all known active YouTube jobs from IDs remembered in the conversation. Use when the user asks to stop/cancel all running jobs.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        jobIds: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Known job IDs. If omitted, the tool scans conversation memory." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "send_result_to_tab",
+    description: "Open the relevant tab for a result or workflow: download, clips, subtitles, clipcutter, translator, timestamps, upload.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        tab: { type: Type.STRING, description: "Target tab name." },
+      },
+      required: ["tab"],
+    },
+  },
+  {
+    name: "create_image",
+    description: "Create a new image from a prompt using Gemini image generation. Use when the user asks to make, generate, design, or create an image.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        prompt: { type: Type.STRING, description: "Detailed visual prompt for the image to create." },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
+    name: "enhance_image",
+    description: "Enhance the latest attached image so it looks crystal clear and newly restored, preserving composition and identity. This is clarity enhancement, not simple pixel upscaling.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        instructions: { type: Type.STRING, description: "Optional user intent, e.g. restore face details, sharpen text, improve lighting." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "edit_image",
+    description: "Edit the latest attached image according to user instructions while preserving the important parts of the original image.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        instructions: { type: Type.STRING, description: "Precise edit instructions." },
+      },
+      required: ["instructions"],
+    },
+  },
+  {
+    name: "describe_image",
+    description: "Analyze the latest attached image and describe subjects, scene, visible text, composition, quality issues, and practical edit suggestions.",
+    parameters: { type: Type.OBJECT, properties: {}, required: [] },
+  },
+  {
+    name: "extract_text_from_image",
+    description: "Read visible text from the latest attached image using vision OCR, preserving line breaks when possible.",
+    parameters: { type: Type.OBJECT, properties: {}, required: [] },
+  },
+  {
+    name: "write_video_script",
+    description: "Write a production-ready video script, narration, hook, shot list, or storyboard for a requested topic, style, duration, and language.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        topic: { type: Type.STRING, description: "Video topic or idea." },
+        duration: { type: Type.STRING, description: "Target duration, e.g. 30 seconds, 3 minutes, 8 minutes." },
+        language: { type: Type.STRING, description: "Output language. Default follows the user." },
+        style: { type: Type.STRING, description: "Tone/style, e.g. cinematic, devotional, news, documentary, shorts." },
+      },
+      required: ["topic"],
+    },
+  },
+  {
+    name: "generate_seo_pack",
+    description: "Generate a YouTube SEO package: title options, description, tags, hashtags, pinned comment, and thumbnail text.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        topic: { type: Type.STRING, description: "Video topic, URL title, transcript summary, or idea." },
+        language: { type: Type.STRING, description: "Output language. Default follows the user." },
+        audience: { type: Type.STRING, description: "Target audience or niche." },
+      },
+      required: ["topic"],
+    },
+  },
+  {
+    name: "read_uploaded_file",
+    description: "Read the latest uploaded SRT/TXT/CSV/JSON/PDF/document attachment and summarize or extract its contents.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        task: { type: Type.STRING, description: "What to do with the file: summarize, inspect, extract, analyze, etc." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "convert_subtitles",
+    description: "Convert subtitle content between SRT, VTT, and plain TXT.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        content: { type: Type.STRING, description: "Subtitle content. If omitted, use latest uploaded text file." },
+        inputFormat: { type: Type.STRING, description: "srt, vtt, or txt. Default: auto." },
+        outputFormat: { type: Type.STRING, description: "srt, vtt, or txt." },
+        filename: { type: Type.STRING, description: "Output filename." },
+      },
+      required: ["outputFormat"],
+    },
+  },
+  {
+    name: "compare_subtitles",
+    description: "Compare two SRT/VTT/TXT subtitle files or blocks for missing lines, timing drift, text differences, and quality issues.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        first: { type: Type.STRING, description: "First subtitle text. If omitted, use uploaded/context content." },
+        second: { type: Type.STRING, description: "Second subtitle text. If omitted, use uploaded/context content." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "export_text_file",
+    description: "Export script, SEO, subtitles, notes, or any generated text as a downloadable file.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        filename: { type: Type.STRING, description: "Output filename, e.g. script.txt or subtitles.srt." },
+        content: { type: Type.STRING, description: "File content. If omitted, export latest text artifact from memory." },
+      },
+      required: ["filename"],
+    },
+  },
+  {
+    name: "run_code_analysis",
+    description: "Use Gemini code execution for CSV/JSON/text calculations, tables, simple charts, statistics, and data analysis.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        task: { type: Type.STRING, description: "Analysis question or calculation to run." },
+        data: { type: Type.STRING, description: "CSV/JSON/text data. If omitted, use latest uploaded text file or context." },
+      },
+      required: ["task"],
+    },
+  },
+  {
     name: "analyze_youtube_video",
     description: "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video.",
     parameters: {
@@ -358,7 +543,7 @@ const STUDIO_TOOLS: any[] = [
 const SYSTEM_PROMPT = `You are the VideoMaking Studio Copilot — a sharp, fast, action-first assistant for a YouTube/video production app.
 
 # VOICE
-Talk like a competent friend, not a corporate bot. One short sentence before a tool call ("Pulling that video info now…", "Cutting that clip for you…"). After a tool returns, one or two sentences max — what you got, what's next, where the file is. No bullet lists unless the user asks for one. No emojis unless the user uses them first.
+Talk like a competent friend, not a corporate bot. Tool cards already show live action, so do not repeat "I am downloading/cutting/generating..." in the final answer. After a tool returns, one or two sentences max: what completed and what to do next. No bullet lists unless the user asks for one. No emojis unless the user uses them first.
 
 # IRON RULES
 1. NEVER refuse a video task that maps to a tool. You have tools — use them. Don't say "I can't access YouTube"; call get_video_info.
@@ -370,7 +555,7 @@ Talk like a competent friend, not a corporate bot. One short sentence before a t
 7. Respect what the user already gave you. If they pasted SRT text, use fix_subtitles directly — don't re-ask for the file.
 
 # DOWNLOAD OUTPUTS
-For download_video, cut_video_clip, generate_subtitles, and get_youtube_captions, never print raw internal /api/... file URLs in final chat text. The UI renders download buttons automatically; say "Done - use the download button above."
+For download_video, cut_video_clip, generate_subtitles, get_youtube_captions, create_image, enhance_image, and edit_image, never print raw internal /api/... file URLs in final chat text. The UI renders download buttons automatically; say only "Done - use the download button above."
 
 # TOOL SELECTION HEURISTICS
 Pick the cheapest tool that solves the request:
@@ -388,11 +573,29 @@ Pick the cheapest tool that solves the request:
 | "make chapter timestamps" | generate_timestamps |
 | "translate this video / dub in Hindi/Spanish" | translate_video THEN navigate_to_tab('translator') |
 | "what's trending / latest news / who is X" | web_search first, then maybe a video tool |
+| "create/generate an image" | create_image |
+| "make this attached image clearer / enhance / restore" | enhance_image |
+| "edit this attached image" | edit_image |
+| "what is in this image / inspect image" | describe_image |
+| "read text from this image" | extract_text_from_image |
+| "write script / storyboard / shot list" | write_video_script |
+| "SEO title/description/tags/thumbnail text" | generate_seo_pack |
+| "full package / do everything / complete package" | do_full_package |
+| "give link again / show result again / where is file" | repeat_last_artifact |
+| "continue/check running jobs / active jobs" | check_active_jobs |
+| "cancel all / stop all running jobs" | cancel_active_jobs |
+| "send/open result in tab" | send_result_to_tab |
+| "read this uploaded file / summarize PDF/CSV/JSON/SRT/TXT" | read_uploaded_file |
+| "convert srt/vtt/txt" | convert_subtitles |
+| "compare two subtitle files" | compare_subtitles |
+| "export this as file / download this text" | export_text_file |
+| "calculate/analyze CSV/JSON/table/chart" | run_code_analysis |
 | "stop the job / cancel" | cancel_job with the jobId from context |
 | "is my job done / progress" | check_job_status |
 | User explicitly says "open the X tab" | navigate_to_tab |
 
 Don't double-call tools. If get_video_info already gave you the title and duration, don't call it again in the same conversation.
+Use artifact memory: if the user asks for a previous result/link/file again, call repeat_last_artifact instead of writing raw URLs.
 
 # MULTI-STEP REASONING
 You can chain up to ${MAX_ITERATIONS} tool calls per turn. Use that:
@@ -440,6 +643,263 @@ function buildInternalHeaders(req: any): Record<string, string> {
 }
 
 // ── Tool executor ─────────────────────────────────────────────────────────
+function latestImageAttachment(req: any): { data: string; mimeType: string; name: string } | null {
+  const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const attachments = Array.isArray(messages[i]?.attachments) ? messages[i].attachments : [];
+    for (let j = attachments.length - 1; j >= 0; j--) {
+      const attachment = attachments[j];
+      if (attachment?.type === "image" && attachment?.data && attachment?.mimeType) {
+        return {
+          data: String(attachment.data),
+          mimeType: String(attachment.mimeType),
+          name: String(attachment.name ?? "image"),
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function imageFilename(mimeType: string, prefix: string): string {
+  const ext = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
+  return `${prefix}-${Date.now()}.${ext}`;
+}
+
+async function publishGeneratedImage(params: {
+  data: string;
+  mimeType: string;
+  filenamePrefix: string;
+}): Promise<{ imageUrl: string; filename: string }> {
+  const filename = imageFilename(params.mimeType, params.filenamePrefix);
+  if (!isS3StorageEnabled()) {
+    return { imageUrl: `data:${params.mimeType};base64,${params.data}`, filename };
+  }
+
+  const upload = await createS3PresignedUpload({
+    jobId: randomUUID(),
+    namespace: "agent-images",
+    filename,
+    contentType: params.mimeType,
+  });
+  const put = await fetch(upload.uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": params.mimeType },
+    body: Buffer.from(params.data, "base64"),
+  });
+  if (!put.ok) throw new Error(`Image upload failed: ${put.status}`);
+  const imageUrl = await getS3SignedDownloadUrl({
+    key: upload.key,
+    filename: upload.filename,
+    expiresInSec: 7 * 24 * 60 * 60,
+  });
+  return { imageUrl, filename: upload.filename };
+}
+
+async function generateImageArtifact(params: {
+  prompt: string;
+  inputImage?: { data: string; mimeType: string };
+  filenamePrefix: string;
+}): Promise<{ imageUrl: string; filename: string; text: string }> {
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const parts: any[] = [{ text: params.prompt }];
+  if (params.inputImage) {
+    parts.push({ inlineData: { mimeType: params.inputImage.mimeType, data: params.inputImage.data } });
+  }
+  const resp = await ai.models.generateContent({
+    model: process.env.COPILOT_IMAGE_MODEL ?? "gemini-2.5-flash-image",
+    contents: [{ role: "user", parts }],
+    config: {
+      responseModalities: [Modality.TEXT, Modality.IMAGE] as any,
+      temperature: 0.25,
+    },
+  } as any);
+
+  let text = "";
+  for (const part of resp.candidates?.[0]?.content?.parts ?? []) {
+    if (part.text) text += part.text;
+    const imageData = part.inlineData?.data;
+    const mimeType = part.inlineData?.mimeType ?? "image/png";
+    if (imageData) {
+      const published = await publishGeneratedImage({
+        data: imageData,
+        mimeType,
+        filenamePrefix: params.filenamePrefix,
+      });
+      return { ...published, text: stripReasoningTags(text).trim() };
+    }
+  }
+  throw new Error("Image model returned no image. Try a clearer prompt or attach an image.");
+}
+
+async function textModelArtifact(label: string, prompt: string): Promise<{ result: any; artifact: object }> {
+  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const resp = await ai.models.generateContent({
+    model: ULTRA_MODEL,
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    config: { temperature: 0.25, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+  });
+  const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
+  if (!content) throw new Error(`${label} returned no content`);
+  return {
+    result: { content },
+    artifact: { artifactType: "text", label, content },
+  };
+}
+
+function latestNonImageAttachment(req: any): { url?: string; data?: string; mimeType: string; name: string; type?: string } | null {
+  const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const attachments = Array.isArray(messages[i]?.attachments) ? messages[i].attachments : [];
+    for (let j = attachments.length - 1; j >= 0; j--) {
+      const attachment = attachments[j];
+      if (attachment?.type !== "image" && (attachment?.url || attachment?.data)) {
+        return {
+          url: attachment.url ? String(attachment.url) : undefined,
+          data: attachment.data ? String(attachment.data) : undefined,
+          mimeType: String(attachment.mimeType ?? "text/plain"),
+          name: String(attachment.name ?? "attachment.txt"),
+          type: attachment.type ? String(attachment.type) : undefined,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function conversationText(req: any): string {
+  return (Array.isArray(req.body?.messages) ? req.body.messages : [])
+    .map((m: any) => String(m?.content ?? ""))
+    .join("\n\n");
+}
+
+async function readAttachmentText(req: any): Promise<{ content: string; name: string; mimeType: string } | null> {
+  const attachment = latestNonImageAttachment(req);
+  if (!attachment) return null;
+  if (attachment.data) {
+    return { content: Buffer.from(attachment.data, "base64").toString("utf8"), name: attachment.name, mimeType: attachment.mimeType };
+  }
+  const url = attachment.url ?? "";
+  if (url.startsWith("data:")) {
+    const comma = url.indexOf(",");
+    const meta = url.slice(0, comma);
+    const body = url.slice(comma + 1);
+    const content = meta.includes(";base64") ? Buffer.from(body, "base64").toString("utf8") : decodeURIComponent(body);
+    return { content, name: attachment.name, mimeType: attachment.mimeType };
+  }
+  if (url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Could not read uploaded file: ${r.status}`);
+    const contentType = r.headers.get("content-type") ?? attachment.mimeType;
+    if (contentType.includes("pdf")) {
+      return { content: `[PDF attachment: ${url}]`, name: attachment.name, mimeType: contentType };
+    }
+    return { content: await r.text(), name: attachment.name, mimeType: contentType };
+  }
+  return null;
+}
+
+function srtTimeToVtt(time: string): string {
+  return time.replace(",", ".");
+}
+
+function vttTimeToSrt(time: string): string {
+  return time.replace(".", ",");
+}
+
+function convertSubtitleText(content: string, inputFormat: string, outputFormat: string): string {
+  const out = outputFormat.toLowerCase();
+  const inferred = inputFormat === "auto"
+    ? content.trimStart().startsWith("WEBVTT") ? "vtt" : /-->\s*\d\d:\d\d:\d\d,\d\d\d/.test(content) ? "srt" : "txt"
+    : inputFormat.toLowerCase();
+  if (inferred === out) return content;
+  if (out === "txt") {
+    return content
+      .replace(/^WEBVTT.*$/gim, "")
+      .replace(/^\d+\s*$/gm, "")
+      .replace(/\d\d:\d\d:\d\d[,.]\d\d\d\s*-->\s*\d\d:\d\d:\d\d[,.]\d\d\d.*$/gm, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+  if (inferred === "srt" && out === "vtt") {
+    return "WEBVTT\n\n" + content
+      .replace(/\r/g, "")
+      .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, "$1.$2")
+      .trim() + "\n";
+  }
+  if (inferred === "vtt" && out === "srt") {
+    let index = 1;
+    return content
+      .replace(/\r/g, "")
+      .replace(/^WEBVTT.*\n+/i, "")
+      .split(/\n\n+/)
+      .map(block => block.trim())
+      .filter(Boolean)
+      .map(block => {
+        const lines = block.split("\n").filter(line => !/^NOTE\b/i.test(line.trim()));
+        const timeIdx = lines.findIndex(line => line.includes("-->"));
+        if (timeIdx < 0) return "";
+        const time = lines[timeIdx].replace(/(\d\d:\d\d:\d\d)\.(\d\d\d)/g, "$1,$2");
+        return `${index++}\n${time}\n${lines.slice(timeIdx + 1).join("\n")}`;
+      })
+      .filter(Boolean)
+      .join("\n\n") + "\n";
+  }
+  if (out === "srt") {
+    return `1\n00:00:00,000 --> 00:00:05,000\n${content.trim()}\n`;
+  }
+  if (out === "vtt") {
+    return `WEBVTT\n\n00:00:00.000 --> 00:00:05.000\n${content.trim()}\n`;
+  }
+  return content;
+}
+
+async function downloadableTextArtifact(filename: string, content: string): Promise<object> {
+  if (!isS3StorageEnabled()) {
+    return {
+      artifactType: "download",
+      label: filename,
+      downloadUrl: `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`,
+    };
+  }
+  const uploaded = await uploadTextToS3({
+    body: content,
+    jobId: randomUUID(),
+    namespace: "agent-exports",
+    filename,
+  });
+  const downloadUrl = await getS3SignedDownloadUrl({
+    key: uploaded.key,
+    filename: uploaded.filename,
+    expiresInSec: 7 * 24 * 60 * 60,
+  });
+  return { artifactType: "download", label: uploaded.filename, downloadUrl };
+}
+
+function scanKnownJobIds(req: any): string[] {
+  const ids = new Set<string>();
+  const text = conversationText(req);
+  for (const match of text.matchAll(/\bjob(?:Id)?:?\s*([a-f0-9-]{8,})\b/gi)) ids.add(match[1]);
+  for (const match of text.matchAll(/\/api\/(?:youtube\/file|subtitles\/status)\/([a-f0-9-]{8,})/gi)) ids.add(match[1]);
+  return [...ids].slice(-20);
+}
+
+function latestArtifactFromMemory(req: any): { artifactType: string; label: string; downloadUrl?: string; imageUrl?: string; tab?: string; jobId?: string } | null {
+  const text = conversationText(req);
+  const artifactLines = text.split("\n").filter(line => line.startsWith("[Artifact:"));
+  const line = artifactLines.at(-1);
+  if (!line) return null;
+  const pick = (key: string) => new RegExp(`${key}: ([^|\\]]+)`, "i").exec(line)?.[1]?.trim();
+  return {
+    artifactType: pick("Artifact") ?? pick("Type") ?? "download",
+    label: pick("Label") ?? "Previous result",
+    downloadUrl: pick("URL"),
+    imageUrl: pick("Image"),
+    tab: pick("Tab"),
+    jobId: pick("Job"),
+  };
+}
+
 async function executeTool(
   name: string,
   args: Record<string, any>,
@@ -832,6 +1292,357 @@ async function executeTool(
       }
     }
 
+    case "do_full_package": {
+      const url = String(args.url ?? "").trim();
+      if (!url) throw new Error("YouTube URL is required.");
+      const language = String(args.language ?? "en");
+      const quality = args.quality ?? "best";
+      const results: Record<string, any> = {};
+      const artifacts: object[] = [];
+
+      const runStep = async (stepName: string, stepArgs: Record<string, any>) => {
+        sseEvent(res, { type: "tool_progress", toolId, name, message: `Full package: ${stepName.replace(/_/g, " ")}...` });
+        const sub = await executeTool(stepName, stepArgs, req, res, isConnected, toolId);
+        results[stepName] = sub.result;
+        if (sub.artifact) {
+          artifacts.push(sub.artifact);
+          sseEvent(res, { type: "artifact", toolId, ...(sub.artifact as object) });
+        }
+        return sub;
+      };
+
+      await runStep("get_video_info", { url });
+      await runStep("download_video", { url, quality });
+      await runStep("analyze_youtube_video", {
+        url,
+        question: `Summarize this video for a creator. Include key points, emotional hooks, reusable quotes, and content opportunities.${args.instructions ? ` Focus: ${args.instructions}` : ""}`,
+      });
+      await runStep("generate_timestamps", { url });
+      await runStep("generate_seo_pack", {
+        topic: results.get_video_info?.title ?? url,
+        audience: args.instructions ?? "YouTube audience",
+      });
+      try {
+        await runStep("get_youtube_captions", { url, language });
+      } catch (err: any) {
+        results.get_youtube_captions = { error: err?.message ?? "Direct captions unavailable" };
+        await runStep("generate_subtitles", { url, language });
+      }
+      await runStep("find_best_clips", { url, instructions: args.instructions ?? "" });
+
+      return {
+        result: { completed: true, results, artifactCount: artifacts.length },
+        artifact: {
+          artifactType: "text",
+          label: "Full Package Summary",
+          content: "Full package completed: metadata, download, summary, timestamps, SEO, subtitles/captions, and best-clips analysis.",
+        },
+      };
+    }
+
+    case "repeat_last_artifact": {
+      const artifact = latestArtifactFromMemory(req);
+      if (!artifact) throw new Error("I do not have a previous downloadable result in this chat yet.");
+      return { result: artifact, artifact };
+    }
+
+    case "check_active_jobs": {
+      const ids = Array.isArray(args.jobIds) && args.jobIds.length ? args.jobIds.map(String) : scanKnownJobIds(req);
+      if (ids.length === 0) return { result: { jobs: [], message: "No known active job IDs in this chat." } };
+      const jobs: any[] = [];
+      for (const jobId of ids) {
+        let status: any = null;
+        for (const endpoint of [`${apiBase}/youtube/progress/${jobId}`, `${apiBase}/subtitles/status/${jobId}`, `${apiBase}/translator/status/${jobId}`]) {
+          const r = await fetch(endpoint, { headers: internalHeaders }).catch(() => null);
+          if (r?.ok) { status = await r.json().catch(() => null); break; }
+        }
+        jobs.push({ jobId, status: status ?? "not_found" });
+      }
+      return {
+        result: { jobs },
+        artifact: { artifactType: "text", label: "Active Jobs", content: JSON.stringify(jobs, null, 2) },
+      };
+    }
+
+    case "cancel_active_jobs": {
+      const ids = Array.isArray(args.jobIds) && args.jobIds.length ? args.jobIds.map(String) : scanKnownJobIds(req);
+      if (ids.length === 0) return { result: { cancelled: [], message: "No known active job IDs in this chat." } };
+      const cancelled: any[] = [];
+      for (const jobId of ids) {
+        let data: any = null;
+        for (const endpoint of [`${apiBase}/youtube/cancel/${jobId}`, `${apiBase}/subtitles/cancel/${jobId}`]) {
+          const r = await fetch(endpoint, { method: "POST", headers: internalHeaders }).catch(() => null);
+          if (r?.ok) { data = await r.json().catch(() => ({ ok: true })); break; }
+        }
+        cancelled.push({ jobId, result: data ?? "not_found_or_not_cancellable" });
+      }
+      return {
+        result: { cancelled },
+        artifact: { artifactType: "text", label: "Cancelled Jobs", content: JSON.stringify(cancelled, null, 2) },
+      };
+    }
+
+    case "send_result_to_tab": {
+      const tab = String(args.tab ?? "").trim();
+      if (!tab) throw new Error("Tab is required.");
+      sseEvent(res, { type: "navigate", tab });
+      return { result: { navigated: true, tab }, artifact: { artifactType: "tab_link", label: `Open ${tab}`, tab } };
+    }
+
+    case "create_image": {
+      const prompt = String(args.prompt ?? "").trim();
+      if (!prompt) throw new Error("Image prompt is required.");
+      logTool("Creating image", { prompt });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Creating image..." });
+      const image = await generateImageArtifact({
+        prompt: `Create a high-quality production-ready image for this request:\n${prompt}`,
+        filenamePrefix: "created-image",
+      });
+      return {
+        result: image,
+        artifact: {
+          artifactType: "image",
+          label: image.filename,
+          imageUrl: image.imageUrl,
+          downloadUrl: image.imageUrl,
+          content: image.text,
+        },
+      };
+    }
+
+    case "enhance_image": {
+      const image = latestImageAttachment(req);
+      if (!image) throw new Error("Attach an image first, then ask me to enhance it.");
+      const instructions = String(args.instructions ?? "").trim();
+      logTool("Enhancing attached image", { image: image.name });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Enhancing image clarity..." });
+      const enhanced = await generateImageArtifact({
+        inputImage: image,
+        filenamePrefix: "enhanced-image",
+        prompt:
+          "Enhance this image so it looks crystal clear and newly restored. Preserve the same composition, person/object identity, text meaning, and important details. Remove noise and compression artifacts, recover fine detail naturally, improve lighting/color balance, and sharpen edges without making it look artificial. Do not crop, do not change the scene, and do not invent unrelated objects." +
+          (instructions ? `\nExtra user instructions: ${instructions}` : ""),
+      });
+      return {
+        result: enhanced,
+        artifact: {
+          artifactType: "image",
+          label: enhanced.filename,
+          imageUrl: enhanced.imageUrl,
+          downloadUrl: enhanced.imageUrl,
+          content: enhanced.text,
+        },
+      };
+    }
+
+    case "edit_image": {
+      const image = latestImageAttachment(req);
+      if (!image) throw new Error("Attach an image first, then describe the edit.");
+      const instructions = String(args.instructions ?? "").trim();
+      if (!instructions) throw new Error("Image edit instructions are required.");
+      logTool("Editing attached image", { image: image.name });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Editing image..." });
+      const edited = await generateImageArtifact({
+        inputImage: image,
+        filenamePrefix: "edited-image",
+        prompt: `Edit the attached image according to these instructions while preserving unchanged areas carefully:\n${instructions}`,
+      });
+      return {
+        result: edited,
+        artifact: {
+          artifactType: "image",
+          label: edited.filename,
+          imageUrl: edited.imageUrl,
+          downloadUrl: edited.imageUrl,
+          content: edited.text,
+        },
+      };
+    }
+
+    case "describe_image": {
+      const image = latestImageAttachment(req);
+      if (!image) throw new Error("Attach an image first, then ask me to inspect it.");
+      logTool("Describing attached image", { image: image.name });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Inspecting image..." });
+      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const resp = await ai.models.generateContent({
+        model: ULTRA_MODEL,
+        contents: [{
+          role: "user",
+          parts: [
+            { text: "Describe this image in detail for a video/content creator. Include scene, subjects, visible text, style, quality issues, and practical improvement ideas. Do not identify real people." },
+            { inlineData: { mimeType: image.mimeType, data: image.data } },
+          ],
+        }],
+        config: { temperature: 0.2, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+      });
+      const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
+      return { result: { content }, artifact: { artifactType: "text", label: "Image Description", content } };
+    }
+
+    case "extract_text_from_image": {
+      const image = latestImageAttachment(req);
+      if (!image) throw new Error("Attach an image first, then ask me to read its text.");
+      logTool("Reading text from attached image", { image: image.name });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Reading image text..." });
+      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const resp = await ai.models.generateContent({
+        model: ULTRA_MODEL,
+        contents: [{
+          role: "user",
+          parts: [
+            { text: "Transcribe all visible text from this image. Preserve line breaks and indicate uncertain words with [?]. Return only the extracted text unless there is no readable text." },
+            { inlineData: { mimeType: image.mimeType, data: image.data } },
+          ],
+        }],
+        config: { temperature: 0.1, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+      });
+      const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
+      return { result: { content }, artifact: { artifactType: "text", label: "Extracted Text", content } };
+    }
+
+    case "write_video_script": {
+      const topic = String(args.topic ?? "").trim();
+      if (!topic) throw new Error("Script topic is required.");
+      const prompt = `Write a production-ready video script.
+Topic: ${topic}
+Duration: ${args.duration ?? "as appropriate"}
+Language: ${args.language ?? "match the user"}
+Style: ${args.style ?? "strong hook, clear structure, practical shot direction"}
+
+Include: hook, narration, scene/shot directions, on-screen text, pacing notes, and CTA.`;
+      logTool("Writing video script", { topic });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Writing script..." });
+      return textModelArtifact("Video Script", prompt);
+    }
+
+    case "generate_seo_pack": {
+      const topic = String(args.topic ?? "").trim();
+      if (!topic) throw new Error("SEO topic is required.");
+      const prompt = `Create a YouTube SEO package.
+Topic/video: ${topic}
+Language: ${args.language ?? "match the user"}
+Audience: ${args.audience ?? "general YouTube audience"}
+
+Return: 8 title options, one optimized description, tags, hashtags, thumbnail text options, and a pinned comment.`;
+      logTool("Generating SEO pack", { topic });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Generating SEO pack..." });
+      return textModelArtifact("YouTube SEO Pack", prompt);
+    }
+
+    case "read_uploaded_file": {
+      const attachment = latestNonImageAttachment(req);
+      if (!attachment) throw new Error("Attach an SRT, TXT, CSV, JSON, PDF, or document first.");
+      const task = String(args.task ?? "Summarize and inspect this file.").trim();
+      logTool("Reading uploaded file", { filename: attachment.name, mimeType: attachment.mimeType });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Reading ${attachment.name}...` });
+
+      if ((attachment.mimeType.includes("pdf") || /\.pdf$/i.test(attachment.name)) && attachment.url && !attachment.url.startsWith("data:")) {
+        const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+        const resp = await ai.models.generateContent({
+          model: ULTRA_MODEL,
+          contents: [{
+            role: "user",
+            parts: [
+              { text: `${task}\nReturn practical, concise results for a creator/editor.` },
+              { fileData: { fileUri: attachment.url } } as any,
+            ],
+          }],
+          config: { temperature: 0.2, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+        });
+        const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
+        return { result: { filename: attachment.name, content }, artifact: { artifactType: "text", label: `Read ${attachment.name}`, content } };
+      }
+
+      const file = await readAttachmentText(req);
+      if (!file) throw new Error("Could not read the latest uploaded file.");
+      const content = file.content.slice(0, 120000);
+      if (/\.csv$/i.test(file.name) || file.mimeType.includes("csv") || /\.json$/i.test(file.name) || file.mimeType.includes("json")) {
+        const analysis = await textModelArtifact(`Read ${file.name}`, `${task}\n\nFile: ${file.name}\nContent:\n${content}`);
+        return analysis;
+      }
+      return {
+        result: { filename: file.name, bytes: Buffer.byteLength(file.content, "utf8"), preview: file.content.slice(0, 4000) },
+        artifact: { artifactType: "text", label: `Read ${file.name}`, content: file.content.slice(0, 32000) },
+      };
+    }
+
+    case "convert_subtitles": {
+      const outputFormat = String(args.outputFormat ?? "").toLowerCase();
+      if (!["srt", "vtt", "txt"].includes(outputFormat)) throw new Error("outputFormat must be srt, vtt, or txt.");
+      let content = String(args.content ?? "");
+      if (!content.trim()) {
+        const file = await readAttachmentText(req);
+        content = file?.content ?? "";
+      }
+      if (!content.trim()) throw new Error("Subtitle content is required.");
+      const converted = convertSubtitleText(content, String(args.inputFormat ?? "auto"), outputFormat);
+      const filename = String(args.filename ?? `converted-subtitles.${outputFormat}`);
+      return {
+        result: { filename, bytes: Buffer.byteLength(converted, "utf8") },
+        artifact: await downloadableTextArtifact(filename, converted),
+      };
+    }
+
+    case "compare_subtitles": {
+      const first = String(args.first ?? "").trim();
+      const second = String(args.second ?? "").trim();
+      let prompt: string;
+      if (first && second) {
+        prompt = `Compare these two subtitle files for timing drift, missing lines, translation/text changes, formatting issues, and quality risks.\n\nFIRST:\n${first.slice(0, 60000)}\n\nSECOND:\n${second.slice(0, 60000)}`;
+      } else {
+        const file = await readAttachmentText(req);
+        const ctx = conversationText(req);
+        prompt = `Compare subtitle content available in this conversation/upload. If only one file is available, audit it for timing/text/format issues.\n\nUploaded file:\n${file?.content.slice(0, 60000) ?? "none"}\n\nConversation context:\n${ctx.slice(-60000)}`;
+      }
+      logTool("Comparing subtitles");
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Comparing subtitle files..." });
+      return textModelArtifact("Subtitle Comparison", prompt);
+    }
+
+    case "export_text_file": {
+      const filename = String(args.filename ?? "export.txt").trim();
+      let content = String(args.content ?? "").trim();
+      if (!content) {
+        const textArtifacts = conversationText(req)
+          .split("\n")
+          .filter(line => line.startsWith("[TextArtifact:"));
+        content = textArtifacts.at(-1)?.replace(/^\[TextArtifact:[^\]]+\]\s*/i, "") ?? "";
+      }
+      if (!content) throw new Error("No text content found to export.");
+      return {
+        result: { filename, bytes: Buffer.byteLength(content, "utf8") },
+        artifact: await downloadableTextArtifact(filename, content),
+      };
+    }
+
+    case "run_code_analysis": {
+      let data = String(args.data ?? "").trim();
+      if (!data) {
+        const file = await readAttachmentText(req);
+        data = file?.content ?? "";
+      }
+      if (!data) throw new Error("Provide data or attach a CSV/JSON/text file first.");
+      const task = String(args.task ?? "Analyze this data.").trim();
+      logTool("Running code analysis", { task });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: "Running code analysis..." });
+      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const resp = await ai.models.generateContent({
+        model: ULTRA_MODEL,
+        contents: [{
+          role: "user",
+          parts: [{ text: `${task}\n\nUse code execution when useful. Return the result, formulas, tables, and any caveats.\n\nDATA:\n${data.slice(0, 120000)}` }],
+        }],
+        config: {
+          tools: [{ codeExecution: {} }] as any,
+          temperature: 0.15,
+          maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192),
+        },
+      } as any);
+      const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
+      return { result: { content }, artifact: { artifactType: "text", label: "Code Analysis", content } };
+    }
+
     case "analyze_youtube_video": {
       const videoUrl = String(args.url ?? "").trim();
       const question = String(args.question ?? "Summarize this video comprehensively.").trim();
@@ -1001,9 +1812,13 @@ router.post("/agent/chat", async (req, res) => {
               systemInstruction: SYSTEM_PROMPT,
               tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
-              temperature: 0.15,
-              maxOutputTokens: 4096,
-              ...(activeModel.includes("thinking") ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+              temperature: 0.2,
+              maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
+              ...(activeModel.includes("thinking") ? {
+                thinkingConfig: {
+                  thinkingBudget: Number.parseInt(process.env.COPILOT_THINKING_BUDGET ?? "4096", 10) || 4096,
+                },
+              } : {}),
             },
           });
           streamErr = null;
@@ -1032,7 +1847,6 @@ router.post("/agent/chat", async (req, res) => {
         const chunkText = chunk.text;           // string | undefined
         if (chunkText) {
           fullText += chunkText;
-          sseEvent(res, { type: "text", content: chunkText, runId });
         }
 
         // Function calls are in candidates[0].content.parts (no change needed here)
@@ -1071,6 +1885,7 @@ router.post("/agent/chat", async (req, res) => {
           const items = sugMatch[1].split("|").map(s => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
           if (items.length > 0) sseEvent(res, { type: "suggestions", items, runId } as any);
         }
+        sseEvent(res, { type: "text", content: fullText, runId });
         break;
       }
 
@@ -1085,13 +1900,17 @@ router.post("/agent/chat", async (req, res) => {
       // ── 4. Execute tools sequentially ─────────────────────────────────────
       const toolResults: any[] = [];
       let iterationHadError = false;
+      const preToolText = stripReasoningTags(fullText);
 
-      for (const fc of functionCalls) {
+      for (const [fcIndex, fc] of functionCalls.entries()) {
         if (!isConnected()) break;
         const toolId = randomUUID().slice(0, 8);
 
         sseEvent(res, { type: "tool_start", runId, toolId, name: fc.name, args: fc.args, ts: Date.now() });
         sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: "Tool execution started", level: "info" });
+        if (fcIndex === 0 && preToolText) {
+          sseEvent(res, { type: "tool_progress", runId, toolId, name: fc.name, message: preToolText });
+        }
 
         let toolResult: any;
         let toolArtifact: object | undefined;
