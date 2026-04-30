@@ -254,6 +254,7 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
   let message = out.Item.message?.S ?? null;
   let updatedAt = out.Item.updatedAt?.N ? Number(out.Item.updatedAt.N) : null;
   const batchJobId = out.Item.batchJobId?.S ?? null;
+  const s3Key = out.Item.s3Key?.S ?? null;
 
   if (
     batch &&
@@ -279,8 +280,13 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
           job.attempts?.[job.attempts.length - 1]?.statusReason ??
           "Queue job failed";
       } else if (job.status === "SUCCEEDED" && status !== "done") {
-        status = "done";
-        message = message ?? "Completed";
+        if (s3Key) {
+          status = "done";
+          message = message ?? "Completed";
+        } else {
+          status = "error";
+          message = "Queue job finished but no downloadable file was produced. Please retry.";
+        }
       } else if (["SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING"].includes(job.status ?? "")) {
         status = status === "queued" ? "queued" : "running";
       }
@@ -315,7 +321,7 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
     batchJobId,
     filename: out.Item.filename?.S ?? null,
     filesize: out.Item.filesize?.N ? Number(out.Item.filesize.N) : null,
-    s3Key: out.Item.s3Key?.S ?? null,
+    s3Key,
     originalS3Key: out.Item.originalS3Key?.S ?? null,
     originalFilename: out.Item.originalFilename?.S ?? null,
     durationSecs: out.Item.durationSecs?.N ? Number(out.Item.durationSecs.N) : null,

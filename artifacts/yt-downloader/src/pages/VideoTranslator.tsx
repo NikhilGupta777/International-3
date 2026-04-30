@@ -15,6 +15,7 @@ import {
   saveTranslatorHistory,
   deleteTranslatorHistory,
   isTranslatorHistoryDeleted,
+  type ActiveTranslatorJob,
   type TranslatorHistoryEntry,
 } from "@/lib/translator-history";
 import { translatorAuthHeaders } from "@/lib/translator-client-id";
@@ -254,6 +255,7 @@ export default function VideoTranslator() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [activeJobs, setActiveJobs] = useState<ActiveTranslatorJob[]>(() => loadActiveTranslatorJobs());
   const [history, setHistory] = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
   const [debugLog, setDebugLog] = useState<{ ts: number; level: "info" | "warn" | "error"; msg: string }[]>([]);
   const [showDebug, setShowDebug] = useState(false);
@@ -263,6 +265,7 @@ export default function VideoTranslator() {
     setDebugLog(prev => [...prev.slice(-49), { ts: Date.now(), level, msg }]);
 
   const refreshHistory = useCallback(() => {
+    setActiveJobs(loadActiveTranslatorJobs());
     setHistory(loadTranslatorHistory());
   }, []);
 
@@ -303,7 +306,7 @@ export default function VideoTranslator() {
       if (data.voiceCloneWarning) appendLog("warn", `[VOICE CLONE] ${data.voiceCloneWarning}`);
       if (data.error) appendLog("error", `[ERROR] ${data.error}`);
       const activeMeta = loadActiveTranslatorJobs().find((j) => j.jobId === id);
-      if (data.status !== "DONE" && data.status !== "FAILED") {
+      if (!["DONE", "FAILED", "CANCELLED", "EXPIRED"].includes(data.status)) {
         upsertActiveTranslatorJob({
           jobId: id,
           filename: data.filename ?? activeMeta?.filename ?? file?.name ?? "video.mp4",
@@ -315,6 +318,7 @@ export default function VideoTranslator() {
           step: data.step ?? activeMeta?.step ?? "",
           status: data.status ?? activeMeta?.status ?? "QUEUED",
         });
+        refreshHistory();
       }
       if (data.status === "DONE") {
         clearInterval(pollRef.current!);
@@ -339,7 +343,12 @@ export default function VideoTranslator() {
       } else if (data.status === "FAILED") {
         clearInterval(pollRef.current!);
         removeActiveTranslatorJob(id);
+        refreshHistory();
         setError(data.error ?? "Translation failed");
+      } else if (data.status === "CANCELLED" || data.status === "EXPIRED") {
+        clearInterval(pollRef.current!);
+        removeActiveTranslatorJob(id);
+        refreshHistory();
       }
     } catch (e: any) {
       setError(e?.message);
@@ -557,6 +566,46 @@ export default function VideoTranslator() {
     setTranscript([]); setError(null); setShowTranscript(false);
   };
 
+  const openActiveEntry = (entry: ActiveTranslatorJob) => {
+    clearInterval(pollRef.current!);
+    setFile(null);
+    setError(null);
+    setTranscript([]);
+    setJobId(entry.jobId);
+    setJob({
+      jobId: entry.jobId,
+      status: entry.status,
+      progress: entry.progress,
+      step: entry.step,
+      filename: entry.filename,
+      targetLang: entry.targetLang,
+      targetLangCode: entry.targetLangCode,
+      sourceLang: entry.sourceLang,
+      createdAt: entry.startedAt,
+    });
+  };
+
+  const cancelTranslation = async (id: string) => {
+    try {
+      const res = await fetch(`${API}/cancel/${encodeURIComponent(id)}`, {
+        method: "POST",
+        headers: translatorAuthHeaders(),
+        cache: NO_STORE,
+      });
+      if (!res.ok) throw await responseError(res, "Cancel failed");
+      removeActiveTranslatorJob(id);
+      refreshHistory();
+      if (jobId === id) {
+        clearInterval(pollRef.current!);
+        setJob((prev: any) => ({ ...(prev ?? { jobId: id }), status: "CANCELLED", step: "Cancelled by user." }));
+        setError(null);
+      }
+      toast({ title: "Translation cancelled" });
+    } catch (e: any) {
+      setError(e?.message ?? "Cancel failed");
+    }
+  };
+
   const openHistoryEntry = async (entry: TranslatorHistoryEntry) => {
     clearInterval(pollRef.current!);
     setFile(null);
@@ -602,7 +651,7 @@ export default function VideoTranslator() {
     } catch { }
   };
 
-  const isProcessing = job && !["DONE", "FAILED"].includes(job.status);
+  const isProcessing = job && !["DONE", "FAILED", "CANCELLED", "EXPIRED"].includes(job.status);
   const isDone = job?.status === "DONE";
   const overallPct = job?.progress ?? 0;
 
@@ -694,7 +743,46 @@ export default function VideoTranslator() {
           )}
         </AnimatePresence>
 
-        {!jobId ? (
+        {activeJobs.length > 0 && (
+          <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 overflow-hidden">
+            <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
+              <Loader2 className="w-4 h-4 text-amber-300 animate-spin" />
+              <span className="text-sm font-semibold text-white/85">Active translations</span>
+              <span className="text-xs text-white/35 ml-auto">{activeJobs.length}</span>
+            </div>
+            <div className="divide-y divide-white/[0.05]">
+              {activeJobs.map((entry) => (
+                <div key={entry.jobId} className={cn(
+                  "px-4 py-3 flex items-center gap-3 transition-colors",
+                  jobId === entry.jobId ? "bg-white/[0.05]" : "hover:bg-white/[0.03]"
+                )}>
+                  <button
+                    onClick={() => openActiveEntry(entry)}
+                    className="flex-1 min-w-0 text-left"
+                  >
+                    <p className="text-sm text-white/85 font-medium truncate">{entry.filename}</p>
+                    <div className="mt-1 flex items-center gap-2 text-xs text-white/40">
+                      <span>{entry.status}</span>
+                      <span>{entry.progress}%</span>
+                      <span>{formatRelative(entry.startedAt)}</span>
+                    </div>
+                    <div className="mt-2 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                      <div className="h-full bg-amber-400 rounded-full" style={{ width: `${Math.max(2, entry.progress)}%` }} />
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => void cancelTranslation(entry.jobId)}
+                    className="px-3 py-2 rounded-lg text-xs font-semibold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <>
           <>
             {/* Drop zone */}
             <DropZone onFile={setFile} disabled={uploading} />
@@ -774,14 +862,24 @@ export default function VideoTranslator() {
               {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploadingâ€¦</> : <><Languages className="w-5 h-5" /> Translate Video</>}
             </button>
           </>
-        ) : (
+        </>
+
+        {jobId && (
           <>
             {/* Overall progress */}
             {isProcessing && (
               <>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-semibold text-white/88">Translating video…</span>
-                  <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
+                    <button
+                      onClick={() => jobId && void cancelTranslation(jobId)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
                 {job?.step && (
                   <p className="text-xs text-white/45 mb-3 flex items-center gap-2">
@@ -891,6 +989,11 @@ export default function VideoTranslator() {
               </motion.div>
             )}
 
+            {(job?.status === "CANCELLED" || job?.status === "EXPIRED") && (
+              <div className="rounded-2xl border border-white/[0.08] bg-white/[0.03] p-4 text-sm text-white/60">
+                {job.status === "CANCELLED" ? "Translation cancelled." : "Translation expired."}
+              </div>
+            )}
 
             {/* Transcript */}
             {showTranscript && transcript.length > 0 && (

@@ -25,6 +25,7 @@ import {
 import {
   BatchClient,
   SubmitJobCommand,
+  TerminateJobCommand,
 } from "@aws-sdk/client-batch";
 import { randomUUID, createHash } from "crypto";
 
@@ -390,6 +391,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       voiceClone:   item.voiceClone?.BOOL,
       lipSync:      item.lipSync?.BOOL,
       segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
+      batchJobId:   item.batchJobId?.S,
       updatedAt:    item.updatedAt?.N ? parseInt(item.updatedAt.N) : item.updatedAt?.S,
       createdAt:    item.createdAt?.N ? parseInt(item.createdAt.N) : (parseEpoch(item.createdAt?.S) ?? item.createdAt?.S),
     });
@@ -448,6 +450,55 @@ router.get("/history", async (req: Request, res: Response) => {
     return res.json({ jobs });
   } catch (err: any) {
     console.error("[Translator] /history error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post("/cancel/:jobId", async (req: Request, res: Response) => {
+  try {
+    const jobId = String(req.params.jobId);
+    const current = await ddb.send(new GetItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: jobId } },
+    }));
+
+    if (!current.Item || current.Item.type?.S !== "translator" || !isOwnerMatch(req, current.Item)) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+
+    const status = current.Item.status?.S ?? "UNKNOWN";
+    if (["DONE", "FAILED", "CANCELLED", "EXPIRED"].includes(status)) {
+      return res.json({ jobId, status, alreadyTerminal: true });
+    }
+
+    const batchJobId = current.Item.batchJobId?.S;
+    if (batchJobId) {
+      await batch.send(new TerminateJobCommand({
+        jobId: batchJobId,
+        reason: "Cancelled by user",
+      }));
+    }
+
+    await ddb.send(new UpdateItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: jobId } },
+      UpdateExpression: "SET #status = :status, progress = :progress, step = :step, #error = :error, updatedAt = :updatedAt",
+      ExpressionAttributeNames: {
+        "#status": "status",
+        "#error": "error",
+      },
+      ExpressionAttributeValues: {
+        ":status": { S: "CANCELLED" },
+        ":progress": { N: current.Item.progress?.N ?? "0" },
+        ":step": { S: "Cancelled by user." },
+        ":error": { S: "Cancelled by user." },
+        ":updatedAt": { N: String(Date.now()) },
+      },
+    }));
+
+    return res.json({ jobId, batchJobId, status: "CANCELLED" });
+  } catch (err: any) {
+    console.error("[Translator] /cancel error:", err);
     return res.status(500).json({ error: err.message });
   }
 });

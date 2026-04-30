@@ -572,34 +572,60 @@ export function ClipCutter() {
     });
   };
 
+  const downloadClip = useCallback(async (job: ActiveJob) => {
+    try {
+      const progressRes = await fetch(`${BASE_URL}/api/youtube/progress/${job.jobId}`, { cache: "no-store" });
+      if (progressRes.ok) {
+        const progress = (await progressRes.json().catch(() => null)) as ProgressPayload & { queue?: { s3Key?: string | null } } | null;
+        if (progress?.status && normalizeJobStatus(progress.status, job.status) !== "done") {
+          toast({
+            title: "Clip is not ready yet",
+            description: progress.message ?? "Please wait for processing to finish.",
+            variant: "destructive",
+          });
+          return;
+        }
+        if (progress?.queue && !progress.queue.s3Key) {
+          toast({
+            title: "Clip output missing",
+            description: "The worker finished without a downloadable file. Please run the clip again.",
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+
+      const a = document.createElement("a");
+      a.href = `${BASE_URL}/api/youtube/file/${job.jobId}`;
+      a.download = job.filename ?? "clip.mp4";
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (err) {
+      toast({
+        title: "Download failed",
+        description: err instanceof Error ? err.message : "Unable to start clip download",
+        variant: "destructive",
+      });
+    }
+  }, [toast]);
+
   // Attempt one automatic download when the clip becomes ready.
   // Browser policies may still block it; Save button remains fallback.
   useEffect(() => {
     const ready = jobs.find((j) => j.status === "done" && !j.downloaded);
     if (!ready) return;
 
-    const href = `${BASE_URL}/api/youtube/file/${ready.jobId}`;
-    const filename = ready.filename ?? "clip.mp4";
-
-    try {
-      const a = document.createElement("a");
-      a.href = href;
-      a.download = filename;
-      a.rel = "noopener";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } catch {
-      // no-op; explicit Save is still available
-    } finally {
+    void downloadClip(ready).finally(() => {
       setJobs((prev) =>
         prev.map((j) =>
           j.jobId === ready.jobId ? { ...j, downloaded: true } : j,
         ),
       );
-    }
-  }, [jobs]);
+    });
+  }, [downloadClip, jobs]);
 
   const cancelJob = async (jobId: string) => {
     setJobs((prev) =>
@@ -814,6 +840,7 @@ export function ClipCutter() {
             job={job}
             onRemove={removeJob}
             onCancel={cancelJob}
+            onDownload={downloadClip}
           />
         ))}
       </AnimatePresence>
@@ -916,10 +943,12 @@ function ClipJobCard({
   job,
   onRemove,
   onCancel,
+  onDownload,
 }: {
   job: ActiveJob;
   onRemove: (id: string) => void;
   onCancel: (id: string) => void;
+  onDownload: (job: ActiveJob) => void;
 }) {
   const isDone = job.status === "done";
   const isError = job.status === "error";
@@ -1009,14 +1038,13 @@ function ClipJobCard({
             </button>
           )}
           {isDone && (
-            <a
-              href={`${BASE_URL}/api/youtube/file/${job.jobId}`}
-              download={job.filename ?? "clip.mp4"}
+            <button
+              onClick={() => onDownload(job)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 border border-green-500/30 text-green-300 text-xs font-semibold transition-all"
             >
               <Download className="w-3 h-3" />
               Save
-            </a>
+            </button>
           )}
           {(isDone || isError || isCancelled) && (
             <button

@@ -804,6 +804,7 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
   const uploaded = await uploadIfConfigured(outputPath, payload.jobId, "youtube/clips");
 
   await updateJobState(payload.jobId, "done", "Clip ready", {
+    progressPct: 100,
     filename: uploaded.filename,
     filesize: uploaded.filesize,
     ...(uploaded.s3Key ? { s3Key: uploaded.s3Key } : {}),

@@ -2268,7 +2268,7 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
       res.json({
         jobId,
         status: queueStatus.status,
-        percent: null,
+        percent: queueStatus.progressPct,
         speed: null,
         eta: null,
         filename: queueStatus.filename,
@@ -2316,7 +2316,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
       send({
         jobId,
         status: queueStatus.status,
-        percent: null,
+        percent: queueStatus.progressPct,
         speed: null,
         eta: null,
         filename: queueStatus.filename,
