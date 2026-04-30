@@ -643,6 +643,16 @@ function trackSubtitleJob(jobId: string, job: SrtJob): SrtJob {
   return tracked;
 }
 
+function markSubtitleLambdaStillStarting(jobId: string): void {
+  setTimeout(() => {
+    const job = jobs.get(jobId);
+    if (!job || job.status !== "pending") return;
+    if (!/Starting fast subtitle worker/i.test(job.message)) return;
+    job.message = "Still starting fast subtitle worker...";
+    job.progressPct = Math.max(job.progressPct ?? 0, 5);
+  }, 15_000);
+}
+
 function notifySubtitleReady(jobId: string, job: SrtJob): void {
   void notifyClientPush(job.notifyClientKey, {
     title: "Subtitles ready",
@@ -740,10 +750,10 @@ function dequeueSubtitleJob(jobId: string): boolean {
 
 type RateWindow = { count: number; resetAt: number };
 const rateWindows = new Map<string, RateWindow>();
-const RATE_LIMIT_WINDOW_MS = 3 * 60 * 1000;
+const RATE_LIMIT_WINDOW_MS = 90 * 1000;
 const RATE_LIMITS = {
-  "POST /subtitles/generate": 3,
-  "POST /subtitles/upload": 3,
+  "POST /subtitles/generate": 5,
+  "POST /subtitles/upload": 5,
   "POST /subtitles/cancel/:jobId": 180, // 60/min
 } as const;
 const RATE_LIMIT_BYPASS_IPS = new Set(
@@ -777,11 +787,16 @@ function getClientIp(req: Request): string {
   return normalizeIp(ip);
 }
 
+function isInternalAgentRequest(req: Request): boolean {
+  const internalSecret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  return req.headers["x-internal-agent"] === internalSecret;
+}
+
 function createIpRateLimiter(routeKey: keyof typeof RATE_LIMITS) {
   const max = RATE_LIMITS[routeKey];
   return (req: Request, res: Response, next: NextFunction) => {
     const ip = getClientIp(req);
-    if (RATE_LIMIT_BYPASS_IPS.has(ip)) {
+    if (isInternalAgentRequest(req) || RATE_LIMIT_BYPASS_IPS.has(ip)) {
       next();
       return;
     }
@@ -2301,13 +2316,14 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
   if (useLambdaWorker) {
     trackSubtitleJob(jobId, {
       status: "pending",
-      message: "Queued - starting soon...",
+      message: "Starting fast subtitle worker...",
       filename: "subtitles.srt",
       createdAt: Date.now(),
       translateTo: translateLang,
-      progressPct: 0,
+      progressPct: 5,
       notifyClientKey,
     });
+    markSubtitleLambdaStillStarting(jobId);
     try {
       await lambdaClient.send(new InvokeCommand({
         FunctionName: WORKER_FUNCTION_NAME,

@@ -32,6 +32,39 @@ const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec!=none]+bestaudio[acodec!=none]/" +
   "best[ext=mp4][vcodec!=none][acodec!=none]/" +
   "best[vcodec!=none][acodec!=none]";
+const TOOL_PARALLEL_LIMITS = {
+  light: 3,
+  youtube_processing: 2,
+} as const;
+
+type ToolParallelGroup = keyof typeof TOOL_PARALLEL_LIMITS | "serial";
+
+function getToolParallelGroup(name: string): ToolParallelGroup {
+  switch (name) {
+    case "get_video_info":
+    case "get_youtube_captions":
+    case "web_search":
+    case "check_job_status":
+    case "check_all_active_jobs":
+    case "repeat_last_artifact":
+    case "read_uploaded_file":
+    case "inspect_image":
+    case "ocr_image":
+    case "generate_script":
+    case "generate_seo_pack":
+      return "light";
+
+    case "cut_video_clip":
+    case "download_video":
+    case "generate_subtitles":
+    case "find_best_clips":
+    case "generate_timestamps":
+      return "youtube_processing";
+
+    default:
+      return "serial";
+  }
+}
 
 // â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function getApiBase(req: any): string {
@@ -200,7 +233,7 @@ const STUDIO_TOOLS: any[] = [
         url: { type: Type.STRING, description: "YouTube video URL" },
         startTime: { type: Type.STRING, description: "Start time e.g. '5:32' or '01:22:10'" },
         endTime: { type: Type.STRING, description: "End time e.g. '6:23' or '01:25:00'" },
-        quality: { type: Type.STRING, description: "Output quality: '1080p', '720p', '480p', '360p'. Default: 720p." },
+        quality: { type: Type.STRING, description: "Output quality: '1080p', '720p', '480p', '360p'. Default: 1080p." },
       },
       required: ["url", "startTime", "endTime"],
     },
@@ -611,11 +644,13 @@ You can chain up to ${MAX_ITERATIONS} tool calls per turn. Use that:
 - "what does the host say about X at minute 10" → analyze_youtube_video (NOT generate_subtitles — much faster).
 - If a tool result contains a clear error message like "video unavailable" or "private", stop retrying and tell the user plainly.
 
+When multiple requested actions are independent, call the tools together in the same turn. The backend can run safe independent work in parallel. Keep dependent chains in order.
+
 # TIME ARGUMENTS
 Always pass startTime/endTime as 'MM:SS' or 'HH:MM:SS' strings exactly as the user typed them. Don't convert to seconds, don't pad zeros unnecessarily. The backend parses both formats.
 
 # QUALITY DEFAULTS
-- cut_video_clip: default 720p unless user asks otherwise.
+- cut_video_clip: default 1080p unless user asks otherwise. Do not use 2K/4K for clips unless the user explicitly asks.
 - download_video: default best (omit quality) unless user picked one. For "audio" / "mp3" requests use quality='audio_only'.
 - translate_video: voiceClone defaults to true (preserves original speaker), lipSync defaults to false (slow + GPU-heavy).
 
@@ -953,7 +988,7 @@ async function executeTool(
     case "cut_video_clip": {
       const startSecs = parseTimestamp(String(args.startTime));
       const endSecs = parseTimestamp(String(args.endTime));
-      const quality = args.quality ?? "720p";
+      const quality = args.quality ?? "1080p";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
       sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
@@ -1909,8 +1944,10 @@ router.post("/agent/chat", async (req, res) => {
       let iterationHadError = false;
       const preToolText = stripReasoningTags(fullText);
 
-      for (const [fcIndex, fc] of functionCalls.entries()) {
-        if (!isConnected()) break;
+      const runToolCall = async (
+        fcIndex: number,
+        fc: { name: string; args: Record<string, any> },
+      ): Promise<{ index: number; response: any; hadError: boolean }> => {
         const toolId = randomUUID().slice(0, 8);
 
         sseEvent(res, { type: "tool_start", runId, toolId, name: fc.name, args: fc.args, ts: Date.now() });
@@ -1921,14 +1958,15 @@ router.post("/agent/chat", async (req, res) => {
 
         let toolResult: any;
         let toolArtifact: object | undefined;
+        let hadError = false;
 
         try {
           const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected, toolId);
           toolResult = result;
           toolArtifact = artifact;
-          if (toolResult?.error) iterationHadError = true;
+          hadError = Boolean(toolResult?.error);
         } catch (toolErr: any) {
-          iterationHadError = true;
+          hadError = true;
           toolResult = { error: toolErr?.message ?? "Tool execution failed" };
           sseEvent(res, { type: "tool_progress", runId, toolId, name: fc.name, status: "error", message: toolErr?.message ?? "Failed" });
           sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: toolErr?.message ?? "Tool failed", level: "error" });
@@ -1937,21 +1975,53 @@ router.post("/agent/chat", async (req, res) => {
         sseEvent(res, { type: "tool_done", runId, toolId, name: fc.name, result: toolResult, ts: Date.now() });
         if (toolArtifact) sseEvent(res, { type: "artifact", runId, toolId, ...(toolArtifact as object) });
 
-        toolResults.push({
-          functionResponse: { name: fc.name, response: { result: toolResult } },
-        });
+        return {
+          index: fcIndex,
+          response: { functionResponse: { name: fc.name, response: { result: toolResult } } },
+          hadError,
+        };
+      };
+
+      for (let fcIndex = 0; fcIndex < functionCalls.length && isConnected();) {
+        const group = getToolParallelGroup(functionCalls[fcIndex].name);
+        if (group === "serial") {
+          const completed = await runToolCall(fcIndex, functionCalls[fcIndex]);
+          toolResults[completed.index] = completed.response;
+          iterationHadError ||= completed.hadError;
+          fcIndex += 1;
+          continue;
+        }
+
+        const limit = TOOL_PARALLEL_LIMITS[group];
+        const batch: Array<{ index: number; fc: { name: string; args: Record<string, any> } }> = [];
+        while (
+          fcIndex < functionCalls.length &&
+          batch.length < limit &&
+          getToolParallelGroup(functionCalls[fcIndex].name) === group
+        ) {
+          batch.push({ index: fcIndex, fc: functionCalls[fcIndex] });
+          fcIndex += 1;
+        }
+
+        const completed = await Promise.all(batch.map(({ index, fc }) => runToolCall(index, fc)));
+        for (const item of completed) {
+          toolResults[item.index] = item.response;
+          iterationHadError ||= item.hadError;
+        }
       }
+
+      const orderedToolResults = toolResults.filter(Boolean);
 
       // \u2500\u2500 5. JUDGE \u2014 verify results, feed correction context to model (hidden) \u2500\u2500
       // Do NOT emit visible text \u2014 the tool card already shows error state.
       // Just push a hidden correction turn so the model self-heals.
       sseEvent(res, { type: "thinking", runId, stage: "verifying", iteration: iterations, total: MAX_ITERATIONS });
       if (iterationHadError) {
-        const failedTools = toolResults
+        const failedTools = orderedToolResults
           .filter(tr => tr.functionResponse?.response?.result?.error)
           .map(tr => `${tr.functionResponse.name}: ${tr.functionResponse.response.result.error}`)
           .join("; ");
-        toolResults.push({ text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.` });
+        orderedToolResults.push({ text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.` });
       }
 
 
@@ -1964,7 +2034,7 @@ router.post("/agent/chat", async (req, res) => {
       loopContents = [
         ...loopContents,
         { role: "model" as const, parts: modelParts },
-        { role: "user" as const, parts: toolResults },
+        { role: "user" as const, parts: orderedToolResults },
       ];
 
       if (!isConnected()) break;

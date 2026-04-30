@@ -545,12 +545,12 @@ function pickFirst(value: string | string[] | undefined): string | undefined {
 
 type RateWindow = { count: number; resetAt: number };
 const rateWindows = new Map<string, RateWindow>();
-const RATE_LIMIT_WINDOW_MS = 3 * 60 * 1000;
+const RATE_LIMIT_WINDOW_MS = 90 * 1000;
 const RATE_LIMITS: Record<string, number> = {
-  "POST /youtube/clip-cut": 3,
-  "POST /youtube/download-clip": 3,
-  "POST /youtube/download": 3,
-  "POST /youtube/clips": 3,
+  "POST /youtube/clip-cut": 5,
+  "POST /youtube/download-clip": 5,
+  "POST /youtube/download": 5,
+  "POST /youtube/clips": 5,
   "POST /youtube/cancel/:jobId": 180, // 60/min
 };
 const RATE_LIMIT_BYPASS_IPS = new Set(
@@ -584,11 +584,16 @@ function getClientIp(req: Request): string {
   return normalizeIp(ip);
 }
 
+function isInternalAgentRequest(req: Request): boolean {
+  const internalSecret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  return req.headers["x-internal-agent"] === internalSecret;
+}
+
 function createIpRateLimiter(routeKey: keyof typeof RATE_LIMITS) {
   const max = RATE_LIMITS[routeKey];
   return (req: Request, res: Response, next: NextFunction) => {
     const ip = getClientIp(req);
-    if (RATE_LIMIT_BYPASS_IPS.has(ip)) {
+    if (isInternalAgentRequest(req) || RATE_LIMIT_BYPASS_IPS.has(ip)) {
       next();
       return;
     }
@@ -1671,10 +1676,15 @@ function qualityToFormatCandidates(quality: string): string[] {
       : parsedHeight;
 
   if (maxHeight) {
+    const fallbackHeight = Math.min(maxHeight, 720);
+    const minProgressiveHeight = Math.min(360, maxHeight);
     return [
-      `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}]`,
-      `best[ext=mp4][vcodec!=none][acodec!=none]`,
-      `best[vcodec!=none][acodec!=none][height<=${maxHeight}]`,
+      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio[ext=m4a]`,
+      `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
+      `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
+      `bestvideo[vcodec^=avc1][height<=${fallbackHeight}]+bestaudio[ext=m4a]`,
+      `bestvideo[height<=${fallbackHeight}]+bestaudio[ext=m4a]`,
+      `best[vcodec!=none][acodec!=none][height<=${fallbackHeight}]`,
     ];
   }
 
@@ -1685,7 +1695,7 @@ function qualityToFormatCandidates(quality: string): string[] {
   ];
 }
 
-const MAX_CLIP_FORMAT_CANDIDATES = 3;
+const MAX_CLIP_FORMAT_CANDIDATES = 6;
 const MAX_CLIP_CLIENT_FALLBACKS = 2;
 const MAX_CLIP_DOWNLOAD_ATTEMPTS = 3;
 const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
