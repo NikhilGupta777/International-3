@@ -730,6 +730,7 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
       outputKey: `${prefix}/output.mp4`,
       srtKey: `${prefix}/subtitles.srt`,
       transcriptKey: `${prefix}/transcript.json`,
+      voiceCloneApplied: false,
       lipSyncApplied: false,
       runtime: "lambda-fast",
     });
@@ -989,6 +990,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       targetLangCode: item.targetLangCode?.S,
       sourceLang:   item.sourceLang?.S,
       voiceClone:   item.voiceClone?.BOOL,
+      voiceCloneApplied: item.voiceCloneApplied?.BOOL,
       lipSync:      item.lipSync?.BOOL,
       runtime:      item.runtime?.S,
       segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
@@ -1041,6 +1043,7 @@ router.get("/history", async (req: Request, res: Response) => {
         targetLangCode: item.targetLangCode?.S,
         sourceLang: item.sourceLang?.S,
         voiceClone: item.voiceClone?.BOOL,
+        voiceCloneApplied: item.voiceCloneApplied?.BOOL,
         lipSync: item.lipSync?.BOOL,
         runtime: item.runtime?.S,
         segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
@@ -1222,7 +1225,16 @@ router.get("/result/:jobId", async (req: Request, res: Response) => {
       getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: `${prefix}/transcript.json` }), { expiresIn: 3600 }),
     ]);
 
-    return res.json({ jobId, videoUrl, shareUrl: shareUrl(req, jobId), srtUrl, transcriptUrl });
+    return res.json({
+      jobId,
+      videoUrl,
+      shareUrl: shareUrl(req, jobId),
+      srtUrl,
+      transcriptUrl,
+      voiceCloneApplied: result.Item.voiceCloneApplied?.BOOL,
+      lipSyncApplied: result.Item.lipSyncApplied?.BOOL,
+      runtime: result.Item.runtime?.S,
+    });
   } catch (err: any) {
     console.error("[Translator] /result error:", err);
     return res.status(500).json({ error: err.message });

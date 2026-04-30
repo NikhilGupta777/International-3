@@ -72,6 +72,7 @@ MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
 MODELSCOPE_CACHE    = Path(os.environ.get("MODELSCOPE_CACHE", str(MODEL_CACHE_DIR / "modelscope")))
 HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "huggingface")))
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "1").lower() == "1"
+ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "false").lower() == "true"
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "iic/CosyVoice2-0.5B")
 LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")
 LATENTSYNC_CHECKPOINT = os.environ.get("LATENTSYNC_CHECKPOINT", "latentsync_unet.pt")
@@ -675,7 +676,13 @@ def synthesize_segments_cosyvoice(
             break
 
     seg_audios: list[Path] = []
-    for seg in segments:
+    total_segments = max(1, len(segments))
+    for index, seg in enumerate(segments, start=1):
+        update_progress(
+            "CLONING",
+            52 + int((index - 1) / total_segments * 7),
+            f"Cloning original voice ({index}/{total_segments})...",
+        )
         out_path = out_dir / f"seg_{seg['id']:04d}.wav"
         text = seg["translated_text"].strip()
         if not text:
@@ -700,6 +707,7 @@ def synthesize_segments_cosyvoice(
         seg_audios.append(out_path)
         log.info(f"[CosyVoice] Segment {seg['id']}/{len(segments)} done.")
 
+    update_progress("CLONING", 59, "Voice cloning complete.")
     del model
     torch.cuda.empty_cache()
     log.info("[CosyVoice] Voice cloning complete.")
@@ -747,8 +755,12 @@ def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -
         except Exception as cv_err:
             # AUTO-FALLBACK: CosyVoice unavailable (model not in image, CUDA OOM, etc.)
             # Write warning to DynamoDB so frontend can show yellow alert instead of green tick.
-            clone_fail_msg = f"Voice clone failed ({cv_err}). Using neural TTS voice instead."
+            clone_fail_msg = f"Voice clone failed ({cv_err})."
             log.warning(f"[TTS] {clone_fail_msg}")
+            if not ALLOW_VOICE_CLONE_FALLBACK:
+                raise RuntimeError(
+                    f"Voice clone was requested but CosyVoice failed: {cv_err}"
+                ) from cv_err
             update_progress(
                 "CLONING", 55,
                 "⚠️ Voice clone unavailable — using neural voice instead.",
@@ -758,12 +770,19 @@ def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -
     # Shared path: edge-tts for all segments, gTTS emergency
     log.info("[TTS] Using edge-tts neural voice (no voice clone).")
     paths = []
-    for seg in segments:
+    total_segments = max(1, len(segments))
+    for index, seg in enumerate(segments, start=1):
+        update_progress(
+            "CLONING",
+            52 + int((index - 1) / total_segments * 7),
+            f"Generating neural voice ({index}/{total_segments})...",
+        )
         try:
             paths.append(synthesize_edge_tts_single(seg, out_dir))
         except Exception as e:
             log.warning(f"[TTS] edge-tts seg {seg['id']} failed: {e}. Falling back to gTTS.")
             paths.append(synthesize_gtts_single(seg, out_dir))
+    update_progress("CLONING", 59, "Voice generation complete.")
     return paths, False  # ← clone was NOT used
 
 
@@ -1132,6 +1151,7 @@ def main():
 
         # â”€â”€ 9. Lip sync (optional) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         final_video_path = work_dir / "output.mp4"
+        lip_sync_applied = False
 
         if LIP_SYNC:
             update_progress("LIPSYNC", 70, f"Running lip sync ({LIP_SYNC_QUALITY})...")
@@ -1141,6 +1161,7 @@ def main():
             if lipsync_video is not None:
                 # Lipsync output has dubbed audio baked in — just copy
                 shutil.copy(lipsync_video, final_video_path)
+                lip_sync_applied = True
                 update_progress("LIPSYNC", 82, "Lip sync complete.")
             else:
                 # Lipsync failed gracefully — mux dubbed audio into original video
@@ -1176,8 +1197,9 @@ def main():
             "segmentCount": len(segments),
             "targetLang": TARGET_LANG,
             "voiceClone": VOICE_CLONE,
+            "voiceCloneApplied": voice_was_cloned,
             "lipSync": LIP_SYNC,
-            "lipSyncApplied": LIP_SYNC,
+            "lipSyncApplied": lip_sync_applied,
         })
 
         log.info(f"=== Job {JOB_ID} complete. Output: s3://{S3_BUCKET}/{output_key} ===")
