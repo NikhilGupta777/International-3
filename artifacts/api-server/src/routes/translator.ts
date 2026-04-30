@@ -13,6 +13,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { GoogleGenAI } from "@google/genai";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -566,6 +567,76 @@ async function transcribeFastAudio(audioPath: string, sourceLang: string): Promi
   throw new Error("AssemblyAI transcription timed out");
 }
 
+async function transcribeFastMediaUrl(mediaUrl: string, sourceLang: string): Promise<{ segments: FastSegment[]; durationSeconds: number }> {
+  if (!ASSEMBLYAI_KEY) throw new Error("ASSEMBLYAI_API_KEY is not configured");
+  const { request } = await import("https");
+  const sourceLangCode = toAssemblyLanguageCode(sourceLang);
+  const payload = JSON.stringify({
+    audio_url: mediaUrl,
+    language_detection: !sourceLangCode,
+    ...(sourceLangCode ? { language_code: sourceLangCode } : {}),
+    punctuate: true,
+    format_text: true,
+  });
+
+  const transcriptId = await new Promise<string>((resolve, reject) => {
+    const req = request({
+      hostname: "api.assemblyai.com",
+      path: "/v2/transcript",
+      method: "POST",
+      headers: {
+        authorization: ASSEMBLYAI_KEY,
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      let body = "";
+      res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+      res.on("end", () => {
+        try {
+          const json = JSON.parse(body);
+          if (json.id) resolve(json.id);
+          else reject(new Error(json.error || `AssemblyAI transcript submit failed (${res.statusCode})`));
+        } catch {
+          reject(new Error("AssemblyAI transcript submit returned invalid JSON"));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
+
+  for (let i = 0; i < 160; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    const result = await new Promise<any>((resolve, reject) => {
+      const req = request({
+        hostname: "api.assemblyai.com",
+        path: `/v2/transcript/${transcriptId}`,
+        method: "GET",
+        headers: { authorization: ASSEMBLYAI_KEY },
+      }, (res) => {
+        let body = "";
+        res.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        res.on("end", () => {
+          try { resolve(JSON.parse(body)); }
+          catch { reject(new Error("AssemblyAI poll returned invalid JSON")); }
+        });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    if (result.status === "completed") {
+      const segments = wordsToSegments(Array.isArray(result.words) ? result.words : []);
+      if (!segments.length) throw new Error("AssemblyAI returned no timed words");
+      return { segments, durationSeconds: Number(result.audio_duration ?? 0) || 0 };
+    }
+    if (result.status === "error") throw new Error(result.error || "AssemblyAI transcription failed");
+  }
+
+  throw new Error("AssemblyAI transcription timed out");
+}
+
 async function translateSegmentsFast(segments: FastSegment[], targetLang: string): Promise<FastSegment[]> {
   if (!GEMINI_KEY) throw new Error("GEMINI_API_KEY is not configured");
   const ai = new GoogleGenAI({ apiKey: GEMINI_KEY });
@@ -599,32 +670,27 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
   let handedToBatch = false;
   try {
     await updateTranslatorJob(jobId, "STARTING", 3, "Starting fast Lambda translation...", { runtime: "lambda-fast" });
-    const inputExt = extname(options.filename || s3Key) || ".mp4";
-    const inputPath = join(workDir, `input${inputExt}`);
-    const audioPath = join(workDir, "audio.wav");
-    const outputPath = join(workDir, "output.mp4");
     const srtPath = join(workDir, "subtitles.srt");
     const transcriptPath = join(workDir, "transcript.json");
 
-    await downloadS3ObjectToFile(s3Key, inputPath);
-    const duration = await probeDurationSeconds(inputPath);
-    if (duration > TRANSLATOR_LAMBDA_FAST_MAX_SECONDS) {
+    await updateTranslatorJob(jobId, "TRANSCRIBING", 18, "Transcribing speech from cloud video...");
+    const mediaUrl = await getSignedUrl(s3, new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: s3Key,
+    }), { expiresIn: 3600 });
+    const { segments, durationSeconds } = await transcribeFastMediaUrl(mediaUrl, options.sourceLang);
+    if (durationSeconds > TRANSLATOR_LAMBDA_FAST_MAX_SECONDS) {
       await updateTranslatorJob(jobId, "QUEUED", 0, "Video is over 10 minutes; starting GPU worker...", {
         runtime: "batch",
-        durationSeconds: Math.round(duration),
+        durationSeconds: Math.round(durationSeconds),
       });
       await submitTranslatorBatchJob(jobId, s3Key, options);
       return;
     }
 
-    await updateTranslatorJob(jobId, "EXTRACTING", 12, "Extracting audio in Lambda...", { durationSeconds: Math.round(duration) });
-    await extractAudioForTranscription(inputPath, audioPath);
-
-    await updateTranslatorJob(jobId, "TRANSCRIBING", 28, "Transcribing speech...");
-    const segments = await transcribeFastAudio(audioPath, options.sourceLang);
-
     await updateTranslatorJob(jobId, "TRANSLATING", 55, `Translating subtitles to ${options.targetLang}...`, {
       segmentCount: segments.length,
+      durationSeconds: Math.round(durationSeconds),
     });
     const translated = await translateSegmentsFast(segments, options.targetLang);
     await writeFile(srtPath, segmentsToSrt(translated), "utf8");
@@ -632,20 +698,18 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
       jobId,
       mode: "lambda-fast-subtitle-translation",
       targetLang: options.targetLang,
-      durationSeconds: duration,
+      durationSeconds,
       segments: translated,
     }, null, 2), "utf8");
-
-    await updateTranslatorJob(jobId, "MERGING", 82, "Preparing translated video and subtitle files...");
-    await remuxToMp4(inputPath, outputPath);
 
     const prefix = `translator-jobs/${jobId}`;
     await updateTranslatorJob(jobId, "UPLOADING", 93, "Uploading translation results...");
     await Promise.all([
-      s3.send(new PutObjectCommand({
+      s3.send(new CopyObjectCommand({
         Bucket: S3_BUCKET,
         Key: `${prefix}/output.mp4`,
-        Body: createReadStream(outputPath),
+        CopySource: `${S3_BUCKET}/${encodeURIComponent(s3Key).replace(/%2F/g, "/")}`,
+        MetadataDirective: "REPLACE",
         ContentType: "video/mp4",
       })),
       s3.send(new PutObjectCommand({
