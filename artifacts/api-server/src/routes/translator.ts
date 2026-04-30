@@ -24,6 +24,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import {
   BatchClient,
+  DescribeJobsCommand,
   SubmitJobCommand,
   TerminateJobCommand,
 } from "@aws-sdk/client-batch";
@@ -87,6 +88,62 @@ function shareUrl(req: Request, jobId: string): string {
   const host = forwardedHost || req.get("host");
   const proto = forwardedProto || req.protocol;
   return `${proto}://${host}/api/translator/share/${encodeURIComponent(jobId)}`;
+}
+
+const TERMINAL_TRANSLATOR_STATUSES = new Set(["DONE", "FAILED", "CANCELLED", "EXPIRED"]);
+
+function isTerminalTranslatorStatus(status: string | undefined): boolean {
+  return TERMINAL_TRANSLATOR_STATUSES.has(String(status ?? "").toUpperCase());
+}
+
+async function syncTerminalBatchState(item: Record<string, any>): Promise<Record<string, any>> {
+  const status = item.status?.S ?? "UNKNOWN";
+  const batchJobId = item.batchJobId?.S;
+  if (!batchJobId || isTerminalTranslatorStatus(status)) return item;
+
+  const described = await batch.send(new DescribeJobsCommand({ jobs: [batchJobId] }));
+  const batchJob = described.jobs?.[0];
+  if (!batchJob || !["FAILED", "SUCCEEDED"].includes(batchJob.status ?? "")) return item;
+
+  const nextStatus = batchJob.status === "SUCCEEDED" ? "DONE" : "FAILED";
+  const reason =
+    batchJob.statusReason ||
+    batchJob.attempts?.find((attempt) => attempt.statusReason)?.statusReason ||
+    (nextStatus === "DONE" ? "Translation complete." : "AWS Batch job failed.");
+  const step =
+    nextStatus === "DONE"
+      ? "Translation complete!"
+      : reason === "Job attempt duration exceeded timeout"
+        ? "Translation stopped after the 30 minute limit."
+        : reason;
+  const progress = nextStatus === "DONE" ? "100" : item.progress?.N ?? "0";
+  const now = String(Date.now());
+
+  await ddb.send(new UpdateItemCommand({
+    TableName: DDB_TABLE,
+    Key: { jobId: { S: item.jobId.S } },
+    UpdateExpression: "SET #status = :status, progress = :progress, step = :step, #error = :error, updatedAt = :updatedAt",
+    ExpressionAttributeNames: {
+      "#status": "status",
+      "#error": "error",
+    },
+    ExpressionAttributeValues: {
+      ":status": { S: nextStatus },
+      ":progress": { N: progress },
+      ":step": { S: step },
+      ":error": { S: nextStatus === "DONE" ? "" : step },
+      ":updatedAt": { N: now },
+    },
+  }));
+
+  return {
+    ...item,
+    status: { S: nextStatus },
+    progress: { N: progress },
+    step: { S: step },
+    error: { S: nextStatus === "DONE" ? "" : step },
+    updatedAt: { N: now },
+  };
 }
 
 function escapeHtml(value: unknown): string {
@@ -375,7 +432,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Job not found" });
     }
 
-    const item = result.Item;
+    const item = await syncTerminalBatchState(result.Item);
     return res.json({
       jobId,
       status:       item.status?.S ?? "UNKNOWN",
@@ -424,7 +481,11 @@ router.get("/history", async (req: Request, res: Response) => {
       if (!exclusiveStartKey || items.length >= 200) break;
     }
 
-    const jobs = items
+    const syncedItems = await Promise.all(
+      items.slice(0, 80).map((item) => syncTerminalBatchState(item).catch(() => item)),
+    );
+
+    const jobs = syncedItems
       .map((item) => ({
         jobId: item.jobId?.S,
         status: item.status?.S ?? "UNKNOWN",
