@@ -1673,14 +1673,14 @@ function qualityToFormatCandidates(quality: string): string[] {
   if (maxHeight) {
     const minProgressiveHeight = Math.min(360, maxHeight);
     return [
-      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio[ext=m4a]`,
-      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio`,
-      `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
-      `bestvideo[height<=${maxHeight}]+bestaudio`,
       `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
       `best[vcodec!=none][acodec!=none][height<=${maxHeight}][height>=${minProgressiveHeight}]`,
       `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}]`,
       `best[vcodec!=none][acodec!=none][height<=${maxHeight}]`,
+      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio[ext=m4a]`,
+      `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio`,
+      `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
+      `bestvideo[height<=${maxHeight}]+bestaudio`,
     ];
   }
 
@@ -1698,6 +1698,10 @@ function qualityToFormatCandidates(quality: string): string[] {
 const MAX_CLIP_FORMAT_CANDIDATES = 6;
 const MAX_CLIP_CLIENT_FALLBACKS = 5;
 const MAX_CLIP_DOWNLOAD_ATTEMPTS = 8;
+const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "150000", 10) || 150_000,
+);
 
 async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   const jobRef = jobs.get(jobId)!;
@@ -1716,6 +1720,13 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.message = "Cutting clip...";
   jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
   persistClipJobState(jobId, jobRef);
+  let lastPersistAt = 0;
+  const persistProgress = () => {
+    const now = Date.now();
+    if (now - lastPersistAt < 2000) return;
+    lastPersistAt = now;
+    persistClipJobState(jobId, jobRef);
+  };
 
   await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
@@ -1757,7 +1768,10 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       attempted.add(key);
       attemptsUsed += 1;
       try {
-        await spawnDownloadOnce(extra, cmdArgs, jobRef);
+        await spawnDownloadOnce(extra, cmdArgs, jobRef, {
+          timeoutMs: LAMBDA_CLIP_COMMAND_TIMEOUT_MS,
+          onProgress: persistProgress,
+        });
         lastErr = null;
         break;
       } catch (err) {
@@ -1780,7 +1794,10 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
           attempted.add(key);
           attemptsUsed += 1;
           try {
-            await spawnDownloadOnce(extra, cmdArgs, jobRef);
+            await spawnDownloadOnce(extra, cmdArgs, jobRef, {
+              timeoutMs: LAMBDA_CLIP_COMMAND_TIMEOUT_MS,
+              onProgress: persistProgress,
+            });
             lastErr = null;
             break;
           } catch (err) {
@@ -1946,6 +1963,7 @@ function spawnDownloadOnce(
   extraArgs: string[],
   cmdArgs: string[],
   jobRef: DownloadJob,
+  options: { timeoutMs?: number; onProgress?: () => void } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (jobRef.cancelled) {
@@ -1969,6 +1987,25 @@ function spawnDownloadOnce(
     const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
     jobRef.activeProc = proc;
     let stderr = "";
+    let timedOut = false;
+    const timeout =
+      options.timeoutMs && options.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            stderr += `\nyt-dlp command timed out after ${Math.round(options.timeoutMs! / 1000)} seconds`;
+            try {
+              proc.kill("SIGTERM");
+            } catch {}
+            setTimeout(() => {
+              if (jobRef.activeProc === proc) {
+                try {
+                  proc.kill("SIGKILL");
+                } catch {}
+              }
+            }, 5000).unref?.();
+          }, options.timeoutMs)
+        : null;
+    timeout?.unref?.();
 
     proc.stdout?.on("data", (data: Buffer) => {
       const lines = data.toString().split("\n");
@@ -1991,6 +2028,7 @@ function spawnDownloadOnce(
           jobRef.percent = Math.round(percent);
           jobRef.speed = `${speedNum}${speedUnit}`;
           jobRef.eta = eta === "Unknown" ? null : eta;
+          options.onProgress?.();
 
           const mult: Record<string, number> = {
             B: 1,
@@ -2017,6 +2055,7 @@ function spawnDownloadOnce(
           // Always update filePath (last Destination wins — e.g. mp3 after m4a)
           jobRef.filename = fname;
           jobRef.filePath = destPath;
+          options.onProgress?.();
         }
 
         // Merging
@@ -2027,6 +2066,7 @@ function spawnDownloadOnce(
           jobRef.status = "merging";
           jobRef.message = "Merging video and audio...";
           jobRef.percent = Math.max(jobRef.percent ?? 0, 90);
+          options.onProgress?.();
         }
 
         // Already downloaded
@@ -2037,6 +2077,7 @@ function spawnDownloadOnce(
           if (alreadyMatch) {
             jobRef.filename = alreadyMatch[1].split("/").pop() ?? "";
             jobRef.filePath = alreadyMatch[1].trim();
+            options.onProgress?.();
           }
         }
       }
@@ -2047,9 +2088,16 @@ function spawnDownloadOnce(
     });
 
     proc.on("close", (code: number | null) => {
+      if (timeout) clearTimeout(timeout);
       jobRef.activeProc = null;
       if (jobRef.cancelled) {
         reject(new Error(CANCELLED_BY_USER));
+      } else if (timedOut) {
+        logger.warn(
+          { command, args: commandArgs, stderr: stderr.slice(-2000), ffmpegPath: FFMPEG_PATH },
+          "yt-dlp download command timed out",
+        );
+        reject(new Error(stderr.slice(-500) || "yt-dlp command timed out"));
       } else if (code === 0) resolve();
       else {
         logger.warn(
@@ -2063,6 +2111,7 @@ function spawnDownloadOnce(
     });
 
     proc.on("error", (err: Error) => {
+      if (timeout) clearTimeout(timeout);
       jobRef.activeProc = null;
       reject(new Error(`Failed to start yt-dlp: ${err.message}`));
     });
@@ -2452,6 +2501,7 @@ router.post("/youtube/cancel/:jobId", cancelRateLimiter, async (req: Request, re
   job.cancelled = true;
   job.status = "cancelled";
   job.message = CANCELLED_BY_USER;
+  persistClipJobState(jobId, job);
   if (queuedClipJobIds.has(jobId)) {
     dequeueClipJob(jobId);
   }
