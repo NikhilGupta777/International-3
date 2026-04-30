@@ -297,7 +297,18 @@ export default function VideoTranslator() {
   const pollStatus = useCallback(async (id: string) => {
     try {
       const r = await fetch(`${API}/status/${id}`, { headers: translatorAuthHeaders(), cache: NO_STORE });
-      if (!r.ok) return;
+      if (!r.ok) {
+        if (r.status === 404 || r.status === 410) {
+          removeActiveTranslatorJob(id);
+          refreshHistory();
+          clearInterval(pollRef.current!);
+          if (jobId === id) {
+            setJob(null);
+            setJobId(null);
+          }
+        }
+        return;
+      }
       const data = await readJsonResponse(r);
       setJob(data);
       // Append real step/warning/error messages to debug log
@@ -353,7 +364,7 @@ export default function VideoTranslator() {
     } catch (e: any) {
       setError(e?.message);
     }
-  }, [fetchResult, file?.name, refreshHistory, srcLang, tgtLang]);
+  }, [fetchResult, file?.name, jobId, refreshHistory, srcLang, tgtLang]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -378,7 +389,12 @@ export default function VideoTranslator() {
               headers: translatorAuthHeaders(),
               cache: NO_STORE,
             });
-            if (!statusRes.ok) continue;
+            if (!statusRes.ok) {
+              if (statusRes.status === 404 || statusRes.status === 410) {
+                removeActiveTranslatorJob(activeJob.jobId);
+              }
+              continue;
+            }
             const statusItem = await readJsonResponse<any>(statusRes, { status: "UNKNOWN" });
             if (statusItem.status === "DONE") {
               const urls = await fetchResultUrls(activeJob.jobId);
