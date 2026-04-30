@@ -54,6 +54,7 @@ type QueueStatus = {
 const PENDING_QUEUE_STATES = new Set([
   "pending",
   "queued",
+  "downloading",
   "running",
   "processing",
   "audio",
@@ -237,6 +238,90 @@ export async function submitYoutubeQueueShadowJob(input: QueueSubmitInput): Prom
 
 export async function submitYoutubeQueuePrimaryJob(input: QueueSubmitInput): Promise<string | null> {
   return submitYoutubeQueueJob(input, "primary");
+}
+
+export async function putYoutubeQueueLocalJob(input: {
+  jobId: string;
+  status: string;
+  message: string;
+  jobType?: QueueJobType;
+  sourceUrl?: string;
+  progressPct?: number;
+  filename?: string | null;
+  filesize?: number | null;
+  s3Key?: string | null;
+  durationSecs?: number | null;
+}): Promise<boolean> {
+  if (!ddb || !JOB_TABLE) return false;
+  const now = Date.now();
+  const item: Record<string, any> = {
+    jobId: { S: input.jobId },
+    status: { S: input.status },
+    message: { S: input.message },
+    createdAt: { N: String(now) },
+    updatedAt: { N: String(now) },
+  };
+  if (input.jobType) item.jobType = { S: input.jobType };
+  if (input.sourceUrl) item.sourceUrl = { S: input.sourceUrl };
+  if (typeof input.progressPct === "number") item.progressPct = { N: String(input.progressPct) };
+  if (input.filename) item.filename = { S: input.filename };
+  if (typeof input.filesize === "number") item.filesize = { N: String(input.filesize) };
+  if (input.s3Key) item.s3Key = { S: input.s3Key };
+  if (typeof input.durationSecs === "number") item.durationSecs = { N: String(input.durationSecs) };
+  await ddb.send(new PutItemCommand({ TableName: JOB_TABLE, Item: item }));
+  return true;
+}
+
+export async function updateYoutubeQueueLocalJob(
+  jobId: string,
+  fields: {
+    status?: string;
+    message?: string | null;
+    progressPct?: number | null;
+    filename?: string | null;
+    filesize?: number | null;
+    s3Key?: string | null;
+    durationSecs?: number | null;
+    resultJson?: string | null;
+  },
+): Promise<boolean> {
+  if (!ddb || !JOB_TABLE) return false;
+  const names: Record<string, string> = { "#u": "updatedAt" };
+  const values: Record<string, any> = { ":u": { N: String(Date.now()) } };
+  const sets = ["#u = :u"];
+
+  const addString = (name: string, value: string | null | undefined) => {
+    if (value === undefined) return;
+    names[`#${name}`] = name;
+    values[`:${name}`] = { S: value ?? "" };
+    sets.push(`#${name} = :${name}`);
+  };
+  const addNumber = (name: string, value: number | null | undefined) => {
+    if (value === undefined || value === null || !Number.isFinite(value)) return;
+    names[`#${name}`] = name;
+    values[`:${name}`] = { N: String(value) };
+    sets.push(`#${name} = :${name}`);
+  };
+
+  addString("status", fields.status);
+  addString("message", fields.message);
+  addNumber("progressPct", fields.progressPct);
+  addString("filename", fields.filename);
+  addNumber("filesize", fields.filesize);
+  addString("s3Key", fields.s3Key);
+  addNumber("durationSecs", fields.durationSecs);
+  addString("resultJson", fields.resultJson);
+
+  await ddb.send(
+    new UpdateItemCommand({
+      TableName: JOB_TABLE,
+      Key: { jobId: { S: jobId } },
+      UpdateExpression: `SET ${sets.join(", ")}`,
+      ExpressionAttributeNames: names,
+      ExpressionAttributeValues: values,
+    }),
+  );
+  return true;
 }
 
 export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStatus | null> {

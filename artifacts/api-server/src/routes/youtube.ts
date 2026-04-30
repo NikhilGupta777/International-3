@@ -49,8 +49,10 @@ import {
   getYoutubeQueueJobStatus,
   isYoutubeQueueEnabledFor,
   isYoutubeQueuePrimaryEnabledFor,
+  putYoutubeQueueLocalJob,
   submitYoutubeQueuePrimaryJob,
   submitYoutubeQueueShadowJob,
+  updateYoutubeQueueLocalJob,
 } from "../lib/youtube-queue";
 
 const router: IRouter = Router();
@@ -1712,6 +1714,8 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.ext = "mp4";
   jobRef.status = "downloading";
   jobRef.message = "Cutting clip...";
+  jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+  persistClipJobState(jobId, jobRef);
 
   await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
@@ -1821,6 +1825,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.speed = null;
   jobRef.eta = null;
   jobRef.message = null;
+  persistClipJobState(jobId, jobRef);
   pushCompletionNotification(
     jobRef,
     "Clip ready",
@@ -1897,20 +1902,21 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
   };
 
   jobs.set(jobId, job);
+  try {
+    await putYoutubeQueueLocalJob({
+      jobId,
+      jobType: "clip-cut",
+      sourceUrl: normalizedUrl,
+      status: "pending",
+      message: job.message ?? "Starting clip cut...",
+      progressPct: 0,
+      filename: job.filename,
+      durationSecs: endTime - startTime,
+    });
+  } catch (err) {
+    req.log.warn({ err, jobId }, "Failed to persist Lambda clip-cut start state");
+  }
   res.json({ jobId, status: "pending", message: "Clip cut started" });
-
-  void submitYoutubeQueueShadowJob({
-    jobId,
-    jobType: "clip-cut",
-    sourceUrl: normalizedUrl,
-    meta: {
-      startTime,
-      endTime,
-      quality: quality ?? "best",
-    },
-  }).catch((err) => {
-    req.log.warn({ err, jobId }, "Failed to submit shadow queue clip-cut job");
-  });
 
   enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
     req.log.error({ err, jobId }, "Clip cut job failed");
@@ -2217,6 +2223,22 @@ function buildProgressPayload(jobId: string, job: DownloadJob) {
     filesize: job.filesize,
     message: job.message,
   };
+}
+
+function persistClipJobState(jobId: string, job: DownloadJob): void {
+  const durationSecs =
+    typeof job.clipStart === "number" && typeof job.clipEnd === "number"
+      ? Math.max(0, job.clipEnd - job.clipStart)
+      : null;
+  void updateYoutubeQueueLocalJob(jobId, {
+    status: job.status,
+    message: job.message,
+    progressPct: job.percent,
+    filename: job.filename,
+    filesize: job.filesize,
+    s3Key: job.s3Key ?? null,
+    durationSecs,
+  }).catch((err) => logger.warn({ err, jobId }, "Failed to persist clip job state"));
 }
 
 function disableProgressCache(res: Response): void {
@@ -4229,21 +4251,21 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
   };
 
   jobs.set(jobId, job);
+  try {
+    await putYoutubeQueueLocalJob({
+      jobId,
+      jobType: "clip-cut",
+      sourceUrl: normalizedUrl,
+      status: "pending",
+      message: job.message ?? "Clip download started",
+      progressPct: 0,
+      filename: job.filename,
+      durationSecs: endSec - startSec,
+    });
+  } catch (err) {
+    req.log.warn({ err, jobId }, "Failed to persist Lambda legacy clip start state");
+  }
   res.json({ jobId, status: "pending", message: "Clip download started" });
-
-  void submitYoutubeQueueShadowJob({
-    jobId,
-    jobType: "clip-cut",
-    sourceUrl: normalizedUrl,
-    meta: {
-      startSec,
-      endSec,
-      quality: quality ?? "best",
-      source: "legacy-download-clip",
-    },
-  }).catch((err) => {
-    req.log.warn({ err, jobId }, "Failed to submit shadow queue legacy clip job");
-  });
 
   enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
     req.log.error({ err, jobId }, "Clip download failed");
@@ -4253,9 +4275,12 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     if (message === CANCELLED_BY_USER || j.cancelled) {
       j.status = "cancelled";
       j.message = CANCELLED_BY_USER;
+      persistClipJobState(jobId, j);
     } else {
       j.status = "error";
       j.message = message;
+      j.percent = 0;
+      persistClipJobState(jobId, j);
       pushFailureNotification(
         j,
         "Clip download failed",
