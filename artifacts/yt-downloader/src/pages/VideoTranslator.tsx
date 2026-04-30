@@ -35,6 +35,7 @@ const LANGS = [
 ];
 const TARGET_LANGS = LANGS.filter(l => l.code !== "auto");
 const MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+const NO_STORE: RequestCache = "no-store";
 
 async function responseError(res: Response, fallback: string): Promise<Error> {
   try {
@@ -266,7 +267,7 @@ export default function VideoTranslator() {
   }, []);
 
   const fetchResultUrls = useCallback(async (id: string) => {
-    const tr = await fetch(`${API}/result/${id}`, { headers: translatorAuthHeaders() });
+    const tr = await fetch(`${API}/result/${id}`, { headers: translatorAuthHeaders(), cache: NO_STORE });
     if (!tr.ok) return null;
     const result = await readJsonResponse(tr);
     return {
@@ -279,7 +280,7 @@ export default function VideoTranslator() {
     const result = await fetchResultUrls(id);
     if (!result) return null;
     if (result.transcriptUrl) {
-      const tj = await fetch(result.transcriptUrl);
+      const tj = await fetch(result.transcriptUrl, { cache: NO_STORE });
       if (tj.ok) {
         const parsed = await readJsonResponse(tj, { segments: [] });
         setTranscript(parsed.segments ?? []);
@@ -292,7 +293,7 @@ export default function VideoTranslator() {
   // Poll job status from DynamoDB via API
   const pollStatus = useCallback(async (id: string) => {
     try {
-      const r = await fetch(`${API}/status/${id}`, { headers: translatorAuthHeaders() });
+      const r = await fetch(`${API}/status/${id}`, { headers: translatorAuthHeaders(), cache: NO_STORE });
       if (!r.ok) return;
       const data = await readJsonResponse(r);
       setJob(data);
@@ -366,6 +367,7 @@ export default function VideoTranslator() {
           try {
             const statusRes = await fetch(`${API}/status/${encodeURIComponent(activeJob.jobId)}`, {
               headers: translatorAuthHeaders(),
+              cache: NO_STORE,
             });
             if (!statusRes.ok) continue;
             const statusItem = await readJsonResponse<any>(statusRes, { status: "UNKNOWN" });
@@ -404,7 +406,7 @@ export default function VideoTranslator() {
           } catch { }
         }
 
-        const res = await fetch(`${API}/history?limit=20`, { headers: translatorAuthHeaders() });
+        const res = await fetch(`${API}/history?limit=20`, { headers: translatorAuthHeaders(), cache: NO_STORE });
         if (!res.ok) return;
         const data = await readJsonResponse<any>(res, { jobs: [] });
         const jobs = Array.isArray(data.jobs) ? data.jobs : [];

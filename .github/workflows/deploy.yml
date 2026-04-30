@@ -278,6 +278,7 @@ jobs:
             --arg img "$TRANSLATOR_URI" \
             'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
              .containerProperties.image = $img |
+             .timeout = {"attemptDurationSeconds": 1800} |
              (.containerProperties.resourceRequirements[] | select(.type == "MEMORY").value) = "15000" |
              (.containerProperties.resourceRequirements[] | select(.type == "GPU").value) = "1"')
 
@@ -418,8 +419,8 @@ jobs:
 
       - name: Apply ECR lifecycle policy to all repos
         run: |
-          POLICY='{"rules":[{"rulePriority":1,"description":"Keep last 5 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":5},"action":{"type":"expire"}}]}'
-          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }}; do
+          POLICY='{"rules":[{"rulePriority":1,"description":"Keep last 3 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}'
+          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }} malika-editor; do
             aws ecr put-lifecycle-policy \
               --repository-name "$REPO" \
               --lifecycle-policy-text "$POLICY" \

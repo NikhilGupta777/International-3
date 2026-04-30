@@ -20,6 +20,7 @@ import {
   PutItemCommand,
   GetItemCommand,
   ScanCommand,
+  UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import {
   BatchClient,
@@ -38,10 +39,22 @@ const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? "";
 const GEMINI_KEY_2 = process.env.GEMINI_API_KEY_2 ?? "";
 const GEMINI_KEY_3 = process.env.GEMINI_API_KEY_3 ?? "";
 const ASSEMBLYAI_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
+const TRANSLATOR_BATCH_TIMEOUT_SECONDS = Math.max(
+  60,
+  Math.min(1800, Number(process.env.TRANSLATOR_BATCH_TIMEOUT_SECONDS ?? "1800") || 1800),
+);
 
 const s3    = new S3Client({ region: REGION });
 const ddb   = new DynamoDBClient({ region: REGION });
 const batch = new BatchClient({ region: REGION });
+
+router.use((_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  res.setHeader("Surrogate-Control", "no-store");
+  next();
+});
 
 function parseEpoch(value: string | undefined): number | undefined {
   if (!value) return undefined;
@@ -189,8 +202,20 @@ router.post("/submit", async (req: Request, res: Response) => {
       jobName:          `translator-${jobId.slice(0, 8)}`,
       jobQueue:         BATCH_QUEUE,
       jobDefinition:    BATCH_JOB_DEF,
+      timeout:          { attemptDurationSeconds: TRANSLATOR_BATCH_TIMEOUT_SECONDS },
       containerOverrides: {
         environment: envVars,
+      },
+    }));
+
+    await ddb.send(new UpdateItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: jobId } },
+      UpdateExpression: "SET batchJobId = :batchJobId, timeoutSeconds = :timeoutSeconds, updatedAt = :updatedAt",
+      ExpressionAttributeValues: {
+        ":batchJobId": { S: String(batchResult.jobId) },
+        ":timeoutSeconds": { N: String(TRANSLATOR_BATCH_TIMEOUT_SECONDS) },
+        ":updatedAt": { N: String(Date.now()) },
       },
     }));
 
@@ -307,7 +332,19 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
       jobName:        `translator-${jobId.slice(0, 8)}`,
       jobQueue:       BATCH_QUEUE,
       jobDefinition:  BATCH_JOB_DEF,
+      timeout:        { attemptDurationSeconds: TRANSLATOR_BATCH_TIMEOUT_SECONDS },
       containerOverrides: { environment: envVars },
+    }));
+
+    await ddb.send(new UpdateItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: jobId } },
+      UpdateExpression: "SET batchJobId = :batchJobId, timeoutSeconds = :timeoutSeconds, updatedAt = :updatedAt",
+      ExpressionAttributeValues: {
+        ":batchJobId": { S: String(batchResult.jobId) },
+        ":timeoutSeconds": { N: String(TRANSLATOR_BATCH_TIMEOUT_SECONDS) },
+        ":updatedAt": { N: String(Date.now()) },
+      },
     }));
 
     console.log(`[Translator] submit-from-url: Batch job ${batchResult.jobId} for translator job ${jobId}`);
