@@ -41,6 +41,11 @@ const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? "";
 const GEMINI_KEY_2 = process.env.GEMINI_API_KEY_2 ?? "";
 const GEMINI_KEY_3 = process.env.GEMINI_API_KEY_3 ?? "";
 const ASSEMBLYAI_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
+const PUBLIC_SITE_URL = (
+  process.env.PUBLIC_SITE_URL ||
+  process.env.VITE_PUBLIC_SITE_URL ||
+  "https://videomaking.in"
+).replace(/\/+$/, "");
 const TRANSLATOR_BATCH_TIMEOUT_SECONDS = Math.max(
   60,
   Math.min(1800, Number(process.env.TRANSLATOR_BATCH_TIMEOUT_SECONDS ?? "1800") || 1800),
@@ -83,6 +88,9 @@ function isOwnerMatch(req: Request, item: Record<string, any> | undefined): bool
 }
 
 function shareUrl(req: Request, jobId: string): string {
+  if (PUBLIC_SITE_URL) {
+    return `${PUBLIC_SITE_URL}/api/translator/share/${encodeURIComponent(jobId)}`;
+  }
   const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0].trim();
   const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim();
   const host = forwardedHost || req.get("host");
