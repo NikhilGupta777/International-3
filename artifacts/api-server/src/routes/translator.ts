@@ -333,15 +333,39 @@ async function downloadS3ObjectToFile(key: string, filePath: string): Promise<vo
 }
 
 async function probeDurationSeconds(filePath: string): Promise<number> {
-  const { stdout } = await runCommand(FFPROBE_BIN, [
-    "-v", "error",
-    "-show_entries", "format=duration",
-    "-of", "default=noprint_wrappers=1:nokey=1",
-    filePath,
-  ], 30_000);
-  const duration = Number(stdout.trim());
-  if (!Number.isFinite(duration) || duration <= 0) throw new Error("Could not read video duration");
-  return duration;
+  try {
+    const { stdout } = await runCommand(FFPROBE_BIN, [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "default=noprint_wrappers=1:nokey=1",
+      filePath,
+    ], 10_000);
+    const duration = Number(stdout.trim());
+    if (Number.isFinite(duration) && duration > 0) return duration;
+  } catch (error) {
+    console.warn("[Translator] ffprobe duration probe failed; trying ffmpeg metadata", error);
+  }
+
+  const stderr = await new Promise<string>((resolve, reject) => {
+    const child = spawn(FFMPEG_BIN, ["-hide_banner", "-i", filePath], { stdio: ["ignore", "ignore", "pipe"] });
+    let output = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`${FFMPEG_BIN} metadata probe timed out`));
+    }, 10_000);
+    child.stderr.on("data", (d: Buffer) => { output += d.toString(); });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      resolve(output);
+    });
+  });
+  const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  if (!match) throw new Error("Could not read video duration");
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
 }
 
 async function extractAudioForTranscription(inputPath: string, outputPath: string): Promise<void> {
