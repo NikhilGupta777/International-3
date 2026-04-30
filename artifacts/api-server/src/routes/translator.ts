@@ -572,6 +572,7 @@ async function translateSegmentsFast(segments: FastSegment[], targetLang: string
 
 async function processLambdaFastTranslation(jobId: string, s3Key: string, options: TranslatorOptions): Promise<void> {
   const workDir = await mkdtemp(join(tmpdir(), `translator-${jobId}-`));
+  let handedToBatch = false;
   try {
     await updateTranslatorJob(jobId, "STARTING", 3, "Starting fast Lambda translation...", { runtime: "lambda-fast" });
     const inputExt = extname(options.filename || s3Key) || ".mp4";
@@ -646,9 +647,22 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
     });
   } catch (error) {
     console.error(`[Translator] Lambda fast path failed for ${jobId}:`, error);
-    await markTranslatorFailed(jobId, error);
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      await updateTranslatorJob(jobId, "QUEUED", 0, `Fast Lambda path unavailable (${message.slice(0, 160)}); starting GPU worker...`, {
+        runtime: "batch",
+        lambdaFastError: message,
+      });
+      await submitTranslatorBatchJob(jobId, s3Key, options);
+      handedToBatch = true;
+    } catch (batchError) {
+      await markTranslatorFailed(jobId, batchError);
+    }
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
+    if (handedToBatch) {
+      console.log(`[Translator] Lambda fast path handed ${jobId} to Batch fallback`);
+    }
   }
 }
 
