@@ -16,6 +16,8 @@ const queryClient = new QueryClient({
   },
 });
 
+const AUTH_HINT_KEY = "videomaking.authenticated";
+
 function Router() {
   return (
     <Switch>
@@ -60,7 +62,10 @@ function AuthOverlay({
 
 function App() {
   const [authChecked, setAuthChecked] = useState(false);
-  const [authenticated, setAuthenticated] = useState(false);
+  const [authenticated, setAuthenticated] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(AUTH_HINT_KEY) === "1";
+  });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -69,22 +74,46 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
+    const hadAuthHint =
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(AUTH_HINT_KEY) === "1";
+    const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
     const check = async () => {
+      let sessionOk = false;
+      let sawDefiniteUnauthenticated = false;
       try {
-        const res = await fetch(`${base}/api/auth/session`, {
-          credentials: "include",
-        });
-        if (!mounted) return;
-        if (res.ok) {
-          const data = (await res.json()) as { authenticated?: boolean };
-          setAuthenticated(Boolean(data.authenticated));
-        } else {
-          setAuthenticated(false);
+        const maxAttempts = hadAuthHint ? 3 : 1;
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+          const res = await fetch(`${base}/api/auth/session`, {
+            credentials: "include",
+            cache: "no-store",
+          });
+          if (!mounted) return;
+          if (res.ok) {
+            const data = (await res.json()) as { authenticated?: boolean };
+            if (data.authenticated) {
+              sessionOk = true;
+              break;
+            }
+            sawDefiniteUnauthenticated = true;
+          }
+          if (attempt < maxAttempts - 1) {
+            await delay(350);
+          }
         }
       } catch {
-        setAuthenticated(false);
+        sawDefiniteUnauthenticated = false;
       } finally {
-        if (mounted) setAuthChecked(true);
+        if (!mounted) return;
+        if (sessionOk) {
+          window.localStorage.setItem(AUTH_HINT_KEY, "1");
+          setAuthenticated(true);
+        } else {
+          window.localStorage.removeItem(AUTH_HINT_KEY);
+          setAuthenticated(false);
+        }
+        setAuthChecked(true);
       }
     };
     void check();
@@ -109,7 +138,9 @@ function App() {
         setLoginError("Invalid username or password");
         return;
       }
+      window.localStorage.setItem(AUTH_HINT_KEY, "1");
       setAuthenticated(true);
+      setAuthChecked(true);
     } catch {
       setLoginError("Login failed. Please try again.");
     } finally {

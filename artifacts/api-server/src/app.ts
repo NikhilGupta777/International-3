@@ -206,6 +206,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 app.get("/api/auth/session", (req: Request, res: Response) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
   res.json({ authenticated: isAuthenticated(req) });
 });
 
