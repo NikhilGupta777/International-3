@@ -648,10 +648,11 @@ export function StudioCopilot({
           ? m.parts
             .filter((p: any) => p.kind === "tool_start" && p.done)
             .map((p: any) => {
+              const compactArgs = JSON.stringify(p.args ?? {}).slice(0, 1200);
               const resultStr = p.result?.error
                 ? `ERROR: ${p.result.error}`
-                : p.result?.message ?? p.result?.filename ?? p.result?.jobId ?? JSON.stringify(p.result ?? {}).slice(0, 120);
-              return `[Tool: ${p.name} | Result: ${resultStr}]`;
+                : JSON.stringify(p.result ?? {}).slice(0, 2000);
+              return `[Tool: ${p.name} | Args: ${compactArgs} | Result: ${resultStr}]`;
             })
             .join("\n")
           : "";
