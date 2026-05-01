@@ -1802,11 +1802,14 @@ function qualityToSourceDownloadSelector(quality: string): string {
   const fallbackHeight = Math.min(maxHeight, 720);
 
   return [
-    `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}][height>=360]`,
-    `best[ext=mp4][vcodec!=none][acodec!=none][height<=${fallbackHeight}][height>=360]`,
     `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio[ext=m4a]`,
     `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
+    `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio`,
+    `bestvideo[height<=${maxHeight}]+bestaudio`,
+    `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}][height>=360]`,
     `bestvideo[vcodec^=avc1][height<=${fallbackHeight}]+bestaudio[ext=m4a]`,
+    `bestvideo[height<=${fallbackHeight}]+bestaudio[ext=m4a]`,
+    `best[ext=mp4][vcodec!=none][acodec!=none][height<=${fallbackHeight}][height>=360]`,
     `best[vcodec!=none][acodec!=none][height<=${fallbackHeight}]`,
   ].join("/");
 }
