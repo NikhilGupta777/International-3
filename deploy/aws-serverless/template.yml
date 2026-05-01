@@ -127,7 +127,13 @@ Parameters:
     Default: download,clip-cut
   LambdaClipMaxDurationSeconds:
     Type: Number
-    Default: 480
+    Default: 600
+  LambdaClipCommandTimeoutMs:
+    Type: Number
+    Default: 840000
+  MaxConcurrentClipJobs:
+    Type: Number
+    Default: 3
   SubtitlesForceLambda:
     Type: String
     Default: "false"
@@ -319,6 +325,8 @@ Resources:
           YOUTUBE_QUEUE_PRIMARY_JOB_TYPES: !Ref YoutubeQueuePrimaryJobTypes
           YOUTUBE_QUEUE_SHADOW_JOB_TYPES: !Ref YoutubeQueueShadowJobTypes
           LAMBDA_CLIP_MAX_DURATION_SECONDS: !Ref LambdaClipMaxDurationSeconds
+          LAMBDA_CLIP_COMMAND_TIMEOUT_MS: !Ref LambdaClipCommandTimeoutMs
+          MAX_CONCURRENT_CLIP_JOBS: !Ref MaxConcurrentClipJobs
           SUBTITLES_FORCE_LAMBDA: !Ref SubtitlesForceLambda
           SUBTITLES_LAMBDA_MAX_DURATION_SECONDS: !Ref SubtitlesLambdaMaxDurationSeconds
           YOUTUBE_QUEUE_REGION: !Ref YoutubeQueueRegion

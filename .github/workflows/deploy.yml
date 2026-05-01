@@ -28,6 +28,7 @@ concurrency:
   cancel-in-progress: false # never cancel a running deploy mid-flight
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   AWS_REGION: us-east-1
   AWS_ACCOUNT_ID: "596596146505"
   ECR_API_REPO: ytgrabber-green-api-lambda
@@ -386,7 +387,9 @@ jobs:
           upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
           upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"
           upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,best-clips,bhagwat-analyze,bhagwat-render,subtitles"
-          upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "480"
+          upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "600"
+          upsert_env "LAMBDA_CLIP_COMMAND_TIMEOUT_MS" "840000"
+          upsert_env "MAX_CONCURRENT_CLIP_JOBS" "3"
           upsert_env "SUBTITLES_FORCE_LAMBDA" "false"
           upsert_env "SUBTITLES_LAMBDA_MAX_DURATION_SECONDS" "600"
           upsert_env "YTDLP_COOKIES_FILE" "/tmp/yt-cookies.txt"

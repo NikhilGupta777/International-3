@@ -643,7 +643,7 @@ const downloadRateLimiter = createIpRateLimiter("POST /youtube/download");
 const clipsRateLimiter = createIpRateLimiter("POST /youtube/clips");
 const cancelRateLimiter = createIpRateLimiter("POST /youtube/cancel/:jobId");
 const LAMBDA_CLIP_MAX_DURATION_SECONDS = Number(
-  process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 8 * 60,
+  process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 10 * 60,
 );
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
@@ -1700,7 +1700,7 @@ const MAX_CLIP_CLIENT_FALLBACKS = 2;
 const MAX_CLIP_DOWNLOAD_ATTEMPTS = 3;
 const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
   60_000,
-  Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "180000", 10) || 180_000,
+  Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "840000", 10) || 840_000,
 );
 const LAMBDA_CLIP_FORCE_KEYFRAMES =
   process.env.LAMBDA_CLIP_FORCE_KEYFRAMES === "true";
