@@ -717,6 +717,10 @@ const YTDLP_MAX_DOWNLOAD_ATTEMPTS = Math.max(
   1,
   Number.parseInt(process.env.YTDLP_MAX_DOWNLOAD_ATTEMPTS ?? "4", 10) || 4,
 );
+const YTDLP_MAX_INFO_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.YTDLP_MAX_INFO_ATTEMPTS ?? "3", 10) || 3,
+);
 
 // Resolve ffmpeg: prefer the system binary (NixOS/Replit has a full ffmpeg on PATH
 // that is more stable than the bundled ffmpeg-static which can segfault on NixOS).
@@ -963,12 +967,17 @@ function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
   });
 }
 
-async function runYtDlp(args: string[]): Promise<string> {
+async function runYtDlp(
+  args: string[],
+  options: { maxAttempts?: number } = {},
+): Promise<string> {
   await ensureYtdlpCookiesLoaded();
   const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = !!(maybeUrl && isYouTubeUrl(maybeUrl));
   const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const maxAttempts = Math.max(1, options.maxAttempts ?? Number.POSITIVE_INFINITY);
+  let attemptsUsed = 0;
 
   const attemptPlans: string[][] = [];
   if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
@@ -988,10 +997,12 @@ async function runYtDlp(args: string[]): Promise<string> {
   const attempted = new Set<string>();
 
   for (const extra of attemptPlans) {
+    if (attemptsUsed >= maxAttempts) break;
     const key = extra.join("\u0001");
     if (attempted.has(key)) continue;
     attempted.add(key);
     try {
+      attemptsUsed += 1;
       return await runYtDlpOnce(extra, args);
     } catch (err) {
       lastErr =
@@ -1010,14 +1021,17 @@ async function runYtDlp(args: string[]): Promise<string> {
   // Only try extractor fallback strategies if we are in a YouTube block scenario.
   if (isYt && lastErr) {
     for (const fallback of youtubeFallbacks) {
+      if (attemptsUsed >= maxAttempts) break;
       const plans = cookieArgs.length
         ? [[...cookieArgs, ...fallback], fallback]
         : [fallback];
       for (const extra of plans) {
+        if (attemptsUsed >= maxAttempts) break;
         const key = extra.join("\u0001");
         if (attempted.has(key)) continue;
         attempted.add(key);
         try {
+          attemptsUsed += 1;
           return await runYtDlpOnce(extra, args);
         } catch (err) {
           lastErr =
@@ -1139,7 +1153,10 @@ function mergeMetadataCandidates(candidates: any[]): any {
 async function runYtDlpMetadata(url: string): Promise<any> {
   const cached = getCachedMeta(url);
   if (cached) return JSON.parse(cached);
-  const raw = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", url]);
+  const raw = await runYtDlp(
+    ["--dump-json", "--no-playlist", "--no-warnings", url],
+    { maxAttempts: YTDLP_MAX_INFO_ATTEMPTS },
+  );
   setCachedMeta(url, raw);
   return JSON.parse(raw);
 }
@@ -1903,6 +1920,9 @@ async function tryProcessClipCutViaFullSource(
   const clipDuration = Math.max(0, clipEnd - clipStart);
   let sourceDuration: number | null = null;
   try {
+    jobRef.message = "Checking clip source...";
+    jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+    persistProgress();
     const meta = await runYtDlpMetadata(jobRef.url);
     const duration = Number(meta?.duration);
     sourceDuration = Number.isFinite(duration) && duration > 0 ? duration : null;
@@ -4812,6 +4832,7 @@ export function getYoutubeOpsSnapshot() {
     limits: {
       maxConcurrentClipJobs: MAX_CONCURRENT_CLIP_JOBS,
       maxClipAttempts: MAX_CLIP_DOWNLOAD_ATTEMPTS,
+      maxInfoAttempts: YTDLP_MAX_INFO_ATTEMPTS,
       maxDownloadAttempts: YTDLP_MAX_DOWNLOAD_ATTEMPTS,
       downloadStallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
     },
