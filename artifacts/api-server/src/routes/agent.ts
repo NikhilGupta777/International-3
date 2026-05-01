@@ -6,14 +6,14 @@
  */
 
 import { Router } from "express";
-import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { Modality, Type } from "@google/genai";
 import { randomUUID } from "crypto";
 import { setupSse } from "../lib/sse";
 import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3 } from "../lib/s3-storage";
+import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 
 const router = Router();
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "";
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-pro";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash"; // for grounded web search
@@ -789,7 +789,7 @@ async function generateImageArtifact(params: {
   inputImage?: { data: string; mimeType: string };
   filenamePrefix: string;
 }): Promise<{ imageUrl: string; filename: string; text: string }> {
-  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const ai = createGeminiClient();
   const parts: any[] = [{ text: params.prompt }];
   if (params.inputImage) {
     parts.push({ inlineData: { mimeType: params.inputImage.mimeType, data: params.inputImage.data } });
@@ -821,7 +821,7 @@ async function generateImageArtifact(params: {
 }
 
 async function textModelArtifact(label: string, prompt: string): Promise<{ result: any; artifact: object }> {
-  const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+  const ai = createGeminiClient();
   const resp = await ai.models.generateContent({
     model: ULTRA_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -1375,7 +1375,7 @@ async function executeTool(
       sseEvent(res, { type: "tool_progress", toolId, name, message: `Searching: "${query}"...` });
 
       // Strategy: Use Gemini's native Google Search grounding tool.
-      // This works with the existing GEMINI_API_KEY — no extra keys required.
+      // Uses Vertex Gemini when configured, otherwise falls back to the API key provider.
       // If that fails, fall back to Tavily / Serper if keys are set.
       const TAVILY_KEY = process.env.TAVILY_API_KEY;
       const SERPER_KEY = process.env.SERPER_API_KEY;
@@ -1384,7 +1384,7 @@ async function executeTool(
         // Primary: Gemini 2.0 Flash with googleSearch grounding
         // Note: googleSearch grounding cannot be mixed with functionDeclarations
         // in the same request, so we use a separate AI client call here.
-        const searchAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+        const searchAi = createGeminiClient();
         const searchResp = await searchAi.models.generateContent({
           model: SEARCH_MODEL, // gemini-2.5-flash — supports grounding + is free tier
           contents: [{ role: "user", parts: [{ text: [
@@ -1641,7 +1641,7 @@ async function executeTool(
       if (!image) throw new Error("Attach an image first, then ask me to inspect it.");
       logTool("Describing attached image", { image: image.name });
       sseEvent(res, { type: "tool_progress", toolId, name, message: "Inspecting image..." });
-      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
         contents: [{
@@ -1662,7 +1662,7 @@ async function executeTool(
       if (!image) throw new Error("Attach an image first, then ask me to read its text.");
       logTool("Reading text from attached image", { image: image.name });
       sseEvent(res, { type: "tool_progress", toolId, name, message: "Reading image text..." });
-      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
         contents: [{
@@ -1715,7 +1715,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       sseEvent(res, { type: "tool_progress", toolId, name, message: `Reading ${attachment.name}...` });
 
       if ((attachment.mimeType.includes("pdf") || /\.pdf$/i.test(attachment.name)) && attachment.url && !attachment.url.startsWith("data:")) {
-        const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+        const ai = createGeminiClient();
         const resp = await ai.models.generateContent({
           model: ULTRA_MODEL,
           contents: [{
@@ -1803,7 +1803,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       const task = String(args.task ?? "Analyze this data.").trim();
       logTool("Running code analysis", { task });
       sseEvent(res, { type: "tool_progress", toolId, name, message: "Running code analysis..." });
-      const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
         contents: [{
@@ -1833,7 +1833,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
 
       // Use Gemini's native YouTube video understanding via file_data.
       // The model receives the actual video frames + audio — it truly watches the video.
-      const videoAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+      const videoAi = createGeminiClient();
       const videoResp = await videoAi.models.generateContent({
         model: ULTRA_MODEL, // Use Pro/Ultra for best video understanding
         contents: [{
@@ -1872,8 +1872,8 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
 
 // â”€â”€ POST /api/agent/chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 router.post("/agent/chat", async (req, res) => {
-  if (!GEMINI_API_KEY) {
-    res.status(503).json({ error: "AI Copilot not configured â€” add GEMINI_API_KEY to environment." });
+  if (!isGeminiConfigured()) {
+    res.status(503).json({ error: "AI Copilot not configured - add Vertex Gemini env or GEMINI_API_KEY." });
     return;
   }
 
@@ -1952,7 +1952,7 @@ router.post("/agent/chat", async (req, res) => {
   }, 8000);
 
   try {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const ai = createGeminiClient();
 
     // Build Gemini contents � multimodal aware.
     // Images ? inlineData bytes (Gemini Vision sees actual pixels, same as Claude/ChatGPT).

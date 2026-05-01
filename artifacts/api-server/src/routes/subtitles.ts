@@ -14,6 +14,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
+import { createGeminiClient, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
@@ -997,6 +998,7 @@ function audioMimeType(ext: string): string {
 function isAiConfigured(): boolean {
   return !!(
     (process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
+    isVertexOrKeyGeminiConfigured() ||
     getAllPersonalGeminiKeys().length > 0
   );
 }
@@ -1005,9 +1007,12 @@ function isAiConfigured(): boolean {
 const GEMINI_TIMEOUT_MS = 5 * 60 * 1000;
 
 function getGenAI(): GoogleGenAI | null {
+  if (isVertexGeminiEnabled()) {
+    return createGeminiClient({ httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
+  }
   const directKey = getAllPersonalGeminiKeys()[0] ?? null;
   if (directKey) {
-    return new GoogleGenAI({ apiKey: directKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
+    return createGeminiClient({ apiKey: directKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
   }
   return null;
 }
@@ -1028,8 +1033,11 @@ function getAllPersonalGeminiKeys(): string[] {
 
 // Returns all configured personal API key clients in order.
 function getAllPersonalGenAIClients(): GoogleGenAI[] {
+  if (isVertexGeminiEnabled()) {
+    return [createGeminiClient({ httpOptions: { timeout: GEMINI_TIMEOUT_MS } })];
+  }
   return getAllPersonalGeminiKeys()
-    .map((apiKey) => new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } }));
+    .map((apiKey) => createGeminiClient({ apiKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } }));
 }
 
 function isGeminiRetryableError(err: unknown): boolean {

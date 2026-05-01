@@ -40,6 +40,7 @@ import {
   uploadFileToS3,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
+import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import {
   getNotifyClientKey,
   notifyClientPush,
@@ -3448,6 +3449,7 @@ function audioMimeType(ext: string): string {
 }
 
 function getPersonalGeminiApiKeys(): string[] {
+  if (isVertexGeminiEnabled()) return ["__vertex__"];
   const keys: string[] = [];
   const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (first) keys.push(first);
@@ -3486,7 +3488,7 @@ async function generateWithPersonalKeyRotation(
     for (let i = 0; i < keys.length; i++) {
       const keyLabel = `key ${i + 1}`;
       try {
-        const client = new GoogleGenAI({ apiKey: keys[i] });
+        const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
         const result = await client.models.generateContent({
           model,
           contents: [{ role: "user", parts: [{ text: userContent }] }],
@@ -3525,7 +3527,7 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
   const subDir = join(DOWNLOAD_DIR, `subs-fix-${sessionId}`);
   let geminiFileName: string | null = null;
   const primaryKey = getPersonalGeminiApiKeys()[0] ?? null;
-  const genAI = primaryKey ? new GoogleGenAI({ apiKey: primaryKey }) : null;
+  const genAI = primaryKey ? (isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: primaryKey })) : null;
 
   try {
     // ── Step 1: Fetch raw subtitle VTT ──
@@ -3752,6 +3754,7 @@ ${inputTranscript}`;
 function isAiConfigured(): boolean {
   return (
     !!(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
+    isGeminiConfigured() ||
     getPersonalGeminiApiKeys().length > 0
   );
 }

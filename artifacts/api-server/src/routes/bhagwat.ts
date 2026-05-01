@@ -36,6 +36,7 @@ import {
   uploadFileToS3,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
+import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 
 const router: Router = Router();
 const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
@@ -486,7 +487,7 @@ async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
   let lastErr: unknown;
   for (let i = 0; i < keys.length; i++) {
     try {
-      const client = new GoogleGenAI({ apiKey: keys[i] });
+      const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
       const response = await client.models.generateContent({
         model: "gemini-2.5-flash-image",
         contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
@@ -511,6 +512,7 @@ async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
 function isAnyAIConfigured(): boolean {
   return (
     !!(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
+    isGeminiConfigured() ||
     getPersonalGeminiApiKeys().length > 0
   );
 }
@@ -559,6 +561,7 @@ const BHAGWAT_REVIEW_TIMEOUT_MS = Number(
 );
 
 function getPersonalGeminiApiKeys(): string[] {
+  if (isVertexGeminiEnabled()) return ["__vertex__"];
   const keys: string[] = [];
   const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (first?.trim()) keys.push(first.trim());
@@ -600,7 +603,7 @@ async function ownKeyGeminiContent(
     const modelName = OWN_KEY_TEXT_MODELS[i];
     for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
       try {
-        const client = new GoogleGenAI({ apiKey: keys[keyIndex] });
+        const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[keyIndex] });
         const result = await client.models.generateContent({
           model: modelName,
           contents: [{ role: "user", parts: [{ text: userContent }] }],
@@ -659,7 +662,7 @@ async function ownKeyGeminiStream(
     for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
       let fullText = "";
       try {
-        const client = new GoogleGenAI({ apiKey: keys[keyIndex] });
+        const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[keyIndex] });
         const stream = client.models.generateContentStream({
           model: modelName,
           contents: [{ role: "user", parts: [{ text: userContent }] }],

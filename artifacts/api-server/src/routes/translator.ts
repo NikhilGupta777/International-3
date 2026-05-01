@@ -15,7 +15,7 @@ import {
   GetObjectCommand,
   CopyObjectCommand,
 } from "@aws-sdk/client-s3";
-import { GoogleGenAI } from "@google/genai";
+import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import {
   DynamoDBClient,
@@ -66,6 +66,18 @@ const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
 const FFMPEG_BIN = process.env.FFMPEG_BIN || "/opt/bin/ffmpeg";
 const FFPROBE_BIN = process.env.FFPROBE_BIN || "/opt/bin/ffprobe";
 const TRANSLATOR_TEXT_MODEL = process.env.TRANSLATOR_TEXT_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const VERTEX_ENV_NAMES = [
+  "GOOGLE_GENAI_USE_VERTEXAI",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+  "GOOGLE_APPLICATION_CREDENTIALS_JSON",
+  "GOOGLE_APPLICATION_CREDENTIALS_BASE64",
+  "GEMINI_USE_VERTEXAI",
+  "VERTEX_AI_ENABLED",
+  "VERTEX_AI_PROJECT",
+  "VERTEX_AI_LOCATION",
+] as const;
 
 const s3    = new S3Client({ region: REGION });
 const ddb   = new DynamoDBClient({ region: REGION });
@@ -265,6 +277,7 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "GEMINI_API_KEY",    value: GEMINI_KEY },
     { name: "GEMINI_API_KEY_2",  value: GEMINI_KEY_2 },
     { name: "GEMINI_API_KEY_3",  value: GEMINI_KEY_3 },
+    ...VERTEX_ENV_NAMES.map((name) => ({ name, value: process.env[name] ?? "" })),
     { name: "TARGET_LANG",       value: options.targetLang },
     { name: "TARGET_LANG_CODE",  value: options.targetLangCode },
     { name: "SOURCE_LANG",       value: options.sourceLang },
@@ -667,8 +680,8 @@ async function transcribeFastMediaUrl(mediaUrl: string, sourceLang: string): Pro
 }
 
 async function translateSegmentsFast(segments: FastSegment[], targetLang: string): Promise<FastSegment[]> {
-  if (!GEMINI_KEY) throw new Error("GEMINI_API_KEY is not configured");
-  const ai = new GoogleGenAI({ apiKey: GEMINI_KEY });
+  if (!isGeminiConfigured()) throw new Error("Gemini is not configured. Add Vertex Gemini env or GEMINI_API_KEY.");
+  const ai = createGeminiClient();
   const payload = segments.map((seg, i) => ({ id: i + 1, text: seg.text }));
   const prompt = [
     `Translate each item to ${targetLang}.`,

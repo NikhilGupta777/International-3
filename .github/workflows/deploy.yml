@@ -384,6 +384,10 @@ jobs:
           upsert_env "YOUTUBE_BATCH_JOB_DEFINITION" "${{ needs.build-worker.outputs.batch_job_def }}"
           sed -i '/^GEMINI_API_KEY_[2-9]=/d;/^GEMINI_API_KEY_10=/d' /tmp/.env.green
           upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
+          upsert_env "GOOGLE_GENAI_USE_VERTEXAI" "${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}"
+          upsert_env "GOOGLE_CLOUD_PROJECT" "${{ secrets.GOOGLE_CLOUD_PROJECT }}"
+          upsert_env "GOOGLE_CLOUD_LOCATION" "${{ secrets.GOOGLE_CLOUD_LOCATION }}"
+          upsert_env "GOOGLE_APPLICATION_CREDENTIALS_BASE64" "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_BASE64 }}"
           upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
           upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"
           upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,best-clips,bhagwat-analyze,bhagwat-render,subtitles"

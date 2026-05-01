@@ -45,6 +45,7 @@ Parameters:
   GeminiApiKey:
     Type: String
     NoEcho: true
+    Default: ""
   GeminiApiKey2:
     Type: String
     NoEcho: true
@@ -62,6 +63,23 @@ Parameters:
     NoEcho: true
     Default: ""
   GeminiApiKey6:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GoogleGenaiUseVertexai:
+    Type: String
+    Default: "false"
+  GoogleCloudProject:
+    Type: String
+    Default: ""
+  GoogleCloudLocation:
+    Type: String
+    Default: "global"
+  GoogleApplicationCredentialsJson:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GoogleApplicationCredentialsBase64:
     Type: String
     NoEcho: true
     Default: ""
@@ -322,6 +340,11 @@ Resources:
           GEMINI_API_KEY_4: !Ref GeminiApiKey4
           GEMINI_API_KEY_5: !Ref GeminiApiKey5
           GEMINI_API_KEY_6: !Ref GeminiApiKey6
+          GOOGLE_GENAI_USE_VERTEXAI: !Ref GoogleGenaiUseVertexai
+          GOOGLE_CLOUD_PROJECT: !Ref GoogleCloudProject
+          GOOGLE_CLOUD_LOCATION: !Ref GoogleCloudLocation
+          GOOGLE_APPLICATION_CREDENTIALS_JSON: !Ref GoogleApplicationCredentialsJson
+          GOOGLE_APPLICATION_CREDENTIALS_BASE64: !Ref GoogleApplicationCredentialsBase64
           ASSEMBLYAI_API_KEY: !Ref AssemblyAiApiKey
           YTDLP_COOKIES_FILE: !Ref YtdlpCookiesFile
           YTDLP_COOKIES_S3_KEY: !Ref YtdlpCookiesS3Key

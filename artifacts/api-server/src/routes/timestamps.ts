@@ -31,6 +31,7 @@ import {
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { readTextFromS3 } from "../lib/s3-storage";
+import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 
 const router = Router();
 
@@ -579,10 +580,10 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
     }
   }
 
-  if (!GEMINI_API_KEY) throw new Error("No Gemini API key configured. Set GEMINI_API_KEY in Secrets.");
+  if (!isGeminiConfigured()) throw new Error("No Gemini provider configured. Set Vertex Gemini env or GEMINI_API_KEY.");
 
   try {
-    const client = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const client = createGeminiClient();
     const result = await client.models.generateContent({
       model: "gemini-2.5-pro",
       contents: [{ role: "user", parts: [{ text: userContent }] }],
@@ -591,7 +592,7 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
     return (result as any).text ?? "";
   } catch (err) {
     logger.warn({ err }, "[timestamps] Gemini 2.5 Pro failed");
-    throw new Error("Gemini timestamp generation failed. Check GEMINI_API_KEY and try again.");
+    throw new Error("Gemini timestamp generation failed. Check Vertex Gemini env or GEMINI_API_KEY and try again.");
   }
 }
 

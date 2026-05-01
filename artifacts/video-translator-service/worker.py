@@ -53,9 +53,12 @@ S3_INPUT_KEY        = os.environ["S3_INPUT_KEY"]          # translator-jobs/{job
 S3_OUTPUT_PREFIX    = os.environ.get("S3_OUTPUT_PREFIX", f"translator-jobs/{JOB_ID}")
 DYNAMODB_TABLE      = os.environ["DYNAMODB_TABLE"]
 DYNAMODB_REGION     = os.environ.get("DYNAMODB_REGION", "us-east-1")
-GEMINI_API_KEY      = os.environ["GEMINI_API_KEY"]
+GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_API_KEY_2    = os.environ.get("GEMINI_API_KEY_2", "")
 GEMINI_API_KEY_3    = os.environ.get("GEMINI_API_KEY_3", "")
+GOOGLE_GENAI_USE_VERTEXAI = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes", "on")
+GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT", "")
+GOOGLE_CLOUD_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION") or os.environ.get("VERTEX_AI_LOCATION", "global")
 
 TARGET_LANG         = os.environ.get("TARGET_LANG", "Hindi")
 TARGET_LANG_CODE    = os.environ.get("TARGET_LANG_CODE", "hi")
@@ -476,9 +479,39 @@ def _ensure_cosyvoice() -> Path:
 GEMINI_KEYS = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3] if k]
 _gemini_key_idx = 0
 
+def _hydrate_google_credentials():
+    existing = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if existing and Path(existing).exists():
+        return
+    raw_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
+    raw_base64 = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_BASE64", "").strip()
+    if not raw_json and raw_base64:
+        import base64
+        raw_json = base64.b64decode(raw_base64).decode("utf-8")
+    if not raw_json:
+        return
+    path = Path(tempfile.gettempdir()) / "google-vertex-credentials.json"
+    path.write_text(raw_json, encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except Exception:
+        pass
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(path)
+
 def _get_gemini_client():
     global _gemini_key_idx
     from google import genai
+    if GOOGLE_GENAI_USE_VERTEXAI:
+        if not GOOGLE_CLOUD_PROJECT:
+            raise RuntimeError("Vertex Gemini is enabled but GOOGLE_CLOUD_PROJECT is not configured")
+        _hydrate_google_credentials()
+        return genai.Client(
+            vertexai=True,
+            project=GOOGLE_CLOUD_PROJECT,
+            location=GOOGLE_CLOUD_LOCATION,
+        )
+    if not GEMINI_KEYS:
+        raise RuntimeError("No Gemini provider configured. Set Vertex Gemini env or GEMINI_API_KEY.")
     key = GEMINI_KEYS[_gemini_key_idx % len(GEMINI_KEYS)]
     _gemini_key_idx += 1
     return genai.Client(api_key=key)

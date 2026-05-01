@@ -56,6 +56,9 @@ artifacts/api-server/*-player-script.js
 
 # Local Environment / Secrets
 .env
+credentials.json
+*credentials*.json
+google-vertex-credentials.json
 .yt-cookies.txt
 ytgrabber-key-*.pem
 deploy/ec2/keys/

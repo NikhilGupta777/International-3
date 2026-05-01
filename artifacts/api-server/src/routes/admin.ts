@@ -17,6 +17,7 @@ import {
 } from "../lib/s3-storage";
 import { getSubtitlesOpsSnapshot } from "./subtitles";
 import { getYoutubeOpsSnapshot } from "./youtube";
+import { isGeminiConfigured } from "../lib/gemini-client";
 
 const router: IRouter = Router();
 
@@ -117,7 +118,7 @@ router.get("/overview", (_req, res) => {
       translatorBatchConfigured: translatorConfigured,
       s3StorageEnabled: isS3StorageEnabled(),
       notificationsConfigured: configured(process.env.VAPID_PUBLIC_KEY) && configured(process.env.VAPID_PRIVATE_KEY),
-      geminiConfigured: configured(process.env.GEMINI_API_KEY) || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
+      geminiConfigured: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
     },
     limits: {
       lambdaClipMaxDurationSeconds: Number(process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 480),
@@ -152,13 +153,13 @@ router.get("/overview", (_req, res) => {
       signedUrlTtlSec: s3.signedUrlTtlSec,
     },
     tools: [
-      { key: "super-agent", label: "Super Agent", status: configured(process.env.GEMINI_API_KEY) || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Routes user prompts to download, clip, subtitle, summarize, timestamp, translate, and sharing tools." },
+      { key: "super-agent", label: "Super Agent", status: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Routes user prompts to download, clip, subtitle, summarize, timestamp, translate, and sharing tools." },
       { key: "download", label: "Download", status: isS3StorageEnabled() ? "ready" : "local-only", detail: "Full video/audio downloads with downloadable result cards." },
       { key: "clip-cut", label: "Clip Cut", status: "ready", detail: `Lambda-fast clips up to ${process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 480}s when eligible.` },
-      { key: "best-clips", label: "Best Clips", status: configured(process.env.GEMINI_API_KEY) || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Finds viral moments and can send cuts to clip tooling." },
+      { key: "best-clips", label: "Best Clips", status: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Finds viral moments and can send cuts to clip tooling." },
       { key: "subtitles", label: "Subtitles", status: "ready", detail: `Lambda-fast subtitles up to ${process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600}s when eligible.` },
       { key: "translator", label: "Translator", status: translatorConfigured ? "ready" : "needs-batch", detail: "GPU translation pipeline with optional voice cloning/lip sync." },
-      { key: "timestamps", label: "Timestamps", status: configured(process.env.GEMINI_API_KEY) || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Chapter marker generation from video/audio." },
+      { key: "timestamps", label: "Timestamps", status: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Chapter marker generation from video/audio." },
       { key: "find-sabha", label: "Find Sabha", status: "ready", detail: "Searches sabha/date/video clues, including screenshot workflows where configured." },
       { key: "share", label: "Share", status: isS3StorageEnabled() ? "ready" : "needs-s3", detail: "Large file sharing through cloud-backed signed links." },
       { key: "google-auth", label: "Google Sign-In", status: enabled(process.env.GOOGLE_AUTH_ENABLED) ? "enabled" : "disabled", detail: "Approved Gmail allow-list login." },
