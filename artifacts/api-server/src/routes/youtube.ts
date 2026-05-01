@@ -1666,6 +1666,19 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
   };
 
   jobs.set(jobId, job);
+  try {
+    await putYoutubeQueueLocalJob({
+      jobId,
+      jobType: "download",
+      sourceUrl: normalizedUrl,
+      status: "pending",
+      message: job.message ?? "Starting download...",
+      progressPct: 0,
+      filename: job.filename,
+    });
+  } catch (err) {
+    req.log.warn({ err, jobId }, "Failed to persist Lambda download start state");
+  }
   res.json({ jobId, status: "pending", message: "Download started" });
 
   void submitYoutubeQueueShadowJob({
@@ -1691,12 +1704,16 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
       } else {
         j.status = "error";
         j.message = message;
+        persistDownloadJobState(jobId, j);
         pushFailureNotification(
           j,
           "Download failed",
           message.slice(0, 200),
           `download-error:${jobId}`,
         );
+      }
+      if (message === CANCELLED_BY_USER || j.cancelled) {
+        persistDownloadJobState(jobId, j);
       }
     }
   });
@@ -2532,6 +2549,14 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.ext = ext;
   jobRef.status = "downloading";
   jobRef.message = isAudioOnly ? "Downloading audio..." : "Downloading...";
+  persistDownloadJobState(jobId, jobRef);
+  let lastPersistAt = 0;
+  const persistProgress = () => {
+    const now = Date.now();
+    if (now - lastPersistAt < 2000) return;
+    lastPersistAt = now;
+    persistDownloadJobState(jobId, jobRef);
+  };
 
   const cmdArgs: string[] = [
     "--no-playlist",
@@ -2581,6 +2606,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
       attemptsUsed += 1;
       await spawnDownloadOnce(extra, cmdArgs, jobRef, {
         stallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
+        onProgress: persistProgress,
       });
       lastErr = null;
       break;
@@ -2595,6 +2621,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   if (lastErr && isYt) {
     jobRef.status = "downloading";
     jobRef.message = isAudioOnly ? "Retrying download..." : "Retrying with alternate client...";
+    persistDownloadJobState(jobId, jobRef);
     for (const fallback of downloadFallbacks) {
       if (attemptsUsed >= YTDLP_MAX_DOWNLOAD_ATTEMPTS) break;
       const plans = cookieArgs.length
@@ -2609,6 +2636,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
           attemptsUsed += 1;
           await spawnDownloadOnce(extra, cmdArgs, jobRef, {
             stallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
+            onProgress: persistProgress,
           });
           lastErr = null;
           break;
@@ -2661,6 +2689,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.speed = null;
   jobRef.eta = null;
   jobRef.message = null;
+  persistDownloadJobState(jobId, jobRef);
   pushCompletionNotification(
     jobRef,
     "Download complete",
@@ -2697,6 +2726,17 @@ function persistClipJobState(jobId: string, job: DownloadJob): void {
     s3Key: job.s3Key ?? null,
     durationSecs,
   }).catch((err) => logger.warn({ err, jobId }, "Failed to persist clip job state"));
+}
+
+function persistDownloadJobState(jobId: string, job: DownloadJob): void {
+  void updateYoutubeQueueLocalJob(jobId, {
+    status: job.status,
+    message: job.message,
+    progressPct: job.percent,
+    filename: job.filename,
+    filesize: job.filesize,
+    s3Key: job.s3Key ?? null,
+  }).catch((err) => logger.warn({ err, jobId }, "Failed to persist download job state"));
 }
 
 function disableProgressCache(res: Response): void {
