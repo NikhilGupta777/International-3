@@ -705,6 +705,10 @@ const BASE_YTDLP_ARGS: string[] = [
   "--user-agent",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
 ];
+const YTDLP_INFO_TIMEOUT_MS = Math.max(
+  15_000,
+  Number.parseInt(process.env.YTDLP_INFO_TIMEOUT_MS ?? "20000", 10) || 20_000,
+);
 
 // Resolve ffmpeg: prefer the system binary (NixOS/Replit has a full ffmpeg on PATH
 // that is more stable than the bundled ffmpeg-static which can segfault on NixOS).
@@ -902,6 +906,18 @@ function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
     });
     let stdout = "";
     let stderr = "";
+    const timeout = setTimeout(() => {
+      stderr += `\nyt-dlp info command timed out after ${Math.round(YTDLP_INFO_TIMEOUT_MS / 1000)} seconds`;
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+      }, 5000).unref?.();
+    }, YTDLP_INFO_TIMEOUT_MS);
+    timeout.unref?.();
     proc.stdout?.on("data", (d) => {
       stdout += d.toString();
     });
@@ -909,15 +925,17 @@ function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
       stderr += d.toString();
     });
     proc.on("close", (code) => {
+      clearTimeout(timeout);
       if (code === 0) resolve(stdout);
       else
         reject(
           new Error(stderr.slice(-500) || `yt-dlp exited with code ${code}`),
         );
     });
-    proc.on("error", (err) =>
-      reject(new Error(`Failed to start yt-dlp: ${err.message}`)),
-    );
+    proc.on("error", (err) => {
+      clearTimeout(timeout);
+      reject(new Error(`Failed to start yt-dlp: ${err.message}`));
+    });
   });
 }
 
@@ -1708,7 +1726,7 @@ const LAMBDA_CLIP_STALL_TIMEOUT_MS = Math.max(
 );
 const LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS = Math.max(
   60,
-  Number.parseInt(process.env.LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS ?? "1800", 10) || 1800,
+  Number.parseInt(process.env.LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS ?? "3600", 10) || 3600,
 );
 const MIN_CLIP_ATTEMPT_TIMEOUT_MS = 30_000;
 const LAMBDA_CLIP_FORCE_KEYFRAMES =
@@ -1839,6 +1857,7 @@ async function tryProcessClipCutViaFullSource(
   clipDeadlineAt: number,
   persistProgress: () => void,
 ): Promise<boolean> {
+  const clipDuration = Math.max(0, clipEnd - clipStart);
   let sourceDuration: number | null = null;
   try {
     const meta = await runYtDlpMetadata(jobRef.url);
@@ -1849,8 +1868,9 @@ async function tryProcessClipCutViaFullSource(
   }
 
   if (
-    sourceDuration == null ||
-    sourceDuration > LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS
+    sourceDuration != null &&
+    sourceDuration > LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS &&
+    clipDuration > 120
   ) {
     return false;
   }
