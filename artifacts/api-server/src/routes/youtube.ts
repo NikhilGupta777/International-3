@@ -713,6 +713,10 @@ const YTDLP_DOWNLOAD_STALL_TIMEOUT_MS = Math.max(
   30_000,
   Number.parseInt(process.env.YTDLP_DOWNLOAD_STALL_TIMEOUT_MS ?? "60000", 10) || 60_000,
 );
+const YTDLP_MAX_DOWNLOAD_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(process.env.YTDLP_MAX_DOWNLOAD_ATTEMPTS ?? "4", 10) || 4,
+);
 
 // Resolve ffmpeg: prefer the system binary (NixOS/Replit has a full ffmpeg on PATH
 // that is more stable than the bundled ffmpeg-static which can segfault on NixOS).
@@ -873,6 +877,9 @@ function isYouTubeBlockedError(message: string): boolean {
 }
 
 function getUserFriendlyYtError(message: string): string {
+  if (/made no progress|command timed out/i.test(message)) {
+    return "YouTube is not sending video data to our server right now. Please try again later or use another video.";
+  }
   if (/not made this video available|not available in your country|geo.*restrict|available in.*india|available in.*[a-z]+\./i.test(message)) {
     const countryMatch = message.match(/available in ([^.\n]+)/i);
     const country = countryMatch ? countryMatch[1].trim() : "certain countries";
@@ -897,6 +904,19 @@ function getUserFriendlyYtError(message: string): string {
     return "Could not find a compatible video format. Please try again.";
   }
   return "Failed to fetch video information";
+}
+
+function getDownloaderFailureMessage(message: string): string {
+  if (/made no progress|command timed out|confirm.*not a bot|bot.*detect|http error 403|http error 429|too many requests|rate.?limit/i.test(message)) {
+    const missingBypass: string[] = [];
+    if (!HAS_DYNAMIC_POT_PROVIDER && !HAS_STATIC_PO_TOKEN) missingBypass.push("PO-token provider");
+    if (!YTDLP_PROXY) missingBypass.push("proxy");
+    const suffix = missingBypass.length
+      ? ` Configure ${missingBypass.join(" or ")} for reliable server-side YouTube downloads.`
+      : "";
+    return `${getUserFriendlyYtError(message)}${suffix}`;
+  }
+  return message;
 }
 
 function runYtDlpOnce(extraArgs: string[], args: string[]): Promise<string> {
@@ -1472,6 +1492,8 @@ router.get("/youtube/diagnostics", async (_req: Request, res: Response) => {
     ? "web+web_embedded (dynamic pot provider mode)"
     : hasPoToken
     ? "web+web_embedded (static po_token mode)"
+    : hasCookies
+    ? "web,web_embedded,tv_embedded (cookies mode)"
     : "tv_embedded,android_vr,mweb (server-IP mode)";
   const storage = getS3StorageConfig();
 
@@ -1922,7 +1944,9 @@ async function tryProcessClipCutViaFullSource(
 
   let lastErr: Error | null = null;
   const attempted = new Set<string>();
+  let attemptsUsed = 0;
   for (const extra of attemptPlans) {
+    if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) break;
     const key = extra.join("\u0001");
     if (attempted.has(key)) continue;
     attempted.add(key);
@@ -1933,6 +1957,7 @@ async function tryProcessClipCutViaFullSource(
       );
     }
     try {
+      attemptsUsed += 1;
       await spawnDownloadOnce(extra, cmdArgs, jobRef, {
         timeoutMs: remainingMs,
         stallTimeoutMs: Math.min(LAMBDA_CLIP_STALL_TIMEOUT_MS, YTDLP_DOWNLOAD_STALL_TIMEOUT_MS),
@@ -1948,7 +1973,9 @@ async function tryProcessClipCutViaFullSource(
       persistProgress();
     }
   }
-  if (lastErr) throw lastErr;
+  if (lastErr) {
+    throw new Error(getDownloaderFailureMessage(lastErr.message));
+  }
 
   const sourcePath =
     findNewestOutputWithPrefix(sourcePrefix, ["mp4", "mkv", "webm"]) ??
@@ -2151,10 +2178,10 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
 
   if (lastErr && attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) {
     throw new Error(
-      `Clip cut failed after ${attemptsUsed} attempts: ${lastErr.message}`,
+      `Clip cut failed after ${attemptsUsed} attempts: ${getDownloaderFailureMessage(lastErr.message)}`,
     );
   }
-  if (lastErr) throw lastErr;
+  if (lastErr) throw new Error(getDownloaderFailureMessage(lastErr.message));
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   const possibleExts = ["mp4"];
@@ -2540,13 +2567,16 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
 
   const attempted = new Set<string>();
   let lastErr: Error | null = null;
+  let attemptsUsed = 0;
 
   // First pass: base args (with and without cookies)
   for (const extra of attemptPlans) {
+    if (attemptsUsed >= YTDLP_MAX_DOWNLOAD_ATTEMPTS) break;
     const key = extra.join("\u0001");
     if (attempted.has(key)) continue;
     attempted.add(key);
     try {
+      attemptsUsed += 1;
       await spawnDownloadOnce(extra, cmdArgs, jobRef, {
         stallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
       });
@@ -2564,14 +2594,17 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
     jobRef.status = "downloading";
     jobRef.message = isAudioOnly ? "Retrying download..." : "Retrying with alternate client...";
     for (const fallback of downloadFallbacks) {
+      if (attemptsUsed >= YTDLP_MAX_DOWNLOAD_ATTEMPTS) break;
       const plans = cookieArgs.length
         ? [[...cookieArgs, ...fallback], fallback]
         : [fallback];
       for (const extra of plans) {
+        if (attemptsUsed >= YTDLP_MAX_DOWNLOAD_ATTEMPTS) break;
         const key = extra.join("\u0001");
         if (attempted.has(key)) continue;
         attempted.add(key);
         try {
+          attemptsUsed += 1;
           await spawnDownloadOnce(extra, cmdArgs, jobRef, {
             stallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
           });
@@ -2585,7 +2618,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
     }
   }
 
-  if (lastErr) throw lastErr;
+  if (lastErr) throw new Error(getDownloaderFailureMessage(lastErr.message));
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   // Find the output file (yt-dlp may change extension)
@@ -4737,6 +4770,8 @@ export function getYoutubeOpsSnapshot() {
     limits: {
       maxConcurrentClipJobs: MAX_CONCURRENT_CLIP_JOBS,
       maxClipAttempts: MAX_CLIP_DOWNLOAD_ATTEMPTS,
+      maxDownloadAttempts: YTDLP_MAX_DOWNLOAD_ATTEMPTS,
+      downloadStallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
     },
     queue: {
       queuedClipJobs: queuedClipJobs.length,
