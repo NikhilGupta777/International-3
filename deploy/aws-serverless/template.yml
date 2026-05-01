@@ -24,6 +24,21 @@ Parameters:
   WebsiteAuthPassword:
     Type: String
     NoEcho: true
+  GoogleAuthEnabled:
+    Type: String
+    Default: "false"
+  GoogleClientId:
+    Type: String
+    Default: ""
+  ApprovedUserEmails:
+    Type: String
+    Default: ""
+  ApprovedAdminEmails:
+    Type: String
+    Default: ""
+  AdminPanelEnabled:
+    Type: String
+    Default: "false"
   BhagwatPassword:
     Type: String
     NoEcho: true
@@ -276,6 +291,11 @@ Resources:
           SESSION_SECRET: !Ref SessionSecret
           WEBSITE_AUTH_USER: !Ref WebsiteAuthUser
           WEBSITE_AUTH_PASSWORD: !Ref WebsiteAuthPassword
+          GOOGLE_AUTH_ENABLED: !Ref GoogleAuthEnabled
+          GOOGLE_CLIENT_ID: !Ref GoogleClientId
+          APPROVED_USER_EMAILS: !Ref ApprovedUserEmails
+          APPROVED_ADMIN_EMAILS: !Ref ApprovedAdminEmails
+          ADMIN_PANEL_ENABLED: !Ref AdminPanelEnabled
           BHAGWAT_PASSWORD: !Ref BhagwatPassword
           GEMINI_API_KEY: !Ref GeminiApiKey
           GEMINI_API_KEY_2: !Ref GeminiApiKey2

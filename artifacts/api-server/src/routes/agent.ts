@@ -34,7 +34,7 @@ const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "best[vcodec!=none][acodec!=none]";
 const TOOL_PARALLEL_LIMITS = {
   light: 3,
-  youtube_processing: 2,
+  youtube_processing: 3,
 } as const;
 
 type ToolParallelGroup = keyof typeof TOOL_PARALLEL_LIMITS | "serial";
@@ -645,6 +645,7 @@ You can chain up to ${MAX_ITERATIONS} tool calls per turn. Use that:
 - If a tool result contains a clear error message like "video unavailable" or "private", stop retrying and tell the user plainly.
 
 When multiple requested actions are independent, call the tools together in the same turn. The backend can run safe independent work in parallel. Keep dependent chains in order.
+For multiple clip-cut requests, call up to 3 cut_video_clip tools in the same turn. Do not cut one clip, wait, then cut the next unless the next clip depends on the previous result.
 
 # TIME ARGUMENTS
 Always pass startTime/endTime as 'MM:SS' or 'HH:MM:SS' strings exactly as the user typed them. Don't convert to seconds, don't pad zeros unnecessarily. The backend parses both formats.

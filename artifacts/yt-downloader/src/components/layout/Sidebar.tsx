@@ -2,14 +2,14 @@ import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
   ListVideo, AlarmClock, UploadCloud, Languages, Youtube, Menu, X,
-  Plus, Home as HomeIcon, CircleHelp, Activity, UserCircle2,
+  Plus, Home as HomeIcon, CircleHelp, Activity, UserCircle2, Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "help" | "activity";
+  | "upload" | "translator" | "help" | "activity" | "admin";
 
 interface NavItem {
   mode: Mode;
@@ -89,15 +89,23 @@ function NavList({
   onClose,
   onNewChat,
   hideUtility,
+  showAdmin,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
   onClose?: () => void;
   onNewChat?: () => void;
   hideUtility?: boolean;
+  showAdmin?: boolean;
 }) {
   const handle = (m: Mode) => () => { onModeChange(m); onClose?.(); };
   const handleNew = () => { onNewChat?.(); onClose?.(); };
+  const utilityItems = showAdmin
+    ? [
+        { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
+        ...UTILITY_ITEMS,
+      ]
+    : UTILITY_ITEMS;
 
   return (
     <>
@@ -115,7 +123,7 @@ function NavList({
       {!hideUtility && (
         <>
           <div className="gs-nav-divider" />
-          {UTILITY_ITEMS.map((item) => (
+          {utilityItems.map((item) => (
             <GsItem
               key={item.mode}
               item={item}
@@ -133,10 +141,12 @@ export function Sidebar({
   mode,
   onModeChange,
   onNewChat,
+  showAdmin = false,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
   onNewChat?: () => void;
+  showAdmin?: boolean;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -164,12 +174,19 @@ export function Sidebar({
             onModeChange={onModeChange}
             onNewChat={onNewChat}
             hideUtility={true}
+            showAdmin={showAdmin}
           />
         </div>
 
         {/* Bottom pinned utility items */}
         <div className="gs-rail-foot">
-          {UTILITY_ITEMS.map((item) => (
+          {(showAdmin
+            ? [
+                { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
+                ...UTILITY_ITEMS,
+              ]
+            : UTILITY_ITEMS
+          ).map((item) => (
             <GsItem
               key={item.mode}
               item={item}
@@ -219,11 +236,18 @@ export function Sidebar({
             onClose={closeDrawer}
             onNewChat={onNewChat}
             hideUtility={true}
+            showAdmin={showAdmin}
           />
         </div>
 
         <div className="gs-drawer-foot">
-          {UTILITY_ITEMS.map((item) => (
+          {(showAdmin
+            ? [
+                { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
+                ...UTILITY_ITEMS,
+              ]
+            : UTILITY_ITEMS
+          ).map((item) => (
             <GsItem
               key={item.mode}
               item={item}

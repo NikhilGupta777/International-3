@@ -1699,8 +1699,8 @@ const MAX_CLIP_FORMAT_CANDIDATES = 6;
 const MAX_CLIP_CLIENT_FALLBACKS = 2;
 const MAX_CLIP_DOWNLOAD_ATTEMPTS = 3;
 const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
-  30_000,
-  Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "60000", 10) || 60_000,
+  60_000,
+  Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "180000", 10) || 180_000,
 );
 const LAMBDA_CLIP_FORCE_KEYFRAMES =
   process.env.LAMBDA_CLIP_FORCE_KEYFRAMES === "true";
@@ -1780,6 +1780,11 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
         break;
       } catch (err) {
         lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut failed");
+        if (!jobRef.cancelled && attemptsUsed < MAX_CLIP_DOWNLOAD_ATTEMPTS) {
+          jobRef.message = "Still cutting clip, retrying stream...";
+          jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+          persistClipJobState(jobId, jobRef);
+        }
         if (!isYt || !isYouTubeBlockedError(lastErr.message)) break;
       }
     }
@@ -1806,6 +1811,11 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
             break;
           } catch (err) {
             lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut fallback failed");
+            if (!jobRef.cancelled && attemptsUsed < MAX_CLIP_DOWNLOAD_ATTEMPTS) {
+              jobRef.message = "Still cutting clip, retrying stream...";
+              jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+              persistClipJobState(jobId, jobRef);
+            }
           }
         }
         if (!lastErr) break;
@@ -1975,8 +1985,9 @@ function spawnDownloadOnce(
       return;
     }
 
-    // Reset progress state for retry attempts
-    jobRef.percent = 0;
+    // Keep visible progress stable across retry attempts. Some YouTube/ffmpeg
+    // retries spend time resolving streams before emitting progress.
+    jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
     jobRef.filename = null;
     jobRef.filePath = null;
 

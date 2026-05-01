@@ -21,6 +21,7 @@ import { Timestamps } from "@/components/Timestamps";
 import { FileUpload } from "@/components/FileUpload";
 import { HelpPanel } from "@/components/HelpPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
+import { AdminPanel } from "@/components/AdminPanel";
 import { GUIDE_TABS, type GuideMode } from "@/lib/guide-tabs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
@@ -48,7 +49,20 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "help" | "activity";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "help" | "activity" | "admin";
+
+export type AuthUser = {
+  method?: "password" | "google";
+  role?: "admin" | "user";
+  email?: string;
+  name?: string;
+  picture?: string;
+};
+
+export type AuthFeatures = {
+  googleAuthEnabled?: boolean;
+  adminPanelEnabled?: boolean;
+};
 
 type ClientAccessConfig = {
   downloadInputEnabled: boolean;
@@ -155,7 +169,13 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export default function Home() {
+export default function Home({
+  authUser,
+  authFeatures,
+}: {
+  authUser?: AuthUser | null;
+  authFeatures?: AuthFeatures | null;
+}) {
   const [url, setUrl] = useState("");
   const [submittedUrl, setSubmittedUrl] = useState("");
   const bestClipsRef = useRef<BestClipsHandle>(null);
@@ -323,6 +343,8 @@ export default function Home() {
   const showTimestamps = mode === "timestamps";
   const showUpload = mode === "upload";
   const showCopilot = mode === "copilot";
+  const showAdmin = mode === "admin";
+  const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
 
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
@@ -343,9 +365,11 @@ export default function Home() {
               ? "Clip Cutter"
               : mode === "bhagwat"
                 ? "Bhagwat Studio"
-                : mode === "timestamps"
+                  : mode === "timestamps"
                   ? "Timestamps"
-                  : "Find Sabha";
+                  : mode === "admin"
+                    ? "Admin"
+                    : "Find Sabha";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
       ? `${modeLabel}: ${contentLabel} Ã‚Â· ${appName}`
@@ -573,6 +597,7 @@ export default function Home() {
         <Sidebar
           mode={mode}
           onModeChange={switchMode}
+          showAdmin={canUseAdmin}
           onNewChat={() => {
             setPendingCopilotPrompt(null);
             setCopilotResetKey(k => k + 1);
@@ -581,8 +606,8 @@ export default function Home() {
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "home" || mode === "help" || mode === "activity") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "home" || mode === "help" || mode === "activity") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "is-copilot", mode === "translator" && "is-copilot")}>
 
             {/* Translator tab â€” full screen */}
             {mode === "translator" && <VideoTranslator />}
@@ -601,6 +626,8 @@ export default function Home() {
                 onSwitchTab={(next) => switchMode(next as Mode)}
               />
             )}
+
+            {showAdmin && canUseAdmin && <AdminPanel />}
 
             {/* Search bar Ã¢â‚¬â€ only for download + clips modes */}
             {showSearch && (

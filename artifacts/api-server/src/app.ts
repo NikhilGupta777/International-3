@@ -8,6 +8,7 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { isEmailApproved, type AuthRole } from "./lib/auth-access";
 import {
   getHttpMetricsSnapshot,
   getSystemMetricsSnapshot,
@@ -24,6 +25,10 @@ const AUTH_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
 const AUTH_COOKIE_SECRET =
   process.env.SESSION_SECRET ??
   process.env.AUTH_COOKIE_SECRET;
+const AUTH_COOKIE_SECURE = process.env.AUTH_COOKIE_SECURE === "false" ? false : true;
+const GOOGLE_AUTH_ENABLED = process.env.GOOGLE_AUTH_ENABLED === "true";
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
+const ADMIN_PANEL_ENABLED = process.env.ADMIN_PANEL_ENABLED === "true";
 
 if (!AUTH_PASS) {
   throw new Error("WEBSITE_AUTH_PASSWORD must be set");
@@ -40,8 +45,66 @@ function secureEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb);
 }
 
+type AuthMethod = "password" | "google";
+type AuthSession = {
+  authenticated: boolean;
+  method?: AuthMethod;
+  role?: AuthRole;
+  email?: string;
+  name?: string;
+  picture?: string;
+};
+
+function encodeSessionCookie(session: Omit<AuthSession, "authenticated">): string {
+  return Buffer.from(JSON.stringify(session), "utf8").toString("base64url");
+}
+
+function decodeSessionCookie(value: unknown): AuthSession {
+  if (value === "1") {
+    return { authenticated: true, method: "password", role: "admin" };
+  }
+  if (typeof value !== "string" || !value) {
+    return { authenticated: false };
+  }
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<AuthSession>;
+    const role: AuthRole = parsed.role === "admin" ? "admin" : "user";
+    const method: AuthMethod = parsed.method === "google" ? "google" : "password";
+    return {
+      authenticated: true,
+      method,
+      role,
+      email: typeof parsed.email === "string" ? parsed.email : undefined,
+      name: typeof parsed.name === "string" ? parsed.name : undefined,
+      picture: typeof parsed.picture === "string" ? parsed.picture : undefined,
+    };
+  } catch {
+    return { authenticated: false };
+  }
+}
+
+function getAuthSession(req: Request): AuthSession {
+  return decodeSessionCookie(req.signedCookies?.[AUTH_COOKIE_NAME]);
+}
+
 function isAuthenticated(req: Request): boolean {
-  return req.signedCookies?.[AUTH_COOKIE_NAME] === "1";
+  return getAuthSession(req).authenticated;
+}
+
+function isAdmin(req: Request): boolean {
+  const session = getAuthSession(req);
+  return session.authenticated && session.role === "admin";
+}
+
+function setAuthCookie(res: Response, session: Omit<AuthSession, "authenticated"> | "legacy"): void {
+  res.cookie(AUTH_COOKIE_NAME, session === "legacy" ? "1" : encodeSessionCookie(session), {
+    httpOnly: true,
+    secure: AUTH_COOKIE_SECURE,
+    sameSite: "lax",
+    signed: true,
+    maxAge: AUTH_MAX_AGE_MS,
+    path: "/",
+  });
 }
 
 function extractLoginCredentials(req: Request): {
@@ -209,7 +272,31 @@ app.get("/api/auth/session", (req: Request, res: Response) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
-  res.json({ authenticated: isAuthenticated(req) });
+  const session = getAuthSession(req);
+  res.json({
+    authenticated: session.authenticated,
+    user: session.authenticated
+      ? {
+          method: session.method,
+          role: session.role,
+          email: session.email,
+          name: session.name,
+          picture: session.picture,
+        }
+      : null,
+    features: {
+      googleAuthEnabled: GOOGLE_AUTH_ENABLED,
+      adminPanelEnabled: ADMIN_PANEL_ENABLED,
+    },
+  });
+});
+
+app.get("/api/auth/config", (_req: Request, res: Response) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.json({
+    googleAuthEnabled: GOOGLE_AUTH_ENABLED,
+    googleClientId: GOOGLE_AUTH_ENABLED ? GOOGLE_CLIENT_ID : "",
+  });
 });
 
 app.post("/api/auth/login", (req: Request, res: Response) => {
@@ -229,22 +316,88 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
     return;
   }
 
-  res.cookie(AUTH_COOKIE_NAME, "1", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    signed: true,
-    maxAge: AUTH_MAX_AGE_MS,
-    path: "/",
-  });
+  setAuthCookie(res, "legacy");
 
   res.json({ ok: true });
+});
+
+app.post("/api/auth/google", async (req: Request, res: Response) => {
+  if (!GOOGLE_AUTH_ENABLED) {
+    res.status(404).json({ error: "Google sign-in is not enabled" });
+    return;
+  }
+  if (!GOOGLE_CLIENT_ID) {
+    res.status(503).json({ error: "Google sign-in is not configured" });
+    return;
+  }
+
+  const idToken =
+    typeof (req.body as { credential?: unknown })?.credential === "string"
+      ? ((req.body as { credential: string }).credential)
+      : typeof (req.body as { idToken?: unknown })?.idToken === "string"
+        ? ((req.body as { idToken: string }).idToken)
+        : "";
+  if (!idToken) {
+    res.status(400).json({ error: "Missing Google credential" });
+    return;
+  }
+
+  try {
+    const verifyUrl = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`;
+    const verifyRes = await fetch(verifyUrl, { method: "GET" });
+    if (!verifyRes.ok) {
+      res.status(401).json({ error: "Invalid Google credential" });
+      return;
+    }
+    const claims = await verifyRes.json() as {
+      aud?: string;
+      email?: string;
+      email_verified?: string;
+      name?: string;
+      picture?: string;
+    };
+    if (claims.aud !== GOOGLE_CLIENT_ID) {
+      res.status(401).json({ error: "Google credential audience mismatch" });
+      return;
+    }
+    if (claims.email_verified !== "true" || !claims.email) {
+      res.status(401).json({ error: "Google account email is not verified" });
+      return;
+    }
+
+    const approval = isEmailApproved(claims.email);
+    if (!approval.approved) {
+      res.status(403).json({ error: "This Google account is not approved yet" });
+      return;
+    }
+
+    setAuthCookie(res, {
+      method: "google",
+      role: approval.role,
+      email: claims.email.toLowerCase(),
+      name: claims.name,
+      picture: claims.picture,
+    });
+    res.json({
+      ok: true,
+      user: {
+        method: "google",
+        role: approval.role,
+        email: claims.email.toLowerCase(),
+        name: claims.name,
+        picture: claims.picture,
+      },
+    });
+  } catch (err) {
+    req.log.error({ err }, "Google sign-in verification failed");
+    res.status(502).json({ error: "Failed to verify Google sign-in" });
+  }
 });
 
 app.post("/api/auth/logout", (_req: Request, res: Response) => {
   res.clearCookie(AUTH_COOKIE_NAME, {
     httpOnly: true,
-    secure: true,
+    secure: AUTH_COOKIE_SECURE,
     sameSite: "lax",
     signed: true,
     path: "/",
@@ -258,6 +411,18 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     return;
   }
   if (req.path.startsWith("/auth/")) {
+    next();
+    return;
+  }
+  if (req.path.startsWith("/admin/")) {
+    if (!ADMIN_PANEL_ENABLED) {
+      res.status(404).json({ error: "Admin panel is not enabled" });
+      return;
+    }
+    if (!isAdmin(req)) {
+      res.status(403).json({ error: "Admin access required" });
+      return;
+    }
     next();
     return;
   }
