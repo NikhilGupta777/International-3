@@ -503,11 +503,12 @@ function qualityToFormatCandidates(quality: string): string[] {
     ];
   }
   return [
-    "bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]",
-    "bestvideo[vcodec^=avc1]+bestaudio",
-    "bestvideo+bestaudio",
-    "best[ext=mp4][vcodec!=none][acodec!=none][height>=360]",
-    "best[vcodec!=none][acodec!=none][height>=360]",
+    "bestvideo[vcodec^=avc1][height<=1440]+bestaudio[ext=m4a]",
+    "bestvideo[height<=1440]+bestaudio[ext=m4a]",
+    "bestvideo[vcodec^=avc1][height<=1440]+bestaudio",
+    "bestvideo[height<=1440]+bestaudio",
+    "best[ext=mp4][vcodec!=none][acodec!=none][height<=1440][height>=720]",
+    "best[vcodec!=none][acodec!=none][height<=1440][height>=720]",
     "best[ext=mp4][vcodec!=none][acodec!=none]",
     "best[vcodec!=none][acodec!=none]",
   ];
@@ -730,7 +731,7 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
     payload.sourceUrl,
   ];
 
-  await updateJobState(payload.jobId, "running", "Cutting clip...");
+  await updateJobState(payload.jobId, "running", "Cutting selected section...");
   const isYt = isYouTubeUrl(payload.sourceUrl);
   const cookieArgs = getCookieArgs();
   const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];

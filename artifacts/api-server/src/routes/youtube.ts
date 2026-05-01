@@ -1767,8 +1767,13 @@ function qualityToFormatCandidates(quality: string): string[] {
   }
 
   return [
-    "best[vcodec!=none][acodec!=none][height>=360]",
-    "best[ext=mp4][vcodec!=none][acodec!=none]",
+    "bestvideo[vcodec^=avc1][height<=1440]+bestaudio[ext=m4a]",
+    "bestvideo[height<=1440]+bestaudio[ext=m4a]",
+    "bestvideo[vcodec^=avc1][height<=1440]+bestaudio",
+    "bestvideo[height<=1440]+bestaudio",
+    "best[ext=mp4][vcodec!=none][acodec!=none][height<=1440][height>=720]",
+    "best[vcodec!=none][acodec!=none][height<=1440][height>=720]",
+    "best[ext=mp4][vcodec!=none][acodec!=none][height>=360]",
     "best[vcodec!=none][acodec!=none]",
   ];
 }
@@ -1797,7 +1802,7 @@ function qualityToSourceDownloadSelector(quality: string): string {
   const parsedHeight = Number.parseInt(normalized, 10);
   const maxHeight =
     normalized === "best" || !normalized || !Number.isFinite(parsedHeight) || parsedHeight <= 0
-      ? 1080
+      ? 1440
       : parsedHeight;
   const fallbackHeight = Math.min(maxHeight, 720);
 
@@ -2057,7 +2062,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
 
   jobRef.ext = "mp4";
   jobRef.status = "downloading";
-  jobRef.message = "Cutting clip...";
+  jobRef.message = "Cutting selected section...";
   jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
   persistClipJobState(jobId, jobRef);
   let lastPersistAt = 0;

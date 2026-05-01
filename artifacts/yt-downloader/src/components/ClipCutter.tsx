@@ -1099,10 +1099,10 @@ function ClipJobCard({
                       ? "Starting worker…"
                       : elapsed < 40
                         ? "Worker booting up…"
-                        : "Downloading…"
+                        : "Preparing clip…"
                     : job.speed
                       ? job.speed
-                      : "Downloading…"}
+                      : (job.message ?? "Cutting selected section…")}
             </span>
             <span className="font-mono">
               {job.status === "downloading" && job.percent > 0
