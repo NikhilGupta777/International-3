@@ -1092,6 +1092,45 @@ async function generateWithKeyRotation(
   throw lastErr instanceof Error ? lastErr : new Error(`${label} failed on all keys and all models`);
 }
 
+function buildNativeScriptRules(language: string): string {
+  const normalized = language.trim().toLowerCase();
+  const scriptByLanguage: Record<string, string> = {
+    hindi: "Devanagari",
+    marathi: "Devanagari",
+    sanskrit: "Devanagari",
+    odia: "Odia",
+    oriya: "Odia",
+    bengali: "Bengali",
+    telugu: "Telugu",
+    tamil: "Tamil",
+    punjabi: "Gurmukhi",
+    kannada: "Kannada",
+    english: "Latin",
+  };
+  const script = scriptByLanguage[normalized];
+  if (script) {
+    return `
+SCRIPT RULES:
+- Write ${language} subtitles in ${script} script.
+- Do NOT romanize ${language}. For example, do not write Hindi as "Jai Jagannath Pandit ji"; write it in native script.
+- Keep real English words in Latin only when the speaker actually says English words.`;
+  }
+  if (normalized === "auto" || !normalized) {
+    return `
+SCRIPT RULES:
+- First detect the spoken language, then write it in its native script.
+- Hindi, Marathi, and Sanskrit must use Devanagari script.
+- Odia must use Odia script. Bengali must use Bengali script. Telugu must use Telugu script. Tamil must use Tamil script. Punjabi must use Gurmukhi script. Kannada must use Kannada script.
+- Do NOT romanize Indian-language speech. For example, Hindi speech must not be written as "Jai Jagannath Pandit ji"; it must be written in native script.
+- Keep real English words in Latin only when the speaker actually says English words.`;
+  }
+  return `
+SCRIPT RULES:
+- Write the output in the normal native writing system for ${language}.
+- Do NOT romanize non-English speech unless that is the language's normal writing system.
+- Keep real English words in Latin only when the speaker actually says English words.`;
+}
+
 // Passes 3 & 4 (text-only): try Replit integration first, fall back to personal key rotation.
 async function generateWithReplitFirst(
   replitModel: string,
@@ -1121,10 +1160,12 @@ function buildSrtPrompt(language: string, durationSrt: string): string {
     language === "auto"
       ? "The audio may be in any language — transcribe it in the original language spoken, do NOT translate."
       : `The audio is in ${language}. Transcribe it in ${language} exactly as spoken — do NOT translate.`;
+  const scriptRules = buildNativeScriptRules(language);
 
   return `You are a professional subtitle creator. Listen to the ENTIRE audio from start to finish and produce a complete, accurate SRT subtitle file.
 
 ${langNote}
+${scriptRules}
 
 AUDIO DURATION: The audio is exactly ${durationSrt} long. You MUST transcribe ALL speech from 00:00:00 all the way to ${durationSrt}. Do NOT stop early. Even if there are quiet sections or pauses, continue listening — more speech follows.
 
@@ -1183,10 +1224,12 @@ function buildCorrectionPrompt(rawSrt: string, language: string, durationSrt: st
     language === "auto"
       ? "The audio and subtitles are in their original language — do NOT translate anything."
       : `The audio and subtitles are in ${language} — do NOT translate anything.`;
+  const scriptRules = buildNativeScriptRules(language);
 
   return `You are an expert subtitle proofreader and corrector. I will give you an audio recording and a draft SRT subtitle file that was auto-generated from it.
 
 ${langNote}
+${scriptRules}
 
 AUDIO DURATION: The audio is exactly ${durationSrt} long. All timestamps MUST be within 00:00:00,000 to ${durationSrt},000. If you see any timestamp beyond ${durationSrt}, it is a hallucination — fix it.
 
@@ -1233,9 +1276,11 @@ Now listen to the full audio from 00:00:00 to ${durationSrt} and return the full
 
 function buildTranslationPrompt(correctedSrt: string, fromLanguage: string, toLanguage: string): string {
   const fromNote = fromLanguage === "auto" ? "its original language" : fromLanguage;
+  const targetScriptRules = buildNativeScriptRules(toLanguage);
   return `You are a simultaneous interpreter — not a translator. A translator converts words; an interpreter understands what a human being is saying and renders that meaning naturally in another language. That is your job here.
 
 I will give you an SRT subtitle file of spoken speech in ${fromNote}. Your task is to render it in ${toLanguage} the way a skilled live interpreter would.
+${targetScriptRules}
 
 ━━━ STEP 1: READ THE ENTIRE SRT FIRST ━━━
 Before you write a single translated word, silently read the ENTIRE SRT from the first entry to the last. Understand:
@@ -1298,7 +1343,9 @@ Now return the fully translated SRT in ${toLanguage}:`;
 
 function buildTranslationVerifyPrompt(originalSrt: string, translatedSrt: string, fromLanguage: string, toLanguage: string): string {
   const fromNote = fromLanguage === "auto" ? "the original language" : fromLanguage;
+  const targetScriptRules = buildNativeScriptRules(toLanguage);
   return `You are an expert bilingual subtitle proofreader and translation editor. I will give you two SRT files: the ORIGINAL (in ${fromNote}) and a TRANSLATED version (in ${toLanguage}). Fix every translation error you find.
+${targetScriptRules}
 
 ━━━ YOUR PRIMARY JOB: FIX LITERAL TRANSLATIONS ━━━
 The most common error to look for: the translator did word-for-word mapping instead of understanding meaning.
