@@ -2401,7 +2401,6 @@ function spawnDownloadOnce(
     resetStallTimeout();
 
     proc.stdout?.on("data", (data: Buffer) => {
-      resetStallTimeout();
       const lines = data.toString().split("\n");
       for (const line of lines) {
         const trimmed = line.trim();
@@ -2412,6 +2411,7 @@ function spawnDownloadOnce(
           /\[download\]\s+([\d.]+)%\s+of\s+~?([\d.]+)([\w]+)\s+at\s+([\d.]+)([\w/]+)\s+ETA\s+(\S+)/,
         );
         if (progressMatch) {
+          resetStallTimeout();
           const percent = parseFloat(progressMatch[1]);
           const sizeNum = parseFloat(progressMatch[2]);
           const sizeUnit = progressMatch[3];
@@ -2444,6 +2444,7 @@ function spawnDownloadOnce(
           /\[(?:download|ExtractAudio|Merger)\] Destination:\s+(.+)/,
         );
         if (destMatch) {
+          resetStallTimeout();
           const destPath = destMatch[1].trim();
           const fname = destPath.split("/").pop() ?? destPath;
           // Always update filePath (last Destination wins — e.g. mp3 after m4a)
@@ -2457,6 +2458,7 @@ function spawnDownloadOnce(
           trimmed.includes("Merging formats") ||
           trimmed.includes("[Merger]")
         ) {
+          resetStallTimeout();
           jobRef.status = "merging";
           jobRef.message = "Merging video and audio...";
           jobRef.percent = Math.max(jobRef.percent ?? 0, 90);
@@ -2469,6 +2471,7 @@ function spawnDownloadOnce(
             /\[download\] (.+) has already been downloaded/,
           );
           if (alreadyMatch) {
+            resetStallTimeout();
             jobRef.filename = alreadyMatch[1].split("/").pop() ?? "";
             jobRef.filePath = alreadyMatch[1].trim();
             options.onProgress?.();
@@ -2478,7 +2481,6 @@ function spawnDownloadOnce(
     });
 
     proc.stderr?.on("data", (d: Buffer) => {
-      resetStallTimeout();
       stderr += d.toString();
     });
 
