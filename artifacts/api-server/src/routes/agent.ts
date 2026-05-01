@@ -1746,7 +1746,12 @@ router.post("/agent/chat", async (req, res) => {
   const { messages = [], model: requestedModel } = req.body as {
     messages: Array<{
       role: "user" | "model";
-      content: string;
+      content?: string;
+      parts?: Array<{
+        kind?: string;
+        content?: string;
+        text?: string;
+      }>;
       // Optional structured attachments — set by the frontend when user attaches a file
       attachments?: Array<{
         type: "image" | "video" | "audio" | "document";
@@ -1765,6 +1770,23 @@ router.post("/agent/chat", async (req, res) => {
     res.status(400).json({ error: "messages array is required" });
     return;
   }
+
+  const normalizedMessages = messages.map((message) => {
+    const content =
+      typeof message.content === "string"
+        ? message.content
+        : Array.isArray(message.parts)
+          ? message.parts
+              .filter((part) => part?.kind === "text" || typeof part?.content === "string" || typeof part?.text === "string")
+              .map((part) => part?.content ?? part?.text ?? "")
+              .join("")
+          : "";
+    return {
+      ...message,
+      content,
+      attachments: message.attachments ?? [],
+    };
+  });
 
   // Resolve model: "ultra" → ULTRA_MODEL, "default"/undefined → AGENT_MODEL,
   // explicit Gemini model id → use only if allow-listed.
@@ -1788,7 +1810,7 @@ router.post("/agent/chat", async (req, res) => {
 
   const runId = randomUUID();
   sseEvent(res, { type: "run_start", runId, ts: Date.now(), model: activeModel, ultra: requestedModel === "ultra" });
-  console.log(`[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${messages.length}`);
+  console.log(`[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${normalizedMessages.length}`);
 
   // Heartbeat every 8s — below ALB (60s), nginx (75s), Cloudflare (100s) idle timeouts
   const keepAlive = setInterval(() => {
@@ -1801,7 +1823,7 @@ router.post("/agent/chat", async (req, res) => {
     // Build Gemini contents � multimodal aware.
     // Images ? inlineData bytes (Gemini Vision sees actual pixels, same as Claude/ChatGPT).
     // Video/audio/docs ? structured [ATTACHED ...] context injected into text so tools use URL.
-    let loopContents: any[] = messages
+    let loopContents: any[] = normalizedMessages
       .filter(m => m.content.trim() || (m.attachments && m.attachments.length > 0))
       .map(m => {
         const parts: any[] = [];
