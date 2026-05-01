@@ -24,7 +24,18 @@ function loadSessions(): ChatSession[] {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as any[];
-    return parsed.map(s => ({ ...s, updatedAt: new Date(s.updatedAt), messages: s.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) })) })).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(s => s && typeof s.id === "string" && Array.isArray(s.messages))
+      .map(s => ({
+        ...s,
+        title: typeof s.title === "string" && s.title.trim() ? s.title : "New Chat",
+        updatedAt: new Date(s.updatedAt || Date.now()),
+        messages: s.messages
+          .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && Array.isArray(m.parts))
+          .map((m: any) => ({ ...m, timestamp: new Date(m.timestamp || Date.now()) })),
+      }))
+      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   } catch { return []; }
 }
 function saveSessions(sessions: ChatSession[]) {
@@ -51,6 +62,7 @@ type SseEvent =
 type MessagePart =
   | { kind: "text"; content: string }
   | { kind: "image"; previewUrl: string; name: string }
+  | { kind: "attachment"; type: string; name: string; mimeType: string; data?: string; url?: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
   | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
   | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string };
@@ -546,7 +558,7 @@ export function StudioCopilot({
 
   useEffect(() => { sessionIdRef.current = currentSessionId; }, [currentSessionId]);
   useEffect(() => { messagesRef.current = currentMessages; }, [currentMessages]);
-  useEffect(() => { if (!streaming && sessions.length > 0) saveSessions(sessions); }, [sessions, streaming]);
+  useEffect(() => { if (sessions.length > 0) saveSessions(sessions); }, [sessions]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [currentMessages]);
   // Editable session title state
   const [editingTitle, setEditingTitle] = useState(false);
@@ -600,6 +612,14 @@ export function StudioCopilot({
       if (att.type === "image" && att.previewUrl) {
         userParts.push({ kind: "image", previewUrl: att.previewUrl, name: att.name });
       }
+      userParts.push({
+        kind: "attachment",
+        type: att.type,
+        name: att.name,
+        mimeType: att.mimeType,
+        data: att.data,
+        url: att.url,
+      });
     }
     updateSession(sessionId, msgs => [...msgs, {
       id: userMsgId, role: "user",
@@ -617,7 +637,7 @@ export function StudioCopilot({
 
     // Build history — include completed tool results as text so the agent
     // has full multi-turn memory of what tools ran and what they returned.
-    const history = [...(messagesRef.current), { id: userMsgId, role: "user" as const, parts: [{ kind: "text" as const, content: text }], timestamp: new Date() }]
+    const history = [...(messagesRef.current), { id: userMsgId, role: "user" as const, parts: userParts, timestamp: new Date() }]
       .map(m => {
         const textParts = m.parts
           .filter((p: any) => p.kind === "text")
@@ -653,9 +673,10 @@ export function StudioCopilot({
             .join("\n")
           : "";
         const content = [textParts, toolSummary, artifactSummary].filter(Boolean).join("\n").trim();
-        const isNewUserMsg = m.role === "user" && m.id === userMsgId;
-        const msgAttachments = isNewUserMsg && snapshotAttachments.length > 0
-          ? snapshotAttachments.map(a => ({ type: a.type, name: a.name, mimeType: a.mimeType, data: a.data, url: a.url }))
+        const msgAttachments = m.role === "user"
+          ? m.parts
+            .filter((p: any) => p.kind === "attachment")
+            .map((p: any) => ({ type: p.type, name: p.name, mimeType: p.mimeType, data: p.data, url: p.url }))
           : undefined;
         return { role: m.role === "user" ? "user" as const : "model" as const, content, ...(msgAttachments ? { attachments: msgAttachments } : {}) };
       })
