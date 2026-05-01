@@ -23,6 +23,7 @@ const ALLOWED_MODELS = new Set([
   "gemini-2.5-pro", "gemini-2.5-flash-lite",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
+const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 300;
 const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "24", 10) || 24;
 const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
@@ -128,7 +129,9 @@ async function pollJobUntilDone(
   isConnected: () => boolean,
   toolId?: string,
 ): Promise<{ status: string; filename?: string; filesize?: number }> {
-  const deadline = Date.now() + JOB_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const timeoutMs = toolName === "cut_video_clip" ? CLIP_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS;
+  const deadline = startedAt + timeoutMs;
   while (Date.now() < deadline && isConnected()) {
     const r = await fetch(progressUrl, {
       headers: { ...headers, "Cache-Control": "no-cache" },
@@ -137,14 +140,23 @@ async function pollJobUntilDone(
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
     const data = await r.json() as any;
     const { status, percent, message, filename } = data;
-    sseEvent(res, { type: "tool_progress", toolId, name: toolName, status, percent: percent ?? null, message: message ?? status, jobId });
+    const elapsedSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    let liveMessage = message ?? status;
+    if (toolName === "cut_video_clip" && !["done", "error", "cancelled", "expired", "not_found"].includes(status)) {
+      const base = message && message !== status ? message : "Cutting selected section";
+      liveMessage = `${base}... ${elapsedSeconds}s`;
+    }
+    sseEvent(res, { type: "tool_progress", toolId, name: toolName, status, percent: percent ?? null, message: liveMessage, jobId });
+    if (toolName === "cut_video_clip") {
+      sseEvent(res, { type: "tool_log", toolId, name: toolName, message: liveMessage, level: "info" });
+    }
     if (status === "done") return { status, filename };
     if (["error", "cancelled", "expired", "not_found"].includes(status))
       throw new Error(`Job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
-  throw new Error("Job timed out after 8 minutes");
+  throw new Error(`Job timed out after ${Math.round(timeoutMs / 60000)} minutes`);
 }
 
 // ── Subtitle job poller ───────────────────────────────────────────────────
@@ -1004,7 +1016,18 @@ async function executeTool(
       const { jobId } = await r.json() as any;
       logTool("Clip cut job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", toolId, name, status: "processing", message: "Starting clip cut...", jobId, url: args.url } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        toolId,
+        name,
+        status: "processing",
+        message: "Starting clip cut...",
+        jobId,
+        url: args.url,
+        startSecs,
+        endSecs,
+        quality,
+      } as any);
 
       await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
       const downloadUrl = `/api/youtube/file/${jobId}`;

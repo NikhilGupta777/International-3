@@ -726,11 +726,15 @@ export function StudioCopilot({
             import("@/lib/clip-history").then(({ loadActiveClipJobs, saveActiveClipJobs }) => {
               const active = loadActiveClipJobs();
               if (!active.some(j => j.jobId === evt.jobId)) {
+                const startSecs = typeof (evt as any).startSecs === "number" ? (evt as any).startSecs : 0;
+                const endSecs = typeof (evt as any).endSecs === "number" ? (evt as any).endSecs : 0;
                 saveActiveClipJobs([...active, {
                   jobId: evt.jobId!,
                   url: url,
-                  label: evt.name === "cut_video_clip" ? "AI Clip" : "AI Analysis",
-                  startSecs: 0, endSecs: 0, quality: "720p",
+                  label: evt.name === "cut_video_clip" && endSecs > startSecs ? `${startSecs}s -> ${endSecs}s` : "AI Analysis",
+                  startSecs,
+                  endSecs,
+                  quality: String((evt as any).quality ?? "best"),
                   startedAt: Date.now()
                 }]);
               }
