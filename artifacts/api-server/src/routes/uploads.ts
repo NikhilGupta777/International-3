@@ -1,7 +1,7 @@
 /**
  * File Share Upload route — /api/uploads/*
  * - Presigned S3 multipart uploads (10MB parts, up to 3GB)
- * - DynamoDB metadata (falls back to in-memory if UPLOADS_TABLE not set)
+ * - DynamoDB metadata (falls back to in-memory if no uploads/job table is set)
  * - Public/private visibility
  * - Public gallery listing
  */
@@ -33,7 +33,8 @@ const router = Router();
 // ── Config ─────────────────────────────────────────────────────────────────
 const BUCKET = process.env.S3_BUCKET ?? process.env.S3_BUCKET_NAME ?? "malikaeditorr";
 const REGION = process.env.S3_REGION ?? process.env.AWS_REGION ?? "us-east-1";
-const UPLOADS_TABLE = process.env.UPLOADS_TABLE ?? "";
+const UPLOADS_TABLE = process.env.UPLOADS_TABLE ?? process.env.YOUTUBE_QUEUE_JOB_TABLE ?? "";
+const UPLOADS_TABLE_KEY = process.env.UPLOADS_TABLE_KEY ?? "jobId";
 const MAX_BYTES = 3 * 1024 * 1024 * 1024; // 3 GB
 const PART_SIZE = 10 * 1024 * 1024;        // 10 MB per part
 const SINGLE_LIMIT = 50 * 1024 * 1024;        // use single PUT for < 50 MB
@@ -80,7 +81,8 @@ function fromDb(item: Record<string, any>) {
 async function dbPut(item: Record<string, any>) {
   if (ddb) {
     const dbItem: Record<string, any> = {};
-    for (const [k, v] of Object.entries(item)) dbItem[k] = toDb(v);
+    const itemWithKey = { ...item, [UPLOADS_TABLE_KEY]: item.fileId };
+    for (const [k, v] of Object.entries(itemWithKey)) dbItem[k] = toDb(v);
     await ddb.send(new PutItemCommand({ TableName: UPLOADS_TABLE, Item: dbItem }));
   } else {
     mem.set(item.fileId, { ...item });
@@ -90,7 +92,7 @@ async function dbPut(item: Record<string, any>) {
 async function dbGet(fileId: string) {
   if (ddb) {
     const res = await ddb.send(new GetItemCommand({
-      TableName: UPLOADS_TABLE, Key: { fileId: { S: fileId } }, ConsistentRead: true,
+      TableName: UPLOADS_TABLE, Key: { [UPLOADS_TABLE_KEY]: { S: fileId } }, ConsistentRead: true,
     }));
     return res.Item ? fromDb(res.Item) : null;
   }
@@ -108,7 +110,7 @@ async function dbUpdate(fileId: string, updates: Record<string, any>) {
       sets.push(`#k${i} = :v${i}`); i++;
     }
     await ddb.send(new UpdateItemCommand({
-      TableName: UPLOADS_TABLE, Key: { fileId: { S: fileId } },
+      TableName: UPLOADS_TABLE, Key: { [UPLOADS_TABLE_KEY]: { S: fileId } },
       UpdateExpression: `SET ${sets.join(", ")}`,
       ExpressionAttributeNames: names, ExpressionAttributeValues: values,
     }));
@@ -141,9 +143,9 @@ async function dbListPublic(limit = 24, cursor?: string) {
     let nextCursorStr: string | undefined = undefined;
 
     if (collected.length > limit) {
-      nextCursorStr = sliced[sliced.length - 1].fileId.S;
+      nextCursorStr = sliced[sliced.length - 1][UPLOADS_TABLE_KEY]?.S ?? sliced[sliced.length - 1].fileId?.S;
     } else if (currentCursor) {
-      nextCursorStr = currentCursor.fileId?.S;
+      nextCursorStr = currentCursor[UPLOADS_TABLE_KEY]?.S;
     }
 
     return {
@@ -163,7 +165,7 @@ async function dbListPublic(limit = 24, cursor?: string) {
 async function dbDelete(fileId: string) {
   if (ddb) {
     await ddb.send(new DeleteItemCommand({
-      TableName: UPLOADS_TABLE, Key: { fileId: { S: fileId } },
+      TableName: UPLOADS_TABLE, Key: { [UPLOADS_TABLE_KEY]: { S: fileId } },
     }));
   } else {
     mem.delete(fileId);
