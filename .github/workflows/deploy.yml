@@ -279,7 +279,7 @@ jobs:
             --arg img "$TRANSLATOR_URI" \
             'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
              .containerProperties.image = $img |
-             .timeout = {"attemptDurationSeconds": 1800} |
+             .timeout = {"attemptDurationSeconds": 3000} |
              (.containerProperties.resourceRequirements[] | select(.type == "MEMORY").value) = "15000" |
              (.containerProperties.resourceRequirements[] | select(.type == "GPU").value) = "1"')
 
@@ -400,6 +400,7 @@ jobs:
           TRANSLATOR_JOB_DEF="${{ needs.build-translator.outputs.batch_job_def || needs.resolve-translator.outputs.batch_job_def }}"
           upsert_env "TRANSLATOR_BATCH_JOB_DEFINITION" "$TRANSLATOR_JOB_DEF"
           upsert_env "TRANSLATOR_BATCH_JOB_QUEUE" "${{ env.CF_STACK_PREFIX }}-gpu-queue"
+          upsert_env "TRANSLATOR_BATCH_TIMEOUT_SECONDS" "3000"
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.

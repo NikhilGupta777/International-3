@@ -72,7 +72,7 @@ MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
 MODELSCOPE_CACHE    = Path(os.environ.get("MODELSCOPE_CACHE", str(MODEL_CACHE_DIR / "modelscope")))
 HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "huggingface")))
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "1").lower() == "1"
-ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "false").lower() == "true"
+ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "true").lower() == "true"
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "iic/CosyVoice2-0.5B")
 LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")
 LATENTSYNC_CHECKPOINT = os.environ.get("LATENTSYNC_CHECKPOINT", "latentsync_unet.pt")
@@ -511,6 +511,35 @@ Output format (array of objects):
 ]
 """
 
+NATIVE_SCRIPT_RULE = (
+    "Use the target language's native writing system. Do not romanize Hindi, Odia, Bengali, "
+    "Telugu, Tamil, Kannada, Malayalam, Marathi, Sanskrit, Punjabi, Gujarati, Arabic, Urdu, "
+    "Japanese, Korean, Chinese, Russian, or Ukrainian."
+)
+
+def target_script_instruction(target_lang: str, target_code: str) -> str:
+    key = f"{target_code} {target_lang}".strip().lower()
+    rules = [
+        (("hi", "hindi", "mr", "marathi", "sa", "sanskrit", "ne", "nepali"), "Use native Devanagari script only. Do not romanize; do not output Hinglish."),
+        (("or", "odia", "oriya"), "Use native Odia script only. Do not romanize."),
+        (("bn", "bengali", "bangla"), "Use native Bengali script only. Do not romanize."),
+        (("pa", "punjabi"), "Use native Gurmukhi script only. Do not romanize."),
+        (("gu", "gujarati"), "Use native Gujarati script only. Do not romanize."),
+        (("ta", "tamil"), "Use native Tamil script only. Do not romanize."),
+        (("te", "telugu"), "Use native Telugu script only. Do not romanize."),
+        (("kn", "kannada"), "Use native Kannada script only. Do not romanize."),
+        (("ml", "malayalam"), "Use native Malayalam script only. Do not romanize."),
+        (("ar", "arabic", "ur", "urdu"), "Use the language's native Arabic-derived script only. Do not romanize."),
+        (("ja", "japanese"), "Use natural Japanese writing with kana/kanji. Do not romanize."),
+        (("ko", "korean"), "Use Hangul. Do not romanize."),
+        (("zh", "chinese", "mandarin", "cantonese"), "Use Chinese characters. Do not romanize."),
+        (("ru", "russian", "uk", "ukrainian"), "Use Cyrillic script. Do not romanize."),
+    ]
+    for tokens, instruction in rules:
+        if any(token in key for token in tokens):
+            return instruction
+    return "Use the normal native writing system for the target language. Do not romanize unless that language is normally written in Latin script."
+
 def translate_segments(segments: list[dict]) -> list[dict]:
     """
     Translate all segments using Gemini with dubbing-aware prompts.
@@ -533,6 +562,11 @@ def translate_segments(segments: list[dict]) -> list[dict]:
 
     user_prompt = (
         f"Translate the following video segments from the source language to {TARGET_LANG}.\n"
+        f"{NATIVE_SCRIPT_RULE}\n"
+        f"{target_script_instruction(TARGET_LANG, TARGET_LANG_CODE)}\n"
+        f"Preserve intent, emotion, tone, names, and cultural meaning. "
+        f"Keep each translation natural to speak, accurate in context, and close to the original duration. "
+        f"Do not include source text, transliteration, labels, or explanations.\n"
         f"These are dubbing segments â€” preserve emotion, tone, and keep each translation "
         f"close to the original duration segments.\n\n"
         f"Segments JSON:\n{json.dumps(seg_payload, ensure_ascii=False, indent=2)}"
@@ -742,6 +776,14 @@ def synthesize_gtts_single(seg: dict, out_dir: Path) -> Path:
     gTTS(text=seg["translated_text"], lang=TARGET_LANG_CODE).save(str(out_path))
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
+
+def synthesize_silence_single(seg: dict, out_dir: Path) -> Path:
+    """Last-resort segment fallback so one bad TTS segment does not fail the video."""
+    out_path = out_dir / f"seg_{seg['id']:04d}_silence.wav"
+    duration = max(0.25, float(seg.get("end", 0)) - float(seg.get("start", 0)))
+    run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(duration), str(out_path))
+    return out_path
+
 def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -> tuple[list[Path], bool]:
     """
     Master TTS router: CosyVoice 3.0 -> edge-tts -> gTTS (auto-fallback at every level).
@@ -781,7 +823,11 @@ def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -
             paths.append(synthesize_edge_tts_single(seg, out_dir))
         except Exception as e:
             log.warning(f"[TTS] edge-tts seg {seg['id']} failed: {e}. Falling back to gTTS.")
-            paths.append(synthesize_gtts_single(seg, out_dir))
+            try:
+                paths.append(synthesize_gtts_single(seg, out_dir))
+            except Exception as gtts_err:
+                log.warning(f"[TTS] gTTS seg {seg['id']} failed: {gtts_err}. Inserting silence for this segment.")
+                paths.append(synthesize_silence_single(seg, out_dir))
     update_progress("CLONING", 59, "Voice generation complete.")
     return paths, False  # ← clone was NOT used
 

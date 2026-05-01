@@ -113,6 +113,9 @@ Parameters:
   TranslatorBatchJobDefinition:
     Type: String
     Default: "ytgrabber-green-translator-job"
+  TranslatorBatchTimeoutSeconds:
+    Type: Number
+    Default: 3000
   YoutubeQueuePrimaryEnabled:
     Type: String
     Default: "true"
@@ -351,6 +354,7 @@ Resources:
           YOUTUBE_BATCH_JOB_DEFINITION: !Ref YoutubeBatchJobDefinition
           TRANSLATOR_BATCH_JOB_QUEUE: !Ref TranslatorBatchJobQueue
           TRANSLATOR_BATCH_JOB_DEFINITION: !Ref TranslatorBatchJobDefinition
+          TRANSLATOR_BATCH_TIMEOUT_SECONDS: !Ref TranslatorBatchTimeoutSeconds
           RATE_LIMIT_BYPASS_IPS: !Ref RateLimitBypassIps
           VAPID_PUBLIC_KEY: !Ref VapidPublicKey
           VAPID_PRIVATE_KEY: !Ref VapidPrivateKey

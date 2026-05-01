@@ -56,7 +56,7 @@ const PUBLIC_SITE_URL = (
 ).replace(/\/+$/, "");
 const TRANSLATOR_BATCH_TIMEOUT_SECONDS = Math.max(
   60,
-  Math.min(1800, Number(process.env.TRANSLATOR_BATCH_TIMEOUT_SECONDS ?? "1800") || 1800),
+  Math.min(3000, Number(process.env.TRANSLATOR_BATCH_TIMEOUT_SECONDS ?? "3000") || 3000),
 );
 const TRANSLATOR_LAMBDA_FAST_ENABLED = process.env.TRANSLATOR_LAMBDA_FAST_ENABLED !== "false";
 const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
@@ -208,7 +208,10 @@ function boolValue(value: unknown, fallback: boolean): boolean {
 }
 
 function isLambdaFastCandidate(options: TranslatorOptions): boolean {
-  return TRANSLATOR_LAMBDA_FAST_ENABLED && !options.voiceClone && !options.lipSync;
+  // The fast path only creates translated subtitles and copies the source video.
+  // Translator tab jobs must return a dubbed video, so route them to Batch.
+  void options;
+  return false;
 }
 
 async function updateTranslatorJob(
@@ -275,6 +278,8 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "TRANSLATION_MODE",  value: options.translationMode },
     { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
     { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
+    { name: "ALLOW_VOICE_CLONE_FALLBACK", value: "true" },
+    { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: "1" },
   ];
 }
 
@@ -439,6 +444,30 @@ function segmentsToSrt(segments: FastSegment[]): string {
   return segments
     .map((seg, index) => `${index + 1}\n${msToSrt(seg.startMs)} --> ${msToSrt(seg.endMs)}\n${seg.translatedText || seg.text}`)
     .join("\n\n") + "\n";
+}
+
+function targetScriptInstruction(targetLang: string): string {
+  const normalized = targetLang.trim().toLowerCase();
+  const scriptRules: Array<[RegExp, string]> = [
+    [/^(hi|hindi|mr|marathi|sa|sanskrit|ne|nepali)\b/, "Use native Devanagari script only. Do not romanize; do not output Hinglish."],
+    [/^(or|odia|oriya)\b/, "Use native Odia script only. Do not romanize."],
+    [/^(bn|bengali|bangla)\b/, "Use native Bengali script only. Do not romanize."],
+    [/^(pa|punjabi)\b/, "Use native Gurmukhi script only. Do not romanize."],
+    [/^(gu|gujarati)\b/, "Use native Gujarati script only. Do not romanize."],
+    [/^(ta|tamil)\b/, "Use native Tamil script only. Do not romanize."],
+    [/^(te|telugu)\b/, "Use native Telugu script only. Do not romanize."],
+    [/^(kn|kannada)\b/, "Use native Kannada script only. Do not romanize."],
+    [/^(ml|malayalam)\b/, "Use native Malayalam script only. Do not romanize."],
+    [/^(ar|arabic|ur|urdu)\b/, "Use the language's native Arabic-derived script only. Do not romanize."],
+    [/^(ja|japanese)\b/, "Use natural Japanese writing with kana/kanji. Do not romanize."],
+    [/^(ko|korean)\b/, "Use Hangul. Do not romanize."],
+    [/^(zh|chinese|mandarin|cantonese)\b/, "Use Chinese characters. Do not romanize."],
+    [/^(ru|russian|uk|ukrainian)\b/, "Use Cyrillic script. Do not romanize."],
+  ];
+  for (const [pattern, instruction] of scriptRules) {
+    if (pattern.test(normalized)) return instruction;
+  }
+  return "Use the normal native writing system for the target language. Do not romanize unless that language is normally written in Latin script.";
 }
 
 function toAssemblyLanguageCode(language: string): string | undefined {
@@ -643,8 +672,11 @@ async function translateSegmentsFast(segments: FastSegment[], targetLang: string
   const payload = segments.map((seg, i) => ({ id: i + 1, text: seg.text }));
   const prompt = [
     `Translate each item to ${targetLang}.`,
+    targetScriptInstruction(targetLang),
+    "Translate meaning, tone, and intent like a skilled dubbing interpreter, not word-for-word.",
+    "Keep each line natural, concise, and speakable in the target language.",
     "Return ONLY a JSON array with objects: {\"id\": number, \"text\": string}.",
-    "Keep meaning natural and concise for video subtitles. Do not add commentary.",
+    "Do not add explanations, labels, transliteration, source text, or commentary.",
     JSON.stringify(payload),
   ].join("\n");
 

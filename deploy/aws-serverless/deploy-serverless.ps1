@@ -220,6 +220,7 @@ $parameterOverrides = @(
   "YoutubeBatchJobDefinition=$(Get-RequiredEnv $envMap 'YOUTUBE_BATCH_JOB_DEFINITION')"
   "TranslatorBatchJobQueue=$(Get-OptionalEnv $envMap 'TRANSLATOR_BATCH_JOB_QUEUE' 'ytgrabber-green-gpu-queue')"
   "TranslatorBatchJobDefinition=$(Get-OptionalEnv $envMap 'TRANSLATOR_BATCH_JOB_DEFINITION' 'ytgrabber-green-translator-job')"
+  "TranslatorBatchTimeoutSeconds=$(Get-OptionalEnv $envMap 'TRANSLATOR_BATCH_TIMEOUT_SECONDS' '3000')"
   "YoutubeQueuePrimaryEnabled=true"
   "YoutubeQueueShadowEnabled=$(Get-OptionalEnv $envMap 'YOUTUBE_QUEUE_SHADOW_ENABLED' 'false')"
   "YoutubeQueuePrimaryJobTypes=$primaryJobTypes"
