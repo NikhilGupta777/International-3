@@ -45,6 +45,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "get_video_info":
     case "get_youtube_captions":
     case "web_search":
+    case "read_web_page":
     case "check_job_status":
     case "check_all_active_jobs":
     case "repeat_last_artifact":
@@ -379,14 +380,27 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "web_search",
-    description: "Search the web for real-time information. Use when the user asks about current events, video details not in metadata, trends, or anything requiring up-to-date knowledge. Returns top search results with titles, snippets, and URLs.",
+    description: "Search the web for real-time information. Use when the user asks about current events, video details not in metadata, trends, recommendations, or anything requiring up-to-date knowledge. Returns search results with titles, snippets, URLs, and sources. Use maxResults up to 10-20 when the user needs broad research.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        query: { type: Type.STRING, description: "Search query string" },
-        maxResults: { type: Type.NUMBER, description: "Max results to return (1-5). Default: 3." },
+        query: { type: Type.STRING, description: "Detailed search query with names, dates, product/version, location, and exact fact needed." },
+        maxResults: { type: Type.NUMBER, description: "Max results to return (1-20). Default: 10." },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "read_web_page",
+    description: "Fetch and read the text content of a specific public web page URL. Use after web_search when snippets are not enough, when the user asks to inspect a page/article/docs, or when exact page content matters.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: { type: Type.STRING, description: "Public http/https URL to read." },
+        task: { type: Type.STRING, description: "What to extract or focus on from the page, e.g. pricing, docs steps, article facts, exact quote context." },
+        maxChars: { type: Type.NUMBER, description: "Maximum text characters to return to the model. Default: 20000, max: 60000." },
+      },
+      required: ["url"],
     },
   },
   {
@@ -588,7 +602,9 @@ const STUDIO_TOOLS: any[] = [
 const SYSTEM_PROMPT = `You are the VideoMaking Studio Copilot — a sharp, fast, action-first assistant for a YouTube/video production app.
 
 # VOICE
-Talk like a competent friend, not a corporate bot. Tool cards already show live action, so do not repeat "I am downloading/cutting/generating..." in the final answer. After a tool returns, one or two sentences max: what completed and what to do next. No bullet lists unless the user asks for one. No emojis unless the user uses them first.
+Talk like a competent friend, not a corporate bot. Tool cards already show live action, so do not repeat "I am downloading/cutting/generating..." in the final answer.
+
+Answer at the length the user's task deserves. If the user asks for a detailed audit, explanation, comparison, strategy, script, research synthesis, review, or long-form output, give a complete long answer. If the task is just a completed download/clip/subtitle, keep it brief. No emojis unless the user uses them first.
 
 # INTELLIGENCE FIRST
 Use your own intelligence before tools. Do not call a tool for normal thinking, writing, rewriting, brainstorming, planning, explaining, prompt improvement, simple translation, short pasted text/SRT/CSV/JSON, visible chat context, or basic image understanding from an attached image already in context. Answer directly when you can.
@@ -608,6 +624,10 @@ If there are multiple plausible references, pick the most recent matching one an
 Tool calls should be complete, specific, and user-intent aware. Include the actual URL/file URL, timestamps, quality, target language, voice/lip-sync choices, and requested count/duration whenever they are available in context.
 
 Do not send vague tool prompts like "generate subtitles" or "search this". Convert the user's request into a precise tool query/action with the important constraints preserved. For web_search, write a focused search query with names, dates, product/version, and the exact fact needed.
+
+For tools with prompt/question/instructions fields, write a full production prompt: include user goal, context, constraints, output format, language, quality bar, edge cases, and what to avoid. A 3-5 word prompt is almost never acceptable unless the user only asked for a tiny literal task.
+
+For deep web research: call web_search with enough maxResults for the task, inspect multiple sources, and call read_web_page on important URLs when snippets are insufficient. Do not stop at the first 3 results if the user asked for broad/current/deep research.
 
 # IRON RULES
 1. NEVER refuse a video task that maps to a tool. You have tools — use them. Don't say "I can't access YouTube"; call get_video_info.
@@ -637,6 +657,7 @@ Pick the cheapest tool that solves the request:
 | "make chapter timestamps" | generate_timestamps |
 | "translate this video / dub in Hindi/Spanish" | translate_video THEN navigate_to_tab('translator') |
 | "what's trending / latest news / who is X" | web_search first, then maybe a video tool |
+| "read this article/page/source / inspect search result" | read_web_page |
 | "create/generate an image" | create_image |
 | "make this attached image clearer / enhance / restore" | enhance_image |
 | "edit this attached image" | edit_image |
@@ -965,6 +986,56 @@ function latestArtifactFromMemory(req: any): { artifactType: string; label: stri
     tab: pick("Tab"),
     jobId: pick("Job"),
   };
+}
+
+function htmlToReadableText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<\/(p|div|section|article|header|footer|main|li|ul|ol|h[1-6]|tr|table|br)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n\s*\n+/g, "\n\n")
+    .trim();
+}
+
+async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ title?: string; finalUrl: string; contentType: string; text: string }> {
+  const parsed = new URL(url);
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http/https URLs can be read.");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const r = await fetch(parsed.toString(), {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "user-agent": "VideoMakingStudioAgent/1.0 (+https://videomaking.in)",
+        accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
+      },
+    });
+    if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
+    const contentType = r.headers.get("content-type") ?? "";
+    const raw = await r.text();
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
+    const text = contentType.includes("html") ? htmlToReadableText(raw) : raw.trim();
+    return {
+      title,
+      finalUrl: r.url || parsed.toString(),
+      contentType,
+      text: text.slice(0, Math.max(1000, Math.min(60000, maxChars))),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function executeTool(
@@ -1298,7 +1369,9 @@ async function executeTool(
 
     case "web_search": {
       const query = String(args.query ?? "").trim();
-      logTool("Searching the web via Gemini grounding", { query });
+      const requestedMax = Number(args.maxResults ?? 10);
+      const maxResults = Math.max(1, Math.min(20, Number.isFinite(requestedMax) ? requestedMax : 10));
+      logTool("Searching the web", { query, maxResults });
       sseEvent(res, { type: "tool_progress", toolId, name, message: `Searching: "${query}"...` });
 
       // Strategy: Use Gemini's native Google Search grounding tool.
@@ -1314,11 +1387,15 @@ async function executeTool(
         const searchAi = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
         const searchResp = await searchAi.models.generateContent({
           model: SEARCH_MODEL, // gemini-2.5-flash — supports grounding + is free tier
-          contents: [{ role: "user", parts: [{ text: `Search the web and answer this query concisely with facts and sources: ${query}` }] }],
+          contents: [{ role: "user", parts: [{ text: [
+            `Search the web for: ${query}`,
+            `Use broad coverage, compare multiple sources, and include up to ${maxResults} useful source URLs if available.`,
+            "Give enough detail to answer accurately. Do not limit yourself to three sites when more are relevant.",
+          ].join("\n") }] }],
           config: {
             tools: [{ googleSearch: {} }] as any,
             temperature: 0.1,
-            maxOutputTokens: 1024,
+            maxOutputTokens: Math.min(4096, AGENT_MAX_OUTPUT_TOKENS),
           },
         });
         const groundedAnswer = (searchResp.candidates?.[0]?.content?.parts ?? [])
@@ -1331,8 +1408,9 @@ async function executeTool(
           const title = chunk?.web?.title;
           if (uri) sources.push(title ? `${title} — ${uri}` : uri);
         });
-        const sourcesText = sources.length > 0 ? `\n\nSources:\n${sources.map((s, i) => `[${i+1}] ${s}`).join("\n")}` : "";
-        return { result: { query, answer: groundedAnswer + sourcesText, grounded: true } };
+        const uniqueSources = [...new Set(sources)].slice(0, maxResults);
+        const sourcesText = uniqueSources.length > 0 ? `\n\nSources:\n${uniqueSources.map((s, i) => `[${i+1}] ${s}`).join("\n")}` : "";
+        return { result: { query, answer: groundedAnswer + sourcesText, grounded: true, sources: uniqueSources } };
       } catch (groundingErr: any) {
         logTool(`Grounding failed (${groundingErr?.message}), trying fallbacks`, {});
         // Fallback 1: Tavily
@@ -1340,14 +1418,14 @@ async function executeTool(
           const r = await fetch("https://api.tavily.com/search", {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${TAVILY_KEY}` },
-            body: JSON.stringify({ query, max_results: 3, search_depth: "basic", include_answer: true }),
+            body: JSON.stringify({ query, max_results: maxResults, search_depth: "advanced", include_answer: true, include_raw_content: true }),
           });
           if (r.ok) {
             const data = await r.json() as any;
-            const results = (data.results ?? []).map((item: any, i: number) =>
-              `[${i + 1}] ${item.title}\n${item.content ?? item.snippet ?? ""}\nSource: ${item.url}`
+            const results = (data.results ?? []).slice(0, maxResults).map((item: any, i: number) =>
+              `[${i + 1}] ${item.title}\n${item.content ?? item.snippet ?? ""}\n${item.raw_content ? `Page content excerpt: ${String(item.raw_content).slice(0, 4000)}\n` : ""}Source: ${item.url}`
             ).join("\n\n");
-            return { result: { query, answer: (data.answer ? `${data.answer}\n\n` : "") + results } };
+            return { result: { query, answer: (data.answer ? `${data.answer}\n\n` : "") + results, results: data.results?.slice(0, maxResults) ?? [] } };
           }
         }
         // Fallback 2: Serper
@@ -1355,19 +1433,40 @@ async function executeTool(
           const r = await fetch("https://google.serper.dev/search", {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-API-KEY": SERPER_KEY },
-            body: JSON.stringify({ q: query, num: 3 }),
+            body: JSON.stringify({ q: query, num: maxResults }),
           });
           if (r.ok) {
             const data = await r.json() as any;
-            const results = ((data.organic ?? []) as any[]).slice(0, 3).map((item: any, i: number) =>
+            const organic = ((data.organic ?? []) as any[]).slice(0, maxResults);
+            const results = organic.map((item: any, i: number) =>
               `[${i + 1}] ${item.title}\n${item.snippet ?? ""}\nSource: ${item.link}`
             ).join("\n\n");
-            return { result: { query, answer: results } };
+            return { result: { query, answer: results, results: organic } };
           }
         }
         // All methods failed
         throw new Error(`Search unavailable: ${groundingErr?.message}`);
       }
+    }
+
+    case "read_web_page": {
+      const url = String(args.url ?? "").trim();
+      if (!url) throw new Error("URL is required.");
+      const task = String(args.task ?? "").trim();
+      const maxChars = Number(args.maxChars ?? 20000);
+      logTool("Reading web page", { url, task, maxChars });
+      sseEvent(res, { type: "tool_progress", toolId, name, message: `Reading page: ${url}` });
+      const page = await fetchReadableWebPage(url, Number.isFinite(maxChars) ? maxChars : 20000);
+      return {
+        result: {
+          url,
+          task,
+          title: page.title,
+          finalUrl: page.finalUrl,
+          contentType: page.contentType,
+          text: page.text,
+        },
+      };
     }
 
     case "do_full_package": {
