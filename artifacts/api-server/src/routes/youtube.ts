@@ -1706,9 +1706,233 @@ const LAMBDA_CLIP_STALL_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(process.env.LAMBDA_CLIP_STALL_TIMEOUT_MS ?? "180000", 10) || 180_000,
 );
+const LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS = Math.max(
+  60,
+  Number.parseInt(process.env.LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS ?? "1800", 10) || 1800,
+);
 const MIN_CLIP_ATTEMPT_TIMEOUT_MS = 30_000;
 const LAMBDA_CLIP_FORCE_KEYFRAMES =
   process.env.LAMBDA_CLIP_FORCE_KEYFRAMES === "true";
+
+function qualityToSourceDownloadSelector(quality: string): string {
+  const normalized = quality.trim().toLowerCase().replace(/p$/, "");
+  const parsedHeight = Number.parseInt(normalized, 10);
+  const maxHeight =
+    normalized === "best" || !normalized || !Number.isFinite(parsedHeight) || parsedHeight <= 0
+      ? 1080
+      : parsedHeight;
+  const fallbackHeight = Math.min(maxHeight, 720);
+
+  return [
+    `bestvideo[vcodec^=avc1][height<=${maxHeight}]+bestaudio[ext=m4a]`,
+    `bestvideo[height<=${maxHeight}]+bestaudio[ext=m4a]`,
+    `best[ext=mp4][vcodec!=none][acodec!=none][height<=${maxHeight}]`,
+    `bestvideo[vcodec^=avc1][height<=${fallbackHeight}]+bestaudio[ext=m4a]`,
+    `best[ext=mp4][vcodec!=none][acodec!=none][height<=${fallbackHeight}]`,
+    `best[vcodec!=none][acodec!=none][height<=${fallbackHeight}]`,
+  ].join("/");
+}
+
+function findNewestOutputWithPrefix(prefix: string, allowedExts: string[]): string | null {
+  let newest: { path: string; mtimeMs: number } | null = null;
+  for (const entry of readdirSync(DOWNLOAD_DIR)) {
+    if (!entry.startsWith(prefix + ".")) continue;
+    const filePath = join(DOWNLOAD_DIR, entry);
+    if (!hasAllowedOutputExtension(filePath, allowedExts)) continue;
+    try {
+      const stats = statSync(filePath);
+      if (stats.isFile() && (!newest || stats.mtimeMs > newest.mtimeMs)) {
+        newest = { path: filePath, mtimeMs: stats.mtimeMs };
+      }
+    } catch {}
+  }
+  return newest?.path ?? null;
+}
+
+function runFfmpegTrim(
+  sourcePath: string,
+  outputPath: string,
+  startSec: number,
+  endSec: number,
+  jobRef: DownloadJob,
+  timeoutMs: number,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (jobRef.cancelled) {
+      reject(new Error(CANCELLED_BY_USER));
+      return;
+    }
+
+    const duration = Math.max(0.001, endSec - startSec);
+    const args = [
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "warning",
+      "-ss",
+      String(startSec),
+      "-i",
+      sourcePath,
+      "-t",
+      String(duration),
+      "-map",
+      "0:v:0",
+      "-map",
+      "0:a:0?",
+      "-c",
+      "copy",
+      "-avoid_negative_ts",
+      "make_zero",
+      "-movflags",
+      "+faststart",
+      outputPath,
+    ];
+
+    const ffmpegPath = FFMPEG_PATH || "ffmpeg";
+    logger.info({ command: ffmpegPath, args }, "Starting ffmpeg clip trim");
+    const proc = spawn(ffmpegPath, args, { env: PYTHON_ENV });
+    jobRef.activeProc = proc;
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      stderr += `\nffmpeg trim timed out after ${Math.round(timeoutMs / 1000)} seconds`;
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        if (jobRef.activeProc === proc) {
+          try {
+            proc.kill("SIGKILL");
+          } catch {}
+        }
+      }, 5000).unref?.();
+    }, timeoutMs);
+    timeout.unref?.();
+
+    proc.stderr?.on("data", (d: Buffer) => {
+      stderr += d.toString();
+    });
+    proc.on("close", (code: number | null) => {
+      clearTimeout(timeout);
+      jobRef.activeProc = null;
+      if (jobRef.cancelled) {
+        reject(new Error(CANCELLED_BY_USER));
+      } else if (code === 0 && existsSync(outputPath) && statSync(outputPath).size > 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr.slice(-800) || `ffmpeg exited with code ${code}`));
+      }
+    });
+    proc.on("error", (err: Error) => {
+      clearTimeout(timeout);
+      jobRef.activeProc = null;
+      reject(new Error(`Failed to start ffmpeg: ${err.message}`));
+    });
+  });
+}
+
+async function tryProcessClipCutViaFullSource(
+  jobId: string,
+  jobRef: DownloadJob,
+  clipStart: number,
+  clipEnd: number,
+  clipQuality: string,
+  clipDeadlineAt: number,
+  persistProgress: () => void,
+): Promise<boolean> {
+  let sourceDuration: number | null = null;
+  try {
+    const meta = await runYtDlpMetadata(jobRef.url);
+    const duration = Number(meta?.duration);
+    sourceDuration = Number.isFinite(duration) && duration > 0 ? duration : null;
+  } catch (err) {
+    logger.warn({ err, jobId }, "Could not resolve clip source duration before trim path");
+  }
+
+  if (
+    sourceDuration == null ||
+    sourceDuration > LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS
+  ) {
+    return false;
+  }
+
+  const sourcePrefix = `${jobId}.source`;
+  const sourceOutputPath = join(DOWNLOAD_DIR, `${sourcePrefix}.%(ext)s`);
+  const sourceSelector = qualityToSourceDownloadSelector(clipQuality);
+  const cmdArgs: string[] = [
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--progress",
+    "-f",
+    sourceSelector,
+    "--merge-output-format",
+    "mp4",
+    "--downloader-args",
+    "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "-o",
+    sourceOutputPath,
+    jobRef.url,
+  ];
+
+  jobRef.message = "Downloading source for fast trim...";
+  jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+  persistProgress();
+
+  await ensureYtdlpCookiesLoaded();
+  const cookieArgs = getYtdlpCookieArgs();
+  const defaultYoutubeArgs = isYouTubeUrl(jobRef.url) ? getDefaultYouTubeExtractorArgs() : [];
+  const attemptPlans = cookieArgs.length
+    ? [[...cookieArgs, ...defaultYoutubeArgs], defaultYoutubeArgs]
+    : [defaultYoutubeArgs];
+
+  let lastErr: Error | null = null;
+  for (const extra of attemptPlans) {
+    const remainingMs = Math.max(0, clipDeadlineAt - Date.now());
+    if (remainingMs < MIN_CLIP_ATTEMPT_TIMEOUT_MS) {
+      throw new Error(
+        `Clip cut timed out after ${Math.round(LAMBDA_CLIP_COMMAND_TIMEOUT_MS / 1000)} seconds`,
+      );
+    }
+    try {
+      await spawnDownloadOnce(extra, cmdArgs, jobRef, {
+        timeoutMs: remainingMs,
+        stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
+        onProgress: persistProgress,
+      });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error("yt-dlp source download failed");
+      if (!isYouTubeUrl(jobRef.url) || !isYouTubeBlockedError(lastErr.message)) break;
+    }
+  }
+  if (lastErr) throw lastErr;
+
+  const sourcePath =
+    findNewestOutputWithPrefix(sourcePrefix, ["mp4", "mkv", "webm"]) ??
+    (jobRef.filePath && existsSync(jobRef.filePath) ? jobRef.filePath : null);
+  if (!sourcePath) throw new Error("Source video file not found after download");
+  if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
+
+  const finalPath = join(DOWNLOAD_DIR, `${jobId}.mp4`);
+  jobRef.message = "Trimming clip...";
+  jobRef.percent = Math.max(jobRef.percent ?? 0, 85);
+  persistProgress();
+
+  const remainingMs = Math.max(MIN_CLIP_ATTEMPT_TIMEOUT_MS, clipDeadlineAt - Date.now());
+  await runFfmpegTrim(sourcePath, finalPath, clipStart, clipEnd, jobRef, remainingMs);
+
+  try {
+    if (sourcePath !== finalPath) unlinkSync(sourcePath);
+  } catch {}
+
+  jobRef.ext = "mp4";
+  jobRef.filename = basename(finalPath);
+  jobRef.filePath = finalPath;
+  jobRef.percent = 95;
+  persistProgress();
+  return true;
+}
 
 async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   const jobRef = jobs.get(jobId)!;
@@ -1747,6 +1971,35 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   let lastErr: Error | null = null;
   let attemptsUsed = 0;
   let deadlineExpired = false;
+  try {
+    const handled = await tryProcessClipCutViaFullSource(
+      jobId,
+      jobRef,
+      clipStart,
+      clipEnd ?? clipStart + 60,
+      clipQuality,
+      clipDeadlineAt,
+      persistProgress,
+    );
+    if (handled) lastErr = null;
+    if (handled) {
+      // Skip yt-dlp section mode; finalPath is resolved below from jobRef/file.
+      attemptsUsed = 0;
+      deadlineExpired = false;
+    }
+  } catch (err) {
+    lastErr = err instanceof Error ? err : new Error("Fast clip trim failed");
+    logger.warn({ err: lastErr, jobId }, "Fast clip trim path failed; falling back to section download");
+    jobRef.message = "Retrying clip stream...";
+    jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+    persistClipJobState(jobId, jobRef);
+  }
+  const fastTrimDone =
+    jobRef.filePath &&
+    existsSync(jobRef.filePath) &&
+    hasAllowedOutputExtension(jobRef.filePath, ["mp4"]);
+
+  if (!fastTrimDone) {
   for (const formatSelector of formatCandidates) {
     if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
     if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS || deadlineExpired) break;
@@ -1851,6 +2104,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
     }
 
     if (!lastErr) break;
+  }
   }
 
   if (lastErr && attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) {
