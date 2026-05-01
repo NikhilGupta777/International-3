@@ -2080,35 +2080,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   let lastErr: Error | null = null;
   let attemptsUsed = 0;
   let deadlineExpired = false;
-  try {
-    const handled = await tryProcessClipCutViaFullSource(
-      jobId,
-      jobRef,
-      clipStart,
-      clipEnd ?? clipStart + 60,
-      clipQuality,
-      clipDeadlineAt,
-      persistProgress,
-    );
-    if (handled) lastErr = null;
-    if (handled) {
-      // Skip yt-dlp section mode; finalPath is resolved below from jobRef/file.
-      attemptsUsed = 0;
-      deadlineExpired = false;
-    }
-  } catch (err) {
-    lastErr = err instanceof Error ? err : new Error("Fast clip trim failed");
-    logger.warn({ err: lastErr, jobId }, "Fast clip trim path failed; falling back to section download");
-    jobRef.message = "Retrying clip stream...";
-    jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
-    persistClipJobState(jobId, jobRef);
-  }
-  const fastTrimDone =
-    jobRef.filePath &&
-    existsSync(jobRef.filePath) &&
-    hasAllowedOutputExtension(jobRef.filePath, ["mp4"]);
 
-  if (!fastTrimDone) {
   for (const formatSelector of formatCandidates) {
     if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
     if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS || deadlineExpired) break;
@@ -2153,7 +2125,6 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       try {
         await spawnDownloadOnce(extra, cmdArgs, jobRef, {
           timeoutMs: attemptTimeoutMs,
-          stallTimeoutMs: Math.min(LAMBDA_CLIP_STALL_TIMEOUT_MS, YTDLP_DOWNLOAD_STALL_TIMEOUT_MS),
           onProgress: persistProgress,
         });
         lastErr = null;
@@ -2194,7 +2165,6 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
           try {
             await spawnDownloadOnce(extra, cmdArgs, jobRef, {
               timeoutMs: attemptTimeoutMs,
-              stallTimeoutMs: Math.min(LAMBDA_CLIP_STALL_TIMEOUT_MS, YTDLP_DOWNLOAD_STALL_TIMEOUT_MS),
               onProgress: persistProgress,
             });
             lastErr = null;
@@ -2214,6 +2184,30 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
 
     if (!lastErr) break;
   }
+
+  if (lastErr && !jobRef.cancelled && Math.max(0, clipDeadlineAt - Date.now()) >= MIN_CLIP_ATTEMPT_TIMEOUT_MS) {
+    const sectionErr = lastErr;
+    try {
+      logger.warn({ err: sectionErr, jobId }, "Section clip path failed; trying full-source trim fallback");
+      jobRef.message = "Trying backup clip method...";
+      jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+      persistClipJobState(jobId, jobRef);
+      const handled = await tryProcessClipCutViaFullSource(
+        jobId,
+        jobRef,
+        clipStart,
+        clipEnd ?? clipStart + 60,
+        clipQuality,
+        clipDeadlineAt,
+        persistProgress,
+      );
+      if (handled) lastErr = null;
+    } catch (err) {
+      const fallbackErr = err instanceof Error ? err : new Error("Backup clip trim failed");
+      lastErr = new Error(
+        `Section clip failed: ${getDownloaderFailureMessage(sectionErr.message)}. Backup clip method failed: ${getDownloaderFailureMessage(fallbackErr.message)}`,
+      );
+    }
   }
 
   if (lastErr && attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) {
