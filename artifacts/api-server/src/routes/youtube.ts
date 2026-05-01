@@ -709,6 +709,10 @@ const YTDLP_INFO_TIMEOUT_MS = Math.max(
   15_000,
   Number.parseInt(process.env.YTDLP_INFO_TIMEOUT_MS ?? "20000", 10) || 20_000,
 );
+const YTDLP_DOWNLOAD_STALL_TIMEOUT_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.YTDLP_DOWNLOAD_STALL_TIMEOUT_MS ?? "60000", 10) || 60_000,
+);
 
 // Resolve ffmpeg: prefer the system binary (NixOS/Replit has a full ffmpeg on PATH
 // that is more stable than the bundled ffmpeg-static which can segfault on NixOS).
@@ -863,7 +867,7 @@ function isYouTubeUrl(url: string): boolean {
 }
 
 function isYouTubeBlockedError(message: string): boolean {
-  return /confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable|this video is unavailable|precondition.*failed|http error 401|requested format is not available|format.*not available|not made this video available|not available in your country|geo.*restrict/i.test(
+  return /made no progress|command timed out|confirm.*not a bot|sign in to confirm|sign.*in.*required|sign.*in.*your age|age.*restrict|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|video.*unavailable|this video is unavailable|precondition.*failed|http error 401|requested format is not available|format.*not available|not made this video available|not available in your country|geo.*restrict/i.test(
     message,
   );
 }
@@ -1900,13 +1904,28 @@ async function tryProcessClipCutViaFullSource(
 
   await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
-  const defaultYoutubeArgs = isYouTubeUrl(jobRef.url) ? getDefaultYouTubeExtractorArgs() : [];
-  const attemptPlans = cookieArgs.length
-    ? [[...cookieArgs, ...defaultYoutubeArgs], defaultYoutubeArgs]
-    : [defaultYoutubeArgs];
+  const isYt = isYouTubeUrl(jobRef.url);
+  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const downloadFallbacks = isYt ? getYouTubeFallbacks() : [];
+  const attemptPlans: string[][] = [];
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
+  attemptPlans.push(defaultYoutubeArgs);
+  for (const fallback of downloadFallbacks) {
+    if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...fallback]);
+    attemptPlans.push(fallback);
+  }
+  if (!isYt) {
+    attemptPlans.length = 0;
+    if (cookieArgs.length) attemptPlans.push(cookieArgs);
+    attemptPlans.push([]);
+  }
 
   let lastErr: Error | null = null;
+  const attempted = new Set<string>();
   for (const extra of attemptPlans) {
+    const key = extra.join("\u0001");
+    if (attempted.has(key)) continue;
+    attempted.add(key);
     const remainingMs = Math.max(0, clipDeadlineAt - Date.now());
     if (remainingMs < MIN_CLIP_ATTEMPT_TIMEOUT_MS) {
       throw new Error(
@@ -1916,14 +1935,17 @@ async function tryProcessClipCutViaFullSource(
     try {
       await spawnDownloadOnce(extra, cmdArgs, jobRef, {
         timeoutMs: remainingMs,
-        stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
+        stallTimeoutMs: Math.min(LAMBDA_CLIP_STALL_TIMEOUT_MS, YTDLP_DOWNLOAD_STALL_TIMEOUT_MS),
         onProgress: persistProgress,
       });
       lastErr = null;
       break;
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error("yt-dlp source download failed");
-      if (!isYouTubeUrl(jobRef.url) || !isYouTubeBlockedError(lastErr.message)) break;
+      if (!isYt || !isYouTubeBlockedError(lastErr.message)) break;
+      jobRef.message = "Retrying download source...";
+      jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
+      persistProgress();
     }
   }
   if (lastErr) throw lastErr;
@@ -2064,7 +2086,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       try {
         await spawnDownloadOnce(extra, cmdArgs, jobRef, {
           timeoutMs: attemptTimeoutMs,
-          stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
+          stallTimeoutMs: Math.min(LAMBDA_CLIP_STALL_TIMEOUT_MS, YTDLP_DOWNLOAD_STALL_TIMEOUT_MS),
           onProgress: persistProgress,
         });
         lastErr = null;
@@ -2105,7 +2127,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
           try {
             await spawnDownloadOnce(extra, cmdArgs, jobRef, {
               timeoutMs: attemptTimeoutMs,
-              stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
+              stallTimeoutMs: Math.min(LAMBDA_CLIP_STALL_TIMEOUT_MS, YTDLP_DOWNLOAD_STALL_TIMEOUT_MS),
               onProgress: persistProgress,
             });
             lastErr = null;
@@ -2525,7 +2547,9 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
     if (attempted.has(key)) continue;
     attempted.add(key);
     try {
-      await spawnDownloadOnce(extra, cmdArgs, jobRef);
+      await spawnDownloadOnce(extra, cmdArgs, jobRef, {
+        stallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
+      });
       lastErr = null;
       break;
     } catch (err) {
@@ -2548,7 +2572,9 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
         if (attempted.has(key)) continue;
         attempted.add(key);
         try {
-          await spawnDownloadOnce(extra, cmdArgs, jobRef);
+          await spawnDownloadOnce(extra, cmdArgs, jobRef, {
+            stallTimeoutMs: YTDLP_DOWNLOAD_STALL_TIMEOUT_MS,
+          });
           lastErr = null;
           break;
         } catch (err) {
