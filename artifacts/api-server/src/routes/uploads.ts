@@ -31,8 +31,8 @@ const logger = pino({ name: "uploads" });
 const router = Router();
 
 // ── Config ─────────────────────────────────────────────────────────────────
-const BUCKET = process.env.S3_BUCKET_NAME ?? "malikaeditorr";
-const REGION = process.env.AWS_REGION ?? "ap-south-1";
+const BUCKET = process.env.S3_BUCKET ?? process.env.S3_BUCKET_NAME ?? "malikaeditorr";
+const REGION = process.env.S3_REGION ?? process.env.AWS_REGION ?? "us-east-1";
 const UPLOADS_TABLE = process.env.UPLOADS_TABLE ?? "";
 const MAX_BYTES = 3 * 1024 * 1024 * 1024; // 3 GB
 const PART_SIZE = 10 * 1024 * 1024;        // 10 MB per part
@@ -188,11 +188,13 @@ router.post("/presign", async (req: Request, res: Response) => {
     const s3Key = `share/${vis}/${fileId}/${safeName}`;
     const contentType = String(mimeType || "application/octet-stream").slice(0, 200);
 
+    const uploadedAt = Date.now();
     await dbPut({
       fileId, s3Key, filename: safeName, originalFilename: String(filename).slice(0, 500),
       title: String(title).slice(0, 200), description: String(description).slice(0, 1000),
       size, mimeType: contentType, visibility: vis,
-      uploadedAt: Date.now(), status: "pending", downloadCount: 0,
+      uploadedAt, expiresAt: Math.floor(uploadedAt / 1000) + 7 * 24 * 60 * 60,
+      status: "pending", downloadCount: 0,
     });
 
     if (size <= SINGLE_LIMIT) {

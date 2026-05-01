@@ -223,6 +223,21 @@ Resources:
           return request;
         }
 
+  UploadsMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Prefix}-uploads"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: fileId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: fileId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
   ApiRole:
     Type: AWS::IAM::Role
     Properties:
@@ -249,7 +264,16 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:Scan
                   - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
                 Resource: !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${YoutubeQueueJobTable}"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt UploadsMetadataTable.Arn
               - Effect: Allow
                 Action:
                   - batch:SubmitJob
@@ -326,7 +350,9 @@ Resources:
           YTDLP_POT_PROVIDER_URL: !Ref YtdlpPotProviderUrl
           YTDLP_PROXY: !Ref YtdlpProxy
           S3_BUCKET: !Ref OutputBucketName
+          S3_BUCKET_NAME: !Ref OutputBucketName
           S3_REGION: !Ref OutputBucketRegion
+          UPLOADS_TABLE: !Ref UploadsMetadataTable
           S3_OBJECT_PREFIX: !Ref OutputObjectPrefix
           S3_SIGNED_URL_TTL_SEC: !Ref SignedUrlTtlSec
           YOUTUBE_QUEUE_PRIMARY_ENABLED: !Ref YoutubeQueuePrimaryEnabled
