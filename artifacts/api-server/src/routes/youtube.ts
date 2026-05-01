@@ -1702,6 +1702,7 @@ const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "840000", 10) || 840_000,
 );
+const MIN_CLIP_ATTEMPT_TIMEOUT_MS = 30_000;
 const LAMBDA_CLIP_FORCE_KEYFRAMES =
   process.env.LAMBDA_CLIP_FORCE_KEYFRAMES === "true";
 
@@ -1729,6 +1730,9 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
     lastPersistAt = now;
     persistClipJobState(jobId, jobRef);
   };
+  const clipDeadlineAt = Date.now() + LAMBDA_CLIP_COMMAND_TIMEOUT_MS;
+  const nextAttemptTimeoutMs = () =>
+    Math.max(0, clipDeadlineAt - Date.now());
 
   await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
@@ -1738,9 +1742,10 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
 
   let lastErr: Error | null = null;
   let attemptsUsed = 0;
+  let deadlineExpired = false;
   for (const formatSelector of formatCandidates) {
     if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
-    if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) break;
+    if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS || deadlineExpired) break;
 
     const cmdArgs: string[] = [
       "--no-playlist",
@@ -1770,10 +1775,18 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       const key = extra.join("\u0001");
       if (attempted.has(key)) continue;
       attempted.add(key);
+      const attemptTimeoutMs = nextAttemptTimeoutMs();
+      if (attemptTimeoutMs < MIN_CLIP_ATTEMPT_TIMEOUT_MS) {
+        deadlineExpired = true;
+        lastErr = new Error(
+          `Clip cut timed out after ${Math.round(LAMBDA_CLIP_COMMAND_TIMEOUT_MS / 1000)} seconds`,
+        );
+        break;
+      }
       attemptsUsed += 1;
       try {
         await spawnDownloadOnce(extra, cmdArgs, jobRef, {
-          timeoutMs: LAMBDA_CLIP_COMMAND_TIMEOUT_MS,
+          timeoutMs: attemptTimeoutMs,
           onProgress: persistProgress,
         });
         lastErr = null;
@@ -1789,6 +1802,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       }
     }
 
+    if (deadlineExpired) break;
     const shouldTryClientFallback =
       !!lastErr && isYt && isYouTubeBlockedError(lastErr.message);
     if (shouldTryClientFallback && attemptsUsed < MAX_CLIP_DOWNLOAD_ATTEMPTS) {
@@ -1801,10 +1815,18 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
           const key = extra.join("\u0001");
           if (attempted.has(key)) continue;
           attempted.add(key);
+          const attemptTimeoutMs = nextAttemptTimeoutMs();
+          if (attemptTimeoutMs < MIN_CLIP_ATTEMPT_TIMEOUT_MS) {
+            deadlineExpired = true;
+            lastErr = new Error(
+              `Clip cut timed out after ${Math.round(LAMBDA_CLIP_COMMAND_TIMEOUT_MS / 1000)} seconds`,
+            );
+            break;
+          }
           attemptsUsed += 1;
           try {
             await spawnDownloadOnce(extra, cmdArgs, jobRef, {
-              timeoutMs: LAMBDA_CLIP_COMMAND_TIMEOUT_MS,
+              timeoutMs: attemptTimeoutMs,
               onProgress: persistProgress,
             });
             lastErr = null;
@@ -1818,7 +1840,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
             }
           }
         }
-        if (!lastErr) break;
+        if (!lastErr || deadlineExpired) break;
       }
     }
 
@@ -1957,9 +1979,12 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
       if (message === CANCELLED_BY_USER || j.cancelled) {
         j.status = "cancelled";
         j.message = CANCELLED_BY_USER;
+        persistClipJobState(jobId, j);
       } else {
         j.status = "error";
         j.message = message;
+        j.percent = 0;
+        persistClipJobState(jobId, j);
         pushFailureNotification(
           j,
           "Clip cut failed",
