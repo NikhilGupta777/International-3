@@ -1702,6 +1702,10 @@ const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "840000", 10) || 840_000,
 );
+const LAMBDA_CLIP_STALL_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.LAMBDA_CLIP_STALL_TIMEOUT_MS ?? "180000", 10) || 180_000,
+);
 const MIN_CLIP_ATTEMPT_TIMEOUT_MS = 30_000;
 const LAMBDA_CLIP_FORCE_KEYFRAMES =
   process.env.LAMBDA_CLIP_FORCE_KEYFRAMES === "true";
@@ -1787,6 +1791,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       try {
         await spawnDownloadOnce(extra, cmdArgs, jobRef, {
           timeoutMs: attemptTimeoutMs,
+          stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
           onProgress: persistProgress,
         });
         lastErr = null;
@@ -1827,6 +1832,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
           try {
             await spawnDownloadOnce(extra, cmdArgs, jobRef, {
               timeoutMs: attemptTimeoutMs,
+              stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
               onProgress: persistProgress,
             });
             lastErr = null;
@@ -2002,7 +2008,7 @@ function spawnDownloadOnce(
   extraArgs: string[],
   cmdArgs: string[],
   jobRef: DownloadJob,
-  options: { timeoutMs?: number; onProgress?: () => void } = {},
+  options: { timeoutMs?: number; stallTimeoutMs?: number; onProgress?: () => void } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (jobRef.cancelled) {
@@ -2028,11 +2034,13 @@ function spawnDownloadOnce(
     jobRef.activeProc = proc;
     let stderr = "";
     let timedOut = false;
+    let timeoutReason = "";
     const timeout =
       options.timeoutMs && options.timeoutMs > 0
         ? setTimeout(() => {
             timedOut = true;
-            stderr += `\nyt-dlp command timed out after ${Math.round(options.timeoutMs! / 1000)} seconds`;
+            timeoutReason = `yt-dlp command timed out after ${Math.round(options.timeoutMs! / 1000)} seconds`;
+            stderr += `\n${timeoutReason}`;
             try {
               proc.kill("SIGTERM");
             } catch {}
@@ -2046,8 +2054,31 @@ function spawnDownloadOnce(
           }, options.timeoutMs)
         : null;
     timeout?.unref?.();
+    let stallTimeout: NodeJS.Timeout | null = null;
+    const resetStallTimeout = () => {
+      if (!options.stallTimeoutMs || options.stallTimeoutMs <= 0) return;
+      if (stallTimeout) clearTimeout(stallTimeout);
+      stallTimeout = setTimeout(() => {
+        timedOut = true;
+        timeoutReason = `yt-dlp made no progress for ${Math.round(options.stallTimeoutMs! / 1000)} seconds`;
+        stderr += `\n${timeoutReason}`;
+        try {
+          proc.kill("SIGTERM");
+        } catch {}
+        setTimeout(() => {
+          if (jobRef.activeProc === proc) {
+            try {
+              proc.kill("SIGKILL");
+            } catch {}
+          }
+        }, 5000).unref?.();
+      }, options.stallTimeoutMs);
+      stallTimeout.unref?.();
+    };
+    resetStallTimeout();
 
     proc.stdout?.on("data", (data: Buffer) => {
+      resetStallTimeout();
       const lines = data.toString().split("\n");
       for (const line of lines) {
         const trimmed = line.trim();
@@ -2124,11 +2155,13 @@ function spawnDownloadOnce(
     });
 
     proc.stderr?.on("data", (d: Buffer) => {
+      resetStallTimeout();
       stderr += d.toString();
     });
 
     proc.on("close", (code: number | null) => {
       if (timeout) clearTimeout(timeout);
+      if (stallTimeout) clearTimeout(stallTimeout);
       jobRef.activeProc = null;
       if (jobRef.cancelled) {
         reject(new Error(CANCELLED_BY_USER));
@@ -2137,7 +2170,7 @@ function spawnDownloadOnce(
           { command, args: commandArgs, stderr: stderr.slice(-2000), ffmpegPath: FFMPEG_PATH },
           "yt-dlp download command timed out",
         );
-        reject(new Error(stderr.slice(-500) || "yt-dlp command timed out"));
+        reject(new Error(stderr.slice(-500) || timeoutReason || "yt-dlp command timed out"));
       } else if (code === 0) resolve();
       else {
         logger.warn(
@@ -2152,6 +2185,7 @@ function spawnDownloadOnce(
 
     proc.on("error", (err: Error) => {
       if (timeout) clearTimeout(timeout);
+      if (stallTimeout) clearTimeout(stallTimeout);
       jobRef.activeProc = null;
       reject(new Error(`Failed to start yt-dlp: ${err.message}`));
     });

@@ -226,6 +226,7 @@ $parameterOverrides = @(
   "YoutubeQueueShadowJobTypes=$(Get-OptionalEnv $envMap 'YOUTUBE_QUEUE_SHADOW_JOB_TYPES' 'download,clip-cut')"
   "LambdaClipMaxDurationSeconds=$(Get-OptionalEnv $envMap 'LAMBDA_CLIP_MAX_DURATION_SECONDS' '600')"
   "LambdaClipCommandTimeoutMs=$(Get-OptionalEnv $envMap 'LAMBDA_CLIP_COMMAND_TIMEOUT_MS' '840000')"
+  "LambdaClipStallTimeoutMs=$(Get-OptionalEnv $envMap 'LAMBDA_CLIP_STALL_TIMEOUT_MS' '180000')"
   "MaxConcurrentClipJobs=$(Get-OptionalEnv $envMap 'MAX_CONCURRENT_CLIP_JOBS' '3')"
   "SubtitlesForceLambda=$(Get-OptionalEnv $envMap 'SUBTITLES_FORCE_LAMBDA' 'false')"
   "SubtitlesLambdaMaxDurationSeconds=$(Get-OptionalEnv $envMap 'SUBTITLES_LAMBDA_MAX_DURATION_SECONDS' '600')"
