@@ -2191,31 +2191,6 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
     if (!lastErr) break;
   }
 
-  if (lastErr && !jobRef.cancelled && Math.max(0, clipDeadlineAt - Date.now()) >= MIN_CLIP_ATTEMPT_TIMEOUT_MS) {
-    const sectionErr = lastErr;
-    try {
-      logger.warn({ err: sectionErr, jobId }, "Section clip path failed; trying full-source trim fallback");
-      jobRef.message = "Trying backup clip method...";
-      jobRef.percent = Math.max(jobRef.percent ?? 0, 5);
-      persistClipJobState(jobId, jobRef);
-      const handled = await tryProcessClipCutViaFullSource(
-        jobId,
-        jobRef,
-        clipStart,
-        clipEnd ?? clipStart + 60,
-        clipQuality,
-        clipDeadlineAt,
-        persistProgress,
-      );
-      if (handled) lastErr = null;
-    } catch (err) {
-      const fallbackErr = err instanceof Error ? err : new Error("Backup clip trim failed");
-      lastErr = new Error(
-        `Section clip failed: ${getDownloaderFailureMessage(sectionErr.message)}. Backup clip method failed: ${getDownloaderFailureMessage(fallbackErr.message)}`,
-      );
-    }
-  }
-
   if (lastErr && attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) {
     throw new Error(
       `Clip cut failed after ${attemptsUsed} attempts: ${getDownloaderFailureMessage(lastErr.message)}`,
