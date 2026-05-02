@@ -4,7 +4,7 @@ import {
   Plus, AudioLines, ArrowUp, Loader2,
   Download, Sparkles, Captions, Scissors,
   ListVideo, AlarmClock, UploadCloud, Languages,
-  Film, Paperclip, ImagePlus, Music2,
+  Film, Paperclip, ImagePlus, Music2, Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "help" | "activity";
+  | "upload" | "translator" | "findvideo" | "help" | "activity";
 const ULTRA_KEY = "studio-ultra-mode";
 
 function readUltraInitial(): boolean {
@@ -301,6 +301,7 @@ export function StudioHome({
             { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
             { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
             { icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" },
+            { icon: <Search className="w-5 h-5" />, label: "Find Video", desc: "Ask NotebookLM", mode: "findvideo", color: "text-sky-400" },
             { icon: <ListVideo className="w-5 h-5" />, label: "Find Sabha", desc: "Search within videos", mode: "scenefinder", color: "text-sky-400" },
             { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
             { icon: <UploadCloud className="w-5 h-5" />, label: "Share", desc: "Share files", mode: "upload", color: "text-cyan-400" },

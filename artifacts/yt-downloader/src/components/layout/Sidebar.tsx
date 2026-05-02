@@ -1,7 +1,7 @@
 import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
-  ListVideo, AlarmClock, UploadCloud, Languages, Youtube, Menu, X,
+  ListVideo, AlarmClock, UploadCloud, Languages, Search, Menu, X,
   Plus, Home as HomeIcon, CircleHelp, Activity, UserCircle2, Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "help" | "activity" | "admin";
+  | "upload" | "translator" | "findvideo" | "help" | "activity" | "admin";
 
 interface NavItem {
   mode: Mode;
@@ -36,6 +36,7 @@ const NAV_ITEMS: NavItem[] = [
   { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
   { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },
   { mode: "translator",  icon: <Languages className="gs-icon" />,       label: "Translator" },
+  { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video" },
   { mode: "timestamps",  icon: <AlarmClock className="gs-icon" />,      label: "Timestamps" },
   { mode: "download",    icon: <Download className="gs-icon" />,        label: "Download" },
   { mode: "scenefinder", icon: <ListVideo className="gs-icon" />,       label: "Find Sabha" },
