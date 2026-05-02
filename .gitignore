@@ -59,6 +59,9 @@ artifacts/api-server/*-player-script.js
 credentials.json
 *credentials*.json
 google-vertex-credentials.json
+gen-lang-client-*.json
+storage_state.json
+.notebooklm-auth/
 .yt-cookies.txt
 ytgrabber-key-*.pem
 deploy/ec2/keys/

@@ -367,6 +367,7 @@ jobs:
           GEMINI_API_KEY_3_SECRET: ${{ secrets.GEMINI_API_KEY_3 }}
           WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
           BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
+          NOTEBOOKLM_AUTH_JSON_B64_SECRET: ${{ secrets.NOTEBOOKLM_AUTH_JSON_B64 }}
         run: |
           printf '%s' "$ENV_GREEN_CONTENT_SECRET" > /tmp/.env.green
           upsert_env() {
@@ -391,6 +392,11 @@ jobs:
           upsert_env "GOOGLE_CLOUD_PROJECT" "${{ secrets.GOOGLE_CLOUD_PROJECT }}"
           upsert_env "GOOGLE_CLOUD_LOCATION" "${{ secrets.GOOGLE_CLOUD_LOCATION }}"
           upsert_env "GOOGLE_APPLICATION_CREDENTIALS_BASE64" "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_BASE64 }}"
+          upsert_env "NOTEBOOKLM_ENABLED" "${{ secrets.NOTEBOOKLM_ENABLED }}"
+          upsert_env "NOTEBOOKLM_NOTEBOOK_ID" "${{ secrets.NOTEBOOKLM_NOTEBOOK_ID }}"
+          if [ -n "$NOTEBOOKLM_AUTH_JSON_B64_SECRET" ]; then
+            upsert_env "NOTEBOOKLM_AUTH_JSON" "$(printf '%s' "$NOTEBOOKLM_AUTH_JSON_B64_SECRET" | base64 -d)"
+          fi
           upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
           upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"
           upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,bhagwat-analyze,bhagwat-render,subtitles"
