@@ -519,7 +519,7 @@ def _get_gemini_client():
 def _gemini_model_for_mode(mode: str) -> str:
     return {
         "budget":  "gemini-3.1-flash-lite-preview",
-        "premium": "gemini-3.1-pro-preview",
+        "premium": "gemini-2.5-flash",
     }.get(mode, "gemini-3-flash-preview")
 
 
@@ -628,9 +628,9 @@ def translate_segments(segments: list[dict]) -> list[dict]:
             log.warning(f"[Gemini] Attempt {attempts} failed: {e}")
             if attempts >= 3:
                 # Retry with premium model on failure
-                if model != "gemini-3.1-pro-preview":
+                if model != "gemini-2.5-flash":
                     log.info("[Gemini] Retrying with premium model...")
-                    model = "gemini-3.1-pro-preview"
+                    model = "gemini-2.5-flash"
                     attempts = 0
                 else:
                     raise RuntimeError(f"Translation failed after all retries: {e}")

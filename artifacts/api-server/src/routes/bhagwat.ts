@@ -550,11 +550,10 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
 }
 
 // ── Gemini text generation ─────────────────────────────────────────────────────
-// Replit integration: gemini-3.1-pro-preview  →  own key fallback: gemini-2.5-pro
+// Replit integration: gemini-2.5-flash -> own key flash fallback
 const OWN_KEY_TEXT_MODELS = [
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
-  "gemini-2.5-pro",
 ] as const;
 const BHAGWAT_REVIEW_TIMEOUT_MS = Number(
   process.env.BHAGWAT_REVIEW_TIMEOUT_MS ?? 90_000,
@@ -708,13 +707,13 @@ async function geminiProContent(
     try {
       const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
       const result = await client.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: userContent }] }],
         ...(systemInstruction && { config: { systemInstruction } }),
       });
       return (result as any).text ?? "";
     } catch (err) {
-      console.warn("[bhagwat/text] Replit gemini-3.1-pro-preview failed, falling back to own key:", (err as Error).message);
+      console.warn("[bhagwat/text] Replit gemini-2.5-flash failed, falling back to own key:", (err as Error).message);
     }
   }
 
@@ -734,7 +733,7 @@ async function geminiProStream(
     try {
       const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
       const stream = client.models.generateContentStream({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: userContent }] }],
         ...(systemInstruction && { config: { systemInstruction } }),
       });
@@ -744,7 +743,7 @@ async function geminiProStream(
       }
       return fullText;
     } catch (err) {
-      console.warn("[bhagwat/text] Replit gemini-3.1-pro-preview stream failed, falling back to own key:", (err as Error).message);
+      console.warn("[bhagwat/text] Replit gemini-2.5-flash stream failed, falling back to own key:", (err as Error).message);
       fullText = "";
     }
   }

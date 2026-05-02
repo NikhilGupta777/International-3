@@ -15,12 +15,12 @@ import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 const router = Router();
 
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
-const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-pro";
+const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-flash";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash"; // for grounded web search
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const ALLOWED_MODELS = new Set([
   "gemini-3-flash-preview", "gemini-2.5-flash",
-  "gemini-2.5-pro", "gemini-2.5-flash-lite",
+  "gemini-2.5-flash-lite",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;

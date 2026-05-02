@@ -570,7 +570,7 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
     try {
       const client = new GoogleGenAI({ apiKey: integrationKey, httpOptions: { apiVersion: "", baseUrl } });
       const result = await client.models.generateContent({
-        model: "gemini-2.5-pro",
+        model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: userContent }] }],
         config: { systemInstruction: SYSTEM_PROMPT },
       });
@@ -585,7 +585,7 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
   try {
     const client = createGeminiClient();
     const result = await client.models.generateContent({
-      model: "gemini-2.5-pro",
+      model: "gemini-2.5-flash",
       contents: [{ role: "user", parts: [{ text: userContent }] }],
       config: { systemInstruction: SYSTEM_PROMPT },
     });

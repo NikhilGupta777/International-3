@@ -363,6 +363,8 @@ jobs:
         env:
           ENV_GREEN_CONTENT_SECRET: ${{ secrets.ENV_GREEN_CONTENT }}
           GEMINI_API_KEY_SECRET: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2_SECRET: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3_SECRET: ${{ secrets.GEMINI_API_KEY_3 }}
           WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
           BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
         run: |
@@ -382,8 +384,9 @@ jobs:
             fi
           }
           upsert_env "YOUTUBE_BATCH_JOB_DEFINITION" "${{ needs.build-worker.outputs.batch_job_def }}"
-          sed -i '/^GEMINI_API_KEY_[2-9]=/d;/^GEMINI_API_KEY_10=/d' /tmp/.env.green
           upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
+          upsert_env "GEMINI_API_KEY_2" "$GEMINI_API_KEY_2_SECRET"
+          upsert_env "GEMINI_API_KEY_3" "$GEMINI_API_KEY_3_SECRET"
           upsert_env "GOOGLE_GENAI_USE_VERTEXAI" "${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}"
           upsert_env "GOOGLE_CLOUD_PROJECT" "${{ secrets.GOOGLE_CLOUD_PROJECT }}"
           upsert_env "GOOGLE_CLOUD_LOCATION" "${{ secrets.GOOGLE_CLOUD_LOCATION }}"
