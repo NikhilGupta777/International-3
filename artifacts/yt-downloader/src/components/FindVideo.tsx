@@ -22,6 +22,11 @@ type NotebookReference = {
   endChar?: number | null;
 };
 
+type NotebookHealth = {
+  enabled?: boolean;
+  configured?: boolean;
+};
+
 type RunState = "idle" | "queued" | "waiting" | "asking" | "done" | "error";
 
 function formatElapsed(ms?: number | null): string {
@@ -61,7 +66,27 @@ export function FindVideo() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [position, setPosition] = useState<number | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [isConfigured, setIsConfigured] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${BASE}/api/notebook/health`, {
+      credentials: "include",
+      headers: { "Cache-Control": "no-cache" },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((health: NotebookHealth | null) => {
+        if (cancelled) return;
+        setIsConfigured(Boolean(health?.enabled && health?.configured));
+      })
+      .catch(() => {
+        if (!cancelled) setIsConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!startedAt || status === "done" || status === "error" || status === "idle") return;
@@ -117,7 +142,7 @@ export function FindVideo() {
 
   const ask = async () => {
     const message = prompt.trim();
-    if (!message) return;
+    if (!message || !isConfigured) return;
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -163,7 +188,7 @@ export function FindVideo() {
   };
 
   const isRunning = status === "queued" || status === "waiting" || status === "asking";
-  const canSubmit = prompt.trim().length > 0 && !isRunning;
+  const canSubmit = isConfigured && prompt.trim().length > 0 && !isRunning;
 
   return (
     <div className="find-video-page">
@@ -185,9 +210,9 @@ export function FindVideo() {
             className="find-video-input"
             placeholder="e.g. asteroid girega 3 bhag hojayega find this please"
             rows={4}
-            disabled={isRunning}
+            disabled={isRunning || !isConfigured}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              if (isConfigured && e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 void ask();
               }
