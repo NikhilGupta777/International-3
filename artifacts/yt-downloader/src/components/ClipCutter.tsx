@@ -109,7 +109,11 @@ interface ActiveJob {
   filename: string | null;
   filesize: number | null;
   message: string | null;
+  progressLine: string | null;
+  progressSource: string | null;
   queueUpdatedAt: string | null;
+  completedAt: number | null;
+  elapsedMs: number | null;
   downloaded: boolean;
   savedToHistory: boolean;
   startedAt: number;
@@ -124,6 +128,11 @@ interface ProgressPayload {
   filename?: string | null;
   filesize?: number | null;
   message?: string | null;
+  progressLine?: string | null;
+  progressSource?: string | null;
+  startedAt?: number | null;
+  completedAt?: number | null;
+  elapsedMs?: number | null;
   queue?: {
     updatedAt?: string | null;
     batchJobId?: string | null;
@@ -192,7 +201,11 @@ export function ClipCutter() {
       eta: null,
       filename: null,
       filesize: null,
+      progressLine: null,
+      progressSource: null,
       queueUpdatedAt: null,
+      completedAt: null,
+      elapsedMs: null,
       message: "Reconnecting…",
       downloaded: false,
       savedToHistory: false,
@@ -260,7 +273,11 @@ export function ClipCutter() {
                   filename: data.filename ?? j.filename,
                   filesize: data.filesize ?? j.filesize,
                   message: data.message ?? null,
+                  progressLine: data.progressLine ?? j.progressLine,
+                  progressSource: data.progressSource ?? j.progressSource,
                   queueUpdatedAt: data.queue?.updatedAt ?? j.queueUpdatedAt,
+                  completedAt: data.completedAt ?? (data.status === "done" ? Date.now() : j.completedAt),
+                  elapsedMs: data.elapsedMs ?? j.elapsedMs,
                 };
 
                 // Save to history when done
@@ -332,7 +349,11 @@ export function ClipCutter() {
               rawStatus === "expired"
                 ? "File expired. Please run clip cut again."
                 : (data.message ?? null),
+            progressLine: data.progressLine ?? j.progressLine,
+            progressSource: data.progressSource ?? j.progressSource,
             queueUpdatedAt: data.queue?.updatedAt ?? j.queueUpdatedAt,
+            completedAt: data.completedAt ?? (nextStatus === "done" ? Date.now() : j.completedAt),
+            elapsedMs: data.elapsedMs ?? j.elapsedMs,
             reconnected: false,
           };
 
@@ -548,7 +569,11 @@ export function ClipCutter() {
         eta: null,
         filename: null,
         filesize: null,
+        progressLine: null,
+        progressSource: null,
         queueUpdatedAt: null,
+        completedAt: null,
+        elapsedMs: null,
         message: data.message ?? "Clip cut queued...",
         downloaded: false,
         savedToHistory: false,
@@ -949,6 +974,11 @@ function fmtElapsed(s: number): string {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
+function fmtMs(ms: number | null | undefined): string | null {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return null;
+  return fmtElapsed(Math.round(ms / 1000));
+}
+
 function clampPercent(percent: number): number {
   if (!Number.isFinite(percent)) return 0;
   return Math.max(0, Math.min(100, percent));
@@ -979,29 +1009,34 @@ function getClipProgressView(job: ActiveJob, elapsed: number) {
   const hasDownloaderDetails = Boolean(job.speed || job.eta || job.filename || job.filesize);
   const hasRealPercent = percent > 5 || (percent > 0 && hasDownloaderDetails);
   const queueAge = formatQueueUpdateAge(job.queueUpdatedAt);
+  const elapsedLabel = fmtElapsed(elapsed);
+  const tookLabel = fmtMs(job.elapsedMs ?? (job.completedAt ? job.completedAt - job.startedAt : null));
 
   const details = [
     job.speed ? `speed ${job.speed}` : null,
     job.eta ? `ETA ${job.eta}` : null,
     job.filesize ? formatFilesize(job.filesize) : null,
+    `elapsed ${elapsedLabel}`,
     queueAge,
   ].filter(Boolean);
 
   let primary: string;
   if (job.reconnected) {
     primary = "Reconnecting to live progress...";
+  } else if (job.progressLine) {
+    primary = job.progressLine;
   } else if (!isGenericClipMessage(job.message)) {
     primary = job.message as string;
   } else if (hasDownloaderDetails || hasRealPercent) {
-    primary = "Receiving downloader progress";
+    primary = "Downloader has not emitted a detailed line yet";
   } else {
-    primary = "Waiting for live downloader output...";
+    primary = "No yt-dlp/ffmpeg output received yet";
   }
 
   return {
     primary,
     details: details.join(" | "),
-    right: hasRealPercent ? `${percent.toFixed(0)}%` : fmtElapsed(elapsed),
+    right: tookLabel ? `took ${tookLabel}` : hasRealPercent ? `${percent.toFixed(0)}%` : elapsedLabel,
     percent,
     determinate: hasRealPercent,
   };
@@ -1033,6 +1068,7 @@ function ClipJobCard({
 
   const elapsed = useElapsed(job.startedAt, isProcessing);
   const progressView = getClipProgressView(job, elapsed);
+  const doneTimeLabel = fmtMs(job.elapsedMs ?? (job.completedAt ? job.completedAt - job.startedAt : null));
 
   return (
     <motion.div
@@ -1176,7 +1212,7 @@ function ClipJobCard({
 
       {isDone && (
         <p className="text-xs text-green-400/70 relative z-10">
-          Clip is ready. Use Save to download.
+          Clip is ready{doneTimeLabel ? ` in ${doneTimeLabel}` : ""}. Use Save to download.
         </p>
       )}
     </motion.div>

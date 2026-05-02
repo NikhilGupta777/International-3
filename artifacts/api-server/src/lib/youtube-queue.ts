@@ -48,6 +48,10 @@ type QueueStatus = {
   originalFilename: string | null;
   durationSecs: number | null;
   progressPct: number | null;
+  progressLine: string | null;
+  progressSource: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
   resultJson: string | null;
 };
 
@@ -256,6 +260,10 @@ export async function putYoutubeQueueLocalJob(input: {
   filesize?: number | null;
   s3Key?: string | null;
   durationSecs?: number | null;
+  progressLine?: string | null;
+  progressSource?: string | null;
+  startedAt?: number | null;
+  completedAt?: number | null;
 }): Promise<boolean> {
   if (!ddb || !JOB_TABLE) return false;
   const now = Date.now();
@@ -273,6 +281,10 @@ export async function putYoutubeQueueLocalJob(input: {
   if (typeof input.filesize === "number") item.filesize = { N: String(input.filesize) };
   if (input.s3Key) item.s3Key = { S: input.s3Key };
   if (typeof input.durationSecs === "number") item.durationSecs = { N: String(input.durationSecs) };
+  if (input.progressLine) item.progressLine = { S: input.progressLine };
+  if (input.progressSource) item.progressSource = { S: input.progressSource };
+  if (typeof input.startedAt === "number") item.startedAt = { N: String(input.startedAt) };
+  if (typeof input.completedAt === "number") item.completedAt = { N: String(input.completedAt) };
   await ddb.send(new PutItemCommand({ TableName: JOB_TABLE, Item: item }));
   return true;
 }
@@ -287,6 +299,10 @@ export async function updateYoutubeQueueLocalJob(
     filesize?: number | null;
     s3Key?: string | null;
     durationSecs?: number | null;
+    progressLine?: string | null;
+    progressSource?: string | null;
+    startedAt?: number | null;
+    completedAt?: number | null;
     resultJson?: string | null;
   },
 ): Promise<boolean> {
@@ -315,6 +331,10 @@ export async function updateYoutubeQueueLocalJob(
   addNumber("filesize", fields.filesize);
   addString("s3Key", fields.s3Key);
   addNumber("durationSecs", fields.durationSecs);
+  addString("progressLine", fields.progressLine);
+  addString("progressSource", fields.progressSource);
+  addNumber("startedAt", fields.startedAt);
+  addNumber("completedAt", fields.completedAt);
   addString("resultJson", fields.resultJson);
 
   await ddb.send(
@@ -452,6 +472,10 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
     originalFilename: out.Item.originalFilename?.S ?? null,
     durationSecs: out.Item.durationSecs?.N ? Number(out.Item.durationSecs.N) : null,
     progressPct: out.Item.progressPct?.N ? Number(out.Item.progressPct.N) : null,
+    progressLine: out.Item.progressLine?.S ?? null,
+    progressSource: out.Item.progressSource?.S ?? null,
+    startedAt: out.Item.startedAt?.N ? Number(out.Item.startedAt.N) : null,
+    completedAt: out.Item.completedAt?.N ? Number(out.Item.completedAt.N) : null,
     resultJson: out.Item.resultJson?.S ?? null,
   };
 }

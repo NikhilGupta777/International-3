@@ -377,6 +377,10 @@ interface DownloadJob {
   filename: string | null;
   filesize: number | null;
   message: string | null;
+  progressLine?: string | null;
+  progressSource?: "stdout" | "stderr" | null;
+  startedAt?: number;
+  completedAt?: number | null;
   filePath: string | null;
   s3Key?: string | null;
   url: string;
@@ -1675,6 +1679,10 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
     filename: null,
     filesize: null,
     message: "Starting download...",
+    progressLine: null,
+    progressSource: null,
+    startedAt: Date.now(),
+    completedAt: null,
     filePath: null,
     url: normalizedUrl,
     formatId: requestedFormatId,
@@ -1693,6 +1701,7 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
       message: job.message ?? "Starting download...",
       progressPct: 0,
       filename: job.filename,
+      startedAt: job.startedAt ?? Date.now(),
     });
   } catch (err) {
     req.log.warn({ err, jobId }, "Failed to persist Lambda download start state");
@@ -2222,6 +2231,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.speed = null;
   jobRef.eta = null;
   jobRef.message = null;
+  jobRef.completedAt = Date.now();
   persistClipJobState(jobId, jobRef);
   pushCompletionNotification(
     jobRef,
@@ -2287,6 +2297,10 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
     filename: null,
     filesize: null,
     message: "Starting clip cut...",
+    progressLine: null,
+    progressSource: null,
+    startedAt: Date.now(),
+    completedAt: null,
     filePath: null,
     url: normalizedUrl,
     formatId: "clip",
@@ -2309,6 +2323,7 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
       progressPct: 0,
       filename: job.filename,
       durationSecs: endTime - startTime,
+      startedAt: job.startedAt ?? Date.now(),
     });
   } catch (err) {
     req.log.warn({ err, jobId }, "Failed to persist Lambda clip-cut start state");
@@ -2415,11 +2430,57 @@ function spawnDownloadOnce(
     };
     resetStallTimeout();
 
+    const clipDurationSecs =
+      typeof jobRef.clipStart === "number" && typeof jobRef.clipEnd === "number"
+        ? Math.max(0, jobRef.clipEnd - jobRef.clipStart)
+        : 0;
+    const rememberProgressLine = (line: string, source: "stdout" | "stderr") => {
+      const compact = line.replace(/\s+/g, " ").trim();
+      if (!compact) return;
+      jobRef.progressLine = compact.slice(0, 240);
+      jobRef.progressSource = source;
+      options.onProgress?.();
+    };
+    const parseFfmpegSectionProgress = (line: string): boolean => {
+      if (!clipDurationSecs) return false;
+      const trimmed = line.trim();
+      const timeMatch = trimmed.match(/\btime=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+      if (!timeMatch) return false;
+      const processedSecs =
+        Number(timeMatch[1]) * 3600 +
+        Number(timeMatch[2]) * 60 +
+        Number(timeMatch[3]);
+      if (!Number.isFinite(processedSecs)) return false;
+      resetStallTimeout();
+      jobRef.percent = Math.min(
+        95,
+        Math.max(jobRef.percent ?? 5, Math.round((processedSecs / clipDurationSecs) * 95)),
+      );
+      const speedMatch = trimmed.match(/\bspeed=\s*([0-9.]+x)/);
+      if (speedMatch) {
+        jobRef.speed = speedMatch[1];
+        const speedNum = Number.parseFloat(speedMatch[1]);
+        if (Number.isFinite(speedNum) && speedNum > 0) {
+          const remainingSecs = Math.max(0, clipDurationSecs - processedSecs) / speedNum;
+          jobRef.eta = secsToTimestamp(Math.round(remainingSecs));
+        }
+      }
+      jobRef.message = `Processed ${secsToTimestamp(Math.min(clipDurationSecs, Math.round(processedSecs)))} of ${secsToTimestamp(clipDurationSecs)}`;
+      rememberProgressLine(trimmed, "stderr");
+      return true;
+    };
+
     proc.stdout?.on("data", (data: Buffer) => {
-      const lines = data.toString().split("\n");
+      const lines = data.toString().split(/\r?\n|\r/);
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) continue;
+        if (
+          /^\[(download|info|youtube|Merger|ExtractAudio)/i.test(trimmed) ||
+          /\b(Destination|Merging|has already been downloaded)\b/i.test(trimmed)
+        ) {
+          rememberProgressLine(trimmed, "stdout");
+        }
 
         // Parse progress lines: [download]  xx.x% of ~xx.xxMiB at xx.xxMiB/s ETA xx:xx
         const progressMatch = trimmed.match(
@@ -2496,7 +2557,19 @@ function spawnDownloadOnce(
     });
 
     proc.stderr?.on("data", (d: Buffer) => {
-      stderr += d.toString();
+      const text = d.toString();
+      stderr += text;
+      for (const line of text.split(/\r?\n|\r/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (parseFfmpegSectionProgress(trimmed)) continue;
+        if (
+          /^\[(download|info|youtube|Merger|ExtractAudio|ffmpeg)/i.test(trimmed) ||
+          /\b(frame=|time=|speed=|Opening|Destination|Merging|has already been downloaded)\b/i.test(trimmed)
+        ) {
+          rememberProgressLine(trimmed, "stderr");
+        }
+      }
     });
 
     proc.on("close", (code: number | null) => {
@@ -2687,6 +2760,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   jobRef.speed = null;
   jobRef.eta = null;
   jobRef.message = null;
+  jobRef.completedAt = Date.now();
   persistDownloadJobState(jobId, jobRef);
   pushCompletionNotification(
     jobRef,
@@ -2707,6 +2781,11 @@ function buildProgressPayload(jobId: string, job: DownloadJob) {
     filename: job.filename,
     filesize: job.filesize,
     message: job.message,
+    progressLine: job.progressLine ?? null,
+    progressSource: job.progressSource ?? null,
+    startedAt: job.startedAt ?? null,
+    completedAt: job.completedAt ?? null,
+    elapsedMs: (job.completedAt ?? Date.now()) - (job.startedAt ?? Date.now()),
   };
 }
 
@@ -2719,6 +2798,10 @@ function persistClipJobState(jobId: string, job: DownloadJob): void {
     status: job.status,
     message: job.message,
     progressPct: job.percent,
+    progressLine: job.progressLine ?? null,
+    progressSource: job.progressSource ?? null,
+    startedAt: job.startedAt ?? null,
+    completedAt: job.completedAt ?? null,
     filename: job.filename,
     filesize: job.filesize,
     s3Key: job.s3Key ?? null,
@@ -2731,6 +2814,10 @@ function persistDownloadJobState(jobId: string, job: DownloadJob): void {
     status: job.status,
     message: job.message,
     progressPct: job.percent,
+    progressLine: job.progressLine ?? null,
+    progressSource: job.progressSource ?? null,
+    startedAt: job.startedAt ?? null,
+    completedAt: job.completedAt ?? null,
     filename: job.filename,
     filesize: job.filesize,
     s3Key: job.s3Key ?? null,
@@ -2792,6 +2879,11 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
         filename: queueStatus.filename,
         filesize: queueStatus.filesize,
         message: queueStatus.message,
+        progressLine: queueStatus.progressLine,
+        progressSource: queueStatus.progressSource,
+        startedAt: queueStatus.startedAt,
+        completedAt: queueStatus.completedAt,
+        elapsedMs: (queueStatus.completedAt ?? Date.now()) - (queueStatus.startedAt ?? Date.now()),
         queue: {
           updatedAt: queueStatus.updatedAt,
           batchJobId: queueStatus.batchJobId,
@@ -2840,6 +2932,11 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
         filename: queueStatus.filename,
         filesize: queueStatus.filesize,
         message: queueStatus.message,
+        progressLine: queueStatus.progressLine,
+        progressSource: queueStatus.progressSource,
+        startedAt: queueStatus.startedAt,
+        completedAt: queueStatus.completedAt,
+        elapsedMs: (queueStatus.completedAt ?? Date.now()) - (queueStatus.startedAt ?? Date.now()),
         queue: {
           updatedAt: queueStatus.updatedAt,
           batchJobId: queueStatus.batchJobId,
@@ -4741,6 +4838,10 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     filename: `${safeTitle}.mp4`,
     filesize: null,
     message: "Queued - starting soon...",
+    progressLine: null,
+    progressSource: null,
+    startedAt: Date.now(),
+    completedAt: null,
     filePath: null,
     url: normalizedUrl,
     formatId: "clip",
@@ -4763,6 +4864,7 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
       progressPct: 0,
       filename: job.filename,
       durationSecs: endSec - startSec,
+      startedAt: job.startedAt ?? Date.now(),
     });
   } catch (err) {
     req.log.warn({ err, jobId }, "Failed to persist Lambda legacy clip start state");
