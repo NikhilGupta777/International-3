@@ -220,7 +220,7 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
   const startedAt = Date.now();
   let closed = false;
   let controller: AbortController | null = null;
-  req.on("close", () => {
+  res.on("close", () => {
     closed = true;
     controller?.abort();
   });
