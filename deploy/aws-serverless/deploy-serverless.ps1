@@ -171,7 +171,7 @@ if (-not $bhagwatPassword) {
   throw "Missing required env value: BHAGWAT_PASSWORD"
 }
 
-$requiredTypes = @("clip-cut", "best-clips", "bhagwat-analyze", "bhagwat-render")
+$requiredTypes = @("clip-cut", "bhagwat-analyze", "bhagwat-render")
 $primarySet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($item in ($primaryJobTypes -split ",")) {
   $trimmed = $item.Trim()

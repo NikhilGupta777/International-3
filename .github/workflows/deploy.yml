@@ -393,7 +393,7 @@ jobs:
           upsert_env "GOOGLE_APPLICATION_CREDENTIALS_BASE64" "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_BASE64 }}"
           upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
           upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"
-          upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,best-clips,bhagwat-analyze,bhagwat-render,subtitles"
+          upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,bhagwat-analyze,bhagwat-render,subtitles"
           upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "600"
           upsert_env "LAMBDA_CLIP_COMMAND_TIMEOUT_MS" "840000"
           upsert_env "LAMBDA_CLIP_STALL_TIMEOUT_MS" "60000"
