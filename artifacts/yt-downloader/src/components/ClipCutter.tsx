@@ -109,6 +109,7 @@ interface ActiveJob {
   filename: string | null;
   filesize: number | null;
   message: string | null;
+  queueUpdatedAt: string | null;
   downloaded: boolean;
   savedToHistory: boolean;
   startedAt: number;
@@ -123,6 +124,11 @@ interface ProgressPayload {
   filename?: string | null;
   filesize?: number | null;
   message?: string | null;
+  queue?: {
+    updatedAt?: string | null;
+    batchJobId?: string | null;
+    s3Key?: string | null;
+  };
 }
 
 export function ClipCutter() {
@@ -186,6 +192,7 @@ export function ClipCutter() {
       eta: null,
       filename: null,
       filesize: null,
+      queueUpdatedAt: null,
       message: "Reconnecting…",
       downloaded: false,
       savedToHistory: false,
@@ -253,6 +260,7 @@ export function ClipCutter() {
                   filename: data.filename ?? j.filename,
                   filesize: data.filesize ?? j.filesize,
                   message: data.message ?? null,
+                  queueUpdatedAt: data.queue?.updatedAt ?? j.queueUpdatedAt,
                 };
 
                 // Save to history when done
@@ -324,6 +332,7 @@ export function ClipCutter() {
               rawStatus === "expired"
                 ? "File expired. Please run clip cut again."
                 : (data.message ?? null),
+            queueUpdatedAt: data.queue?.updatedAt ?? j.queueUpdatedAt,
             reconnected: false,
           };
 
@@ -539,6 +548,7 @@ export function ClipCutter() {
         eta: null,
         filename: null,
         filesize: null,
+        queueUpdatedAt: null,
         message: data.message ?? "Clip cut queued...",
         downloaded: false,
         savedToHistory: false,
@@ -939,6 +949,64 @@ function fmtElapsed(s: number): string {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
+function clampPercent(percent: number): number {
+  if (!Number.isFinite(percent)) return 0;
+  return Math.max(0, Math.min(100, percent));
+}
+
+function formatQueueUpdateAge(updatedAt: string | null): string | null {
+  if (!updatedAt) return null;
+  const updatedMs = Date.parse(updatedAt);
+  if (!Number.isFinite(updatedMs)) return null;
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - updatedMs) / 1000));
+  return `updated ${fmtElapsed(ageSeconds)} ago`;
+}
+
+function isGenericClipMessage(message: string | null): boolean {
+  const normalized = (message ?? "").trim().toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "cutting clip..." ||
+    normalized === "cutting selected section..." ||
+    normalized === "downloading..." ||
+    normalized === "clip cut queued..." ||
+    normalized === "processing..."
+  );
+}
+
+function getClipProgressView(job: ActiveJob, elapsed: number) {
+  const percent = clampPercent(job.percent);
+  const hasDownloaderDetails = Boolean(job.speed || job.eta || job.filename || job.filesize);
+  const hasRealPercent = percent > 5 || (percent > 0 && hasDownloaderDetails);
+  const queueAge = formatQueueUpdateAge(job.queueUpdatedAt);
+
+  const details = [
+    job.speed ? `speed ${job.speed}` : null,
+    job.eta ? `ETA ${job.eta}` : null,
+    job.filesize ? formatFilesize(job.filesize) : null,
+    queueAge,
+  ].filter(Boolean);
+
+  let primary: string;
+  if (job.reconnected) {
+    primary = "Reconnecting to live progress...";
+  } else if (!isGenericClipMessage(job.message)) {
+    primary = job.message as string;
+  } else if (hasDownloaderDetails || hasRealPercent) {
+    primary = "Receiving downloader progress";
+  } else {
+    primary = "Waiting for live downloader output...";
+  }
+
+  return {
+    primary,
+    details: details.join(" | "),
+    right: hasRealPercent ? `${percent.toFixed(0)}%` : fmtElapsed(elapsed),
+    percent,
+    determinate: hasRealPercent,
+  };
+}
+
 function ClipJobCard({
   job,
   onRemove,
@@ -958,15 +1026,13 @@ function ClipJobCard({
     job.status === "downloading" ||
     job.status === "merging";
 
-  const isConnecting =
-    (job.status === "pending" || job.status === "downloading") &&
-    job.percent === 0;
   const isCancelling = isProcessing && (job.message ?? "").toLowerCase().includes("cancel");
   const queuePositionMatch = job.message?.match(/queued\s*\(#(\d+)\)/i);
   const queuePosition = queuePositionMatch ? Number.parseInt(queuePositionMatch[1], 10) : null;
   const isQueued = job.status === "pending" && (job.message ?? "").toLowerCase().includes("queued");
 
   const elapsed = useElapsed(job.startedAt, isProcessing);
+  const progressView = getClipProgressView(job, elapsed);
 
   return (
     <motion.div
@@ -1061,18 +1127,13 @@ function ClipJobCard({
       {isProcessing && (
         <div className="relative z-10 flex flex-col gap-1.5">
           <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-            {isConnecting || job.status === "merging" ? (
+            {!progressView.determinate ? (
               <motion.div
-                className={cn(
-                  "h-full rounded-full",
-                  isConnecting
-                    ? "bg-gradient-to-r from-transparent via-orange-400/70 to-transparent"
-                    : "bg-orange-500/60",
-                )}
+                className="h-full rounded-full bg-gradient-to-r from-transparent via-orange-400/70 to-transparent"
                 animate={{ x: ["-100%", "200%"] }}
                 transition={{
                   repeat: Infinity,
-                  duration: isConnecting ? 1.8 : 1.5,
+                  duration: 1.8,
                   ease: "easeInOut",
                 }}
                 style={{ width: "45%" }}
@@ -1080,38 +1141,22 @@ function ClipJobCard({
             ) : (
               <motion.div
                 className="h-full bg-gradient-to-r from-orange-500 to-amber-400 rounded-full"
-                animate={{ width: `${job.percent}%` }}
+                animate={{ width: `${progressView.percent}%` }}
                 transition={{ ease: "linear", duration: 0.5 }}
-                style={{ width: `${job.percent}%` }}
+                style={{ width: `${progressView.percent}%` }}
               />
             )}
           </div>
-          <div className="flex justify-between text-[11px] text-white/40">
-            <span>
-              {job.reconnected && job.status === "pending"
-                ? "Reconnecting…"
-                : isQueued
-                  ? (job.message ?? "Queued - starting soon...")
-                : job.status === "merging"
-                  ? "Merging…"
-                  : isConnecting
-                    ? elapsed < 15
-                      ? "Starting worker…"
-                      : elapsed < 40
-                        ? "Worker booting up…"
-                        : "Preparing clip…"
-                    : job.speed
-                      ? job.speed
-                      : (job.message ?? "Cutting selected section…")}
+          <div className="flex justify-between gap-3 text-[11px] text-white/40">
+            <span
+              className="min-w-0 truncate"
+              title={progressView.details || progressView.primary}
+            >
+              {progressView.primary}
+              {progressView.details ? ` | ${progressView.details}` : ""}
             </span>
-            <span className="font-mono">
-              {job.status === "downloading" && job.percent > 0
-                ? `${job.percent.toFixed(0)}%`
-                : job.eta
-                  ? `ETA ${job.eta}`
-                  : isProcessing
-                    ? fmtElapsed(elapsed)
-                    : ""}
+            <span className="font-mono shrink-0 pl-3">
+              {progressView.right}
             </span>
           </div>
         </div>
