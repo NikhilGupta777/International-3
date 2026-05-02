@@ -64,6 +64,11 @@ const PENDING_QUEUE_STATES = new Set([
   "translating",
 ]);
 const STALE_QUEUE_RECONCILE_MS = 90_000;
+const LOCAL_CLIP_STALE_MS =
+  Math.max(
+    60_000,
+    Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "840000", 10) || 840_000,
+  ) + 120_000;
 
 function envBool(value: string | undefined): boolean {
   if (!value) return false;
@@ -338,8 +343,44 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
   let status = out.Item.status?.S ?? "pending";
   let message = out.Item.message?.S ?? null;
   let updatedAt = out.Item.updatedAt?.N ? Number(out.Item.updatedAt.N) : null;
+  const createdAt = out.Item.createdAt?.N ? Number(out.Item.createdAt.N) : null;
+  const jobType = out.Item.jobType?.S ?? null;
   const batchJobId = out.Item.batchJobId?.S ?? null;
   const s3Key = out.Item.s3Key?.S ?? null;
+
+  if (
+    jobType === "clip-cut" &&
+    !batchJobId &&
+    createdAt &&
+    Date.now() - createdAt >= LOCAL_CLIP_STALE_MS &&
+    PENDING_QUEUE_STATES.has(status)
+  ) {
+    status = "error";
+    message = "Clip cut timed out in Lambda. Please retry with a shorter section or try again.";
+    try {
+      await ddb.send(
+        new UpdateItemCommand({
+          TableName: JOB_TABLE,
+          Key: { jobId: { S: jobId } },
+          UpdateExpression: "SET #s = :s, #m = :m, #u = :u, progressPct = :p",
+          ExpressionAttributeNames: {
+            "#s": "status",
+            "#m": "message",
+            "#u": "updatedAt",
+          },
+          ExpressionAttributeValues: {
+            ":s": { S: status },
+            ":m": { S: message },
+            ":u": { N: String(Date.now()) },
+            ":p": { N: "0" },
+          },
+        }),
+      );
+      updatedAt = Date.now();
+    } catch (err) {
+      logger.warn({ err, jobId }, "Failed to mark stale local clip job");
+    }
+  }
 
   if (
     batch &&
