@@ -26,6 +26,7 @@ import { GUIDE_TABS, type GuideMode } from "@/lib/guide-tabs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
 import { StudioHome } from "@/components/StudioHome";
+import { FindVideo } from "@/components/FindVideo";
 import VideoTranslator from "./VideoTranslator";
 import {
   saveActiveDownload,
@@ -49,7 +50,7 @@ import {
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "help" | "activity" | "admin";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "help" | "activity" | "admin";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -343,6 +344,7 @@ export default function Home({
   const showTimestamps = mode === "timestamps";
   const showUpload = mode === "upload";
   const showCopilot = mode === "copilot";
+  const showFindVideo = mode === "findvideo";
   const showAdmin = mode === "admin";
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
 
@@ -367,6 +369,8 @@ export default function Home({
                 ? "Bhagwat Studio"
                   : mode === "timestamps"
                   ? "Timestamps"
+                  : mode === "findvideo"
+                    ? "Find Video"
                   : mode === "admin"
                     ? "Admin"
                     : "Find Sabha";
@@ -441,7 +445,7 @@ export default function Home({
   const openGuide = () => {
     // Help is now a sidebar tab — switch into it and remember the user's
     // current tab so the guide opens to the relevant section by default.
-    if (mode !== "help" && mode !== "activity" && mode !== "home" && mode !== "copilot" && mode !== "translator") {
+    if (mode !== "help" && mode !== "activity" && mode !== "home" && mode !== "copilot" && mode !== "translator" && mode !== "findvideo") {
       setHelpInitialMode(mode as GuideMode);
     }
     setMode("help");
@@ -606,8 +610,8 @@ export default function Home({
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "is-copilot", mode === "translator" && "is-copilot")}>
 
             {/* Translator tab â€” full screen */}
             {mode === "translator" && <VideoTranslator />}
@@ -739,6 +743,7 @@ export default function Home({
                     { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
                     { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
                     { icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" },
+                    { icon: <Search className="w-5 h-5" />, label: "Find Video", desc: "Ask NotebookLM", mode: "findvideo", color: "text-sky-400" },
                     { icon: <UploadCloud className="w-5 h-5" />, label: "Upload", desc: "Share files", mode: "upload", color: "text-cyan-400" },
                     { icon: <Bot className="w-5 h-5" />, label: "AI Agent", desc: "Ask anything", mode: "copilot", color: "text-emerald-400" },
                   ] as Array<{ icon: React.ReactNode; label: string; desc: string; mode: string; color: string }>).map((tool) => (
@@ -980,6 +985,12 @@ export default function Home({
                     onPromptConsumed={() => setPendingCopilotPrompt(null)}
                     onBackToHome={() => switchMode("home")}
                   />
+                </motion.div>
+              )}
+
+              {showFindVideo && (
+                <motion.div key="findvideo-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
+                  <FindVideo />
                 </motion.div>
               )}
 

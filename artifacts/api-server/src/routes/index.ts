@@ -10,6 +10,7 @@ import uploadsRouter from "./uploads";
 import agentRouter from "./agent";
 import translatorRouter from "./translator";
 import adminRouter from "./admin";
+import notebookRouter from "./notebook";
 
 const router: IRouter = Router();
 
@@ -24,5 +25,6 @@ router.use("/uploads", uploadsRouter);
 router.use(agentRouter);
 router.use("/translator", translatorRouter);
 router.use("/admin", adminRouter);
+router.use(notebookRouter);
 
 export default router;

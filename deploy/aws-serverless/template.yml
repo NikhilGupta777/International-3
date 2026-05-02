@@ -170,6 +170,25 @@ Parameters:
   SubtitlesLambdaMaxDurationSeconds:
     Type: Number
     Default: 600
+  NotebookLmEnabled:
+    Type: String
+    Default: "false"
+  NotebookLmNotebookId:
+    Type: String
+    Default: ""
+  NotebookLmAuthJson:
+    Type: String
+    NoEcho: true
+    Default: ""
+  NotebookLmTimeoutMs:
+    Type: Number
+    Default: 480000
+  NotebookLmTurnDelayMs:
+    Type: Number
+    Default: 2500
+  NotebookLmLocalQueueLimit:
+    Type: Number
+    Default: 12
   RateLimitBypassIps:
     Type: String
     Default: ""
@@ -371,6 +390,13 @@ Resources:
           MAX_CONCURRENT_CLIP_JOBS: !Ref MaxConcurrentClipJobs
           SUBTITLES_FORCE_LAMBDA: !Ref SubtitlesForceLambda
           SUBTITLES_LAMBDA_MAX_DURATION_SECONDS: !Ref SubtitlesLambdaMaxDurationSeconds
+          NOTEBOOKLM_ENABLED: !Ref NotebookLmEnabled
+          NOTEBOOKLM_NOTEBOOK_ID: !Ref NotebookLmNotebookId
+          NOTEBOOKLM_AUTH_JSON: !Ref NotebookLmAuthJson
+          NOTEBOOKLM_TIMEOUT_MS: !Ref NotebookLmTimeoutMs
+          NOTEBOOKLM_TURN_DELAY_MS: !Ref NotebookLmTurnDelayMs
+          NOTEBOOKLM_LOCAL_QUEUE_LIMIT: !Ref NotebookLmLocalQueueLimit
+          NOTEBOOKLM_LOCK_TABLE: !Ref YoutubeQueueJobTable
           YOUTUBE_QUEUE_REGION: !Ref YoutubeQueueRegion
           YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable
           YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue
