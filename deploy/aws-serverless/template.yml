@@ -180,6 +180,9 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  NotebookLmAuthS3Key:
+    Type: String
+    Default: ""
   NotebookLmTimeoutMs:
     Type: Number
     Default: 480000
@@ -393,6 +396,7 @@ Resources:
           NOTEBOOKLM_ENABLED: !Ref NotebookLmEnabled
           NOTEBOOKLM_NOTEBOOK_ID: !Ref NotebookLmNotebookId
           NOTEBOOKLM_AUTH_JSON: !Ref NotebookLmAuthJson
+          NOTEBOOKLM_AUTH_S3_KEY: !Ref NotebookLmAuthS3Key
           NOTEBOOKLM_TIMEOUT_MS: !Ref NotebookLmTimeoutMs
           NOTEBOOKLM_TURN_DELAY_MS: !Ref NotebookLmTurnDelayMs
           NOTEBOOKLM_LOCAL_QUEUE_LIMIT: !Ref NotebookLmLocalQueueLimit

@@ -384,6 +384,10 @@ jobs:
               printf '\n%s=%s\n' "$key" "$value" >> /tmp/.env.green
             fi
           }
+          read_env() {
+            local key="$1"
+            grep -m1 "^${key}=" /tmp/.env.green | cut -d= -f2- || true
+          }
           upsert_env "YOUTUBE_BATCH_JOB_DEFINITION" "${{ needs.build-worker.outputs.batch_job_def }}"
           upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
           upsert_env "GEMINI_API_KEY_2" "$GEMINI_API_KEY_2_SECRET"
@@ -394,8 +398,26 @@ jobs:
           upsert_env "GOOGLE_APPLICATION_CREDENTIALS_BASE64" "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_BASE64 }}"
           upsert_env "NOTEBOOKLM_ENABLED" "${{ secrets.NOTEBOOKLM_ENABLED }}"
           upsert_env "NOTEBOOKLM_NOTEBOOK_ID" "${{ secrets.NOTEBOOKLM_NOTEBOOK_ID }}"
+          sed -i '/^NOTEBOOKLM_AUTH_JSON=/d' /tmp/.env.green
           if [ -n "$NOTEBOOKLM_AUTH_JSON_B64_SECRET" ]; then
-            upsert_env "NOTEBOOKLM_AUTH_JSON" "$(printf '%s' "$NOTEBOOKLM_AUTH_JSON_B64_SECRET" | base64 -d)"
+            NOTEBOOKLM_AUTH_KEY="$(read_env S3_OBJECT_PREFIX)"
+            if [ -z "$NOTEBOOKLM_AUTH_KEY" ]; then
+              NOTEBOOKLM_AUTH_KEY="${{ env.CF_STACK_PREFIX }}"
+            fi
+            NOTEBOOKLM_AUTH_KEY="${NOTEBOOKLM_AUTH_KEY%/}/secrets/notebooklm/storage_state.json"
+            NOTEBOOKLM_AUTH_BUCKET="$(read_env S3_BUCKET)"
+            NOTEBOOKLM_AUTH_REGION="$(read_env S3_REGION)"
+            if [ -z "$NOTEBOOKLM_AUTH_REGION" ]; then
+              NOTEBOOKLM_AUTH_REGION="${{ env.AWS_REGION }}"
+            fi
+            if [ -z "$NOTEBOOKLM_AUTH_BUCKET" ]; then
+              echo "::error::S3_BUCKET is required to store NotebookLM auth"
+              exit 1
+            fi
+            printf '%s' "$NOTEBOOKLM_AUTH_JSON_B64_SECRET" | base64 -d > /tmp/notebooklm-storage-state.json
+            aws s3 cp /tmp/notebooklm-storage-state.json "s3://${NOTEBOOKLM_AUTH_BUCKET}/${NOTEBOOKLM_AUTH_KEY}" --region "$NOTEBOOKLM_AUTH_REGION" --sse AES256 --no-progress
+            rm -f /tmp/notebooklm-storage-state.json
+            upsert_env "NOTEBOOKLM_AUTH_S3_KEY" "$NOTEBOOKLM_AUTH_KEY"
           fi
           upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
           upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"

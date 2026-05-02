@@ -241,6 +241,7 @@ $parameterOverrides = @(
   "NotebookLmEnabled=$(Get-OptionalEnv $envMap 'NOTEBOOKLM_ENABLED' 'false')"
   "NotebookLmNotebookId=$(Get-OptionalEnv $envMap 'NOTEBOOKLM_NOTEBOOK_ID')"
   "NotebookLmAuthJson=$(Get-OptionalEnv $envMap 'NOTEBOOKLM_AUTH_JSON')"
+  "NotebookLmAuthS3Key=$(Get-OptionalEnv $envMap 'NOTEBOOKLM_AUTH_S3_KEY')"
   "NotebookLmTimeoutMs=$(Get-OptionalEnv $envMap 'NOTEBOOKLM_TIMEOUT_MS' '480000')"
   "NotebookLmTurnDelayMs=$(Get-OptionalEnv $envMap 'NOTEBOOKLM_TURN_DELAY_MS' '2500')"
   "NotebookLmLocalQueueLimit=$(Get-OptionalEnv $envMap 'NOTEBOOKLM_LOCAL_QUEUE_LIMIT' '12')"
