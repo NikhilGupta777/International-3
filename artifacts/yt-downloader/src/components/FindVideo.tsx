@@ -1,7 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Clock, Loader2, Search, Send, Square, Copy } from "lucide-react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  Copy,
+  FileSearch,
+  HelpCircle,
+  Loader2,
+  Search,
+  Send,
+  Sparkles,
+  Square,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -28,6 +41,13 @@ type NotebookHealth = {
 };
 
 type RunState = "idle" | "queued" | "waiting" | "asking" | "done" | "error";
+
+const EXAMPLE_PROMPTS = [
+  "unchaas vayu 600 km ki raftaar",
+  "iran yudh ke baad bharat par attack",
+  "asteroid girega 3 bhag hojayega",
+  "pawan se vinash kab hoga",
+];
 
 function formatElapsed(ms?: number | null): string {
   const total = Math.max(0, Math.round((ms ?? 0) / 1000));
@@ -194,30 +214,70 @@ export function FindVideo() {
     <div className="find-video-page">
       <div className="find-video-inner">
         <header className="find-video-header">
-          <div className="find-video-icon">
-            <Search className="w-5 h-5 text-sky-300" />
+          <div className="find-video-orb" aria-hidden="true">
+            <FileSearch className="w-6 h-6" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-white">Find Video</h1>
-            <p className="text-sm text-white/50 mt-1">Ask the connected NotebookLM sources and get only the result.</p>
+            <div className="find-video-kicker">
+              <Sparkles className="w-3.5 h-3.5" />
+              Notebook source search
+            </div>
+            <h1 className="find-video-title">Find Video</h1>
+            <p className="find-video-subtitle">Ask a short clue. Get the matching video, time, and details.</p>
           </div>
         </header>
 
         <section className="find-video-card">
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            className="find-video-input"
-            placeholder="e.g. asteroid girega 3 bhag hojayega find this please"
-            rows={4}
-            disabled={isRunning || !isConfigured}
-            onKeyDown={(e) => {
-              if (isConfigured && e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault();
-                void ask();
-              }
-            }}
-          />
+          <div className="find-video-composer-top">
+            <div className="find-video-label">
+              <Search className="w-4 h-4" />
+              Ask NotebookLM
+            </div>
+            <TooltipProvider delayDuration={120}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button type="button" className="find-video-help" aria-label="Show example prompts">
+                    <HelpCircle className="w-4 h-4" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="max-w-[280px] bg-zinc-950 text-white border border-white/10">
+                  <div className="find-video-tooltip">
+                    <strong>Try short clues</strong>
+                    <span>Topic words, prophecy lines, names, or rough Hinglish phrases work best.</span>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+          <div className={cn("find-video-composer", !isConfigured && "find-video-composer-disabled")}>
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              className="find-video-input"
+              placeholder="e.g. asteroid girega 3 bhag hojayega find this please"
+              rows={4}
+              disabled={isRunning || !isConfigured}
+              onKeyDown={(e) => {
+                if (isConfigured && e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  void ask();
+                }
+              }}
+            />
+          </div>
+          <div className="find-video-examples" aria-label="Example prompts">
+            {EXAMPLE_PROMPTS.map((example) => (
+              <button
+                key={example}
+                type="button"
+                className="find-video-example"
+                disabled={!isConfigured || isRunning}
+                onClick={() => setPrompt(example)}
+              >
+                {example}
+              </button>
+            ))}
+          </div>
           <div className="find-video-actions">
             <div className="find-video-status">
               {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : status === "done" ? <CheckCircle2 className="w-4 h-4" /> : status === "error" ? <AlertCircle className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
