@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import math
 import base64
+import importlib.metadata
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -596,6 +597,53 @@ def _import_cosyvoice_class():
         _install_runtime_package("openai-whisper==20231117")
         return _try_import()
 
+
+def _ensure_cosyvoice_yaml_compatibility() -> None:
+    """
+    CosyVoice/HyperPyYAML expects the older ruamel.yaml Loader API. Validate
+    before model construction so dependency drift fails fast instead of wasting
+    the whole translation job at "Cloning original voice".
+    """
+    try:
+        version = importlib.metadata.version("ruamel.yaml")
+    except importlib.metadata.PackageNotFoundError:
+        version = ""
+
+    def _major_minor(raw: str) -> tuple[int, int]:
+        parts = raw.split(".")
+        try:
+            return int(parts[0]), int(parts[1])
+        except Exception:
+            return (999, 999)
+
+    if version and _major_minor(version) < (0, 18):
+        return
+
+    log.warning(
+        "[CosyVoice] Incompatible ruamel.yaml version %s detected; installing compatible pins.",
+        version or "missing",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--prefer-binary",
+            "hyperpyyaml==1.2.2",
+            "ruamel.yaml>=0.17.28,<0.18.0",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Could not install CosyVoice-compatible YAML dependencies. "
+            f"pip stderr:\n{result.stderr[-2000:]}"
+        )
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 3: Translation (Gemini dubbing-aware)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -837,6 +885,7 @@ def synthesize_segments_cosyvoice(
     if str(matcha_root) not in sys.path:
         sys.path.insert(0, str(matcha_root))
 
+    _ensure_cosyvoice_yaml_compatibility()
     _CosyVoice = _import_cosyvoice_class()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -861,6 +910,7 @@ def synthesize_segments_cosyvoice(
                     return candidate
         return None
 
+    tried_model_paths: set[str] = set()
     # Try v2 first (baked into Docker image), then v3 if ever added.
     for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
         model_path = _resolve_model_path(model_name)
@@ -869,6 +919,10 @@ def synthesize_segments_cosyvoice(
         if model_path is None:
             log.warning(f"[CosyVoice] {model_name} not found in cache, skipping.")
             continue
+        model_path_key = str(model_path.resolve())
+        if model_path_key in tried_model_paths:
+            continue
+        tried_model_paths.add(model_path_key)
         try:
             log.info(f"[CosyVoice] Loading {model_name} from {model_path} on {device}...")
             model = _CosyVoice(str(model_path), load_jit=False, load_trt=False)

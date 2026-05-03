@@ -69,6 +69,7 @@ RUN pip install --no-cache-dir modelscope==1.18.1
 # ── Optional CosyVoice extras (non-fatal if any fail) ────────────────────────
 RUN pip install --no-cache-dir pyopenjtalk==0.3.4 || true
 RUN pip install --no-cache-dir onnxruntime-gpu==1.18.1 || true
+RUN pip install --no-cache-dir "hyperpyyaml==1.2.2" "ruamel.yaml>=0.17.28,<0.18.0"
 
 # ── Pre-download CosyVoice model weights into ModelScope cache ────────────────
 # Uses iic/CosyVoice2-0.5B — publicly available on ModelScope.
