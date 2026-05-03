@@ -2,8 +2,11 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
+from pathlib import Path
 
-from notebooklm import NotebookLMClient
+from notebooklm import AuthTokens, NotebookLMClient
+from notebooklm.auth import fetch_tokens, load_auth_from_storage
 
 
 async def main() -> int:
@@ -17,11 +20,33 @@ async def main() -> int:
             raise ValueError("NOTEBOOKLM_NOTEBOOK_ID is not configured")
         if not message:
             raise ValueError("message is required")
-        if not os.environ.get("NOTEBOOKLM_AUTH_JSON"):
-            raise ValueError("NOTEBOOKLM_AUTH_JSON is not configured")
+        auth_json = os.environ.get("NOTEBOOKLM_AUTH_JSON")
+        storage_path = os.environ.get("NOTEBOOKLM_STORAGE_PATH")
+        temp_storage_path = None
+        if auth_json:
+            fd, temp_storage_path = tempfile.mkstemp(prefix="notebooklm-storage-", suffix=".json")
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(auth_json)
+            try:
+                Path(temp_storage_path).chmod(0o600)
+            except OSError:
+                pass
+            storage_path = temp_storage_path
+        if not storage_path:
+            raise ValueError("NOTEBOOKLM_AUTH_JSON or NOTEBOOKLM_STORAGE_PATH is required")
 
-        async with await NotebookLMClient.from_storage(timeout=timeout) as client:
-            result = await asyncio.wait_for(client.chat.ask(notebook_id, message), timeout=timeout)
+        try:
+            cookies = load_auth_from_storage(Path(storage_path))
+            csrf_token, session_id = await fetch_tokens(cookies)
+            auth = AuthTokens(cookies=cookies, csrf_token=csrf_token, session_id=session_id)
+            async with NotebookLMClient(auth, timeout=timeout) as client:
+                result = await asyncio.wait_for(client.chat.ask(notebook_id, message), timeout=timeout)
+        finally:
+            if temp_storage_path:
+                try:
+                    os.remove(temp_storage_path)
+                except OSError:
+                    pass
 
         references = []
         for ref in getattr(result, "references", []) or []:
