@@ -601,16 +601,18 @@ def _import_cosyvoice_class():
 
 def _ensure_cosyvoice_yaml_compatibility() -> None:
     """
-    CosyVoice/HyperPyYAML expects the older ruamel.yaml Loader API and
-    hydra-core at import time. Validate before model construction so dependency
-    drift fails fast instead of wasting the whole translation job at
-    "Cloning original voice".
+    CosyVoice/HyperPyYAML expects the older ruamel.yaml Loader API and a
+    handful of upstream inference imports. Validate before model construction
+    so dependency drift fails fast instead of wasting the whole translation job
+    at "Cloning original voice".
     """
     try:
         version = importlib.metadata.version("ruamel.yaml")
     except importlib.metadata.PackageNotFoundError:
         version = ""
     hydra_available = importlib.util.find_spec("hydra") is not None
+    lightning_available = importlib.util.find_spec("lightning") is not None
+    x_transformers_available = importlib.util.find_spec("x_transformers") is not None
 
     def _major_minor(raw: str) -> tuple[int, int]:
         parts = raw.split(".")
@@ -619,13 +621,21 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
         except Exception:
             return (999, 999)
 
-    if version and _major_minor(version) < (0, 18) and hydra_available:
+    if (
+        version
+        and _major_minor(version) < (0, 18)
+        and hydra_available
+        and lightning_available
+        and x_transformers_available
+    ):
         return
 
     log.warning(
-        "[CosyVoice] Incompatible YAML/Hydra deps detected; ruamel.yaml=%s hydra=%s. Installing compatible pins.",
+        "[CosyVoice] Incompatible deps detected; ruamel.yaml=%s hydra=%s lightning=%s x_transformers=%s. Installing compatible pins.",
         version or "missing",
         "present" if hydra_available else "missing",
+        "present" if lightning_available else "missing",
+        "present" if x_transformers_available else "missing",
     )
     result = subprocess.run(
         [
@@ -637,7 +647,9 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
             "--prefer-binary",
             "hydra-core==1.3.2",
             "hyperpyyaml==1.2.3",
+            "lightning==2.2.4",
             "ruamel.yaml>=0.17.28,<0.18.0",
+            "x-transformers==2.11.24",
         ],
         check=False,
         capture_output=True,
@@ -645,7 +657,7 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(
-            "Could not install CosyVoice-compatible YAML/Hydra dependencies. "
+            "Could not install CosyVoice-compatible dependencies. "
             f"pip stderr:\n{result.stderr[-2000:]}"
         )
 
