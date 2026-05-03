@@ -16,6 +16,10 @@ ENV MODELSCOPE_CACHE=/model-cache/modelscope
 ENV HF_HOME=/model-cache/huggingface
 ENV ALLOW_RUNTIME_MODEL_DOWNLOADS=1
 
+# PYTHONPATH must include CosyVoice root AND Matcha-TTS (third_party submodule).
+# Both are required for CosyVoice imports to resolve without error.
+ENV PYTHONPATH=/model-cache/CosyVoice:/model-cache/CosyVoice/third_party/Matcha-TTS
+
 ARG DOWNLOAD_MODELS_AT_BUILD=false
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -44,6 +48,7 @@ RUN pip install --no-cache-dir \
 # ── Pre-clone model repos ──────────────────────────────────────────────────────
 # Cloned BEFORE pip install so these layers are cached independently.
 # requirements.txt changes do NOT invalidate these git clone layers.
+# --recurse-submodules is CRITICAL — it pulls in third_party/Matcha-TTS.
 RUN git clone --depth 1 --recurse-submodules \
     https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice
 
@@ -69,21 +74,61 @@ RUN pip install --no-cache-dir modelscope==1.18.1
 # ── Optional CosyVoice extras (non-fatal if any fail) ────────────────────────
 RUN pip install --no-cache-dir pyopenjtalk==0.3.4 || true
 RUN pip install --no-cache-dir onnxruntime-gpu==1.18.1 || true
-RUN pip install --no-cache-dir \
-    "einops==0.8.0" \
-    "gdown==5.1.0" \
-    "hydra-core==1.3.2" \
-    "hyperpyyaml==1.2.3" \
-    "lightning==2.2.4" \
-    "matplotlib==3.7.5" \
-    "phonemizer==3.3.0" \
-    "pyarrow==18.1.0" \
-    "pyworld==0.3.4" \
-    "rich==13.7.1" \
-    "ruamel.yaml>=0.17.28,<0.18.0" \
-    "Unidecode==1.3.8" \
-    "wget==3.2" \
-    "x-transformers==2.11.24"
+
+# ── Build-time import smoke test ──────────────────────────────────────────────
+# FAIL FAST: verify ALL CosyVoice + Matcha-TTS imports resolve BEFORE deployment.
+# If any module is missing, the Docker build fails here — not in production.
+COPY <<'PY' /tmp/smoke_test_imports.py
+import sys, importlib
+sys.path.insert(0, "/model-cache/CosyVoice")
+sys.path.insert(0, "/model-cache/CosyVoice/third_party/Matcha-TTS")
+
+modules = [
+    # CosyVoice core
+    "cosyvoice.cli.cosyvoice",
+    "cosyvoice.flow.flow_matching",
+    "cosyvoice.dataset.processor",
+    "cosyvoice.utils.file_utils",
+    # Matcha-TTS
+    "matcha.models.components.flow_matching",
+    "matcha.models.baselightningmodule",
+    # Upstream deps
+    "hydra",
+    "omegaconf",
+    "lightning",
+    "torchmetrics",
+    "x_transformers",
+    "rich",
+    "pyarrow",
+    "pyworld",
+    "inflect",
+    "conformer",
+    "diffusers",
+    "grpc",
+    "tensorboard",
+    "rootutils",
+    "networkx",
+    "pandas",
+    "scipy",
+    "seaborn",
+]
+
+failed = []
+for m in modules:
+    try:
+        importlib.import_module(m)
+        print(f"  OK: {m}")
+    except ImportError as e:
+        print(f"  FAIL: {m} — {e}")
+        failed.append(m)
+
+if failed:
+    print(f"\nSMOKE TEST FAILED — {len(failed)} missing module(s): {failed}")
+    sys.exit(1)
+else:
+    print(f"\nSMOKE TEST PASSED — all {len(modules)} modules imported successfully")
+PY
+RUN python /tmp/smoke_test_imports.py && rm -f /tmp/smoke_test_imports.py
 
 # ── Pre-download CosyVoice model weights into ModelScope cache ────────────────
 # Uses iic/CosyVoice2-0.5B — publicly available on ModelScope.
@@ -127,6 +172,7 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
     else \
       echo "Skipping CosyVoice model download during Docker build"; \
     fi && rm -f /tmp/download_cosyvoice.py
+
 # Verify the weights actually landed where worker.py will look for them.
 # Accept either the legacy iic/ path or the new models/iic/ path.
 RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
@@ -136,6 +182,35 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
        echo "--- /model-cache/modelscope tree ---" && find /model-cache/modelscope -maxdepth 5 -type d 2>/dev/null && \
        exit 1); \
     fi
+
+# ── Model-construction smoke test ─────────────────────────────────────────────
+# If model weights were baked in, verify CosyVoice2 can actually be constructed.
+COPY <<'PY' /tmp/smoke_test_model.py
+import sys, os
+sys.path.insert(0, "/model-cache/CosyVoice")
+sys.path.insert(0, "/model-cache/CosyVoice/third_party/Matcha-TTS")
+
+# Try both legacy and new model paths
+model_dirs = [
+    "/model-cache/modelscope/hub/iic/CosyVoice2-0.5B",
+    "/model-cache/modelscope/hub/models/iic/CosyVoice2-0.5B",
+]
+model_dir = next((d for d in model_dirs if os.path.isdir(d)), None)
+
+if model_dir is None:
+    print("Model weights not baked in — import smoke test already passed, skipping construction test")
+    sys.exit(0)
+
+print(f"Testing model construction from: {model_dir}")
+from cosyvoice.cli.cosyvoice import CosyVoice2
+model = CosyVoice2(model_dir, load_jit=False, load_trt=False)
+print("CosyVoice2 model construction OK")
+PY
+RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      python /tmp/smoke_test_model.py; \
+    else \
+      echo "Skipping model construction smoke test (models not baked in)"; \
+    fi && rm -f /tmp/smoke_test_model.py
 
 # ── Pre-download LatentSync checkpoint (~700 MB) ─────────────────────────────
 # Optional build-time cache warmup; runtime can download if this is skipped.
