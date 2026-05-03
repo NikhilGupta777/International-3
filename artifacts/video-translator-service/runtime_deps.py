@@ -15,6 +15,7 @@ SKIP_RUNTIME_REQUIREMENT_PREFIXES = (
     "huggingface_hub==",
     "librosa==",
     "numpy==",
+    "opencv-python==",
     "omegaconf==",
     "opencv-python-headless==",
     "transformers==",
@@ -29,9 +30,6 @@ def filter_runtime_requirements(lines: list[str]) -> list[str]:
             filtered.append(raw_line)
             continue
         if any(line.startswith(prefix) for prefix in SKIP_RUNTIME_REQUIREMENT_PREFIXES):
-            continue
-        if line.startswith("opencv-python=="):
-            filtered.append(raw_line.replace("opencv-python==", "opencv-python-headless==", 1))
             continue
         filtered.append(raw_line)
     return filtered

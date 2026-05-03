@@ -34,7 +34,7 @@ class RuntimeDepsTests(unittest.TestCase):
     def test_filter_runtime_requirements_uses_headless_opencv(self):
         filtered = filter_runtime_requirements(["opencv-python==4.9.0.80\n"])
 
-        self.assertEqual(filtered, ["opencv-python-headless==4.9.0.80\n"])
+        self.assertEqual(filtered, [])
 
     def test_pip_install_command_uses_constraints_when_present(self):
         import tempfile
