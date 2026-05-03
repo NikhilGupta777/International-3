@@ -80,6 +80,7 @@ MODELSCOPE_CACHE    = Path(os.environ.get("MODELSCOPE_CACHE", str(MODEL_CACHE_DI
 HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "huggingface")))
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "1").lower() == "1"
 ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "true").lower() == "true"
+ALLOW_LIP_SYNC_FALLBACK = os.environ.get("ALLOW_LIP_SYNC_FALLBACK", "true").lower() == "true"
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "iic/CosyVoice2-0.5B")
 LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")
 LATENTSYNC_CHECKPOINT = os.environ.get("LATENTSYNC_CHECKPOINT", "latentsync_unet.pt")
@@ -1145,6 +1146,8 @@ def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Optional
         return run_lipsync_latentsync(video_path, dubbed_audio, out_dir)
     except Exception as e:
         warn_msg = f"LatentSync failed: {e}"
+        if not ALLOW_LIP_SYNC_FALLBACK:
+            raise RuntimeError(warn_msg) from e
         log.warning(f"[LipSync] {warn_msg} -- continuing with dubbed audio only.")
         update_progress(
             "LIPSYNC", 82,
