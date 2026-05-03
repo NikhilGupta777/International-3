@@ -9,6 +9,7 @@ SKIP_RUNTIME_REQUIREMENT_PREFIXES = (
     "--extra-index-url",
     "accelerate==",
     "diffusers==",
+    "einops==",
     "ffmpeg-python==",
     "huggingface-hub==",
     "huggingface_hub==",

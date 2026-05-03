@@ -13,6 +13,7 @@ class RuntimeDepsTests(unittest.TestCase):
             "diffusers==0.32.2\n",
             "transformers==4.48.0\n",
             "huggingface-hub==0.30.2\n",
+            "einops==0.7.0\n",
             "opencv-python==4.9.0.80\n",
             "numpy==1.26.4\n",
             "decord==0.6.0\n",
@@ -26,6 +27,7 @@ class RuntimeDepsTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("diffusers==") for line in filtered))
         self.assertFalse(any(line.startswith("transformers==") for line in filtered))
         self.assertFalse(any(line.startswith("huggingface-hub==") for line in filtered))
+        self.assertFalse(any(line.startswith("einops==") for line in filtered))
         self.assertFalse(any(line.startswith("numpy==") for line in filtered))
         self.assertFalse(any(line.startswith("--extra-index-url") for line in filtered))
 
