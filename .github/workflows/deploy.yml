@@ -397,9 +397,24 @@ jobs:
           if [[ "$GOOGLE_GENAI_USE_VERTEXAI_SECRET" =~ ^(1|true|yes|on)$ ]]; then
             upsert_env "GOOGLE_CLOUD_PROJECT" "${{ secrets.GOOGLE_CLOUD_PROJECT }}"
             upsert_env "GOOGLE_CLOUD_LOCATION" "${{ secrets.GOOGLE_CLOUD_LOCATION }}"
-            upsert_env "GOOGLE_APPLICATION_CREDENTIALS_BASE64" "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_BASE64 }}"
+            # Upload Vertex credentials to S3 (too large for Lambda 4KB env limit)
+            VERTEX_CREDS_B64="${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_BASE64 }}"
+            if [ -n "$VERTEX_CREDS_B64" ]; then
+              VERTEX_S3_BUCKET="$(read_env S3_BUCKET)"
+              VERTEX_S3_REGION="$(read_env S3_REGION)"
+              VERTEX_S3_PREFIX="$(read_env S3_OBJECT_PREFIX)"
+              if [ -z "$VERTEX_S3_PREFIX" ]; then VERTEX_S3_PREFIX="${{ env.CF_STACK_PREFIX }}"; fi
+              if [ -z "$VERTEX_S3_REGION" ]; then VERTEX_S3_REGION="${{ env.AWS_REGION }}"; fi
+              VERTEX_S3_KEY="${VERTEX_S3_PREFIX%/}/secrets/vertex/service-account.json"
+              printf '%s' "$VERTEX_CREDS_B64" | base64 -d > /tmp/vertex-creds.json
+              aws s3 cp /tmp/vertex-creds.json "s3://${VERTEX_S3_BUCKET}/${VERTEX_S3_KEY}" --region "$VERTEX_S3_REGION" --sse AES256 --no-progress
+              rm -f /tmp/vertex-creds.json
+              upsert_env "GOOGLE_APPLICATION_CREDENTIALS_S3_KEY" "$VERTEX_S3_KEY"
+            fi
+            sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_BASE64=/d' /tmp/.env.green
           else
             sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_BASE64=/d' /tmp/.env.green
+            sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_S3_KEY=/d' /tmp/.env.green
           fi
           upsert_env "NOTEBOOKLM_ENABLED" "${{ secrets.NOTEBOOKLM_ENABLED }}"
           upsert_env "NOTEBOOKLM_NOTEBOOK_ID" "${{ secrets.NOTEBOOKLM_NOTEBOOK_ID }}"

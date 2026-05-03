@@ -3539,8 +3539,7 @@ function isQuotaLikeGeminiError(message: string): boolean {
 
 const YOUTUBE_KEY_ROTATION_MODELS = [
   "gemini-3-flash-preview",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
 ];
 
 async function generateWithPersonalKeyRotation(
@@ -3709,9 +3708,9 @@ ${inputTranscript}`;
           }
 
           if (fileInfo.state === "ACTIVE") {
-            // Audio file upload requires own key; use Flash so free AI Studio keys do not fail on Pro access.
+            // Audio file upload requires own key; use Pro for best quality.
             const result = await genAI.models.generateContent({
-              model: "gemini-2.5-flash",
+              model: "gemini-2.5-pro",
               contents: [{
                 role: "user",
                 parts: [
@@ -3738,14 +3737,14 @@ ${inputTranscript}`;
           try {
             const rc = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
             const rr = await rc.models.generateContent({
-              model: "gemini-2.5-flash",
+              model: "gemini-2.5-pro",
               contents: [{ role: "user", parts: [{ text: promptText }] }],
               config: { systemInstruction },
             });
             corrected = (rr as any).text ?? "";
             done = true;
           } catch (e) {
-            console.warn("[subtitle/fix] Replit gemini-2.5-flash failed, falling back to own key:", (e as Error).message);
+            console.warn("[subtitle/fix] Replit gemini-2.5-pro failed, falling back to own key:", (e as Error).message);
           }
         }
         if (!done) {
@@ -3755,8 +3754,7 @@ ${inputTranscript}`;
             promptText,
             [
               "gemini-3-flash-preview",
-              "gemini-2.5-flash",
-              "gemini-2.5-flash-lite",
+              "gemini-2.5-pro",
             ],
           );
         }
@@ -3824,7 +3822,7 @@ ${inputTranscript}`;
 
 // ─── Best Clips Feature (streaming with SSE) ──────────────────────────────
 
-// Replit integration: gemini-2.5-flash -> own key flash rotation
+// Replit integration: gemini-2.5-pro -> own key rotation
 function isAiConfigured(): boolean {
   return (
     !!(process.env.AI_INTEGRATIONS_GEMINI_BASE_URL && process.env.AI_INTEGRATIONS_GEMINI_API_KEY) ||
@@ -3844,20 +3842,19 @@ async function clipsGeminiContent(
     try {
       const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
       const result = await client.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-2.5-pro",
         contents: [{ role: "user", parts: [{ text: userContent }] }],
         ...(systemInstruction && { config: { systemInstruction } }),
       });
       return (result as any).text ?? "";
     } catch (err) {
-      console.warn("[clips/text] Replit gemini-2.5-flash failed, falling back to own key:", (err as Error).message);
+      console.warn("[clips/text] Replit gemini-2.5-pro failed, falling back to own key:", (err as Error).message);
     }
   }
 
   return generateWithPersonalKeyRotation("clips/text", systemInstruction, userContent, [
+    "gemini-2.5-pro",
     "gemini-3-flash-preview",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
   ]);
 }
 

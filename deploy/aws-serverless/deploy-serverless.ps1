@@ -208,6 +208,7 @@ $parameterOverrides = @(
   "GoogleCloudLocation=$(Get-OptionalEnv $envMap 'GOOGLE_CLOUD_LOCATION' 'global')"
   "GoogleApplicationCredentialsJson=$(Get-OptionalEnv $envMap 'GOOGLE_APPLICATION_CREDENTIALS_JSON')"
   "GoogleApplicationCredentialsBase64=$(Get-OptionalEnv $envMap 'GOOGLE_APPLICATION_CREDENTIALS_BASE64')"
+  "GoogleApplicationCredentialsS3Key=$(Get-OptionalEnv $envMap 'GOOGLE_APPLICATION_CREDENTIALS_S3_KEY')"
   "AssemblyAiApiKey=$(Get-OptionalEnv $envMap 'ASSEMBLYAI_API_KEY')"
   "YtdlpCookiesFile=$(Get-OptionalEnv $envMap 'YTDLP_COOKIES_FILE' '/tmp/yt-cookies.txt')"
   "YtdlpCookiesS3Key=$(Get-OptionalEnv $envMap 'YTDLP_COOKIES_S3_KEY')"

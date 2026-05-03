@@ -83,6 +83,9 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  GoogleApplicationCredentialsS3Key:
+    Type: String
+    Default: ""
   AssemblyAiApiKey:
     Type: String
     NoEcho: true
@@ -367,6 +370,7 @@ Resources:
           GOOGLE_CLOUD_LOCATION: !Ref GoogleCloudLocation
           GOOGLE_APPLICATION_CREDENTIALS_JSON: !Ref GoogleApplicationCredentialsJson
           GOOGLE_APPLICATION_CREDENTIALS_BASE64: !Ref GoogleApplicationCredentialsBase64
+          GOOGLE_APPLICATION_CREDENTIALS_S3_KEY: !Ref GoogleApplicationCredentialsS3Key
           ASSEMBLYAI_API_KEY: !Ref AssemblyAiApiKey
           YTDLP_COOKIES_FILE: !Ref YtdlpCookiesFile
           YTDLP_COOKIES_S3_KEY: !Ref YtdlpCookiesS3Key
