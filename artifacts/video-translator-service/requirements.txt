@@ -47,6 +47,7 @@ matplotlib==3.7.5
 networkx==3.1
 omegaconf==2.3.0
 onnx==1.16.0
+openai-whisper==20231117
 pandas
 phonemizer==3.3.0
 protobuf==4.25
