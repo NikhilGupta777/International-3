@@ -38,6 +38,8 @@ from typing import Optional
 import boto3
 from botocore.exceptions import ClientError
 
+from runtime_deps import pip_install_command, write_runtime_requirements
+
 # â”€â”€ Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 logging.basicConfig(
     level=logging.INFO,
@@ -668,6 +670,19 @@ LANG_TO_EDGE_TTS = {
     "zh": "zh-CN-XiaoxiaoNeural",
     "ru": "ru-RU-SvetlanaNeural",
     "ar": "ar-EG-SalmaNeural",
+    "nl": "nl-NL-ColetteNeural",
+    "pl": "pl-PL-ZofiaNeural",
+    "tr": "tr-TR-EmelNeural",
+    "uk": "uk-UA-PolinaNeural",
+    "vi": "vi-VN-HoaiMyNeural",
+    "id": "id-ID-GadisNeural",
+    "fil": "fil-PH-BlessicaNeural",
+    "fi": "fi-FI-NooraNeural",
+}
+
+GTTS_LANG_MAP = {
+    "fil": "tl",
+    "zh": "zh-CN",
 }
 
 
@@ -806,7 +821,8 @@ def synthesize_gtts_single(seg: dict, out_dir: Path) -> Path:
     from gtts import gTTS
     out_path = out_dir / f"seg_{seg['id']:04d}_gtts.mp3"
     wav_path = out_path.with_suffix(".wav")
-    gTTS(text=seg["translated_text"], lang=TARGET_LANG_CODE).save(str(out_path))
+    gtts_lang = GTTS_LANG_MAP.get(TARGET_LANG_CODE, TARGET_LANG_CODE)
+    gTTS(text=seg["translated_text"], lang=gtts_lang).save(str(out_path))
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
 
@@ -937,15 +953,20 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
     _latentsync_deps_flag = ls_dir / ".deps_installed"
     if not _latentsync_deps_flag.exists():
         log.info("[LatentSync] Installing runtime deps (first run only)...")
+        runtime_requirements = ls_dir / "requirements.runtime.txt"
+        write_runtime_requirements(ls_dir / "requirements.txt", runtime_requirements)
+        constraints = Path("/app/constraints.txt")
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary",
-             "-r", str(ls_dir / "requirements.txt")],
+            pip_install_command(runtime_requirements, constraints),
             check=False,
             capture_output=True,
             text=True
         )
         if result.returncode != 0:
-            log.warning(f"[LatentSync] pip install had errors (ignoring): {result.stderr[-500:]}")
+            raise RuntimeError(
+                "LatentSync runtime dependency install failed. "
+                f"pip stderr:\n{result.stderr[-2000:]}"
+            )
         _latentsync_deps_flag.touch()
 
     # Checkpoint is pre-downloaded into the Docker image at build time.

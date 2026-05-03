@@ -14,6 +14,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   CopyObjectCommand,
+  HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -37,6 +38,7 @@ import { tmpdir } from "os";
 import { dirname, extname, join } from "path";
 import { spawn } from "child_process";
 import { pipeline } from "stream/promises";
+import { Readable, Transform } from "stream";
 
 const router = Router();
 
@@ -58,6 +60,11 @@ const TRANSLATOR_BATCH_TIMEOUT_SECONDS = Math.max(
   60,
   Math.min(3000, Number(process.env.TRANSLATOR_BATCH_TIMEOUT_SECONDS ?? "3000") || 3000),
 );
+const TRANSLATOR_MAX_VIDEO_SIZE_BYTES = Math.max(
+  1,
+  Number(process.env.TRANSLATOR_MAX_VIDEO_SIZE_BYTES ?? String(2 * 1024 * 1024 * 1024)) || 2 * 1024 * 1024 * 1024,
+);
+const TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS = process.env.TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS ?? "1";
 const TRANSLATOR_LAMBDA_FAST_ENABLED = process.env.TRANSLATOR_LAMBDA_FAST_ENABLED !== "false";
 const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
   60,
@@ -127,9 +134,130 @@ function shareUrl(req: Request, jobId: string): string {
 }
 
 const TERMINAL_TRANSLATOR_STATUSES = new Set(["DONE", "FAILED", "CANCELLED", "EXPIRED"]);
+const ALLOWED_VIDEO_EXTENSIONS = new Set(["mp4", "mov", "mkv", "avi", "webm"]);
+const ALLOWED_VIDEO_CONTENT_TYPES = new Set([
+  "video/mp4",
+  "video/quicktime",
+  "video/x-matroska",
+  "video/x-msvideo",
+  "video/webm",
+  "application/octet-stream",
+]);
 
 function isTerminalTranslatorStatus(status: string | undefined): boolean {
   return TERMINAL_TRANSLATOR_STATUSES.has(String(status ?? "").toUpperCase());
+}
+
+function safeVideoExtension(filename: string): string {
+  const raw = String(filename || "input.mp4").split(/[\\/]/).pop() || "input.mp4";
+  const ext = raw.includes(".") ? raw.split(".").pop()!.toLowerCase() : "mp4";
+  if (!ALLOWED_VIDEO_EXTENSIONS.has(ext)) {
+    throw new Error(`Unsupported video file type ".${ext}". Use MP4, MOV, MKV, AVI, or WebM.`);
+  }
+  return ext;
+}
+
+function normalizeContentType(contentType: string | undefined): string {
+  return String(contentType || "video/mp4").split(";")[0].trim().toLowerCase() || "video/mp4";
+}
+
+function assertAllowedVideoContentType(contentType: string | undefined): string {
+  const normalized = normalizeContentType(contentType);
+  if (!ALLOWED_VIDEO_CONTENT_TYPES.has(normalized)) {
+    throw new Error(`Unsupported video content type "${normalized}".`);
+  }
+  return normalized;
+}
+
+function assertTranslatorInputKey(jobId: string, s3Key: string): void {
+  const expectedPrefix = `translator-jobs/${jobId}/input.`;
+  if (!s3Key.startsWith(expectedPrefix)) {
+    throw new Error("Invalid translator input key for this job.");
+  }
+  safeVideoExtension(s3Key);
+}
+
+async function assertUploadedTranslatorObject(jobId: string, s3Key: string): Promise<void> {
+  assertTranslatorInputKey(jobId, s3Key);
+  const head = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: s3Key }));
+  const size = Number(head.ContentLength ?? 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    throw new Error("Uploaded video is empty or missing.");
+  }
+  if (size > TRANSLATOR_MAX_VIDEO_SIZE_BYTES) {
+    throw new Error(`Video is larger than the ${Math.round(TRANSLATOR_MAX_VIDEO_SIZE_BYTES / 1024 / 1024)}MB upload limit.`);
+  }
+  assertAllowedVideoContentType(head.ContentType);
+}
+
+function assertPublicHttpUrl(rawUrl: string): URL {
+  const url = new URL(rawUrl);
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("fileUrl must be an HTTP or HTTPS URL.");
+  }
+  const host = url.hostname.toLowerCase();
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.startsWith("10.") ||
+    host.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) ||
+    host.startsWith("169.254.")
+  ) {
+    throw new Error("fileUrl must be a public URL.");
+  }
+  return url;
+}
+
+function translatorErrorStatus(error: any): number {
+  const message = String(error?.message ?? "");
+  if (
+    message.startsWith("Unsupported") ||
+    message.startsWith("Invalid translator input") ||
+    message.startsWith("Video is larger") ||
+    message.startsWith("Uploaded video") ||
+    message.startsWith("Downloaded video") ||
+    message.startsWith("fileUrl must") ||
+    message === "Invalid URL"
+  ) {
+    return 400;
+  }
+  return 500;
+}
+
+async function downloadUrlToTempFile(url: URL, destination: string): Promise<{ bytes: number; contentType: string }> {
+  const downloadRes = await fetch(url);
+  if (!downloadRes.ok) {
+    throw new Error(`Failed to download file from URL: ${downloadRes.status}`);
+  }
+  if (!downloadRes.body) {
+    throw new Error("Downloaded file response had no body.");
+  }
+
+  const contentLength = Number(downloadRes.headers.get("content-length") ?? "0");
+  if (Number.isFinite(contentLength) && contentLength > TRANSLATOR_MAX_VIDEO_SIZE_BYTES) {
+    throw new Error(`Video is larger than the ${Math.round(TRANSLATOR_MAX_VIDEO_SIZE_BYTES / 1024 / 1024)}MB upload limit.`);
+  }
+
+  const contentType = assertAllowedVideoContentType(downloadRes.headers.get("content-type") ?? "video/mp4");
+  let bytes = 0;
+  const limit = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > TRANSLATOR_MAX_VIDEO_SIZE_BYTES) {
+        callback(new Error(`Video is larger than the ${Math.round(TRANSLATOR_MAX_VIDEO_SIZE_BYTES / 1024 / 1024)}MB upload limit.`));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+
+  await pipeline(Readable.fromWeb(downloadRes.body as any), limit, createWriteStream(destination));
+  if (bytes <= 0) {
+    throw new Error("Downloaded video is empty.");
+  }
+  return { bytes, contentType };
 }
 
 async function syncTerminalBatchState(item: Record<string, any>): Promise<Record<string, any>> {
@@ -150,7 +278,7 @@ async function syncTerminalBatchState(item: Record<string, any>): Promise<Record
     nextStatus === "DONE"
       ? "Translation complete!"
       : reason === "Job attempt duration exceeded timeout"
-        ? "Translation stopped after the 30 minute limit."
+        ? `Translation stopped after the ${Math.round(TRANSLATOR_BATCH_TIMEOUT_SECONDS / 60)} minute limit.`
         : reason;
   const progress = nextStatus === "DONE" ? "100" : item.progress?.N ?? "0";
   const now = String(Date.now());
@@ -292,7 +420,7 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
     { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
     { name: "ALLOW_VOICE_CLONE_FALLBACK", value: "true" },
-    { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: "1" },
+    { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS },
   ];
 }
 
@@ -814,14 +942,15 @@ async function startTranslatorJob(jobId: string, s3Key: string, options: Transla
 router.get("/presign", async (req: Request, res: Response) => {
   try {
     const { filename = "input.mp4", contentType = "video/mp4" } = req.query as Record<string, string>;
+    const ext = safeVideoExtension(filename);
+    const normalizedContentType = assertAllowedVideoContentType(contentType);
     const jobId = randomUUID();
-    const ext   = filename.split(".").pop() ?? "mp4";
     const s3Key = `translator-jobs/${jobId}/input.${ext}`;
 
     const command = new PutObjectCommand({
       Bucket:      S3_BUCKET,
       Key:         s3Key,
-      ContentType: contentType,
+      ContentType: normalizedContentType,
     });
 
     const presignedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
@@ -829,7 +958,7 @@ router.get("/presign", async (req: Request, res: Response) => {
     return res.json({ jobId, presignedUrl, s3Key });
   } catch (err: any) {
     console.error("[Translator] /presign error:", err);
-    return res.status(500).json({ error: err.message });
+    return res.status(translatorErrorStatus(err)).json({ error: err.message });
   }
 });
 
@@ -858,6 +987,7 @@ router.post("/submit", async (req: Request, res: Response) => {
     if (!jobId || !s3Key) {
       return res.status(400).json({ error: "jobId and s3Key are required" });
     }
+    await assertUploadedTranslatorObject(String(jobId), String(s3Key));
 
     const now = Date.now();
     const options: TranslatorOptions = {
@@ -902,7 +1032,7 @@ router.post("/submit", async (req: Request, res: Response) => {
     return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED" });
   } catch (err: any) {
     console.error("[Translator] /submit error:", err);
-    return res.status(500).json({ error: err.message });
+    return res.status(translatorErrorStatus(err)).json({ error: err.message });
   }
 });
 
@@ -934,7 +1064,8 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
     }
 
     const jobId = randomUUID();
-    const ext   = (filename as string).split(".").pop() ?? "mp4";
+    const sourceUrl = assertPublicHttpUrl(String(fileUrl));
+    const ext = safeVideoExtension(String(filename || "uploaded-video.mp4"));
     const s3Key = `translator-jobs/${jobId}/input.${ext}`;
     const options: TranslatorOptions = {
       targetLang: String(targetLang),
@@ -951,25 +1082,21 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
       filename: typeof filename === "string" && filename.trim() ? filename.trim() : "uploaded-video.mp4",
     };
 
-    // Download the file from the public URL and upload to translator S3 prefix
-    console.log(`[Translator] /submit-from-url downloading ${fileUrl}`);
-    const downloadRes = await fetch(fileUrl as string);
-    if (!downloadRes.ok) {
-      return res.status(400).json({ error: `Failed to download file from URL: ${downloadRes.status}` });
+    console.log(`[Translator] /submit-from-url downloading ${sourceUrl.href}`);
+    const tempDir = await mkdtemp(join(tmpdir(), `translator-url-${jobId}-`));
+    try {
+      const inputPath = join(tempDir, `input.${ext}`);
+      const { bytes, contentType } = await downloadUrlToTempFile(sourceUrl, inputPath);
+      await s3.send(new PutObjectCommand({
+        Bucket:      S3_BUCKET,
+        Key:         s3Key,
+        Body:        createReadStream(inputPath),
+        ContentType: contentType,
+      }));
+      console.log(`[Translator] Copied uploaded file to s3://${S3_BUCKET}/${s3Key} (${bytes} bytes)`);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
-    const fileBuffer = Buffer.from(await downloadRes.arrayBuffer());
-
-    // Determine content type from response or filename
-    const contentType = downloadRes.headers.get("content-type") ?? "video/mp4";
-
-    // Upload to translator S3 prefix
-    await s3.send(new PutObjectCommand({
-      Bucket:      S3_BUCKET,
-      Key:         s3Key,
-      Body:        fileBuffer,
-      ContentType: contentType,
-    }));
-    console.log(`[Translator] Copied uploaded file to s3://${S3_BUCKET}/${s3Key} (${fileBuffer.length} bytes)`);
 
     const now = Date.now();
     await ddb.send(new PutItemCommand({
@@ -998,7 +1125,7 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
     return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED" });
   } catch (err: any) {
     console.error("[Translator] /submit-from-url error:", err);
-    return res.status(500).json({ error: err.message });
+    return res.status(translatorErrorStatus(err)).json({ error: err.message });
   }
 });
 

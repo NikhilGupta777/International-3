@@ -137,6 +137,12 @@ Parameters:
   TranslatorBatchTimeoutSeconds:
     Type: Number
     Default: 3000
+  TranslatorMaxVideoSizeBytes:
+    Type: Number
+    Default: 2147483648
+  TranslatorAllowRuntimeModelDownloads:
+    Type: String
+    Default: "1"
   YoutubeQueuePrimaryEnabled:
     Type: String
     Default: "true"
@@ -412,6 +418,8 @@ Resources:
           TRANSLATOR_BATCH_JOB_QUEUE: !Ref TranslatorBatchJobQueue
           TRANSLATOR_BATCH_JOB_DEFINITION: !Ref TranslatorBatchJobDefinition
           TRANSLATOR_BATCH_TIMEOUT_SECONDS: !Ref TranslatorBatchTimeoutSeconds
+          TRANSLATOR_MAX_VIDEO_SIZE_BYTES: !Ref TranslatorMaxVideoSizeBytes
+          TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS: !Ref TranslatorAllowRuntimeModelDownloads
           RATE_LIMIT_BYPASS_IPS: !Ref RateLimitBypassIps
           VAPID_PUBLIC_KEY: !Ref VapidPublicKey
           VAPID_PRIVATE_KEY: !Ref VapidPrivateKey

@@ -65,7 +65,7 @@ jobs:
             BEFORE="HEAD~1"
           fi
 
-          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^artifacts/video-translator-service/(Dockerfile|requirements\.txt|constraints\.txt|worker\.py)$'; then
+          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^artifacts/video-translator-service/(Dockerfile|requirements\.txt|constraints\.txt|worker\.py|runtime_deps\.py)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -298,6 +298,8 @@ jobs:
   resolve-translator:
     name: Resolve Translator Image
     runs-on: ubuntu-latest
+    needs: [detect-translator-changes]
+    if: ${{ needs.detect-translator-changes.outputs.changed != 'true' }}
     outputs:
       batch_job_def: ${{ steps.resolve.outputs.batch_job_def }}
     steps:
@@ -333,7 +335,7 @@ jobs:
     name: Deploy to AWS
     runs-on: ubuntu-latest
     needs: [build-api, build-worker, build-translator, resolve-translator]
-    if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' && needs.resolve-translator.result == 'success' && (needs.build-translator.result == 'success' || needs.build-translator.result == 'skipped') }}
+    if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' && (needs.build-translator.result == 'success' || needs.build-translator.result == 'skipped') && (needs.build-translator.result == 'success' || needs.resolve-translator.result == 'success') }}
     # No environment gate — secrets are repo-level, no approval required
     steps:
       - uses: actions/checkout@v4
@@ -456,6 +458,8 @@ jobs:
           upsert_env "TRANSLATOR_BATCH_JOB_DEFINITION" "$TRANSLATOR_JOB_DEF"
           upsert_env "TRANSLATOR_BATCH_JOB_QUEUE" "${{ env.CF_STACK_PREFIX }}-gpu-queue"
           upsert_env "TRANSLATOR_BATCH_TIMEOUT_SECONDS" "3000"
+          upsert_env "TRANSLATOR_MAX_VIDEO_SIZE_BYTES" "2147483648"
+          upsert_env "TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS" "1"
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.

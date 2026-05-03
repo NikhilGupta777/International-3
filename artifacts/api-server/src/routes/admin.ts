@@ -38,6 +38,11 @@ function numberFromEnv(name: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function translatorRuntimeMinutes(): number {
+  const seconds = numberFromEnv("TRANSLATOR_BATCH_TIMEOUT_SECONDS", 3000);
+  return Math.round(seconds / 60);
+}
+
 function configured(value: string | undefined): boolean {
   return Boolean(value && value.trim());
 }
@@ -125,14 +130,14 @@ router.get("/overview", (_req, res) => {
       subtitlesLambdaMaxDurationSeconds: Number(process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600),
       maxConcurrentClipJobs: youtube.limits.maxConcurrentClipJobs,
       maxConcurrentSubtitleJobs: subtitles.limits.maxConcurrentSubtitleJobs,
-      translatorMaxRuntimeMinutes: numberFromEnv("TRANSLATOR_MAX_RUNTIME_MINUTES", 30),
+      translatorMaxRuntimeMinutes: translatorRuntimeMinutes(),
       monthlyBudgetUsd: numberFromEnv("MONTHLY_BUDGET_USD", 20),
       ecrKeepTaggedImages: numberFromEnv("ECR_KEEP_TAGGED_IMAGES", 3),
     },
     cost: {
       monthlyBudgetUsd: numberFromEnv("MONTHLY_BUDGET_USD", 20),
       currentMonthUsageUsd: process.env.ADMIN_CURRENT_MONTH_USAGE_USD ? Number(process.env.ADMIN_CURRENT_MONTH_USAGE_USD) : null,
-      gpuMaxRuntimeMinutes: numberFromEnv("TRANSLATOR_MAX_RUNTIME_MINUTES", 30),
+      gpuMaxRuntimeMinutes: translatorRuntimeMinutes(),
       gpuConcurrency: numberFromEnv("TRANSLATOR_MAX_CONCURRENT_JOBS", 1),
       notes: [
         "This panel shows configured guardrails. AWS Billing remains the source of truth.",

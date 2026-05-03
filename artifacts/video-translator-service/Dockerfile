@@ -141,7 +141,7 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
     fi && rm -f /tmp/download_latentsync.py
 
 # ── Copy worker script ────────────────────────────────────────────────────────
-COPY worker.py .
+COPY worker.py runtime_deps.py ./
 
 # ── Entrypoint: one-shot CLI job ──────────────────────────────────────────────
 CMD ["python", "worker.py"]
