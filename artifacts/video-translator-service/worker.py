@@ -31,6 +31,7 @@ import tempfile
 import shutil
 import subprocess
 import math
+import base64
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -61,6 +62,7 @@ GEMINI_API_KEY_3    = os.environ.get("GEMINI_API_KEY_3", "")
 GOOGLE_GENAI_USE_VERTEXAI = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes", "on")
 GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT", "")
 GOOGLE_CLOUD_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION") or os.environ.get("VERTEX_AI_LOCATION", "global")
+GOOGLE_APPLICATION_CREDENTIALS_S3_KEY = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_S3_KEY", "")
 
 TARGET_LANG         = os.environ.get("TARGET_LANG", "Hindi")
 TARGET_LANG_CODE    = os.environ.get("TARGET_LANG_CODE", "hi")
@@ -485,10 +487,21 @@ def _hydrate_google_credentials():
     existing = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     if existing and Path(existing).exists():
         return
+
+    if GOOGLE_APPLICATION_CREDENTIALS_S3_KEY:
+        path = Path(tempfile.gettempdir()) / "google-vertex-credentials.json"
+        log.info("[Gemini] Loading Vertex credentials from private S3 object...")
+        s3.download_file(S3_BUCKET, GOOGLE_APPLICATION_CREDENTIALS_S3_KEY, str(path))
+        try:
+            path.chmod(0o600)
+        except Exception:
+            pass
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(path)
+        return
+
     raw_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON", "").strip()
     raw_base64 = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_BASE64", "").strip()
     if not raw_json and raw_base64:
-        import base64
         raw_json = base64.b64decode(raw_base64).decode("utf-8")
     if not raw_json:
         return
