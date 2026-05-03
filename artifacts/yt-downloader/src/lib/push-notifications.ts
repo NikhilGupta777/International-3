@@ -65,7 +65,7 @@ export async function registerPushServiceWorker(): Promise<ServiceWorkerRegistra
   if (!("serviceWorker" in navigator)) return null;
   try {
     const base = (import.meta.env.BASE_URL ?? "/").replace(/\/?$/, "/");
-    return await navigator.serviceWorker.register(`${base}push-sw.js`, {
+    return await navigator.serviceWorker.register(`${base}sw.js`, {
       scope: base,
     });
   } catch {
