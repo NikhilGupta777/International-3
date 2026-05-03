@@ -26,6 +26,7 @@ import sys
 import uuid
 import time
 import json
+import re
 import logging
 import tempfile
 import shutil
@@ -43,6 +44,82 @@ import boto3
 from botocore.exceptions import ClientError
 
 from runtime_deps import pip_install_command, write_runtime_requirements
+
+
+def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
+    """
+    Merge micro-segments before translation/TTS to prevent choppy voice output.
+    Sub-second segments are poison for TTS — a voice model cannot naturally
+    synthesize speech into 0.1-0.8 second slots.
+    Target: 2.5-7s merged segments. Hard max 8s.
+    Respects speaker labels — never merges different speakers.
+    """
+    if not segments:
+        return segments
+
+    original_count = len(segments)
+    merged: list[dict] = []
+    buf: dict | None = None
+
+    for seg in segments:
+        if buf is None:
+            buf = dict(seg)
+            continue
+
+        gap = float(seg["start"]) - float(buf["end"])
+        buf_dur = float(buf["end"]) - float(buf["start"])
+        word_count = len(str(buf.get("text", "")).split())
+        merged_dur = float(seg["end"]) - float(buf["start"])
+
+        # Only merge same speaker (or when no speaker labels exist)
+        buf_speaker = str(buf.get("speaker", "")).strip()
+        seg_speaker = str(seg.get("speaker", "")).strip()
+        same_speaker = (not buf_speaker and not seg_speaker) or (buf_speaker == seg_speaker)
+
+        should_merge = (
+            same_speaker
+            and (buf_dur < 1.2 or word_count < 3 or gap < 0.8)
+            and merged_dur <= 8.0
+        )
+
+        if should_merge:
+            buf["end"] = seg["end"]
+            buf["text"] = (
+                str(buf.get("text", "")).strip()
+                + " "
+                + str(seg.get("text", "")).strip()
+            ).strip()
+            buf["words"] = list(buf.get("words", [])) + list(seg.get("words", []))
+        else:
+            merged.append(buf)
+            buf = dict(seg)
+
+    if buf:
+        merged.append(buf)
+
+    # Re-index segment IDs sequentially
+    for i, seg in enumerate(merged):
+        seg["id"] = i
+
+    log.info(f"[Merge] {original_count} segments -> {len(merged)} after dubbing merge.")
+    return merged
+
+
+def normalize_tts_text(text: str) -> str:
+    """
+    Clean translated text before passing to CosyVoice/TTS.
+    Prevents phoneme encoder failures from fragments, ellipses, and missing punctuation.
+    """
+    text = text.strip()
+    if not text:
+        return text
+    text = re.sub(r'\.{2,}', '.', text)    # ... or .. -> .
+    text = re.sub(r'\s+', ' ', text)        # collapse whitespace
+    # Ensure text ends with sentence-ending punctuation
+    if text[-1] not in '.?!\u0964':         # \u0964 = Devanagari danda ।
+        text += '.'
+    return text
+
 
 # â”€â”€ Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 logging.basicConfig(
@@ -70,6 +147,10 @@ GOOGLE_APPLICATION_CREDENTIALS_S3_KEY = os.environ.get("GOOGLE_APPLICATION_CREDE
 TARGET_LANG         = os.environ.get("TARGET_LANG", "Hindi")
 TARGET_LANG_CODE    = os.environ.get("TARGET_LANG_CODE", "hi")
 SOURCE_LANG         = os.environ.get("SOURCE_LANG", "auto")
+SOURCE_LANG_CODE    = os.environ.get("SOURCE_LANG_CODE", "")
+# Best-effort: derive code from SOURCE_LANG name when explicit code is absent
+if not SOURCE_LANG_CODE and SOURCE_LANG not in ("", "auto"):
+    SOURCE_LANG_CODE = SOURCE_LANG[:2].lower()
 VOICE_CLONE         = os.environ.get("VOICE_CLONE", "true").lower() == "true"
 LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
 USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
@@ -1223,6 +1304,14 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
             "Rebuild the Docker image — the build-time checkpoint download step failed."
         )
 
+    latentsync_env = os.environ.copy()
+    existing_pythonpath = latentsync_env.get("PYTHONPATH", "")
+    latentsync_env["PYTHONPATH"] = (
+        str(ls_dir)
+        if not existing_pythonpath
+        else f"{ls_dir}{os.pathsep}{existing_pythonpath}"
+    )
+
     result = subprocess.run([
         sys.executable, "scripts/inference.py",
         "--unet_config", "configs/unet/stage2.yaml",
@@ -1230,7 +1319,7 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
         "--video_path", str(video_path),
         "--audio_path", str(dubbed_audio),
         "--video_out_path", str(out_path),
-    ], capture_output=True, text=True, cwd=str(ls_dir))
+    ], capture_output=True, text=True, cwd=str(ls_dir), env=latentsync_env)
 
     if result.returncode != 0:
         raise RuntimeError(f"LatentSync failed:\n{result.stderr[-1500:]}")
