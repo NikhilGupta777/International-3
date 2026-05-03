@@ -249,7 +249,12 @@ jobs:
         run: |
           TAG="${GITHUB_SHA::8}"
           URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:${TAG}"
-          DOWNLOAD_MODELS="${{ github.event.inputs.download_models_at_build || 'false' }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DOWNLOAD_MODELS="${{ github.event.inputs.download_models_at_build || 'false' }}"
+          else
+            DOWNLOAD_MODELS="true"
+          fi
+          echo "DOWNLOAD_MODELS_AT_BUILD=${DOWNLOAD_MODELS}"
           docker buildx build \
             --platform linux/amd64 \
             --provenance=false \

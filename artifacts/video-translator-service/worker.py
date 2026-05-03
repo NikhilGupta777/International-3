@@ -33,6 +33,7 @@ import subprocess
 import math
 import base64
 import importlib.metadata
+import importlib.util
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -600,14 +601,16 @@ def _import_cosyvoice_class():
 
 def _ensure_cosyvoice_yaml_compatibility() -> None:
     """
-    CosyVoice/HyperPyYAML expects the older ruamel.yaml Loader API. Validate
-    before model construction so dependency drift fails fast instead of wasting
-    the whole translation job at "Cloning original voice".
+    CosyVoice/HyperPyYAML expects the older ruamel.yaml Loader API and
+    hydra-core at import time. Validate before model construction so dependency
+    drift fails fast instead of wasting the whole translation job at
+    "Cloning original voice".
     """
     try:
         version = importlib.metadata.version("ruamel.yaml")
     except importlib.metadata.PackageNotFoundError:
         version = ""
+    hydra_available = importlib.util.find_spec("hydra") is not None
 
     def _major_minor(raw: str) -> tuple[int, int]:
         parts = raw.split(".")
@@ -616,12 +619,13 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
         except Exception:
             return (999, 999)
 
-    if version and _major_minor(version) < (0, 18):
+    if version and _major_minor(version) < (0, 18) and hydra_available:
         return
 
     log.warning(
-        "[CosyVoice] Incompatible ruamel.yaml version %s detected; installing compatible pins.",
+        "[CosyVoice] Incompatible YAML/Hydra deps detected; ruamel.yaml=%s hydra=%s. Installing compatible pins.",
         version or "missing",
+        "present" if hydra_available else "missing",
     )
     result = subprocess.run(
         [
@@ -631,7 +635,8 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
             "install",
             "--quiet",
             "--prefer-binary",
-            "hyperpyyaml==1.2.2",
+            "hydra-core==1.3.2",
+            "hyperpyyaml==1.2.3",
             "ruamel.yaml>=0.17.28,<0.18.0",
         ],
         check=False,
@@ -640,7 +645,7 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
     )
     if result.returncode != 0:
         raise RuntimeError(
-            "Could not install CosyVoice-compatible YAML dependencies. "
+            "Could not install CosyVoice-compatible YAML/Hydra dependencies. "
             f"pip stderr:\n{result.stderr[-2000:]}"
         )
 
