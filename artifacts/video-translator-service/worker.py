@@ -100,6 +100,8 @@ os.environ.setdefault("HF_HOME", str(HF_HOME))
 s3 = boto3.client("s3", region_name=DYNAMODB_REGION)
 ddb = boto3.resource("dynamodb", region_name=DYNAMODB_REGION)
 table = ddb.Table(DYNAMODB_TABLE)
+_LAST_PIPELINE_STATUS = "STARTING"
+_LAST_PIPELINE_PROGRESS = 0
 
 PIPELINE_STEPS = [
     {"name": "download", "label": "Downloading video", "start": 0, "end": 3, "statuses": ["STARTING"]},
@@ -120,8 +122,9 @@ def _stage_local_progress(progress: int, start: int, end: int) -> int:
 
 
 def _stage_snapshot(status: str, progress: int, step: str) -> list[dict]:
+    stage_status_key = _LAST_PIPELINE_STATUS if status == "FAILED" else status
     status_index = next(
-        (idx for idx, item in enumerate(PIPELINE_STEPS) if status in item["statuses"]),
+        (idx for idx, item in enumerate(PIPELINE_STEPS) if stage_status_key in item["statuses"]),
         len(PIPELINE_STEPS) if status == "DONE" else -1,
     )
     snapshot: list[dict] = []
@@ -139,7 +142,7 @@ def _stage_snapshot(status: str, progress: int, step: str) -> list[dict]:
             })
             continue
 
-        current = status in item["statuses"]
+        current = stage_status_key in item["statuses"]
         if status == "DONE" or idx < status_index:
             stage_status = "completed"
             stage_progress = 100
@@ -170,6 +173,10 @@ def _stage_snapshot(status: str, progress: int, step: str) -> list[dict]:
 def update_progress(status: str, progress: int, step: str, extra: Optional[dict] = None):
     """Write progress to DynamoDB so the frontend can poll it."""
     try:
+        global _LAST_PIPELINE_STATUS, _LAST_PIPELINE_PROGRESS
+        if status != "FAILED":
+            _LAST_PIPELINE_STATUS = status
+            _LAST_PIPELINE_PROGRESS = progress
         extra = extra or {}
         now_ms = int(time.time() * 1000)
         stage_snapshot = _stage_snapshot(status, progress, step)
@@ -204,7 +211,7 @@ def update_progress(status: str, progress: int, step: str, extra: Optional[dict]
 
 
 def mark_failed(error: str):
-    update_progress("FAILED", 0, f"Error: {error}", {"error": error})
+    update_progress("FAILED", _LAST_PIPELINE_PROGRESS, f"Error: {error}", {"error": error})
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -473,14 +480,28 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
     return segments
 
 def _find_cosyvoice_model() -> Optional[Path]:
+    candidates: list[Path] = []
     for root in [
         MODELSCOPE_CACHE / "hub" / "iic",
         MODELSCOPE_CACHE / "hub" / "models" / "iic",
+        MODELSCOPE_CACHE / "iic",
+        MODELSCOPE_CACHE / "models" / "iic",
+        MODELSCOPE_CACHE,
     ]:
         for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
             p = root / model_name
             if p.exists():
                 return p
+        if root.exists():
+            candidates.extend(root.glob("CosyVoice2*"))
+            candidates.extend(root.glob("CosyVoice3*"))
+    for candidate in candidates:
+        if candidate.is_dir() and (
+            (candidate / "cosyvoice2.yaml").exists()
+            or (candidate / "cosyvoice.yaml").exists()
+            or (candidate / "configuration.json").exists()
+        ):
+            return candidate
     return None
 
 
@@ -828,15 +849,22 @@ def synthesize_segments_cosyvoice(
         for root in [
             MODELSCOPE_CACHE / "hub" / "iic",
             MODELSCOPE_CACHE / "hub" / "models" / "iic",
+            MODELSCOPE_CACHE / "iic",
+            MODELSCOPE_CACHE / "models" / "iic",
         ]:
             p = root / model_name
             if p.exists():
                 return p
+            for candidate in root.glob(f"{model_name.split('-')[0]}*") if root.exists() else []:
+                if candidate.is_dir():
+                    return candidate
         return None
 
     # Try v2 first (baked into Docker image), then v3 if ever added.
     for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
         model_path = _resolve_model_path(model_name)
+        if model_path is None:
+            model_path = _find_cosyvoice_model()
         if model_path is None:
             log.warning(f"[CosyVoice] {model_name} not found in cache, skipping.")
             continue
