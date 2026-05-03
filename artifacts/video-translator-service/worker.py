@@ -979,6 +979,8 @@ def synthesize_segments_cosyvoice(
     if ref_sr != 16000:
         ref_wav = torchaudio.functional.resample(ref_wav, ref_sr, 16000)
     ref_wav = ref_wav[:, : 16000 * 30]  # max 30 s reference
+    ref_prompt_path = out_dir / "cosyvoice_reference_16k.wav"
+    torchaudio.save(str(ref_prompt_path), ref_wav, 16000)
 
     prompt_text = ""
     for seg in segments:
@@ -1010,7 +1012,7 @@ def synthesize_segments_cosyvoice(
                     "stream": False,
                 }
                 if "prompt_wav" in inference_params:
-                    inference_args["prompt_wav"] = ref_wav
+                    inference_args["prompt_wav"] = str(ref_prompt_path)
                 elif "prompt_speech_16k" in inference_params:
                     inference_args["prompt_speech_16k"] = ref_wav
                 else:
