@@ -7,6 +7,16 @@ SKIP_RUNTIME_REQUIREMENT_PREFIXES = (
     "torchvision==",
     "torchaudio==",
     "--extra-index-url",
+    "accelerate==",
+    "diffusers==",
+    "ffmpeg-python==",
+    "huggingface-hub==",
+    "huggingface_hub==",
+    "librosa==",
+    "numpy==",
+    "omegaconf==",
+    "opencv-python-headless==",
+    "transformers==",
 )
 
 

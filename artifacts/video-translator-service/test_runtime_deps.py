@@ -11,16 +11,22 @@ class RuntimeDepsTests(unittest.TestCase):
             "torchvision==0.20.1\n",
             "--extra-index-url https://download.pytorch.org/whl/cu121\n",
             "diffusers==0.32.2\n",
+            "transformers==4.48.0\n",
+            "huggingface-hub==0.30.2\n",
             "opencv-python==4.9.0.80\n",
             "numpy==1.26.4\n",
+            "decord==0.6.0\n",
         ]
 
         filtered = filter_runtime_requirements(lines)
 
-        self.assertIn("diffusers==0.32.2\n", filtered)
-        self.assertIn("numpy==1.26.4\n", filtered)
+        self.assertIn("decord==0.6.0\n", filtered)
         self.assertFalse(any(line.startswith("torch==") for line in filtered))
         self.assertFalse(any(line.startswith("torchvision==") for line in filtered))
+        self.assertFalse(any(line.startswith("diffusers==") for line in filtered))
+        self.assertFalse(any(line.startswith("transformers==") for line in filtered))
+        self.assertFalse(any(line.startswith("huggingface-hub==") for line in filtered))
+        self.assertFalse(any(line.startswith("numpy==") for line in filtered))
         self.assertFalse(any(line.startswith("--extra-index-url") for line in filtered))
 
     def test_filter_runtime_requirements_uses_headless_opencv(self):

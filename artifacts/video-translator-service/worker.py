@@ -101,34 +101,99 @@ s3 = boto3.client("s3", region_name=DYNAMODB_REGION)
 ddb = boto3.resource("dynamodb", region_name=DYNAMODB_REGION)
 table = ddb.Table(DYNAMODB_TABLE)
 
+PIPELINE_STEPS = [
+    {"name": "download", "label": "Downloading video", "start": 0, "end": 3, "statuses": ["STARTING"]},
+    {"name": "audio_extraction", "label": "Extracting audio", "start": 3, "end": 12, "statuses": ["EXTRACTING"]},
+    {"name": "transcription", "label": "Transcribing speech", "start": 12, "end": 28, "statuses": ["TRANSCRIBING"]},
+    {"name": "translation", "label": "Translating text", "start": 28, "end": 48, "statuses": ["TRANSLATING"]},
+    {"name": "voice_generation", "label": "Cloning voice", "start": 48, "end": 65, "statuses": ["CLONING"]},
+    {"name": "lip_sync", "label": "Running lip sync", "start": 65, "end": 82, "statuses": ["LIPSYNC"]},
+    {"name": "video_merge", "label": "Merging & generating SRT", "start": 82, "end": 88, "statuses": ["MERGING"]},
+    {"name": "upload", "label": "Uploading to cloud", "start": 88, "end": 100, "statuses": ["UPLOADING"]},
+]
+
+
+def _stage_local_progress(progress: int, start: int, end: int) -> int:
+    if end <= start:
+        return 0
+    return max(0, min(100, int((progress - start) / (end - start) * 100)))
+
+
+def _stage_snapshot(status: str, progress: int, step: str) -> list[dict]:
+    status_index = next(
+        (idx for idx, item in enumerate(PIPELINE_STEPS) if status in item["statuses"]),
+        len(PIPELINE_STEPS) if status == "DONE" else -1,
+    )
+    snapshot: list[dict] = []
+    for idx, item in enumerate(PIPELINE_STEPS):
+        label = item["label"]
+        if item["name"] == "voice_generation" and not VOICE_CLONE:
+            label = "Generating voice"
+        if item["name"] == "lip_sync" and not LIP_SYNC:
+            snapshot.append({
+                "name": item["name"],
+                "label": label,
+                "status": "skipped",
+                "progress": 100,
+                "message": "Lip sync disabled for this job.",
+            })
+            continue
+
+        current = status in item["statuses"]
+        if status == "DONE" or idx < status_index:
+            stage_status = "completed"
+            stage_progress = 100
+        elif status == "FAILED" and (current or idx == max(0, status_index)):
+            stage_status = "failed"
+            stage_progress = _stage_local_progress(progress, item["start"], item["end"])
+        elif current:
+            stage_status = "running"
+            stage_progress = _stage_local_progress(progress, item["start"], item["end"])
+        else:
+            stage_status = "pending"
+            stage_progress = 0
+
+        snapshot.append({
+            "name": item["name"],
+            "label": label,
+            "status": stage_status,
+            "progress": stage_progress,
+            "message": step if current or stage_status == "failed" else "",
+        })
+    return snapshot
+
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # DynamoDB progress helpers
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def update_progress(status: str, progress: int, step: str, extra: dict = {}):
+def update_progress(status: str, progress: int, step: str, extra: Optional[dict] = None):
     """Write progress to DynamoDB so the frontend can poll it."""
     try:
+        extra = extra or {}
         now_ms = int(time.time() * 1000)
+        stage_snapshot = _stage_snapshot(status, progress, step)
         item = {
             "status": status,
             "progress": progress,
             "step": step,
+            "stepsJson": json.dumps(stage_snapshot, ensure_ascii=False),
             "updatedAt": now_ms,
             **extra,
         }
         table.update_item(
             Key={"jobId": JOB_ID},
             UpdateExpression=(
-                "SET #s = :s, #p = :p, #st = :st, #ua = :ua"
+                "SET #s = :s, #p = :p, #st = :st, #steps = :steps, #ua = :ua"
                 + ("".join(f", #{k} = :{k}" for k in extra))
             ),
             ExpressionAttributeNames={
-                "#s": "status", "#p": "progress", "#st": "step", "#ua": "updatedAt",
+                "#s": "status", "#p": "progress", "#st": "step", "#steps": "stepsJson", "#ua": "updatedAt",
                 **{f"#{k}": k for k in extra},
             },
             ExpressionAttributeValues={
                 ":s": status, ":p": progress, ":st": step,
+                ":steps": item["stepsJson"],
                 ":ua": item["updatedAt"],
                 **{f":{k}": v for k, v in extra.items()},
             },
@@ -476,6 +541,39 @@ def _ensure_cosyvoice() -> Path:
     log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {found} verified OK")
     return cv_dir
 
+
+def _install_runtime_package(package: str) -> None:
+    log.info(f"[RuntimeDeps] Installing {package}...")
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary", package],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Runtime install failed for {package}. pip stderr:\n{result.stderr[-2000:]}"
+        )
+
+
+def _import_cosyvoice_class():
+    def _try_import():
+        try:
+            from cosyvoice.cli.cosyvoice import CosyVoice2 as _CosyVoice  # type: ignore
+        except Exception:
+            from cosyvoice.cli.cosyvoice import CosyVoice as _CosyVoice  # type: ignore
+        return _CosyVoice
+
+    try:
+        return _try_import()
+    except ModuleNotFoundError as exc:
+        if exc.name != "whisper":
+            raise
+        # CosyVoice imports openai-whisper internally for its frontend. AssemblyAI is
+        # still the only transcription provider used by this worker.
+        _install_runtime_package("openai-whisper==20231117")
+        return _try_import()
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 3: Translation (Gemini dubbing-aware)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -717,10 +815,7 @@ def synthesize_segments_cosyvoice(
     if str(matcha_root) not in sys.path:
         sys.path.insert(0, str(matcha_root))
 
-    try:
-        from cosyvoice.cli.cosyvoice import CosyVoice2 as _CosyVoice  # type: ignore
-    except Exception:
-        from cosyvoice.cli.cosyvoice import CosyVoice as _CosyVoice  # type: ignore
+    _CosyVoice = _import_cosyvoice_class()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = None

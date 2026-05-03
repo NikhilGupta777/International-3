@@ -108,6 +108,15 @@ function parseEpoch(value: string | undefined): number | undefined {
   return undefined;
 }
 
+function parseJsonAttribute<T>(value: string | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 function getRequesterId(req: Request): string {
   const explicit = String(req.headers["x-client-id"] ?? "").trim();
   if (explicit) return explicit.slice(0, 120);
@@ -420,7 +429,7 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "TRANSLATION_MODE",  value: options.translationMode },
     { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
     { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
-    { name: "ALLOW_VOICE_CLONE_FALLBACK", value: "true" },
+    { name: "ALLOW_VOICE_CLONE_FALLBACK", value: process.env.TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK ?? "false" },
     { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS },
   ];
 }
@@ -1155,6 +1164,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       status:       item.status?.S ?? "UNKNOWN",
       progress:     parseInt(item.progress?.N ?? "0"),
       step:         item.step?.S ?? "",
+      steps:        parseJsonAttribute(item.stepsJson?.S, []),
       error:        item.error?.S,
       lipsyncWarning:     item.lipsync_warning?.S,
       voiceCloneWarning:  item.voice_clone_warning?.S,
@@ -1210,6 +1220,7 @@ router.get("/history", async (req: Request, res: Response) => {
         status: item.status?.S ?? "UNKNOWN",
         progress: parseInt(item.progress?.N ?? "0"),
         step: item.step?.S ?? "",
+        steps: parseJsonAttribute(item.stepsJson?.S, []),
         error: item.error?.S,
         filename: item.filename?.S ?? "video.mp4",
         targetLang: item.targetLang?.S,

@@ -37,6 +37,13 @@ const LANGS = [
 const TARGET_LANGS = LANGS.filter(l => l.code !== "auto");
 const MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
 const NO_STORE: RequestCache = "no-store";
+type TranslatorStep = {
+  name: string;
+  label: string;
+  status: "completed" | "running" | "failed" | "skipped" | "pending";
+  progress?: number;
+  message?: string;
+};
 
 async function responseError(res: Response, fallback: string): Promise<Error> {
   try {
@@ -136,7 +143,7 @@ function LangSelect({ value, onChange, options, label, id }: {
 }
 
 // â”€â”€ Step card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function StepCard({ step }: { step: any }) {
+function StepCard({ step }: { step: TranslatorStep }) {
   const colorClass = STEP_COLORS[step.status] ?? STEP_COLORS.pending;
   return (
     <motion.div
@@ -262,7 +269,11 @@ export default function VideoTranslator() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const appendLog = (level: "info" | "warn" | "error", msg: string) =>
-    setDebugLog(prev => [...prev.slice(-49), { ts: Date.now(), level, msg }]);
+    setDebugLog(prev => {
+      const last = prev[prev.length - 1];
+      if (last?.level === level && last.msg === msg) return prev;
+      return [...prev.slice(-49), { ts: Date.now(), level, msg }];
+    });
 
   const refreshHistory = useCallback(() => {
     setActiveJobs(loadActiveTranslatorJobs());
@@ -685,12 +696,13 @@ export default function VideoTranslator() {
     { name: "upload", label: "Uploading to cloud", thresholdPct: 100, status_keys: ["UPLOADING", "DONE"] },
   ];
 
-  const derivedSteps = isProcessing || isDone
+  const backendSteps: TranslatorStep[] | null = Array.isArray(job?.steps) && job.steps.length > 0 ? job.steps : null;
+  const derivedSteps: TranslatorStep[] | null = backendSteps ?? (isProcessing || isDone
     ? PIPELINE_STEPS.map((s) => {
       const isCurrentStatus = s.status_keys.includes(job?.status ?? "");
       const isPastThreshold = overallPct >= s.thresholdPct;
       const isBeforeThreshold = overallPct < s.thresholdPct && !isCurrentStatus;
-      let stepStatus: string;
+      let stepStatus: TranslatorStep["status"];
       if (isDone || isPastThreshold) stepStatus = "completed";
       else if (isCurrentStatus) stepStatus = "running";
       else if (isBeforeThreshold) stepStatus = "pending";
@@ -705,7 +717,7 @@ export default function VideoTranslator() {
         progress: isCurrentStatus ? overallPct : undefined,
       };
     })
-    : null;
+    : null);
 
 
   return (
