@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import math
 import base64
+import inspect
 import importlib.metadata
 import importlib.util
 from pathlib import Path
@@ -1002,12 +1003,23 @@ def synthesize_segments_cosyvoice(
                        "-t", str(duration), str(out_path))
         else:
             try:
-                chunks = list(model.inference_zero_shot(
-                    tts_text=text,
-                    prompt_text=prompt_text,
-                    prompt_speech_16k=ref_wav,
-                    stream=False,
-                ))
+                inference_params = inspect.signature(model.inference_zero_shot).parameters
+                inference_args = {
+                    "tts_text": text,
+                    "prompt_text": prompt_text,
+                    "stream": False,
+                }
+                if "prompt_wav" in inference_params:
+                    inference_args["prompt_wav"] = ref_wav
+                elif "prompt_speech_16k" in inference_params:
+                    inference_args["prompt_speech_16k"] = ref_wav
+                else:
+                    supported = ", ".join(inference_params.keys())
+                    raise RuntimeError(f"Unsupported CosyVoice zero-shot signature: {supported}")
+                if "speed" in inference_params:
+                    inference_args["speed"] = 1.0
+
+                chunks = list(model.inference_zero_shot(**inference_args))
                 audio_data = torch.cat([c["tts_speech"] for c in chunks], dim=1)
                 # CosyVoice2 native sample rate is 24000 Hz
                 torchaudio.save(str(out_path), audio_data, 24000)
