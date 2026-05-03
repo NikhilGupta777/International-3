@@ -15,6 +15,9 @@ class RuntimeDepsTests(unittest.TestCase):
             "huggingface-hub==0.30.2\n",
             "einops==0.7.0\n",
             "opencv-python==4.9.0.80\n",
+            "mediapipe==0.10.11\n",
+            "gradio==5.24.0\n",
+            "onnxruntime-gpu==1.21.0\n",
             "numpy==1.26.4\n",
             "decord==0.6.0\n",
         ]
@@ -28,6 +31,9 @@ class RuntimeDepsTests(unittest.TestCase):
         self.assertFalse(any(line.startswith("transformers==") for line in filtered))
         self.assertFalse(any(line.startswith("huggingface-hub==") for line in filtered))
         self.assertFalse(any(line.startswith("einops==") for line in filtered))
+        self.assertFalse(any(line.startswith("mediapipe==") for line in filtered))
+        self.assertFalse(any(line.startswith("gradio==") for line in filtered))
+        self.assertFalse(any(line.startswith("onnxruntime-gpu==") for line in filtered))
         self.assertFalse(any(line.startswith("numpy==") for line in filtered))
         self.assertFalse(any(line.startswith("--extra-index-url") for line in filtered))
 
