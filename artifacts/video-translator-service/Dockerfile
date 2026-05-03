@@ -77,6 +77,8 @@ RUN pip install --no-cache-dir \
     "lightning==2.2.4" \
     "matplotlib==3.7.5" \
     "phonemizer==3.3.0" \
+    "pyarrow==18.1.0" \
+    "pyworld==0.3.4" \
     "rich==13.7.1" \
     "ruamel.yaml>=0.17.28,<0.18.0" \
     "Unidecode==1.3.8" \

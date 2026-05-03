@@ -613,6 +613,8 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
     hydra_available = importlib.util.find_spec("hydra") is not None
     einops_available = importlib.util.find_spec("einops") is not None
     lightning_available = importlib.util.find_spec("lightning") is not None
+    pyarrow_available = importlib.util.find_spec("pyarrow") is not None
+    pyworld_available = importlib.util.find_spec("pyworld") is not None
     rich_available = importlib.util.find_spec("rich") is not None
     x_transformers_available = importlib.util.find_spec("x_transformers") is not None
 
@@ -629,17 +631,21 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
         and einops_available
         and hydra_available
         and lightning_available
+        and pyarrow_available
+        and pyworld_available
         and rich_available
         and x_transformers_available
     ):
         return
 
     log.warning(
-        "[CosyVoice] Incompatible deps detected; ruamel.yaml=%s einops=%s hydra=%s lightning=%s rich=%s x_transformers=%s. Installing compatible pins.",
+        "[CosyVoice] Incompatible deps detected; ruamel.yaml=%s einops=%s hydra=%s lightning=%s pyarrow=%s pyworld=%s rich=%s x_transformers=%s. Installing compatible pins.",
         version or "missing",
         "present" if einops_available else "missing",
         "present" if hydra_available else "missing",
         "present" if lightning_available else "missing",
+        "present" if pyarrow_available else "missing",
+        "present" if pyworld_available else "missing",
         "present" if rich_available else "missing",
         "present" if x_transformers_available else "missing",
     )
@@ -658,6 +664,8 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
             "lightning==2.2.4",
             "matplotlib==3.7.5",
             "phonemizer==3.3.0",
+            "pyarrow==18.1.0",
+            "pyworld==0.3.4",
             "rich==13.7.1",
             "ruamel.yaml>=0.17.28,<0.18.0",
             "Unidecode==1.3.8",
