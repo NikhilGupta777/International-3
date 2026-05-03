@@ -45,82 +45,6 @@ from botocore.exceptions import ClientError
 
 from runtime_deps import pip_install_command, write_runtime_requirements
 
-
-def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
-    """
-    Merge micro-segments before translation/TTS to prevent choppy voice output.
-    Sub-second segments are poison for TTS — a voice model cannot naturally
-    synthesize speech into 0.1-0.8 second slots.
-    Target: 2.5-7s merged segments. Hard max 8s.
-    Respects speaker labels — never merges different speakers.
-    """
-    if not segments:
-        return segments
-
-    original_count = len(segments)
-    merged: list[dict] = []
-    buf: dict | None = None
-
-    for seg in segments:
-        if buf is None:
-            buf = dict(seg)
-            continue
-
-        gap = float(seg["start"]) - float(buf["end"])
-        buf_dur = float(buf["end"]) - float(buf["start"])
-        word_count = len(str(buf.get("text", "")).split())
-        merged_dur = float(seg["end"]) - float(buf["start"])
-
-        # Only merge same speaker (or when no speaker labels exist)
-        buf_speaker = str(buf.get("speaker", "")).strip()
-        seg_speaker = str(seg.get("speaker", "")).strip()
-        same_speaker = (not buf_speaker and not seg_speaker) or (buf_speaker == seg_speaker)
-
-        should_merge = (
-            same_speaker
-            and (buf_dur < 1.2 or word_count < 3 or gap < 0.8)
-            and merged_dur <= 8.0
-        )
-
-        if should_merge:
-            buf["end"] = seg["end"]
-            buf["text"] = (
-                str(buf.get("text", "")).strip()
-                + " "
-                + str(seg.get("text", "")).strip()
-            ).strip()
-            buf["words"] = list(buf.get("words", [])) + list(seg.get("words", []))
-        else:
-            merged.append(buf)
-            buf = dict(seg)
-
-    if buf:
-        merged.append(buf)
-
-    # Re-index segment IDs sequentially
-    for i, seg in enumerate(merged):
-        seg["id"] = i
-
-    log.info(f"[Merge] {original_count} segments -> {len(merged)} after dubbing merge.")
-    return merged
-
-
-def normalize_tts_text(text: str) -> str:
-    """
-    Clean translated text before passing to CosyVoice/TTS.
-    Prevents phoneme encoder failures from fragments, ellipses, and missing punctuation.
-    """
-    text = text.strip()
-    if not text:
-        return text
-    text = re.sub(r'\.{2,}', '.', text)    # ... or .. -> .
-    text = re.sub(r'\s+', ' ', text)        # collapse whitespace
-    # Ensure text ends with sentence-ending punctuation
-    if text[-1] not in '.?!\u0964':         # \u0964 = Devanagari danda ।
-        text += '.'
-    return text
-
-
 # â”€â”€ Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 logging.basicConfig(
     level=logging.INFO,
@@ -458,7 +382,11 @@ def transcribe(audio_path: Path) -> list[dict]:
     if transcript.error:
         raise RuntimeError(f"AssemblyAI error: {transcript.error}")
 
-    log.info(f"[AssemblyAI] Transcribed. Detected language: {transcript.json_response.get('language_code', 'unknown')}")
+    global SOURCE_LANG_CODE
+    detected_code = transcript.json_response.get('language_code')
+    if detected_code:
+        SOURCE_LANG_CODE = detected_code
+    log.info(f"[AssemblyAI] Transcribed. Detected language: {detected_code or 'unknown'}")
 
     # Group words into segments by pauses (>0.45s) or length (>8s)
     words = transcript.words
@@ -563,6 +491,85 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
     except Exception as e:
         log.warning(f"[Diarize] Failed: {e}")
     return segments
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2c: Merge micro-segments for TTS quality
+# ─────────────────────────────────────────────────────────────────────────────
+
+def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
+    """
+    Merge micro-segments before translation/TTS to prevent choppy voice output.
+    Sub-second segments are poison for TTS — a voice model cannot naturally
+    synthesize speech into 0.1-0.8 second slots.
+    Target: 2.5-7s merged segments. Hard max 8s.
+    Respects speaker labels — never merges different speakers.
+    """
+    if not segments:
+        return segments
+
+    original_count = len(segments)
+    merged: list[dict] = []
+    buf: dict | None = None
+
+    for seg in segments:
+        if buf is None:
+            buf = dict(seg)
+            continue
+
+        gap = float(seg["start"]) - float(buf["end"])
+        buf_dur = float(buf["end"]) - float(buf["start"])
+        word_count = len(str(buf.get("text", "")).split())
+        merged_dur = float(seg["end"]) - float(buf["start"])
+
+        # Only merge same speaker (or when no speaker labels exist)
+        buf_speaker = str(buf.get("speaker", "")).strip()
+        seg_speaker = str(seg.get("speaker", "")).strip()
+        same_speaker = (not buf_speaker and not seg_speaker) or (buf_speaker == seg_speaker)
+
+        should_merge = (
+            same_speaker
+            and (buf_dur < 1.2 or word_count < 3 or gap < 0.8)
+            and merged_dur <= 8.0
+        )
+
+        if should_merge:
+            buf["end"] = seg["end"]
+            buf["text"] = (
+                str(buf.get("text", "")).strip()
+                + " "
+                + str(seg.get("text", "")).strip()
+            ).strip()
+            buf["words"] = list(buf.get("words", [])) + list(seg.get("words", []))
+        else:
+            merged.append(buf)
+            buf = dict(seg)
+
+    if buf:
+        merged.append(buf)
+
+    # Re-index segment IDs sequentially
+    for i, seg in enumerate(merged):
+        seg["id"] = i
+
+    log.info(f"[Merge] {original_count} segments -> {len(merged)} after dubbing merge.")
+    return merged
+
+
+def normalize_tts_text(text: str) -> str:
+    """
+    Clean translated text before passing to CosyVoice/TTS.
+    Prevents phoneme encoder failures from fragments, ellipses, and missing punctuation.
+    """
+    text = text.strip()
+    if not text:
+        return text
+    text = re.sub(r'\.{2,}', '.', text)    # ... or .. -> .
+    text = re.sub(r'\s+', ' ', text)        # collapse whitespace
+    # Ensure text ends with sentence-ending punctuation
+    if text[-1] not in '.?!\u0964':         # \u0964 = Devanagari danda
+        text += '.'
+    return text
+
 
 def _find_cosyvoice_model() -> Optional[Path]:
     candidates: list[Path] = []
@@ -827,22 +834,35 @@ def _gemini_model_for_mode(mode: str) -> str:
 
 
 TRANSLATION_SYSTEM_PROMPT = """
-You are a professional video dubbing translator. Your task is to translate speech segments for dubbing.
+You are a professional dubbing translator for video voice-over.
 
-Rules:
-1. Translate meaning, emotion, and tone â€” NOT word-for-word literal text.
-2. Keep translated segment duration close to the original speaking duration.
-3. Match the speaking style (formal, casual, excited, sad, etc.).
-4. If the original is short and punchy, keep the translation short and punchy but not changing the meaning of the sentence.
-5. Return ONLY valid JSON â€” no markdown, no explanation.
+Your task is to translate speech segments into natural spoken dubbing text for TTS.
 
-Output format (array of objects):
+Core rules:
+1. Translate meaning, emotion, tone, and intent. Do not translate word-for-word.
+2. Write speakable voice-over text, not subtitle fragments.
+3. Keep each translated_text close to the original segment duration.
+4. Do not output ellipses, filler dots, broken phrases, half-words, pronunciation hints, labels, brackets, or explanations.
+5. Every translated_text must be natural when spoken aloud and should end with punctuation.
+6. Preserve names, religious terms, cultural references, and important proper nouns accurately.
+7. If source text is mixed-language or contains a verse/quote, translate the meaning naturally. Do not transliterate unless the target language normally uses that word.
+8. If the source segment is a fragment, translate it as a complete natural spoken phrase using nearby context. Preserve meaning, but make the output speakable.
+9. Return ONLY valid JSON. No markdown, no commentary.
+
+Duration rules:
+- duration < 1.5s: use 1-3 short words only.
+- 1.5s-3s: use one short phrase.
+- 3s-6s: use one natural sentence.
+- 6s-8s: use one or two short sentences.
+Never write a long sentence for a short duration.
+
+Output exactly one object for every input segment:
 [
   {
-    "id": <segment_id>,
-    "translated_text": "<translated text>",
+    "id": <same segment_id>,
+    "translated_text": "<natural speakable translated text>",
     "emotion": "<neutral|happy|sad|excited|serious|questioning>",
-    "speaking_rate": <0.9 to 1.2, where 1.0 is normal speed keep between 0.9 to 1.2>
+    "speaking_rate": <number from 0.9 to 1.2>
   }
 ]
 """
@@ -897,14 +917,15 @@ def translate_segments(segments: list[dict]) -> list[dict]:
     ]
 
     user_prompt = (
-        f"Translate the following video segments from the source language to {TARGET_LANG}.\n"
+        f"Translate these merged dubbing segments into {TARGET_LANG}.\n"
         f"{NATIVE_SCRIPT_RULE}\n"
-        f"{target_script_instruction(TARGET_LANG, TARGET_LANG_CODE)}\n"
-        f"Preserve intent, emotion, tone, names, and cultural meaning. "
-        f"Keep each translation natural to speak, accurate in context, and close to the original duration. "
-        f"Do not include source text, transliteration, labels, or explanations.\n"
-        f"These are dubbing segments â€” preserve emotion, tone, and keep each translation "
-        f"close to the original duration segments.\n\n"
+        f"{target_script_instruction(TARGET_LANG, TARGET_LANG_CODE)}\n\n"
+        f"Important:\n"
+        f"- These segments will be passed directly into TTS/voice cloning.\n"
+        f"- Make each translated_text natural, short, and speakable.\n"
+        f"- Respect each segment duration.\n"
+        f"- Do not output source text, transliteration, labels, explanations, or markdown.\n"
+        f"- Keep religious/devotional terms respectful and accurate.\n\n"
         f"Segments JSON:\n{json.dumps(seg_payload, ensure_ascii=False, indent=2)}"
     )
 
@@ -941,11 +962,18 @@ def translate_segments(segments: list[dict]) -> list[dict]:
 
     # Merge translations back into segments
     trans_map = {t["id"]: t for t in translations}
+    missing = [seg["id"] for seg in segments if seg["id"] not in trans_map]
+    if missing:
+        raise RuntimeError(f"Gemini translation missing segment ids: {missing[:10]}")
+
     for seg in segments:
         t = trans_map.get(seg["id"], {})
-        seg["translated_text"] = t.get("translated_text", seg["text"])
+        translated = str(t.get("translated_text", "")).strip()
+        if not translated and seg["text"].strip():
+            raise RuntimeError(f"Missing translated_text for segment {seg['id']}")
+        seg["translated_text"] = translated
         seg["emotion"] = t.get("emotion", "neutral")
-        seg["speaking_rate"] = float(t.get("speaking_rate", 1.0))
+        seg["speaking_rate"] = max(0.9, min(1.2, float(t.get("speaking_rate", 1.0))))
 
     log.info(f"[Gemini] Translation complete using {model}.")
     return segments
@@ -1063,13 +1091,60 @@ def synthesize_segments_cosyvoice(
     ref_prompt_path = out_dir / "cosyvoice_reference_16k.wav"
     torchaudio.save(str(ref_prompt_path), ref_wav, 16000)
 
-    prompt_text = ""
-    for seg in segments:
-        source_text = str(seg.get("text", "")).strip()
-        if source_text:
-            prompt_text = source_text[:200]
-            break
+    # ── Decide CosyVoice mode ──
+    # Cross-lingual: target language differs from source/reference — no prompt_text needed.
+    # Zero-shot:     same language — prompt_text must match the reference audio.
+    is_cross_lingual = (
+        bool(TARGET_LANG_CODE)
+        and TARGET_LANG_CODE.lower() not in ("", "auto")
+        and TARGET_LANG_CODE.lower() != SOURCE_LANG_CODE.lower()
+    )
+    # Check if cross_lingual method is available on this model
+    has_cross_lingual = hasattr(model, "inference_cross_lingual")
+    use_cross_lingual = is_cross_lingual and has_cross_lingual
 
+    if use_cross_lingual:
+        log.info(
+            f"[CosyVoice] Using CROSS-LINGUAL mode: "
+            f"source={SOURCE_LANG_CODE or 'auto'} -> target={TARGET_LANG_CODE}"
+        )
+    else:
+        if is_cross_lingual and not has_cross_lingual:
+            log.warning(
+                "[CosyVoice] Cross-lingual dubbing needed but model lacks inference_cross_lingual. "
+                "Falling back to zero_shot (quality may be degraded)."
+            )
+        log.info(
+            f"[CosyVoice] Using ZERO-SHOT mode: "
+            f"source={SOURCE_LANG_CODE or 'auto'} target={TARGET_LANG_CODE}"
+        )
+
+    # ── Build prompt_text for zero-shot only ──
+    # prompt_text = transcription of what the reference audio is actually saying.
+    # Must be in the SAME language as the reference audio, NOT the translated text.
+    # For cross_lingual mode this is unused.
+    prompt_text = ""
+    if not use_cross_lingual:
+        # Collect source text overlapping the first ~12s of reference audio
+        ref_seconds = 12.0
+        prompt_parts = []
+        for seg in segments:
+            if float(seg.get("start", 0)) < ref_seconds:
+                src = str(seg.get("text", "")).strip()
+                if src:
+                    prompt_parts.append(src)
+            else:
+                break
+        prompt_text = normalize_tts_text(" ".join(prompt_parts))[:300]
+        if not prompt_text:
+            # Fallback: first non-empty segment
+            for seg in segments:
+                src = str(seg.get("text", "")).strip()
+                if src:
+                    prompt_text = normalize_tts_text(src[:200])
+                    break
+
+    # ── Synthesize each segment ──
     seg_audios: list[Path] = []
     total_segments = max(1, len(segments))
     for index, seg in enumerate(segments, start=1):
@@ -1079,30 +1154,46 @@ def synthesize_segments_cosyvoice(
             f"Cloning original voice ({index}/{total_segments})...",
         )
         out_path = out_dir / f"seg_{seg['id']:04d}.wav"
-        text = seg["translated_text"].strip()
+        text = normalize_tts_text(seg["translated_text"])
         if not text:
             duration = seg["end"] - seg["start"]
             run_ffmpeg("-f", "lavfi", "-i", f"anullsrc=r=24000:cl=mono",
                        "-t", str(duration), str(out_path))
         else:
             try:
-                inference_params = inspect.signature(model.inference_zero_shot).parameters
-                inference_args = {
-                    "tts_text": text,
-                    "prompt_text": prompt_text,
-                    "stream": False,
-                }
-                if "prompt_wav" in inference_params:
-                    inference_args["prompt_wav"] = str(ref_prompt_path)
-                elif "prompt_speech_16k" in inference_params:
-                    inference_args["prompt_speech_16k"] = ref_wav
+                if use_cross_lingual:
+                    # ── Cross-lingual: tts_text + prompt_wav, NO prompt_text ──
+                    cl_params = inspect.signature(model.inference_cross_lingual).parameters
+                    cl_args: dict = {"tts_text": text, "stream": False}
+                    if "prompt_wav" in cl_params:
+                        cl_args["prompt_wav"] = str(ref_prompt_path)
+                    elif "prompt_speech_16k" in cl_params:
+                        cl_args["prompt_speech_16k"] = ref_wav
+                    else:
+                        supported = ", ".join(cl_params.keys())
+                        raise RuntimeError(f"Unsupported CosyVoice cross_lingual signature: {supported}")
+                    if "speed" in cl_params:
+                        cl_args["speed"] = 1.0
+                    chunks = list(model.inference_cross_lingual(**cl_args))
                 else:
-                    supported = ", ".join(inference_params.keys())
-                    raise RuntimeError(f"Unsupported CosyVoice zero-shot signature: {supported}")
-                if "speed" in inference_params:
-                    inference_args["speed"] = 1.0
+                    # ── Zero-shot: tts_text + prompt_text + prompt_wav ──
+                    zs_params = inspect.signature(model.inference_zero_shot).parameters
+                    zs_args: dict = {
+                        "tts_text": text,
+                        "prompt_text": prompt_text,
+                        "stream": False,
+                    }
+                    if "prompt_wav" in zs_params:
+                        zs_args["prompt_wav"] = str(ref_prompt_path)
+                    elif "prompt_speech_16k" in zs_params:
+                        zs_args["prompt_speech_16k"] = ref_wav
+                    else:
+                        supported = ", ".join(zs_params.keys())
+                        raise RuntimeError(f"Unsupported CosyVoice zero-shot signature: {supported}")
+                    if "speed" in zs_params:
+                        zs_args["speed"] = 1.0
+                    chunks = list(model.inference_zero_shot(**zs_args))
 
-                chunks = list(model.inference_zero_shot(**inference_args))
                 audio_data = torch.cat([c["tts_speech"] for c in chunks], dim=1)
                 # CosyVoice2 native sample rate is 24000 Hz
                 torchaudio.save(str(out_path), audio_data, 24000)
@@ -1302,6 +1393,13 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
         raise RuntimeError(
             f"LatentSync checkpoint not found at {ckpt_path}. "
             "Rebuild the Docker image — the build-time checkpoint download step failed."
+        )
+
+    ls_whisper = ls_dir / "checkpoints" / "whisper" / "tiny.pt"
+    if not ls_whisper.exists():
+        raise RuntimeError(
+            f"LatentSync whisper model missing at {ls_whisper}. "
+            "Rebuild the Docker image."
         )
 
     latentsync_env = os.environ.copy()
@@ -1549,7 +1647,12 @@ def main():
             update_progress("TRANSCRIBING", 28, "Identifying speakers...")
             segments = diarize(transcription_audio, segments)
 
-        log.info(f"Transcription: {len(segments)} segments")
+        # ── 5b. Merge micro-segments for TTS quality ─────────────────
+        # Must run AFTER diarization so speaker labels are available.
+        # Prevents choppy voice from sub-second segments.
+        segments = merge_segments_for_dubbing(segments)
+
+        log.info(f"Transcription: {len(segments)} segments (after merge)")
 
         # â”€â”€ 6. Translation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("TRANSLATING", 35, f"Translating to {TARGET_LANG}...")

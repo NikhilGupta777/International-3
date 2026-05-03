@@ -20,7 +20,7 @@ ENV ALLOW_RUNTIME_MODEL_DOWNLOADS=1
 # Both are required for CosyVoice imports to resolve without error.
 ENV PYTHONPATH=/model-cache/CosyVoice:/model-cache/CosyVoice/third_party/Matcha-TTS
 
-ARG DOWNLOAD_MODELS_AT_BUILD=false
+ARG DOWNLOAD_MODELS_AT_BUILD=true
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_DEFAULT_TIMEOUT=300
@@ -218,14 +218,24 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
 COPY <<'PY' /tmp/download_latentsync.py
 from huggingface_hub import hf_hub_download
 import pathlib
+import whisper
+
 ckpt_dir = pathlib.Path('/model-cache/LatentSync/checkpoints')
 ckpt_dir.mkdir(parents=True, exist_ok=True)
 print('[LatentSync] Downloading latentsync_unet.pt ...')
 path = hf_hub_download('ByteDance/LatentSync', 'latentsync_unet.pt', local_dir=str(ckpt_dir))
 print(f'[LatentSync] Checkpoint saved to {path}')
+
+dst = ckpt_dir / "whisper"
+dst.mkdir(parents=True, exist_ok=True)
+print('[LatentSync] Downloading Whisper tiny.pt ...')
+whisper.load_model("tiny", download_root=str(dst))
+assert (dst / "tiny.pt").exists(), "missing LatentSync whisper tiny.pt"
+print("LatentSync whisper tiny.pt OK")
 PY
 RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
-      python /tmp/download_latentsync.py; \
+      python /tmp/download_latentsync.py && \
+      test -f /model-cache/LatentSync/checkpoints/whisper/tiny.pt; \
     else \
       echo "Skipping LatentSync checkpoint download during Docker build"; \
     fi && rm -f /tmp/download_latentsync.py

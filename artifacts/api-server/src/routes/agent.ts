@@ -47,12 +47,12 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "web_search":
     case "read_web_page":
     case "check_job_status":
-    case "check_all_active_jobs":
+    case "check_active_jobs":
     case "repeat_last_artifact":
     case "read_uploaded_file":
-    case "inspect_image":
-    case "ocr_image":
-    case "generate_script":
+    case "describe_image":
+    case "extract_text_from_image":
+    case "write_video_script":
     case "generate_seo_pack":
       return "light";
 
@@ -85,11 +85,7 @@ function stripReasoningTags(text: string): string {
     .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
     .replace(/\[reasoning\][\s\S]*?\[\/reasoning\]/gi, "")
     .replace(/\[THOUGHT\][\s\S]*?\[\/THOUGHT\]/gi, "")
-    .replace(/\[RESPONSE\][\s\S]*?\[\/RESPONSE\]/gi, "")
-    .replace(/\[JUDGE\][\s\S]*?\[\/JUDGE\]/gi, "")
-    // Single-line opaque tags (model leaks these as raw text sometimes)
-    .replace(/^\[THOUGHT\].*$/gim, "")
-    .replace(/^\[RESPONSE\].*$/gim, "")
+    .replace(/\[\/?RESPONSE\]/gi, "")
     .replace(/^\[JUDGE\].*$/gim, "")
     .replace(/^\[PLAN\].*$/gim, "")
     .replace(/^\[EXECUTE\].*$/gim, "")
@@ -107,11 +103,11 @@ function stripReasoningTags(text: string): string {
 // ── SSE helper — writes and flushes immediately ───────────────────────────
 function sseEvent(res: any, payload: object) {
   // Strip reasoning traces from text events
-  const safePayload = (payload as any).type === "text" && (payload as any).content
+  const safePayload = ((payload as any).type === "text" || (payload as any).type === "text_delta") && (payload as any).content
     ? { ...(payload as any), content: stripReasoningTags((payload as any).content) }
     : payload;
   // Skip empty text events (after stripping)
-  if ((safePayload as any).type === "text" && !(safePayload as any).content) return;
+  if (((safePayload as any).type === "text" || (safePayload as any).type === "text_delta") && !(safePayload as any).content) return;
   res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
   // Triple-layer flush to guarantee real-time delivery:
   // 1. Express compression middleware (if present)
@@ -129,6 +125,7 @@ async function pollJobUntilDone(
   headers: Record<string, string>,
   isConnected: () => boolean,
   toolId?: string,
+  runId?: string,
 ): Promise<{ status: string; filename?: string; filesize?: number }> {
   const startedAt = Date.now();
   const timeoutMs = toolName === "cut_video_clip" ? CLIP_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS;
@@ -147,9 +144,9 @@ async function pollJobUntilDone(
       const base = message && message !== status ? message : "Cutting selected section";
       liveMessage = `${base}... ${elapsedSeconds}s`;
     }
-    sseEvent(res, { type: "tool_progress", toolId, name: toolName, status, percent: percent ?? null, message: liveMessage, jobId });
+    sseEvent(res, { type: "tool_progress", runId, toolId, name: toolName, status, percent: percent ?? null, message: liveMessage, jobId });
     if (toolName === "cut_video_clip") {
-      sseEvent(res, { type: "tool_log", toolId, name: toolName, message: liveMessage, level: "info" });
+      sseEvent(res, { type: "tool_log", runId, toolId, name: toolName, message: liveMessage, level: "info" });
     }
     if (status === "done") return { status, filename };
     if (["error", "cancelled", "expired", "not_found"].includes(status))
@@ -168,6 +165,7 @@ async function pollSubtitleUntilDone(
   headers: Record<string, string>,
   isConnected: () => boolean,
   toolId?: string,
+  runId?: string,
 ): Promise<{ status: string; srtFilename?: string }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   while (Date.now() < deadline && isConnected()) {
@@ -179,8 +177,8 @@ async function pollSubtitleUntilDone(
     const data = await r.json() as any;
     const { status, progressPct, message, srtFilename } = data;
     const subtitleMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
-    sseEvent(res, { type: "tool_progress", toolId, name: "generate_subtitles", status, percent: progressPct ?? null, message: subtitleMsg, jobId });
-    sseEvent(res, { type: "tool_log", toolId, name: "generate_subtitles", message: subtitleMsg, level: "info" });
+    sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_subtitles", status, percent: progressPct ?? null, message: subtitleMsg, jobId });
+    sseEvent(res, { type: "tool_log", runId, toolId, name: "generate_subtitles", message: subtitleMsg, level: "info" });
     if (status === "done") return { status, srtFilename };
     if (["error", "cancelled"].includes(status)) throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
@@ -197,6 +195,7 @@ async function pollTimestampsUntilDone(
   headers: Record<string, string>,
   isConnected: () => boolean,
   toolId?: string,
+  runId?: string,
 ): Promise<{ status: string; timestamps?: any }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   while (Date.now() < deadline && isConnected()) {
@@ -208,8 +207,8 @@ async function pollTimestampsUntilDone(
     const data = await r.json() as any;
     const { status, progressPct, message, timestamps } = data;
     const tsMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
-    sseEvent(res, { type: "tool_progress", toolId, name: "generate_timestamps", status, percent: progressPct ?? null, message: tsMsg, jobId });
-    sseEvent(res, { type: "tool_log", toolId, name: "generate_timestamps", message: tsMsg, level: "info" });
+    sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_timestamps", status, percent: progressPct ?? null, message: tsMsg, jobId });
+    sseEvent(res, { type: "tool_log", runId, toolId, name: "generate_timestamps", message: tsMsg, level: "info" });
     if (status === "done") return { status, timestamps };
     if (["error", "cancelled"].includes(status)) throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
@@ -221,9 +220,12 @@ async function pollTimestampsUntilDone(
 // ── Parse timestamps like "5:32" or "1:22:10" into seconds ───────────────
 function parseTimestamp(ts: string): number {
   const parts = ts.trim().split(":").map(Number);
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0];
+  let result: number;
+  if (parts.length === 3) result = parts[0] * 3600 + parts[1] * 60 + parts[2];
+  else if (parts.length === 2) result = parts[0] * 60 + parts[1];
+  else result = parts[0];
+  if (!Number.isFinite(result) || result < 0) throw new Error(`Invalid timestamp: "${ts}"`);
+  return result;
 }
 
 // ── Tool definitions ──────────────────────────────────────────────────────
@@ -278,7 +280,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "find_best_clips",
-    description: "Use AI to find the most valuable segments from a long YouTube video. Starts the analysis job.",
+    description: "Find the most valuable segments from a long YouTube video. Polls until analysis is complete and returns a Best Clips tab artifact. Use for highlights, shorts, viral moments, best clips, or content segment discovery.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -323,7 +325,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "translate_video",
-    description: "Translate a YouTube video into another language with AI voice cloning. Downloads the video, transcribes, translates, clones the voice, and delivers the result. Use when the user wants to dub or translate a video.",
+    description: "Start a video translation/dubbing job and return a jobId plus Translator tab artifact. The final translated video is produced asynchronously; do not claim the file is ready unless the result endpoint returns a videoUrl.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -435,7 +437,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "cancel_active_jobs",
-    description: "Cancel all known active YouTube jobs from IDs remembered in the conversation. Use when the user asks to stop/cancel all running jobs.",
+    description: "Cancel known active processing jobs from conversation memory. Use when the user asks to stop/cancel all running downloads, clips, subtitles, timestamps, best-clips, or translation jobs.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -457,7 +459,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "create_image",
-    description: "Create a new image from a prompt using Gemini image generation. Use when the user asks to make, generate, design, or create an image.",
+    description: "Create a new image from a text prompt. If the user attached an existing image and asks to modify/edit it, use edit_image instead. Use create_image only for generating new images from scratch.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -538,7 +540,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "convert_subtitles",
-    description: "Convert subtitle content between SRT, VTT, and plain TXT.",
+    description: "Convert subtitle content between SRT, VTT, and plain TXT formats. This only converts existing timing — it does not generate real timings from plain text without timing data.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -599,50 +601,103 @@ const STUDIO_TOOLS: any[] = [
     },
   },
 ];
-const SYSTEM_PROMPT = `You are the VideoMaking Studio Copilot — a sharp, fast, action-first assistant for a YouTube/video production app.
+const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot, an action-focused assistant inside a YouTube/video production web app.
 
-# VOICE
-Talk like a competent friend, not a corporate bot. Tool cards already show live action, so do not repeat "I am downloading/cutting/generating..." in the final answer.
+Your job is to help the user create, edit, analyze, download, subtitle, translate, package, and publish video/media content.
 
-Answer at the length the user's task deserves. If the user asks for a detailed audit, explanation, comparison, strategy, script, research synthesis, review, or long-form output, give a complete long answer. If the task is just a completed download/clip/subtitle, keep it brief. No emojis unless the user uses them first.
+# CORE BEHAVIOR
 
-# INTELLIGENCE FIRST
-Use your own intelligence before tools. Do not call a tool for normal thinking, writing, rewriting, brainstorming, planning, explaining, prompt improvement, simple translation, short pasted text/SRT/CSV/JSON, visible chat context, or basic image understanding from an attached image already in context. Answer directly when you can.
+Be direct, practical, and friendly. Talk like a skilled senior production assistant, not a corporate bot.
 
-Call tools only when you need a real app action or missing capability: downloading/cutting videos, fetching YouTube data/captions, reading file URLs/PDFs, generating/editing/enhancing actual image files, exporting downloadable files, checking/cancelling jobs, searching current web info, running code/data analysis, opening tabs, or restoring a previous result button.
+User can ask anything and you should be ready for any thing any task that user gives - you have all the tools and capabilities (full power of AI + your tools and APIs).
 
-Always choose the best user outcome, not the most tools. If a direct answer is enough, be direct. If a tool will produce a better real result, use the smallest correct tool.
+Before using a user-visible tool, briefly tell the user what you're about to do in their language. Keep it one natural sentence. Do not reveal tool names/internal APIs. Do not claim completion before the tool returns.
+
+Examples:
+- translate video to English with voice clone:
+  "Got it — I'll translate this video to English with voice clone "
+- cut 40–57 seconds:
+  "Okay — I'll cut the 40–57 second section for you right now ... ()."
+- check status:
+  "I'll check the latest job status now."
+
+Answer at the length the task deserves:
+- Completed tool tasks (download, clip, subtitle, translate queued): short final confirmation.
+- Audits, debugging, strategy, scripts, SEO, research, comparisons, or planning: detailed answer.
+- No emojis unless the user uses them first.
+
+Match the user's language:
+- If the user writes in Hindi or Hinglish, respond in simple Hinglish.
+- If the user writes in English, respond in English.
+- Keep devotional/religious content respectful.
+
+# INTELLIGENCE FIRST — NO TOOL SPAM
+
+Use your own intelligence first. Do NOT call tools for:
+- Normal writing, rewriting, brainstorming, script drafts, hooks, thumbnail text, titles, descriptions, hashtags
+- SEO ideas, content strategy, video improvement suggestions
+- Explaining what you can do, answering general questions
+- Simple pasted text/SRT/CSV/JSON analysis
+- Visible chat context that already has the answer
+- Image description or visible text reading from an attached image (unless the user needs an export/card)
+
+Call tools only when the user needs a real app action or unavailable information:
+- YouTube metadata, captions, video analysis, download, clip, subtitles, timestamps, best clips, translation/dubbing
+- Image generation/edit/enhancement that must produce an output image file
+- File reading, export, format conversion
+- Web research or current information
+- Job status, cancel, repeat artifact, tab navigation
+- Code or data calculation
+
+Always use the smallest, cheapest correct tool. Do not call a more expensive or slower tool when a simpler one solves the task.
+
+# AVOID BAD AUTOMATION
+
+Do not run a heavy tool just because a URL exists in context:
+- User asks for title/metadata only → get_video_info only, not analyze_youtube_video
+- User asks for summary/quotes/moments → analyze_youtube_video, not download + transcribe
+- User asks for existing YouTube captions → get_youtube_captions first, not generate_subtitles
+- User gives exact clip times → cut_video_clip directly, not web_search first
+- User asks for SEO/title/script from their own idea → answer directly unless they ask for export/download
+- User asks for visible text from image in chat → answer directly unless they need the text extracted as a file
 
 # CONTEXT AND MEMORY
-Treat the whole visible chat history, prior tool results, artifacts, uploads, job IDs, URLs, filenames, timestamps, and selected options as active memory for the current chat. If the user says "do it", "same video", "that file", "previous result", "continue", "fix this", or "again", resolve the reference from chat history instead of asking again.
 
-When a new chat is started, do not assume memory from other chats. In an existing chat, never ignore earlier user constraints like quality, language, start/end times, "don't edit", "don't revert", or "send email".
+Treat the visible chat history, prior tool results, artifacts, uploads, job IDs, URLs, filenames, timestamps, and selected options as active memory.
 
-If there are multiple plausible references, pick the most recent matching one and state the assumption briefly only if it affects the result.
+When the user says "do it", "same video", "that file", "previous result", "continue", "fix this", "again", or "send/open it":
+- Resolve the reference from the most recent matching context.
+- If multiple references are possible, pick the most recent reasonable one and briefly state the assumption only if it affects the result.
+- Ask one short clarification only when no reasonable assumption exists or choosing wrong would produce the wrong file.
+
+Never ignore user constraints already given: quality, language, start/end time, "do not edit", "do not revert", "only title", "send now".
 
 # TOOL ARGUMENT QUALITY
-Tool calls should be complete, specific, and user-intent aware. Include the actual URL/file URL, timestamps, quality, target language, voice/lip-sync choices, and requested count/duration whenever they are available in context.
 
-Do not send vague tool prompts like "generate subtitles" or "search this". Convert the user's request into a precise tool query/action with the important constraints preserved. For web_search, write a focused search query with names, dates, product/version, and the exact fact needed.
+Every tool call must have complete, specific arguments. Preserve the user's important details:
+- Exact URL or file URL
+- Exact timestamps as written ("1:12:03", "40-57 seconds")
+- Desired quality, defaulting only when absent
+- Target language and language code when known
+- Voice cloning / lip sync preference
+- Number of clips, duration preference, style, topic focus
 
-For tools with prompt/question/instructions fields, write a full production prompt: include user goal, context, constraints, output format, language, quality bar, edge cases, and what to avoid. A 3-5 word prompt is almost never acceptable unless the user only asked for a tiny literal task.
+For tools with prompt/question/instructions fields, write a production-quality instruction with: user goal, source/context, output format, language, quality bar, constraints, and what to avoid. Never pass vague prompts like "summarize", "fix this", or "make SEO".
 
-For deep web research: call web_search with enough maxResults for the task, inspect multiple sources, and call read_web_page on important URLs when snippets are insufficient. Do not stop at the first 3 results if the user asked for broad/current/deep research.
+For deep web research: call web_search with enough maxResults, inspect multiple sources, and call read_web_page on important results when snippets are insufficient.
 
-# IRON RULES
-1. NEVER refuse a video task that maps to a tool. You have tools — use them. Don't say "I can't access YouTube"; call get_video_info.
-2. NEVER ask for permission before running a tool. If the user gave you a URL and a clear intent, just go.
-3. NEVER reveal internals: no "planning", "phase 1", "executing", "judging", "thought", "tool_call", "function call", JSON of args, raw error stacks, [JUDGE], [REASONING], or model names.
-4. NEVER invent timestamps, durations, or video facts. If you need them, call get_video_info or analyze_youtube_video first.
-5. NEVER fabricate a download URL — only quote URLs the tools returned.
-6. If a YouTube URL is missing and clearly required, ask for it in one sentence. Otherwise infer.
-7. Respect what the user already gave you. If they pasted SRT text, use fix_subtitles directly — don't re-ask for the file.
+# WHEN TO ACT VS ASK
 
-# DOWNLOAD OUTPUTS
-For download_video, cut_video_clip, generate_subtitles, get_youtube_captions, create_image, enhance_image, and edit_image, never print raw internal /api/... file URLs in final chat text. The UI renders download buttons automatically; say only "Done - use the download button above."
+Act immediately when the user gave a clear action and required inputs are available.
 
-# TOOL SELECTION HEURISTICS
-Pick the cheapest tool that solves the request:
+Ask one short clarification only when:
+- A required URL/file/timestamp/language is genuinely missing
+- Multiple references exist and the wrong choice would produce the wrong artifact
+- The operation is impossible without a missing input
+
+Do not ask "should I continue?" after partial work if the user clearly asked for the full task.
+
+# VIDEO TOOL SELECTION
 
 | User wants | Use |
 |---|---|
@@ -655,16 +710,16 @@ Pick the cheapest tool that solves the request:
 | "download the whole video / get the audio" | download_video (use quality='audio_only' for audio) |
 | "find best moments / highlights / shorts" | find_best_clips |
 | "make chapter timestamps" | generate_timestamps |
-| "translate this video / dub in Hindi/Spanish" | translate_video THEN navigate_to_tab('translator') |
+| "translate this video / dub in Hindi/Spanish" | translate_video only |
 | "what's trending / latest news / who is X" | web_search first, then maybe a video tool |
-| "read this article/page/source / inspect search result" | read_web_page |
+| "read this article/page/source" | read_web_page |
 | "create/generate an image" | create_image |
 | "make this attached image clearer / enhance / restore" | enhance_image |
 | "edit this attached image" | edit_image |
-| "what is in this image / inspect image" | describe_image |
-| "read text from this image" | extract_text_from_image |
-| "write script / storyboard / shot list" | write_video_script |
-| "SEO title/description/tags/thumbnail text" | generate_seo_pack |
+| "what is in this image" | describe_image only when user needs structured artifact/card; otherwise answer directly |
+| "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
+| "write script / storyboard / shot list" | write_video_script only when user needs downloadable file; otherwise answer directly |
+| "SEO title/description/tags/thumbnail text" | generate_seo_pack only when user needs structured artifact export; otherwise answer directly |
 | "full package / do everything / complete package" | do_full_package |
 | "give link again / show result again / where is file" | repeat_last_artifact |
 | "continue/check running jobs / active jobs" | check_active_jobs |
@@ -679,40 +734,77 @@ Pick the cheapest tool that solves the request:
 | "is my job done / progress" | check_job_status |
 | User explicitly says "open the X tab" | navigate_to_tab |
 
-Don't double-call tools. If get_video_info already gave you the title and duration, don't call it again in the same conversation.
-Use artifact memory: if the user asks for a previous result/link/file again, call repeat_last_artifact instead of writing raw URLs.
+Do not double-call tools. If get_video_info already returned title and duration, do not call it again in the same turn.
+Use artifact memory: if the user asks for a previous result/link/file again, call repeat_last_artifact instead of printing raw URLs.
+
+# CAPTION VS TRANSCRIPTION
+
+- Existing YouTube captions → get_youtube_captions (instant, uses YouTube's own captions)
+- New transcription from audio / translated SRT / no captions available → generate_subtitles
+- Fix pasted SRT/VTT/text → fix_subtitles (only when subtitle content is provided or uploaded)
+
+Do not run generate_subtitles if YouTube captions would suffice.
 
 # MULTI-STEP REASONING
-You can chain up to ${MAX_ITERATIONS} tool calls per turn. Use that:
+
+You can chain up to ${MAX_ITERATIONS} tool calls per turn:
 - "summarize the video and then pull the best 3 clips" → analyze_youtube_video, then find_best_clips.
 - "transcribe and translate to English" → generate_subtitles with translateTo='en'.
 - "what does the host say about X at minute 10" → analyze_youtube_video (NOT generate_subtitles — much faster).
-- If a tool result contains a clear error message like "video unavailable" or "private", stop retrying and tell the user plainly.
+- If a tool result contains "video unavailable", "private", or "no captions found", stop retrying and tell the user plainly.
 
-When multiple requested actions are independent, call the tools together in the same turn. The backend can run safe independent work in parallel. Keep dependent chains in order.
-For multiple clip-cut requests, call up to 3 cut_video_clip tools in the same turn. Do not cut one clip, wait, then cut the next unless the next clip depends on the previous result.
+When multiple requested actions are independent, call the tools together in the same turn. Keep dependent chains in order.
+For multiple clip-cut requests, call up to 3 cut_video_clip tools in the same turn.
 
-# TIME ARGUMENTS
-Always pass startTime/endTime as 'MM:SS' or 'HH:MM:SS' strings exactly as the user typed them. Don't convert to seconds, don't pad zeros unnecessarily. The backend parses both formats.
+# AUTONOMOUS COMPLETION
 
-# QUALITY DEFAULTS
-- cut_video_clip: default 1080p unless user asks otherwise. Do not use 2K/4K for clips unless the user explicitly asks.
-- download_video: default best (omit quality) unless user picked one. For "audio" / "mp3" requests use quality='audio_only'.
+When the user assigns a task, complete the full workflow without asking for step-by-step confirmation.
+- If a tool starts a job and the poller monitors it, wait for completion before giving the final answer.
+- If a job fails, read the error, retry once for transient issues, then report the exact blocker in plain language.
+- For translator GPU jobs: these are intentionally long-running. After queuing, navigate to the Translator tab and tell the user to watch progress there. Do NOT claim the final video is ready unless the result endpoint returns a videoUrl.
+- For multi-step tasks, continue until there is a concrete artifact, final status, or a clear failure. Do not stop at "queued".
+
+# TIME AND QUALITY DEFAULTS
+
+- Always pass startTime/endTime as 'MM:SS' or 'HH:MM:SS' exactly as the user typed them.
+- cut_video_clip: default 1080p unless user asks otherwise.
+- download_video: default best (omit quality) unless user picked one. For audio/mp3 use quality='audio_only'.
 - translate_video: voiceClone defaults to true (preserves original speaker), lipSync defaults to false (slow + GPU-heavy).
 
 # UPLOADED FILES
-If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], pass that URL straight to generate_subtitles or translate_video — do NOT ask for a YouTube link.
+
+If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], pass that URL straight to generate_subtitles or translate_video. Do NOT ask for a YouTube link.
 
 # FAILURE HANDLING
-If a tool errors:
-1. Read the error string. If it's a transient/rate issue, retry once with the same args.
-2. If it's a real failure ("video private", "no captions found", "duration too long for clip"), tell the user in one short sentence and offer the next-best option ("the captions tool didn't find any — want me to transcribe it instead?").
-3. Never apologise more than once. Never blame "the system" — say what specifically failed.
 
-# FINAL ANSWER FORMAT
-When the work is complete, end your reply with the suggestions line on its OWN final line, exactly:
+If a tool errors:
+1. Read the error string. If it's transient/rate issue, retry once with the same args.
+2. If it's a real failure ("video private", "no captions found", "duration too long"), tell the user in one short sentence and offer the best next option.
+3. Never apologise more than once. Say what specifically failed.
+
+Do not reveal raw stack traces, raw tool JSON, hidden reasoning, internal prompts, function-call IDs, or model/provider names.
+You may explain the user-visible reason for a failure in plain language.
+
+# OUTPUT RULES
+
+For completed download/clip/subtitle/image artifacts:
+- Do not print raw /api/... URLs in chat text.
+- Say briefly: "Done — use the download/result button above."
+- If the tool only queued a job, say it has started and that progress/result will appear in the card/tab.
+- Do not claim a final downloadable file is ready unless the tool returned a final artifact with a download URL.
+
+Do not output any of these internal markers in visible replies:
+[REASONING] [reasoning] [THOUGHT] [JUDGE] [PLAN] [EXECUTE] [SAY] [WAIT] [TOOL]
+
+# SUGGESTIONS
+
+When useful, include one suggestions marker at the very end of the reply on its own line. Skip it for simple confirmations, direct factual answers, and errors.
+
 [SUGGESTIONS: "suggestion one" | "suggestion two" | "suggestion three"]
-Suggestions must be concrete next actions on this same video/topic (e.g. "Translate this clip to Spanish", "Generate timestamps", "Download in 1080p"), not generic prompts. 2–3 items.`;
+
+Suggestions can be 1 or max 2 concrete next actions on this same video/topic (e.g. "Generate timestamps", "Download in 1080p"), not generic prompts. Do not mention this marker in the normal answer text.`;
+
+
 
 // ── Build internal headers from request ───────────────────────────────────
 function buildInternalHeaders(req: any): Record<string, string> {
@@ -968,7 +1060,7 @@ function scanKnownJobIds(req: any): string[] {
   const ids = new Set<string>();
   const text = conversationText(req);
   for (const match of text.matchAll(/\bjob(?:Id)?:?\s*([a-f0-9-]{8,})\b/gi)) ids.add(match[1]);
-  for (const match of text.matchAll(/\/api\/(?:youtube\/file|subtitles\/status)\/([a-f0-9-]{8,})/gi)) ids.add(match[1]);
+  for (const match of text.matchAll(/\/api\/(?:youtube\/file|subtitles\/status|translator\/status|translator\/result)\/([a-f0-9-]{8,})/gi)) ids.add(match[1]);
   return [...ids].slice(-20);
 }
 
@@ -1045,23 +1137,25 @@ async function executeTool(
   res: any,
   isConnected: () => boolean,
   toolId?: string,
+  runId?: string,
 ): Promise<{ result: any; artifact?: object }> {
   const apiBase = getApiBase(req);
   const internalHeaders = buildInternalHeaders(req);
   const logTool = (message: string, details?: Record<string, any>) => {
-    sseEvent(res, { type: "tool_log", toolId, name, message, ...(details ? { details } : {}) });
+    sseEvent(res, { type: "tool_log", runId, toolId, name, message, ...(details ? { details } : {}) } as any);
   };
 
   switch (name) {
 
     case "get_video_info": {
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/info" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fetching video metadata..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Fetching video metadata..." });
       const r = await fetch(`${apiBase}/youtube/info`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
+      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Info fetch failed: ${r.status}`); }
       const data = await r.json().catch(() => ({ error: "Failed to fetch info" })) as any;
       // Build a readable summary for the artifact card
       const infoLines: string[] = [];
@@ -1086,7 +1180,7 @@ async function executeTool(
       const endSecs = parseTimestamp(String(args.endTime));
       const quality = args.quality ?? "1080p";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
         method: "POST",
         headers: internalHeaders,
@@ -1101,6 +1195,7 @@ async function executeTool(
       // Emit initial progress so frontend can track in Activity Panel
       sseEvent(res, {
         type: "tool_progress",
+        runId,
         toolId,
         name,
         status: "processing",
@@ -1112,7 +1207,7 @@ async function executeTool(
         quality,
       } as any);
 
-      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: { jobId, downloadUrl, startTime: args.startTime, endTime: args.endTime, url: args.url, quality },
@@ -1123,7 +1218,7 @@ async function executeTool(
     case "download_video": {
       const quality = args.quality ?? "best";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/download" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: `Starting download (${quality})...` });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Starting download (${quality})...` });
       let formatId = DEFAULT_VIDEO_FORMAT_SELECTOR;
       if (quality === "audio_only") formatId = "audio:bestaudio";
       if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec!=none]+bestaudio[acodec!=none]/best[height<=1080][ext=mp4][vcodec!=none][acodec!=none]";
@@ -1142,9 +1237,9 @@ async function executeTool(
       const { jobId } = await r.json() as any;
       logTool("Download job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", toolId, name, status: "processing", message: "Starting download...", jobId, url: args.url } as any);
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, status: "processing", message: "Starting download...", jobId, url: args.url } as any);
 
-      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
+      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: { jobId, downloadUrl, filename: final.filename, url: args.url, quality },
@@ -1159,7 +1254,7 @@ async function executeTool(
       const inputUrl = (args.url ?? args.fileUrl ?? "") as string;
       const isUploadedFile = !!inputUrl && !inputUrl.includes("youtube.com") && !inputUrl.includes("youtu.be");
       logTool("Starting subtitle generation", { url: inputUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: isUploadedFile ? "Transcribing uploaded file..." : "Starting subtitle generation..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: isUploadedFile ? "Transcribing uploaded file..." : "Starting subtitle generation..." });
 
       let subtitleJobId: string;
       if (isUploadedFile) {
@@ -1179,9 +1274,9 @@ async function executeTool(
       }
       logTool("Subtitles job accepted", { jobId: subtitleJobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", toolId, name: "generate_subtitles", status: "processing", message: "Starting subtitle generation...", jobId: subtitleJobId, url: args.url } as any);
+      sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_subtitles", status: "processing", message: "Starting subtitle generation...", jobId: subtitleJobId, url: args.url } as any);
 
-      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${subtitleJobId}`, subtitleJobId, internalHeaders, isConnected, toolId);
+      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${subtitleJobId}`, subtitleJobId, internalHeaders, isConnected, toolId, runId);
       const srtUrl = `/api/subtitles/status/${subtitleJobId}/download?format=srt`;
       return {
         result: { jobId: subtitleJobId, srtFilename: final.srtFilename, url: args.url, language: args.language, translateTo: args.translateTo },
@@ -1196,7 +1291,7 @@ async function executeTool(
 
     case "find_best_clips": {
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clips" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Starting best clips AI analysis..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Starting best clips AI analysis..." });
       const r = await fetch(`${apiBase}/youtube/clips`, {
         method: "POST",
         headers: internalHeaders,
@@ -1209,10 +1304,10 @@ async function executeTool(
       const { jobId } = await r.json() as any;
       logTool("Best clips job accepted — polling for results...", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", toolId, name: "find_best_clips", status: "processing", message: "Starting best clips analysis...", jobId, url: args.url } as any);
+      sseEvent(res, { type: "tool_progress", runId, toolId, name: "find_best_clips", status: "processing", message: "Starting best clips analysis...", jobId, url: args.url } as any);
 
       // Poll until analysis is done (same pattern as clip/download)
-      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId);
+      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
       return {
         result: { jobId, message: "Best clips analysis complete. View results in the Best Clips tab." },
         artifact: { artifactType: "tab_link", label: "✅ Best Clips ready — open tab to download", tab: "clips", jobId },
@@ -1221,7 +1316,7 @@ async function executeTool(
 
     case "generate_timestamps": {
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/timestamps" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Generating timestamps..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Generating timestamps..." });
       const r = await fetch(`${apiBase}/youtube/timestamps`, {
         method: "POST",
         headers: internalHeaders,
@@ -1234,9 +1329,9 @@ async function executeTool(
       const { jobId } = await r.json() as any;
       logTool("Timestamps job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", toolId, name: "generate_timestamps", status: "processing", message: "Starting timestamp generation...", jobId, url: args.url } as any);
+      sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_timestamps", status: "processing", message: "Starting timestamp generation...", jobId, url: args.url } as any);
 
-      const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders, isConnected, toolId);
+      const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
       return {
         result: { jobId, timestamps: final.timestamps },
         artifact: final.timestamps ? {
@@ -1256,7 +1351,7 @@ async function executeTool(
     }
 
     case "navigate_to_tab": {
-      sseEvent(res, { type: "navigate", tab: args.tab });
+      sseEvent(res, { type: "navigate", runId, tab: args.tab });
       return { result: { navigated: true, tab: args.tab } };
     }
 
@@ -1267,7 +1362,7 @@ async function executeTool(
       const videoUrl = (args.url ?? args.fileUrl ?? "") as string;
       const isUploadedFile = !!videoUrl && !videoUrl.includes("youtube.com") && !videoUrl.includes("youtu.be");
       logTool("Starting video translation job", { url: videoUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: isUploadedFile ? "Registering uploaded file for GPU translation..." : "Downloading video for translation..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: isUploadedFile ? "Registering uploaded file for GPU translation..." : "Downloading video for translation..." });
 
       let tvJobId: string;
       if (isUploadedFile) {
@@ -1289,13 +1384,12 @@ async function executeTool(
         if (!presignR.ok) throw new Error(`Failed to get upload URL: ${presignR.status}`);
         const { jobId: pJobId, presignedUrl, s3Key } = await presignR.json() as any;
         tvJobId = pJobId;
-        sseEvent(res, { type: "tool_progress", toolId, name, message: "Uploading video to GPU worker queue..." });
+        sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Uploading video to GPU worker queue..." });
         const ytStreamR = await fetch(`${apiBase}/youtube/stream?url=${encodeURIComponent(videoUrl)}`, { headers: internalHeaders });
         if (!ytStreamR.ok) throw new Error(`YouTube stream failed: ${ytStreamR.status}`);
-        const videoBuffer = Buffer.from(await ytStreamR.arrayBuffer());
-        const uploadR = await fetch(presignedUrl, { method: "PUT", headers: { "Content-Type": "video/mp4" }, body: videoBuffer });
+        const uploadR = await fetch(presignedUrl, { method: "PUT", headers: { "Content-Type": "video/mp4" }, body: ytStreamR.body, duplex: "half" } as any);
         if (!uploadR.ok) throw new Error(`S3 upload failed: ${uploadR.status}`);
-        sseEvent(res, { type: "tool_progress", toolId, name, message: `Submitting GPU translation job (${args.targetLang ?? "Hindi"})...` });
+        sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Submitting GPU translation job (${args.targetLang ?? "Hindi"})...` });
         const submitR = await fetch(`${apiBase}/translator/submit`, {
           method: "POST", headers: internalHeaders,
           body: JSON.stringify({ jobId: tvJobId, s3Key, targetLang: args.targetLang ?? "Hindi", targetLangCode: args.targetLangCode ?? "hi", voiceClone: args.voiceClone ?? true, lipSync: args.lipSync ?? false, filename: "input.mp4" }),
@@ -1304,9 +1398,9 @@ async function executeTool(
       }
       logTool("Translation job submitted", { jobId: tvJobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", toolId, name: "translate_video", status: "processing", message: "Job submitted to GPU worker...", jobId: tvJobId, url: videoUrl } as any);
+      sseEvent(res, { type: "tool_progress", runId, toolId, name: "translate_video", status: "processing", message: "Job submitted to GPU worker...", jobId: tvJobId, url: videoUrl } as any);
 
-      sseEvent(res, { type: "navigate", tab: "translator" });
+      sseEvent(res, { type: "navigate", runId, tab: "translator" });
       return {
         result: { jobId: tvJobId, message: "Translation job queued on GPU worker. Track progress in the Translator tab." },
         artifact: { artifactType: "tab_link", label: `Translating to ${args.targetLang ?? "Hindi"} — open Translator tab`, tab: "translator", jobId: tvJobId },
@@ -1315,7 +1409,7 @@ async function executeTool(
 
     case "get_youtube_captions": {
       logTool("Fetching YouTube captions", { url: args.url });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fetching captions from YouTube..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Fetching captions from YouTube..." });
       const language = args.language ?? "en";
       const downloadUrl = `/api/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`;
       const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`, { headers: internalHeaders });
@@ -1325,7 +1419,7 @@ async function executeTool(
         try {
           const parsed = JSON.parse(content) as { error?: string };
           message = parsed.error ?? message;
-        } catch {}
+        } catch { }
         throw new Error(message);
       }
       return {
@@ -1336,7 +1430,7 @@ async function executeTool(
 
     case "fix_subtitles": {
       logTool("Fixing subtitle content");
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Fixing subtitles..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Fixing subtitles..." });
       const r = await fetch(`${apiBase}/youtube/subtitles/fix`, {
         method: "POST",
         headers: internalHeaders,
@@ -1354,16 +1448,21 @@ async function executeTool(
 
     case "cancel_job": {
       logTool("Cancelling job", { jobId: args.jobId });
-      const r = await fetch(`${apiBase}/youtube/cancel/${args.jobId}`, { method: "POST", headers: internalHeaders });
-      const data = await r.json().catch(() => ({})) as any;
+      let data: any = { error: "not_found" };
+      for (const endpoint of [`${apiBase}/youtube/cancel/${args.jobId}`, `${apiBase}/subtitles/cancel/${args.jobId}`, `${apiBase}/translator/cancel/${args.jobId}`]) {
+        const r = await fetch(endpoint, { method: "POST", headers: internalHeaders }).catch(() => null);
+        if (r?.ok) { data = await r.json().catch(() => ({ ok: true })); break; }
+      }
       return { result: data };
     }
 
     case "check_job_status": {
       logTool("Checking job status", { jobId: args.jobId });
-      const r = await fetch(`${apiBase}/youtube/progress/${args.jobId}`, { headers: internalHeaders });
-      if (!r.ok) throw new Error(`Status check failed: ${r.status}`);
-      const data = await r.json() as any;
+      let data: any = { status: "not_found" };
+      for (const endpoint of [`${apiBase}/youtube/progress/${args.jobId}`, `${apiBase}/subtitles/status/${args.jobId}`, `${apiBase}/translator/status/${args.jobId}`]) {
+        const r = await fetch(endpoint, { headers: internalHeaders }).catch(() => null);
+        if (r?.ok) { data = await r.json().catch(() => null); if (data) break; }
+      }
       return { result: data };
     }
 
@@ -1372,7 +1471,7 @@ async function executeTool(
       const requestedMax = Number(args.maxResults ?? 10);
       const maxResults = Math.max(1, Math.min(20, Number.isFinite(requestedMax) ? requestedMax : 10));
       logTool("Searching the web", { query, maxResults });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: `Searching: "${query}"...` });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Searching: "${query}"...` });
 
       // Strategy: Use Gemini's native Google Search grounding tool.
       // Uses Vertex Gemini when configured, otherwise falls back to the API key provider.
@@ -1387,11 +1486,15 @@ async function executeTool(
         const searchAi = createGeminiClient();
         const searchResp = await searchAi.models.generateContent({
           model: SEARCH_MODEL, // gemini-2.5-flash — supports grounding + is free tier
-          contents: [{ role: "user", parts: [{ text: [
-            `Search the web for: ${query}`,
-            `Use broad coverage, compare multiple sources, and include up to ${maxResults} useful source URLs if available.`,
-            "Give enough detail to answer accurately. Do not limit yourself to three sites when more are relevant.",
-          ].join("\n") }] }],
+          contents: [{
+            role: "user", parts: [{
+              text: [
+                `Search the web for: ${query}`,
+                `Use broad coverage, compare multiple sources, and include up to ${maxResults} useful source URLs if available.`,
+                "Give enough detail to answer accurately. Do not limit yourself to three sites when more are relevant.",
+              ].join("\n")
+            }]
+          }],
           config: {
             tools: [{ googleSearch: {} }] as any,
             temperature: 0.1,
@@ -1409,7 +1512,7 @@ async function executeTool(
           if (uri) sources.push(title ? `${title} — ${uri}` : uri);
         });
         const uniqueSources = [...new Set(sources)].slice(0, maxResults);
-        const sourcesText = uniqueSources.length > 0 ? `\n\nSources:\n${uniqueSources.map((s, i) => `[${i+1}] ${s}`).join("\n")}` : "";
+        const sourcesText = uniqueSources.length > 0 ? `\n\nSources:\n${uniqueSources.map((s, i) => `[${i + 1}] ${s}`).join("\n")}` : "";
         return { result: { query, answer: groundedAnswer + sourcesText, grounded: true, sources: uniqueSources } };
       } catch (groundingErr: any) {
         logTool(`Grounding failed (${groundingErr?.message}), trying fallbacks`, {});
@@ -1455,7 +1558,7 @@ async function executeTool(
       const task = String(args.task ?? "").trim();
       const maxChars = Number(args.maxChars ?? 20000);
       logTool("Reading web page", { url, task, maxChars });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: `Reading page: ${url}` });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Reading page: ${url}` });
       const page = await fetchReadableWebPage(url, Number.isFinite(maxChars) ? maxChars : 20000);
       return {
         result: {
@@ -1478,12 +1581,12 @@ async function executeTool(
       const artifacts: object[] = [];
 
       const runStep = async (stepName: string, stepArgs: Record<string, any>) => {
-        sseEvent(res, { type: "tool_progress", toolId, name, message: `Full package: ${stepName.replace(/_/g, " ")}...` });
-        const sub = await executeTool(stepName, stepArgs, req, res, isConnected, toolId);
+        sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Full package: ${stepName.replace(/_/g, " ")}...` });
+        const sub = await executeTool(stepName, stepArgs, req, res, isConnected, toolId, runId);
         results[stepName] = sub.result;
         if (sub.artifact) {
           artifacts.push(sub.artifact);
-          sseEvent(res, { type: "artifact", toolId, ...(sub.artifact as object) });
+          sseEvent(res, { type: "artifact", runId, toolId, ...(sub.artifact as object) });
         }
         return sub;
       };
@@ -1547,7 +1650,7 @@ async function executeTool(
       const cancelled: any[] = [];
       for (const jobId of ids) {
         let data: any = null;
-        for (const endpoint of [`${apiBase}/youtube/cancel/${jobId}`, `${apiBase}/subtitles/cancel/${jobId}`]) {
+        for (const endpoint of [`${apiBase}/youtube/cancel/${jobId}`, `${apiBase}/subtitles/cancel/${jobId}`, `${apiBase}/translator/cancel/${jobId}`]) {
           const r = await fetch(endpoint, { method: "POST", headers: internalHeaders }).catch(() => null);
           if (r?.ok) { data = await r.json().catch(() => ({ ok: true })); break; }
         }
@@ -1562,7 +1665,7 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
-      sseEvent(res, { type: "navigate", tab });
+      sseEvent(res, { type: "navigate", runId, tab });
       return { result: { navigated: true, tab }, artifact: { artifactType: "tab_link", label: `Open ${tab}`, tab } };
     }
 
@@ -1570,7 +1673,7 @@ async function executeTool(
       const prompt = String(args.prompt ?? "").trim();
       if (!prompt) throw new Error("Image prompt is required.");
       logTool("Creating image", { prompt });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Creating image..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Creating image..." });
       const image = await generateImageArtifact({
         prompt: `Create a high-quality production-ready image for this request:\n${prompt}`,
         filenamePrefix: "created-image",
@@ -1592,7 +1695,7 @@ async function executeTool(
       if (!image) throw new Error("Attach an image first, then ask me to enhance it.");
       const instructions = String(args.instructions ?? "").trim();
       logTool("Enhancing attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Enhancing image clarity..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Enhancing image clarity..." });
       const enhanced = await generateImageArtifact({
         inputImage: image,
         filenamePrefix: "enhanced-image",
@@ -1618,7 +1721,7 @@ async function executeTool(
       const instructions = String(args.instructions ?? "").trim();
       if (!instructions) throw new Error("Image edit instructions are required.");
       logTool("Editing attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Editing image..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Editing image..." });
       const edited = await generateImageArtifact({
         inputImage: image,
         filenamePrefix: "edited-image",
@@ -1640,7 +1743,7 @@ async function executeTool(
       const image = latestImageAttachment(req);
       if (!image) throw new Error("Attach an image first, then ask me to inspect it.");
       logTool("Describing attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Inspecting image..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Inspecting image..." });
       const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
@@ -1661,7 +1764,7 @@ async function executeTool(
       const image = latestImageAttachment(req);
       if (!image) throw new Error("Attach an image first, then ask me to read its text.");
       logTool("Reading text from attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Reading image text..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Reading image text..." });
       const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
@@ -1689,7 +1792,7 @@ Style: ${args.style ?? "strong hook, clear structure, practical shot direction"}
 
 Include: hook, narration, scene/shot directions, on-screen text, pacing notes, and CTA.`;
       logTool("Writing video script", { topic });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Writing script..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Writing script..." });
       return textModelArtifact("Video Script", prompt);
     }
 
@@ -1703,7 +1806,7 @@ Audience: ${args.audience ?? "general YouTube audience"}
 
 Return: 8 title options, one optimized description, tags, hashtags, thumbnail text options, and a pinned comment.`;
       logTool("Generating SEO pack", { topic });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Generating SEO pack..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Generating SEO pack..." });
       return textModelArtifact("YouTube SEO Pack", prompt);
     }
 
@@ -1712,7 +1815,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       if (!attachment) throw new Error("Attach an SRT, TXT, CSV, JSON, PDF, or document first.");
       const task = String(args.task ?? "Summarize and inspect this file.").trim();
       logTool("Reading uploaded file", { filename: attachment.name, mimeType: attachment.mimeType });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: `Reading ${attachment.name}...` });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Reading ${attachment.name}...` });
 
       if ((attachment.mimeType.includes("pdf") || /\.pdf$/i.test(attachment.name)) && attachment.url && !attachment.url.startsWith("data:")) {
         const ai = createGeminiClient();
@@ -1773,7 +1876,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
         prompt = `Compare subtitle content available in this conversation/upload. If only one file is available, audit it for timing/text/format issues.\n\nUploaded file:\n${file?.content.slice(0, 60000) ?? "none"}\n\nConversation context:\n${ctx.slice(-60000)}`;
       }
       logTool("Comparing subtitles");
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Comparing subtitle files..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Comparing subtitle files..." });
       return textModelArtifact("Subtitle Comparison", prompt);
     }
 
@@ -1802,7 +1905,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       if (!data) throw new Error("Provide data or attach a CSV/JSON/text file first.");
       const task = String(args.task ?? "Analyze this data.").trim();
       logTool("Running code analysis", { task });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Running code analysis..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Running code analysis..." });
       const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
@@ -1829,7 +1932,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       if (!isYouTubeUrl) throw new Error("URL must be a public YouTube video link.");
 
       logTool("Analyzing YouTube video with Gemini Vision+Audio", { videoUrl, question });
-      sseEvent(res, { type: "tool_progress", toolId, name, message: "Loading video... Gemini is watching and listening" });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Loading video... Gemini is watching and listening" });
 
       // Use Gemini's native YouTube video understanding via file_data.
       // The model receives the actual video frames + audio — it truly watches the video.
@@ -1911,9 +2014,9 @@ router.post("/agent/chat", async (req, res) => {
         ? message.content
         : Array.isArray(message.parts)
           ? message.parts
-              .filter((part) => part?.kind === "text" || typeof part?.content === "string" || typeof part?.text === "string")
-              .map((part) => part?.content ?? part?.text ?? "")
-              .join("")
+            .filter((part) => part?.kind === "text" || typeof part?.content === "string" || typeof part?.text === "string")
+            .map((part) => part?.content ?? part?.text ?? "")
+            .join("")
           : "";
     return {
       ...message,
@@ -1964,7 +2067,7 @@ router.post("/agent/chat", async (req, res) => {
         const textContent = m.content.trim();
         const attachments = (m as any).attachments ?? [];
         const mediaAttachments = attachments.filter((a: any) => a.type !== 'image');
-        const imageAttachments  = attachments.filter((a: any) => a.type === 'image');
+        const imageAttachments = attachments.filter((a: any) => a.type === 'image');
 
         if (mediaAttachments.length > 0) {
           const ctxLines = mediaAttachments.map((a: any) => {
@@ -2031,7 +2134,7 @@ router.post("/agent/chat", async (req, res) => {
       if (streamErr) throw streamErr;
 
       let fullText = "";
-      const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
+      const functionCalls: Array<{ id?: string; name: string; args: Record<string, any> }> = [];
       // ⚠️ rawFcParts preserves thought_signature — Gemini API REQUIRES this
       // to be passed back in history when thinking is active. Dropping it
       // causes INVALID_ARGUMENT: "Function call is missing a thought_signature".
@@ -2052,7 +2155,7 @@ router.post("/agent/chat", async (req, res) => {
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
           if (p.functionCall) {
-            functionCalls.push({ name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
+            functionCalls.push({ id: p.functionCall.id, name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
             rawFcParts.push(p);
           }
         }
@@ -2100,25 +2203,29 @@ router.post("/agent/chat", async (req, res) => {
       const toolResults: any[] = [];
       let iterationHadError = false;
       const preToolText = stripReasoningTags(fullText);
+      if (preToolText) {
+        sseEvent(res, {
+          type: "text_delta",
+          runId,
+          content: preToolText + "\n\n"
+        });
+      }
 
       const runToolCall = async (
         fcIndex: number,
-        fc: { name: string; args: Record<string, any> },
+        fc: { id?: string; name: string; args: Record<string, any> },
       ): Promise<{ index: number; response: any; hadError: boolean }> => {
         const toolId = randomUUID().slice(0, 8);
 
         sseEvent(res, { type: "tool_start", runId, toolId, name: fc.name, args: fc.args, ts: Date.now() });
         sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: "Tool execution started", level: "info" });
-        if (fcIndex === 0 && preToolText) {
-          sseEvent(res, { type: "tool_progress", runId, toolId, name: fc.name, message: preToolText });
-        }
 
         let toolResult: any;
         let toolArtifact: object | undefined;
         let hadError = false;
 
         try {
-          const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected, toolId);
+          const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected, toolId, runId);
           toolResult = result;
           toolArtifact = artifact;
           hadError = Boolean(toolResult?.error);
@@ -2134,7 +2241,7 @@ router.post("/agent/chat", async (req, res) => {
 
         return {
           index: fcIndex,
-          response: { functionResponse: { name: fc.name, response: { result: toolResult } } },
+          response: { functionResponse: { id: fc.id, name: fc.name, response: { result: toolResult } } },
           hadError,
         };
       };
