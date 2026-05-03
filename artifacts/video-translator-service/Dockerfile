@@ -70,10 +70,17 @@ RUN pip install --no-cache-dir modelscope==1.18.1
 RUN pip install --no-cache-dir pyopenjtalk==0.3.4 || true
 RUN pip install --no-cache-dir onnxruntime-gpu==1.18.1 || true
 RUN pip install --no-cache-dir \
+    "einops==0.8.0" \
+    "gdown==5.1.0" \
     "hydra-core==1.3.2" \
     "hyperpyyaml==1.2.3" \
     "lightning==2.2.4" \
+    "matplotlib==3.7.5" \
+    "phonemizer==3.3.0" \
+    "rich==13.7.1" \
     "ruamel.yaml>=0.17.28,<0.18.0" \
+    "Unidecode==1.3.8" \
+    "wget==3.2" \
     "x-transformers==2.11.24"
 
 # ── Pre-download CosyVoice model weights into ModelScope cache ────────────────

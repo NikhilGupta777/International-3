@@ -611,7 +611,9 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
     except importlib.metadata.PackageNotFoundError:
         version = ""
     hydra_available = importlib.util.find_spec("hydra") is not None
+    einops_available = importlib.util.find_spec("einops") is not None
     lightning_available = importlib.util.find_spec("lightning") is not None
+    rich_available = importlib.util.find_spec("rich") is not None
     x_transformers_available = importlib.util.find_spec("x_transformers") is not None
 
     def _major_minor(raw: str) -> tuple[int, int]:
@@ -624,17 +626,21 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
     if (
         version
         and _major_minor(version) < (0, 18)
+        and einops_available
         and hydra_available
         and lightning_available
+        and rich_available
         and x_transformers_available
     ):
         return
 
     log.warning(
-        "[CosyVoice] Incompatible deps detected; ruamel.yaml=%s hydra=%s lightning=%s x_transformers=%s. Installing compatible pins.",
+        "[CosyVoice] Incompatible deps detected; ruamel.yaml=%s einops=%s hydra=%s lightning=%s rich=%s x_transformers=%s. Installing compatible pins.",
         version or "missing",
+        "present" if einops_available else "missing",
         "present" if hydra_available else "missing",
         "present" if lightning_available else "missing",
+        "present" if rich_available else "missing",
         "present" if x_transformers_available else "missing",
     )
     result = subprocess.run(
@@ -645,10 +651,17 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
             "install",
             "--quiet",
             "--prefer-binary",
+            "einops==0.8.0",
+            "gdown==5.1.0",
             "hydra-core==1.3.2",
             "hyperpyyaml==1.2.3",
             "lightning==2.2.4",
+            "matplotlib==3.7.5",
+            "phonemizer==3.3.0",
+            "rich==13.7.1",
             "ruamel.yaml>=0.17.28,<0.18.0",
+            "Unidecode==1.3.8",
+            "wget==3.2",
             "x-transformers==2.11.24",
         ],
         check=False,
