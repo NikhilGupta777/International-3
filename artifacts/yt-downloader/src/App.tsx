@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Home, { type AuthFeatures, type AuthUser } from "@/pages/Home";
 import NotFound from "@/pages/not-found";
 import { cn } from "@/lib/utils";
+import { InstallBanner } from "@/components/InstallBanner";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -346,6 +347,7 @@ function App() {
             </AuthOverlay>
           )}
         </div>
+        <InstallBanner />
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

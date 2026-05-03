@@ -4156,3 +4156,197 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
     width: 100%;
   }
 }
+
+/* ── PWA Install Banner ─────────────────────────────────────────────────── */
+.install-banner-root {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  padding: 12px 16px;
+  pointer-events: none;
+
+  /* Slide-up entrance animation */
+  animation: installBannerIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes installBannerIn {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.install-banner-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 14px 16px;
+  pointer-events: all;
+
+  /* Glassmorphism dark card */
+  background: rgba(14, 14, 18, 0.90);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.05) inset,
+    0 -4px 40px rgba(0, 0, 0, 0.55),
+    0 8px 32px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+}
+
+.install-banner-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.install-banner-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+}
+
+.install-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.install-banner-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.95);
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+
+.install-banner-subtitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.48);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.install-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.install-banner-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 700;
+  transition: opacity 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+
+.install-banner-btn:active {
+  transform: scale(0.96);
+}
+
+.install-banner-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* Primary CTA — purple accent to match the app theme */
+.install-banner-btn--primary {
+  padding: 0 16px;
+  height: 38px;
+  font-size: 13px;
+  color: #fff;
+  background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);
+  box-shadow:
+    0 0 0 1px rgba(124, 58, 237, 0.45),
+    0 4px 16px rgba(109, 40, 217, 0.45);
+}
+
+.install-banner-btn--primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+  box-shadow:
+    0 0 0 1px rgba(139, 92, 246, 0.5),
+    0 4px 20px rgba(109, 40, 217, 0.55);
+}
+
+/* Ghost dismiss button */
+.install-banner-btn--ghost {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 9px;
+  font-size: 12px;
+}
+
+.install-banner-btn--ghost:hover {
+  color: rgba(255, 255, 255, 0.8);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* Loading spinner inside button */
+.install-banner-spinner {
+  width: 15px;
+  height: 15px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: installSpinner 0.6s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes installSpinner {
+  to { transform: rotate(360deg); }
+}
+
+/* Responsive — stack on very small screens */
+@media (max-width: 460px) {
+  .install-banner-root {
+    padding: 10px 10px 14px;
+  }
+
+  .install-banner-inner {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 14px;
+  }
+
+  .install-banner-info {
+    flex: 1 1 100%;
+  }
+
+  .install-banner-actions {
+    flex: 1 1 100%;
+  }
+
+  .install-banner-btn--primary {
+    flex: 1;
+    justify-content: center;
+  }
+}
