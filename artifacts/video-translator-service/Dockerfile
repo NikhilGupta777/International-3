@@ -280,4 +280,15 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
 COPY worker.py runtime_deps.py ./
 
 # ── Entrypoint: one-shot CLI job ──────────────────────────────────────────────
-CMD ["python", "worker.py"]
+# CRITICAL: Clear the inherited NVIDIA entrypoint.
+# nvidia/cuda base images ship with ENTRYPOINT ["/opt/nvidia/nvidia_entrypoint.sh"].
+# That script does driver/CUDA compatibility checks and can exit(0) before ever
+# executing our CMD — making AWS Batch think the job succeeded while Python
+# never ran.  ENTRYPOINT [] wipes the inherited script so CMD runs directly.
+# NVIDIA_DISABLE_REQUIRE=1 skips the nvidia-smi driver requirement check that
+# would otherwise crash containers where the host driver version is mismatched.
+ENV NVIDIA_DISABLE_REQUIRE=1
+ENTRYPOINT []
+# -u = unbuffered stdout/stderr so every log line appears in CloudWatch
+# immediately rather than being held in Python's I/O buffer.
+CMD ["python", "-u", "worker.py"]

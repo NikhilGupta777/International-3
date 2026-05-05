@@ -1,4 +1,4 @@
-"""
+﻿"""
 AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -2011,6 +2011,13 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def main():
+    # ── Immediate DDB heartbeat ───────────────────────────────────────────────
+    # This is the FIRST thing main() does — before any imports, before work_dir,
+    # before the try block.  If Python actually started, the frontend will
+    # immediately update from "GPU instance starting..." to "Worker initialised."
+    # If this never fires, it proves the NVIDIA entrypoint exited before Python.
+    update_progress("STARTING", 1, "Worker process initialised. Python running...")
+
     log.info(f"=== Translator Worker starting. JobId={JOB_ID} ===")
     log.info(f"Target: {TARGET_LANG} ({TARGET_LANG_CODE}), LipSync={LIP_SYNC}, VoiceClone={VOICE_CLONE}")
 

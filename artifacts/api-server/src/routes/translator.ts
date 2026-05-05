@@ -322,7 +322,39 @@ async function syncTerminalBatchState(item: Record<string, any>): Promise<Record
   // ── Terminal states ───────────────────────────────────────────────────────
   if (!["FAILED", "SUCCEEDED"].includes(batchStatus)) return item;
 
-  const nextStatus = batchJob.status === "SUCCEEDED" ? "DONE" : "FAILED";
+  // "Trust but verify" — AWS Batch marks a container SUCCEEDED whenever
+  // the process exits with code 0.  The NVIDIA base image entrypoint can
+  // do exactly that before Python ever starts (driver compatibility check
+  // exits 0, Batch says SUCCEEDED, user sees "Complete!" with no output).
+  // We verify that output.mp4 actually exists in S3 and has real bytes
+  // before accepting SUCCEEDED as DONE.  If the file is missing we override
+  // to FAILED with a clear diagnostic message.
+  let nextStatus = batchJob.status === "SUCCEEDED" ? "DONE" : "FAILED";
+
+  if (nextStatus === "DONE") {
+    const jobId = item.jobId?.S ?? "";
+    const outputKey = `translator-jobs/${jobId}/output.mp4`;
+    try {
+      const head = await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: outputKey }));
+      const size = Number(head.ContentLength ?? 0);
+      if (!Number.isFinite(size) || size < 1024) {
+        // File missing (HeadObject would throw) or suspiciously tiny
+        nextStatus = "FAILED";
+        console.error(
+          `[Translator] Job ${jobId} Batch=SUCCEEDED but output.mp4 is ${size} bytes — ` +
+          "worker likely exited before producing output (NVIDIA entrypoint or early crash)."
+        );
+      }
+    } catch {
+      // HeadObject threw → file does not exist at all
+      nextStatus = "FAILED";
+      console.error(
+        `[Translator] Job ${jobId} Batch=SUCCEEDED but output.mp4 not found in S3 — ` +
+        "worker exited with code 0 but never wrote output (NVIDIA entrypoint or early crash)."
+      );
+    }
+  }
+
   const reason =
     batchJob.statusReason ||
     batchJob.attempts?.find((attempt) => attempt.statusReason)?.statusReason ||
@@ -330,9 +362,11 @@ async function syncTerminalBatchState(item: Record<string, any>): Promise<Record
   const step =
     nextStatus === "DONE"
       ? "Translation complete!"
-      : reason === "Job attempt duration exceeded timeout"
-        ? `Translation stopped after the ${Math.round(TRANSLATOR_BATCH_TIMEOUT_SECONDS / 60)} minute limit.`
-        : reason;
+      : nextStatus === "FAILED" && reason === "Translation complete."
+        ? "Worker exited successfully but produced no output — the process likely crashed before starting. Please retry."
+        : reason === "Job attempt duration exceeded timeout"
+          ? `Translation stopped after the ${Math.round(TRANSLATOR_BATCH_TIMEOUT_SECONDS / 60)} minute limit.`
+          : reason;
   const progress = nextStatus === "DONE" ? "100" : item.progress?.N ?? "0";
   const now = String(Date.now());
 

@@ -295,6 +295,10 @@ jobs:
             --arg img "$TRANSLATOR_URI" \
             'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
              .containerProperties.image = $img |
+             # Explicitly set command so ENTRYPOINT [] + python -u is always baked in.
+             # Without this, the old command from the previous definition is preserved,
+             # meaning a rollback could silently restore the broken entrypoint behaviour.
+             .containerProperties.command = ["python", "-u", "worker.py"] |
              .timeout = {"attemptDurationSeconds": 3000} |
              (.containerProperties.resourceRequirements[] | select(.type == "MEMORY").value) = "15000" |
              (.containerProperties.resourceRequirements[] | select(.type == "GPU").value) = "1"')
