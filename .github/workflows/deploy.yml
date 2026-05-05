@@ -676,34 +676,59 @@ jobs:
           ACCOUNT="${{ env.AWS_ACCOUNT_ID }}"
           REGION="${{ env.AWS_REGION }}"
 
-          # User-data: pull the translator image then signal done via a tag
-          USER_DATA=$(cat <<UDEOF | base64 -w 0
-          #!/bin/bash
-          set -e
-          # Give ECS agent time to start
-          sleep 15
-          # Login to ECR
-          aws ecr get-login-password --region ${REGION} | \
-            docker login --username AWS --password-stdin ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com
-          # Pre-pull translator image (the big one)
-          docker pull ${TRANSLATOR_IMAGE}
-          # Configure ECS prefer-cached so future runs reuse this layer cache
-          echo "ECS_IMAGE_PULL_BEHAVIOR=prefer-cached" >> /etc/ecs/ecs.config
-          echo "ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=24h" >> /etc/ecs/ecs.config
-          # Signal completion by tagging the instance
-          INSTANCE_ID=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-          aws ec2 create-tags --region ${REGION} \
-            --resources \$INSTANCE_ID \
-            --tags Key=ami-build-status,Value=ready
-          UDEOF
+          # User-data: pull the translator image then signal done via a tag.
+          # KEY FIXES vs naive approach:
+          #   1. export PATH — cloud-init runs with a minimal PATH; aws CLI lives
+          #      at /usr/local/bin which is not in the default cloud-init PATH.
+          #   2. amazon-ecr-credential-helper — installs via yum (available on
+          #      Amazon Linux 2 ECS AMI), uses the instance IAM role automatically.
+          #      This avoids calling `aws ecr get-login-password` which needs the
+          #      CLI to be on PATH at the moment cloud-init runs (before /usr/local
+          #      is fully initialised).
+          #   3. yum install aws-cli — fallback for the tag-creation step which
+          #      needs the CLI.
+          USER_DATA=$(cat <<'UDEOF' | base64 -w 0
+#!/bin/bash
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+set -e
+echo "[AMI] Installing ECR credential helper..."
+yum install -y amazon-ecr-credential-helper 2>/dev/null || true
+echo "[AMI] Configuring docker ECR helper..."
+mkdir -p /root/.docker
+printf '{"credHelpers":{"ACCOUNT.dkr.ecr.REGION.amazonaws.com":"ecr-login"}}' \
+  > /root/.docker/config.json
+sed -i "s/ACCOUNT/${ACCOUNT}/g; s/REGION/${REGION}/g" /root/.docker/config.json
+echo "[AMI] Pulling TRANSLATOR_IMAGE ..."
+docker pull TRANSLATOR_IMAGE_PLACEHOLDER
+echo "[AMI] Pull complete."
+echo "ECS_IMAGE_PULL_BEHAVIOR=prefer-cached" >> /etc/ecs/ecs.config
+echo "ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=24h" >> /etc/ecs/ecs.config
+yum install -y aws-cli 2>/dev/null || true
+INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+aws ec2 create-tags --region REGION --resources "$INSTANCE_ID" \
+  --tags Key=ami-build-status,Value=ready
+echo "[AMI] Tagged as ready."
+UDEOF
           )
+
+          # Replace placeholders in the base64-decoded user-data
+          DECODED=$(echo "$USER_DATA" | base64 -d)
+          DECODED="${DECODED//ACCOUNT/${ACCOUNT}}"
+          DECODED="${DECODED//REGION/${REGION}}"
+          DECODED="${DECODED//TRANSLATOR_IMAGE_PLACEHOLDER/${TRANSLATOR_IMAGE}}"
+          USER_DATA=$(echo "$DECODED" | base64 -w 0)
+
+          # Use Spot instance to avoid the 4 vCPU On-Demand G-instance limit.
+          SPOT_OPTIONS='{"MarketType":"spot"}'
 
           INSTANCE_ID=$(aws ec2 run-instances \
             --image-id "${BASE_AMI}" \
             --instance-type g4dn.xlarge \
+            --instance-market-options "${SPOT_OPTIONS}" \
             --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
             --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
             --subnet-id subnet-0e39d7f64d803f4d6 \
+            --associate-public-ip-address \
             --user-data "${USER_DATA}" \
             --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ami-builder-translator},{Key=ami-build-status,Value=building}]" \
             --query "Instances[0].InstanceId" \
