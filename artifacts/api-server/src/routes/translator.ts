@@ -45,8 +45,12 @@ const router = Router();
 const REGION       = process.env.YOUTUBE_QUEUE_REGION ?? "us-east-1";
 const S3_BUCKET    = process.env.S3_BUCKET!;
 const DDB_TABLE    = process.env.YOUTUBE_QUEUE_JOB_TABLE!;
-const BATCH_QUEUE  = process.env.TRANSLATOR_BATCH_JOB_QUEUE!;
+const BATCH_QUEUE   = process.env.TRANSLATOR_BATCH_JOB_QUEUE!;
 const BATCH_JOB_DEF = process.env.TRANSLATOR_BATCH_JOB_DEFINITION!;
+// CPU Fargate queue — used for Neural Voice (no GPU) jobs.
+// Falls back to GPU queue if not configured.
+const CPU_BATCH_QUEUE   = process.env.TRANSLATOR_CPU_BATCH_JOB_QUEUE ?? "";
+const CPU_BATCH_JOB_DEF = process.env.TRANSLATOR_CPU_BATCH_JOB_DEFINITION ?? "";;
 const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? "";
 const GEMINI_KEY_2 = process.env.GEMINI_API_KEY_2 ?? "";
 const GEMINI_KEY_3 = process.env.GEMINI_API_KEY_3 ?? "";
@@ -396,11 +400,22 @@ function boolValue(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+function isCpuBatchCandidate(options: TranslatorOptions): boolean {
+  // Neural Voice jobs (no GPU): edge-tts dubbing on Fargate CPU.
+  // Requires TRANSLATOR_CPU_BATCH_JOB_QUEUE + TRANSLATOR_CPU_BATCH_JOB_DEFINITION.
+  // Falls back to GPU queue when CPU queue not configured (safe degradation).
+  return (
+    !options.voiceClone &&
+    !options.lipSync &&
+    Boolean(CPU_BATCH_QUEUE) &&
+    Boolean(CPU_BATCH_JOB_DEF)
+  );
+}
+
 function isLambdaFastCandidate(options: TranslatorOptions): boolean {
-  // Fast path: subtitle-only translation (no voice clone, no lip sync, no demucs,
-  // no multi-speaker diarization). Returns SRT + original video copy — much faster
-  // and cheaper than spinning up a GPU Batch job.
-  // Voice clone jobs always go to Batch regardless of other settings.
+  // Lambda subtitle-only path: only used when CPU Batch queue is not configured.
+  // When CPU queue IS configured, Neural Voice jobs go there for actual dubbing.
+  if (isCpuBatchCandidate(options)) return false;
   return (
     !options.voiceClone &&
     !options.lipSync &&
@@ -487,12 +502,21 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
   ];
 }
 
-async function submitTranslatorBatchJob(jobId: string, s3Key: string, options: TranslatorOptions): Promise<string> {
+async function submitTranslatorBatchJob(
+  jobId: string,
+  s3Key: string,
+  options: TranslatorOptions,
+  useCpuQueue = false,
+): Promise<string> {
+  const queue   = useCpuQueue ? CPU_BATCH_QUEUE   : BATCH_QUEUE;
+  const jobDef  = useCpuQueue ? CPU_BATCH_JOB_DEF : BATCH_JOB_DEF;
+  const runtime = useCpuQueue ? "batch-cpu"       : "batch";
+
   const batchResult = await batch.send(new SubmitJobCommand({
-    jobName:       `translator-${jobId.slice(0, 8)}`,
-    jobQueue:      BATCH_QUEUE,
-    jobDefinition: BATCH_JOB_DEF,
-    timeout:       { attemptDurationSeconds: TRANSLATOR_BATCH_TIMEOUT_SECONDS },
+    jobName:       `translator-${useCpuQueue ? "cpu-" : ""}${jobId.slice(0, 8)}`,
+    jobQueue:      queue,
+    jobDefinition: jobDef,
+    timeout:       { attemptDurationSeconds: useCpuQueue ? 1800 : TRANSLATOR_BATCH_TIMEOUT_SECONDS },
     containerOverrides: { environment: buildBatchEnvironment(jobId, s3Key, options) },
   }));
 
@@ -501,14 +525,14 @@ async function submitTranslatorBatchJob(jobId: string, s3Key: string, options: T
     Key: { jobId: { S: jobId } },
     UpdateExpression: "SET batchJobId = :batchJobId, timeoutSeconds = :timeoutSeconds, runtime = :runtime, updatedAt = :updatedAt",
     ExpressionAttributeValues: {
-      ":batchJobId": { S: String(batchResult.jobId) },
-      ":timeoutSeconds": { N: String(TRANSLATOR_BATCH_TIMEOUT_SECONDS) },
-      ":runtime": { S: "batch" },
-      ":updatedAt": { N: String(Date.now()) },
+      ":batchJobId":      { S: String(batchResult.jobId) },
+      ":timeoutSeconds":  { N: String(useCpuQueue ? 1800 : TRANSLATOR_BATCH_TIMEOUT_SECONDS) },
+      ":runtime":         { S: runtime },
+      ":updatedAt":       { N: String(Date.now()) },
     },
   }));
 
-  console.log(`[Translator] Submitted Batch job ${batchResult.jobId} for translator job ${jobId}`);
+  console.log(`[Translator] Submitted ${runtime} Batch job ${batchResult.jobId} for translator job ${jobId}`);
   return String(batchResult.jobId);
 }
 
@@ -992,11 +1016,22 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
 }
 
 async function startTranslatorJob(jobId: string, s3Key: string, options: TranslatorOptions): Promise<{ runtime: string; batchJobId?: string }> {
+  // Neural Voice (no GPU): route to CPU Fargate Batch queue for actual edge-tts dubbing.
+  // The CPU worker runs worker.py with VOICE_CLONE=false — uses edge-tts, no CosyVoice.
+  // Starts in ~30 seconds (Fargate), no cold start, 10× cheaper than GPU.
+  if (isCpuBatchCandidate(options)) {
+    const batchJobId = await submitTranslatorBatchJob(jobId, s3Key, options, true);
+    return { runtime: "batch-cpu", batchJobId };
+  }
+
+  // Subtitle-only Lambda fast path (fallback when CPU Batch not configured)
   if (isLambdaFastCandidate(options)) {
     void processLambdaFastTranslation(jobId, s3Key, options);
     return { runtime: "lambda-fast" };
   }
-  const batchJobId = await submitTranslatorBatchJob(jobId, s3Key, options);
+
+  // Clone Voice: GPU Batch queue
+  const batchJobId = await submitTranslatorBatchJob(jobId, s3Key, options, false);
   return { runtime: "batch", batchJobId };
 }
 

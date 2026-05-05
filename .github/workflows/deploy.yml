@@ -42,6 +42,7 @@ env:
   ECR_API_REPO: ytgrabber-green-api-lambda
   ECR_WORKER_REPO: ytgrabber-green-worker
   ECR_TRANSLATOR_REPO: ytgrabber-green-translator
+  ECR_TRANSLATOR_CPU_REPO: ytgrabber-green-translator-cpu
   CF_STACK_PREFIX: ytgrabber-green
   YTDLP_VERSION: "2026.03.17"
   SITE_DOMAIN_NAME: videomaking.in
@@ -345,12 +346,75 @@ jobs:
           echo "batch_job_def=${FULL}" >> "$GITHUB_OUTPUT"
           echo "ℹ️ Reusing existing translator job def: ${FULL}"
 
+  # ─── Job 3b: Build CPU translator image (Neural Voice / no-GPU path) ──────────
+  # Lightweight ~500 MB image: Python + edge-tts + ffmpeg — no CUDA, no CosyVoice.
+  # Runs on Fargate, starts in ~30 sec, 10× cheaper than GPU.
+  # Triggers: whenever Dockerfile.cpu, requirements.cpu.txt, or worker.py changes.
+  build-translator-cpu:
+    name: Build CPU Translator Image
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri:    ${{ steps.push.outputs.image_uri }}
+      batch_job_def: ${{ steps.register.outputs.batch_job_def }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build & push CPU translator image
+        id: push
+        run: |
+          TAG="${GITHUB_SHA::8}"
+          URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_CPU_REPO }}:${TAG}"
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false --sbom=false \
+            -f artifacts/video-translator-service/Dockerfile.cpu \
+            -t "$URI" \
+            --cache-from type=gha,scope=translator-cpu-image \
+            --cache-to type=gha,mode=max,scope=translator-cpu-image \
+            --push artifacts/video-translator-service/
+          echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
+          echo "✅ CPU translator image: ${URI}"
+
+      - name: Register CPU Batch job definition (Fargate)
+        id: register
+        run: |
+          CPU_URI="${{ steps.push.outputs.image_uri }}"
+          EXEC_ROLE="arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/${{ env.CF_STACK_PREFIX }}-api-role"
+          CONTAINER_JSON=$(jq -n \
+            --arg img "$CPU_URI" \
+            --arg role "$EXEC_ROLE" \
+            '{image:$img,command:["python","worker.py"],jobRoleArn:$role,executionRoleArn:$role,
+              resourceRequirements:[{type:"VCPU",value:"2"},{type:"MEMORY",value:"8192"}],
+              environment:[{name:"VOICE_CLONE",value:"false"},{name:"LIP_SYNC",value:"false"},
+                           {name:"ALLOW_RUNTIME_MODEL_DOWNLOADS",value:"0"}],
+              networkConfiguration:{assignPublicIp:"ENABLED"}}')
+          RESULT=$(aws batch register-job-definition \
+            --job-definition-name "${{ env.CF_STACK_PREFIX }}-translator-cpu-job" \
+            --type container \
+            --platform-capabilities FARGATE \
+            --container-properties "$CONTAINER_JSON")
+          REV=$(echo "$RESULT" | jq -r '.revision')
+          DEF="${{ env.CF_STACK_PREFIX }}-translator-cpu-job:${REV}"
+          echo "batch_job_def=${DEF}" >> "$GITHUB_OUTPUT"
+          echo "✅ CPU Batch job def: ${DEF}"
+
   # ─── Job 4: Deploy full stack ─────────────────────────────────────────────────
   deploy:
     name: Deploy to AWS
     runs-on: ubuntu-latest
-    needs: [build-api, build-worker, build-translator, resolve-translator]
-    if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' && (needs.build-translator.result == 'success' || needs.build-translator.result == 'skipped') && (needs.build-translator.result == 'success' || needs.resolve-translator.result == 'success') }}
+    needs: [build-api, build-worker, build-translator, resolve-translator, build-translator-cpu]
+    if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' && (needs.build-translator.result == 'success' || needs.build-translator.result == 'skipped') && (needs.build-translator.result == 'success' || needs.resolve-translator.result == 'success') && needs.build-translator-cpu.result == 'success' }}
     # No environment gate — secrets are repo-level, no approval required
     steps:
       - uses: actions/checkout@v4
@@ -485,6 +549,10 @@ jobs:
           # Fail loudly on clone/lipsync failure — no silent fallback to neural voice.
           upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "false"
           upsert_env "TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK" "false"
+          # CPU Fargate queue for Neural Voice (no GPU) jobs — edge-tts dubbing.
+          # Starts in ~30 sec (Fargate), 10x cheaper than GPU.
+          upsert_env "TRANSLATOR_CPU_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-translator-cpu-queue"
+          upsert_env "TRANSLATOR_CPU_BATCH_JOB_DEFINITION" "${{ needs.build-translator-cpu.outputs.batch_job_def }}"
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.
@@ -511,7 +579,7 @@ jobs:
       - name: Apply ECR lifecycle policy to all repos
         run: |
           POLICY='{"rules":[{"rulePriority":1,"description":"Keep last 3 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}'
-          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }} malika-editor; do
+          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }} ${{ env.ECR_TRANSLATOR_CPU_REPO }} malika-editor; do
             aws ecr put-lifecycle-policy \
               --repository-name "$REPO" \
               --lifecycle-policy-text "$POLICY" \

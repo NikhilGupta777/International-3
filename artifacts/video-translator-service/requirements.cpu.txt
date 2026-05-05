@@ -1,0 +1,28 @@
+# CPU-only translator requirements
+# Used by Dockerfile.cpu for Neural Voice (edge-tts) jobs that don't need GPU.
+# No torch, no CosyVoice, no LatentSync, no modelscope.
+# Image size: ~500 MB vs ~20 GB for the full GPU image.
+
+# ── AWS / core ─────────────────────────────────────────────────────────────────
+boto3==1.34.162
+google-genai==1.73.0
+pydantic==2.10.6
+httpx==0.28.1
+python-dotenv==1.0.1
+
+# ── Transcription (AssemblyAI) ─────────────────────────────────────────────────
+assemblyai==0.30.0
+
+# ── Audio / video processing ───────────────────────────────────────────────────
+soundfile==0.12.1
+librosa==0.10.2.post1
+pydub==0.25.1
+numpy==1.26.4
+numba==0.59.1
+llvmlite==0.42.0
+ffmpeg-python==0.2.0
+scipy
+
+# ── TTS (Neural Voice — CPU only) ─────────────────────────────────────────────
+edge-tts==6.1.9
+gtts==2.5.0
