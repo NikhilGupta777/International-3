@@ -1321,7 +1321,7 @@ def synthesize_segments_cosyvoice(
                 _init_kw["load_jit"] = False
             if "load_trt" in _init_sig.parameters:
                 _init_kw["load_trt"] = False
-            model = _CosyVoice(str(model_path), **_init_kw)
+            model = _CosyVoice(model_dir=str(model_path), **_init_kw)
             break
         except Exception as e:
             last_err = e
