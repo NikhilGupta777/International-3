@@ -427,6 +427,9 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "MULTI_SPEAKER",     value: String(options.multiSpeaker) },
     { name: "ASR_MODEL",         value: options.asrModel },
     { name: "TRANSLATION_MODE",  value: options.translationMode },
+    // Allow overriding the exact Gemini model ID used for translation via Lambda env.
+    // Defaults to gemini-3.1-pro-preview in the worker when blank.
+    { name: "TRANSLATION_MODEL", value: process.env.TRANSLATION_MODEL ?? "" },
     { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
     { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
     { name: "ALLOW_VOICE_CLONE_FALLBACK", value: process.env.TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK ?? "false" },

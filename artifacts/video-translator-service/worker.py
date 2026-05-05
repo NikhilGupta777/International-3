@@ -1,4 +1,4 @@
-"""
+﻿"""
 AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -388,53 +388,111 @@ def transcribe(audio_path: Path) -> list[dict]:
         SOURCE_LANG_CODE = detected_code
     log.info(f"[AssemblyAI] Transcribed. Detected language: {detected_code or 'unknown'}")
 
-    # Group words into segments by pauses (>0.45s) or length (>8s)
-    words = transcript.words
-    if not words:
+    # ── Helper: build segments from a flat word list (single-speaker path) ──────
+    def _build_segments_from_words(word_list, speaker_label: Optional[str] = None) -> list[dict]:
+        if not word_list:
+            return []
+        segs: list[dict] = []
+        cur_words: list[dict] = []
+        seg_start_t = word_list[0].start / 1000.0
+
+        def flush(end_t):
+            nonlocal cur_words, seg_start_t
+            if not cur_words:
+                return
+            text = " ".join(w["word"] for w in cur_words).strip()
+            if text:
+                entry: dict = {
+                    "id": len(segs),
+                    "start": seg_start_t,
+                    "end": end_t,
+                    "text": text,
+                    "words": cur_words,
+                }
+                if speaker_label:
+                    entry["speaker"] = speaker_label
+                segs.append(entry)
+            cur_words = []
+
+        for w in word_list:
+            w_start = w.start / 1000.0
+            w_end   = w.end   / 1000.0
+            if cur_words:
+                prev_end = cur_words[-1]["end"]
+                gap = w_start - prev_end
+                dur = w_start - seg_start_t
+                if gap > 0.45 or dur > 8.0:
+                    flush(prev_end)
+                    seg_start_t = w_start
+            cur_words.append({"word": w.text, "start": w_start, "end": w_end})
+
+        if cur_words:
+            flush(cur_words[-1]["end"])
+        return segs
+
+    # ── Path A: multi-speaker via AssemblyAI utterances ───────────────────────
+    # When speaker_labels=True AssemblyAI returns utterances each tagged with a
+    # speaker letter ('A', 'B', ...).  Use these directly — this is far more
+    # accurate than the separate pyannote pass and requires no HF_TOKEN.
+    all_words = transcript.words or []
+    utterances = getattr(transcript, "utterances", None) or []
+
+    if MULTI_SPEAKER and utterances:
+        segments: list[dict] = []
+        for utt in utterances:
+            utt_start = utt.start / 1000.0
+            utt_end   = utt.end   / 1000.0
+            speaker   = f"SPEAKER_{utt.speaker}"  # 'A' → 'SPEAKER_A', etc.
+            text      = (utt.text or "").strip()
+            if not text:
+                continue
+
+            # Collect words that belong to this utterance time window
+            utt_words = [
+                {"word": w.text, "start": w.start / 1000.0, "end": w.end / 1000.0}
+                for w in all_words
+                if utt_start - 0.05 <= w.start / 1000.0 <= utt_end + 0.05
+            ]
+
+            # Split utterances longer than 10 s at natural pause boundaries
+            if utt_end - utt_start > 10.0 and utt_words:
+                # Build dummy Word-like objects the helper can use
+                class _FakeWord:
+                    def __init__(self, d):
+                        self.text  = d["word"]
+                        self.start = int(d["start"] * 1000)
+                        self.end   = int(d["end"]   * 1000)
+                sub = _build_segments_from_words(
+                    [_FakeWord(w) for w in utt_words], speaker_label=speaker
+                )
+                for s in sub:
+                    s["id"] = len(segments)
+                    segments.append(s)
+            else:
+                segments.append({
+                    "id":      len(segments),
+                    "start":   utt_start,
+                    "end":     utt_end,
+                    "text":    text,
+                    "speaker": speaker,
+                    "words":   utt_words,
+                })
+
+        if segments:
+            log.info(
+                f"[AssemblyAI] Built {len(segments)} speaker-labelled segments "
+                f"from utterances (speakers: "
+                f"{sorted({s['speaker'] for s in segments})})."
+            )
+            return segments
+        # If utterances yielded nothing, fall through to word-based path
+        log.warning("[AssemblyAI] Utterances were empty after filtering; falling back to word segmentation.")
+
+    # ── Path B: word-based segmentation (single-speaker / fallback) ──────────
+    if not all_words:
         return []
 
-    segments = []
-    current_seg_words = []
-    seg_start = words[0].start / 1000.0
-
-    def push_segment(end_time):
-        nonlocal current_seg_words, seg_start
-        if not current_seg_words: return
-        text = " ".join(w["word"] for w in current_seg_words).strip()
-        if text:
-            segments.append({
-                "id": len(segments),
-                "start": seg_start,
-                "end": end_time,
-                "text": text,
-                "words": current_seg_words
-            })
-        current_seg_words = []
-
-    for i, w in enumerate(words):
-        w_start = w.start / 1000.0
-        w_end = w.end / 1000.0
-        
-        # Check gap before this word
-        if current_seg_words:
-            prev_end = current_seg_words[-1]["end"]
-            gap = w_start - prev_end
-            dur = w_start - seg_start
-            
-            # Split if gap is large or segment is getting too long
-            if gap > 0.45 or dur > 8.0:
-                push_segment(prev_end)
-                seg_start = w_start
-        
-        current_seg_words.append({
-            "word": w.text,
-            "start": w_start,
-            "end": w_end
-        })
-        
-    if current_seg_words:
-        push_segment(current_seg_words[-1]["end"])
-
+    segments = _build_segments_from_words(all_words)
     log.info(f"[AssemblyAI] Grouped into {len(segments)} segments.")
     return segments
 
@@ -475,15 +533,25 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
 
         diarization = pipeline(str(audio_path))
 
-        # Tag each segment with its dominant speaker
+        # Tag each segment with its dominant speaker by maximum overlap,
+        # not just midpoint — handles speaker changes inside a segment correctly.
+        from collections import defaultdict as _dd
         for seg in segments:
-            mid = (seg["start"] + seg["end"]) / 2
-            speaker = "SPEAKER_00"
+            # Skip segments that already have a reliable speaker label from AssemblyAI
+            if seg.get("speaker") and seg["speaker"] != "SPEAKER_00":
+                continue
+            overlap_scores: dict = _dd(float)
             for turn, _, spk in diarization.itertracks(yield_label=True):
-                if turn.start <= mid <= turn.end:
-                    speaker = spk
-                    break
-            seg["speaker"] = speaker
+                overlap = max(
+                    0.0,
+                    min(seg["end"], turn.end) - max(seg["start"], turn.start),
+                )
+                if overlap > 0:
+                    overlap_scores[spk] += overlap
+            if overlap_scores:
+                seg["speaker"] = max(overlap_scores, key=overlap_scores.get)
+            elif "speaker" not in seg:
+                seg["speaker"] = "SPEAKER_00"
 
         del pipeline
         torch.cuda.empty_cache()
@@ -493,7 +561,97 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
     return segments
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 2c: Merge micro-segments for TTS quality
+# Stage 2c: Per-speaker voice reference extraction
+# ─────────────────────────────────────────────────────────────────────────────
+
+def extract_speaker_reference(
+    audio_path: Path,
+    segments: list[dict],
+    out_dir: Path,
+    max_ref_duration: float = 15.0,
+    min_segment_duration: float = 1.5,
+) -> dict:
+    """
+    Build one clean reference WAV per unique speaker from the source audio.
+    Returns {speaker_label: Path} — used by CosyVoice for per-speaker cloning.
+
+    Strategy: for each speaker, concatenate their longest clean segments
+    (up to max_ref_duration total).  Falls back to full audio if a speaker
+    has no sufficiently long segments.
+    """
+    import numpy as np
+    import soundfile as sf
+
+    speaker_refs: dict = {}
+
+    try:
+        full_audio, sr = sf.read(str(audio_path))
+        if full_audio.ndim > 1:
+            full_audio = full_audio.mean(axis=1)
+    except Exception as exc:
+        log.warning(f"[SpeakerRef] Could not read audio: {exc}")
+        return speaker_refs
+
+    # Group segments by speaker
+    speaker_map: dict = {}
+    for seg in segments:
+        spk = (seg.get("speaker") or "SPEAKER_00")
+        speaker_map.setdefault(spk, []).append(seg)
+
+    for spk, spk_segs in speaker_map.items():
+        # Sort by duration descending — pick longest clean clips first
+        by_dur = sorted(spk_segs, key=lambda s: s["end"] - s["start"], reverse=True)
+
+        clips: list = []
+        total_dur: float = 0.0
+        for seg in by_dur:
+            dur = seg["end"] - seg["start"]
+            if dur < min_segment_duration:
+                continue
+            clips.append(seg)
+            total_dur += dur
+            if total_dur >= max_ref_duration:
+                break
+
+        # Fallback: take any segment if none are long enough
+        if not clips:
+            clips = by_dur[:3]
+
+        if not clips:
+            log.warning(f"[SpeakerRef] No usable clips for {spk}; using full audio.")
+            speaker_refs[spk] = audio_path
+            continue
+
+        # Concatenate selected clips into one reference
+        chunks: list = []
+        for seg in clips:
+            s_idx = max(0, int(seg["start"] * sr))
+            e_idx = min(len(full_audio), int(seg["end"] * sr))
+            if e_idx > s_idx:
+                chunks.append(full_audio[s_idx:e_idx])
+
+        if not chunks:
+            log.warning(f"[SpeakerRef] Empty chunks for {spk}; using full audio.")
+            speaker_refs[spk] = audio_path
+            continue
+
+        ref_data = np.concatenate(chunks)
+        # Trim to max_ref_duration samples
+        ref_data = ref_data[: int(max_ref_duration * sr)]
+
+        ref_path = out_dir / f"speaker_ref_{spk}.wav"
+        sf.write(str(ref_path), ref_data, sr)
+        speaker_refs[spk] = ref_path
+        log.info(
+            f"[SpeakerRef] {spk}: {len(chunks)} clip(s), "
+            f"{len(ref_data)/sr:.1f}s reference → {ref_path.name}"
+        )
+
+    return speaker_refs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2d: Merge micro-segments for TTS quality
 # ─────────────────────────────────────────────────────────────────────────────
 
 def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
@@ -827,40 +985,59 @@ def _get_gemini_client():
     return genai.Client(api_key=key)
 
 def _gemini_model_for_mode(mode: str) -> str:
-    return {
-        "budget":  "gemini-3.1-flash-lite-preview",
-        "premium": "gemini-3.1-pro-preview",
-    }.get(mode, "gemini-3-flash-preview")
+    # Allow a hard override via env var (useful for A/B testing or cost control).
+    env_override = os.environ.get("TRANSLATION_MODEL", "").strip()
+    if env_override:
+        return env_override
+    # Always use Gemini 3.1 Pro for translation — the Pro model produces the
+    # most natural dubbing phrasing, correct acronym handling, and tts_text
+    # quality that Flash cannot reliably match.  'mode' is kept as a parameter
+    # for backward compatibility but is intentionally ignored here.
+    return "gemini-3.1-pro-preview"
 
 
 TRANSLATION_SYSTEM_PROMPT = """
 You are a professional dubbing translator for video voice-over.
 
-Your task is to translate speech segments into natural spoken dubbing text for TTS.
+Your task is to translate speech segments into natural spoken dubbing text for Text-To-Speech (TTS) engines.
 
 Core rules:
-1. Translate meaning, emotion, tone, and intent. Do not translate word-for-word.
+1. Translate meaning, emotion, tone, and intent — NOT word-for-word.
 2. Write speakable voice-over text, not subtitle fragments.
-3. Keep each translated_text close to the original segment duration.
-4. Do not output ellipses, filler dots, broken phrases, half-words, pronunciation hints, labels, brackets, or explanations.
-5. Every translated_text must be natural when spoken aloud and should end with punctuation.
+3. Keep each translation close to the original segment duration.
+4. Do NOT output ellipses, filler dots, broken phrases, half-words, pronunciation hints, labels, brackets, or explanations.
+5. Every translated_text and tts_text must be natural when spoken aloud and must end with punctuation.
 6. Preserve names, religious terms, cultural references, and important proper nouns accurately.
-7. If source text is mixed-language or contains a verse/quote, translate the meaning naturally. Do not transliterate unless the target language normally uses that word.
-8. If the source segment is a fragment, translate it as a complete natural spoken phrase using nearby context. Preserve meaning, but make the output speakable.
-9. Return ONLY valid JSON. No markdown, no commentary.
+7. If source text is mixed-language or contains a verse/quote, translate the meaning naturally.
+8. If the source segment is a fragment, translate it as a complete natural spoken phrase. Make output speakable.
+9. Return ONLY valid JSON. No markdown, no code fences, no commentary.
 
 Duration rules:
-- duration < 1.5s: use 1-3 short words only.
-- 1.5s-3s: use one short phrase.
-- 3s-6s: use one natural sentence.
-- 6s-8s: use one or two short sentences.
+- duration < 1.5s: 1-3 short words only.
+- 1.5s-3s: one short phrase.
+- 3s-6s: one natural sentence.
+- 6s-8s: one or two short sentences.
 Never write a long sentence for a short duration.
 
-Output exactly one object for every input segment:
+TTS pronunciation rules (CRITICAL — apply in the tts_text field):
+- Acronyms and abbreviations: NEVER write them as a single condensed word in tts_text.
+  Spell each letter out the way it would be spoken in the TARGET language script.
+  Examples for Hindi target: BJP → बी जे पी, RSS → आर एस एस, UP → यू पी, PM → पी एम.
+  Examples for English target: BJP → B J P, RSS → R S S.
+  Use the same letter-by-letter pattern for any ALL-CAPS abbreviation.
+- Do NOT keep English acronyms as raw uppercase letters (e.g. "BJP") in non-English tts_text.
+- Short numbers that appear alone: write as words in the target language.
+- Political party names, government body abbreviations: expand or properly transliterate.
+- Speaker names and proper nouns: keep them accurately transliterated; do not invent new spellings.
+- The translated_text field is for human-readable subtitles (may retain familiar abbreviations).
+  The tts_text field is for the TTS engine (always use the pronunciation-safe version).
+
+Output exactly one object per input segment:
 [
   {
     "id": <same segment_id>,
-    "translated_text": "<natural speakable translated text>",
+    "translated_text": "<human-readable subtitle text in target language>",
+    "tts_text": "<TTS-optimised text — acronyms spelled out, numbers as words>",
     "emotion": "<neutral|happy|sad|excited|serious|questioning>",
     "speaking_rate": <number from 0.9 to 1.2>
   }
@@ -951,11 +1128,11 @@ def translate_segments(segments: list[dict]) -> list[dict]:
             attempts += 1
             log.warning(f"[Gemini] Attempt {attempts} failed: {e}")
             if attempts >= 3:
-                # Retry with premium model on failure
-                if model != "gemini-3.1-pro-preview":
-                    log.info("[Gemini] Retrying with premium model...")
-                    model = "gemini-3.1-pro-preview"
-                    attempts = 0
+                # On persistent failure, rotate to a different API key and retry once.
+                # If already exhausted, raise.
+                if _gemini_key_idx < len(GEMINI_KEYS):
+                    log.info(f"[Gemini] Rotating key and retrying (key index {_gemini_key_idx})...")
+                    attempts = 0  # reset counter for fresh attempt with new key
                 else:
                     raise RuntimeError(f"Translation failed after all retries: {e}")
             time.sleep(2 ** attempts)
@@ -972,6 +1149,10 @@ def translate_segments(segments: list[dict]) -> list[dict]:
         if not translated and seg["text"].strip():
             raise RuntimeError(f"Missing translated_text for segment {seg['id']}")
         seg["translated_text"] = translated
+        # tts_text is the TTS-optimised version (acronyms spelled out, etc.).
+        # Fall back to translated_text if Gemini didn't return it.
+        tts_raw = str(t.get("tts_text", "")).strip()
+        seg["tts_text"] = tts_raw if tts_raw else translated
         seg["emotion"] = t.get("emotion", "neutral")
         seg["speaking_rate"] = max(0.9, min(1.2, float(t.get("speaking_rate", 1.0))))
 
@@ -1017,11 +1198,16 @@ GTTS_LANG_MAP = {
 
 
 def synthesize_segments_cosyvoice(
-    segments: list[dict], reference_audio: Path, out_dir: Path
+    segments: list[dict],
+    default_reference_audio: Path,
+    out_dir: Path,
+    speaker_refs: Optional[dict] = None,
 ) -> list[Path]:
     """
-    Zero-shot voice cloning via CosyVoice 3.0 (CosyVoice3-0.5B).
-    Each segment synthesised with the original speaker's voice in target lang.
+    Zero-shot / cross-lingual voice cloning via CosyVoice.
+    When speaker_refs is provided each speaker gets their own voice reference,
+    so a multi-speaker video is dubbed with the correct voice per speaker.
+    Falls back to default_reference_audio for any unknown speaker.
     """
     import torch
     import torchaudio
@@ -1040,9 +1226,6 @@ def synthesize_segments_cosyvoice(
     model = None
     last_err: Optional[Exception] = None
 
-    # Resolve the actual on-disk path from the ModelScope cache.
-    # CosyVoice2 constructor expects a directory path, NOT a ModelScope model ID.
-    # We check both the legacy and new cache layouts baked in by the Dockerfile.
     def _resolve_model_path(model_name: str) -> Optional[Path]:
         for root in [
             MODELSCOPE_CACHE / "hub" / "iic",
@@ -1059,7 +1242,6 @@ def synthesize_segments_cosyvoice(
         return None
 
     tried_model_paths: set[str] = set()
-    # Try v2 first (baked into Docker image), then v3 if ever added.
     for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
         model_path = _resolve_model_path(model_name)
         if model_path is None:
@@ -1081,128 +1263,183 @@ def synthesize_segments_cosyvoice(
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
 
-    # Prepare 16kHz mono reference clip (≤30 s)
-    ref_wav, ref_sr = torchaudio.load(str(reference_audio))
-    if ref_wav.shape[0] > 1:
-        ref_wav = ref_wav.mean(0, keepdim=True)
-    if ref_sr != 16000:
-        ref_wav = torchaudio.functional.resample(ref_wav, ref_sr, 16000)
-    ref_wav = ref_wav[:, : 16000 * 30]  # max 30 s reference
-    ref_prompt_path = out_dir / "cosyvoice_reference_16k.wav"
-    torchaudio.save(str(ref_prompt_path), ref_wav, 16000)
-
-    # ── Decide CosyVoice mode ──
-    # Cross-lingual: target language differs from source/reference — no prompt_text needed.
-    # Zero-shot:     same language — prompt_text must match the reference audio.
+    # ── Decide inference mode (cross-lingual vs zero-shot) ──────────────────
     is_cross_lingual = (
         bool(TARGET_LANG_CODE)
         and TARGET_LANG_CODE.lower() not in ("", "auto")
         and TARGET_LANG_CODE.lower() != SOURCE_LANG_CODE.lower()
     )
-    # Check if cross_lingual method is available on this model
     has_cross_lingual = hasattr(model, "inference_cross_lingual")
     use_cross_lingual = is_cross_lingual and has_cross_lingual
 
     if use_cross_lingual:
-        log.info(
-            f"[CosyVoice] Using CROSS-LINGUAL mode: "
-            f"source={SOURCE_LANG_CODE or 'auto'} -> target={TARGET_LANG_CODE}"
-        )
+        log.info(f"[CosyVoice] CROSS-LINGUAL: {SOURCE_LANG_CODE or 'auto'} → {TARGET_LANG_CODE}")
     else:
         if is_cross_lingual and not has_cross_lingual:
             log.warning(
-                "[CosyVoice] Cross-lingual dubbing needed but model lacks inference_cross_lingual. "
-                "Falling back to zero_shot (quality may be degraded)."
+                "[CosyVoice] Cross-lingual needed but model lacks inference_cross_lingual; "
+                "falling back to zero_shot."
             )
-        log.info(
-            f"[CosyVoice] Using ZERO-SHOT mode: "
-            f"source={SOURCE_LANG_CODE or 'auto'} target={TARGET_LANG_CODE}"
-        )
+        log.info(f"[CosyVoice] ZERO-SHOT: {SOURCE_LANG_CODE or 'auto'} → {TARGET_LANG_CODE}")
 
-    # ── Build prompt_text for zero-shot only ──
-    # prompt_text = transcription of what the reference audio is actually saying.
-    # Must be in the SAME language as the reference audio, NOT the translated text.
-    # For cross_lingual mode this is unused.
-    prompt_text = ""
+    # ── Pre-load per-speaker reference WAVs (cached by speaker label) ────────
+    # Each entry: speaker_label → (tensor[1,T], prompt_wav_file_path_str)
+    _ref_cache: dict = {}
+
+    def _load_ref(ref_path: Path, speaker: str):
+        key = str(ref_path.resolve())
+        if key in _ref_cache:
+            return _ref_cache[key]
+        rw, rs = torchaudio.load(str(ref_path))
+        if rw.shape[0] > 1:
+            rw = rw.mean(0, keepdim=True)
+        if rs != 16000:
+            rw = torchaudio.functional.resample(rw, rs, 16000)
+        rw = rw[:, : 16000 * 30]  # cap at 30 s
+        # Use a safe filename for the cached 16 kHz WAV
+        safe_spk = re.sub(r"[^A-Za-z0-9_\-]", "_", speaker)
+        fname = out_dir / f"ref_{safe_spk}_16k.wav"
+        torchaudio.save(str(fname), rw, 16000)
+        _ref_cache[key] = (rw, str(fname))
+        return rw, str(fname)
+
+    # Pre-warm default reference
+    default_ref_wav, default_ref_prompt_path = _load_ref(default_reference_audio, "default")
+
+    # Pre-warm per-speaker refs so load errors are caught before synthesis
+    if speaker_refs:
+        for spk, rp in speaker_refs.items():
+            try:
+                _load_ref(Path(rp), spk)
+                log.info(f"[CosyVoice] Pre-loaded reference for {spk}.")
+            except Exception as exc:
+                log.warning(f"[CosyVoice] Could not load speaker ref for {spk}: {exc}. "
+                            "Will use default reference.")
+
+    # ── Pre-compute per-speaker prompt_text for zero-shot mode ───────────────
+    # prompt_text must match what is SPOKEN in the reference audio for that speaker.
+    # Only needed for zero-shot (same source/target language).
+    global_prompt_text = ""
+    speaker_prompt_texts: dict = {}
     if not use_cross_lingual:
-        # Collect source text overlapping the first ~12s of reference audio
-        ref_seconds = 12.0
-        prompt_parts = []
+        # Global fallback: first 12 s of the recording
+        parts: list[str] = []
         for seg in segments:
-            if float(seg.get("start", 0)) < ref_seconds:
+            if float(seg.get("start", 0)) < 12.0:
                 src = str(seg.get("text", "")).strip()
                 if src:
-                    prompt_parts.append(src)
+                    parts.append(src)
             else:
                 break
-        prompt_text = normalize_tts_text(" ".join(prompt_parts))[:300]
-        if not prompt_text:
-            # Fallback: first non-empty segment
+        global_prompt_text = normalize_tts_text(" ".join(parts))[:300]
+        if not global_prompt_text:
             for seg in segments:
                 src = str(seg.get("text", "")).strip()
                 if src:
-                    prompt_text = normalize_tts_text(src[:200])
+                    global_prompt_text = normalize_tts_text(src[:200])
                     break
 
-    # ── Synthesize each segment ──
+        # Per-speaker: collect that speaker's source text from the first 12 s of their clips
+        from collections import defaultdict as _dd2
+        spk_segs: dict = _dd2(list)
+        for seg in segments:
+            spk_segs[seg.get("speaker") or "SPEAKER_00"].append(seg)
+        for spk, s_list in spk_segs.items():
+            p_parts: list[str] = []
+            total = 0.0
+            for s in sorted(s_list, key=lambda x: x["start"]):
+                txt = str(s.get("text", "")).strip()
+                if txt:
+                    p_parts.append(txt)
+                    total += s["end"] - s["start"]
+                    if total >= 12.0:
+                        break
+            pt = normalize_tts_text(" ".join(p_parts))[:300]
+            speaker_prompt_texts[spk] = pt or global_prompt_text
+
+    # ── Synthesize each segment ───────────────────────────────────────────────
     seg_audios: list[Path] = []
     total_segments = max(1, len(segments))
+
     for index, seg in enumerate(segments, start=1):
         update_progress(
             "CLONING",
             52 + int((index - 1) / total_segments * 7),
-            f"Cloning original voice ({index}/{total_segments})...",
+            f"Cloning voice ({index}/{total_segments})…",
         )
         out_path = out_dir / f"seg_{seg['id']:04d}.wav"
-        text = normalize_tts_text(seg["translated_text"])
-        if not text:
-            duration = seg["end"] - seg["start"]
-            run_ffmpeg("-f", "lavfi", "-i", f"anullsrc=r=24000:cl=mono",
-                       "-t", str(duration), str(out_path))
-        else:
-            try:
-                if use_cross_lingual:
-                    # ── Cross-lingual: tts_text + prompt_wav, NO prompt_text ──
-                    cl_params = inspect.signature(model.inference_cross_lingual).parameters
-                    cl_args: dict = {"tts_text": text, "stream": False}
-                    if "prompt_wav" in cl_params:
-                        cl_args["prompt_wav"] = str(ref_prompt_path)
-                    elif "prompt_speech_16k" in cl_params:
-                        cl_args["prompt_speech_16k"] = ref_wav
-                    else:
-                        supported = ", ".join(cl_params.keys())
-                        raise RuntimeError(f"Unsupported CosyVoice cross_lingual signature: {supported}")
-                    if "speed" in cl_params:
-                        cl_args["speed"] = 1.0
-                    chunks = list(model.inference_cross_lingual(**cl_args))
-                else:
-                    # ── Zero-shot: tts_text + prompt_text + prompt_wav ──
-                    zs_params = inspect.signature(model.inference_zero_shot).parameters
-                    zs_args: dict = {
-                        "tts_text": text,
-                        "prompt_text": prompt_text,
-                        "stream": False,
-                    }
-                    if "prompt_wav" in zs_params:
-                        zs_args["prompt_wav"] = str(ref_prompt_path)
-                    elif "prompt_speech_16k" in zs_params:
-                        zs_args["prompt_speech_16k"] = ref_wav
-                    else:
-                        supported = ", ".join(zs_params.keys())
-                        raise RuntimeError(f"Unsupported CosyVoice zero-shot signature: {supported}")
-                    if "speed" in zs_params:
-                        zs_args["speed"] = 1.0
-                    chunks = list(model.inference_zero_shot(**zs_args))
 
-                audio_data = torch.cat([c["tts_speech"] for c in chunks], dim=1)
-                # CosyVoice2 native sample rate is 24000 Hz
-                torchaudio.save(str(out_path), audio_data, 24000)
-            except Exception as e:
-                raise RuntimeError(
-                    f"CosyVoice failed for segment {seg['id']}: {e}"
-                ) from e
+        # Use tts_text (TTS-optimised) if Gemini produced it, else translated_text
+        text = normalize_tts_text(
+            seg.get("tts_text") or seg.get("translated_text") or ""
+        )
+
+        if not text:
+            duration = max(0.1, seg["end"] - seg["start"])
+            run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                       "-t", str(duration), str(out_path))
+            seg_audios.append(out_path)
+            continue
+
+        # Resolve which reference to use for this speaker
+        speaker = (seg.get("speaker") or "SPEAKER_00")
+        if speaker_refs and speaker in speaker_refs:
+            try:
+                seg_ref_wav, seg_ref_prompt_path = _load_ref(
+                    Path(speaker_refs[speaker]), speaker
+                )
+            except Exception:
+                seg_ref_wav, seg_ref_prompt_path = default_ref_wav, default_ref_prompt_path
+        else:
+            seg_ref_wav, seg_ref_prompt_path = default_ref_wav, default_ref_prompt_path
+
+        seg_prompt_text = speaker_prompt_texts.get(speaker, global_prompt_text)
+
+        try:
+            if use_cross_lingual:
+                cl_params = inspect.signature(model.inference_cross_lingual).parameters
+                cl_args: dict = {"tts_text": text, "stream": False}
+                if "prompt_wav" in cl_params:
+                    cl_args["prompt_wav"] = seg_ref_prompt_path
+                elif "prompt_speech_16k" in cl_params:
+                    cl_args["prompt_speech_16k"] = seg_ref_wav
+                else:
+                    raise RuntimeError(
+                        f"Unsupported CosyVoice cross_lingual signature: "
+                        f"{', '.join(cl_params.keys())}"
+                    )
+                if "speed" in cl_params:
+                    cl_args["speed"] = 1.0
+                chunks = list(model.inference_cross_lingual(**cl_args))
+            else:
+                zs_params = inspect.signature(model.inference_zero_shot).parameters
+                zs_args: dict = {
+                    "tts_text": text,
+                    "prompt_text": seg_prompt_text,
+                    "stream": False,
+                }
+                if "prompt_wav" in zs_params:
+                    zs_args["prompt_wav"] = seg_ref_prompt_path
+                elif "prompt_speech_16k" in zs_params:
+                    zs_args["prompt_speech_16k"] = seg_ref_wav
+                else:
+                    raise RuntimeError(
+                        f"Unsupported CosyVoice zero-shot signature: "
+                        f"{', '.join(zs_params.keys())}"
+                    )
+                if "speed" in zs_params:
+                    zs_args["speed"] = 1.0
+                chunks = list(model.inference_zero_shot(**zs_args))
+
+            audio_data = torch.cat([c["tts_speech"] for c in chunks], dim=1)
+            torchaudio.save(str(out_path), audio_data, 24000)  # CosyVoice native SR=24kHz
+        except Exception as exc:
+            raise RuntimeError(
+                f"CosyVoice failed for segment {seg['id']} speaker={speaker}: {exc}"
+            ) from exc
+
         seg_audios.append(out_path)
-        log.info(f"[CosyVoice] Segment {seg['id']}/{len(segments)} done.")
+        log.info(f"[CosyVoice] Seg {seg['id']}/{len(segments)} done (speaker={speaker}).")
 
     update_progress("CLONING", 59, "Voice cloning complete.")
     del model
@@ -1248,19 +1485,25 @@ def synthesize_silence_single(seg: dict, out_dir: Path) -> Path:
     run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(duration), str(out_path))
     return out_path
 
-def synthesize_all(segments: list[dict], reference_audio: Path, out_dir: Path) -> tuple[list[Path], bool]:
+def synthesize_all(
+    segments: list[dict],
+    reference_audio: Path,
+    out_dir: Path,
+    speaker_refs: Optional[dict] = None,
+) -> tuple[list[Path], bool]:
     """
-    Master TTS router: CosyVoice 3.0 -> edge-tts -> gTTS (auto-fallback at every level).
+    Master TTS router: CosyVoice -> edge-tts -> gTTS (auto-fallback at every level).
+    speaker_refs: {speaker_label: Path} for per-speaker voice cloning.
     Returns (seg_audio_paths, voice_was_cloned).
     """
     if VOICE_CLONE:
         try:
-            paths = synthesize_segments_cosyvoice(segments, reference_audio, out_dir)
+            paths = synthesize_segments_cosyvoice(
+                segments, reference_audio, out_dir, speaker_refs=speaker_refs
+            )
             log.info("[TTS] CosyVoice voice cloning succeeded.")
-            return paths, True  # ← clone succeeded
+            return paths, True
         except Exception as cv_err:
-            # AUTO-FALLBACK: CosyVoice unavailable (model not in image, CUDA OOM, etc.)
-            # Write warning to DynamoDB so frontend can show yellow alert instead of green tick.
             clone_fail_msg = f"Voice clone failed ({cv_err})."
             log.warning(f"[TTS] {clone_fail_msg}")
             if not ALLOW_VOICE_CLONE_FALLBACK:
@@ -1485,13 +1728,19 @@ def assemble_dubbed_audio(
             import librosa
             data = librosa.resample(data, orig_sr=sr, target_sr=SR)
 
+        # Truncate to segment duration so this segment's audio never bleeds
+        # into the next segment's slot and causes two voices to overlap.
+        max_seg_samples = max(1, int((seg["end"] - seg["start"]) * SR))
+        if len(data) > max_seg_samples:
+            data = data[:max_seg_samples]
+
         start_sample = max(0, int(seg["start"] * SR))
         end_sample = start_sample + len(data)
         if end_sample > len(mixed):
             mixed = np.pad(mixed, (0, end_sample - len(mixed)))
         mixed[start_sample:end_sample] += data
 
-    # Normalize dubbed audio
+    # Normalise dubbed voice track
     peak = np.abs(mixed).max()
     if peak > 0:
         mixed = mixed / peak * 0.9
@@ -1499,15 +1748,20 @@ def assemble_dubbed_audio(
     dubbed_path = out_dir / "dubbed_voice.wav"
     sf.write(str(dubbed_path), mixed, SR)
 
-    # Mix with background music if Demucs was used
+    # Mix with background music when Demucs separated it.
+    # loudnorm normalises both tracks to broadcast levels before mixing.
     if background_audio and background_audio.exists():
-        log.info("[Assemble] Mixing with background audio...")
+        log.info("[Assemble] Mixing dubbed voice with background (loudness-normalised)...")
         final_mix = out_dir / "dubbed_final_mix.wav"
         run_ffmpeg(
             "-i", str(dubbed_path),
             "-i", str(background_audio),
             "-filter_complex",
-            "[0]volume=1.0[v];[1]volume=0.4[b];[v][b]amix=inputs=2:duration=first:dropout_transition=0[out]",
+            (
+                "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11[v];"
+                "[1:a]loudnorm=I=-28:TP=-2:LRA=14[b];"
+                "[v][b]amix=inputs=2:duration=first:dropout_transition=0[out]"
+            ),
             "-map", "[out]",
             "-ar", str(SR),
             str(final_mix),
@@ -1553,9 +1807,13 @@ def mux_final_video(
     video_path: Path,
     audio_path: Path,
     out_path: Path,
+    video_duration: Optional[float] = None,
 ):
-    """Combine original video stream with new dubbed audio."""
-    run_ffmpeg(
+    """Combine original video stream with new dubbed audio.
+    video_duration: explicit -t trim prevents tail clipping when dubbed audio
+    is slightly longer than the source video.
+    """
+    ffmpeg_args = [
         "-i", str(video_path),
         "-i", str(audio_path),
         "-c:v", "copy",
@@ -1563,9 +1821,15 @@ def mux_final_video(
         "-b:a", "192k",
         "-map", "0:v:0",
         "-map", "1:a:0",
-        "-shortest",
-        str(out_path),
-    )
+    ]
+    if video_duration is not None:
+        # Explicit duration is safer than -shortest; prevents single-frame
+        # tail clips when dubbed audio is fractionally longer than the video.
+        ffmpeg_args.extend(["-t", str(round(video_duration, 3))])
+    else:
+        ffmpeg_args.append("-shortest")
+    ffmpeg_args.append(str(out_path))
+    run_ffmpeg(*ffmpeg_args)
     log.info(f"[Mux] Final video: {out_path}")
 
 
@@ -1659,20 +1923,41 @@ def main():
         segments = translate_segments(segments)
         update_progress("TRANSLATING", 48, f"Translation complete. Generating voice...")
 
-        # â”€â”€ 7. Voice synthesis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # -- 7. Extract per-speaker voice references (when voice cloning + multiple speakers) -
+        speaker_refs: dict = {}
+        if VOICE_CLONE:
+            unique_speakers = {seg.get("speaker") or "SPEAKER_00" for seg in segments}
+            if len(unique_speakers) > 1:
+                update_progress("CLONING", 50, "Extracting per-speaker voice references...")
+                try:
+                    speaker_refs = extract_speaker_reference(
+                        transcription_audio, segments, work_dir
+                    )
+                    log.info(
+                        f"[Main] Per-speaker refs: "
+                        f"{list(speaker_refs.keys())}"
+                    )
+                except Exception as sr_err:
+                    log.warning(
+                        f"[Main] Speaker reference extraction failed: {sr_err}. "
+                        "Using single shared reference for all speakers."
+                    )
+
+        # -- 7b. Voice synthesis -----------------------------------------------
         voice_message = "Cloning original voice..." if VOICE_CLONE else "Generating neural voice..."
         update_progress("CLONING", 52, voice_message)
         seg_dir = work_dir / "segments"
         seg_dir.mkdir()
-        seg_audio_paths, voice_was_cloned = synthesize_all(segments, transcription_audio, seg_dir)
+        seg_audio_paths, voice_was_cloned = synthesize_all(
+            segments, transcription_audio, seg_dir, speaker_refs=speaker_refs
+        )
 
-        # Report actual voice mode used (may differ from what user requested if clone failed)
         if VOICE_CLONE and not voice_was_cloned:
-            log.warning("[Main] Voice clone was requested but CosyVoice fell back to edge-tts.")
+            log.warning("[Main] Voice clone requested but CosyVoice fell back to edge-tts.")
         elif voice_was_cloned:
-            log.info("[Main] Voice cloning successful — CosyVoice used.")
+            log.info("[Main] Voice cloning successful -- CosyVoice used.")
 
-        # â”€â”€ 7b. Timing fit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # -- 7c. Timing fit ----------------------------------------------------
         update_progress("CLONING", 60, "Fitting audio timing to video...")
         fitted_paths = []
         for seg, audio_path in zip(segments, seg_audio_paths):
@@ -1680,13 +1965,13 @@ def main():
             fitted = fit_audio_to_duration(audio_path, target_dur, seg_dir)
             fitted_paths.append(fitted)
 
-        # â”€â”€ 8. Assemble dubbed audio track â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # -- 8. Assemble dubbed audio track ------------------------------------
         update_progress("CLONING", 65, "Assembling dubbed audio track...")
         dubbed_audio = assemble_dubbed_audio(
             segments, fitted_paths, video_duration, work_dir, background_audio
         )
 
-        # â”€â”€ 9. Lip sync (optional) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # -- 9. Lip sync (optional) --------------------------------------------
         final_video_path = work_dir / "output.mp4"
         lip_sync_applied = False
 
@@ -1696,18 +1981,16 @@ def main():
             lip_dir.mkdir()
             lipsync_video = run_lipsync(video_path, dubbed_audio, lip_dir)
             if lipsync_video is not None:
-                # Lipsync output has dubbed audio baked in — just copy
                 shutil.copy(lipsync_video, final_video_path)
                 lip_sync_applied = True
                 update_progress("LIPSYNC", 82, "Lip sync complete.")
             else:
-                # Lipsync failed gracefully — mux dubbed audio into original video
                 log.warning("[Main] Lip sync failed, muxing dubbed audio without lip sync.")
                 update_progress("MERGING", 78, "Merging video and dubbed audio (no lip sync)...")
-                mux_final_video(video_path, dubbed_audio, final_video_path)
+                mux_final_video(video_path, dubbed_audio, final_video_path, video_duration=video_duration)
         else:
             update_progress("MERGING", 78, "Merging video and dubbed audio...")
-            mux_final_video(video_path, dubbed_audio, final_video_path)
+            mux_final_video(video_path, dubbed_audio, final_video_path, video_duration=video_duration)
 
         # â”€â”€ 10. Generate SRT and transcript â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("MERGING", 88, "Generating subtitles...")

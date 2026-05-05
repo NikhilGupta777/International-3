@@ -546,6 +546,7 @@ export default function VideoTranslator() {
       if (!uploadRes.ok) throw new Error("S3 upload failed");
 
       // Step 3: Submit Batch job
+      const isVoiceClone = voiceStyle === "original";
       const submitRes = await fetch(`${API}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...translatorAuthHeaders() },
@@ -556,9 +557,12 @@ export default function VideoTranslator() {
           targetLang: TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
           targetLangCode: tgtLang,
           sourceLang: srcLang,
-          voiceClone: voiceStyle === "original",
+          voiceClone: isVoiceClone,
           lipSync,
           lipSyncQuality: "latentsync",
+          // Enable speaker diarization automatically when voice cloning so each
+          // speaker in the video gets their own cloned voice reference.
+          multiSpeaker: isVoiceClone,
         }),
       });
       if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");
