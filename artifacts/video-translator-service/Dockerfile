@@ -240,6 +240,32 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
       echo "Skipping LatentSync checkpoint download during Docker build"; \
     fi && rm -f /tmp/download_latentsync.py
 
+# ── Pre-download VAE used by LatentSync at inference time (~330 MB) ──────────
+# LatentSync inference.py calls AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").
+# Pre-baking it into the image means every translation job doesn't pay a 330 MB
+# HuggingFace download on cold start and avoids failures if the network is slow.
+COPY <<'PY' /tmp/download_vae.py
+import os, sys
+sys.path.insert(0, "/model-cache/CosyVoice")
+sys.path.insert(0, "/model-cache/CosyVoice/third_party/Matcha-TTS")
+os.environ.setdefault("HF_HOME", "/model-cache/huggingface")
+from diffusers import AutoencoderKL
+import torch
+print("[VAE] Downloading stabilityai/sd-vae-ft-mse ...")
+vae = AutoencoderKL.from_pretrained(
+    "stabilityai/sd-vae-ft-mse",
+    torch_dtype=torch.float32,
+    cache_dir="/model-cache/huggingface",
+)
+print(f"[VAE] Downloaded OK — config: {vae.config.scaling_factor}")
+del vae
+PY
+RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      python /tmp/download_vae.py; \
+    else \
+      echo "Skipping VAE pre-download during Docker build"; \
+    fi && rm -f /tmp/download_vae.py
+
 # ── Copy worker script ────────────────────────────────────────────────────────
 COPY worker.py runtime_deps.py ./
 

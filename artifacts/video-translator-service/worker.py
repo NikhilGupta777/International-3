@@ -34,6 +34,7 @@ import subprocess
 import math
 import base64
 import inspect
+import threading
 import importlib.metadata
 import importlib.util
 from pathlib import Path
@@ -1597,7 +1598,10 @@ def _ensure_latentsync_checkpoint(ckpt_dir: Path) -> Path:
 
 
 def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """LatentSync 1.6 â€” best quality lip sync (diffusion-based, 512Ã—512)."""
+    """LatentSync — diffusion-based lip sync.
+    Defaults to 256x256 (stage2.yaml) which fits on a T4 GPU (16 GB VRAM).
+    Set LIP_SYNC_QUALITY="latentsync_hq" for 512x512 (needs 24 GB+ VRAM).
+    """
     out_path = out_dir / "latentsync_output.mp4"
     ls_dir = MODEL_CACHE_DIR / "LatentSync"
 
@@ -1607,7 +1611,7 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
             "Translator image is missing preloaded model dependencies."
         )
 
-    # Install LatentSync deps lazily on first run (not in CI build to keep image fast)
+    # Install LatentSync runtime deps on first job (lazily, not in CI build)
     _latentsync_deps_flag = ls_dir / ".deps_installed"
     if not _latentsync_deps_flag.exists():
         log.info("[LatentSync] Installing runtime deps (first run only)...")
@@ -1623,28 +1627,40 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
         if result.returncode != 0:
             raise RuntimeError(
                 "LatentSync runtime dependency install failed. "
-                f"pip stderr:\n{result.stderr[-2000:]}"
+                f"pip stderr:\n{result.stderr[-3000:]}"
             )
         _latentsync_deps_flag.touch()
 
-    # Checkpoint is pre-downloaded into the Docker image at build time.
-    # HF_HUB_OFFLINE=1 is set at runtime — network downloads will fail.
-    # If the checkpoint is missing, the image must be rebuilt.
-    ckpt_dir = ls_dir / "checkpoints"
+    # Verify checkpoint files
+    ckpt_dir  = ls_dir / "checkpoints"
     ckpt_path = _ensure_latentsync_checkpoint(ckpt_dir)
     if not ckpt_path.exists():
         raise RuntimeError(
             f"LatentSync checkpoint not found at {ckpt_path}. "
-            "Rebuild the Docker image — the build-time checkpoint download step failed."
+            "Rebuild the Docker image."
         )
-
-    ls_whisper = ls_dir / "checkpoints" / "whisper" / "tiny.pt"
+    ls_whisper = ckpt_dir / "whisper" / "tiny.pt"
     if not ls_whisper.exists():
         raise RuntimeError(
-            f"LatentSync whisper model missing at {ls_whisper}. "
+            f"LatentSync whisper/tiny.pt missing at {ls_whisper}. "
             "Rebuild the Docker image."
         )
 
+    # Choose resolution config based on quality setting.
+    # stage2_512.yaml = 512x512 (official recommended, needs ~18-24 GB VRAM)
+    # stage2.yaml     = 256x256 (T4-compatible, 16 GB VRAM sufficient)
+    if LIP_SYNC_QUALITY in ("latentsync_hq", "hq", "512"):
+        config_file = "configs/unet/stage2_512.yaml"
+        log.info("[LatentSync] 512x512 HQ mode (requires 24 GB+ VRAM)")
+    else:
+        config_file = "configs/unet/stage2.yaml"
+        log.info("[LatentSync] 256x256 standard mode (T4 / 16 GB VRAM compatible)")
+
+    # Per-job isolated temp dir — auto-cleaned with the job work_dir
+    temp_dir = out_dir / "latentsync_temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Prepend LatentSync repo to PYTHONPATH so its internal imports resolve
     latentsync_env = os.environ.copy()
     existing_pythonpath = latentsync_env.get("PYTHONPATH", "")
     latentsync_env["PYTHONPATH"] = (
@@ -1653,23 +1669,71 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
         else f"{ls_dir}{os.pathsep}{existing_pythonpath}"
     )
 
-    result = subprocess.run([
-        sys.executable, "scripts/inference.py",
-        "--unet_config", "configs/unet/stage2.yaml",
-        "--inference_ckpt", str(ckpt_path),
-        "--video_path", str(video_path),
-        "--audio_path", str(dubbed_audio),
-        "--video_out_path", str(out_path),
-    ], capture_output=True, text=True, cwd=str(ls_dir), env=latentsync_env)
+    # Background thread that ticks DynamoDB progress every 30 s while
+    # LatentSync runs, so the frontend shows elapsed time instead of freezing.
+    stop_event = threading.Event()
+    def _progress_updater():
+        start = time.monotonic()
+        while not stop_event.is_set():
+            elapsed = int(time.monotonic() - start)
+            m, s = divmod(elapsed, 60)
+            # Creep from 70 % to 81 % over the run (82 % is marked complete)
+            pct = min(81, 70 + int(elapsed / 45))
+            update_progress(
+                "LIPSYNC", pct,
+                f"Lip sync running... {m}m {s:02d}s elapsed"
+            )
+            stop_event.wait(30)
+    progress_thread = threading.Thread(target=_progress_updater, daemon=True)
+    progress_thread.start()
+
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, "scripts/inference.py",
+                # FIXED: correct argparse argument names (--unet_config and
+                # --inference_ckpt would be silently ignored / raise errors)
+                "--unet_config_path",   config_file,
+                "--inference_ckpt_path", str(ckpt_path),
+                "--inference_steps",    "20",
+                "--guidance_scale",     "1.5",   # official inference.sh value
+                "--enable_deepcache",            # ~2-3x faster, minimal quality loss
+                "--temp_dir",           str(temp_dir),  # per-job, cleaned with work_dir
+                "--video_path",         str(video_path),
+                "--audio_path",         str(dubbed_audio),
+                "--video_out_path",     str(out_path),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(ls_dir),
+            env=latentsync_env,
+            timeout=4500,  # 75-minute hard stop prevents hanging jobs
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            "LatentSync timed out after 75 minutes. "
+            "Consider disabling lip sync for very long videos."
+        )
+    finally:
+        stop_event.set()
+        progress_thread.join(timeout=2)
+
+    # Always emit stderr to CloudWatch for post-job debugging
+    if result.stderr.strip():
+        log.info(f"[LatentSync] stderr (last 3000 chars):\n{result.stderr[-3000:]}")
 
     if result.returncode != 0:
-        raise RuntimeError(f"LatentSync failed:\n{result.stderr[-1500:]}")
+        raise RuntimeError(
+            f"LatentSync failed (exit {result.returncode}):\n"
+            f"{result.stderr[-4000:]}"
+        )
     if not out_path.exists():
-        raise FileNotFoundError("LatentSync did not produce output file")
-    log.info(f"[LatentSync] Done â†’ {out_path}")
+        raise FileNotFoundError(
+            f"LatentSync exited 0 but produced no output at {out_path}. "
+            f"stdout: {result.stdout[-1000:]}"
+        )
+    log.info(f"[LatentSync] Done => {out_path}")
     return out_path
-
-
 
 def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Optional[Path]:
     """
