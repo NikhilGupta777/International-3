@@ -188,7 +188,7 @@ if "load_jit" in _sig.parameters:
     _kw["load_jit"] = False
 if "load_trt" in _sig.parameters:
     _kw["load_trt"] = False
-model = AutoModel(model_dir, **_kw)
+model = AutoModel(model_dir=model_dir, **_kw)
 print("CosyVoice3 AutoModel construction OK")
 PY
 RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
