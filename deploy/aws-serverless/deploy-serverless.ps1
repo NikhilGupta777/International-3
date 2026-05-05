@@ -291,11 +291,25 @@ if (-not $siteBucket -or -not $distributionId) {
 pnpm --filter @workspace/yt-downloader run build
 Assert-LastExitCode "pnpm yt-downloader build"
 
+# Sync hashed assets (JS/CSS/images) with long-lived cache — filenames change on every build
 aws s3 sync `
   (Join-Path $repoRoot "artifacts\yt-downloader\dist\public") `
   "s3://$siteBucket/" `
   --region $Region `
-  --delete | Out-Null
+  --delete `
+  --exclude "*.html" `
+  --cache-control "public, max-age=31536000, immutable" | Out-Null
+
+# Sync HTML files with no-cache — ensures browsers always fetch fresh index.html after deploy
+aws s3 sync `
+  (Join-Path $repoRoot "artifacts\yt-downloader\dist\public") `
+  "s3://$siteBucket/" `
+  --region $Region `
+  --delete `
+  --exclude "*" --include "*.html" `
+  --cache-control "no-cache, no-store, must-revalidate" `
+  --content-type "text/html; charset=utf-8" | Out-Null
+
 if ($LASTEXITCODE -ne 0) {
   Write-Warning "aws s3 sync failed with exit code $LASTEXITCODE (continuing without static sync)"
 }

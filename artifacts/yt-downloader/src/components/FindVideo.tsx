@@ -7,37 +7,79 @@ export function FindVideo() {
   const [key, setKey] = useState(0);
 
   return (
-    <div className="flex flex-col" style={{ height: "100%", minHeight: 0 }}>
-      {/* Thin top bar — reload + open-in-tab, stays out of the way */}
+    // Use flex:1 + min-h-0 pattern — works inside any flex parent without needing
+    // explicit height values. The iframe gets all remaining space via flex:1.
+    // minHeight:0 on the outer div prevents flex from using content size as minimum.
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        flex: "1 1 0%",
+        minHeight: 0,
+        height: "100%",
+      }}
+    >
+      {/* Thin top bar — reload + open-in-new-tab */}
       <div
-        className="flex items-center justify-end gap-2 px-3 py-1.5 shrink-0"
-        style={{ background: "rgba(255,255,255,0.03)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          gap: "8px",
+          padding: "6px 12px",
+          flexShrink: 0,
+          background: "rgba(255,255,255,0.03)",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+        }}
       >
         <button
           onClick={() => setKey((k) => k + 1)}
           title="Reload"
-          className="p-1.5 rounded-lg text-white/30 hover:text-white/70 hover:bg-white/8 transition-colors"
+          style={{
+            padding: "6px",
+            borderRadius: "8px",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "rgba(255,255,255,0.3)",
+            display: "flex",
+            alignItems: "center",
+          }}
         >
-          <RefreshCw className="w-3.5 h-3.5" />
+          <RefreshCw style={{ width: 14, height: 14 }} />
         </button>
         <a
           href={EMBED_URL}
           target="_blank"
           rel="noopener noreferrer"
           title="Open in new tab"
-          className="p-1.5 rounded-lg text-white/30 hover:text-white/70 hover:bg-white/8 transition-colors"
+          style={{
+            padding: "6px",
+            borderRadius: "8px",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "rgba(255,255,255,0.3)",
+            display: "flex",
+            alignItems: "center",
+          }}
         >
-          <ExternalLink className="w-3.5 h-3.5" />
+          <ExternalLink style={{ width: 14, height: 14 }} />
         </a>
       </div>
 
-      {/* The iframe — fills all remaining height */}
+      {/* iframe fills all remaining space via flex:1 + min-h-0 */}
       <iframe
         key={key}
         src={EMBED_URL}
         title="Kalkiram"
-        className="w-full flex-1 border-0 block"
-        style={{ minHeight: 0 }}
+        style={{
+          flex: "1 1 0%",
+          minHeight: 0,
+          width: "100%",
+          border: "none",
+          display: "block",
+        }}
         allow="clipboard-write; fullscreen"
         referrerPolicy="no-referrer-when-downgrade"
       />
