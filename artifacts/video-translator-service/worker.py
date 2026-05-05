@@ -514,7 +514,16 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
     Requires HF_TOKEN env var for gated model access.
     """
     try:
-        # Lazy install pyannote (stripped from base image to keep CI fast)
+        # Check HF_TOKEN FIRST before any pip install — pyannote.audio is a heavy
+        # package (~1 GB of deps) and takes 30-60 s to install.  Every voice-clone
+        # job wasted that time before because the token check came AFTER the install.
+        hf_token = os.environ.get("HF_TOKEN", "")
+        if not hf_token:
+            log.info("[Diarize] HF_TOKEN not set — skipping pyannote diarization "
+                     "(AssemblyAI utterances already provide speaker labels).")
+            return segments
+
+        # Only reach here if HF_TOKEN is set — install pyannote lazily
         try:
             import pyannote.audio  # noqa: F401
         except ImportError:
@@ -524,11 +533,6 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
 
         import torch
         from pyannote.audio import Pipeline
-
-        hf_token = os.environ.get("HF_TOKEN", "")
-        if not hf_token:
-            log.warning("[Diarize] HF_TOKEN not set, skipping diarization.")
-            return segments
 
         log.info("[Diarize] Running pyannote speaker diarization...")
         pipeline = Pipeline.from_pretrained(
@@ -1432,14 +1436,24 @@ def synthesize_segments_cosyvoice(
             pt = normalize_tts_text(" ".join(p_parts))[:300]
             speaker_prompt_texts[spk] = pt or global_prompt_text
 
+    # ── Pre-compute inference method signatures ONCE (outside the loop) ─────────
+    # inspect.signature() is non-trivial; calling it on every segment iteration
+    # (15-20 times per job) is wasteful.  Compute once and reuse.
+    if use_cross_lingual:
+        _cl_params_set = set(inspect.signature(model.inference_cross_lingual).parameters.keys())
+    else:
+        _zs_params_set = set(inspect.signature(model.inference_zero_shot).parameters.keys())
+
     # ── Synthesize each segment ───────────────────────────────────────────────
     seg_audios: list[Path] = []
     total_segments = max(1, len(segments))
 
     for index, seg in enumerate(segments, start=1):
+        # Wider progress range (52→68) so users see meaningful movement
+        # instead of a bar that barely moves during 1-3 min of cloning.
         update_progress(
             "CLONING",
-            52 + int((index - 1) / total_segments * 7),
+            52 + int((index - 1) / total_segments * 16),
             f"Cloning voice ({index}/{total_segments})…",
         )
         out_path = out_dir / f"seg_{seg['id']:04d}.wav"
@@ -1475,39 +1489,36 @@ def synthesize_segments_cosyvoice(
 
         try:
             if use_cross_lingual:
-                cl_params = inspect.signature(model.inference_cross_lingual).parameters
-                # CosyVoice3 cross-lingual: instruction prefix goes in tts_text
+                # Use pre-computed signature set (not re-inspected each iteration)
                 _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if is_cosyvoice3 else text)
                 cl_args: dict = {"tts_text": _cl_tts, "stream": False}
-                if "prompt_wav" in cl_params:
+                if "prompt_wav" in _cl_params_set:
                     cl_args["prompt_wav"] = seg_ref_prompt_path
-                elif "prompt_speech_16k" in cl_params:
+                elif "prompt_speech_16k" in _cl_params_set:
                     cl_args["prompt_speech_16k"] = seg_ref_wav
                 else:
                     raise RuntimeError(
-                        f"Unsupported CosyVoice cross_lingual signature: "
-                        f"{', '.join(cl_params.keys())}"
+                        f"Unsupported CosyVoice cross_lingual signature: {_cl_params_set}"
                     )
-                if "speed" in cl_params:
+                if "speed" in _cl_params_set:
                     cl_args["speed"] = 1.0
                 chunks = list(model.inference_cross_lingual(**cl_args))
             else:
-                zs_params = inspect.signature(model.inference_zero_shot).parameters
+                # Use pre-computed signature set (not re-inspected each iteration)
                 zs_args: dict = {
                     "tts_text": text,
                     "prompt_text": seg_prompt_text,
                     "stream": False,
                 }
-                if "prompt_wav" in zs_params:
+                if "prompt_wav" in _zs_params_set:
                     zs_args["prompt_wav"] = seg_ref_prompt_path
-                elif "prompt_speech_16k" in zs_params:
+                elif "prompt_speech_16k" in _zs_params_set:
                     zs_args["prompt_speech_16k"] = seg_ref_wav
                 else:
                     raise RuntimeError(
-                        f"Unsupported CosyVoice zero-shot signature: "
-                        f"{', '.join(zs_params.keys())}"
+                        f"Unsupported CosyVoice zero-shot signature: {_zs_params_set}"
                     )
-                if "speed" in zs_params:
+                if "speed" in _zs_params_set:
                     zs_args["speed"] = 1.0
                 chunks = list(model.inference_zero_shot(**zs_args))
 
