@@ -1,4 +1,4 @@
-﻿"""
+"""
 AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -94,7 +94,7 @@ HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "hugg
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "0").lower() == "1"
 # Fail loudly if cloning fails — do NOT silently downgrade to a neural voice.
 ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "false").lower() == "true"
-ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "true").lower()  == "true"
+ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "false").lower() == "true"
 # CosyVoice3 (Fun-CosyVoice3-0.5B-2512) is the current recommended model.
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
 LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")

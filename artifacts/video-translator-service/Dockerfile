@@ -60,6 +60,19 @@ RUN git clone --depth 1 --recurse-submodules \
 RUN git clone --depth 1 \
     https://github.com/bytedance/LatentSync.git /model-cache/LatentSync
 
+# ── Pre-install LatentSync deps (filtered to avoid torch conflicts) ───────────
+# LatentSync has its own requirements.txt. We install it here (skipping torch/
+# torchvision/torchaudio which are already installed from CUDA wheels) so the
+# first lip-sync job doesn't need a runtime pip install.
+COPY runtime_deps.py /tmp/runtime_deps.py
+RUN if [ -f /model-cache/LatentSync/requirements.txt ]; then \
+      python -c "from pathlib import Path; exec(Path('/tmp/runtime_deps.py').read_text()); write_runtime_requirements(Path('/model-cache/LatentSync/requirements.txt'), Path('/tmp/ls_filtered.txt'))" 2>/dev/null \
+      && pip install --no-cache-dir --prefer-binary -r /tmp/ls_filtered.txt || \
+      pip install --no-cache-dir --prefer-binary -r /model-cache/LatentSync/requirements.txt || true; \
+      rm -f /tmp/ls_filtered.txt; \
+    fi && rm -f /tmp/runtime_deps.py
+
+
 # ── Python dependencies ───────────────────────────────────────────────────────
 WORKDIR /app
 COPY requirements.txt constraints.txt ./
