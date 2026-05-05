@@ -14,11 +14,12 @@ ENV MODEL_CACHE_DIR=/model-cache
 # CosyVoice uses ModelScope (Alibaba) for iic/ model IDs — NOT HuggingFace
 ENV MODELSCOPE_CACHE=/model-cache/modelscope
 ENV HF_HOME=/model-cache/huggingface
-# All models are baked into the image at build time — disable runtime downloads.
-# Set ALLOW_RUNTIME_MODEL_DOWNLOADS=1 only for local dev/testing.
+# ALLOW_RUNTIME_MODEL_DOWNLOADS=0 tells worker.py to treat missing models as a
+# fatal error rather than downloading on the fly.  worker.py then sets
+# HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1 at runtime automatically.
+# DO NOT set HF_HUB_OFFLINE here — it would also block model downloads
+# during the Docker BUILD steps below, causing the image build to fail.
 ENV ALLOW_RUNTIME_MODEL_DOWNLOADS=0
-ENV HF_HUB_OFFLINE=1
-ENV TRANSFORMERS_OFFLINE=1
 
 # PYTHONPATH must include CosyVoice root AND Matcha-TTS (third_party submodule).
 # Both are required for CosyVoice imports to resolve without error.
