@@ -76,6 +76,16 @@ RUN pip install --no-cache-dir \
 #   preprocessing. CosyVoice still works without them.
 RUN pip install --no-cache-dir modelscope==1.18.1
 
+# ── Force-pin packages that modelscope may downgrade or remove ────────────────
+# modelscope's resolver can uninstall/downgrade packages already installed.
+# Re-installing these AFTER modelscope ensures the correct versions survive.
+RUN pip install --no-cache-dir --force-reinstall \
+    "rich==13.7.1" \
+    "x-transformers==2.11.24" \
+    "einops==0.8.0" \
+    "lightning==2.2.4" \
+    "pyarrow==18.1.0"
+
 # ── Optional CosyVoice extras (non-fatal if any fail) ────────────────────────
 RUN pip install --no-cache-dir pyopenjtalk==0.3.4 || true
 RUN pip install --no-cache-dir onnxruntime-gpu==1.18.1 || true
