@@ -535,11 +535,10 @@ jobs:
           # Use the newly built translator job def if available, otherwise use the resolved existing one
           TRANSLATOR_JOB_DEF="${{ needs.build-translator.outputs.batch_job_def || needs.resolve-translator.outputs.batch_job_def }}"
           upsert_env "TRANSLATOR_BATCH_JOB_DEFINITION" "$TRANSLATOR_JOB_DEF"
-          # Use the On-Demand fast queue as default — reliable startup, no Spot capacity wait.
-          # The original Spot queue (ytgrabber-green-gpu-queue) remains available for
-          # cheap/non-urgent jobs via the TRANSLATOR_BATCH_JOB_QUEUE_SPOT env var.
-          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-gpu-fast-queue"
-          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE_SPOT" "${{ env.CF_STACK_PREFIX }}-gpu-queue"
+          # Default to Spot queue (cheaper). On-Demand fast queue available as
+          # TRANSLATOR_BATCH_JOB_QUEUE_FAST for urgent/admin-triggered jobs.
+          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-gpu-queue"
+          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE_FAST" "${{ env.CF_STACK_PREFIX }}-gpu-fast-queue"
           upsert_env "TRANSLATOR_BATCH_TIMEOUT_SECONDS" "3000"
           upsert_env "TRANSLATOR_MAX_VIDEO_SIZE_BYTES" "2147483648"
           # All models are baked into the Docker image — disable runtime downloads.
@@ -578,14 +577,21 @@ jobs:
 
       - name: Apply ECR lifecycle policy to all repos
         run: |
-          POLICY='{"rules":[{"rulePriority":1,"description":"Keep last 3 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}'
-          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }} ${{ env.ECR_TRANSLATOR_CPU_REPO }} malika-editor; do
+          POLICY_3='{"rules":[{"rulePriority":1,"description":"Keep last 3 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}'
+          POLICY_10='{"rules":[{"rulePriority":1,"description":"Keep last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
+          # Translator repo gets 10 images for AMI/rollback safety; others get 3.
+          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_CPU_REPO }} malika-editor; do
             aws ecr put-lifecycle-policy \
               --repository-name "$REPO" \
-              --lifecycle-policy-text "$POLICY" \
+              --lifecycle-policy-text "$POLICY_3" \
               --region "${{ env.AWS_REGION }}" \
-              2>/dev/null && echo "✅ Lifecycle policy applied to $REPO" || echo "⚠️ Could not apply lifecycle policy to $REPO (repo may not exist yet)"
+              2>/dev/null && echo "✅ Lifecycle policy (keep 3) applied to $REPO" || echo "⚠️ Could not apply lifecycle policy to $REPO (repo may not exist yet)"
           done
+          aws ecr put-lifecycle-policy \
+            --repository-name "${{ env.ECR_TRANSLATOR_REPO }}" \
+            --lifecycle-policy-text "$POLICY_10" \
+            --region "${{ env.AWS_REGION }}" \
+            2>/dev/null && echo "✅ Lifecycle policy (keep 10) applied to ${{ env.ECR_TRANSLATOR_REPO }}" || echo "⚠️ Could not apply lifecycle policy to ${{ env.ECR_TRANSLATOR_REPO }}"
 
       - name: Summary
         run: |
@@ -748,13 +754,14 @@ jobs:
           PREFIX="${{ env.CF_STACK_PREFIX }}"
           REGION="${{ env.AWS_REGION }}"
 
-          for CE in "${PREFIX}-gpu-fast-compute" "${PREFIX}-gpu-compute"; do
+          # v2 CEs use the Batch SLR and support ec2Configuration updates.
+          for CE in "${PREFIX}-gpu-fast-v2" "${PREFIX}-gpu-spot-v2"; do
             echo "Updating ${CE} → AMI ${AMI_ID}"
             aws batch update-compute-environment \
               --compute-environment "${CE}" \
-              --compute-resources "{\"imageId\":\"${AMI_ID}\"}" \
+              --compute-resources "{\"ec2Configuration\":[{\"imageIdOverride\":\"${AMI_ID}\",\"imageType\":\"ECS_AL2_NVIDIA\"}]}" \
               --region "${REGION}" 2>&1 || \
-            echo "⚠️  Could not update ${CE} imageId directly — may need launch template. AMI: ${AMI_ID}"
+            echo "⚠️  Could not update ${CE} — AMI: ${AMI_ID}"
           done
           echo "✅ Batch compute envs updated."
 
