@@ -77,9 +77,10 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir modelscope==1.18.1
 
 # ── Force-pin packages that modelscope may downgrade or remove ────────────────
-# modelscope's resolver can uninstall/downgrade packages already installed.
-# Re-installing these AFTER modelscope ensures the correct versions survive.
-RUN pip install --no-cache-dir --force-reinstall \
+# modelscope's pip resolver can silently downgrade packages installed earlier.
+# Using --no-deps is CRITICAL: prevents pulling in incompatible transitive deps
+# that would break the CUDA-built torchvision (torchvision::nms error).
+RUN pip install --no-cache-dir --force-reinstall --no-deps \
     "rich==13.7.1" \
     "x-transformers==2.11.24" \
     "einops==0.8.0" \
