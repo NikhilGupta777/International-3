@@ -46,50 +46,75 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "Instance profile $InstanceProfileName already exists."
 }
 
-# 2. Create GPU Compute Environment
+# 2a. Create Spot GPU Compute Environment (cheap, scale-to-zero)
 $CeName = "$Prefix-gpu-compute"
-$ceConfig = @"
-{
-    "type": "SPOT",
-    "allocationStrategy": "SPOT_PRICE_CAPACITY_OPTIMIZED",
-    "minvCpus": 0,
-    "maxvCpus": 32,
-    "desiredvCpus": 0,
-    "instanceTypes": ["g4dn.xlarge", "g5.xlarge"],
-    "subnets": ["$SubnetId"],
-    "securityGroupIds": ["$SecurityGroupId"],
-    "instanceRole": "arn:aws:iam::$($AccountId):instance-profile/$InstanceProfileName"
-}
-"@
-Set-Content -Path ".\ce_config.json" -Value $ceConfig
+$ceConfigSpot = "{`"type`":`"SPOT`",`"allocationStrategy`":`"SPOT_PRICE_CAPACITY_OPTIMIZED`",`"minvCpus`":0,`"maxvCpus`":32,`"desiredvCpus`":0,`"instanceTypes`":[`"g4dn.xlarge`",`"g4dn.2xlarge`",`"g4dn.4xlarge`",`"g5.xlarge`",`"g5.2xlarge`"],`"subnets`":[`"$SubnetId`"],`"securityGroupIds`":[`"$SecurityGroupId`"],`"instanceRole`":`"arn:aws:iam::$($AccountId):instance-profile/$InstanceProfileName`"}"
+[System.IO.File]::WriteAllText("$PWD\ce_config_spot.json", $ceConfigSpot, [System.Text.Encoding]::ASCII)
 
 $existingCE = aws batch describe-compute-environments --compute-environments $CeName --region $Region | ConvertFrom-Json
 if ($existingCE.computeEnvironments.Count -gt 0) {
-    Write-Host "Compute environment $CeName already exists."
+    Write-Host "Spot compute environment $CeName already exists."
 } else {
-    Write-Host "Creating compute environment $CeName..."
+    Write-Host "Creating Spot compute environment $CeName..."
     aws batch create-compute-environment `
         --compute-environment-name $CeName `
         --type MANAGED `
         --state ENABLED `
-        --compute-resources file://ce_config.json `
+        --compute-resources file://ce_config_spot.json `
         --service-role $ServiceRole `
         --region $Region | Out-Null
     Start-Sleep -Seconds 10
 }
+Remove-Item -ErrorAction SilentlyContinue .\ce_config_spot.json
 
-# 3. Create Job Queue
+# 2b. Create On-Demand GPU Compute Environment (fast, scale-to-zero)
+$FastCeName = "$Prefix-gpu-fast-compute"
+$ceConfigFast = "{`"type`":`"EC2`",`"allocationStrategy`":`"BEST_FIT_PROGRESSIVE`",`"minvCpus`":0,`"maxvCpus`":32,`"desiredvCpus`":0,`"instanceTypes`":[`"g5.xlarge`",`"g5.2xlarge`",`"g4dn.xlarge`",`"g4dn.2xlarge`"],`"subnets`":[`"$SubnetId`"],`"securityGroupIds`":[`"$SecurityGroupId`"],`"instanceRole`":`"arn:aws:iam::$($AccountId):instance-profile/$InstanceProfileName`"}"
+[System.IO.File]::WriteAllText("$PWD\ce_config_fast.json", $ceConfigFast, [System.Text.Encoding]::ASCII)
+
+$existingFastCE = aws batch describe-compute-environments --compute-environments $FastCeName --region $Region | ConvertFrom-Json
+if ($existingFastCE.computeEnvironments.Count -gt 0) {
+    Write-Host "Fast On-Demand compute environment $FastCeName already exists."
+} else {
+    Write-Host "Creating fast On-Demand compute environment $FastCeName..."
+    aws batch create-compute-environment `
+        --compute-environment-name $FastCeName `
+        --type MANAGED `
+        --state ENABLED `
+        --compute-resources file://ce_config_fast.json `
+        --service-role $ServiceRole `
+        --region $Region | Out-Null
+    Start-Sleep -Seconds 15
+}
+Remove-Item -ErrorAction SilentlyContinue .\ce_config_fast.json
+
+# 3a. Create Spot Job Queue (cheap, default for non-urgent)
 $QueueName = "$Prefix-gpu-queue"
 $existingQ = aws batch describe-job-queues --job-queues $QueueName --region $Region | ConvertFrom-Json
 if ($existingQ.jobQueues.Count -gt 0) {
-    Write-Host "Job queue $QueueName already exists."
+    Write-Host "Spot job queue $QueueName already exists."
 } else {
-    Write-Host "Creating job queue $QueueName..."
+    Write-Host "Creating Spot job queue $QueueName..."
     aws batch create-job-queue `
         --job-queue-name $QueueName `
         --state ENABLED `
-        --priority 10 `
+        --priority 5 `
         --compute-environment-order computeEnvironment=$CeName,order=1 `
+        --region $Region | Out-Null
+}
+
+# 3b. Create On-Demand Fast Job Queue (default for website translation jobs)
+$FastQueueName = "$Prefix-gpu-fast-queue"
+$existingFastQ = aws batch describe-job-queues --job-queues $FastQueueName --region $Region | ConvertFrom-Json
+if ($existingFastQ.jobQueues.Count -gt 0) {
+    Write-Host "Fast job queue $FastQueueName already exists."
+} else {
+    Write-Host "Creating fast On-Demand job queue $FastQueueName..."
+    aws batch create-job-queue `
+        --job-queue-name $FastQueueName `
+        --state ENABLED `
+        --priority 10 `
+        --compute-environment-order computeEnvironment=$FastCeName,order=1 `
         --region $Region | Out-Null
 }
 

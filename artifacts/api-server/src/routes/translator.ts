@@ -270,6 +270,16 @@ async function downloadUrlToTempFile(url: URL, destination: string): Promise<{ b
   return { bytes, contentType };
 }
 
+// Map AWS Batch intermediate states → human-readable step messages shown
+// while the GPU instance boots and the Docker image is pulled (~2-4 min with
+// custom AMI, ~10-20 min on a cold fresh instance).
+const BATCH_PRESTART_STEPS: Record<string, { step: string; progress: number }> = {
+  SUBMITTED: { step: "Job submitted to GPU queue…",                              progress: 1  },
+  PENDING:   { step: "Waiting for GPU instance to be allocated…",                progress: 2  },
+  RUNNABLE:  { step: "GPU instance allocated — waiting to start…",               progress: 3  },
+  STARTING:  { step: "GPU instance starting, loading translator image… (2–4 min with warm AMI, up to 20 min cold)", progress: 5  },
+};
+
 async function syncTerminalBatchState(item: Record<string, any>): Promise<Record<string, any>> {
   const status = item.status?.S ?? "UNKNOWN";
   const batchJobId = item.batchJobId?.S;
@@ -277,7 +287,36 @@ async function syncTerminalBatchState(item: Record<string, any>): Promise<Record
 
   const described = await batch.send(new DescribeJobsCommand({ jobs: [batchJobId] }));
   const batchJob = described.jobs?.[0];
-  if (!batchJob || !["FAILED", "SUCCEEDED"].includes(batchJob.status ?? "")) return item;
+  if (!batchJob) return item;
+
+  // ── Pre-start states: update step message so frontend shows real progress
+  // instead of "QUEUED 0%" for the entire boot+pull duration.
+  // Only update when DDB still says QUEUED (worker hasn't taken over yet).
+  const batchStatus = batchJob.status ?? "";
+  if (status === "QUEUED" && batchStatus in BATCH_PRESTART_STEPS) {
+    const { step, progress } = BATCH_PRESTART_STEPS[batchStatus];
+    const currentStep = item.step?.S ?? "";
+    // Avoid redundant DDB writes — only update when step message changes
+    if (currentStep !== step) {
+      const now = String(Date.now());
+      await ddb.send(new UpdateItemCommand({
+        TableName: DDB_TABLE,
+        Key: { jobId: { S: item.jobId.S } },
+        UpdateExpression: "SET #st = :st, progress = :p, updatedAt = :ua",
+        ExpressionAttributeNames: { "#st": "step" },
+        ExpressionAttributeValues: {
+          ":st": { S: step },
+          ":p":  { N: String(progress) },
+          ":ua": { N: now },
+        },
+      }));
+      return { ...item, step: { S: step }, progress: { N: String(progress) }, updatedAt: { N: now } };
+    }
+    return item;
+  }
+
+  // ── Terminal states ───────────────────────────────────────────────────────
+  if (!["FAILED", "SUCCEEDED"].includes(batchStatus)) return item;
 
   const nextStatus = batchJob.status === "SUCCEEDED" ? "DONE" : "FAILED";
   const reason =

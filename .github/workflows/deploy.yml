@@ -22,6 +22,14 @@ on:
         options:
           - "false"
           - "true"
+      rebuild_gpu_ami:
+        description: "Rebuild custom GPU AMI with pre-pulled translator image (runs after translator build)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: deploy-production
@@ -463,7 +471,11 @@ jobs:
           # Use the newly built translator job def if available, otherwise use the resolved existing one
           TRANSLATOR_JOB_DEF="${{ needs.build-translator.outputs.batch_job_def || needs.resolve-translator.outputs.batch_job_def }}"
           upsert_env "TRANSLATOR_BATCH_JOB_DEFINITION" "$TRANSLATOR_JOB_DEF"
-          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE" "${{ env.CF_STACK_PREFIX }}-gpu-queue"
+          # Use the On-Demand fast queue as default — reliable startup, no Spot capacity wait.
+          # The original Spot queue (ytgrabber-green-gpu-queue) remains available for
+          # cheap/non-urgent jobs via the TRANSLATOR_BATCH_JOB_QUEUE_SPOT env var.
+          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-gpu-fast-queue"
+          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE_SPOT" "${{ env.CF_STACK_PREFIX }}-gpu-queue"
           upsert_env "TRANSLATOR_BATCH_TIMEOUT_SECONDS" "3000"
           upsert_env "TRANSLATOR_MAX_VIDEO_SIZE_BYTES" "2147483648"
           # All models are baked into the Docker image — disable runtime downloads.
@@ -520,3 +532,194 @@ jobs:
           echo "| **Worker Batch job** | \`${{ needs.build-worker.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Translator Batch job** | \`${TRANSLATOR_JOB_DEF}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Live** | https://videomaking.in |" >> $GITHUB_STEP_SUMMARY
+
+  # ─── Job 5: Refresh custom GPU AMI with pre-pulled translator image ───────────
+  # Runs only when translator image was rebuilt OR manually triggered.
+  # Pre-pulling the image into an AMI eliminates the ~10-20 min cold-start pull.
+  # Skipped on normal code pushes (API/worker only changes) to save CI time.
+  refresh-gpu-ami:
+    name: Refresh GPU AMI (pre-pull translator image)
+    runs-on: ubuntu-latest
+    needs: [build-translator, deploy]
+    if: >
+      always() &&
+      needs.deploy.result == 'success' &&
+      (
+        needs.build-translator.result == 'success' ||
+        github.event.inputs.rebuild_gpu_ami == 'true'
+      )
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Resolve translator image URI
+        id: image
+        run: |
+          # Use the newly built image if available; otherwise resolve the current active one
+          if [ -n "${{ needs.build-translator.outputs.image_uri }}" ]; then
+            IMAGE="${{ needs.build-translator.outputs.image_uri }}"
+          else
+            IMAGE="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:$(git rev-parse --short HEAD 2>/dev/null || echo latest)"
+            # Fallback: find the most recently pushed tag
+            IMAGE=$(aws ecr describe-images \
+              --repository-name "${{ env.ECR_TRANSLATOR_REPO }}" \
+              --query 'sort_by(imageDetails,&imagePushedAt)[-1].imageTags[0]' \
+              --output text 2>/dev/null | \
+              xargs -I{} echo "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:{}" || \
+              echo "SKIP")
+          fi
+          echo "image_uri=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "ℹ️ Translator image for AMI: ${IMAGE}"
+
+      - name: Find latest ECS-optimized GPU AMI
+        id: base_ami
+        run: |
+          BASE=$(aws ec2 describe-images \
+            --owners amazon \
+            --filters \
+              "Name=name,Values=amzn2-ami-ecs-gpu-hvm-*-x86_64-ebs" \
+              "Name=state,Values=available" \
+            --query "sort_by(Images, &CreationDate)[-1].ImageId" \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          echo "ami_id=${BASE}" >> "$GITHUB_OUTPUT"
+          echo "ℹ️ Base ECS GPU AMI: ${BASE}"
+
+      - name: Launch temp EC2 to pre-pull image
+        id: launch
+        run: |
+          TRANSLATOR_IMAGE="${{ steps.image.outputs.image_uri }}"
+          BASE_AMI="${{ steps.base_ami.outputs.ami_id }}"
+          ACCOUNT="${{ env.AWS_ACCOUNT_ID }}"
+          REGION="${{ env.AWS_REGION }}"
+
+          # User-data: pull the translator image then signal done via a tag
+          USER_DATA=$(cat <<UDEOF | base64 -w 0
+          #!/bin/bash
+          set -e
+          # Give ECS agent time to start
+          sleep 15
+          # Login to ECR
+          aws ecr get-login-password --region ${REGION} | \
+            docker login --username AWS --password-stdin ${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com
+          # Pre-pull translator image (the big one)
+          docker pull ${TRANSLATOR_IMAGE}
+          # Configure ECS prefer-cached so future runs reuse this layer cache
+          echo "ECS_IMAGE_PULL_BEHAVIOR=prefer-cached" >> /etc/ecs/ecs.config
+          echo "ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=24h" >> /etc/ecs/ecs.config
+          # Signal completion by tagging the instance
+          INSTANCE_ID=\$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+          aws ec2 create-tags --region ${REGION} \
+            --resources \$INSTANCE_ID \
+            --tags Key=ami-build-status,Value=ready
+          UDEOF
+          )
+
+          INSTANCE_ID=$(aws ec2 run-instances \
+            --image-id "${BASE_AMI}" \
+            --instance-type g4dn.xlarge \
+            --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
+            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+            --subnet-id subnet-0e39d7f64d803f4d6 \
+            --user-data "${USER_DATA}" \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ami-builder-translator},{Key=ami-build-status,Value=building}]" \
+            --query "Instances[0].InstanceId" \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
+          echo "✅ Launched AMI builder: ${INSTANCE_ID}"
+
+      - name: Wait for image pull to complete (max 30 min)
+        run: |
+          INSTANCE_ID="${{ steps.launch.outputs.instance_id }}"
+          echo "Waiting for instance ${INSTANCE_ID} to finish pulling image..."
+          for i in $(seq 1 36); do
+            sleep 50
+            STATUS=$(aws ec2 describe-tags \
+              --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=ami-build-status" \
+              --query "Tags[0].Value" --output text --region ${{ env.AWS_REGION }} 2>/dev/null || echo "unknown")
+            echo "  [${i}/36] ami-build-status=${STATUS}"
+            if [ "$STATUS" = "ready" ]; then
+              echo "✅ Image pull complete."
+              break
+            fi
+          done
+
+      - name: Create AMI from instance
+        id: create_ami
+        run: |
+          INSTANCE_ID="${{ steps.launch.outputs.instance_id }}"
+          AMI_NAME="${{ env.CF_STACK_PREFIX }}-translator-ami-${GITHUB_SHA::8}"
+          AMI_ID=$(aws ec2 create-image \
+            --instance-id "${INSTANCE_ID}" \
+            --name "${AMI_NAME}" \
+            --description "Translator GPU AMI with pre-pulled image ${GITHUB_SHA::8}" \
+            --no-reboot \
+            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3"}}]' \
+            --query "ImageId" \
+            --output text \
+            --region ${{ env.AWS_REGION }})
+          echo "ami_id=${AMI_ID}" >> "$GITHUB_OUTPUT"
+          echo "✅ AMI creation started: ${AMI_ID}"
+
+      - name: Wait for AMI to be available
+        run: |
+          AMI_ID="${{ steps.create_ami.outputs.ami_id }}"
+          echo "Waiting for AMI ${AMI_ID} to become available..."
+          aws ec2 wait image-available --image-ids "${AMI_ID}" --region ${{ env.AWS_REGION }}
+          echo "✅ AMI ready: ${AMI_ID}"
+
+      - name: Update Batch compute environments to use new AMI
+        run: |
+          AMI_ID="${{ steps.create_ami.outputs.ami_id }}"
+          PREFIX="${{ env.CF_STACK_PREFIX }}"
+          REGION="${{ env.AWS_REGION }}"
+
+          for CE in "${PREFIX}-gpu-fast-compute" "${PREFIX}-gpu-compute"; do
+            echo "Updating ${CE} → AMI ${AMI_ID}"
+            aws batch update-compute-environment \
+              --compute-environment "${CE}" \
+              --compute-resources "{\"imageId\":\"${AMI_ID}\"}" \
+              --region "${REGION}" 2>&1 || \
+            echo "⚠️  Could not update ${CE} imageId directly — may need launch template. AMI: ${AMI_ID}"
+          done
+          echo "✅ Batch compute envs updated."
+
+      - name: Terminate temp EC2 instance
+        if: always()
+        run: |
+          aws ec2 terminate-instances \
+            --instance-ids "${{ steps.launch.outputs.instance_id }}" \
+            --region ${{ env.AWS_REGION }} 2>&1 || true
+          echo "✅ Temp instance terminated."
+
+      - name: Deregister old AMIs (keep last 3)
+        run: |
+          OLD_AMIS=$(aws ec2 describe-images \
+            --owners self \
+            --filters "Name=name,Values=${{ env.CF_STACK_PREFIX }}-translator-ami-*" \
+                      "Name=state,Values=available" \
+            --query "sort_by(Images, &CreationDate)[:-3].ImageId" \
+            --output text --region ${{ env.AWS_REGION }})
+          for AMI in $OLD_AMIS; do
+            SNAP=$(aws ec2 describe-images --image-ids "$AMI" \
+              --query "Images[0].BlockDeviceMappings[0].Ebs.SnapshotId" \
+              --output text --region ${{ env.AWS_REGION }})
+            aws ec2 deregister-image --image-id "$AMI" --region ${{ env.AWS_REGION }} 2>&1 || true
+            aws ec2 delete-snapshot --snapshot-id "$SNAP" --region ${{ env.AWS_REGION }} 2>&1 || true
+            echo "Cleaned old AMI: ${AMI}"
+          done
+
+      - name: AMI Summary
+        run: |
+          echo "## 🖥️ GPU AMI Refreshed" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **New AMI** | \`${{ steps.create_ami.outputs.ami_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Translator image** | \`${{ steps.image.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Compute envs updated** | \`${{ env.CF_STACK_PREFIX }}-gpu-fast-compute\`, \`${{ env.CF_STACK_PREFIX }}-gpu-compute\` |" >> $GITHUB_STEP_SUMMARY
