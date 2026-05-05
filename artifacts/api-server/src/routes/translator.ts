@@ -358,10 +358,16 @@ function boolValue(value: unknown, fallback: boolean): boolean {
 }
 
 function isLambdaFastCandidate(options: TranslatorOptions): boolean {
-  // The fast path only creates translated subtitles and copies the source video.
-  // Translator tab jobs must return a dubbed video, so route them to Batch.
-  void options;
-  return false;
+  // Fast path: subtitle-only translation (no voice clone, no lip sync, no demucs,
+  // no multi-speaker diarization). Returns SRT + original video copy — much faster
+  // and cheaper than spinning up a GPU Batch job.
+  // Voice clone jobs always go to Batch regardless of other settings.
+  return (
+    !options.voiceClone &&
+    !options.lipSync &&
+    !options.useDemucs &&
+    !options.multiSpeaker
+  );
 }
 
 async function updateTranslatorJob(
@@ -422,19 +428,23 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "VOICE_CLONE",       value: String(options.voiceClone) },
     { name: "LIP_SYNC",          value: String(options.lipSync) },
     { name: "LIP_SYNC_QUALITY",  value: options.lipSyncQuality },
-    { name: "USE_DEMUCS",        value: String(options.useDemucs) },
     { name: "PREMIUM_ASR",       value: String(options.premiumAsr) },
-    { name: "MULTI_SPEAKER",     value: String(options.multiSpeaker) },
     { name: "ASR_MODEL",         value: options.asrModel },
     { name: "TRANSLATION_MODE",  value: options.translationMode },
     // Allow overriding the exact Gemini model ID used for translation via Lambda env.
     // Defaults to gemini-3.1-pro-preview in the worker when blank.
     { name: "TRANSLATION_MODEL", value: process.env.TRANSLATION_MODEL ?? "" },
+    // CosyVoice3 model ID — passed explicitly so no job uses an old baked-in default.
+    { name: "COSYVOICE_MODEL_ID", value: process.env.TRANSLATOR_COSYVOICE_MODEL_ID ?? "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" },
     { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
     { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
     { name: "ALLOW_VOICE_CLONE_FALLBACK", value: process.env.TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK ?? "false" },
-    { name: "ALLOW_LIP_SYNC_FALLBACK", value: process.env.TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK ?? "false" },
+    { name: "ALLOW_LIP_SYNC_FALLBACK",    value: process.env.TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK    ?? "false" },
     { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS },
+    // Force demucs + multi-speaker ON when voice cloning is requested —
+    // background separation and speaker diarization are needed for best quality.
+    { name: "USE_DEMUCS",    value: String(options.useDemucs    || options.voiceClone) },
+    { name: "MULTI_SPEAKER", value: String(options.multiSpeaker || options.voiceClone) },
   ];
 }
 

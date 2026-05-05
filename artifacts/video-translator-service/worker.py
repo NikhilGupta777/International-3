@@ -78,19 +78,25 @@ if not SOURCE_LANG_CODE and SOURCE_LANG not in ("", "auto"):
     SOURCE_LANG_CODE = SOURCE_LANG[:2].lower()
 VOICE_CLONE         = os.environ.get("VOICE_CLONE", "true").lower() == "true"
 LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
-USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
-MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "false").lower() == "true"
+# Demucs and multi-speaker default ON when voice cloning — delivers the
+# best quality without the user having to know to enable them.
+USE_DEMUCS          = os.environ.get("USE_DEMUCS", "true").lower() == "true"
+MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "true").lower() == "true"
 ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
-LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync (only supported mode)
-TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget | premium
+LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | latentsync_hq
+TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget
 
 MODEL_CACHE_DIR     = Path(os.environ.get("MODEL_CACHE_DIR", "/model-cache"))
 MODELSCOPE_CACHE    = Path(os.environ.get("MODELSCOPE_CACHE", str(MODEL_CACHE_DIR / "modelscope")))
 HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "huggingface")))
-ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "1").lower() == "1"
-ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "true").lower() == "true"
-ALLOW_LIP_SYNC_FALLBACK = os.environ.get("ALLOW_LIP_SYNC_FALLBACK", "true").lower() == "true"
-COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "iic/CosyVoice2-0.5B")
+# Runtime downloads disabled by default — all models must be baked into the
+# Docker image.  Set =1 only for dev/testing.
+ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "0").lower() == "1"
+# Fail loudly if cloning fails — do NOT silently downgrade to a neural voice.
+ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "false").lower() == "true"
+ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "true").lower()  == "true"
+# CosyVoice3 (Fun-CosyVoice3-0.5B-2512) is the current recommended model.
+COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
 LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")
 LATENTSYNC_CHECKPOINT = os.environ.get("LATENTSYNC_CHECKPOINT", "latentsync_unet.pt")
 
@@ -730,6 +736,40 @@ def normalize_tts_text(text: str) -> str:
     return text
 
 
+# Pronunciation fixes applied BEFORE text reaches TTS.
+# These prevent well-known mispronunciation bugs (e.g. BJP \u2192 "buggie").
+_PRONUNCIATION_REPLACEMENTS = [
+    # Acronyms: space each letter so TTS reads them individually.
+    (r"\bBJP\b",   "B J P"),
+    (r"\bRSS\b",   "R S S"),
+    (r"\bAAP\b",   "A A P"),
+    (r"\bCBI\b",   "C B I"),
+    (r"\bEVM\b",   "E V M"),
+    (r"\bPM\b",    "P M"),
+    (r"\bCM\b",    "C M"),
+    (r"\bDGP\b",   "D G P"),
+    (r"\bIPS\b",   "I P S"),
+    (r"\bIAS\b",   "I A S"),
+    (r"\bIIT\b",   "I I T"),
+    (r"\bIIM\b",   "I I M"),
+    (r"\bUNO\b",   "U N O"),
+    (r"\bNGO\b",   "N G O"),
+    (r"\bMLA\b",   "M L A"),
+    (r"\bMLC\b",   "M L C"),
+    (r"\bMSP\b",   "M S P"),
+    # Common proper noun transliteration corrections
+    (r"\bSyama\b", "Shyama"),
+]
+
+def normalize_tts_pronunciation(text: str) -> str:
+    """Apply pronunciation replacements then standard text cleaning."""
+    if not text:
+        return text
+    for pattern, replacement in _PRONUNCIATION_REPLACEMENTS:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return normalize_tts_text(text)
+
+
 def _find_cosyvoice_model() -> Optional[Path]:
     candidates: list[Path] = []
     for root in [
@@ -739,13 +779,20 @@ def _find_cosyvoice_model() -> Optional[Path]:
         MODELSCOPE_CACHE / "models" / "iic",
         MODELSCOPE_CACHE,
     ]:
-        for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
+        # v3 first (best quality), v2 as fallback
+        for model_name in (
+            "Fun-CosyVoice3-0.5B",       # Dockerfile downloads here
+            "Fun-CosyVoice3-0.5B-2512",  # alternate layout
+            "CosyVoice3-0.5B",           # generic v3 name
+            "CosyVoice2-0.5B",           # v2 fallback
+        ):
             p = root / model_name
             if p.exists():
                 return p
         if root.exists():
-            candidates.extend(root.glob("CosyVoice2*"))
+            candidates.extend(root.glob("Fun-CosyVoice3*"))
             candidates.extend(root.glob("CosyVoice3*"))
+            candidates.extend(root.glob("CosyVoice2*"))
     for candidate in candidates:
         if candidate.is_dir() and (
             (candidate / "cosyvoice2.yaml").exists()
@@ -829,11 +876,23 @@ def _install_runtime_package(package: str) -> None:
 
 
 def _import_cosyvoice_class():
+    """Return the best available CosyVoice constructor.
+    Priority: AutoModel (v3) → CosyVoice2 → CosyVoice (legacy).
+    AutoModel auto-detects which version the weights are and is the
+    official entry point for both v2 and v3.
+    """
     def _try_import():
         try:
+            from cosyvoice.cli.cosyvoice import AutoModel as _CosyVoice  # type: ignore
+            return _CosyVoice
+        except (ImportError, AttributeError):
+            pass
+        try:
             from cosyvoice.cli.cosyvoice import CosyVoice2 as _CosyVoice  # type: ignore
+            return _CosyVoice
         except Exception:
-            from cosyvoice.cli.cosyvoice import CosyVoice as _CosyVoice  # type: ignore
+            pass
+        from cosyvoice.cli.cosyvoice import CosyVoice as _CosyVoice  # type: ignore
         return _CosyVoice
 
     try:
@@ -841,8 +900,6 @@ def _import_cosyvoice_class():
     except ModuleNotFoundError as exc:
         if exc.name != "whisper":
             raise
-        # CosyVoice imports openai-whisper internally for its frontend. AssemblyAI is
-        # still the only transcription provider used by this worker.
         _install_runtime_package("openai-whisper==20231117")
         return _try_import()
 
@@ -1256,13 +1313,30 @@ def synthesize_segments_cosyvoice(
         tried_model_paths.add(model_path_key)
         try:
             log.info(f"[CosyVoice] Loading {model_name} from {model_path} on {device}...")
-            model = _CosyVoice(str(model_path), load_jit=False, load_trt=False)
+            # CosyVoice3 (AutoModel) dropped load_jit — only pass what the
+            # constructor accepts so v2 and v3 both work.
+            _init_sig = inspect.signature(_CosyVoice)
+            _init_kw: dict = {}
+            if "load_jit" in _init_sig.parameters:
+                _init_kw["load_jit"] = False
+            if "load_trt" in _init_sig.parameters:
+                _init_kw["load_trt"] = False
+            model = _CosyVoice(str(model_path), **_init_kw)
             break
         except Exception as e:
             last_err = e
             log.warning(f"[CosyVoice] Failed loading {model_name}: {e}")
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
+
+    # Detect CosyVoice version to apply correct instruction prefix format.
+    # CosyVoice3 requires "You are a helpful assistant.<|endofprompt|>" prefix.
+    _model_path_lower = str(model_path).lower()
+    is_cosyvoice3 = bool(re.search(r"fun.cosyvoice3|cosyvoice3", _model_path_lower))
+    if is_cosyvoice3:
+        log.info("[CosyVoice] CosyVoice3 detected — instruction prefix will be applied.")
+    else:
+        log.info("[CosyVoice] CosyVoice2/legacy detected.")
 
     # ── Decide inference mode (cross-lingual vs zero-shot) ──────────────────
     is_cross_lingual = (
@@ -1371,7 +1445,7 @@ def synthesize_segments_cosyvoice(
         out_path = out_dir / f"seg_{seg['id']:04d}.wav"
 
         # Use tts_text (TTS-optimised) if Gemini produced it, else translated_text
-        text = normalize_tts_text(
+        text = normalize_tts_pronunciation(
             seg.get("tts_text") or seg.get("translated_text") or ""
         )
 
@@ -1395,11 +1469,16 @@ def synthesize_segments_cosyvoice(
             seg_ref_wav, seg_ref_prompt_path = default_ref_wav, default_ref_prompt_path
 
         seg_prompt_text = speaker_prompt_texts.get(speaker, global_prompt_text)
+        # CosyVoice3 zero-shot: instruction prefix goes in prompt_text (not tts_text)
+        if is_cosyvoice3 and seg_prompt_text:
+            seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
 
         try:
             if use_cross_lingual:
                 cl_params = inspect.signature(model.inference_cross_lingual).parameters
-                cl_args: dict = {"tts_text": text, "stream": False}
+                # CosyVoice3 cross-lingual: instruction prefix goes in tts_text
+                _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if is_cosyvoice3 else text)
+                cl_args: dict = {"tts_text": _cl_tts, "stream": False}
                 if "prompt_wav" in cl_params:
                     cl_args["prompt_wav"] = seg_ref_prompt_path
                 elif "prompt_speech_16k" in cl_params:
@@ -1823,8 +1902,10 @@ def assemble_dubbed_audio(
             "-filter_complex",
             (
                 "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11[v];"
-                "[1:a]loudnorm=I=-28:TP=-2:LRA=14[b];"
-                "[v][b]amix=inputs=2:duration=first:dropout_transition=0[out]"
+                "[1:a]loudnorm=I=-24:TP=-2:LRA=18[b];"
+                "[b][v]sidechaincompress=threshold=0.04:ratio=8:attack=20:release=250[bd];"
+                "[v][bd]amix=inputs=2:duration=first:dropout_transition=0,"
+                "alimiter=limit=0.95[out]"
             ),
             "-map", "[out]",
             "-ar", str(SR),
@@ -1954,13 +2035,17 @@ def main():
         background_audio = None
         transcription_audio = full_audio
 
+        demucs_applied = False
+        demucs_warning = ""
         if USE_DEMUCS:
             update_progress("EXTRACTING", 12, "Separating voice from background music...")
             try:
                 vocals_path, bg_path = run_demucs(full_audio, work_dir)
                 transcription_audio = vocals_path
                 background_audio = bg_path
+                demucs_applied = True
             except Exception as e:
+                demucs_warning = str(e)
                 log.warning(f"[Demucs] Skipped: {e}")
 
         # â”€â”€ 4. Transcription â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2073,6 +2158,30 @@ def main():
         upload_to_s3(srt_path, srt_key, "text/plain")
         upload_to_s3(transcript_path, json_key, "application/json")
 
+        # -- 11b. Upload translation report (metadata for debugging/auditing) --
+        report_key = f"{S3_OUTPUT_PREFIX}/translation_report.json"
+        try:
+            report = {
+                "jobId": JOB_ID,
+                "cosyvoiceModelId": COSYVOICE_MODEL_ID,
+                "voiceCloneRequested": VOICE_CLONE,
+                "voiceCloneApplied": voice_was_cloned,
+                "multiSpeaker": MULTI_SPEAKER,
+                "useDemucs": USE_DEMUCS,
+                "demucsApplied": demucs_applied,
+                "demucsWarning": demucs_warning,
+                "lipSync": LIP_SYNC,
+                "lipSyncApplied": lip_sync_applied,
+                "translationMode": TRANSLATION_MODE,
+                "targetLang": TARGET_LANG,
+                "segmentCount": len(segments),
+            }
+            report_path = work_dir / "translation_report.json"
+            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            upload_to_s3(report_path, report_key, "application/json")
+        except Exception as rpt_err:
+            log.warning(f"[Report] Could not upload translation report: {rpt_err}")
+
         # â”€â”€ 12. Mark complete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("DONE", 100, "Translation complete!", {
             "outputKey": output_key,
@@ -2084,6 +2193,7 @@ def main():
             "voiceCloneApplied": voice_was_cloned,
             "lipSync": LIP_SYNC,
             "lipSyncApplied": lip_sync_applied,
+            "reportKey": report_key,
         })
 
         log.info(f"=== Job {JOB_ID} complete. Output: s3://{S3_BUCKET}/{output_key} ===")
@@ -2098,4 +2208,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+                "[1:a]loudnorm=I=-24:TP=-2:LRA=18[b];"

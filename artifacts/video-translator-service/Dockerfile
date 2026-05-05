@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # AWS Batch GPU Worker Container — Production Grade
 # Base: CUDA 12.1 + cuDNN 8 on Ubuntu 22.04
-# Pipeline: AssemblyAI → Gemini → CosyVoice 2.0 → LatentSync 1.6
+# Pipeline: AssemblyAI → Gemini → CosyVoice 3.0 (Fun-CosyVoice3-0.5B-2512) → LatentSync 1.6
 # Runs as a one-shot CLI job: python worker.py
 # No HTTP server, no EXPOSE, no HEALTHCHECK.
 # Requires BuildKit (heredoc COPY) — the deploy workflow uses `docker buildx build`.
@@ -14,7 +14,11 @@ ENV MODEL_CACHE_DIR=/model-cache
 # CosyVoice uses ModelScope (Alibaba) for iic/ model IDs — NOT HuggingFace
 ENV MODELSCOPE_CACHE=/model-cache/modelscope
 ENV HF_HOME=/model-cache/huggingface
-ENV ALLOW_RUNTIME_MODEL_DOWNLOADS=1
+# All models are baked into the image at build time — disable runtime downloads.
+# Set ALLOW_RUNTIME_MODEL_DOWNLOADS=1 only for local dev/testing.
+ENV ALLOW_RUNTIME_MODEL_DOWNLOADS=0
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
 
 # PYTHONPATH must include CosyVoice root AND Matcha-TTS (third_party submodule).
 # Both are required for CosyVoice imports to resolve without error.
@@ -130,81 +134,62 @@ else:
 PY
 RUN python /tmp/smoke_test_imports.py && rm -f /tmp/smoke_test_imports.py
 
-# ── Pre-download CosyVoice model weights into ModelScope cache ────────────────
-# Uses iic/CosyVoice2-0.5B — publicly available on ModelScope.
-# CRITICAL: pass cache_dir explicitly — do NOT rely on MODELSCOPE_CACHE env var
-# alone, as some modelscope versions ignore it.
-#
-# modelscope >=1.16 lays the cache out at:
-#     <cache>/hub/models/iic/CosyVoice2-0.5B
-# older modelscope laid it out at:
-#     <cache>/hub/iic/CosyVoice2-0.5B
-# worker.py historically checked the OLD layout, so we capture the real
-# download path and symlink the canonical legacy path to it. That way both
-# layouts work for any future modelscope upgrade or downgrade.
+# ── Pre-download CosyVoice3 model weights ────────────────────────────────────
+# Downloads FunAudioLLM/Fun-CosyVoice3-0.5B-2512 (the official CosyVoice3 model).
+# Uses local_dir so the path is deterministic: /model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B
+# worker.py _find_cosyvoice_model() searches this exact path.
 RUN mkdir -p /model-cache/modelscope /model-cache/huggingface
 COPY <<'PY' /tmp/download_cosyvoice.py
-import os, pathlib, shutil
+import os, pathlib
 from modelscope import snapshot_download
 
-cache = "/model-cache/modelscope"
-os.makedirs(cache, exist_ok=True)
-p = snapshot_download("iic/CosyVoice2-0.5B", cache_dir=cache)
-print(f"[ModelScope] Downloaded to: {p}")
-
-target = pathlib.Path(p).resolve()
-legacy = pathlib.Path(cache) / "hub" / "iic" / "CosyVoice2-0.5B"
-legacy.parent.mkdir(parents=True, exist_ok=True)
-
-if legacy.exists() or legacy.is_symlink():
-    if legacy.is_symlink() or legacy.is_file():
-        legacy.unlink()
-    elif legacy.is_dir():
-        # Already a real dir from a prior layout — leave it alone.
-        print(f"[ModelScope] Legacy dir already exists at {legacy}; skipping symlink")
-        raise SystemExit(0)
-
-legacy.symlink_to(target, target_is_directory=True)
-print(f"[ModelScope] Legacy path: {legacy} -> {target}")
+target = "/model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B"
+os.makedirs(target, exist_ok=True)
+print(f"[ModelScope] Downloading FunAudioLLM/Fun-CosyVoice3-0.5B-2512 -> {target} ...")
+p = snapshot_download(
+    "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+    local_dir=target,
+)
+print(f"[ModelScope] CosyVoice3 downloaded to: {p}")
+print(f"[ModelScope] Weights at: {target}")
 PY
 RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
       python /tmp/download_cosyvoice.py; \
     else \
-      echo "Skipping CosyVoice model download during Docker build"; \
+      echo "Skipping CosyVoice3 model download during Docker build"; \
     fi && rm -f /tmp/download_cosyvoice.py
 
-# Verify the weights actually landed where worker.py will look for them.
-# Accept either the legacy iic/ path or the new models/iic/ path.
+# Verify the weights landed at the expected path
 RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
-      (ls -la /model-cache/modelscope/hub/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (legacy path) verified OK") || \
-      (ls -la /model-cache/modelscope/hub/models/iic/CosyVoice2-0.5B 2>/dev/null && echo "CosyVoice2-0.5B (new path) verified OK") || \
-      (echo "ERROR: CosyVoice2-0.5B not found at either /model-cache/modelscope/hub/iic/ or /model-cache/modelscope/hub/models/iic/" && \
-       echo "--- /model-cache/modelscope tree ---" && find /model-cache/modelscope -maxdepth 5 -type d 2>/dev/null && \
-       exit 1); \
+      test -d /model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B || \
+      (echo "ERROR: Fun-CosyVoice3-0.5B not found at /model-cache/modelscope/hub/iic/" && \
+       find /model-cache/modelscope -maxdepth 6 -type d 2>/dev/null && exit 1); \
+      echo "Fun-CosyVoice3-0.5B verified OK"; \
     fi
 
 # ── Model-construction smoke test ─────────────────────────────────────────────
-# If model weights were baked in, verify CosyVoice2 can actually be constructed.
+# Verify CosyVoice3 can be constructed via AutoModel (the official v3 entry point).
+# CosyVoice3 drops load_jit; we use inspect.signature to pass only supported kwargs.
 COPY <<'PY' /tmp/smoke_test_model.py
-import sys, os
+import sys, os, inspect
 sys.path.insert(0, "/model-cache/CosyVoice")
 sys.path.insert(0, "/model-cache/CosyVoice/third_party/Matcha-TTS")
 
-# Try both legacy and new model paths
-model_dirs = [
-    "/model-cache/modelscope/hub/iic/CosyVoice2-0.5B",
-    "/model-cache/modelscope/hub/models/iic/CosyVoice2-0.5B",
-]
-model_dir = next((d for d in model_dirs if os.path.isdir(d)), None)
-
-if model_dir is None:
-    print("Model weights not baked in — import smoke test already passed, skipping construction test")
+model_dir = "/model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B"
+if not os.path.isdir(model_dir):
+    print("Model weights not baked in — skipping construction smoke test")
     sys.exit(0)
 
-print(f"Testing model construction from: {model_dir}")
-from cosyvoice.cli.cosyvoice import CosyVoice2
-model = CosyVoice2(model_dir, load_jit=False, load_trt=False)
-print("CosyVoice2 model construction OK")
+print(f"Testing CosyVoice3 construction from: {model_dir}")
+from cosyvoice.cli.cosyvoice import AutoModel
+_sig = inspect.signature(AutoModel)
+_kw = {}
+if "load_jit" in _sig.parameters:
+    _kw["load_jit"] = False
+if "load_trt" in _sig.parameters:
+    _kw["load_trt"] = False
+model = AutoModel(model_dir, **_kw)
+print("CosyVoice3 AutoModel construction OK")
 PY
 RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
       python /tmp/smoke_test_model.py; \

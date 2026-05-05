@@ -250,7 +250,9 @@ jobs:
           TAG="${GITHUB_SHA::8}"
           URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:${TAG}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            DOWNLOAD_MODELS="${{ github.event.inputs.download_models_at_build || 'false' }}"
+            # Default to true for manual builds — models must always be baked in.
+            # Only set to false for a lightweight dev/test build (not production).
+            DOWNLOAD_MODELS="${{ github.event.inputs.download_models_at_build || 'true' }}"
           else
             DOWNLOAD_MODELS="true"
           fi
@@ -464,7 +466,13 @@ jobs:
           upsert_env "TRANSLATOR_BATCH_JOB_QUEUE" "${{ env.CF_STACK_PREFIX }}-gpu-queue"
           upsert_env "TRANSLATOR_BATCH_TIMEOUT_SECONDS" "3000"
           upsert_env "TRANSLATOR_MAX_VIDEO_SIZE_BYTES" "2147483648"
-          upsert_env "TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS" "1"
+          # All models are baked into the Docker image — disable runtime downloads.
+          upsert_env "TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS" "0"
+          # CosyVoice3 model ID passed explicitly to every Batch job.
+          upsert_env "TRANSLATOR_COSYVOICE_MODEL_ID" "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+          # Fail loudly on clone/lipsync failure — no silent fallback to neural voice.
+          upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "false"
+          upsert_env "TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK" "false"
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.
