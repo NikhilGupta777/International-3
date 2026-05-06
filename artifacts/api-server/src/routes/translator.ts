@@ -531,7 +531,11 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS },
     // Force demucs + multi-speaker ON when voice cloning is requested —
     // background separation and speaker diarization are needed for best quality.
-    { name: "USE_DEMUCS",    value: String(options.useDemucs    || options.voiceClone) },
+    // Demucs is NOT forced on for voice-clone jobs — the htdemucs model (~460 MB)
+    // is not baked into the Docker image and downloads at runtime, adding 5-10 min
+    // to every cold job. Users can opt in explicitly; default is off until the
+    // model is baked into the image (Dockerfile update required).
+    { name: "USE_DEMUCS",    value: String(options.useDemucs) },
     { name: "MULTI_SPEAKER", value: String(options.multiSpeaker || options.voiceClone) },
   ];
 }
