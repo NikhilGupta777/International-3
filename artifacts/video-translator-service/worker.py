@@ -1,4 +1,4 @@
-﻿"""
+"""
 AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -2226,4 +2226,4 @@ def main():
 
 
 if __name__ == "__main__":
-                "[1:a]loudnorm=I=-24:TP=-2:LRA=18[b];"
+    main()
