@@ -5,6 +5,7 @@
 # Runs as a one-shot CLI job: python worker.py
 # No HTTP server, no EXPOSE, no HEALTHCHECK.
 # Requires BuildKit (heredoc COPY) — the deploy workflow uses `docker buildx build`.
+# Trigger: rebuild to refresh GPU AMI with pre-pulled image (fixes 8-9 min cold start).
 
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
