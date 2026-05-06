@@ -227,6 +227,9 @@ def update_progress(status: str, progress: int, step: str, extra: Optional[dict]
 
 
 def mark_failed(error: str):
+    log.error(f"[FATAL] Job failed: {error}")
+    # We send the technical error to the 'step' field so it shows up prominently in the UI,
+    # and also to a dedicated 'error' field for the API.
     update_progress("FAILED", _LAST_PIPELINE_PROGRESS, f"Error: {error}", {"error": error})
 
 
