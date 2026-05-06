@@ -582,8 +582,9 @@ jobs:
       - name: Apply ECR lifecycle policy to all repos
         run: |
           POLICY_3='{"rules":[{"rulePriority":1,"description":"Keep last 3 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":3},"action":{"type":"expire"}}]}'
-          POLICY_10='{"rules":[{"rulePriority":1,"description":"Keep last 10 images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":10},"action":{"type":"expire"}}]}'
-          # Translator repo gets 10 images for AMI/rollback safety; others get 3.
+          # All repos keep last 3 images — translator image is large (~20GB) and
+          # 10-tag retention was costing ~$14/month in ECR storage with no rollback benefit.
+          # 3 tags = current + 2 rollback versions, which is sufficient.
           for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_CPU_REPO }} malika-editor; do
             aws ecr put-lifecycle-policy \
               --repository-name "$REPO" \
@@ -593,9 +594,9 @@ jobs:
           done
           aws ecr put-lifecycle-policy \
             --repository-name "${{ env.ECR_TRANSLATOR_REPO }}" \
-            --lifecycle-policy-text "$POLICY_10" \
+            --lifecycle-policy-text "$POLICY_3" \
             --region "${{ env.AWS_REGION }}" \
-            2>/dev/null && echo "✅ Lifecycle policy (keep 10) applied to ${{ env.ECR_TRANSLATOR_REPO }}" || echo "⚠️ Could not apply lifecycle policy to ${{ env.ECR_TRANSLATOR_REPO }}"
+            2>/dev/null && echo "✅ Lifecycle policy (keep 3) applied to ${{ env.ECR_TRANSLATOR_REPO }}" || echo "⚠️ Could not apply lifecycle policy to ${{ env.ECR_TRANSLATOR_REPO }}"
 
       - name: Summary
         run: |
@@ -723,7 +724,7 @@ jobs:
             --instance-type g4dn.xlarge \
             --instance-market-options "${SPOT_OPTIONS}" \
             --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
-            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":80,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
             --subnet-id subnet-0e39d7f64d803f4d6 \
             --associate-public-ip-address \
             --user-data "${USER_DATA}" \
@@ -772,7 +773,7 @@ jobs:
             --name "${AMI_NAME}" \
             --description "Translator GPU AMI with pre-pulled image ${GITHUB_SHA::8}" \
             --no-reboot \
-            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3"}}]' \
+            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":80,"VolumeType":"gp3"}}]' \
             --query "ImageId" \
             --output text \
             --region ${{ env.AWS_REGION }})
