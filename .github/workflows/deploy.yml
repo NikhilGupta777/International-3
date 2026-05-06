@@ -17,7 +17,7 @@ on:
       download_models_at_build:
         description: "Bake CosyVoice/LatentSync model weights into translator image"
         required: false
-        default: "false"
+        default: "true"
         type: choice
         options:
           - "false"
@@ -788,6 +788,7 @@ jobs:
           echo "✅ AMI ready: ${AMI_ID}"
 
       - name: Update Batch compute environments to use new AMI
+        id: update_ce
         run: |
           AMI_ID="${{ steps.create_ami.outputs.ami_id }}"
           REGION="${{ env.AWS_REGION }}"
@@ -837,6 +838,7 @@ jobs:
             exit 1
           fi
           echo "✅ All Batch compute environments updated to AMI ${AMI_ID}."
+          echo "ces=$(echo $CES | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
 
       - name: Terminate temp EC2 instance
         if: always()
@@ -870,4 +872,4 @@ jobs:
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| **New AMI** | \`${{ steps.create_ami.outputs.ami_id }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Translator image** | \`${{ steps.image.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Compute envs updated** | \`${{ env.CF_STACK_PREFIX }}-gpu-fast-compute\`, \`${{ env.CF_STACK_PREFIX }}-gpu-compute\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Compute envs updated** | \`${{ steps.update_ce.outputs.ces }}\` |" >> $GITHUB_STEP_SUMMARY
