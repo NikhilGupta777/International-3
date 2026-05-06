@@ -655,6 +655,28 @@ jobs:
               xargs -I{} echo "${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:{}" || \
               echo "SKIP")
           fi
+
+          # ── Validate: reject obviously bad URIs ──────────────────────────
+          if [ -z "$IMAGE" ] || [ "$IMAGE" = "SKIP" ] || [[ "$IMAGE" == *":None" ]]; then
+            echo "::error::Could not resolve a valid translator image URI. Got: '$IMAGE'"
+            exit 1
+          fi
+
+          # ── Validate: confirm the tag actually exists in ECR ─────────────
+          ECR_REPO="${{ env.ECR_TRANSLATOR_REPO }}"
+          IMG_TAG="${IMAGE##*:}"
+          DIGEST=$(aws ecr batch-get-image \
+            --repository-name "$ECR_REPO" \
+            --image-ids "imageTag=${IMG_TAG}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'images[0].imageId.imageDigest' \
+            --output text 2>/dev/null || echo "")
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "None" ]; then
+            echo "::error::Image tag '${IMG_TAG}' not found in ECR repo '${ECR_REPO}'. Cannot build AMI."
+            exit 1
+          fi
+          echo "ℹ️ ECR image verified — digest: ${DIGEST}"
+
           echo "image_uri=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "ℹ️ Translator image for AMI: ${IMAGE}"
 
@@ -767,19 +789,53 @@ jobs:
       - name: Update Batch compute environments to use new AMI
         run: |
           AMI_ID="${{ steps.create_ami.outputs.ami_id }}"
-          PREFIX="${{ env.CF_STACK_PREFIX }}"
           REGION="${{ env.AWS_REGION }}"
 
-          # v2 CEs use the Batch SLR and support ec2Configuration updates.
-          for CE in "${PREFIX}-gpu-fast-v2" "${PREFIX}-gpu-spot-v2"; do
+          # Discover real compute environments from the actual GPU job queues.
+          # This avoids hardcoded CE names breaking when infra changes.
+          QUEUES=(
+            "${{ env.CF_STACK_PREFIX }}-gpu-queue"
+            "${{ env.CF_STACK_PREFIX }}-gpu-fast-queue"
+          )
+
+          CES=""
+          for Q in "${QUEUES[@]}"; do
+            FOUND=$(aws batch describe-job-queues \
+              --job-queues "$Q" \
+              --region "$REGION" \
+              --query 'jobQueues[0].computeEnvironmentOrder[].computeEnvironment' \
+              --output text 2>/dev/null || true)
+            CES="$CES $FOUND"
+          done
+
+          # Deduplicate and filter blanks
+          CES=$(echo "$CES" | tr ' ' '\n' | grep -v '^$' | sort -u)
+
+          if [ -z "$CES" ]; then
+            echo "::error::No compute environments found from GPU job queues. Cannot apply new AMI."
+            exit 1
+          fi
+
+          echo "Compute environments to update: $(echo $CES | tr '\n' ' ')"
+          UPDATE_FAILED=0
+
+          for CE in $CES; do
             echo "Updating ${CE} → AMI ${AMI_ID}"
-            aws batch update-compute-environment \
+            if ! aws batch update-compute-environment \
               --compute-environment "${CE}" \
               --compute-resources "{\"ec2Configuration\":[{\"imageIdOverride\":\"${AMI_ID}\",\"imageType\":\"ECS_AL2_NVIDIA\"}]}" \
-              --region "${REGION}" 2>&1 || \
-            echo "⚠️  Could not update ${CE} — AMI: ${AMI_ID}"
+              --region "${REGION}"; then
+              echo "::error::Failed to update compute environment ${CE} with AMI ${AMI_ID}"
+              UPDATE_FAILED=1
+            else
+              echo "✅ ${CE} → ${AMI_ID}"
+            fi
           done
-          echo "✅ Batch compute envs updated."
+
+          if [ "$UPDATE_FAILED" = "1" ]; then
+            exit 1
+          fi
+          echo "✅ All Batch compute environments updated to AMI ${AMI_ID}."
 
       - name: Terminate temp EC2 instance
         if: always()
