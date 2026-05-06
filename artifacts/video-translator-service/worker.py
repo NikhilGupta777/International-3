@@ -1912,10 +1912,10 @@ def assemble_dubbed_audio(
             "-i", str(background_audio),
             "-filter_complex",
             (
-                "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11[v];"
-                "[1:a]loudnorm=I=-24:TP=-2:LRA=18[b];"
-                "[b][v]sidechaincompress=threshold=0.04:ratio=8:attack=20:release=250[bd];"
-                "[v][bd]amix=inputs=2:duration=first:dropout_transition=0,"
+                "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11[voice];"
+                "[1:a]loudnorm=I=-24:TP=-2:LRA=18[bg];"
+                "[bg][voice]sidechaincompress=threshold=0.04:ratio=8:attack=20:release=250[bd];"
+                "[voice][bd]amix=inputs=2:duration=first:dropout_transition=0,"
                 "alimiter=limit=0.95[out]"
             ),
             "-map", "[out]",
