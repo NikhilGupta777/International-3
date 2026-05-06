@@ -15,6 +15,8 @@ ENV MODEL_CACHE_DIR=/model-cache
 # CosyVoice uses ModelScope (Alibaba) for iic/ model IDs — NOT HuggingFace
 ENV MODELSCOPE_CACHE=/model-cache/modelscope
 ENV HF_HOME=/model-cache/huggingface
+# PyTorch hub downloads (used by Demucs) — baked into image at this path
+ENV TORCH_HOME=/model-cache/torch
 # ALLOW_RUNTIME_MODEL_DOWNLOADS=0 tells worker.py to treat missing models as a
 # fatal error rather than downloading on the fly.  worker.py then sets
 # HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1 at runtime automatically.
@@ -81,6 +83,20 @@ COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir \
     "pip<26" "setuptools<81" wheel \
     && pip install --no-cache-dir --prefer-binary -r requirements.txt -c constraints.txt
+
+# ── Pre-download Demucs htdemucs model weights (~80 MB) ──────────────────────
+# Demucs uses PyTorch Hub which downloads to TORCH_HOME at runtime if not cached.
+# Baking the weights in eliminates a 5-10 min cold-start download per job.
+# TORCH_HOME is set to /model-cache/torch so weights persist in the image layer.
+RUN python - <<'PY'
+import os
+os.environ.setdefault("TORCH_HOME", "/model-cache/torch")
+from demucs.pretrained import get_model
+print("[Demucs] Pre-downloading htdemucs model weights...")
+model = get_model("htdemucs")
+print(f"[Demucs] Model ready: {model.__class__.__name__}")
+del model
+PY
 
 # ── modelscope — required for CosyVoice model download & loading ──────────────
 # Must be its own RUN to guarantee it installs before the download step.

@@ -1,4 +1,4 @@
-"""
+﻿"""
 AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -2062,14 +2062,18 @@ def assemble_dubbed_audio(
     # loudnorm normalises both tracks to broadcast levels before mixing.
     if background_audio and background_audio.exists():
         log.info("[Assemble] Mixing dubbed voice with background (loudness-normalised)...")
-        final_mix = out_dir / "dubbed_final_mix.wav"
         run_ffmpeg(
             "-i", str(dubbed_path),
             "-i", str(background_audio),
             "-filter_complex",
             (
-                "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11,asplit=2[voice_mix][voice_ctrl];"
-                "[1:a]loudnorm=I=-24:TP=-2:LRA=18[bg];"
+                # Fix: aformat=channel_layouts=mono on sidechain + bg so that
+                # sidechaincompress gets explicit channel layouts on both inputs.
+                # Without this, FFmpeg 4.4 on Ubuntu 22.04 fails with
+                # "No channel layout for input 1".
+                "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11,asplit=2[voice_mix][voice_ctrl_raw];"
+                "[voice_ctrl_raw]aformat=channel_layouts=mono[voice_ctrl];"
+                "[1:a]loudnorm=I=-24:TP=-2:LRA=18,aformat=channel_layouts=mono[bg];"
                 "[bg][voice_ctrl]sidechaincompress=threshold=0.04:ratio=8:attack=20:release=250[bd];"
                 "[voice_mix][bd]amix=inputs=2:duration=first:dropout_transition=0,"
                 "alimiter=limit=0.95[out]"
@@ -2079,8 +2083,6 @@ def assemble_dubbed_audio(
             str(final_mix),
         )
         return final_mix
-
-    return dubbed_path
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
