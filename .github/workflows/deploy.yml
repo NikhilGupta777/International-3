@@ -74,7 +74,7 @@ jobs:
             BEFORE="HEAD~1"
           fi
 
-          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^artifacts/video-translator-service/(Dockerfile|requirements\.txt|constraints\.txt|worker\.py|runtime_deps\.py)$|^.github/(scripts/ami-userdata\.sh|workflows/deploy\.yml)$'; then
+          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^artifacts/video-translator-service/(Dockerfile|requirements\.txt|constraints\.txt|worker\.py|runtime_deps\.py)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -704,17 +704,27 @@ jobs:
           REGION="${{ env.AWS_REGION }}"
 
           # User-data: pull the translator image then signal done via a tag.
-          # Script is stored in .github/scripts/ami-userdata.sh — placeholders
-          # (ACCOUNT_PLACEHOLDER, REGION_PLACEHOLDER, TRANSLATOR_IMAGE_PLACEHOLDER)
-          # are substituted here via sed before base64-encoding.
-          # NOTE: The script was moved to a separate file to avoid the YAML heredoc
-          # column-0 syntax error that occurs when heredoc content is unindented.
-          SCRIPT=$(sed \
+          # Script stored in .github/scripts/ami-userdata.sh with placeholder tokens
+          # (ACCOUNT_PLACEHOLDER, REGION_PLACEHOLDER, TRANSLATOR_IMAGE_PLACEHOLDER).
+          # CRITICAL: the script must be 100% ASCII.  Amazon Linux 2 cloud-init uses
+          # Python 2 which crashes with UnicodeEncodeError on any non-ASCII byte in
+          # user-data.  We validate the generated script before launching EC2.
+          SCRIPT_FILE="/tmp/ami-userdata-generated.sh"
+          sed \
             -e "s|ACCOUNT_PLACEHOLDER|${ACCOUNT}|g" \
             -e "s|REGION_PLACEHOLDER|${REGION}|g" \
             -e "s|TRANSLATOR_IMAGE_PLACEHOLDER|${TRANSLATOR_IMAGE}|g" \
-            .github/scripts/ami-userdata.sh)
-          USER_DATA=$(printf '%s' "$SCRIPT" | base64 -w 0)
+            .github/scripts/ami-userdata.sh > "$SCRIPT_FILE"
+
+          # ASCII guard: fail fast if any non-ASCII byte snuck into the script.
+          # cloud-init Python 2 UnicodeEncodeError is silent and just stops user-data.
+          if grep -qP '[^\x00-\x7F]' "$SCRIPT_FILE"; then
+            echo "::error::ami-userdata contains non-ASCII characters - will break Amazon Linux 2 cloud-init!"
+            grep -nP '[^\x00-\x7F]' "$SCRIPT_FILE"
+            exit 1
+          fi
+          echo "ASCII check passed: ami-userdata is clean"
+          chmod +x "$SCRIPT_FILE"
 
           # Use Spot instance to avoid the 4 vCPU On-Demand G-instance limit.
           SPOT_OPTIONS='{"MarketType":"spot"}'
@@ -724,10 +734,10 @@ jobs:
             --instance-type g4dn.xlarge \
             --instance-market-options "${SPOT_OPTIONS}" \
             --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
-            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":80,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
             --subnet-id subnet-0e39d7f64d803f4d6 \
             --associate-public-ip-address \
-            --user-data "${USER_DATA}" \
+            --user-data "file://${SCRIPT_FILE}" \
             --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ami-builder-translator},{Key=ami-build-status,Value=building}]" \
             --query "Instances[0].InstanceId" \
             --output text \
@@ -735,17 +745,17 @@ jobs:
           echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
           echo "✅ Launched AMI builder: ${INSTANCE_ID}"
 
-      - name: Wait for image pull to complete (max 30 min)
+      - name: Wait for image pull to complete (max 60 min)
         run: |
           INSTANCE_ID="${{ steps.launch.outputs.instance_id }}"
           echo "Waiting for instance ${INSTANCE_ID} to finish pulling image..."
           READY="false"
-          for i in $(seq 1 36); do
+          for i in $(seq 1 72); do
             sleep 50
             STATUS=$(aws ec2 describe-tags \
               --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=ami-build-status" \
               --query "Tags[0].Value" --output text --region ${{ env.AWS_REGION }} 2>/dev/null || echo "unknown")
-            echo "  [${i}/36] ami-build-status=${STATUS}"
+            echo "  [${i}/72] ami-build-status=${STATUS}"
             if [ "$STATUS" = "ready" ]; then
               echo "Image pull complete."
               READY="true"
@@ -773,7 +783,7 @@ jobs:
             --name "${AMI_NAME}" \
             --description "Translator GPU AMI with pre-pulled image ${GITHUB_SHA::8}" \
             --no-reboot \
-            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":80,"VolumeType":"gp3"}}]' \
+            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3"}}]' \
             --query "ImageId" \
             --output text \
             --region ${{ env.AWS_REGION }})
