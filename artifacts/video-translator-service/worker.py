@@ -23,7 +23,6 @@ Pipeline:
 
 import os
 import sys
-import uuid
 import time
 import json
 import re
@@ -42,7 +41,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import boto3
-from botocore.exceptions import ClientError
 
 from runtime_deps import pip_install_command, write_runtime_requirements
 
@@ -53,6 +51,14 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 log = logging.getLogger("translator-worker")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        log.warning("Invalid integer env %s=%r; using %s", name, os.environ.get(name), default)
+        return default
 
 # â”€â”€ Environment config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 JOB_ID              = os.environ["JOB_ID"]
@@ -99,6 +105,8 @@ ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "false
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
 LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")
 LATENTSYNC_CHECKPOINT = os.environ.get("LATENTSYNC_CHECKPOINT", "latentsync_unet.pt")
+FFMPEG_TIMEOUT_SECONDS = _env_int("FFMPEG_TIMEOUT_SECONDS", 3600)
+FFPROBE_TIMEOUT_SECONDS = _env_int("FFPROBE_TIMEOUT_SECONDS", 120)
 
 # ── Force HuggingFace/ModelScope offline mode ─────────────────────────────────
 # All model weights are baked into the Docker image at build time.
@@ -264,17 +272,73 @@ def presigned_url(key: str, expires: int = 3600) -> str:
 # FFmpeg helpers
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def run_ffmpeg(*args, check: bool = True):
+def run_ffmpeg(*args, check: bool = True, timeout: Optional[int] = None):
     cmd = ["ffmpeg", "-y", *args]
     log.info(f"[FFmpeg] {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout or FFMPEG_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg binary is not installed or not available on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        stderr = (exc.stderr or "")[-2000:]
+        raise RuntimeError(
+            f"FFmpeg timed out after {timeout or FFMPEG_TIMEOUT_SECONDS}s. "
+            f"Command: {' '.join(cmd)}\n{stderr}"
+        ) from exc
     if check and result.returncode != 0:
-        raise RuntimeError(f"FFmpeg failed:\n{result.stderr[-2000:]}")
+        raise RuntimeError(
+            f"FFmpeg failed with exit {result.returncode}. "
+            f"Command: {' '.join(cmd)}\n{result.stderr[-3000:]}"
+        )
     return result
+
+
+def run_ffprobe(*args, check: bool = True, timeout: Optional[int] = None):
+    cmd = ["ffprobe", *args]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout or FFPROBE_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffprobe binary is not installed or not available on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        stderr = (exc.stderr or "")[-1000:]
+        raise RuntimeError(
+            f"ffprobe timed out after {timeout or FFPROBE_TIMEOUT_SECONDS}s. "
+            f"Command: {' '.join(cmd)}\n{stderr}"
+        ) from exc
+    if check and result.returncode != 0:
+        raise RuntimeError(
+            f"ffprobe failed with exit {result.returncode}. "
+            f"Command: {' '.join(cmd)}\n{result.stderr[-2000:]}"
+        )
+    return result
+
+
+def video_has_audio_stream(video_path: Path) -> bool:
+    result = run_ffprobe(
+        "-v", "error",
+        "-select_streams", "a:0",
+        "-show_entries", "stream=index",
+        "-of", "csv=p=0",
+        str(video_path),
+    )
+    return bool(result.stdout.strip())
 
 
 def extract_audio(video_path: Path, out_dir: Path) -> Path:
     """Extract audio as 16kHz mono WAV."""
+    if not video_has_audio_stream(video_path):
+        raise RuntimeError("Input video has no audio stream; video translation requires spoken audio.")
+
     wav_path = out_dir / "audio_full.wav"
     run_ffmpeg(
         "-i", str(video_path),
@@ -282,16 +346,26 @@ def extract_audio(video_path: Path, out_dir: Path) -> Path:
         "-ar", "16000", "-ac", "1",
         str(wav_path),
     )
+    if not wav_path.exists() or wav_path.stat().st_size == 0:
+        raise RuntimeError(f"Audio extraction produced no WAV output at {wav_path}.")
     return wav_path
 
 
 def get_video_duration(video_path: Path) -> float:
-    result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
-        capture_output=True, text=True, check=True,
+    result = run_ffprobe(
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
     )
-    return float(result.stdout.strip())
+    raw = result.stdout.strip()
+    try:
+        duration = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Could not read video duration from ffprobe output: {raw!r}") from exc
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError(f"Invalid video duration from ffprobe: {duration!r}")
+    return duration
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -304,9 +378,7 @@ def run_demucs(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
     Returns (vocals_path, background_path).
     """
     # Lazy install demucs (stripped from base image to keep CI fast)
-    try:
-        import demucs  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("demucs") is None:
         import subprocess as _spd, sys as _sysd
         _spd.run([_sysd.executable, '-m', 'pip', 'install',
                   '--quiet', '--prefer-binary', 'demucs==4.0.1'], check=True)
@@ -407,7 +479,7 @@ def transcribe(audio_path: Path) -> list[dict]:
         seg_start_t = word_list[0].start / 1000.0
 
         def flush(end_t):
-            nonlocal cur_words, seg_start_t
+            nonlocal cur_words
             if not cur_words:
                 return
             text = " ".join(w["word"] for w in cur_words).strip()
@@ -527,9 +599,10 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
             return segments
 
         # Only reach here if HF_TOKEN is set — install pyannote lazily
-        try:
-            import pyannote.audio  # noqa: F401
-        except ImportError:
+        if (
+            importlib.util.find_spec("pyannote") is None
+            or importlib.util.find_spec("pyannote.audio") is None
+        ):
             import subprocess as _spp, sys as _sysp
             _spp.run([_sysp.executable, '-m', 'pip', 'install',
                       '--quiet', '--prefer-binary', 'pyannote.audio>=3.1.0'], check=True)
@@ -1138,6 +1211,51 @@ def target_script_instruction(target_lang: str, target_code: str) -> str:
             return instruction
     return "Use the normal native writing system for the target language. Do not romanize unless that language is normally written in Latin script."
 
+
+def _normalise_translation_response(raw) -> list[dict]:
+    if isinstance(raw, dict):
+        for key in ("translations", "segments", "items", "data"):
+            if isinstance(raw.get(key), list):
+                raw = raw[key]
+                break
+        else:
+            if "id" in raw:
+                raw = [raw]
+            else:
+                raise RuntimeError(
+                    "Gemini returned a JSON object instead of a translation list. "
+                    f"Keys: {sorted(raw.keys())[:10]}"
+                )
+    if not isinstance(raw, list):
+        raise RuntimeError(f"Gemini returned invalid JSON shape: {type(raw).__name__}, expected list.")
+    cleaned: list[dict] = []
+    seen_ids: set[int] = set()
+    for idx, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"Gemini translation item {idx} is {type(item).__name__}, expected object.")
+        if "id" not in item:
+            raise RuntimeError(f"Gemini translation item {idx} is missing id.")
+        try:
+            item["id"] = int(item["id"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Gemini translation item {idx} has invalid id: {item.get('id')!r}") from exc
+        if item["id"] in seen_ids:
+            raise RuntimeError(f"Gemini returned duplicate translation id: {item['id']}")
+        seen_ids.add(item["id"])
+        cleaned.append(item)
+    return cleaned
+
+
+def _safe_speaking_rate(value) -> float:
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(rate):
+        return 1.0
+    return max(0.9, min(1.2, rate))
+
+
 def translate_segments(segments: list[dict]) -> list[dict]:
     """
     Translate all segments using Gemini with dubbing-aware prompts.
@@ -1187,7 +1305,7 @@ def translate_segments(segments: list[dict]) -> list[dict]:
                     "response_mime_type": "application/json",
                 },
             )
-            translations = json.loads(response.text)
+            translations = _normalise_translation_response(json.loads(response.text))
             break
         except Exception as e:
             attempts += 1
@@ -1203,6 +1321,9 @@ def translate_segments(segments: list[dict]) -> list[dict]:
             time.sleep(2 ** attempts)
 
     # Merge translations back into segments
+    if translations is None:
+        raise RuntimeError("Translation failed: Gemini returned no translations.")
+
     trans_map = {t["id"]: t for t in translations}
     missing = [seg["id"] for seg in segments if seg["id"] not in trans_map]
     if missing:
@@ -1219,7 +1340,7 @@ def translate_segments(segments: list[dict]) -> list[dict]:
         tts_raw = str(t.get("tts_text", "")).strip()
         seg["tts_text"] = tts_raw if tts_raw else translated
         seg["emotion"] = t.get("emotion", "neutral")
-        seg["speaking_rate"] = max(0.9, min(1.2, float(t.get("speaking_rate", 1.0))))
+        seg["speaking_rate"] = _safe_speaking_rate(t.get("speaking_rate", 1.0))
 
     log.info(f"[Gemini] Translation complete using {model}.")
     return segments
@@ -1525,7 +1646,16 @@ def synthesize_segments_cosyvoice(
                     zs_args["speed"] = 1.0
                 chunks = list(model.inference_zero_shot(**zs_args))
 
-            audio_data = torch.cat([c["tts_speech"] for c in chunks], dim=1)
+            tts_chunks = [
+                c["tts_speech"]
+                for c in chunks
+                if isinstance(c, dict) and c.get("tts_speech") is not None
+            ]
+            if not tts_chunks:
+                raise RuntimeError("CosyVoice returned no audio chunks.")
+            audio_data = torch.cat(tts_chunks, dim=1)
+            if audio_data.numel() == 0:
+                raise RuntimeError("CosyVoice returned empty audio.")
             torchaudio.save(str(out_path), audio_data, 24000)  # CosyVoice native SR=24kHz
         except Exception as exc:
             raise RuntimeError(
@@ -1644,7 +1774,15 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
     """
     import soundfile as sf
     data, sr = sf.read(str(audio_path))
+    if sr <= 0:
+        raise RuntimeError(f"Invalid sample rate {sr} while reading {audio_path}.")
     actual_dur = len(data) / sr
+    if not math.isfinite(actual_dur) or actual_dur <= 0:
+        log.warning("[Timing] Empty audio for %s; inserting silence.", audio_path.name)
+        out_path = audio_path.with_stem(audio_path.stem + "_silence")
+        duration = max(0.25, float(target_duration or 0.25))
+        run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(duration), str(out_path))
+        return out_path
 
     if abs(actual_dur - target_duration) < 0.1:
         return audio_path  # close enough, no change needed
@@ -1868,7 +2006,13 @@ def assemble_dubbed_audio(
     import soundfile as sf
 
     log.info("[Assemble] Assembling final dubbed audio track...")
-    min_samples = int(math.ceil(video_duration * SR))
+    if not math.isfinite(video_duration) or video_duration <= 0:
+        raise RuntimeError(f"Cannot assemble dubbed audio for invalid video duration: {video_duration!r}")
+    if len(seg_audio_paths) < len(segments):
+        raise RuntimeError(
+            f"Only {len(seg_audio_paths)} synthesized audio files for {len(segments)} segments."
+        )
+    min_samples = max(1, int(math.ceil(video_duration * SR)))
     mixed = np.zeros(min_samples, dtype=np.float32)
 
     for seg, audio_path in zip(segments, seg_audio_paths):
@@ -1876,7 +2020,14 @@ def assemble_dubbed_audio(
             log.warning(f"[Assemble] Missing audio for segment {seg['id']}")
             continue
 
-        data, sr = sf.read(str(audio_path))
+        try:
+            data, sr = sf.read(str(audio_path))
+        except Exception as exc:
+            log.warning(f"[Assemble] Could not read segment audio {audio_path}: {exc}")
+            continue
+        if sr <= 0 or len(data) == 0:
+            log.warning(f"[Assemble] Empty/invalid audio for segment {seg['id']}: {audio_path}")
+            continue
         if data.ndim > 1:
             data = data.mean(axis=1)  # stereo â†’ mono
 
@@ -1890,6 +2041,8 @@ def assemble_dubbed_audio(
         max_seg_samples = max(1, int((seg["end"] - seg["start"]) * SR))
         if len(data) > max_seg_samples:
             data = data[:max_seg_samples]
+        if len(data) == 0:
+            continue
 
         start_sample = max(0, int(seg["start"] * SR))
         end_sample = start_sample + len(data)
@@ -2091,7 +2244,7 @@ def main():
         # â”€â”€ 6. Translation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("TRANSLATING", 35, f"Translating to {TARGET_LANG}...")
         segments = translate_segments(segments)
-        update_progress("TRANSLATING", 48, f"Translation complete. Generating voice...")
+        update_progress("TRANSLATING", 48, "Translation complete. Generating voice...")
 
         # -- 7. Extract per-speaker voice references (when voice cloning + multiple speakers) -
         speaker_refs: dict = {}

@@ -67,9 +67,9 @@ RUN git clone --depth 1 \
 # first lip-sync job doesn't need a runtime pip install.
 COPY runtime_deps.py /tmp/runtime_deps.py
 RUN if [ -f /model-cache/LatentSync/requirements.txt ]; then \
-      python -c "from pathlib import Path; exec(Path('/tmp/runtime_deps.py').read_text()); write_runtime_requirements(Path('/model-cache/LatentSync/requirements.txt'), Path('/tmp/ls_filtered.txt'))" 2>/dev/null \
-      && pip install --no-cache-dir --prefer-binary -r /tmp/ls_filtered.txt || \
-      pip install --no-cache-dir --prefer-binary -r /model-cache/LatentSync/requirements.txt || true; \
+      python -c "from pathlib import Path; exec(Path('/tmp/runtime_deps.py').read_text()); write_runtime_requirements(Path('/model-cache/LatentSync/requirements.txt'), Path('/tmp/ls_filtered.txt'))" \
+      && pip install --no-cache-dir --prefer-binary -r /tmp/ls_filtered.txt \
+      && touch /model-cache/LatentSync/.deps_installed; \
       rm -f /tmp/ls_filtered.txt; \
     fi && rm -f /tmp/runtime_deps.py
 
