@@ -793,9 +793,50 @@ jobs:
       - name: Wait for AMI to be available
         run: |
           AMI_ID="${{ steps.create_ami.outputs.ami_id }}"
+          REGION="${{ env.AWS_REGION }}"
           echo "Waiting for AMI ${AMI_ID} to become available..."
-          aws ec2 wait image-available --image-ids "${AMI_ID}" --region ${{ env.AWS_REGION }}
-          echo "✅ AMI ready: ${AMI_ID}"
+
+          # Use a custom poll loop instead of aws ec2 wait image-available.
+          # The built-in waiter only retries ~40 times x 15s = ~10 min which is
+          # not enough for a 200 GB snapshot of a 20 GB image.
+          MAX_WAIT=3600
+          INTERVAL=30
+          ELAPSED=0
+
+          while [ "$ELAPSED" -le "$MAX_WAIT" ]; do
+            IMG_JSON=$(aws ec2 describe-images \
+              --image-ids "$AMI_ID" \
+              --region "$REGION" \
+              --output json 2>/dev/null || echo '{}')
+
+            STATE=$(echo "$IMG_JSON" | jq -r '.Images[0].State // "unknown"')
+            REASON=$(echo "$IMG_JSON" | jq -r '.Images[0].StateReason.Message // ""')
+
+            # Print snapshot progress so we can see it moving in the logs
+            SNAPS=$(echo "$IMG_JSON" | jq -r '.Images[0].BlockDeviceMappings[].Ebs.SnapshotId? // empty' 2>/dev/null || true)
+            for SNAP in $SNAPS; do
+              PROG=$(aws ec2 describe-snapshots --snapshot-ids "$SNAP" --region "$REGION" \
+                --query 'Snapshots[0].Progress' --output text 2>/dev/null || echo "?")
+              echo "  [${ELAPSED}s] snapshot ${SNAP}: ${PROG}"
+            done
+
+            echo "[${ELAPSED}s/${MAX_WAIT}s] AMI state=${STATE} ${REASON}"
+
+            if [ "$STATE" = "available" ]; then
+              echo "AMI ready: ${AMI_ID}"
+              exit 0
+            fi
+            if [ "$STATE" = "failed" ]; then
+              echo "::error::AMI creation failed: ${REASON}"
+              exit 1
+            fi
+
+            sleep "$INTERVAL"
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "::error::Timeout waiting for AMI ${AMI_ID} after ${MAX_WAIT}s"
+          exit 1
 
       - name: Update Batch compute environments to use new AMI
         id: update_ce
