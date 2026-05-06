@@ -716,6 +716,7 @@ jobs:
         run: |
           INSTANCE_ID="${{ steps.launch.outputs.instance_id }}"
           echo "Waiting for instance ${INSTANCE_ID} to finish pulling image..."
+          READY="false"
           for i in $(seq 1 36); do
             sleep 50
             STATUS=$(aws ec2 describe-tags \
@@ -723,10 +724,21 @@ jobs:
               --query "Tags[0].Value" --output text --region ${{ env.AWS_REGION }} 2>/dev/null || echo "unknown")
             echo "  [${i}/36] ami-build-status=${STATUS}"
             if [ "$STATUS" = "ready" ]; then
-              echo "✅ Image pull complete."
+              echo "Image pull complete."
+              READY="true"
               break
             fi
+            if [ "$STATUS" = "failed" ]; then
+              echo "::error::AMI builder user-data failed while pulling translator image."
+              aws ec2 get-console-output --instance-id "${INSTANCE_ID}" --latest --region ${{ env.AWS_REGION }} --output text || true
+              exit 1
+            fi
           done
+          if [ "$READY" != "true" ]; then
+            echo "::error::Timed out waiting for translator image pre-pull. Refusing to create an unverified AMI."
+            aws ec2 get-console-output --instance-id "${INSTANCE_ID}" --latest --region ${{ env.AWS_REGION }} --output text || true
+            exit 1
+          fi
 
       - name: Create AMI from instance
         id: create_ami
