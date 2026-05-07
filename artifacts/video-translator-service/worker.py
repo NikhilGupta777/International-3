@@ -1560,6 +1560,8 @@ def synthesize_segments_cosyvoice(
                 if value:
                     global_prompt_text = value
                     break
+            if not global_prompt_text:
+                log.info("[CosyVoice] Speaker prompt texts provided but all were empty; using fallback prompts.")
 
         if not global_prompt_text:
             # Global fallback: first 12 s of the recording
@@ -1644,7 +1646,9 @@ def synthesize_segments_cosyvoice(
         else:
             seg_ref_wav, seg_ref_prompt_path = default_ref_wav, default_ref_prompt_path
 
-        seg_prompt_text = speaker_prompt_texts.get(speaker) or global_prompt_text
+        seg_prompt_text = speaker_prompt_texts.get(speaker)
+        if not seg_prompt_text:
+            seg_prompt_text = global_prompt_text
         # CosyVoice3 zero-shot: instruction prefix goes in prompt_text (not tts_text)
         if is_cosyvoice3 and seg_prompt_text:
             seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
