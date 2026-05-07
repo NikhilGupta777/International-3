@@ -43,6 +43,7 @@ env:
   ECR_WORKER_REPO: ytgrabber-green-worker
   ECR_TRANSLATOR_REPO: ytgrabber-green-translator
   ECR_TRANSLATOR_CPU_REPO: ytgrabber-green-translator-cpu
+  ECR_TRANSLATOR_BASE_REPO: ytgrabber-green-translator-base
   CF_STACK_PREFIX: ytgrabber-green
   YTDLP_VERSION: "2026.03.17"
   SITE_DOMAIN_NAME: videomaking.in
@@ -74,7 +75,7 @@ jobs:
             BEFORE="HEAD~1"
           fi
 
-          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^artifacts/video-translator-service/(Dockerfile|requirements\.txt|constraints\.txt|worker\.py|runtime_deps\.py)$'; then
+          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^artifacts/video-translator-service/(Dockerfile|Dockerfile\.base|requirements\.txt|constraints\.txt|worker\.py|runtime_deps\.py)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -217,32 +218,32 @@ jobs:
   # or requirements.txt actually changes. This prevents 60-minute builds on
   # every commit. The deployed image tag is stored in ECR and re-used.
   # To rebuild manually: Actions → Deploy to Production → Run workflow → check "rebuild_translator"
+  # ─── Job 3: Build translator images (base + slim) ────────────────────────────
+  # SPLIT IMAGE STRATEGY — two Dockerfiles, two images:
+  #
+  #   Dockerfile.base  (~20 GB): CUDA + all model weights + Python deps
+  #     Rebuilt ONLY when Dockerfile.base / requirements.txt / constraints.txt /
+  #     runtime_deps.py change.  Typical: once per few weeks.  Time: ~20-25 min.
+  #
+  #   Dockerfile (slim, ~50 MB): FROM translator-base + COPY worker.py + validation
+  #     Rebuilt on EVERY push that touches any translator file.  Time: ~2-3 min.
+  #     Includes pyflakes + py_compile — broken code FAILS THE BUILD here.
+  #
+  # Result: worker.py fixes deploy in 2-3 min instead of 25 min.
   build-translator:
     name: Build Translator Image
     runs-on: ubuntu-latest
     needs: [detect-translator-changes]
     if: ${{ needs.detect-translator-changes.outputs.changed == 'true' }}
     outputs:
-      image_uri: ${{ steps.push.outputs.image_uri }}
+      image_uri:    ${{ steps.slim_push.outputs.image_uri }}
       batch_job_def: ${{ steps.register.outputs.batch_job_def }}
+      base_changed: ${{ steps.detect_base.outputs.base_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: false
-
-      # Free up GitHub runner disk space before the heavy build (Issue 1 mitigation)
-      - name: Free disk space
-        run: |
-          echo "Disk before cleanup:"
-          df -h
-          # Remove large pre-installed tools not needed for translator build
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/boost
-          sudo docker system prune -af || true
-          echo "Disk after cleanup:"
-          df -h
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -253,38 +254,115 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build & push translator image
-        id: push
+      # ── Step 1: Detect if base image needs rebuilding ──────────────────────
+      - name: Detect base image changes
+        id: detect_base
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && \
+             [ "${{ github.event.inputs.rebuild_translator }}" = "true" ]; then
+            echo "base_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Manual rebuild — treating base as changed"
+            exit 0
+          fi
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="HEAD~1"
+          fi
+          if git diff --name-only "$BEFORE" "$GITHUB_SHA" | \
+             grep -E '^artifacts/video-translator-service/(Dockerfile\.base|requirements\.txt|constraints\.txt|runtime_deps\.py)$'; then
+            echo "base_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Base dependencies changed — will rebuild base image (~20 min)"
+          else
+            echo "base_changed=false" >> "$GITHUB_OUTPUT"
+            echo "Base unchanged — will reuse existing base image, build slim only (~2-3 min)"
+          fi
+
+      # ── Step 2a: Build base image (only when base files changed) ───────────
+      - name: Free disk space (base build only)
+        if: steps.detect_base.outputs.base_changed == 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo docker system prune -af || true
+          df -h
+
+      - name: Ensure base ECR repo exists
+        if: steps.detect_base.outputs.base_changed == 'true'
+        run: |
+          aws ecr describe-repositories --repository-names "${{ env.ECR_TRANSLATOR_BASE_REPO }}" \
+            --region "${{ env.AWS_REGION }}" 2>/dev/null || \
+          aws ecr create-repository --repository-name "${{ env.ECR_TRANSLATOR_BASE_REPO }}" \
+            --region "${{ env.AWS_REGION }}"
+
+      - name: Build & push base image
+        id: base_push
+        if: steps.detect_base.outputs.base_changed == 'true'
         run: |
           TAG="${GITHUB_SHA::8}"
-          URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:${TAG}"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # Default to true for manual builds — models must always be baked in.
-            # Only set to false for a lightweight dev/test build (not production).
             DOWNLOAD_MODELS="${{ github.event.inputs.download_models_at_build || 'true' }}"
           else
             DOWNLOAD_MODELS="true"
           fi
-          echo "DOWNLOAD_MODELS_AT_BUILD=${DOWNLOAD_MODELS}"
+          BASE_URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_BASE_REPO }}:${TAG}"
           docker buildx build \
             --platform linux/amd64 \
-            --provenance=false \
-            --sbom=false \
-            -f artifacts/video-translator-service/Dockerfile \
+            --provenance=false --sbom=false \
+            -f artifacts/video-translator-service/Dockerfile.base \
             --build-arg DOWNLOAD_MODELS_AT_BUILD="$DOWNLOAD_MODELS" \
-            -t "$URI" \
-            --cache-from type=gha,scope=translator-image \
-            --cache-to type=gha,mode=max,scope=translator-image \
+            -t "$BASE_URI" \
+            --cache-from type=gha,scope=translator-base-image \
+            --cache-to type=gha,mode=max,scope=translator-base-image \
             --push artifacts/video-translator-service/
-          echo "image_uri=${URI}" >> "$GITHUB_OUTPUT"
-          echo "✅ Translator image: ${URI}"
+          echo "base_uri=${BASE_URI}" >> "$GITHUB_OUTPUT"
+          echo "Base image pushed: ${BASE_URI}"
 
+      # ── Step 2b: Resolve existing base image (when base unchanged) ─────────
+      - name: Resolve existing base image from ECR
+        id: base_resolve
+        if: steps.detect_base.outputs.base_changed != 'true'
+        run: |
+          # Find the most recently pushed base image tag
+          TAG=$(aws ecr describe-images \
+            --repository-name "${{ env.ECR_TRANSLATOR_BASE_REPO }}" \
+            --region "${{ env.AWS_REGION }}" \
+            --query 'sort_by(imageDetails, &imagePushedAt)[-1].imageTags[0]' \
+            --output text 2>/dev/null || echo "")
+          if [ -z "$TAG" ] || [ "$TAG" = "None" ]; then
+            echo "::error::No base image found in ECR. Run with rebuild_translator=true to build the base image first."
+            exit 1
+          fi
+          BASE_URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_BASE_REPO }}:${TAG}"
+          echo "base_uri=${BASE_URI}" >> "$GITHUB_OUTPUT"
+          echo "Reusing existing base image: ${BASE_URI}"
+
+      # ── Step 3: Build slim translator image (always, fast ~2-3 min) ────────
+      # Uses Dockerfile (slim): FROM base + COPY worker.py + pyflakes validation.
+      # The validation step FAILS THE BUILD if worker.py has syntax errors or
+      # undefined names — preventing broken code from ever reaching production.
+      - name: Build & push slim translator image
+        id: slim_push
+        run: |
+          TAG="${GITHUB_SHA::8}"
+          BASE_IMAGE="${{ steps.base_push.outputs.base_uri || steps.base_resolve.outputs.base_uri }}"
+          SLIM_URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:${TAG}"
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=false --sbom=false \
+            -f artifacts/video-translator-service/Dockerfile \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            -t "$SLIM_URI" \
+            --cache-from type=gha,scope=translator-slim-image \
+            --cache-to type=gha,mode=max,scope=translator-slim-image \
+            --push artifacts/video-translator-service/
+          echo "image_uri=${SLIM_URI}" >> "$GITHUB_OUTPUT"
+          echo "Slim translator image pushed: ${SLIM_URI}"
+
+      # ── Step 4: Register Batch job definition ──────────────────────────────
       - name: Register new Batch job definition
         id: register
         run: |
-          TRANSLATOR_URI="${{ steps.push.outputs.image_uri }}"
+          TRANSLATOR_URI="${{ steps.slim_push.outputs.image_uri }}"
 
-          # Get current active job definition
           CURRENT=$(aws batch describe-job-definitions \
             --job-definition-name ${{ env.CF_STACK_PREFIX }}-translator-job \
             --status ACTIVE \
@@ -295,9 +373,6 @@ jobs:
             --arg img "$TRANSLATOR_URI" \
             'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
              .containerProperties.image = $img |
-             # Explicitly set command so ENTRYPOINT [] + python -u is always baked in.
-             # Without this, the old command from the previous definition is preserved,
-             # meaning a rollback could silently restore the broken entrypoint behaviour.
              .containerProperties.command = ["python", "-u", "worker.py"] |
              .timeout = {"attemptDurationSeconds": 3000} |
              (.containerProperties.resourceRequirements[] | select(.type == "MEMORY").value) = "15000" |
@@ -310,7 +385,7 @@ jobs:
           REV=$(echo "$RESULT" | jq -r '.revision')
           DEF="${{ env.CF_STACK_PREFIX }}-translator-job:${REV}"
           echo "batch_job_def=${DEF}" >> "$GITHUB_OUTPUT"
-          echo "✅ Translator Batch job def: ${DEF}"
+          echo "Translator Batch job def: ${DEF}"
 
   # ─── Job to resolve the current translator image tag (when not rebuilt) ──────
   # When build-translator is skipped, we look up the most recent ECR image tag
@@ -585,7 +660,7 @@ jobs:
           # All repos keep last 3 images — translator image is large (~20GB) and
           # 10-tag retention was costing ~$14/month in ECR storage with no rollback benefit.
           # 3 tags = current + 2 rollback versions, which is sufficient.
-          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_CPU_REPO }} malika-editor; do
+          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }} ${{ env.ECR_TRANSLATOR_CPU_REPO }} ${{ env.ECR_TRANSLATOR_BASE_REPO }} malika-editor; do
             aws ecr put-lifecycle-policy \
               --repository-name "$REPO" \
               --lifecycle-policy-text "$POLICY_3" \
@@ -620,11 +695,20 @@ jobs:
     name: Refresh GPU AMI (pre-pull translator image)
     runs-on: ubuntu-latest
     needs: [build-translator, deploy]
+    # AMI refresh only runs when the BASE image changed (models/deps) — not on
+    # every worker.py code push.  Because the slim image is tiny (~50 MB), a
+    # code-only change causes Docker to pull only the new slim layer (~10 sec)
+    # on first cold start even without an AMI refresh.  This saves ~35 min of
+    # AMI build time on every routine code fix.
+    #
+    # Triggers:
+    #   - base_changed=true  : Dockerfile.base / requirements.txt etc changed
+    #   - rebuild_gpu_ami=true: manual workflow_dispatch override
     if: >
       always() &&
       needs.deploy.result == 'success' &&
       (
-        needs.build-translator.result == 'success' ||
+        (needs.build-translator.result == 'success' && needs.build-translator.outputs.base_changed == 'true') ||
         github.event.inputs.rebuild_gpu_ami == 'true'
       )
     steps:
