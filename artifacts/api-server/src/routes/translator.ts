@@ -46,6 +46,7 @@ const REGION       = process.env.YOUTUBE_QUEUE_REGION ?? "us-east-1";
 const S3_BUCKET    = process.env.S3_BUCKET!;
 const DDB_TABLE    = process.env.YOUTUBE_QUEUE_JOB_TABLE!;
 const BATCH_QUEUE   = process.env.TRANSLATOR_BATCH_JOB_QUEUE!;
+const BATCH_QUEUE_FAST = process.env.TRANSLATOR_BATCH_JOB_QUEUE_FAST ?? "";
 const BATCH_JOB_DEF = process.env.TRANSLATOR_BATCH_JOB_DEFINITION!;
 // CPU Fargate queue — used for Neural Voice (no GPU) jobs.
 // Falls back to GPU queue if not configured.
@@ -69,6 +70,9 @@ const TRANSLATOR_MAX_VIDEO_SIZE_BYTES = Math.max(
   Number(process.env.TRANSLATOR_MAX_VIDEO_SIZE_BYTES ?? String(2 * 1024 * 1024 * 1024)) || 2 * 1024 * 1024 * 1024,
 );
 const TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS = process.env.TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS ?? "0";
+const TRANSLATOR_LIP_SYNC_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(process.env.TRANSLATOR_LIP_SYNC_ENABLED ?? "false").toLowerCase(),
+);
 const TRANSLATOR_LAMBDA_FAST_ENABLED = process.env.TRANSLATOR_LAMBDA_FAST_ENABLED !== "false";
 const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
   60,
@@ -545,9 +549,10 @@ async function submitTranslatorBatchJob(
   options: TranslatorOptions,
   useCpuQueue = false,
 ): Promise<string> {
-  const queue   = useCpuQueue ? CPU_BATCH_QUEUE   : BATCH_QUEUE;
+  const useFastGpuQueue = !useCpuQueue && options.lipSync && Boolean(BATCH_QUEUE_FAST);
+  const queue   = useCpuQueue ? CPU_BATCH_QUEUE   : (useFastGpuQueue ? BATCH_QUEUE_FAST : BATCH_QUEUE);
   const jobDef  = useCpuQueue ? CPU_BATCH_JOB_DEF : BATCH_JOB_DEF;
-  const runtime = useCpuQueue ? "batch-cpu"       : "batch";
+  const runtime = useCpuQueue ? "batch-cpu"       : (useFastGpuQueue ? "batch-lipsync" : "batch");
 
   const batchResult = await batch.send(new SubmitJobCommand({
     jobName:       `translator-${useCpuQueue ? "cpu-" : ""}${jobId.slice(0, 8)}`,
@@ -1130,7 +1135,7 @@ router.post("/submit", async (req: Request, res: Response) => {
       targetLangCode: String(targetLangCode),
       sourceLang: String(sourceLang),
       voiceClone: boolValue(voiceClone, true),
-      lipSync: boolValue(lipSync, false),
+      lipSync: TRANSLATOR_LIP_SYNC_ENABLED && boolValue(lipSync, false),
       lipSyncQuality: String(lipSyncQuality),
       useDemucs: boolValue(useDemucs, false),
       premiumAsr: boolValue(premiumAsr, false),
@@ -1207,7 +1212,7 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
       targetLangCode: String(targetLangCode),
       sourceLang: String(sourceLang),
       voiceClone: boolValue(voiceClone, true),
-      lipSync: boolValue(lipSync, false),
+      lipSync: TRANSLATOR_LIP_SYNC_ENABLED && boolValue(lipSync, false),
       lipSyncQuality: String(lipSyncQuality),
       useDemucs: boolValue(useDemucs, false),
       premiumAsr: boolValue(premiumAsr, false),

@@ -624,9 +624,15 @@ jobs:
           upsert_env "TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS" "0"
           # CosyVoice3 model ID passed explicitly to every Batch job.
           upsert_env "TRANSLATOR_COSYVOICE_MODEL_ID" "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
-          # Fail loudly on clone/lipsync failure — no silent fallback to neural voice.
+          # Fail loudly on voice-clone failure, but do not fail the whole job if
+          # LatentSync fails/OOMs on a hard video. In that case the worker muxes
+          # the dubbed audio into the original video and records a warning.
           upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "false"
-          upsert_env "TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK" "false"
+          upsert_env "TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK" "true"
+          # Keep lip sync hidden/disabled for normal users until we add
+          # per-user permissions. When enabled later, API routes these jobs to
+          # the g5 fast queue via TRANSLATOR_BATCH_JOB_QUEUE_FAST.
+          upsert_env "TRANSLATOR_LIP_SYNC_ENABLED" "false"
           # CPU Fargate queue for Neural Voice (no GPU) jobs — edge-tts dubbing.
           # Starts in ~30 sec (Fargate), 10x cheaper than GPU.
           upsert_env "TRANSLATOR_CPU_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-translator-cpu-queue"

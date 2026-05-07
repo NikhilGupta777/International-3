@@ -131,9 +131,18 @@ Parameters:
   TranslatorBatchJobQueue:
     Type: String
     Default: "ytgrabber-green-gpu-queue"
+  TranslatorBatchJobQueueFast:
+    Type: String
+    Default: ""
   TranslatorBatchJobDefinition:
     Type: String
     Default: "ytgrabber-green-translator-job"
+  TranslatorCpuBatchJobQueue:
+    Type: String
+    Default: ""
+  TranslatorCpuBatchJobDefinition:
+    Type: String
+    Default: ""
   TranslatorBatchTimeoutSeconds:
     Type: Number
     Default: 3000
@@ -143,6 +152,18 @@ Parameters:
   TranslatorAllowRuntimeModelDownloads:
     Type: String
     Default: "1"
+  TranslatorCosyVoiceModelId:
+    Type: String
+    Default: "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
+  TranslatorAllowVoiceCloneFallback:
+    Type: String
+    Default: "false"
+  TranslatorAllowLipSyncFallback:
+    Type: String
+    Default: "true"
+  TranslatorLipSyncEnabled:
+    Type: String
+    Default: "false"
   YoutubeQueuePrimaryEnabled:
     Type: String
     Default: "true"
@@ -416,10 +437,17 @@ Resources:
           YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue
           YOUTUBE_BATCH_JOB_DEFINITION: !Ref YoutubeBatchJobDefinition
           TRANSLATOR_BATCH_JOB_QUEUE: !Ref TranslatorBatchJobQueue
+          TRANSLATOR_BATCH_JOB_QUEUE_FAST: !Ref TranslatorBatchJobQueueFast
           TRANSLATOR_BATCH_JOB_DEFINITION: !Ref TranslatorBatchJobDefinition
+          TRANSLATOR_CPU_BATCH_JOB_QUEUE: !Ref TranslatorCpuBatchJobQueue
+          TRANSLATOR_CPU_BATCH_JOB_DEFINITION: !Ref TranslatorCpuBatchJobDefinition
           TRANSLATOR_BATCH_TIMEOUT_SECONDS: !Ref TranslatorBatchTimeoutSeconds
           TRANSLATOR_MAX_VIDEO_SIZE_BYTES: !Ref TranslatorMaxVideoSizeBytes
           TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS: !Ref TranslatorAllowRuntimeModelDownloads
+          TRANSLATOR_COSYVOICE_MODEL_ID: !Ref TranslatorCosyVoiceModelId
+          TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK: !Ref TranslatorAllowVoiceCloneFallback
+          TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK: !Ref TranslatorAllowLipSyncFallback
+          TRANSLATOR_LIP_SYNC_ENABLED: !Ref TranslatorLipSyncEnabled
           RATE_LIMIT_BYPASS_IPS: !Ref RateLimitBypassIps
           VAPID_PUBLIC_KEY: !Ref VapidPublicKey
           VAPID_PRIVATE_KEY: !Ref VapidPrivateKey
