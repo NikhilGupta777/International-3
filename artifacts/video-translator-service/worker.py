@@ -98,8 +98,8 @@ HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "hugg
 # Runtime downloads disabled by default — all models must be baked into the
 # Docker image.  Set =1 only for dev/testing.
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "0").lower() == "1"
-# Fail loudly if cloning fails — do NOT silently downgrade to a neural voice.
-ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "false").lower() == "true"
+# Allow automatic neural fallback when cloning fails (aligned with UI messaging).
+ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "true").lower() == "true"
 ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "false").lower() == "true"
 # CosyVoice3 (Fun-CosyVoice3-0.5B-2512) is the current recommended model.
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
@@ -647,6 +647,15 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
         log.warning(f"[Diarize] Failed: {e}")
     return segments
 
+
+def _effective_speaker_labels(segments: list[dict]) -> list[str]:
+    labels: set[str] = set()
+    for seg in segments:
+        label = str(seg.get("speaker", "")).strip()
+        if label and label != "SPEAKER_00":
+            labels.add(label)
+    return sorted(labels)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2c: Per-speaker voice reference extraction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -655,7 +664,7 @@ def extract_speaker_reference(
     audio_path: Path,
     segments: list[dict],
     out_dir: Path,
-    max_ref_duration: float = 15.0,
+    max_ref_duration: float = 24.0,
     min_segment_duration: float = 1.5,
 ) -> tuple[dict, dict]:
     """
@@ -761,7 +770,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     Merge micro-segments before translation/TTS to prevent choppy voice output.
     Sub-second segments are poison for TTS — a voice model cannot naturally
     synthesize speech into 0.1-0.8 second slots.
-    Target: 2.5-7s merged segments. Hard max 10s.
+    Target: 2.5-7s merged segments. Hard max 12s.
     Respects speaker labels — never merges different speakers.
     """
     if not segments:
@@ -788,8 +797,8 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
 
         should_merge = (
             same_speaker
-            and (buf_dur < 1.2 or word_count < 3 or gap < 0.8)
-            and merged_dur <= 10.0
+            and (buf_dur < 1.6 or word_count < 5 or gap < 1.0)
+            and merged_dur <= 12.0
         )
 
         if should_merge:
@@ -1376,6 +1385,13 @@ LANG_TO_EDGE_TTS = {
     "de": "de-DE-KatjaNeural",
     "it": "it-IT-ElsaNeural",
     "pt": "pt-BR-FranciscaNeural",
+    "bn": "bn-IN-TanishaaNeural",
+    "ta": "ta-IN-PallaviNeural",
+    "te": "te-IN-ShrutiNeural",
+    "mr": "mr-IN-AarohiNeural",
+    "gu": "gu-IN-DhwaniNeural",
+    "pa": "pa-IN-GurpreetNeural",
+    "ur": "ur-PK-UzmaNeural",
     "ja": "ja-JP-NanamiNeural",
     "ko": "ko-KR-SunHiNeural",
     "zh": "zh-CN-XiaoxiaoNeural",
@@ -1385,6 +1401,8 @@ LANG_TO_EDGE_TTS = {
     "pl": "pl-PL-ZofiaNeural",
     "tr": "tr-TR-EmelNeural",
     "uk": "uk-UA-PolinaNeural",
+    "th": "th-TH-PremwadeeNeural",
+    "ms": "ms-MY-YasminNeural",
     "vi": "vi-VN-HoaiMyNeural",
     "id": "id-ID-GadisNeural",
     "fil": "fil-PH-BlessicaNeural",
@@ -2286,8 +2304,26 @@ def main():
 
         # â”€â”€ 5. Optional Diarization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if MULTI_SPEAKER:
-            update_progress("TRANSCRIBING", 28, "Identifying speakers...")
+            pre_labels = _effective_speaker_labels(segments)
+            hf_token = os.environ.get("HF_TOKEN", "")
+            if not pre_labels and not hf_token:
+                warn_msg = (
+                    "Multi-speaker requested but no speaker labels were detected and HF_TOKEN is missing. "
+                    "Speaker cloning will default to a single voice unless labels are provided."
+                )
+                log.warning(f"[Diarize] {warn_msg}")
+                update_progress("TRANSCRIBING", 28, "Identifying speakers...", {"speaker_warning": warn_msg})
+            else:
+                update_progress("TRANSCRIBING", 28, "Identifying speakers...")
+
             segments = diarize(transcription_audio, segments)
+
+            post_labels = _effective_speaker_labels(segments)
+            if len(post_labels) <= 1:
+                log.warning(
+                    "[Diarize] Speaker labels collapsed to a single voice (%s).",
+                    post_labels[0] if post_labels else "none",
+                )
 
         # ── 5b. Merge micro-segments for TTS quality ─────────────────
         # Must run AFTER diarization so speaker labels are available.
