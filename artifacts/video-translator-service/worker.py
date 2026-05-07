@@ -1447,6 +1447,7 @@ def synthesize_segments_cosyvoice(
     candidate_models: list[str] = []
     for name in (
         primary_model_name,
+        # Dockerfile downloads Fun-CosyVoice3-0.5B into ModelScope cache.
         "Fun-CosyVoice3-0.5B",
         "CosyVoice3-0.5B",
         "CosyVoice2-0.5B",
@@ -1560,7 +1561,7 @@ def synthesize_segments_cosyvoice(
                 if value:
                     global_prompt_text = value
                     break
-            if not global_prompt_text:
+            if not global_prompt_text and all(not v for v in speaker_prompt_texts.values()):
                 log.info("[CosyVoice] Speaker prompt texts provided but all were empty; using fallback prompts.")
 
         if not global_prompt_text:
@@ -1836,6 +1837,7 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
 
     ratio = actual_dur / max(target_duration, 0.1)
     # Keep a wider clamp to reduce truncation while avoiding chipmunk voices.
+    # 0.8–1.4 keeps pitch reasonable while giving long segments more room to fit.
     ratio = max(0.8, min(1.4, ratio))
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
