@@ -2062,6 +2062,7 @@ def assemble_dubbed_audio(
     # loudnorm normalises both tracks to broadcast levels before mixing.
     if background_audio and background_audio.exists():
         log.info("[Assemble] Mixing dubbed voice with background (loudness-normalised)...")
+        final_mix = out_dir / "dubbed_final_mix.wav"
         run_ffmpeg(
             "-i", str(dubbed_path),
             "-i", str(background_audio),
