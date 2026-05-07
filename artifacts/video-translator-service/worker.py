@@ -657,10 +657,10 @@ def extract_speaker_reference(
     out_dir: Path,
     max_ref_duration: float = 15.0,
     min_segment_duration: float = 1.5,
-) -> dict:
+) -> tuple[dict, dict]:
     """
     Build one clean reference WAV per unique speaker from the source audio.
-    Returns {speaker_label: Path} — used by CosyVoice for per-speaker cloning.
+    Returns ({speaker_label: Path}, {speaker_label: prompt_text}) for per-speaker cloning.
 
     Strategy: for each speaker, concatenate their longest clean segments
     (up to max_ref_duration total).  Falls back to full audio if a speaker
@@ -670,6 +670,7 @@ def extract_speaker_reference(
     import soundfile as sf
 
     speaker_refs: dict = {}
+    speaker_prompt_texts: dict = {}
 
     try:
         full_audio, sr = sf.read(str(audio_path))
@@ -677,7 +678,7 @@ def extract_speaker_reference(
             full_audio = full_audio.mean(axis=1)
     except Exception as exc:
         log.warning(f"[SpeakerRef] Could not read audio: {exc}")
-        return speaker_refs
+        return speaker_refs, speaker_prompt_texts
 
     # Group segments by speaker
     speaker_map: dict = {}
@@ -707,11 +708,25 @@ def extract_speaker_reference(
         if not clips:
             log.warning(f"[SpeakerRef] No usable clips for {spk}; using full audio.")
             speaker_refs[spk] = audio_path
+            prompt_fallback = " ".join(
+                str(s.get("text", "")).strip()
+                for s in sorted(spk_segs, key=lambda s: s["start"])
+                if str(s.get("text", "")).strip()
+            ).strip()
+            speaker_prompt_texts[spk] = normalize_tts_text(prompt_fallback)[:300] if prompt_fallback else ""
             continue
 
-        # Concatenate selected clips into one reference
+        ordered_clips = sorted(clips, key=lambda s: s["start"])
+        prompt_text = " ".join(
+            str(s.get("text", "")).strip()
+            for s in ordered_clips
+            if str(s.get("text", "")).strip()
+        ).strip()
+        speaker_prompt_texts[spk] = normalize_tts_text(prompt_text)[:300] if prompt_text else ""
+
+        # Concatenate selected clips into one reference (chronological order)
         chunks: list = []
-        for seg in clips:
+        for seg in ordered_clips:
             s_idx = max(0, int(seg["start"] * sr))
             e_idx = min(len(full_audio), int(seg["end"] * sr))
             if e_idx > s_idx:
@@ -734,7 +749,7 @@ def extract_speaker_reference(
             f"{len(ref_data)/sr:.1f}s reference → {ref_path.name}"
         )
 
-    return speaker_refs
+    return speaker_refs, speaker_prompt_texts
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -746,7 +761,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     Merge micro-segments before translation/TTS to prevent choppy voice output.
     Sub-second segments are poison for TTS — a voice model cannot naturally
     synthesize speech into 0.1-0.8 second slots.
-    Target: 2.5-7s merged segments. Hard max 8s.
+    Target: 2.5-7s merged segments. Hard max 10s.
     Respects speaker labels — never merges different speakers.
     """
     if not segments:
@@ -774,7 +789,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
         should_merge = (
             same_speaker
             and (buf_dur < 1.2 or word_count < 3 or gap < 0.8)
-            and merged_dur <= 8.0
+            and merged_dur <= 10.0
         )
 
         if should_merge:
@@ -1388,6 +1403,7 @@ def synthesize_segments_cosyvoice(
     default_reference_audio: Path,
     out_dir: Path,
     speaker_refs: Optional[dict] = None,
+    speaker_prompt_texts: Optional[dict] = None,
 ) -> list[Path]:
     """
     Zero-shot / cross-lingual voice cloning via CosyVoice.
@@ -1427,8 +1443,19 @@ def synthesize_segments_cosyvoice(
                     return candidate
         return None
 
+    primary_model_name = COSYVOICE_MODEL_ID.split("/")[-1].strip()
+    candidate_models: list[str] = []
+    for name in (
+        primary_model_name,
+        "Fun-CosyVoice3-0.5B",
+        "CosyVoice3-0.5B",
+        "CosyVoice2-0.5B",
+    ):
+        if name and name not in candidate_models:
+            candidate_models.append(name)
+
     tried_model_paths: set[str] = set()
-    for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
+    for model_name in candidate_models:
         model_path = _resolve_model_path(model_name)
         if model_path is None:
             model_path = _find_cosyvoice_model()
@@ -1467,10 +1494,13 @@ def synthesize_segments_cosyvoice(
         log.info("[CosyVoice] CosyVoice2/legacy detected.")
 
     # ── Decide inference mode (cross-lingual vs zero-shot) ──────────────────
-    is_cross_lingual = (
-        bool(TARGET_LANG_CODE)
-        and TARGET_LANG_CODE.lower() not in ("", "auto")
-        and TARGET_LANG_CODE.lower() != SOURCE_LANG_CODE.lower()
+    source_code = (SOURCE_LANG_CODE or "").lower().strip()
+    target_code = (TARGET_LANG_CODE or "").lower().strip()
+    is_cross_lingual = bool(
+        source_code
+        and target_code
+        and target_code not in ("", "auto")
+        and target_code != source_code
     )
     has_cross_lingual = hasattr(model, "inference_cross_lingual")
     use_cross_lingual = is_cross_lingual and has_cross_lingual
@@ -1523,42 +1553,50 @@ def synthesize_segments_cosyvoice(
     # prompt_text must match what is SPOKEN in the reference audio for that speaker.
     # Only needed for zero-shot (same source/target language).
     global_prompt_text = ""
-    speaker_prompt_texts: dict = {}
+    speaker_prompt_texts = speaker_prompt_texts or {}
     if not use_cross_lingual:
-        # Global fallback: first 12 s of the recording
-        parts: list[str] = []
-        for seg in segments:
-            if float(seg.get("start", 0)) < 12.0:
-                src = str(seg.get("text", "")).strip()
-                if src:
-                    parts.append(src)
-            else:
-                break
-        global_prompt_text = normalize_tts_text(" ".join(parts))[:300]
-        if not global_prompt_text:
-            for seg in segments:
-                src = str(seg.get("text", "")).strip()
-                if src:
-                    global_prompt_text = normalize_tts_text(src[:200])
+        if speaker_prompt_texts:
+            for value in speaker_prompt_texts.values():
+                if value:
+                    global_prompt_text = value
                     break
 
-        # Per-speaker: collect that speaker's source text from the first 12 s of their clips
-        from collections import defaultdict as _dd2
-        spk_segs: dict = _dd2(list)
-        for seg in segments:
-            spk_segs[seg.get("speaker") or "SPEAKER_00"].append(seg)
-        for spk, s_list in spk_segs.items():
-            p_parts: list[str] = []
-            total = 0.0
-            for s in sorted(s_list, key=lambda x: x["start"]):
-                txt = str(s.get("text", "")).strip()
-                if txt:
-                    p_parts.append(txt)
-                    total += s["end"] - s["start"]
-                    if total >= 12.0:
+        if not global_prompt_text:
+            # Global fallback: first 12 s of the recording
+            parts: list[str] = []
+            for seg in segments:
+                if float(seg.get("start", 0)) < 12.0:
+                    src = str(seg.get("text", "")).strip()
+                    if src:
+                        parts.append(src)
+                else:
+                    break
+            global_prompt_text = normalize_tts_text(" ".join(parts))[:300]
+            if not global_prompt_text:
+                for seg in segments:
+                    src = str(seg.get("text", "")).strip()
+                    if src:
+                        global_prompt_text = normalize_tts_text(src[:200])
                         break
-            pt = normalize_tts_text(" ".join(p_parts))[:300]
-            speaker_prompt_texts[spk] = pt or global_prompt_text
+
+        if not speaker_prompt_texts:
+            # Per-speaker: collect that speaker's source text from the first 12 s of their clips
+            from collections import defaultdict as _dd2
+            spk_segs: dict = _dd2(list)
+            for seg in segments:
+                spk_segs[seg.get("speaker") or "SPEAKER_00"].append(seg)
+            for spk, s_list in spk_segs.items():
+                p_parts: list[str] = []
+                total = 0.0
+                for s in sorted(s_list, key=lambda x: x["start"]):
+                    txt = str(s.get("text", "")).strip()
+                    if txt:
+                        p_parts.append(txt)
+                        total += s["end"] - s["start"]
+                        if total >= 12.0:
+                            break
+                pt = normalize_tts_text(" ".join(p_parts))[:300]
+                speaker_prompt_texts[spk] = pt or global_prompt_text
 
     # ── Pre-compute inference method signatures ONCE (outside the loop) ─────────
     # inspect.signature() is non-trivial; calling it on every segment iteration
@@ -1606,7 +1644,7 @@ def synthesize_segments_cosyvoice(
         else:
             seg_ref_wav, seg_ref_prompt_path = default_ref_wav, default_ref_prompt_path
 
-        seg_prompt_text = speaker_prompt_texts.get(speaker, global_prompt_text)
+        seg_prompt_text = speaker_prompt_texts.get(speaker) or global_prompt_text
         # CosyVoice3 zero-shot: instruction prefix goes in prompt_text (not tts_text)
         if is_cosyvoice3 and seg_prompt_text:
             seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
@@ -1625,7 +1663,7 @@ def synthesize_segments_cosyvoice(
                         f"Unsupported CosyVoice cross_lingual signature: {_cl_params_set}"
                     )
                 if "speed" in _cl_params_set:
-                    cl_args["speed"] = 1.0
+                    cl_args["speed"] = _safe_speaking_rate(seg.get("speaking_rate", 1.0))
                 chunks = list(model.inference_cross_lingual(**cl_args))
             else:
                 # Use pre-computed signature set (not re-inspected each iteration)
@@ -1643,7 +1681,7 @@ def synthesize_segments_cosyvoice(
                         f"Unsupported CosyVoice zero-shot signature: {_zs_params_set}"
                     )
                 if "speed" in _zs_params_set:
-                    zs_args["speed"] = 1.0
+                    zs_args["speed"] = _safe_speaking_rate(seg.get("speaking_rate", 1.0))
                 chunks = list(model.inference_zero_shot(**zs_args))
 
             tts_chunks = [
@@ -1714,6 +1752,7 @@ def synthesize_all(
     reference_audio: Path,
     out_dir: Path,
     speaker_refs: Optional[dict] = None,
+    speaker_prompt_texts: Optional[dict] = None,
 ) -> tuple[list[Path], bool]:
     """
     Master TTS router: CosyVoice -> edge-tts -> gTTS (auto-fallback at every level).
@@ -1723,7 +1762,11 @@ def synthesize_all(
     if VOICE_CLONE:
         try:
             paths = synthesize_segments_cosyvoice(
-                segments, reference_audio, out_dir, speaker_refs=speaker_refs
+                segments,
+                reference_audio,
+                out_dir,
+                speaker_refs=speaker_refs,
+                speaker_prompt_texts=speaker_prompt_texts,
             )
             log.info("[TTS] CosyVoice voice cloning succeeded.")
             return paths, True
@@ -1788,8 +1831,8 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
         return audio_path  # close enough, no change needed
 
     ratio = actual_dur / max(target_duration, 0.1)
-    # Relax the clamp so we don't get chipmunk voices (max 1.25x speedup)
-    ratio = max(0.85, min(1.25, ratio))
+    # Keep a wider clamp to reduce truncation while avoiding chipmunk voices.
+    ratio = max(0.8, min(1.4, ratio))
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
 
@@ -2254,12 +2297,13 @@ def main():
 
         # -- 7. Extract per-speaker voice references (when voice cloning + multiple speakers) -
         speaker_refs: dict = {}
+        speaker_prompt_texts: dict = {}
         if VOICE_CLONE:
             unique_speakers = {seg.get("speaker") or "SPEAKER_00" for seg in segments}
             if len(unique_speakers) > 1:
                 update_progress("CLONING", 50, "Extracting per-speaker voice references...")
                 try:
-                    speaker_refs = extract_speaker_reference(
+                    speaker_refs, speaker_prompt_texts = extract_speaker_reference(
                         transcription_audio, segments, work_dir
                     )
                     log.info(
@@ -2278,7 +2322,11 @@ def main():
         seg_dir = work_dir / "segments"
         seg_dir.mkdir()
         seg_audio_paths, voice_was_cloned = synthesize_all(
-            segments, transcription_audio, seg_dir, speaker_refs=speaker_refs
+            segments,
+            transcription_audio,
+            seg_dir,
+            speaker_refs=speaker_refs,
+            speaker_prompt_texts=speaker_prompt_texts,
         )
 
         if VOICE_CLONE and not voice_was_cloned:
