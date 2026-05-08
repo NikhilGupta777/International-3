@@ -624,8 +624,8 @@ jobs:
           upsert_env "TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS" "0"
           # CosyVoice3 model ID passed explicitly to every Batch job.
           upsert_env "TRANSLATOR_COSYVOICE_MODEL_ID" "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
-          # Fail loudly on clone/lipsync failure — no silent fallback to neural voice.
-          upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "false"
+          # Allow neural-voice fallback when clone fails (matches UI messaging).
+          upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "true"
           upsert_env "TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK" "false"
           # CPU Fargate queue for Neural Voice (no GPU) jobs — edge-tts dubbing.
           # Starts in ~30 sec (Fargate), 10x cheaper than GPU.
