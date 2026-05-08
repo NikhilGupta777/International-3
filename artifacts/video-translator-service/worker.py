@@ -138,6 +138,9 @@ PIPELINE_STEPS = [
     {"name": "upload", "label": "Uploading to cloud", "start": 88, "end": 100, "statuses": ["UPLOADING"]},
 ]
 
+DEFAULT_SPEAKER_LABEL = "SPEAKER_00"
+TAIL_FADE_SECONDS = 0.06  # 60 ms fade-out to soften hard truncations
+
 
 def _stage_local_progress(progress: int, start: int, end: int) -> int:
     if end <= start:
@@ -625,7 +628,7 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
         from collections import defaultdict as _dd
         for seg in segments:
             # Skip segments that already have a reliable speaker label from AssemblyAI
-            if seg.get("speaker") and seg["speaker"] != "SPEAKER_00":
+            if seg.get("speaker") and seg["speaker"] != DEFAULT_SPEAKER_LABEL:
                 continue
             overlap_scores: dict = _dd(float)
             for turn, _, spk in diarization.itertracks(yield_label=True):
@@ -638,7 +641,7 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
             if overlap_scores:
                 seg["speaker"] = max(overlap_scores, key=overlap_scores.get)
             elif "speaker" not in seg:
-                seg["speaker"] = "SPEAKER_00"
+                seg["speaker"] = DEFAULT_SPEAKER_LABEL
 
         del pipeline
         torch.cuda.empty_cache()
@@ -652,7 +655,7 @@ def _effective_speaker_labels(segments: list[dict]) -> list[str]:
     labels: set[str] = set()
     for seg in segments:
         label = str(seg.get("speaker", "")).strip()
-        if label and label != "SPEAKER_00":
+        if label and label != DEFAULT_SPEAKER_LABEL:
             labels.add(label)
     return sorted(labels)
 
@@ -683,6 +686,7 @@ def extract_speaker_reference(
     Strategy: for each speaker, concatenate their longest clean segments
     (up to max_ref_duration total).  Falls back to full audio if a speaker
     has no sufficiently long segments.
+    Default max_ref_duration is 24 seconds.
     """
     import numpy as np
     import soundfile as sf
@@ -701,7 +705,7 @@ def extract_speaker_reference(
     # Group segments by speaker
     speaker_map: dict = {}
     for seg in segments:
-        spk = (seg.get("speaker") or "SPEAKER_00")
+        spk = (seg.get("speaker") or DEFAULT_SPEAKER_LABEL)
         speaker_map.setdefault(spk, []).append(seg)
 
     for spk, spk_segs in speaker_map.items():
@@ -1287,6 +1291,7 @@ def _normalise_translation_response(raw) -> list[dict]:
 
 
 def _safe_speaking_rate(value) -> float:
+    """Clamp speaking rate to safe bounds for TTS/voice models."""
     try:
         rate = float(value)
     except (TypeError, ValueError):
@@ -1311,7 +1316,7 @@ def translate_segments(segments: list[dict]) -> list[dict]:
             "end": s["end"],
             "duration": round(s["end"] - s["start"], 2),
             "text": s["text"],
-            "speaker": s.get("speaker", "SPEAKER_00"),
+            "speaker": s.get("speaker", DEFAULT_SPEAKER_LABEL),
         }
         for s in segments
     ]
@@ -1622,7 +1627,7 @@ def synthesize_segments_cosyvoice(
             from collections import defaultdict as _dd2
             spk_segs: dict = _dd2(list)
             for seg in segments:
-                spk_segs[seg.get("speaker") or "SPEAKER_00"].append(seg)
+                spk_segs[seg.get("speaker") or DEFAULT_SPEAKER_LABEL].append(seg)
             for spk, s_list in spk_segs.items():
                 p_parts: list[str] = []
                 total = 0.0
@@ -1671,7 +1676,7 @@ def synthesize_segments_cosyvoice(
             continue
 
         # Resolve which reference to use for this speaker
-        speaker = (seg.get("speaker") or "SPEAKER_00")
+        speaker = (seg.get("speaker") or DEFAULT_SPEAKER_LABEL)
         if speaker_refs and speaker in speaker_refs:
             try:
                 seg_ref_wav, seg_ref_prompt_path = _load_ref(
@@ -1862,9 +1867,9 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
         while ratio > 2.0:
             filters.append("atempo=2.0")
             ratio /= 2.0
-        while ratio < 0.5:
-            filters.append("atempo=0.5")
-            ratio /= 0.5
+    while ratio < 0.5:
+        filters.append("atempo=0.5")
+        ratio *= 2.0
         filters.append(f"atempo={round(ratio, 3)}")
         return ",".join(filters)
 
@@ -2139,7 +2144,7 @@ def assemble_dubbed_audio(
         # into the next segment's slot and causes two voices to overlap.
         max_seg_samples = max(1, int((seg["end"] - seg["start"]) * SR))
         if len(data) > max_seg_samples:
-            fade_samples = min(int(SR * 0.06), max_seg_samples // 3)
+            fade_samples = min(int(SR * TAIL_FADE_SECONDS), max_seg_samples // 3)
             if fade_samples > 0 and len(data) >= max_seg_samples:
                 fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
                 data = data.astype(np.float32, copy=False)
@@ -2274,7 +2279,7 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
                 "translatedText": s.get("translated_text", ""),
                 "emotion": s.get("emotion", "neutral"),
                 "speakingRate": s.get("speaking_rate", 1.0),
-                "speaker": s.get("speaker", "SPEAKER_00"),
+                "speaker": s.get("speaker", DEFAULT_SPEAKER_LABEL),
             }
             for s in segments
         ],
@@ -2385,7 +2390,7 @@ def main():
         speaker_refs: dict = {}
         speaker_prompt_texts: dict = {}
         if VOICE_CLONE:
-            unique_speakers = {seg.get("speaker") or "SPEAKER_00" for seg in segments}
+            unique_speakers = {seg.get("speaker") or DEFAULT_SPEAKER_LABEL for seg in segments}
             if len(unique_speakers) > 1:
                 update_progress("CLONING", 50, "Extracting per-speaker voice references...")
                 try:
