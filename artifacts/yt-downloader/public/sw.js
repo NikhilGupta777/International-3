@@ -1,5 +1,5 @@
 /* VideoMaking Studio — PWA Service Worker */
-const CACHE_NAME = "vmstudio-v1";
+const CACHE_NAME = "vmstudio-v2";
 const PRECACHE = ["/", "/index.html", "/app-logo.png", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -31,10 +31,8 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        // Cache successful navigation / asset responses.
+    fetch(event.request)
+      .then((response) => {
         if (
           response &&
           response.status === 200 &&
@@ -45,8 +43,8 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
         return response;
-      });
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });
 

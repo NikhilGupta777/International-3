@@ -250,6 +250,49 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   color: #86efac;
 }
 
+.admin-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem;
+  margin-bottom: 0.85rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.admin-toggle-row div {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.admin-toggle-row strong {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.9rem;
+}
+
+.admin-toggle-row span {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.78rem;
+}
+
+.admin-toggle-row button {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.admin-toggle-row button.admin-toggle-on {
+  border-color: rgba(74, 222, 128, 0.45);
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.14);
+}
+
 .admin-email-list {
   display: flex;
   flex-wrap: wrap;

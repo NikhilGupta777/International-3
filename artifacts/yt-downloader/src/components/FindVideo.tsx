@@ -75,7 +75,7 @@ export function FindVideo() {
         title="Kalkiram"
         style={{
           flex: "1 1 0%",
-          minHeight: 0,
+          minHeight: "calc(100dvh - 96px)",
           width: "100%",
           border: "none",
           display: "block",

@@ -1960,8 +1960,8 @@ async function processAudio(
     } else {
       // ── Gemini path (audio ≤ 10 min) ─────────────────────────────────────────
       // Read into memory only here — short audio only (AssemblyAI streams directly).
-      const audioBuffer = readFileSync(processedPath);
-      const audioBlob = new Blob([audioBuffer], { type: mimeType });
+      // Upload the real preprocessed WAV path. The Gemini Node SDK handles file
+      // paths more reliably than anonymous Node Blob objects in Lambda.
       // A fileUri is tied to the API key/project that uploaded it — a different key
       // gets 403 on the same URI. So each key attempt uploads its own copy, runs both
       // passes, then deletes the file. On quota (429) we move to the next key.
@@ -1979,7 +1979,7 @@ async function processAudio(
           job.message = ki === 0 ? "Uploading audio to AI..." : `Uploading audio to AI (${keyLabel})...`;
 
           const uploadResult = await client.files.upload({
-            file: audioBlob,
+            file: processedPath,
             config: { mimeType, displayName: filename },
           });
           geminiFileName = uploadResult.name!;

@@ -37,7 +37,6 @@ const LANGS = [
 const TARGET_LANGS = LANGS.filter(l => l.code !== "auto");
 const MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
 const NO_STORE: RequestCache = "no-store";
-const LIP_SYNC_AVAILABLE = false;
 type TranslatorStep = {
   name: string;
   label: string;
@@ -250,7 +249,7 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
 }
 
 // â”€â”€ Main component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export default function VideoTranslator() {
+export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncAvailable?: boolean }) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [srcLang, setSrcLang] = useState("auto");
@@ -559,7 +558,7 @@ export default function VideoTranslator() {
           targetLangCode: tgtLang,
           sourceLang: srcLang,
           voiceClone: isVoiceClone,
-          lipSync: LIP_SYNC_AVAILABLE && lipSync,
+          lipSync: lipSyncAvailable && lipSync,
           lipSyncQuality: "latentsync",
           // Enable speaker diarization automatically when voice cloning so each
           // speaker in the video gets their own cloned voice reference.
@@ -867,16 +866,18 @@ export default function VideoTranslator() {
                 )}
               </div>
 
-              <label className="flex items-center gap-3 cursor-not-allowed select-none opacity-60">
-                <div onClick={() => LIP_SYNC_AVAILABLE && setLipSync(!lipSync)}
+              <label className={cn("flex items-center gap-3 select-none", lipSyncAvailable ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
+                <div onClick={() => lipSyncAvailable && setLipSync(!lipSync)}
                   className={cn("w-10 h-6 rounded-full transition-all relative",
-                    LIP_SYNC_AVAILABLE && lipSync ? "bg-primary" : "bg-white/20")}>
+                    lipSyncAvailable && lipSync ? "bg-primary" : "bg-white/20")}>
                   <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all",
-                    LIP_SYNC_AVAILABLE && lipSync ? "left-[18px]" : "left-0.5")} />
+                    lipSyncAvailable && lipSync ? "left-[18px]" : "left-0.5")} />
                 </div>
                 <div>
                   <p className="text-sm text-white/80 font-medium">Lip Sync (LatentSync)</p>
-                  <p className="text-xs text-white/40">Temporarily limited while we tune GPU capacity</p>
+                  <p className="text-xs text-white/40">
+                    {lipSyncAvailable ? "Enabled for your account; uses the fast GPU queue" : "Limited to selected approved users"}
+                  </p>
                 </div>
               </label>
             </div>

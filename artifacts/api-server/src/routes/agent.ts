@@ -76,6 +76,30 @@ function getApiBase(req: any): string {
   return `${proto}://${host}/api`;
 }
 
+function rememberAgentJob(req: any, jobId: unknown): void {
+  if (!jobId) return;
+  const id = String(jobId).trim();
+  if (!id) return;
+  if (!(req as any).agentRunJobIds) (req as any).agentRunJobIds = new Set<string>();
+  (req as any).agentRunJobIds.add(id);
+}
+
+async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
+  const ids = Array.from(((req as any).agentRunJobIds ?? new Set<string>()) as Set<string>);
+  if (ids.length === 0) return;
+  const apiBase = getApiBase(req);
+  const headers = buildInternalHeaders(req);
+  await Promise.allSettled(ids.map(async (jobId) => {
+    for (const endpoint of [`${apiBase}/youtube/cancel/${jobId}`, `${apiBase}/subtitles/cancel/${jobId}`, `${apiBase}/translator/cancel/${jobId}`]) {
+      const res = await fetch(endpoint, { method: "POST", headers }).catch(() => null);
+      if (res?.ok) {
+        console.log(`[agent] cancelled ${jobId} after ${reason}`);
+        return;
+      }
+    }
+  }));
+}
+
 // ── Strip model-internal tags before sending to client ─────────────────────
 // Gemini 3 Flash / Pro can emit reasoning, thought, response wrappers, and our
 // own [SUGGESTIONS:] marker. None of these should reach the browser as raw text.
@@ -1191,6 +1215,7 @@ async function executeTool(
         throw new Error(err.error ?? `Clip cut failed: ${r.status}`);
       }
       const { jobId } = await r.json() as any;
+      rememberAgentJob(req, jobId);
       logTool("Clip cut job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
       sseEvent(res, {
@@ -1235,6 +1260,7 @@ async function executeTool(
         throw new Error(err.error ?? `Download failed: ${r.status}`);
       }
       const { jobId } = await r.json() as any;
+      rememberAgentJob(req, jobId);
       logTool("Download job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
       sseEvent(res, { type: "tool_progress", runId, toolId, name, status: "processing", message: "Starting download...", jobId, url: args.url } as any);
@@ -1272,6 +1298,7 @@ async function executeTool(
         if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Subtitle job failed: ${r.status}`); }
         const d = await r.json() as any; subtitleJobId = d.id ?? d.jobId;
       }
+      rememberAgentJob(req, subtitleJobId);
       logTool("Subtitles job accepted", { jobId: subtitleJobId });
       // Emit initial progress so frontend can track in Activity Panel
       sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_subtitles", status: "processing", message: "Starting subtitle generation...", jobId: subtitleJobId, url: args.url } as any);
@@ -1302,6 +1329,7 @@ async function executeTool(
         throw new Error(err.error ?? `Best clips job failed: ${r.status}`);
       }
       const { jobId } = await r.json() as any;
+      rememberAgentJob(req, jobId);
       logTool("Best clips job accepted — polling for results...", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
       sseEvent(res, { type: "tool_progress", runId, toolId, name: "find_best_clips", status: "processing", message: "Starting best clips analysis...", jobId, url: args.url } as any);
@@ -1327,6 +1355,7 @@ async function executeTool(
         throw new Error(err.error ?? `Timestamps failed: ${r.status}`);
       }
       const { jobId } = await r.json() as any;
+      rememberAgentJob(req, jobId);
       logTool("Timestamps job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
       sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_timestamps", status: "processing", message: "Starting timestamp generation...", jobId, url: args.url } as any);
@@ -1396,6 +1425,7 @@ async function executeTool(
         });
         if (!submitR.ok) { const err = await submitR.json().catch(() => ({})) as any; throw new Error(err.error ?? `Translation submit failed: ${submitR.status}`); }
       }
+      rememberAgentJob(req, tvJobId);
       logTool("Translation job submitted", { jobId: tvJobId });
       // Emit initial progress so frontend can track in Activity Panel
       sseEvent(res, { type: "tool_progress", runId, toolId, name: "translate_video", status: "processing", message: "Job submitted to GPU worker...", jobId: tvJobId, url: videoUrl } as any);
@@ -1979,6 +2009,7 @@ router.post("/agent/chat", async (req, res) => {
     res.status(503).json({ error: "AI Copilot not configured - add Vertex Gemini env or GEMINI_API_KEY." });
     return;
   }
+  (req as any).agentRunJobIds = new Set<string>();
 
   const { messages = [], model: requestedModel } = req.body as {
     messages: Array<{
@@ -2042,6 +2073,7 @@ router.post("/agent/chat", async (req, res) => {
   // happens immediately after Express reads the body. That would falsely
   // mark the client as disconnected before any streaming starts.
   let clientConnected = true;
+  let runCompleted = false;
   res.on("close", () => { clientConnected = false; });
   const isConnected = () => clientConnected && !res.writableEnded;
 
@@ -2310,6 +2342,7 @@ router.post("/agent/chat", async (req, res) => {
     }
 
     if (isConnected()) {
+      runCompleted = true;
       sseEvent(res, { type: "done", runId, ts: Date.now() });
     }
   } catch (err: any) {
@@ -2336,6 +2369,9 @@ router.post("/agent/chat", async (req, res) => {
     }
   } finally {
     clearInterval(keepAlive);
+    if (!runCompleted) {
+      void cancelAgentRunJobs(req, clientConnected ? "agent_error" : "client_abort");
+    }
     if (!res.writableEnded) res.end();
   }
 });

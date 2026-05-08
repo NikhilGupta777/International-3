@@ -105,6 +105,14 @@ type AdminOverview = {
     approvedUsers: string[];
     approvedAdmins: string[];
   };
+  runtime?: {
+    features: {
+      translatorLipSyncEnabled?: boolean;
+    };
+    permissions: {
+      translatorLipSyncAllowedEmails?: string[];
+    };
+  };
 };
 
 function formatPercent(value: number | null | undefined): string {
@@ -180,6 +188,32 @@ function FlagList({ flags }: { flags: Record<string, boolean> }) {
   );
 }
 
+function ToggleRow({
+  label,
+  detail,
+  enabled,
+  busy,
+  onToggle,
+}: {
+  label: string;
+  detail: string;
+  enabled: boolean;
+  busy: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div className="admin-toggle-row">
+      <div>
+        <strong>{label}</strong>
+        <span>{detail}</span>
+      </div>
+      <button type="button" onClick={onToggle} disabled={busy} className={cn(enabled && "admin-toggle-on")}>
+        {enabled ? "Enabled" : "Disabled"}
+      </button>
+    </div>
+  );
+}
+
 function ToolGrid({ tools }: { tools: AdminOverview["tools"] }) {
   return (
     <div className="admin-tool-grid">
@@ -203,7 +237,9 @@ export function AdminPanel() {
   const [error, setError] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"admin" | "user">("user");
+  const [lipSyncEmail, setLipSyncEmail] = useState("");
   const [savingEmail, setSavingEmail] = useState(false);
+  const [savingRuntime, setSavingRuntime] = useState(false);
   const [cancelJobId, setCancelJobId] = useState("");
   const [cancelResult, setCancelResult] = useState("");
   const [cleanupNamespace, setCleanupNamespace] = useState("youtube/clips");
@@ -288,6 +324,72 @@ export function AdminPanel() {
     }
   };
 
+  const setRuntimeFeature = async (key: string, enabled: boolean) => {
+    setSavingRuntime(true);
+    setError("");
+    try {
+      const res = await fetch(`${base}/api/admin/features`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, enabled }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Could not update feature");
+      }
+      await loadOverview();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update feature");
+    } finally {
+      setSavingRuntime(false);
+    }
+  };
+
+  const saveLipSyncPermission = async (event: FormEvent) => {
+    event.preventDefault();
+    setSavingRuntime(true);
+    setError("");
+    try {
+      const res = await fetch(`${base}/api/admin/permissions/lipsync`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: lipSyncEmail, allowed: true }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Could not save lip sync permission");
+      }
+      setLipSyncEmail("");
+      await loadOverview();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save lip sync permission");
+    } finally {
+      setSavingRuntime(false);
+    }
+  };
+
+  const removeLipSyncPermission = async (value: string) => {
+    setSavingRuntime(true);
+    setError("");
+    try {
+      const res = await fetch(`${base}/api/admin/permissions/lipsync/${encodeURIComponent(value)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Could not remove lip sync permission");
+      }
+      await loadOverview();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove lip sync permission");
+    } finally {
+      setSavingRuntime(false);
+    }
+  };
+
   const cancelYoutubeJob = async (event: FormEvent) => {
     event.preventDefault();
     if (!cancelJobId.trim()) return;
@@ -348,6 +450,8 @@ export function AdminPanel() {
     overview?.cost.currentMonthUsageUsd && overview.cost.monthlyBudgetUsd
       ? Math.round((overview.cost.currentMonthUsageUsd / overview.cost.monthlyBudgetUsd) * 100)
       : null;
+  const lipSyncEnabled = Boolean(overview?.runtime?.features.translatorLipSyncEnabled);
+  const lipSyncAllowedEmails = overview?.runtime?.permissions.translatorLipSyncAllowedEmails ?? [];
 
   return (
     <section className="admin-panel">
@@ -576,7 +680,40 @@ export function AdminPanel() {
         </Section>
 
         <Section icon={<Settings className="w-4 h-4" />} title="Runtime feature flags" wide>
+          <ToggleRow
+            label="Translator lip sync"
+            detail="Global gate. Users must also be listed in lip sync permissions."
+            enabled={lipSyncEnabled}
+            busy={savingRuntime}
+            onToggle={() => void setRuntimeFeature("translatorLipSyncEnabled", !lipSyncEnabled)}
+          />
           <FlagList flags={overview?.features ?? {}} />
+        </Section>
+
+        <Section icon={<ShieldCheck className="w-4 h-4" />} title="Lip sync permissions" wide>
+          <form className="admin-email-form" onSubmit={saveLipSyncPermission}>
+            <input
+              value={lipSyncEmail}
+              onChange={(event) => setLipSyncEmail(event.target.value)}
+              placeholder="admin@gmail.com"
+              type="email"
+            />
+            <button type="submit" disabled={savingRuntime || !lipSyncEmail.trim()}>
+              {savingRuntime ? "Saving" : "Allow lip sync"}
+            </button>
+          </form>
+          <div className="admin-email-list">
+            {lipSyncAllowedEmails.map((value) => (
+              <span key={value}>
+                <strong>lipsync</strong>
+                {value}
+                <button type="button" onClick={() => void removeLipSyncPermission(value)} aria-label={`Remove ${value}`}>
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+          <p className="admin-note">Runtime permission changes apply immediately but reset on Lambda cold starts/redeploys unless also configured in env.</p>
         </Section>
 
         <Section icon={<Activity className="w-4 h-4" />} title="Traffic">

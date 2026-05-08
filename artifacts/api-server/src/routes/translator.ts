@@ -39,6 +39,7 @@ import { dirname, extname, join } from "path";
 import { spawn } from "child_process";
 import { pipeline } from "stream/promises";
 import { Readable, Transform } from "stream";
+import { canUseTranslatorLipSync } from "../lib/admin-features";
 
 const router = Router();
 
@@ -70,9 +71,6 @@ const TRANSLATOR_MAX_VIDEO_SIZE_BYTES = Math.max(
   Number(process.env.TRANSLATOR_MAX_VIDEO_SIZE_BYTES ?? String(2 * 1024 * 1024 * 1024)) || 2 * 1024 * 1024 * 1024,
 );
 const TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS = process.env.TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS ?? "0";
-const TRANSLATOR_LIP_SYNC_ENABLED = ["1", "true", "yes", "on"].includes(
-  String(process.env.TRANSLATOR_LIP_SYNC_ENABLED ?? "false").toLowerCase(),
-);
 const TRANSLATOR_LAMBDA_FAST_ENABLED = process.env.TRANSLATOR_LAMBDA_FAST_ENABLED !== "false";
 const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
   60,
@@ -436,6 +434,27 @@ function boolValue(value: unknown, fallback: boolean): boolean {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") return ["1", "true", "yes", "on"].includes(value.toLowerCase());
   return fallback;
+}
+
+function authEmailFromResponse(res: Response): string | undefined {
+  const session = res.locals.authSession as { email?: unknown } | undefined;
+  return typeof session?.email === "string" ? session.email : undefined;
+}
+
+function resolveRequestedLipSync(req: Request, res: Response, value: unknown): {
+  enabled: boolean;
+  warning?: string;
+} {
+  const requested = boolValue(value, false);
+  if (!requested) return { enabled: false };
+  if (canUseTranslatorLipSync(authEmailFromResponse(res))) return { enabled: true };
+  const isInternal = req.headers["x-internal-agent"] === (process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key");
+  return {
+    enabled: false,
+    warning: isInternal
+      ? "Lip sync is disabled for internal agent requests until an approved user starts the job."
+      : "Lip sync is currently limited to approved users. The job will run without lip sync.",
+  };
 }
 
 function isCpuBatchCandidate(options: TranslatorOptions): boolean {
@@ -1130,12 +1149,13 @@ router.post("/submit", async (req: Request, res: Response) => {
     await assertUploadedTranslatorObject(String(jobId), String(s3Key));
 
     const now = Date.now();
+    const resolvedLipSync = resolveRequestedLipSync(req, res, lipSync);
     const options: TranslatorOptions = {
       targetLang: String(targetLang),
       targetLangCode: String(targetLangCode),
       sourceLang: String(sourceLang),
       voiceClone: boolValue(voiceClone, true),
-      lipSync: TRANSLATOR_LIP_SYNC_ENABLED && boolValue(lipSync, false),
+      lipSync: resolvedLipSync.enabled,
       lipSyncQuality: String(lipSyncQuality),
       useDemucs: boolValue(useDemucs, false),
       premiumAsr: boolValue(premiumAsr, false),
@@ -1169,7 +1189,7 @@ router.post("/submit", async (req: Request, res: Response) => {
     }));
 
     const started = await startTranslatorJob(jobId, s3Key, options);
-    return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED" });
+    return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED", lipsyncWarning: resolvedLipSync.warning });
   } catch (err: any) {
     console.error("[Translator] /submit error:", err);
     return res.status(translatorErrorStatus(err)).json({ error: err.message });
@@ -1207,12 +1227,13 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
     const sourceUrl = assertPublicHttpUrl(String(fileUrl));
     const ext = safeVideoExtension(String(filename || "uploaded-video.mp4"));
     const s3Key = `translator-jobs/${jobId}/input.${ext}`;
+    const resolvedLipSync = resolveRequestedLipSync(req, res, lipSync);
     const options: TranslatorOptions = {
       targetLang: String(targetLang),
       targetLangCode: String(targetLangCode),
       sourceLang: String(sourceLang),
       voiceClone: boolValue(voiceClone, true),
-      lipSync: TRANSLATOR_LIP_SYNC_ENABLED && boolValue(lipSync, false),
+      lipSync: resolvedLipSync.enabled,
       lipSyncQuality: String(lipSyncQuality),
       useDemucs: boolValue(useDemucs, false),
       premiumAsr: boolValue(premiumAsr, false),
@@ -1262,7 +1283,7 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
     }));
 
     const started = await startTranslatorJob(jobId, s3Key, options);
-    return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED" });
+    return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED", lipsyncWarning: resolvedLipSync.warning });
   } catch (err: any) {
     console.error("[Translator] /submit-from-url error:", err);
     return res.status(translatorErrorStatus(err)).json({ error: err.message });

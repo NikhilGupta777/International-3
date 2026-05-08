@@ -527,6 +527,7 @@ jobs:
           GEMINI_API_KEY_3_SECRET: ${{ secrets.GEMINI_API_KEY_3 }}
           WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
           BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
+          GOOGLE_CLIENT_ID_SECRET: ${{ secrets.GOOGLE_CLIENT_ID }}
           NOTEBOOKLM_AUTH_JSON_B64_SECRET: ${{ secrets.NOTEBOOKLM_AUTH_JSON_B64 }}
           GOOGLE_GENAI_USE_VERTEXAI_SECRET: ${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}
         run: |
@@ -601,6 +602,10 @@ jobs:
           fi
           upsert_env "WEBSITE_AUTH_PASSWORD" "$WEBSITE_AUTH_PASSWORD_SECRET"
           upsert_env "BHAGWAT_PASSWORD" "$BHAGWAT_PASSWORD_SECRET"
+          upsert_env "GOOGLE_AUTH_ENABLED" "true"
+          upsert_env "GOOGLE_CLIENT_ID" "$GOOGLE_CLIENT_ID_SECRET"
+          upsert_env "ADMIN_PANEL_ENABLED" "true"
+          upsert_env "APPROVED_ADMIN_EMAILS" "guptanikhil2056@gmail.com"
           upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,bhagwat-analyze,bhagwat-render,subtitles"
           upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "600"
           upsert_env "LAMBDA_CLIP_COMMAND_TIMEOUT_MS" "840000"
@@ -633,6 +638,7 @@ jobs:
           # per-user permissions. When enabled later, API routes these jobs to
           # the g5 fast queue via TRANSLATOR_BATCH_JOB_QUEUE_FAST.
           upsert_env "TRANSLATOR_LIP_SYNC_ENABLED" "false"
+          upsert_env "TRANSLATOR_LIP_SYNC_ALLOWED_EMAILS" "guptanikhil2056@gmail.com"
           # CPU Fargate queue for Neural Voice (no GPU) jobs — edge-tts dubbing.
           # Starts in ~30 sec (Fargate), 10x cheaper than GPU.
           upsert_env "TRANSLATOR_CPU_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-translator-cpu-queue"

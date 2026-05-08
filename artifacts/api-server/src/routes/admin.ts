@@ -18,6 +18,12 @@ import {
 import { getSubtitlesOpsSnapshot } from "./subtitles";
 import { getYoutubeOpsSnapshot } from "./youtube";
 import { isGeminiConfigured } from "../lib/gemini-client";
+import {
+  getRuntimeFeatureState,
+  setRuntimeFeature,
+  setTranslatorLipSyncEmail,
+  type RuntimeFeatureKey,
+} from "../lib/admin-features";
 
 const router: IRouter = Router();
 
@@ -91,6 +97,7 @@ router.get("/overview", (_req, res) => {
   const youtube = getYoutubeOpsSnapshot();
   const subtitles = getSubtitlesOpsSnapshot();
   const access = listApprovedAccess();
+  const runtime = getRuntimeFeatureState();
   const s3 = getS3StorageConfig();
   const translatorConfigured = configured(process.env.TRANSLATOR_BATCH_JOB_QUEUE) && configured(process.env.TRANSLATOR_BATCH_JOB_DEFINITION);
 
@@ -117,6 +124,7 @@ router.get("/overview", (_req, res) => {
     features: {
       googleAuthEnabled: enabled(process.env.GOOGLE_AUTH_ENABLED),
       adminPanelEnabled: enabled(process.env.ADMIN_PANEL_ENABLED),
+      translatorLipSyncEnabled: runtime.features.translatorLipSyncEnabled,
       youtubeQueuePrimaryEnabled: enabled(process.env.YOUTUBE_QUEUE_PRIMARY_ENABLED),
       youtubeQueueShadowEnabled: enabled(process.env.YOUTUBE_QUEUE_SHADOW_ENABLED),
       subtitlesForceLambda: enabled(process.env.SUBTITLES_FORCE_LAMBDA, true),
@@ -177,6 +185,7 @@ router.get("/overview", (_req, res) => {
       approvedUsers: access.users,
       approvedAdmins: access.admins,
     },
+    runtime,
   });
 });
 
@@ -251,6 +260,46 @@ router.post("/approved-emails", (req, res) => {
 router.delete("/approved-emails/:email", (req, res) => {
   const result = removeApprovedEmail(String(req.params.email ?? ""));
   res.json({ ok: true, ...result, access: listApprovedAccess() });
+});
+
+router.post("/features", (req, res) => {
+  try {
+    const body = req.body as { key?: unknown; enabled?: unknown };
+    const key = String(body.key ?? "") as RuntimeFeatureKey;
+    if (key !== "translatorLipSyncEnabled") {
+      res.status(400).json({ error: "Unsupported feature key" });
+      return;
+    }
+    const enabledValue =
+      typeof body.enabled === "boolean"
+        ? body.enabled
+        : ["1", "true", "yes", "on"].includes(String(body.enabled ?? "").toLowerCase());
+    res.json({ ok: true, runtime: setRuntimeFeature(key, enabledValue) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to update feature" });
+  }
+});
+
+router.post("/permissions/lipsync", (req, res) => {
+  try {
+    const body = req.body as { email?: unknown; allowed?: unknown };
+    const email = typeof body.email === "string" ? body.email : "";
+    const allowed =
+      typeof body.allowed === "boolean"
+        ? body.allowed
+        : ["1", "true", "yes", "on"].includes(String(body.allowed ?? "true").toLowerCase());
+    res.json({ ok: true, runtime: setTranslatorLipSyncEmail(email, allowed) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to update lip sync permission" });
+  }
+});
+
+router.delete("/permissions/lipsync/:email", (req, res) => {
+  try {
+    res.json({ ok: true, runtime: setTranslatorLipSyncEmail(String(req.params.email ?? ""), false) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to remove lip sync permission" });
+  }
 });
 
 export default router;

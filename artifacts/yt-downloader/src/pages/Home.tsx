@@ -63,6 +63,7 @@ export type AuthUser = {
 export type AuthFeatures = {
   googleAuthEnabled?: boolean;
   adminPanelEnabled?: boolean;
+  translatorLipSyncAllowed?: boolean;
 };
 
 type ClientAccessConfig = {
@@ -614,7 +615,7 @@ export default function Home({
           <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "is-copilot", mode === "translator" && "is-copilot")}>
 
             {/* Translator tab â€” full screen */}
-            {mode === "translator" && <VideoTranslator />}
+            {mode === "translator" && <VideoTranslator lipSyncAvailable={Boolean(authFeatures?.translatorLipSyncAllowed)} />}
 
             {/* Help tab — dedicated page (replaces old GuideModal) */}
             {mode === "help" && (

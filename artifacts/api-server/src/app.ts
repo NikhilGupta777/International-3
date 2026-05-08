@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { isEmailApproved, type AuthRole } from "./lib/auth-access";
+import { canUseTranslatorLipSync } from "./lib/admin-features";
 import {
   getHttpMetricsSnapshot,
   getSystemMetricsSnapshot,
@@ -287,6 +288,7 @@ app.get("/api/auth/session", (req: Request, res: Response) => {
     features: {
       googleAuthEnabled: GOOGLE_AUTH_ENABLED,
       adminPanelEnabled: ADMIN_PANEL_ENABLED,
+      translatorLipSyncAllowed: canUseTranslatorLipSync(session.email),
     },
   });
 });
@@ -406,6 +408,7 @@ app.post("/api/auth/logout", (_req: Request, res: Response) => {
 });
 
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+  res.locals.authSession = getAuthSession(req);
   if (req.path === "/healthz") {
     next();
     return;
