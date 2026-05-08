@@ -656,6 +656,15 @@ def _effective_speaker_labels(segments: list[dict]) -> list[str]:
             labels.add(label)
     return sorted(labels)
 
+
+def _all_speaker_labels(segments: list[dict]) -> list[str]:
+    labels: set[str] = set()
+    for seg in segments:
+        label = str(seg.get("speaker", "")).strip()
+        if label:
+            labels.add(label)
+    return sorted(labels)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2c: Per-speaker voice reference extraction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1472,7 +1481,8 @@ def synthesize_segments_cosyvoice(
     candidate_models: list[str] = []
     for name in (
         primary_model_name,
-        # Dockerfile downloads Fun-CosyVoice3-0.5B into ModelScope cache.
+        # Probe both Fun-* and generic names so cache layouts resolve reliably.
+        "Fun-CosyVoice3-0.5B-2512",
         "Fun-CosyVoice3-0.5B",
         "CosyVoice3-0.5B",
         "CosyVoice2-0.5B",
@@ -1874,7 +1884,8 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
 
     ratio = actual_dur / max(target_duration, 0.1)
     # Keep a wider clamp to reduce truncation while avoiding chipmunk voices.
-    # Short segments tolerate slightly faster stretch to prevent cut-offs.
+    # Short segments tolerate slightly faster stretch because the absolute
+    # perceptual shift is smaller than long segments, and it prevents cut-offs.
     max_ratio = 1.8 if target_duration < 2.2 else 1.6
     min_ratio = 0.75 if target_duration < 2.2 else 0.8
     ratio = max(min_ratio, min(max_ratio, ratio))
@@ -2130,7 +2141,8 @@ def assemble_dubbed_audio(
         if len(data) > max_seg_samples:
             fade_samples = min(int(SR * 0.06), max_seg_samples // 3)
             if fade_samples > 0 and len(data) >= max_seg_samples:
-                fade = np.linspace(1.0, 0.0, fade_samples, dtype=data.dtype)
+                fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+                data = data.astype(np.float32, copy=False)
                 data[max_seg_samples - fade_samples:max_seg_samples] *= fade
             data = data[:max_seg_samples]
         if len(data) == 0:
@@ -2345,13 +2357,14 @@ def main():
 
             post_labels = _effective_speaker_labels(segments)
             if len(post_labels) <= 1:
+                all_labels = _all_speaker_labels(segments)
                 warn_msg = (
                     "Multi-speaker requested but diarization produced only one speaker label. "
                     "Voice cloning will use a single reference unless additional labels are provided."
                 )
                 log.warning(
                     "[Diarize] Speaker labels collapsed to a single voice (%s). %s",
-                    post_labels[0] if post_labels else "none",
+                    all_labels[0] if all_labels else "none",
                     warn_msg,
                 )
                 update_progress("TRANSCRIBING", 28, "Identifying speakers...", {"speaker_warning": warn_msg})
