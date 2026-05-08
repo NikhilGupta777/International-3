@@ -526,7 +526,7 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "COSYVOICE_MODEL_ID", value: process.env.TRANSLATOR_COSYVOICE_MODEL_ID ?? "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" },
     { name: "ASSEMBLYAI_API_KEY", value: ASSEMBLYAI_KEY },
     { name: "MODEL_CACHE_DIR",   value: "/model-cache" },
-    { name: "ALLOW_VOICE_CLONE_FALLBACK", value: process.env.TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK ?? "false" },
+    { name: "ALLOW_VOICE_CLONE_FALLBACK", value: process.env.TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK ?? "true" },
     { name: "ALLOW_LIP_SYNC_FALLBACK",    value: process.env.TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK    ?? "false" },
     { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS },
     // Force demucs + multi-speaker ON when voice cloning is requested —

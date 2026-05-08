@@ -770,7 +770,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     Merge micro-segments before translation/TTS to prevent choppy voice output.
     Sub-second segments are poison for TTS — a voice model cannot naturally
     synthesize speech into 0.1-0.8 second slots.
-    Target: 2.5-7s merged segments. Hard max 12s.
+    Target: 2.5-8s merged segments. Hard max 14s.
     Respects speaker labels — never merges different speakers.
     """
     if not segments:
@@ -787,6 +787,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
 
         gap = float(seg["start"]) - float(buf["end"])
         buf_dur = float(buf["end"]) - float(buf["start"])
+        seg_dur = float(seg["end"]) - float(seg["start"])
         word_count = len(str(buf.get("text", "")).split())
         merged_dur = float(seg["end"]) - float(buf["start"])
 
@@ -797,8 +798,14 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
 
         should_merge = (
             same_speaker
-            and (buf_dur < 1.6 or word_count < 5 or gap < 1.0)
-            and merged_dur <= 12.0
+            and gap < 1.2
+            and merged_dur <= 14.0
+            and (
+                buf_dur < 2.2
+                or seg_dur < 2.2
+                or word_count < 6
+                or gap < 0.6
+            )
         )
 
         if should_merge:
@@ -1839,6 +1846,18 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
     Uses FFmpeg atempo filter (0.5x â€“ 2.0x range, chained for extremes).
     """
     import soundfile as sf
+    def _atempo_chain(value: float) -> str:
+        filters: list[str] = []
+        ratio = float(value)
+        while ratio > 2.0:
+            filters.append("atempo=2.0")
+            ratio /= 2.0
+        while ratio < 0.5:
+            filters.append("atempo=0.5")
+            ratio /= 0.5
+        filters.append(f"atempo={round(ratio, 3)}")
+        return ",".join(filters)
+
     data, sr = sf.read(str(audio_path))
     if sr <= 0:
         raise RuntimeError(f"Invalid sample rate {sr} while reading {audio_path}.")
@@ -1855,12 +1874,14 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
 
     ratio = actual_dur / max(target_duration, 0.1)
     # Keep a wider clamp to reduce truncation while avoiding chipmunk voices.
-    # 0.8–1.4 keeps pitch reasonable while giving long segments more room to fit.
-    ratio = max(0.8, min(1.4, ratio))
+    # Short segments tolerate slightly faster stretch to prevent cut-offs.
+    max_ratio = 1.8 if target_duration < 2.2 else 1.6
+    min_ratio = 0.75 if target_duration < 2.2 else 0.8
+    ratio = max(min_ratio, min(max_ratio, ratio))
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
 
-    tempo_filters = f"atempo={round(ratio, 3)}"
+    tempo_filters = _atempo_chain(ratio)
 
     run_ffmpeg("-i", str(audio_path), "-filter:a", tempo_filters, str(out_path))
     return out_path
@@ -2107,6 +2128,10 @@ def assemble_dubbed_audio(
         # into the next segment's slot and causes two voices to overlap.
         max_seg_samples = max(1, int((seg["end"] - seg["start"]) * SR))
         if len(data) > max_seg_samples:
+            fade_samples = min(int(SR * 0.06), max_seg_samples // 3)
+            if fade_samples > 0 and len(data) >= max_seg_samples:
+                fade = np.linspace(1.0, 0.0, fade_samples, dtype=data.dtype)
+                data[max_seg_samples - fade_samples:max_seg_samples] *= fade
             data = data[:max_seg_samples]
         if len(data) == 0:
             continue
@@ -2320,10 +2345,16 @@ def main():
 
             post_labels = _effective_speaker_labels(segments)
             if len(post_labels) <= 1:
-                log.warning(
-                    "[Diarize] Speaker labels collapsed to a single voice (%s).",
-                    post_labels[0] if post_labels else "none",
+                warn_msg = (
+                    "Multi-speaker requested but diarization produced only one speaker label. "
+                    "Voice cloning will use a single reference unless additional labels are provided."
                 )
+                log.warning(
+                    "[Diarize] Speaker labels collapsed to a single voice (%s). %s",
+                    post_labels[0] if post_labels else "none",
+                    warn_msg,
+                )
+                update_progress("TRANSCRIBING", 28, "Identifying speakers...", {"speaker_warning": warn_msg})
 
         # ── 5b. Merge micro-segments for TTS quality ─────────────────
         # Must run AFTER diarization so speaker labels are available.
