@@ -47,6 +47,11 @@ const YTDLP_PROXY = process.env.YTDLP_PROXY ?? "";
 const YTDLP_PO_TOKEN = process.env.YTDLP_PO_TOKEN ?? "";
 const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
 const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
+const YTDLP_COMMAND_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.YTDLP_COMMAND_TIMEOUT_MS ?? "2700000", 10) || 2_700_000,
+);
+const CLIP_FORCE_KEYFRAMES = process.env.CLIP_FORCE_KEYFRAMES === "true";
 let ytdlpCookiesBase64 = process.env.YTDLP_COOKIES_BASE64 ?? "";
 const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
 const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE || join(tmpdir(), ".yt-cookies-worker.txt");
@@ -401,7 +406,11 @@ function getYouTubeFallbacks(): string[][] {
   ];
 }
 
-function runYtDlp(jobId: string, args: string[]): Promise<void> {
+function runYtDlp(
+  jobId: string,
+  args: string[],
+  onProgress?: (line: string, source: "stdout" | "stderr") => void,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     logger.info({ jobId, args }, "Running yt-dlp command");
     const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...args], {
@@ -410,16 +419,44 @@ function runYtDlp(jobId: string, args: string[]): Promise<void> {
     });
 
     let stderr = "";
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      stderr += `\nyt-dlp command timed out after ${Math.round(YTDLP_COMMAND_TIMEOUT_MS / 1000)} seconds`;
+      try {
+        proc.kill("SIGTERM");
+      } catch {}
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL");
+        } catch {}
+      }, 5000).unref?.();
+    }, YTDLP_COMMAND_TIMEOUT_MS);
+    timeout.unref?.();
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      for (const line of text.split(/\r?\n|\r/)) {
+        const trimmed = line.trim();
+        if (trimmed) onProgress?.(trimmed, "stdout");
+      }
+    });
     proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
+      for (const line of text.split(/\r?\n|\r/)) {
+        const trimmed = line.trim();
+        if (trimmed) onProgress?.(trimmed, "stderr");
+      }
     });
 
     proc.on("error", (err) => {
+      clearTimeout(timeout);
       reject(new Error(`Failed to start yt-dlp: ${err.message}`));
     });
 
     proc.on("close", (code) => {
+      clearTimeout(timeout);
       if (code === 0) {
         resolve();
         return;
@@ -428,7 +465,13 @@ function runYtDlp(jobId: string, args: string[]): Promise<void> {
         { jobId, code, stderrTail: stderr.slice(-1200) },
         "yt-dlp exited with non-zero status",
       );
-      reject(new Error(`yt-dlp failed for ${jobId}: ${stderr.slice(-700) || `exit ${String(code)}`}`));
+      reject(
+        new Error(
+          `yt-dlp failed for ${jobId}: ${
+            stderr.slice(-700) || (timedOut ? "command timed out" : `exit ${String(code)}`)
+          }`,
+        ),
+      );
     });
   });
 }
@@ -723,15 +766,48 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
     "--progress",
     "--download-sections",
     section,
-    "--force-keyframes-at-cuts",
     "--downloader-args",
     "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "-o",
     outputTemplate,
     payload.sourceUrl,
   ];
+  if (CLIP_FORCE_KEYFRAMES) {
+    baseClipArgs.splice(baseClipArgs.indexOf("--downloader-args"), 0, "--force-keyframes-at-cuts");
+  }
 
   await updateJobState(payload.jobId, "running", "Cutting selected section...");
+  let lastProgressUpdateAt = 0;
+  const recordProgress = (line: string, source: "stdout" | "stderr") => {
+    const compact = line.replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!compact) return;
+    const now = Date.now();
+    if (now - lastProgressUpdateAt < 5000) return;
+    lastProgressUpdateAt = now;
+    const extra: Record<string, string | number | boolean> = {
+      progressLine: compact,
+      progressSource: source,
+    };
+    const progressMatch = compact.match(/\[download\]\s+([\d.]+)%/i);
+    if (progressMatch) {
+      const pct = Number.parseFloat(progressMatch[1]);
+      if (Number.isFinite(pct)) extra.progressPct = Math.min(95, Math.max(1, Math.round(pct)));
+    }
+    const timeMatch = compact.match(/\btime=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (timeMatch) {
+      const processedSecs =
+        Number(timeMatch[1]) * 3600 +
+        Number(timeMatch[2]) * 60 +
+        Number(timeMatch[3]);
+      const duration = Math.max(0.001, endTime - startTime);
+      if (Number.isFinite(processedSecs)) {
+        extra.progressPct = Math.min(95, Math.max(1, Math.round((processedSecs / duration) * 95)));
+      }
+    }
+    void updateJobState(payload.jobId, "running", "Cutting selected section...", extra).catch((err) =>
+      logger.warn({ err, jobId: payload.jobId }, "Failed to persist clip progress"),
+    );
+  };
   const isYt = isYouTubeUrl(payload.sourceUrl);
   const cookieArgs = getCookieArgs();
   const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
@@ -762,7 +838,7 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
       attempted.add(key);
       attemptsUsed += 1;
       try {
-        await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs]);
+        await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], recordProgress);
         lastErr = null;
         break;
       } catch (err) {
@@ -783,7 +859,7 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
           attempted.add(key);
           attemptsUsed += 1;
           try {
-            await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs]);
+            await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], recordProgress);
             lastErr = null;
             break;
           } catch (err) {

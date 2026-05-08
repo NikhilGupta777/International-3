@@ -190,15 +190,34 @@ async function submitYoutubeQueueJob(
   };
 
   const now = Date.now();
+  const startSec =
+    typeof input.meta?.startSec === "number"
+      ? input.meta.startSec
+      : typeof input.meta?.startTime === "number"
+        ? input.meta.startTime
+        : null;
+  const endSec =
+    typeof input.meta?.endSec === "number"
+      ? input.meta.endSec
+      : typeof input.meta?.endTime === "number"
+        ? input.meta.endTime
+        : null;
+  const durationSecs =
+    typeof startSec === "number" && typeof endSec === "number" && Number.isFinite(endSec - startSec)
+      ? Math.max(0, endSec - startSec)
+      : null;
   await ddb.send(
     new PutItemCommand({
       TableName: JOB_TABLE,
       Item: {
         jobId: { S: input.jobId },
+        jobType: { S: input.jobType },
+        sourceUrl: { S: input.sourceUrl },
         status: { S: "queued" },
         message: { S: mode === "primary" ? "Submitted by API (primary mode)" : "Submitted by API (shadow mode)" },
         createdAt: { N: String(now) },
         updatedAt: { N: String(now) },
+        ...(durationSecs != null ? { durationSecs: { N: String(durationSecs) } } : {}),
       },
     }),
   );
@@ -227,6 +246,8 @@ async function submitYoutubeQueueJob(
         TableName: JOB_TABLE,
         Item: {
           jobId: { S: input.jobId },
+          jobType: { S: input.jobType },
+          sourceUrl: { S: input.sourceUrl },
           status: { S: "queued" },
           message: {
             S: "Queued - starting soon...",
@@ -234,6 +255,7 @@ async function submitYoutubeQueueJob(
           batchJobId: { S: batchJobId },
           createdAt: { N: String(now) },
           updatedAt: { N: String(Date.now()) },
+          ...(durationSecs != null ? { durationSecs: { N: String(durationSecs) } } : {}),
         },
       }),
     );

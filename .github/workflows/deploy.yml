@@ -607,10 +607,10 @@ jobs:
           upsert_env "ADMIN_PANEL_ENABLED" "true"
           upsert_env "APPROVED_ADMIN_EMAILS" "guptanikhil2056@gmail.com"
           upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,bhagwat-analyze,bhagwat-render,subtitles"
-          upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "600"
+          upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "420"
           upsert_env "LAMBDA_CLIP_COMMAND_TIMEOUT_MS" "840000"
-          upsert_env "LAMBDA_CLIP_STALL_TIMEOUT_MS" "60000"
-          upsert_env "YTDLP_DOWNLOAD_STALL_TIMEOUT_MS" "60000"
+          upsert_env "LAMBDA_CLIP_STALL_TIMEOUT_MS" "180000"
+          upsert_env "YTDLP_DOWNLOAD_STALL_TIMEOUT_MS" "180000"
           upsert_env "YTDLP_MAX_DOWNLOAD_ATTEMPTS" "4"
           upsert_env "MAX_CONCURRENT_CLIP_JOBS" "3"
           upsert_env "SUBTITLES_FORCE_LAMBDA" "false"
@@ -629,10 +629,9 @@ jobs:
           upsert_env "TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS" "0"
           # CosyVoice3 model ID passed explicitly to every Batch job.
           upsert_env "TRANSLATOR_COSYVOICE_MODEL_ID" "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
-          # Fail loudly on voice-clone failure, but do not fail the whole job if
-          # LatentSync fails/OOMs on a hard video. In that case the worker muxes
-          # the dubbed audio into the original video and records a warning.
-          upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "false"
+          # Allow neural-voice fallback when clone fails (matches UI messaging).
+          # LatentSync failures still mux dubbed audio into the original video and record a warning.
+          upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "true"
           upsert_env "TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK" "true"
           # Keep lip sync hidden/disabled for normal users until we add
           # per-user permissions. When enabled later, API routes these jobs to

@@ -98,8 +98,8 @@ HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "hugg
 # Runtime downloads disabled by default — all models must be baked into the
 # Docker image.  Set =1 only for dev/testing.
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "0").lower() == "1"
-# Fail loudly if cloning fails — do NOT silently downgrade to a neural voice.
-ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "false").lower() == "true"
+# Allow automatic neural fallback when cloning fails (aligned with UI messaging).
+ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "true").lower() == "true"
 ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "false").lower() == "true"
 # CosyVoice3 (Fun-CosyVoice3-0.5B-2512) is the current recommended model.
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
@@ -137,6 +137,9 @@ PIPELINE_STEPS = [
     {"name": "video_merge", "label": "Merging & generating SRT", "start": 82, "end": 88, "statuses": ["MERGING"]},
     {"name": "upload", "label": "Uploading to cloud", "start": 88, "end": 100, "statuses": ["UPLOADING"]},
 ]
+
+DEFAULT_SPEAKER_LABEL = "SPEAKER_UNKNOWN"
+TAIL_FADE_SECONDS = 0.06  # 60 ms fade-out to soften hard truncations
 
 
 def _stage_local_progress(progress: int, start: int, end: int) -> int:
@@ -625,7 +628,7 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
         from collections import defaultdict as _dd
         for seg in segments:
             # Skip segments that already have a reliable speaker label from AssemblyAI
-            if seg.get("speaker") and seg["speaker"] != "SPEAKER_00":
+            if seg.get("speaker") and seg["speaker"] != DEFAULT_SPEAKER_LABEL:
                 continue
             overlap_scores: dict = _dd(float)
             for turn, _, spk in diarization.itertracks(yield_label=True):
@@ -638,7 +641,7 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
             if overlap_scores:
                 seg["speaker"] = max(overlap_scores, key=overlap_scores.get)
             elif "speaker" not in seg:
-                seg["speaker"] = "SPEAKER_00"
+                seg["speaker"] = DEFAULT_SPEAKER_LABEL
 
         del pipeline
         torch.cuda.empty_cache()
@@ -646,6 +649,24 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
     except Exception as e:
         log.warning(f"[Diarize] Failed: {e}")
     return segments
+
+
+def _effective_speaker_labels(segments: list[dict]) -> list[str]:
+    labels: set[str] = set()
+    for seg in segments:
+        label = str(seg.get("speaker", "")).strip()
+        if label and label != DEFAULT_SPEAKER_LABEL:
+            labels.add(label)
+    return sorted(labels)
+
+
+def _all_speaker_labels(segments: list[dict]) -> list[str]:
+    labels: set[str] = set()
+    for seg in segments:
+        label = str(seg.get("speaker", "")).strip()
+        if label:
+            labels.add(label)
+    return sorted(labels)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2c: Per-speaker voice reference extraction
@@ -655,21 +676,23 @@ def extract_speaker_reference(
     audio_path: Path,
     segments: list[dict],
     out_dir: Path,
-    max_ref_duration: float = 15.0,
+    max_ref_duration: float = 24.0,
     min_segment_duration: float = 1.5,
-) -> dict:
+) -> tuple[dict, dict]:
     """
     Build one clean reference WAV per unique speaker from the source audio.
-    Returns {speaker_label: Path} — used by CosyVoice for per-speaker cloning.
+    Returns ({speaker_label: Path}, {speaker_label: prompt_text}) for per-speaker cloning.
 
     Strategy: for each speaker, concatenate their longest clean segments
     (up to max_ref_duration total).  Falls back to full audio if a speaker
     has no sufficiently long segments.
+    Default max_ref_duration is 24 seconds.
     """
     import numpy as np
     import soundfile as sf
 
     speaker_refs: dict = {}
+    speaker_prompt_texts: dict = {}
 
     try:
         full_audio, sr = sf.read(str(audio_path))
@@ -677,12 +700,12 @@ def extract_speaker_reference(
             full_audio = full_audio.mean(axis=1)
     except Exception as exc:
         log.warning(f"[SpeakerRef] Could not read audio: {exc}")
-        return speaker_refs
+        return speaker_refs, speaker_prompt_texts
 
     # Group segments by speaker
     speaker_map: dict = {}
     for seg in segments:
-        spk = (seg.get("speaker") or "SPEAKER_00")
+        spk = (seg.get("speaker") or DEFAULT_SPEAKER_LABEL)
         speaker_map.setdefault(spk, []).append(seg)
 
     for spk, spk_segs in speaker_map.items():
@@ -707,11 +730,25 @@ def extract_speaker_reference(
         if not clips:
             log.warning(f"[SpeakerRef] No usable clips for {spk}; using full audio.")
             speaker_refs[spk] = audio_path
+            prompt_fallback = " ".join(
+                str(s.get("text", "")).strip()
+                for s in sorted(spk_segs, key=lambda s: s["start"])
+                if str(s.get("text", "")).strip()
+            ).strip()
+            speaker_prompt_texts[spk] = normalize_tts_text(prompt_fallback)[:300] if prompt_fallback else ""
             continue
 
-        # Concatenate selected clips into one reference
+        ordered_clips = sorted(clips, key=lambda s: s["start"])
+        prompt_text = " ".join(
+            str(s.get("text", "")).strip()
+            for s in ordered_clips
+            if str(s.get("text", "")).strip()
+        ).strip()
+        speaker_prompt_texts[spk] = normalize_tts_text(prompt_text)[:300] if prompt_text else ""
+
+        # Concatenate selected clips into one reference (chronological order)
         chunks: list = []
-        for seg in clips:
+        for seg in ordered_clips:
             s_idx = max(0, int(seg["start"] * sr))
             e_idx = min(len(full_audio), int(seg["end"] * sr))
             if e_idx > s_idx:
@@ -734,7 +771,7 @@ def extract_speaker_reference(
             f"{len(ref_data)/sr:.1f}s reference → {ref_path.name}"
         )
 
-    return speaker_refs
+    return speaker_refs, speaker_prompt_texts
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -746,7 +783,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     Merge micro-segments before translation/TTS to prevent choppy voice output.
     Sub-second segments are poison for TTS — a voice model cannot naturally
     synthesize speech into 0.1-0.8 second slots.
-    Target: 2.5-7s merged segments. Hard max 8s.
+    Target: 2.5-8s merged segments. Hard max 14s.
     Respects speaker labels — never merges different speakers.
     """
     if not segments:
@@ -763,6 +800,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
 
         gap = float(seg["start"]) - float(buf["end"])
         buf_dur = float(buf["end"]) - float(buf["start"])
+        seg_dur = float(seg["end"]) - float(seg["start"])
         word_count = len(str(buf.get("text", "")).split())
         merged_dur = float(seg["end"]) - float(buf["start"])
 
@@ -773,8 +811,14 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
 
         should_merge = (
             same_speaker
-            and (buf_dur < 1.2 or word_count < 3 or gap < 0.8)
-            and merged_dur <= 8.0
+            and gap < 1.2
+            and merged_dur <= 14.0
+            and (
+                buf_dur < 2.2
+                or seg_dur < 2.2
+                or word_count < 6
+                or gap < 0.6
+            )
         )
 
         if should_merge:
@@ -1247,6 +1291,7 @@ def _normalise_translation_response(raw) -> list[dict]:
 
 
 def _safe_speaking_rate(value) -> float:
+    """Clamp speaking rate to safe bounds for TTS/voice models."""
     try:
         rate = float(value)
     except (TypeError, ValueError):
@@ -1271,7 +1316,7 @@ def translate_segments(segments: list[dict]) -> list[dict]:
             "end": s["end"],
             "duration": round(s["end"] - s["start"], 2),
             "text": s["text"],
-            "speaker": s.get("speaker", "SPEAKER_00"),
+            "speaker": s.get("speaker") or DEFAULT_SPEAKER_LABEL,
         }
         for s in segments
     ]
@@ -1374,6 +1419,14 @@ LANG_TO_EDGE_TTS = {
     "id": "id-ID-GadisNeural",
     "fil": "fil-PH-BlessicaNeural",
     "fi": "fi-FI-NooraNeural",
+    "bn": "bn-IN-TanishaaNeural",
+    "gu": "gu-IN-DhwaniNeural",
+    "kn": "kn-IN-SapnaNeural",
+    "ml": "ml-IN-SobhanaNeural",
+    "mr": "mr-IN-AarohiNeural",
+    "ta": "ta-IN-PallaviNeural",
+    "te": "te-IN-ShrutiNeural",
+    "ur": "ur-IN-GulNeural",
 }
 
 GTTS_LANG_MAP = {
@@ -1388,6 +1441,7 @@ def synthesize_segments_cosyvoice(
     default_reference_audio: Path,
     out_dir: Path,
     speaker_refs: Optional[dict] = None,
+    speaker_prompt_texts: Optional[dict] = None,
 ) -> list[Path]:
     """
     Zero-shot / cross-lingual voice cloning via CosyVoice.
@@ -1427,8 +1481,20 @@ def synthesize_segments_cosyvoice(
                     return candidate
         return None
 
+    primary_model_name = COSYVOICE_MODEL_ID.split("/")[-1].strip()
+    candidate_models: list[str] = []
+    for name in (
+        primary_model_name,
+        "Fun-CosyVoice3-0.5B-2512",
+        "Fun-CosyVoice3-0.5B",
+        "CosyVoice3-0.5B",
+        "CosyVoice2-0.5B",
+    ):
+        if name and name not in candidate_models:
+            candidate_models.append(name)
+
     tried_model_paths: set[str] = set()
-    for model_name in ("CosyVoice2-0.5B", "CosyVoice3-0.5B"):
+    for model_name in candidate_models:
         model_path = _resolve_model_path(model_name)
         if model_path is None:
             model_path = _find_cosyvoice_model()
@@ -1467,10 +1533,13 @@ def synthesize_segments_cosyvoice(
         log.info("[CosyVoice] CosyVoice2/legacy detected.")
 
     # ── Decide inference mode (cross-lingual vs zero-shot) ──────────────────
-    is_cross_lingual = (
-        bool(TARGET_LANG_CODE)
-        and TARGET_LANG_CODE.lower() not in ("", "auto")
-        and TARGET_LANG_CODE.lower() != SOURCE_LANG_CODE.lower()
+    source_code = (SOURCE_LANG_CODE or "").lower().strip()
+    target_code = (TARGET_LANG_CODE or "").lower().strip()
+    is_cross_lingual = bool(
+        source_code
+        and target_code
+        and target_code not in ("", "auto")
+        and target_code != source_code
     )
     has_cross_lingual = hasattr(model, "inference_cross_lingual")
     use_cross_lingual = is_cross_lingual and has_cross_lingual
@@ -1523,42 +1592,52 @@ def synthesize_segments_cosyvoice(
     # prompt_text must match what is SPOKEN in the reference audio for that speaker.
     # Only needed for zero-shot (same source/target language).
     global_prompt_text = ""
-    speaker_prompt_texts: dict = {}
+    speaker_prompt_texts = speaker_prompt_texts or {}
     if not use_cross_lingual:
-        # Global fallback: first 12 s of the recording
-        parts: list[str] = []
-        for seg in segments:
-            if float(seg.get("start", 0)) < 12.0:
-                src = str(seg.get("text", "")).strip()
-                if src:
-                    parts.append(src)
-            else:
-                break
-        global_prompt_text = normalize_tts_text(" ".join(parts))[:300]
-        if not global_prompt_text:
-            for seg in segments:
-                src = str(seg.get("text", "")).strip()
-                if src:
-                    global_prompt_text = normalize_tts_text(src[:200])
+        if speaker_prompt_texts:
+            for value in speaker_prompt_texts.values():
+                if value:
+                    global_prompt_text = value
                     break
+            if not global_prompt_text and all(not v for v in speaker_prompt_texts.values()):
+                log.info("[CosyVoice] Speaker prompt texts provided but all were empty; using fallback prompts.")
 
-        # Per-speaker: collect that speaker's source text from the first 12 s of their clips
-        from collections import defaultdict as _dd2
-        spk_segs: dict = _dd2(list)
-        for seg in segments:
-            spk_segs[seg.get("speaker") or "SPEAKER_00"].append(seg)
-        for spk, s_list in spk_segs.items():
-            p_parts: list[str] = []
-            total = 0.0
-            for s in sorted(s_list, key=lambda x: x["start"]):
-                txt = str(s.get("text", "")).strip()
-                if txt:
-                    p_parts.append(txt)
-                    total += s["end"] - s["start"]
-                    if total >= 12.0:
+        if not global_prompt_text:
+            # Global fallback: first 12 s of the recording
+            parts: list[str] = []
+            for seg in segments:
+                if float(seg.get("start", 0)) < 12.0:
+                    src = str(seg.get("text", "")).strip()
+                    if src:
+                        parts.append(src)
+                else:
+                    break
+            global_prompt_text = normalize_tts_text(" ".join(parts))[:300]
+            if not global_prompt_text:
+                for seg in segments:
+                    src = str(seg.get("text", "")).strip()
+                    if src:
+                        global_prompt_text = normalize_tts_text(src[:200])
                         break
-            pt = normalize_tts_text(" ".join(p_parts))[:300]
-            speaker_prompt_texts[spk] = pt or global_prompt_text
+
+        if not speaker_prompt_texts:
+            # Per-speaker fallback if reference extraction did not provide matched prompt text.
+            from collections import defaultdict as _dd2
+            spk_segs: dict = _dd2(list)
+            for seg in segments:
+                spk_segs[seg.get("speaker") or DEFAULT_SPEAKER_LABEL].append(seg)
+            for spk, s_list in spk_segs.items():
+                p_parts: list[str] = []
+                total = 0.0
+                for s in sorted(s_list, key=lambda x: x["start"]):
+                    txt = str(s.get("text", "")).strip()
+                    if txt:
+                        p_parts.append(txt)
+                        total += s["end"] - s["start"]
+                        if total >= 12.0:
+                            break
+                pt = normalize_tts_text(" ".join(p_parts))[:300]
+                speaker_prompt_texts[spk] = pt or global_prompt_text
 
     # ── Pre-compute inference method signatures ONCE (outside the loop) ─────────
     # inspect.signature() is non-trivial; calling it on every segment iteration
@@ -1595,7 +1674,7 @@ def synthesize_segments_cosyvoice(
             continue
 
         # Resolve which reference to use for this speaker
-        speaker = (seg.get("speaker") or "SPEAKER_00")
+        speaker = (seg.get("speaker") or DEFAULT_SPEAKER_LABEL)
         if speaker_refs and speaker in speaker_refs:
             try:
                 seg_ref_wav, seg_ref_prompt_path = _load_ref(
@@ -1606,7 +1685,9 @@ def synthesize_segments_cosyvoice(
         else:
             seg_ref_wav, seg_ref_prompt_path = default_ref_wav, default_ref_prompt_path
 
-        seg_prompt_text = speaker_prompt_texts.get(speaker, global_prompt_text)
+        seg_prompt_text = speaker_prompt_texts.get(speaker)
+        if not seg_prompt_text:
+            seg_prompt_text = global_prompt_text
         # CosyVoice3 zero-shot: instruction prefix goes in prompt_text (not tts_text)
         if is_cosyvoice3 and seg_prompt_text:
             seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
@@ -1625,7 +1706,7 @@ def synthesize_segments_cosyvoice(
                         f"Unsupported CosyVoice cross_lingual signature: {_cl_params_set}"
                     )
                 if "speed" in _cl_params_set:
-                    cl_args["speed"] = 1.0
+                    cl_args["speed"] = _safe_speaking_rate(seg.get("speaking_rate", 1.0))
                 chunks = list(model.inference_cross_lingual(**cl_args))
             else:
                 # Use pre-computed signature set (not re-inspected each iteration)
@@ -1643,7 +1724,7 @@ def synthesize_segments_cosyvoice(
                         f"Unsupported CosyVoice zero-shot signature: {_zs_params_set}"
                     )
                 if "speed" in _zs_params_set:
-                    zs_args["speed"] = 1.0
+                    zs_args["speed"] = _safe_speaking_rate(seg.get("speaking_rate", 1.0))
                 chunks = list(model.inference_zero_shot(**zs_args))
 
             tts_chunks = [
@@ -1679,9 +1760,10 @@ def synthesize_edge_tts_single(seg: dict, out_dir: Path) -> Path:
     out_path = out_dir / f"seg_{seg['id']:04d}_edgetts.mp3"
     rate_pct = int((seg.get("speaking_rate", 1.0) - 1.0) * 100)
     rate_str = f"{rate_pct:+d}%"
+    text = seg.get("tts_text") or seg.get("translated_text") or ""
 
     async def _run():
-        c = edge_tts.Communicate(text=seg["translated_text"], voice=voice, rate=rate_str)
+        c = edge_tts.Communicate(text=text, voice=voice, rate=rate_str)
         await c.save(str(out_path))
 
     asyncio.run(_run())
@@ -1714,6 +1796,7 @@ def synthesize_all(
     reference_audio: Path,
     out_dir: Path,
     speaker_refs: Optional[dict] = None,
+    speaker_prompt_texts: Optional[dict] = None,
 ) -> tuple[list[Path], bool]:
     """
     Master TTS router: CosyVoice -> edge-tts -> gTTS (auto-fallback at every level).
@@ -1723,7 +1806,11 @@ def synthesize_all(
     if VOICE_CLONE:
         try:
             paths = synthesize_segments_cosyvoice(
-                segments, reference_audio, out_dir, speaker_refs=speaker_refs
+                segments,
+                reference_audio,
+                out_dir,
+                speaker_refs=speaker_refs,
+                speaker_prompt_texts=speaker_prompt_texts,
             )
             log.info("[TTS] CosyVoice voice cloning succeeded.")
             return paths, True
@@ -1773,6 +1860,19 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
     Uses FFmpeg atempo filter (0.5x â€“ 2.0x range, chained for extremes).
     """
     import soundfile as sf
+
+    def _atempo_chain(value: float) -> str:
+        filters: list[str] = []
+        ratio = float(value)
+        while ratio > 2.0:
+            filters.append("atempo=2.0")
+            ratio /= 2.0
+        while ratio < 0.5:
+            filters.append("atempo=0.5")
+            ratio *= 2.0
+        filters.append(f"atempo={round(ratio, 3)}")
+        return ",".join(filters)
+
     data, sr = sf.read(str(audio_path))
     if sr <= 0:
         raise RuntimeError(f"Invalid sample rate {sr} while reading {audio_path}.")
@@ -1788,12 +1888,16 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
         return audio_path  # close enough, no change needed
 
     ratio = actual_dur / max(target_duration, 0.1)
-    # Relax the clamp so we don't get chipmunk voices (max 1.25x speedup)
-    ratio = max(0.85, min(1.25, ratio))
+    # Keep a wider clamp to reduce truncation while avoiding chipmunk voices.
+    # Short segments tolerate slightly faster stretch because the absolute
+    # perceptual shift is smaller than long segments, and it prevents cut-offs.
+    max_ratio = 1.8 if target_duration < 2.2 else 1.6
+    min_ratio = 0.75 if target_duration < 2.2 else 0.8
+    ratio = max(min_ratio, min(max_ratio, ratio))
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
 
-    tempo_filters = f"atempo={round(ratio, 3)}"
+    tempo_filters = _atempo_chain(ratio)
 
     run_ffmpeg("-i", str(audio_path), "-filter:a", tempo_filters, str(out_path))
     return out_path
@@ -2040,6 +2144,11 @@ def assemble_dubbed_audio(
         # into the next segment's slot and causes two voices to overlap.
         max_seg_samples = max(1, int((seg["end"] - seg["start"]) * SR))
         if len(data) > max_seg_samples:
+            fade_samples = min(int(SR * TAIL_FADE_SECONDS), max_seg_samples // 3)
+            if fade_samples > 0 and len(data) >= max_seg_samples:
+                fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+                data = data.astype(np.float32, copy=False)
+                data[max_seg_samples - fade_samples:max_seg_samples] *= fade
             data = data[:max_seg_samples]
         if len(data) == 0:
             continue
@@ -2170,7 +2279,7 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
                 "translatedText": s.get("translated_text", ""),
                 "emotion": s.get("emotion", "neutral"),
                 "speakingRate": s.get("speaking_rate", 1.0),
-                "speaker": s.get("speaker", "SPEAKER_00"),
+                "speaker": s.get("speaker") or DEFAULT_SPEAKER_LABEL,
             }
             for s in segments
         ],
@@ -2237,8 +2346,30 @@ def main():
 
         # â”€â”€ 5. Optional Diarization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if MULTI_SPEAKER:
-            update_progress("TRANSCRIBING", 28, "Identifying speakers...")
+            pre_labels = _effective_speaker_labels(segments)
+            if not pre_labels and not os.environ.get("HF_TOKEN", ""):
+                warn_msg = (
+                    "Multi-speaker requested but no reliable speaker labels were detected and HF_TOKEN is missing. "
+                    "Speaker cloning will default to a single voice unless labels are provided."
+                )
+                log.warning(f"[Diarize] {warn_msg}")
+                update_progress("TRANSCRIBING", 28, "Identifying speakers...", {"speaker_warning": warn_msg})
+            else:
+                update_progress("TRANSCRIBING", 28, "Identifying speakers...")
             segments = diarize(transcription_audio, segments)
+            post_labels = _effective_speaker_labels(segments)
+            if len(post_labels) <= 1:
+                all_labels = _all_speaker_labels(segments)
+                warn_msg = (
+                    "Multi-speaker requested but diarization produced only one speaker label. "
+                    "Voice cloning will use a single reference unless additional labels are provided."
+                )
+                log.warning(
+                    "[Diarize] Speaker labels collapsed to a single voice (%s). %s",
+                    all_labels[0] if all_labels else "none",
+                    warn_msg,
+                )
+                update_progress("TRANSCRIBING", 28, "Identifying speakers...", {"speaker_warning": warn_msg})
 
         # ── 5b. Merge micro-segments for TTS quality ─────────────────
         # Must run AFTER diarization so speaker labels are available.
@@ -2254,12 +2385,13 @@ def main():
 
         # -- 7. Extract per-speaker voice references (when voice cloning + multiple speakers) -
         speaker_refs: dict = {}
+        speaker_prompt_texts: dict = {}
         if VOICE_CLONE:
-            unique_speakers = {seg.get("speaker") or "SPEAKER_00" for seg in segments}
+            unique_speakers = {seg.get("speaker") or DEFAULT_SPEAKER_LABEL for seg in segments}
             if len(unique_speakers) > 1:
                 update_progress("CLONING", 50, "Extracting per-speaker voice references...")
                 try:
-                    speaker_refs = extract_speaker_reference(
+                    speaker_refs, speaker_prompt_texts = extract_speaker_reference(
                         transcription_audio, segments, work_dir
                     )
                     log.info(
@@ -2278,7 +2410,11 @@ def main():
         seg_dir = work_dir / "segments"
         seg_dir.mkdir()
         seg_audio_paths, voice_was_cloned = synthesize_all(
-            segments, transcription_audio, seg_dir, speaker_refs=speaker_refs
+            segments,
+            transcription_audio,
+            seg_dir,
+            speaker_refs=speaker_refs,
+            speaker_prompt_texts=speaker_prompt_texts,
         )
 
         if VOICE_CLONE and not voice_was_cloned:
