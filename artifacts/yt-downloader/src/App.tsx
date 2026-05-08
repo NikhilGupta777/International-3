@@ -135,7 +135,7 @@ function App() {
             setAuthFeatures(data.features ?? null);
             if (data.authenticated) {
               sessionOk = true;
-              setAuthUser(data.user ?? { method: "password", role: "admin" });
+              setAuthUser(data.user ?? { method: "password", role: "user" });
               break;
             }
             setAuthUser(null);
@@ -251,7 +251,7 @@ function App() {
         return;
       }
       window.localStorage.setItem(AUTH_HINT_KEY, "1");
-      setAuthUser({ method: "password", role: "admin" });
+      setAuthUser({ method: "password", role: "user" });
       setAuthenticated(true);
       setAuthChecked(true);
     } catch {

@@ -62,7 +62,7 @@ function encodeSessionCookie(session: Omit<AuthSession, "authenticated">): strin
 
 function decodeSessionCookie(value: unknown): AuthSession {
   if (value === "1") {
-    return { authenticated: true, method: "password", role: "admin" };
+    return { authenticated: true, method: "password", role: "user" };
   }
   if (typeof value !== "string" || !value) {
     return { authenticated: false };
@@ -97,8 +97,8 @@ function isAdmin(req: Request): boolean {
   return session.authenticated && session.role === "admin";
 }
 
-function setAuthCookie(res: Response, session: Omit<AuthSession, "authenticated"> | "legacy"): void {
-  res.cookie(AUTH_COOKIE_NAME, session === "legacy" ? "1" : encodeSessionCookie(session), {
+function setAuthCookie(res: Response, session: Omit<AuthSession, "authenticated">): void {
+  res.cookie(AUTH_COOKIE_NAME, encodeSessionCookie(session), {
     httpOnly: true,
     secure: AUTH_COOKIE_SECURE,
     sameSite: "lax",
@@ -318,7 +318,10 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
     return;
   }
 
-  setAuthCookie(res, "legacy");
+  setAuthCookie(res, {
+    method: "password",
+    role: "user",
+  });
 
   res.json({ ok: true });
 });
