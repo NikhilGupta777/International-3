@@ -91,6 +91,8 @@ function NavList({
   onNewChat,
   hideUtility,
   showAdmin,
+  superAgentEnabled = true,
+  translatorEnabled = true,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
@@ -98,6 +100,8 @@ function NavList({
   onNewChat?: () => void;
   hideUtility?: boolean;
   showAdmin?: boolean;
+  superAgentEnabled?: boolean;
+  translatorEnabled?: boolean;
 }) {
   const handle = (m: Mode) => () => { onModeChange(m); onClose?.(); };
   const handleNew = () => { onNewChat?.(); onClose?.(); };
@@ -116,6 +120,7 @@ function NavList({
           key={item.mode}
           item={item}
           active={mode === item.mode}
+          className={((item.mode === "copilot" && !superAgentEnabled) || (item.mode === "translator" && !translatorEnabled)) ? "opacity-45" : undefined}
           onClick={handle(item.mode)}
         />
       ))}
@@ -143,11 +148,15 @@ export function Sidebar({
   onModeChange,
   onNewChat,
   showAdmin = false,
+  superAgentEnabled = true,
+  translatorEnabled = true,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
   onNewChat?: () => void;
   showAdmin?: boolean;
+  superAgentEnabled?: boolean;
+  translatorEnabled?: boolean;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -176,6 +185,8 @@ export function Sidebar({
             onNewChat={onNewChat}
             hideUtility={true}
             showAdmin={showAdmin}
+            superAgentEnabled={superAgentEnabled}
+            translatorEnabled={translatorEnabled}
           />
         </div>
 
@@ -238,6 +249,8 @@ export function Sidebar({
             onNewChat={onNewChat}
             hideUtility={true}
             showAdmin={showAdmin}
+            superAgentEnabled={superAgentEnabled}
+            translatorEnabled={translatorEnabled}
           />
         </div>
 

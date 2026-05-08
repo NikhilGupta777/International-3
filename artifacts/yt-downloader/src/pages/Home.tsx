@@ -69,7 +69,9 @@ export type AuthUser = {
 export type AuthFeatures = {
   googleAuthEnabled?: boolean;
   adminPanelEnabled?: boolean;
+  translatorAllowed?: boolean;
   translatorLipSyncAllowed?: boolean;
+  superAgentAllowed?: boolean;
 };
 
 type ClientAccessConfig = {
@@ -378,6 +380,8 @@ export default function Home({
   const showAdmin = mode === "admin";
   const showSettings = mode === "settings";
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
+  const canUseTranslator = authFeatures?.translatorAllowed !== false;
+  const canUseSuperAgent = authFeatures?.superAgentAllowed !== false;
 
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
@@ -653,7 +657,10 @@ export default function Home({
           mode={mode}
           onModeChange={switchMode}
           showAdmin={canUseAdmin}
+          superAgentEnabled={canUseSuperAgent}
+          translatorEnabled={canUseTranslator}
           onNewChat={() => {
+            if (!canUseSuperAgent) return;
             setPendingCopilotPrompt(null);
             setCopilotResetKey(k => k + 1);
             switchMode("copilot");
@@ -665,7 +672,11 @@ export default function Home({
           <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
 
             {/* Translator tab â€” full screen */}
-            {mode === "translator" && <VideoTranslator lipSyncAvailable={Boolean(authFeatures?.translatorLipSyncAllowed)} />}
+            {mode === "translator" && (
+              canUseTranslator
+                ? <VideoTranslator lipSyncAvailable={Boolean(authFeatures?.translatorLipSyncAllowed)} />
+                : <FeatureUnavailable title="Translator is restricted" detail="Your account is not allowed to use video translation right now." />
+            )}
 
             {/* Help tab — dedicated page (replaces old GuideModal) */}
             {mode === "help" && (
@@ -1034,6 +1045,10 @@ export default function Home({
                   <StudioHome
                     onSwitchMode={(m) => switchMode(m as Mode)}
                     onLaunchAgent={(prompt) => {
+                      if (!canUseSuperAgent) {
+                        switchMode("copilot");
+                        return;
+                      }
                       setPendingCopilotPrompt(prompt);
                       switchMode("copilot");
                     }}
@@ -1044,13 +1059,17 @@ export default function Home({
               {/* AI Copilot */}
               {showCopilot && (
                 <motion.div key="copilot-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
-                  <StudioCopilot
-                    key={copilotResetKey}
-                    onNavigate={(tab) => switchMode(tab as any)}
-                    pendingPrompt={pendingCopilotPrompt}
-                    onPromptConsumed={() => setPendingCopilotPrompt(null)}
-                    onBackToHome={() => switchMode("home")}
-                  />
+                  {canUseSuperAgent ? (
+                    <StudioCopilot
+                      key={copilotResetKey}
+                      onNavigate={(tab) => switchMode(tab as any)}
+                      pendingPrompt={pendingCopilotPrompt}
+                      onPromptConsumed={() => setPendingCopilotPrompt(null)}
+                      onBackToHome={() => switchMode("home")}
+                    />
+                  ) : (
+                    <FeatureUnavailable title="Super Agent is restricted" detail="Your account is not allowed to use Super Agent right now." />
+                  )}
                 </motion.div>
               )}
 
@@ -1072,6 +1091,20 @@ export default function Home({
 
 // GuideModal has been replaced by HelpPanel (a full sidebar tab).
 // Keep this stub so any older import sites compile; safe to delete later.
+
+function FeatureUnavailable({ title, detail }: { title: string; detail: string }) {
+  return (
+    <div className="activity-page">
+      <div className="activity-page-inner">
+        <div className="settings-card">
+          <p className="text-xs uppercase tracking-[0.35em] text-white/35 font-semibold">Access</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-white mt-2">{title}</h1>
+          <p className="text-sm text-white/45 mt-2">{detail}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function FormatCard({ 
   format, 

@@ -3149,6 +3149,26 @@ export function getSubtitlesOpsSnapshot() {
   let pendingJobs = 0;
   let doneJobs = 0;
   let errorJobs = 0;
+  const recentJobs = Array.from(jobs.entries())
+    .map(([jobId, job]) => ({
+      jobId,
+      type: "subtitles",
+      status: job.status,
+      stage: job.message || job.status,
+      progressPct: job.progressPct ?? (job.status === "done" ? 100 : 0),
+      startedAt: job.createdAt ?? null,
+      createdAt: job.createdAt ?? null,
+      completedAt: job.completedAt ?? null,
+      updatedAt: job.completedAt ?? job.createdAt ?? null,
+      elapsedMs: job.completedAt && job.createdAt ? job.completedAt - job.createdAt : (job.createdAt ? Date.now() - job.createdAt : null),
+      filename: job.filename,
+      error: job.status === "error" ? (job.error ?? job.message) : null,
+      outputAvailable: job.status === "done" && Boolean(job.s3Key || job.srt),
+      translateTo: job.translateTo ?? null,
+      durationSecs: job.durationSecs ?? null,
+    }))
+    .sort((a, b) => Number(b.updatedAt ?? 0) - Number(a.updatedAt ?? 0))
+    .slice(0, 50);
 
   for (const job of jobs.values()) {
     if (job.status === "pending") pendingJobs += 1;
@@ -3180,6 +3200,7 @@ export function getSubtitlesOpsSnapshot() {
       errorJobs,
       totalTrackedJobs: jobs.size,
     },
+    recentJobs,
   };
 }
 

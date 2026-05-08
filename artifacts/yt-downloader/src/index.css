@@ -127,6 +127,37 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   margin-bottom: 16px;
 }
 
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin: 0 0 16px;
+  padding: 6px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.035);
+  scrollbar-width: none;
+}
+
+.admin-tabs::-webkit-scrollbar { display: none; }
+
+.admin-tabs button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(255,255,255,0.55);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.admin-tabs button.is-active {
+  background: rgba(45,212,191,0.16);
+  color: #ccfbf1;
+}
+
 .admin-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
@@ -146,6 +177,29 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   grid-column: 1 / -1;
 }
 
+.admin-grid--overview > .admin-section,
+.admin-grid--jobs > .admin-section,
+.admin-grid--access > .admin-section,
+.admin-grid--storage > .admin-section,
+.admin-grid--tools > .admin-section {
+  display: none;
+}
+
+.admin-grid--overview > .admin-section:nth-of-type(2),
+.admin-grid--overview > .admin-section:nth-of-type(4),
+.admin-grid--overview > .admin-section:nth-of-type(11),
+.admin-grid--jobs > .admin-section:nth-of-type(1),
+.admin-grid--jobs > .admin-section:nth-of-type(3),
+.admin-grid--access > .admin-section:nth-of-type(5),
+.admin-grid--access > .admin-section:nth-of-type(9),
+.admin-grid--access > .admin-section:nth-of-type(10),
+.admin-grid--storage > .admin-section:nth-of-type(6),
+.admin-grid--storage > .admin-section:nth-of-type(7),
+.admin-grid--tools > .admin-section:nth-of-type(8),
+.admin-grid--tools > .admin-section:nth-of-type(12) {
+  display: block;
+}
+
 .admin-section-title {
   display: flex;
   align-items: center;
@@ -155,6 +209,86 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 0.02em;
+}
+
+.admin-section-title--sub {
+  margin-top: 16px;
+}
+
+.admin-window-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.admin-window-card {
+  padding: 12px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.035);
+}
+
+.admin-window-card strong,
+.admin-window-card span,
+.admin-window-card em {
+  display: block;
+}
+
+.admin-window-card strong {
+  color: rgba(255,255,255,0.9);
+  font-size: 16px;
+}
+
+.admin-window-card span,
+.admin-window-card em {
+  color: rgba(255,255,255,0.5);
+  font-size: 12px;
+  font-style: normal;
+  margin-top: 4px;
+}
+
+.admin-job-table {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-job-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.7fr 0.8fr 1.2fr;
+  gap: 10px;
+  align-items: start;
+  padding: 11px;
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.035);
+}
+
+.admin-job-row strong,
+.admin-job-row span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-job-row strong {
+  color: rgba(255,255,255,0.86);
+  font-size: 12px;
+}
+
+.admin-job-row span {
+  color: rgba(255,255,255,0.45);
+  font-size: 11px;
+  margin-top: 3px;
+}
+
+.admin-job-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #fca5a5;
+  font-size: 12px;
 }
 
 .admin-stats {
@@ -545,6 +679,30 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   font-size: 13px;
 }
 
+.admin-cleanup-history {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.admin-cleanup-history div {
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.03);
+}
+
+.admin-cleanup-history strong,
+.admin-cleanup-history span,
+.admin-cleanup-history em {
+  display: block;
+  font-size: 12px;
+}
+
+.admin-cleanup-history strong { color: rgba(255,255,255,0.82); }
+.admin-cleanup-history span { color: rgba(255,255,255,0.48); margin-top: 3px; }
+.admin-cleanup-history em { color: #fca5a5; font-style: normal; margin-top: 3px; }
+
 @media (max-width: 900px) {
   .admin-panel {
     width: 100%;
@@ -562,7 +720,9 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   .admin-email-form,
   .admin-action-row,
   .admin-tool-grid,
-  .admin-capability-list {
+  .admin-capability-list,
+  .admin-window-grid,
+  .admin-job-row {
     grid-template-columns: 1fr;
   }
 
@@ -3953,14 +4113,37 @@ html.studio-light-mode .studio-workspace,
 html.studio-light-mode .studio-content,
 html.studio-light-mode .activity-page,
 html.studio-light-mode .help-page {
-  background: #f6efe4;
+  background: #f6efe4 !important;
+  color: #17130f;
+}
+html.studio-light-mode .studio-content-inner,
+html.studio-light-mode .hero-home,
+html.studio-light-mode .copilot-wrap,
+html.studio-light-mode .translator-page,
+html.studio-light-mode .admin-panel {
+  background: transparent !important;
   color: #17130f;
 }
 html.studio-light-mode .glass-panel,
 html.studio-light-mode .settings-card,
 html.studio-light-mode .settings-profile-card,
 html.studio-light-mode .help-page-detail,
-html.studio-light-mode .activity-row-card {
+html.studio-light-mode .activity-row-card,
+html.studio-light-mode .admin-section,
+html.studio-light-mode .admin-stat,
+html.studio-light-mode .admin-tabs,
+html.studio-light-mode .admin-window-card,
+html.studio-light-mode .admin-job-row,
+html.studio-light-mode .admin-cleanup-history div,
+html.studio-light-mode .admin-tool,
+html.studio-light-mode .admin-flag,
+html.studio-light-mode .activity-row-active,
+html.studio-light-mode .help-page-list-btn,
+html.studio-light-mode .help-page-pill,
+html.studio-light-mode .auth-card,
+html.studio-light-mode input,
+html.studio-light-mode select,
+html.studio-light-mode textarea {
   background: rgba(255,255,255,0.74);
   border-color: rgba(39,30,17,0.14);
   box-shadow: 0 18px 50px rgba(92,64,29,0.10);
@@ -3981,6 +4164,63 @@ html.studio-light-mode .text-white\/30,
 html.studio-light-mode .text-white\/25,
 html.studio-light-mode .text-white\/20 {
   color: rgba(24,20,16,0.54) !important;
+}
+html.studio-light-mode .admin-eyebrow,
+html.studio-light-mode .admin-subtitle,
+html.studio-light-mode .admin-section-title,
+html.studio-light-mode .admin-stat-label,
+html.studio-light-mode .admin-stat-detail,
+html.studio-light-mode .admin-window-card span,
+html.studio-light-mode .admin-window-card em,
+html.studio-light-mode .admin-job-row span,
+html.studio-light-mode .admin-cleanup-history span,
+html.studio-light-mode .help-page-step,
+html.studio-light-mode .settings-toggle-row small,
+html.studio-light-mode .activity-page-section-title {
+  color: rgba(24,20,16,0.58) !important;
+}
+html.studio-light-mode .admin-header h1,
+html.studio-light-mode .admin-stat-value,
+html.studio-light-mode .admin-window-card strong,
+html.studio-light-mode .admin-job-row strong,
+html.studio-light-mode .admin-cleanup-history strong,
+html.studio-light-mode .admin-tool strong,
+html.studio-light-mode .settings-card h2,
+html.studio-light-mode .settings-toggle-row strong {
+  color: rgba(24,20,16,0.94) !important;
+}
+html.studio-light-mode .admin-tabs button {
+  color: rgba(24,20,16,0.58);
+}
+html.studio-light-mode .admin-tabs button.is-active,
+html.studio-light-mode .admin-refresh,
+html.studio-light-mode .settings-action-btn {
+  background: rgba(20,184,166,0.14);
+  border-color: rgba(13,148,136,0.28);
+  color: #0f766e;
+}
+html.studio-light-mode .studio-search-wrap input,
+html.studio-light-mode input,
+html.studio-light-mode select,
+html.studio-light-mode textarea {
+  color: #17130f !important;
+}
+html.studio-light-mode input::placeholder,
+html.studio-light-mode textarea::placeholder {
+  color: rgba(24,20,16,0.42) !important;
+}
+html.studio-light-mode .gs-rail,
+html.studio-light-mode .gs-drawer {
+  background: rgba(255,255,255,0.82);
+  border-color: rgba(39,30,17,0.12);
+}
+html.studio-light-mode .gs-nav-label,
+html.studio-light-mode .gs-icon {
+  color: rgba(24,20,16,0.62);
+}
+html.studio-light-mode .gs-nav-item-active .gs-nav-label,
+html.studio-light-mode .gs-nav-item-active .gs-icon {
+  color: #0f766e;
 }
 html.studio-light-mode .settings-row,
 html.studio-light-mode .settings-toggle-row,

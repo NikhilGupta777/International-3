@@ -1,4 +1,4 @@
-import { Bell, BellOff, LogOut, Moon, Settings, ShieldCheck, Sun, UserCircle2, Volume2, VolumeX } from "lucide-react";
+import { Bell, BellOff, LogOut, Moon, Settings, Sun, UserCircle2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AuthFeatures, AuthUser } from "@/pages/Home";
 import {
@@ -93,25 +93,6 @@ export function SettingsPanel({
         </section>
 
         <section className="settings-grid">
-          <div className="settings-card">
-            <div className="flex items-center gap-2 mb-4">
-              <ShieldCheck className="w-4 h-4 text-emerald-300" />
-              <h2 className="text-sm font-semibold text-white/85">Access</h2>
-            </div>
-            <div className="settings-row">
-              <span>Google sign-in</span>
-              <strong>{authFeatures?.googleAuthEnabled ? "Enabled" : "Unavailable"}</strong>
-            </div>
-            <div className="settings-row">
-              <span>Admin panel</span>
-              <strong>{isAdmin && authFeatures?.adminPanelEnabled ? "Allowed" : "Restricted"}</strong>
-            </div>
-            <div className="settings-row">
-              <span>Translator lip sync</span>
-              <strong>{authFeatures?.translatorLipSyncAllowed ? "Allowed" : "Restricted"}</strong>
-            </div>
-          </div>
-
           <div className="settings-card">
             <div className="flex items-center gap-2 mb-4">
               <LogOut className="w-4 h-4 text-rose-300" />

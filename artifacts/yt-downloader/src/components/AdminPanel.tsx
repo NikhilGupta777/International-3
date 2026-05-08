@@ -50,6 +50,29 @@ type HttpMetrics = {
 type QueueSnapshot = {
   limits?: Record<string, number>;
   queue?: Record<string, number>;
+  recentJobs?: AdminJob[];
+};
+
+type AdminJob = {
+  jobId: string;
+  type: string;
+  user?: string;
+  status: string;
+  stage?: string;
+  progressPct?: number | null;
+  createdAt?: number | null;
+  startedAt?: number | null;
+  updatedAt?: number | null;
+  completedAt?: number | null;
+  elapsedMs?: number | null;
+  filename?: string | null;
+  error?: string | null;
+  outputAvailable?: boolean;
+  lipSync?: boolean | null;
+  translation?: boolean | null;
+  targetLang?: string | null;
+  runtime?: string | null;
+  batchJobId?: string | null;
 };
 
 type AdminOverview = {
@@ -95,6 +118,7 @@ type AdminOverview = {
     };
     cleanupNamespaces: string[];
     signedUrlTtlSec: number;
+    cleanupHistory?: Array<{ ts: number; namespace: string; maxAgeHours: number; deletedCount: number; bytesFreed: number; scannedCount: number; ok: boolean; error?: string }>;
   };
   tools: Array<{ key: string; label: string; status: string; detail: string }>;
   auth: {
@@ -107,11 +131,20 @@ type AdminOverview = {
   };
   runtime?: {
     features: {
+      translatorEnabled?: boolean;
       translatorLipSyncEnabled?: boolean;
+      superAgentEnabled?: boolean;
     };
     permissions: {
+      translatorAllowedEmails?: string[];
       translatorLipSyncAllowedEmails?: string[];
+      superAgentAllowedEmails?: string[];
     };
+  };
+  jobs?: {
+    active: AdminJob[];
+    recent: AdminJob[];
+    analytics: Record<string, { total: number; active: number; completed: number; failed: number }>;
   };
 };
 
@@ -230,14 +263,69 @@ function ToolGrid({ tools }: { tools: AdminOverview["tools"] }) {
   );
 }
 
+function formatRelativeMs(value: number | null | undefined): string {
+  if (!value || value < 0) return "-";
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function formatTime(value: number | null | undefined): string {
+  if (!value) return "-";
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatBytesAdmin(value: number | null | undefined): string {
+  if (!value) return "0 B";
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function JobsTable({ jobs }: { jobs: AdminJob[] }) {
+  if (jobs.length === 0) {
+    return <div className="admin-empty">No jobs found in the current window</div>;
+  }
+  return (
+    <div className="admin-job-table">
+      {jobs.map((job) => (
+        <div key={`${job.type}-${job.jobId}`} className="admin-job-row">
+          <div>
+            <strong>{job.type}</strong>
+            <span>{job.jobId}</span>
+          </div>
+          <div>
+            <strong>{job.status}</strong>
+            <span>{job.stage || "-"}</span>
+          </div>
+          <div>
+            <strong>{job.progressPct ?? "-"}{job.progressPct != null ? "%" : ""}</strong>
+            <span>{formatRelativeMs(job.elapsedMs)}</span>
+          </div>
+          <div>
+            <strong>{job.user || "unknown"}</strong>
+            <span>{formatTime(job.startedAt ?? job.createdAt)}</span>
+          </div>
+          {job.error ? <p className="admin-job-error">{job.error}</p> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function AdminPanel() {
   const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+  const [tab, setTab] = useState<"overview" | "jobs" | "access" | "storage" | "tools">("overview");
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"admin" | "user">("user");
   const [lipSyncEmail, setLipSyncEmail] = useState("");
+  const [translationEmail, setTranslationEmail] = useState("");
+  const [superAgentEmail, setSuperAgentEmail] = useState("");
   const [savingEmail, setSavingEmail] = useState(false);
   const [savingRuntime, setSavingRuntime] = useState(false);
   const [cancelJobId, setCancelJobId] = useState("");
@@ -370,6 +458,50 @@ export function AdminPanel() {
     }
   };
 
+  const savePermission = async (event: FormEvent, feature: "translator" | "super-agent", value: string, clear: () => void) => {
+    event.preventDefault();
+    setSavingRuntime(true);
+    setError("");
+    try {
+      const res = await fetch(`${base}/api/admin/permissions/${feature}`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: value, allowed: true }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Could not save permission");
+      }
+      clear();
+      await loadOverview();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save permission");
+    } finally {
+      setSavingRuntime(false);
+    }
+  };
+
+  const removePermission = async (feature: "translator" | "super-agent" | "lipsync", value: string) => {
+    setSavingRuntime(true);
+    setError("");
+    try {
+      const res = await fetch(`${base}/api/admin/permissions/${feature}/${encodeURIComponent(value)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Could not remove permission");
+      }
+      await loadOverview();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove permission");
+    } finally {
+      setSavingRuntime(false);
+    }
+  };
+
   const removeLipSyncPermission = async (value: string) => {
     setSavingRuntime(true);
     setError("");
@@ -424,7 +556,7 @@ export function AdminPanel() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || "Cleanup failed");
-      setCancelResult(`S3 cleanup removed ${data.deleted ?? 0} object(s) from ${data.namespace}`);
+      setCancelResult(`S3 cleanup scanned ${data.scannedCount ?? 0}, removed ${data.deletedCount ?? data.deleted ?? 0} object(s), freed ${formatBytesAdmin(data.bytesFreed ?? 0)} from ${data.namespace}`);
       await loadOverview();
     } catch (err) {
       setCancelResult(err instanceof Error ? err.message : "Cleanup failed");
@@ -451,7 +583,11 @@ export function AdminPanel() {
       ? Math.round((overview.cost.currentMonthUsageUsd / overview.cost.monthlyBudgetUsd) * 100)
       : null;
   const lipSyncEnabled = Boolean(overview?.runtime?.features.translatorLipSyncEnabled);
+  const translationEnabled = overview?.runtime?.features.translatorEnabled !== false;
+  const superAgentEnabled = overview?.runtime?.features.superAgentEnabled !== false;
   const lipSyncAllowedEmails = overview?.runtime?.permissions.translatorLipSyncAllowedEmails ?? [];
+  const translationAllowedEmails = overview?.runtime?.permissions.translatorAllowedEmails ?? [];
+  const superAgentAllowedEmails = overview?.runtime?.permissions.superAgentAllowedEmails ?? [];
 
   return (
     <section className="admin-panel">
@@ -480,6 +616,25 @@ export function AdminPanel() {
           {error}
         </div>
       ) : null}
+
+      <nav className="admin-tabs" aria-label="Admin sections">
+        {[
+          ["overview", "Overview"],
+          ["jobs", "Live Jobs"],
+          ["access", "Access"],
+          ["storage", "Storage"],
+          ["tools", "Tools"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className={tab === key ? "is-active" : ""}
+            onClick={() => setTab(key as typeof tab)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
 
       <div className="admin-kpis">
         <Stat
@@ -512,7 +667,25 @@ export function AdminPanel() {
         />
       </div>
 
-      <div className="admin-grid">
+      <div className={cn("admin-grid", `admin-grid--${tab}`)}>
+        <Section icon={<ListChecks className="w-4 h-4" />} title="Live global jobs" wide>
+          <div className="admin-window-grid">
+            {(["30m", "1h", "24h"] as const).map((key) => {
+              const bucket = overview?.jobs?.analytics?.[key];
+              return (
+                <div key={key} className="admin-window-card">
+                  <strong>{key}</strong>
+                  <span>{bucket?.total ?? 0} total</span>
+                  <em>{bucket?.active ?? 0} active / {bucket?.completed ?? 0} done / {bucket?.failed ?? 0} failed</em>
+                </div>
+              );
+            })}
+          </div>
+          <JobsTable jobs={overview?.jobs?.active ?? []} />
+          <div className="admin-section-title admin-section-title--sub">Recent activity</div>
+          <JobsTable jobs={(overview?.jobs?.recent ?? []).slice(0, 20)} />
+        </Section>
+
         <Section icon={<Activity className="w-4 h-4" />} title="Health">
           <div className="admin-stats">
             <Stat icon={<Clock className="w-4 h-4" />} label="Uptime" value={`${overview?.health.uptimeSec ?? 0}s`} />
@@ -673,6 +846,15 @@ export function AdminPanel() {
               Clean old files
             </button>
           </form>
+          <div className="admin-cleanup-history">
+            {(overview?.storage.cleanupHistory ?? []).slice(0, 5).map((item) => (
+              <div key={`${item.ts}-${item.namespace}`}>
+                <strong>{item.ok ? "Cleanup complete" : "Cleanup failed"}</strong>
+                <span>{item.namespace} - scanned {item.scannedCount}, removed {item.deletedCount}, freed {formatBytesAdmin(item.bytesFreed)} - {formatTime(item.ts)}</span>
+                {item.error ? <em>{item.error}</em> : null}
+              </div>
+            ))}
+          </div>
         </Section>
 
         <Section icon={<Bot className="w-4 h-4" />} title="Tool readiness" wide>
@@ -681,16 +863,53 @@ export function AdminPanel() {
 
         <Section icon={<Settings className="w-4 h-4" />} title="Runtime feature flags" wide>
           <ToggleRow
+            label="Translation tab"
+            detail="Global translator access gate. If selected users are listed, only those users can use it."
+            enabled={translationEnabled}
+            busy={savingRuntime}
+            onToggle={() => void setRuntimeFeature("translatorEnabled", !translationEnabled)}
+          />
+          <ToggleRow
             label="Translator lip sync"
             detail="Global gate. Users must also be listed in lip sync permissions."
             enabled={lipSyncEnabled}
             busy={savingRuntime}
             onToggle={() => void setRuntimeFeature("translatorLipSyncEnabled", !lipSyncEnabled)}
           />
+          <ToggleRow
+            label="Super Agent"
+            detail="Global agent access gate. If selected users are listed, only those users can use it."
+            enabled={superAgentEnabled}
+            busy={savingRuntime}
+            onToggle={() => void setRuntimeFeature("superAgentEnabled", !superAgentEnabled)}
+          />
           <FlagList flags={overview?.features ?? {}} />
         </Section>
 
-        <Section icon={<ShieldCheck className="w-4 h-4" />} title="Lip sync permissions" wide>
+        <Section icon={<ShieldCheck className="w-4 h-4" />} title="Feature permissions" wide>
+          <form className="admin-email-form" onSubmit={(event) => void savePermission(event, "translator", translationEmail, () => setTranslationEmail(""))}>
+            <input
+              value={translationEmail}
+              onChange={(event) => setTranslationEmail(event.target.value)}
+              placeholder="translation-user@gmail.com"
+              type="email"
+            />
+            <button type="submit" disabled={savingRuntime || !translationEmail.trim()}>
+              Allow translation
+            </button>
+          </form>
+          <div className="admin-email-list">
+            {translationAllowedEmails.map((value) => (
+              <span key={value}>
+                <strong>translation</strong>
+                {value}
+                <button type="button" onClick={() => void removePermission("translator", value)} aria-label={`Remove ${value}`}>
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+
           <form className="admin-email-form" onSubmit={saveLipSyncPermission}>
             <input
               value={lipSyncEmail}
@@ -707,7 +926,30 @@ export function AdminPanel() {
               <span key={value}>
                 <strong>lipsync</strong>
                 {value}
-                <button type="button" onClick={() => void removeLipSyncPermission(value)} aria-label={`Remove ${value}`}>
+                <button type="button" onClick={() => void removePermission("lipsync", value)} aria-label={`Remove ${value}`}>
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+
+          <form className="admin-email-form" onSubmit={(event) => void savePermission(event, "super-agent", superAgentEmail, () => setSuperAgentEmail(""))}>
+            <input
+              value={superAgentEmail}
+              onChange={(event) => setSuperAgentEmail(event.target.value)}
+              placeholder="agent-user@gmail.com"
+              type="email"
+            />
+            <button type="submit" disabled={savingRuntime || !superAgentEmail.trim()}>
+              Allow Super Agent
+            </button>
+          </form>
+          <div className="admin-email-list">
+            {superAgentAllowedEmails.map((value) => (
+              <span key={value}>
+                <strong>agent</strong>
+                {value}
+                <button type="button" onClick={() => void removePermission("super-agent", value)} aria-label={`Remove ${value}`}>
                   x
                 </button>
               </span>

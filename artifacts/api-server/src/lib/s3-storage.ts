@@ -273,13 +273,23 @@ export async function cleanupOldS3Objects(params: {
   namespace: string;
   maxAgeMs: number;
 }): Promise<number> {
-  if (!isS3StorageEnabled()) return 0;
+  const result = await cleanupOldS3ObjectsDetailed(params);
+  return result.deletedCount;
+}
+
+export async function cleanupOldS3ObjectsDetailed(params: {
+  namespace: string;
+  maxAgeMs: number;
+}): Promise<{ deletedCount: number; bytesFreed: number; scannedCount: number; prefix: string }> {
+  const prefix = `${S3_OBJECT_PREFIX}/${params.namespace.replace(/^\/+|\/+$/g, "").replace(/\s+/g, "-")}/`;
+  if (!isS3StorageEnabled()) return { deletedCount: 0, bytesFreed: 0, scannedCount: 0, prefix };
 
   const client = getS3Client();
-  const prefix = `${S3_OBJECT_PREFIX}/${params.namespace.replace(/^\/+|\/+$/g, "").replace(/\s+/g, "-")}/`;
   const cutoff = Date.now() - params.maxAgeMs;
   let continuationToken: string | undefined;
   let deletedCount = 0;
+  let bytesFreed = 0;
+  let scannedCount = 0;
 
   do {
     const result = await client.send(
@@ -293,8 +303,10 @@ export async function cleanupOldS3Objects(params: {
 
     const objects = result.Contents ?? [];
     for (const object of objects) {
+      scannedCount += 1;
       if (!object.Key || !object.LastModified) continue;
       if (object.LastModified.getTime() >= cutoff) continue;
+      bytesFreed += object.Size ?? 0;
       await deleteS3Object(object.Key);
       deletedCount += 1;
     }
@@ -304,5 +316,5 @@ export async function cleanupOldS3Objects(params: {
       : undefined;
   } while (continuationToken);
 
-  return deletedCount;
+  return { deletedCount, bytesFreed, scannedCount, prefix };
 }

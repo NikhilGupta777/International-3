@@ -4898,6 +4898,26 @@ export function getYoutubeOpsSnapshot() {
   let activeDownloads = 0;
   let activeClipJobs = 0;
   let pendingJobs = 0;
+  const recentJobs = Array.from(jobs.entries())
+    .map(([jobId, job]) => ({
+      jobId,
+      type: job.formatId === "clip" ? "clip-cut" : "download",
+      status: job.status,
+      stage: job.progressLine || job.message || job.status,
+      progressPct: job.percent ?? null,
+      startedAt: job.startedAt ?? null,
+      createdAt: job.startedAt ?? null,
+      completedAt: job.completedAt ?? null,
+      updatedAt: job.completedAt ?? job.startedAt ?? null,
+      elapsedMs: job.completedAt && job.startedAt ? job.completedAt - job.startedAt : (job.startedAt ? Date.now() - job.startedAt : null),
+      filename: job.filename,
+      filesize: job.filesize,
+      error: job.status === "error" ? job.message : null,
+      outputAvailable: job.status === "done" && Boolean(job.s3Key || job.filePath),
+      sourceUrl: job.url,
+    }))
+    .sort((a, b) => Number(b.updatedAt ?? 0) - Number(a.updatedAt ?? 0))
+    .slice(0, 50);
 
   for (const job of jobs.values()) {
     if (job.status === "pending") pendingJobs += 1;
@@ -4926,6 +4946,7 @@ export function getYoutubeOpsSnapshot() {
       activeDownloads,
       totalTrackedJobs: jobs.size,
     },
+    recentJobs,
   };
 }
 
