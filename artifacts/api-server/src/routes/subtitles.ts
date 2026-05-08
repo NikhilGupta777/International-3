@@ -1959,13 +1959,80 @@ async function processAudio(
 
     } else {
       // ── Gemini path (audio ≤ 10 min) ─────────────────────────────────────────
-      // Read into memory only here — short audio only (AssemblyAI streams directly).
-      // Upload the real preprocessed WAV path. The Gemini Node SDK handles file
-      // paths more reliably than anonymous Node Blob objects in Lambda.
-      // A fileUri is tied to the API key/project that uploaded it — a different key
-      // gets 403 on the same URI. So each key attempt uploads its own copy, runs both
-      // passes, then deletes the file. On quota (429) we move to the next key.
-      let lastKeyErr: unknown;
+      // Vertex AI cannot use Gemini Developer Files upload, so it sends short
+      // preprocessed audio inline. API-key mode still uploads one file per key.
+      if (isVertexGeminiEnabled()) {
+        let lastVertexErr: unknown;
+
+        try {
+          const maxInlineBytes = Number.parseInt(process.env.VERTEX_INLINE_AUDIO_MAX_BYTES || "18000000", 10);
+          const fileSize = statSync(processedPath).size;
+          if (fileSize > maxInlineBytes) {
+            throw new Error(`Preprocessed audio is ${fileSize} bytes, above Vertex inline limit ${maxInlineBytes}`);
+          }
+
+          const audioBase64 = readFileSync(processedPath).toString("base64");
+          const client = clients[0];
+
+          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+          job.status = "generating";
+          job.progressPct = 40;
+          job.message = "AI is transcribing audio...";
+
+          let rawSrt = "";
+          let lastPass1Err: unknown;
+          for (const model of KEY_ROTATION_MODELS) {
+            try {
+              const result = await client.models.generateContent({
+                model,
+                contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: audioBase64 } }, { text: buildSrtPrompt(language, durationSrt) }] }],
+                config: { temperature: 0.1, maxOutputTokens: 65536 },
+              });
+              rawSrt = result.text?.trim() ?? "";
+              logger.info({ model }, "Initial subtitle transcription completed via Vertex inline audio");
+              break;
+            } catch (err) {
+              lastPass1Err = err;
+              if (!isGeminiRetryableError(err)) throw err;
+              logger.warn({ model }, `Vertex transcription rate limited on ${model} - trying next model`);
+            }
+          }
+          if (!rawSrt) throw lastPass1Err instanceof Error ? lastPass1Err : new Error("All Vertex models failed on transcription");
+
+          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+          job.status = "correcting";
+          job.progressPct = 60;
+          job.message = "Cleaning subtitle timing...";
+
+          const normalized = normalizeSrtTimestamps(stripFences(rawSrt));
+          const deduped = cleanupHallucinatedEntries(normalized);
+          const strictFiltered = strictFilterMalformedTimestamps(deduped);
+          correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
+        } catch (err) {
+          lastVertexErr = err;
+          logger.warn({ err }, "Vertex inline audio path failed - using fallback if configured");
+        }
+
+        if (!correctedFinalSrt) {
+          if (ASSEMBLYAI_API_KEY) {
+            logger.warn({ err: lastVertexErr }, "Vertex Gemini audio path failed - falling back to AssemblyAI subtitles");
+            job.status = "audio";
+            job.progressPct = 45;
+            job.message = "Gemini audio failed - using AssemblyAI fallback...";
+            const rawSrt = await transcribeWithAssemblyAI(processedPath, language, job);
+            if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+            const normalized = normalizeSrtTimestamps(stripFences(rawSrt));
+            const deduped = cleanupHallucinatedEntries(normalized);
+            const strictFiltered = strictFilterMalformedTimestamps(deduped);
+            correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
+          } else {
+            job.status = "error";
+            job.error = lastVertexErr instanceof Error ? lastVertexErr.message : "Vertex Gemini audio failed";
+            return;
+          }
+        }
+      } else {
+        let lastKeyErr: unknown;
 
       for (let ki = 0; ki < clients.length; ki++) {
         const client = clients[ki];
@@ -2074,6 +2141,7 @@ async function processAudio(
           job.error = lastKeyErr instanceof Error ? lastKeyErr.message : "All API keys exhausted - try again later";
           return;
         }
+      }
       }
     }
 

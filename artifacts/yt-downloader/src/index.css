@@ -3773,6 +3773,234 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   border: 1px dashed rgba(255,255,255,0.08);
   background: rgba(255,255,255,0.02);
 }
+.settings-profile-card {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 18px;
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 10% 20%, rgba(45,212,191,0.12), transparent 28%),
+    linear-gradient(135deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025));
+  border: 1px solid rgba(255,255,255,0.10);
+}
+.settings-avatar {
+  width: 68px;
+  height: 68px;
+  flex-shrink: 0;
+  border-radius: 18px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.settings-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.78);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+@media (min-width: 768px) {
+  .settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.settings-card {
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.09);
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 0;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.54);
+  font-size: 14px;
+}
+.settings-row strong {
+  color: rgba(255,255,255,0.88);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.settings-action-btn,
+.settings-danger-btn {
+  min-height: 42px;
+  border-radius: 12px;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.settings-action-btn:disabled,
+.settings-danger-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+.settings-action-btn {
+  background: rgba(45,212,191,0.14);
+  color: #99f6e4;
+  border: 1px solid rgba(45,212,191,0.35);
+}
+.settings-danger-btn {
+  background: rgba(244,63,94,0.14);
+  color: #fecdd3;
+  border: 1px solid rgba(244,63,94,0.35);
+}
+.settings-action-btn:hover,
+.settings-danger-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(255,255,255,0.28);
+}
+.settings-segment {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 5px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.settings-segment button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255,255,255,0.52);
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+.settings-segment button.is-active {
+  color: #111827;
+  background: linear-gradient(135deg, #f8fafc, #99f6e4);
+}
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 0;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
+.settings-toggle-row span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.settings-toggle-row strong {
+  color: rgba(255,255,255,0.86);
+  font-size: 14px;
+}
+.settings-toggle-row small {
+  color: rgba(255,255,255,0.42);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.settings-toggle-row input {
+  width: 42px;
+  height: 24px;
+  flex-shrink: 0;
+  appearance: none;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.14);
+  border: 1px solid rgba(255,255,255,0.16);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.settings-toggle-row input::after {
+  content: "";
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.82);
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform 0.15s ease;
+}
+.settings-toggle-row input:checked {
+  background: rgba(45,212,191,0.35);
+  border-color: rgba(45,212,191,0.6);
+}
+.settings-toggle-row input:checked::after {
+  transform: translateX(18px);
+}
+html.studio-light-mode body,
+html.studio-light-mode #root,
+html.studio-light-mode .studio-workspace,
+html.studio-light-mode .studio-content,
+html.studio-light-mode .activity-page,
+html.studio-light-mode .help-page {
+  background: #f6efe4;
+  color: #17130f;
+}
+html.studio-light-mode .glass-panel,
+html.studio-light-mode .settings-card,
+html.studio-light-mode .settings-profile-card,
+html.studio-light-mode .help-page-detail,
+html.studio-light-mode .activity-row-card {
+  background: rgba(255,255,255,0.74);
+  border-color: rgba(39,30,17,0.14);
+  box-shadow: 0 18px 50px rgba(92,64,29,0.10);
+}
+html.studio-light-mode .text-white,
+html.studio-light-mode .text-white\/90,
+html.studio-light-mode .text-white\/85,
+html.studio-light-mode .text-white\/80,
+html.studio-light-mode .text-white\/70 {
+  color: rgba(24,20,16,0.92) !important;
+}
+html.studio-light-mode .text-white\/60,
+html.studio-light-mode .text-white\/50,
+html.studio-light-mode .text-white\/45,
+html.studio-light-mode .text-white\/40,
+html.studio-light-mode .text-white\/35,
+html.studio-light-mode .text-white\/30,
+html.studio-light-mode .text-white\/25,
+html.studio-light-mode .text-white\/20 {
+  color: rgba(24,20,16,0.54) !important;
+}
+html.studio-light-mode .settings-row,
+html.studio-light-mode .settings-toggle-row,
+html.studio-light-mode .help-page-footer {
+  border-color: rgba(39,30,17,0.10);
+}
+html.studio-light-mode .settings-row,
+html.studio-light-mode .settings-toggle-row small {
+  color: rgba(24,20,16,0.56);
+}
+html.studio-light-mode .settings-row strong,
+html.studio-light-mode .settings-toggle-row strong {
+  color: rgba(24,20,16,0.9);
+}
+html.studio-light-mode .settings-chip,
+html.studio-light-mode .settings-segment {
+  background: rgba(39,30,17,0.05);
+  border-color: rgba(39,30,17,0.12);
+  color: rgba(24,20,16,0.72);
+}
 .activity-row {
   display: flex;
   align-items: center;

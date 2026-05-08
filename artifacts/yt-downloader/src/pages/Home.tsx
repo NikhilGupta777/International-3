@@ -22,6 +22,7 @@ import { FileUpload } from "@/components/FileUpload";
 import { HelpPanel } from "@/components/HelpPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AdminPanel } from "@/components/AdminPanel";
+import { SettingsPanel } from "@/components/SettingsPanel";
 import { GUIDE_TABS, type GuideMode } from "@/lib/guide-tabs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
@@ -49,8 +50,13 @@ import {
   getPushConfig,
   pushNotificationSupportSummary,
 } from "@/lib/push-notifications";
+import {
+  applyThemePreference,
+  loadUserPreferences,
+  subscribeToPreferenceChanges,
+} from "@/lib/user-preferences";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "help" | "activity" | "admin";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "help" | "activity" | "admin" | "settings";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -76,35 +82,55 @@ type ClientAccessConfig = {
 
 const GUIDE_SEEN_KEY = "videomaking-guide-seen-v1";
 const CLIP_JOB_MISSING_GRACE_MS = 15 * 60 * 1000;
+const NOTIFICATION_SOUND_URL = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/notification-agent.mp3`;
 
 // GUIDE_TABS now lives in @/lib/guide-tabs and is imported above so the
 // dedicated Help sidebar tab and any inline guide stay in sync.
 
 function playSoftCompletionChime() {
   try {
+    const audio = new Audio(NOTIFICATION_SOUND_URL);
+    audio.volume = 0.65;
+    void audio.play().catch(() => {
+      playFallbackCompletionChime();
+    });
+    return;
+  } catch {
+    playFallbackCompletionChime();
+  }
+}
+
+function playFallbackCompletionChime() {
+  try {
     const AudioContextImpl =
       window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!AudioContextImpl) return;
     const ctx = new AudioContextImpl();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    const now = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(0.045, now + 0.018);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+    master.connect(ctx.destination);
 
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(880, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.12);
-
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.02, ctx.currentTime + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.14);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
+    for (const [index, freq] of [523.25, 659.25, 783.99].entries()) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = now + index * 0.075;
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.75, start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.2);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(start);
+      osc.stop(start + 0.24);
+    }
     if (ctx.state === "suspended") {
       void ctx.resume().catch(() => {});
     }
-    osc.start();
-    osc.stop(ctx.currentTime + 0.15);
-    setTimeout(() => void ctx.close().catch(() => {}), 220);
+    setTimeout(() => void ctx.close().catch(() => {}), 520);
   } catch {
     // Ignore browser audio limitations.
   }
@@ -174,9 +200,11 @@ function getApiErrorMessage(error: unknown, fallback: string): string {
 export default function Home({
   authUser,
   authFeatures,
+  onLogout,
 }: {
   authUser?: AuthUser | null;
   authFeatures?: AuthFeatures | null;
+  onLogout?: () => void;
 }) {
   const [url, setUrl] = useState("");
   const [submittedUrl, setSubmittedUrl] = useState("");
@@ -194,6 +222,7 @@ export default function Home({
   const [pushEnabling, setPushEnabling] = useState(false);
   const [telegramUrl, setTelegramUrl] = useState("https://t.me/c/2852263933/3");
   const [helpInitialMode, setHelpInitialMode] = useState<GuideMode>("download");
+  const [preferences, setPreferences] = useState(loadUserPreferences);
   const seenCompletionRef = useRef<Set<string>>(new Set());
   const initializedCompletionsRef = useRef(false);
   const { toast } = useToast();
@@ -347,6 +376,7 @@ export default function Home({
   const showCopilot = mode === "copilot";
   const showFindVideo = mode === "findvideo";
   const showAdmin = mode === "admin";
+  const showSettings = mode === "settings";
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
 
 
@@ -372,6 +402,8 @@ export default function Home({
                   ? "Timestamps"
                   : mode === "findvideo"
                     ? "Find Video"
+                  : mode === "settings"
+                    ? "Settings"
                   : mode === "admin"
                     ? "Admin"
                     : "Find Sabha";
@@ -391,6 +423,24 @@ export default function Home({
       if (!cfg) return;
       setPushConfigured(Boolean(cfg.enabled && cfg.publicKey));
     });
+  }, []);
+
+  useEffect(() => {
+    applyThemePreference(preferences.theme);
+  }, [preferences.theme]);
+
+  useEffect(() => subscribeToPreferenceChanges(setPreferences), []);
+
+  useEffect(() => {
+    const mq = window.matchMedia?.("(prefers-color-scheme: light)");
+    if (!mq) return;
+    const handler = () => {
+      if (loadUserPreferences().theme === "system") {
+        applyThemePreference("system");
+      }
+    };
+    mq.addEventListener?.("change", handler);
+    return () => mq.removeEventListener?.("change", handler);
   }, []);
 
   useEffect(() => {
@@ -446,7 +496,7 @@ export default function Home({
   const openGuide = () => {
     // Help is now a sidebar tab — switch into it and remember the user's
     // current tab so the guide opens to the relevant section by default.
-    if (mode !== "help" && mode !== "activity" && mode !== "home" && mode !== "copilot" && mode !== "translator" && mode !== "findvideo") {
+    if (mode !== "help" && mode !== "activity" && mode !== "settings" && mode !== "home" && mode !== "copilot" && mode !== "translator" && mode !== "findvideo") {
       setHelpInitialMode(mode as GuideMode);
     }
     setMode("help");
@@ -475,26 +525,26 @@ export default function Home({
         if (key.startsWith("subtitle:")) {
           const id = key.slice("subtitle:".length);
           const entry = loadSubtitleHistoryForNotify().find((x) => x.id === id);
-          if (entry) notifyBackgroundCompletion("Subtitles", entry.srtFilename);
+          if (entry && preferences.notificationsEnabled) notifyBackgroundCompletion("Subtitles", entry.srtFilename);
         } else if (key.startsWith("clip:")) {
           const id = key.slice("clip:".length);
           const entry = loadClipHistoryForNotify().find((x) => x.jobId === id);
-          if (entry) notifyBackgroundCompletion("Clip cut", entry.label);
+          if (entry && preferences.notificationsEnabled) notifyBackgroundCompletion("Clip cut", entry.label);
         } else if (key.startsWith("download:")) {
           const id = key.slice("download:".length);
           const entry = loadCompletedDownloadsForNotify().find((x) => x.jobId === id);
-          if (entry) notifyBackgroundCompletion("Download", entry.filename);
+          if (entry && preferences.notificationsEnabled) notifyBackgroundCompletion("Download", entry.filename);
         } else if (key.startsWith("bestclips:")) {
           const id = key.slice("bestclips:".length);
           const entry = loadBestClipsHistoryForNotify().find((x) => x.id === id);
-          if (entry) notifyBackgroundCompletion("Best clips", `${entry.clipCount} clips ready`);
+          if (entry && preferences.notificationsEnabled) notifyBackgroundCompletion("Best clips", `${entry.clipCount} clips ready`);
         } else if (key.startsWith("translator:")) {
           const id = key.slice("translator:".length);
           const entry = loadTranslatorHistoryForNotify().find((x) => x.jobId === id);
-          if (entry) notifyBackgroundCompletion("Translation", entry.filename);
+          if (entry && preferences.notificationsEnabled) notifyBackgroundCompletion("Translation", entry.filename);
         }
 
-        playSoftCompletionChime();
+        if (preferences.notificationSoundEnabled) playSoftCompletionChime();
       }
 
       seenCompletionRef.current = snapshot;
@@ -503,7 +553,7 @@ export default function Home({
     sync();
     const timer = setInterval(sync, 4000);
     return () => clearInterval(timer);
-  }, []);
+  }, [preferences.notificationsEnabled, preferences.notificationSoundEnabled]);
 
   // Reconcile Clip Cutter jobs even when user is on other tabs or reopens later.
   useEffect(() => {
@@ -611,8 +661,8 @@ export default function Home({
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
 
             {/* Translator tab â€” full screen */}
             {mode === "translator" && <VideoTranslator lipSyncAvailable={Boolean(authFeatures?.translatorLipSyncAllowed)} />}
@@ -629,6 +679,21 @@ export default function Home({
             {mode === "activity" && (
               <ActivityPanel
                 onSwitchTab={(next) => switchMode(next as Mode)}
+              />
+            )}
+
+            {showSettings && (
+              <SettingsPanel
+                authUser={authUser}
+                authFeatures={authFeatures}
+                onLogout={onLogout}
+                onOpenAdmin={() => switchMode("admin")}
+                onEnablePush={handleEnablePush}
+                pushSupported={pushSupported}
+                pushConfigured={pushConfigured}
+                pushPermission={pushPermission}
+                pushEnabling={pushEnabling}
+                onTestSound={playSoftCompletionChime}
               />
             )}
 

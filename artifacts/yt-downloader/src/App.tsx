@@ -48,14 +48,16 @@ declare global {
 function Router({
   authUser,
   authFeatures,
+  onLogout,
 }: {
   authUser: AuthUser | null;
   authFeatures: AuthFeatures | null;
+  onLogout: () => void;
 }) {
   return (
     <Switch>
       <Route path="/">
-        <Home authUser={authUser} authFeatures={authFeatures} />
+        <Home authUser={authUser} authFeatures={authFeatures} onLogout={onLogout} />
       </Route>
       <Route component={NotFound} />
     </Switch>
@@ -287,6 +289,23 @@ function App() {
     }
   };
 
+  const submitLogout = async () => {
+    try {
+      await fetch(`${base}/api/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch {
+      // Local state is authoritative for returning the user to sign-in.
+    } finally {
+      window.localStorage.removeItem(AUTH_HINT_KEY);
+      setAuthenticated(false);
+      setAuthUser(null);
+      setAuthFeatures(null);
+      setAuthChecked(true);
+    }
+  };
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
@@ -300,7 +319,7 @@ function App() {
             />
           ) : authenticated ? (
             <WouterRouter base={base} key="auth">
-              <Router authUser={authUser} authFeatures={authFeatures} />
+              <Router authUser={authUser} authFeatures={authFeatures} onLogout={submitLogout} />
             </WouterRouter>
           ) : (
             <AuthOverlay

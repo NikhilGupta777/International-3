@@ -140,6 +140,8 @@ interface ProgressPayload {
   };
 }
 
+type DownloadableClip = Pick<ActiveJob, "jobId" | "filename" | "status">;
+
 export function ClipCutter() {
   const [url, setUrl] = useState("");
   const [startTime, setStartTime] = useState("");
@@ -607,7 +609,7 @@ export function ClipCutter() {
     });
   };
 
-  const downloadClip = useCallback(async (job: ActiveJob) => {
+  const downloadClip = useCallback(async (job: DownloadableClip) => {
     try {
       const progressRes = await fetch(`${BASE_URL}/api/youtube/progress/${job.jobId}`, { cache: "no-store" });
       if (progressRes.ok) {
@@ -661,6 +663,14 @@ export function ClipCutter() {
       );
     });
   }, [downloadClip, jobs]);
+
+  const downloadHistoryClip = useCallback((entry: ClipHistoryEntry) => {
+    void downloadClip({
+      jobId: entry.jobId,
+      filename: entry.filename,
+      status: "done",
+    });
+  }, [downloadClip]);
 
   const cancelJob = async (jobId: string) => {
     setJobs((prev) =>
@@ -938,6 +948,15 @@ export function ClipCutter() {
                       {entry.url}
                     </p>
                   </div>
+
+                  <button
+                    onClick={() => downloadHistoryClip(entry)}
+                    title="Save clip again"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/12 hover:bg-green-500/22 border border-green-500/25 text-green-300 text-xs font-semibold transition-colors shrink-0"
+                  >
+                    <Download className="w-3 h-3" />
+                    Save
+                  </button>
 
                   <button
                     onClick={() => setHistory(deleteFromClipHistory(entry.jobId))}

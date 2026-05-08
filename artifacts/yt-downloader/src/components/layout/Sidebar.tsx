@@ -2,14 +2,14 @@ import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
   ListVideo, AlarmClock, UploadCloud, Languages, Search, Menu, X,
-  Plus, Home as HomeIcon, CircleHelp, Activity, UserCircle2, Settings,
+  Home as HomeIcon, Activity, Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "findvideo" | "help" | "activity" | "admin";
+  | "upload" | "translator" | "findvideo" | "help" | "activity" | "admin" | "settings";
 
 interface NavItem {
   mode: Mode;
@@ -44,10 +44,10 @@ const NAV_ITEMS: NavItem[] = [
   { mode: "upload",      icon: <UploadCloud className="gs-icon" />,     label: "Share" },
 ];
 
-// Utility nav (Help / Activity) — pinned below the main list, separated by a divider.
+// Utility nav (Activity / Settings) - pinned below the main list.
 const UTILITY_ITEMS: NavItem[] = [
   { mode: "activity",    icon: <Activity className="gs-icon" />,        label: "Activity" },
-  { mode: "help",        icon: <CircleHelp className="gs-icon" />,      label: "Help" },
+  { mode: "settings",    icon: <Settings className="gs-icon" />,        label: "Settings" },
 ];
 
 function GsItem({
