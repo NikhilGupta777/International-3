@@ -1849,7 +1849,7 @@ def synthesize_edge_tts_single(seg: dict, out_dir: Path) -> Path:
     out_path = out_dir / f"seg_{seg['id']:04d}_edgetts.mp3"
     rate_pct = int((seg.get("speaking_rate", 1.0) - 1.0) * 100)
     rate_str = f"{rate_pct:+d}%"
-    text = seg.get("tts_text") or seg.get("translated_text") or ""
+    text = normalize_tts_pronunciation(seg.get("tts_text") or seg.get("translated_text") or "")
 
     async def _run():
         c = edge_tts.Communicate(text=text, voice=voice, rate=rate_str)
@@ -1869,7 +1869,7 @@ def synthesize_gtts_single(seg: dict, out_dir: Path) -> Path:
     out_path = out_dir / f"seg_{seg['id']:04d}_gtts.mp3"
     wav_path = out_path.with_suffix(".wav")
     gtts_lang = GTTS_LANG_MAP.get(TARGET_LANG_CODE, TARGET_LANG_CODE)
-    gTTS(text=seg["translated_text"], lang=gtts_lang).save(str(out_path))
+    gTTS(text=normalize_tts_pronunciation(seg["translated_text"]), lang=gtts_lang).save(str(out_path))
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
 
@@ -1977,11 +1977,10 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
         return audio_path  # close enough, no change needed
 
     ratio = actual_dur / max(target_duration, 0.1)
-    # Wider clamp to avoid hard truncation; prefer time-scaling over cut-offs.
-    # Short segments can tolerate more aggressive tempo shifts.
-    max_ratio = 2.6 if target_duration < 2.0 else 2.2
-    min_ratio = 0.6 if target_duration < 2.0 else 0.7
-    ratio = max(min_ratio, min(max_ratio, ratio))
+    # Prefer time-scaling over cut-offs. Keep a lower bound to avoid extreme slowdowns,
+    # but allow fast tempo shifts so segments fit without truncation.
+    min_ratio = 0.55 if target_duration < 2.0 else 0.65
+    ratio = max(min_ratio, ratio)
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
 
