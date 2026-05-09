@@ -2308,8 +2308,8 @@ router.post("/agent/chat", async (req, res) => {
 
       const orderedToolResults = toolResults.filter(Boolean);
 
-      // \u2500\u2500 5. JUDGE \u2014 verify results, feed correction context to model (hidden) \u2500\u2500
-      // Do NOT emit visible text \u2014 the tool card already shows error state.
+      // ── 5. JUDGE — verify results, feed correction context to model (hidden) ──
+      // Do NOT emit visible text — the tool card already shows error state.
       // Just push a hidden correction turn so the model self-heals.
       sseEvent(res, { type: "thinking", runId, stage: "verifying", iteration: iterations, total: MAX_ITERATIONS });
       if (iterationHadError) {
