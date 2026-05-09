@@ -9,6 +9,10 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { saveActiveDownload, loadActiveDownload, saveCompletedDownload } from "@/lib/download-history";
+import { saveActiveJob, loadActiveJob, saveToHistory } from "@/lib/subtitle-history";
+import { loadActiveClipJobs, saveActiveClipJobs, saveToClipHistory } from "@/lib/clip-history";
+import { upsertActiveTranslatorJob } from "@/lib/translator-history";
 
 const ULTRA_KEY = "studio-ultra-mode";
 function readUltraInitial(): boolean {
@@ -745,56 +749,48 @@ export function StudioCopilot({
         if (evt.jobId) {
           const url = (evt as any).url || "";
           if (evt.name === "cut_video_clip" || evt.name === "find_best_clips") {
-            import("@/lib/clip-history").then(({ loadActiveClipJobs, saveActiveClipJobs }) => {
-              const active = loadActiveClipJobs();
-              if (!active.some(j => j.jobId === evt.jobId)) {
-                const startSecs = typeof (evt as any).startSecs === "number" ? (evt as any).startSecs : 0;
-                const endSecs = typeof (evt as any).endSecs === "number" ? (evt as any).endSecs : 0;
-                saveActiveClipJobs([...active, {
-                  jobId: evt.jobId!,
-                  url: url,
-                  label: evt.name === "cut_video_clip" && endSecs > startSecs ? `${startSecs}s -> ${endSecs}s` : "AI Analysis",
-                  startSecs,
-                  endSecs,
-                  quality: String((evt as any).quality ?? "best"),
-                  startedAt: Date.now()
-                }]);
-              }
-            });
-          } else if (evt.name === "download_video") {
-            import("@/lib/download-history").then(({ saveActiveDownload, loadActiveDownload }) => {
-              if (loadActiveDownload()?.jobId !== evt.jobId) {
-                saveActiveDownload({
-                  jobId: evt.jobId!,
-                  url: url,
-                  savedAt: Date.now()
-                });
-              }
-            });
-          } else if (evt.name === "generate_subtitles") {
-            import("@/lib/subtitle-history").then(({ saveActiveJob, loadActiveJob }) => {
-              if (loadActiveJob()?.jobId !== evt.jobId) {
-                saveActiveJob({
-                  jobId: evt.jobId!,
-                  mode: "url",
-                  url: url,
-                  language: "auto",
-                  translateTo: "",
-                  startedAt: Date.now()
-                });
-              }
-            });
-          } else if (evt.name === "translate_video") {
-            import("@/lib/translator-history").then(({ upsertActiveTranslatorJob }) => {
-              upsertActiveTranslatorJob({
+            const active = loadActiveClipJobs();
+            if (!active.some(j => j.jobId === evt.jobId)) {
+              const startSecs = typeof (evt as any).startSecs === "number" ? (evt as any).startSecs : 0;
+              const endSecs = typeof (evt as any).endSecs === "number" ? (evt as any).endSecs : 0;
+              saveActiveClipJobs([...active, {
                 jobId: evt.jobId!,
-                filename: "input.mp4",
-                targetLang: "Hindi",
-                startedAt: Date.now(),
-                progress: 0,
-                step: "Starting",
-                status: "processing"
+                url: url,
+                label: evt.name === "cut_video_clip" && endSecs > startSecs ? `${startSecs}s -> ${endSecs}s` : "AI Analysis",
+                startSecs,
+                endSecs,
+                quality: String((evt as any).quality ?? "best"),
+                startedAt: Date.now()
+              }]);
+            }
+          } else if (evt.name === "download_video") {
+            if (loadActiveDownload()?.jobId !== evt.jobId) {
+              saveActiveDownload({
+                jobId: evt.jobId!,
+                url: url,
+                savedAt: Date.now()
               });
+            }
+          } else if (evt.name === "generate_subtitles") {
+            if (loadActiveJob()?.jobId !== evt.jobId) {
+              saveActiveJob({
+                jobId: evt.jobId!,
+                mode: "url",
+                url: url,
+                language: "auto",
+                translateTo: "",
+                startedAt: Date.now()
+              });
+            }
+          } else if (evt.name === "translate_video") {
+            upsertActiveTranslatorJob({
+              jobId: evt.jobId!,
+              filename: "input.mp4",
+              targetLang: "Hindi",
+              startedAt: Date.now(),
+              progress: 0,
+              step: "Starting",
+              status: "processing"
             });
           }
         }
@@ -810,41 +806,35 @@ export function StudioCopilot({
 
         // Sync to Activity History
         if (evt.name === "cut_video_clip" && evt.result?.jobId) {
-          import("@/lib/clip-history").then(({ saveToClipHistory }) => {
-            saveToClipHistory({
-              jobId: evt.result.jobId,
-              createdAt: Date.now(),
-              label: `AI Clip: ${evt.result.startTime || ""} to ${evt.result.endTime || ""}`,
-              url: evt.result.url || "",
-              quality: evt.result.quality || "720p",
-              filename: "clip.mp4",
-              filesize: null,
-              durationSecs: 0,
-            });
+          saveToClipHistory({
+            jobId: evt.result.jobId,
+            createdAt: Date.now(),
+            label: `AI Clip: ${evt.result.startTime || ""} to ${evt.result.endTime || ""}`,
+            url: evt.result.url || "",
+            quality: evt.result.quality || "720p",
+            filename: "clip.mp4",
+            filesize: null,
+            durationSecs: 0,
           });
         } else if (evt.name === "download_video" && evt.result?.jobId) {
-          import("@/lib/download-history").then(({ saveCompletedDownload }) => {
-            saveCompletedDownload({
-              jobId: evt.result.jobId,
-              url: evt.result.url || "",
-              filename: evt.result.filename || "video.mp4",
-              filesize: null,
-              createdAt: Date.now(),
-            });
+          saveCompletedDownload({
+            jobId: evt.result.jobId,
+            url: evt.result.url || "",
+            filename: evt.result.filename || "video.mp4",
+            filesize: null,
+            createdAt: Date.now(),
           });
         } else if (evt.name === "generate_subtitles" && evt.result?.jobId) {
-          import("@/lib/subtitle-history").then(({ saveToHistory }) => {
-            saveToHistory({
-              id: evt.result.jobId,
-              createdAt: Date.now(),
-              mode: "url",
-              url: evt.result.url || "",
-              srtFilename: evt.result.srtFilename || "subtitles.srt",
-              language: evt.result.language || "auto",
-              translateTo: evt.result.translateTo || "",
-              srt: "",
-              entryCount: 0,
-            });
+          saveToHistory({
+            id: evt.result.jobId,
+            createdAt: Date.now(),
+            mode: "url",
+            url: evt.result.url || "",
+            srtFilename: evt.result.srtFilename || "subtitles.srt",
+            language: evt.result.language || "auto",
+            translateTo: evt.result.translateTo || "",
+            srt: "",
+            entryCount: 0,
           });
         }
 

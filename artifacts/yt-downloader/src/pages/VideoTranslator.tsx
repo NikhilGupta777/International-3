@@ -893,7 +893,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                   : "bg-white/10 text-white/30 cursor-not-allowed"
               )}
             >
-              {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploadingâ€¦</> : <><Languages className="w-5 h-5" /> Translate Video</>}
+              {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploading...</> : <><Languages className="w-5 h-5" /> Translate Video</>}
             </button>
           </>
         </>
@@ -904,7 +904,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             {isProcessing && (
               <>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-semibold text-white/88">Translating video…</span>
+                  <span className="text-sm font-semibold text-white/88">Translating video...</span>
                   <div className="flex items-center gap-3">
                     <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
                     <button

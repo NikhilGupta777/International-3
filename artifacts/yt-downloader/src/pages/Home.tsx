@@ -85,6 +85,25 @@ type ClientAccessConfig = {
 const GUIDE_SEEN_KEY = "videomaking-guide-seen-v1";
 const CLIP_JOB_MISSING_GRACE_MS = 15 * 60 * 1000;
 const NOTIFICATION_SOUND_URL = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/notification-agent.mp3`;
+const MODE_LABELS: Record<Mode, string> = {
+  home: "Home",
+  download: "Download",
+  clips: "Best Clips",
+  subtitles: "Subtitles",
+  clipcutter: "Clip Cutter",
+  bhagwat: "Bhagwat Studio",
+  scenefinder: "Find Sabha",
+  timestamps: "Timestamps",
+  upload: "Share",
+  copilot: "Super Agent",
+  translator: "Translator",
+  findvideo: "Find Video",
+  help: "Help",
+  activity: "Activity",
+  admin: "Admin",
+  settings: "Settings",
+};
+
 
 // GUIDE_TABS now lives in @/lib/guide-tabs and is imported above so the
 // dedicated Help sidebar tab and any inline guide stay in sync.
@@ -391,30 +410,11 @@ export default function Home({
 
   useEffect(() => {
     const appName = "VideoMaking Studio";
-    const modeLabel =
-      mode === "download"
-        ? "Download"
-        : mode === "clips"
-          ? "Best Clips"
-          : mode === "subtitles"
-            ? "Subtitles"
-            : mode === "clipcutter"
-              ? "Clip Cutter"
-              : mode === "bhagwat"
-                ? "Bhagwat Studio"
-                  : mode === "timestamps"
-                  ? "Timestamps"
-                  : mode === "findvideo"
-                    ? "Find Video"
-                  : mode === "settings"
-                    ? "Settings"
-                  : mode === "admin"
-                    ? "Admin"
-                    : "Find Sabha";
+    const modeLabel = MODE_LABELS[mode] ?? "VideoMaking";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
-      ? `${modeLabel}: ${contentLabel} Ã‚Â· ${appName}`
-      : `${modeLabel} Ã‚Â· ${appName}`;
+      ? `${modeLabel}: ${contentLabel} | ${appName}`
+      : `${modeLabel} | ${appName}`;
   }, [mode, submittedUrl, video?.title]);
 
   useEffect(() => {
@@ -1254,7 +1254,7 @@ function SubtitleDownloadRow({ url }: { url: string }) {
           {fixing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Fixing with AIÃ¢â‚¬Â¦
+              Fixing with AI...
             </>
           ) : (
             <>
@@ -1267,7 +1267,7 @@ function SubtitleDownloadRow({ url }: { url: string }) {
 
       {fixing && (
         <p className="text-xs text-white/30 sm:ml-auto">
-          Downloading audio & running AI correction Ã¢â‚¬â€ this may take a minuteÃ¢â‚¬Â¦
+          Downloading audio and running AI correction - this may take a minute...
         </p>
       )}
     </div>
@@ -1296,7 +1296,7 @@ function InlinePlayer({
       {loading && !error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white/50 z-10">
           <Loader2 className="w-7 h-7 animate-spin" />
-          <span className="text-xs">Resolving streamÃ¢â‚¬Â¦</span>
+          <span className="text-xs">Resolving stream...</span>
         </div>
       )}
       {error && (

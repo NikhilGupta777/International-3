@@ -2089,9 +2089,9 @@ router.post("/agent/chat", async (req, res) => {
   try {
     const ai = createGeminiClient();
 
-    // Build Gemini contents � multimodal aware.
-    // Images ? inlineData bytes (Gemini Vision sees actual pixels, same as Claude/ChatGPT).
-    // Video/audio/docs ? structured [ATTACHED ...] context injected into text so tools use URL.
+    // Build Gemini contents with multimodal awareness.
+    // Images: inlineData bytes (Gemini Vision sees actual pixels, same as Claude/ChatGPT).
+    // Video/audio/docs: structured [ATTACHED ...] context injected into text so tools use URL.
     let loopContents: any[] = normalizedMessages
       .filter(m => m.content.trim() || (m.attachments && m.attachments.length > 0))
       .map(m => {
@@ -2104,7 +2104,7 @@ router.post("/agent/chat", async (req, res) => {
         if (mediaAttachments.length > 0) {
           const ctxLines = mediaAttachments.map((a: any) => {
             const typeLabel = a.type === 'video' ? 'VIDEO' : a.type === 'audio' ? 'AUDIO' : 'FILE';
-            return `[ATTACHED ${typeLabel}: "${a.name}" | URL: ${a.url} | MIME: ${a.mimeType}]\nThe user uploaded this file. Use its URL directly with tools (generate_subtitles, translate_video, etc.) � do NOT ask for a YouTube link.`;
+            return `[ATTACHED ${typeLabel}: "${a.name}" | URL: ${a.url} | MIME: ${a.mimeType}]\nThe user uploaded this file. Use its URL directly with tools (generate_subtitles, translate_video, etc.) - do NOT ask for a YouTube link.`;
           }).join('\n');
           parts.push({ text: ctxLines + (textContent ? '\n\nUser message: ' + textContent : '') });
         } else if (textContent) {

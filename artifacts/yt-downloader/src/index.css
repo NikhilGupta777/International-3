@@ -4241,6 +4241,119 @@ html.studio-light-mode .settings-segment {
   border-color: rgba(39,30,17,0.12);
   color: rgba(24,20,16,0.72);
 }
+
+html.studio-light-mode .studio-workspace,
+html.studio-light-mode .gs-home,
+html.studio-light-mode .agent-hero,
+html.studio-light-mode .find-video-page {
+  background:
+    radial-gradient(900px 520px at 50% 10%, rgba(20,184,166,0.14), transparent 68%),
+    linear-gradient(180deg, #faf6ee 0%, #f4eadc 100%) !important;
+}
+
+html.studio-light-mode .studio-hamburger {
+  background: rgba(255,255,255,0.84);
+  border: 1px solid rgba(39,30,17,0.12);
+  color: rgba(24,20,16,0.82);
+  box-shadow: 0 10px 30px rgba(92,64,29,0.14);
+}
+
+html.studio-light-mode .studio-hamburger:hover {
+  background: rgba(255,255,255,0.96);
+  color: #0f766e;
+}
+
+html.studio-light-mode .studio-drawer-backdrop {
+  background: rgba(39,30,17,0.20);
+}
+
+html.studio-light-mode .gs-app-tile,
+html.studio-light-mode .gs-nav-icon-wrap,
+html.studio-light-mode .gs-input-card,
+html.studio-light-mode .gs-plus-menu,
+html.studio-light-mode .gs-starter,
+html.studio-light-mode .gs-suggestion-chip,
+html.studio-light-mode .gs-mode-tabs,
+html.studio-light-mode .gs-paste-pill,
+html.studio-light-mode .gs-thinking,
+html.studio-light-mode .gs-chat-header,
+html.studio-light-mode .gs-chat-title-input,
+html.studio-light-mode .studio-home-tool,
+html.studio-light-mode .find-video-card,
+html.studio-light-mode .find-video-result,
+html.studio-light-mode .find-video-composer,
+html.studio-light-mode .find-video-example,
+html.studio-light-mode .find-video-chip,
+html.studio-light-mode .studio-search-wrap form > div {
+  background: rgba(255,255,255,0.74) !important;
+  border-color: rgba(39,30,17,0.14) !important;
+  box-shadow: 0 18px 50px rgba(92,64,29,0.10) !important;
+}
+
+html.studio-light-mode .gs-input-textarea,
+html.studio-light-mode .find-video-input,
+html.studio-light-mode .studio-search-wrap input {
+  color: rgba(24,20,16,0.94) !important;
+}
+
+html.studio-light-mode .gs-input-textarea::placeholder,
+html.studio-light-mode .find-video-input::placeholder,
+html.studio-light-mode .studio-search-wrap input::placeholder {
+  color: rgba(24,20,16,0.42) !important;
+}
+
+html.studio-light-mode .gs-home-title-text,
+html.studio-light-mode .gs-welcome-title,
+html.studio-light-mode .agent-hero-title,
+html.studio-light-mode .studio-home-title,
+html.studio-light-mode .studio-home-tool-label,
+html.studio-light-mode .find-video-title,
+html.studio-light-mode .find-video-tooltip strong,
+html.studio-light-mode .gs-chat-header-title,
+html.studio-light-mode .gs-chat-title-text {
+  color: rgba(24,20,16,0.94) !important;
+  -webkit-text-fill-color: currentColor;
+}
+
+html.studio-light-mode .gs-welcome-sub,
+html.studio-light-mode .agent-hero-sub,
+html.studio-light-mode .studio-home-sub,
+html.studio-light-mode .studio-home-tool-desc,
+html.studio-light-mode .studio-home-tip,
+html.studio-light-mode .find-video-subtitle,
+html.studio-light-mode .find-video-kicker,
+html.studio-light-mode .find-video-label,
+html.studio-light-mode .find-video-reference,
+html.studio-light-mode .find-video-tooltip span,
+html.studio-light-mode .gs-starter-text,
+html.studio-light-mode .gs-thinking-text {
+  color: rgba(24,20,16,0.58) !important;
+}
+
+html.studio-light-mode [class*="bg-white/5"],
+html.studio-light-mode [class*="bg-white/8"],
+html.studio-light-mode [class*="bg-white/10"],
+html.studio-light-mode [class*="bg-white/14"],
+html.studio-light-mode [class*="bg-white/15"],
+html.studio-light-mode [class*="bg-black/20"],
+html.studio-light-mode [class*="bg-black/30"],
+html.studio-light-mode [class*="bg-black/40"],
+html.studio-light-mode [class*="bg-black/50"] {
+  background-color: rgba(255,255,255,0.68) !important;
+}
+
+html.studio-light-mode [class*="border-white/5"],
+html.studio-light-mode [class*="border-white/8"],
+html.studio-light-mode [class*="border-white/10"],
+html.studio-light-mode [class*="border-white/12"],
+html.studio-light-mode [class*="border-white/20"] {
+  border-color: rgba(39,30,17,0.13) !important;
+}
+
+html.studio-light-mode [class*="placeholder:text-white/"],
+html.studio-light-mode [class*="placeholder-white/"]::placeholder {
+  color: rgba(24,20,16,0.42) !important;
+}
 .activity-row {
   display: flex;
   align-items: center;

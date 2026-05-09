@@ -334,7 +334,7 @@ export function Timestamps() {
             className="bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white font-semibold px-5 rounded-xl shadow-lg shadow-indigo-500/20 disabled:opacity-40 shrink-0"
           >
             {isRunning ? (
-              <><Loader2 className="w-4 h-4 animate-spin mr-2" />Analyzingâ€¦</>
+              <><Loader2 className="w-4 h-4 animate-spin mr-2" />Analyzing...</>
             ) : (
               <><Sparkles className="w-4 h-4 mr-2" />Generate</>
             )}
