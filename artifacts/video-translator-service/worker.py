@@ -337,21 +337,44 @@ def video_has_audio_stream(video_path: Path) -> bool:
     return bool(result.stdout.strip())
 
 
-def extract_audio(video_path: Path, out_dir: Path) -> Path:
-    """Extract audio as 16kHz mono WAV."""
+def extract_audio(
+    video_path: Path,
+    out_dir: Path,
+    sample_rate: int = 16000,
+    mono: bool = True,
+    label: str = "audio_full",
+) -> Path:
+    """Extract audio as WAV at the requested sample rate."""
     if not video_has_audio_stream(video_path):
         raise RuntimeError("Input video has no audio stream; video translation requires spoken audio.")
 
-    wav_path = out_dir / "audio_full.wav"
+    wav_path = out_dir / f"{label}_{sample_rate}hz.wav"
+    channel_args = ["-ac", "1"] if mono else []
     run_ffmpeg(
         "-i", str(video_path),
         "-vn", "-acodec", "pcm_s16le",
-        "-ar", "16000", "-ac", "1",
+        "-ar", str(sample_rate),
+        *channel_args,
         str(wav_path),
     )
     if not wav_path.exists() or wav_path.stat().st_size == 0:
         raise RuntimeError(f"Audio extraction produced no WAV output at {wav_path}.")
     return wav_path
+
+
+def resample_audio(audio_path: Path, out_path: Path, sample_rate: int = 16000, mono: bool = True) -> Path:
+    """Resample audio to a target sample rate for ASR/TTS."""
+    channel_args = ["-ac", "1"] if mono else []
+    run_ffmpeg(
+        "-i", str(audio_path),
+        "-acodec", "pcm_s16le",
+        "-ar", str(sample_rate),
+        *channel_args,
+        str(out_path),
+    )
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError(f"Audio resample produced no WAV output at {out_path}.")
+    return out_path
 
 
 def get_video_duration(video_path: Path) -> float:
@@ -586,7 +609,7 @@ def transcribe(audio_path: Path) -> list[dict]:
 # Stage 2b: Optional speaker diarization (pyannote)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
+def diarize(audio_path: Path, segments: list[dict], override_existing: bool = False) -> list[dict]:
     """
     Tag each segment with a speaker label using pyannote 3.1.
     Requires HF_TOKEN env var for gated model access.
@@ -628,7 +651,11 @@ def diarize(audio_path: Path, segments: list[dict]) -> list[dict]:
         from collections import defaultdict as _dd
         for seg in segments:
             # Skip segments that already have a reliable speaker label from AssemblyAI
-            if seg.get("speaker") and seg["speaker"] != DEFAULT_SPEAKER_LABEL:
+            if (
+                not override_existing
+                and seg.get("speaker")
+                and seg["speaker"] != DEFAULT_SPEAKER_LABEL
+            ):
                 continue
             overlap_scores: dict = _dd(float)
             for turn, _, spk in diarization.itertracks(yield_label=True):
@@ -690,6 +717,7 @@ def extract_speaker_reference(
     """
     import numpy as np
     import soundfile as sf
+    import librosa
 
     speaker_refs: dict = {}
     speaker_prompt_texts: dict = {}
@@ -709,15 +737,36 @@ def extract_speaker_reference(
         speaker_map.setdefault(spk, []).append(seg)
 
     for spk, spk_segs in speaker_map.items():
-        # Sort by duration descending — pick longest clean clips first
-        by_dur = sorted(spk_segs, key=lambda s: s["end"] - s["start"], reverse=True)
-
-        clips: list = []
-        total_dur: float = 0.0
-        for seg in by_dur:
+        # Score by duration * energy to prefer clean, loud segments
+        scored: list[tuple[dict, float, float]] = []
+        audio_cache: dict[int, np.ndarray] = {}
+        for seg in spk_segs:
             dur = seg["end"] - seg["start"]
             if dur < min_segment_duration:
                 continue
+            s_idx = max(0, int(seg["start"] * sr))
+            e_idx = min(len(full_audio), int(seg["end"] * sr))
+            if e_idx <= s_idx:
+                continue
+            seg_audio = full_audio[s_idx:e_idx]
+            if seg_audio.size == 0:
+                continue
+            trimmed, _ = librosa.effects.trim(seg_audio, top_db=35)
+            if len(trimmed) < int(min_segment_duration * sr):
+                continue
+            energy = float(np.sqrt(np.mean(trimmed ** 2)))
+            audio_cache[int(seg.get("id", len(audio_cache)))] = trimmed
+            scored.append((seg, dur, energy))
+
+        by_score = sorted(
+            scored,
+            key=lambda item: (item[1] * (item[2] + 1e-8), item[1]),
+            reverse=True,
+        )
+
+        clips: list = []
+        total_dur: float = 0.0
+        for seg, dur, _energy in by_score:
             clips.append(seg)
             total_dur += dur
             if total_dur >= max_ref_duration:
@@ -725,7 +774,7 @@ def extract_speaker_reference(
 
         # Fallback: take any segment if none are long enough
         if not clips:
-            clips = by_dur[:3]
+            clips = sorted(spk_segs, key=lambda s: s["end"] - s["start"], reverse=True)[:3]
 
         if not clips:
             log.warning(f"[SpeakerRef] No usable clips for {spk}; using full audio.")
@@ -749,6 +798,10 @@ def extract_speaker_reference(
         # Concatenate selected clips into one reference (chronological order)
         chunks: list = []
         for seg in ordered_clips:
+            cached = audio_cache.get(int(seg.get("id", -1)))
+            if cached is not None and len(cached) > 0:
+                chunks.append(cached)
+                continue
             s_idx = max(0, int(seg["start"] * sr))
             e_idx = min(len(full_audio), int(seg["end"] * sr))
             if e_idx > s_idx:
@@ -803,6 +856,8 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
         seg_dur = float(seg["end"]) - float(seg["start"])
         word_count = len(str(buf.get("text", "")).split())
         merged_dur = float(seg["end"]) - float(buf["start"])
+        short_segment = buf_dur < 1.6 or seg_dur < 1.6
+        gap_limit = 2.4 if short_segment else 1.2
 
         # Only merge same speaker (or when no speaker labels exist)
         buf_speaker = str(buf.get("speaker", "")).strip()
@@ -811,13 +866,13 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
 
         should_merge = (
             same_speaker
-            and gap < 1.2
-            and merged_dur <= 14.0
+            and gap < gap_limit
+            and merged_dur <= 16.0
             and (
-                buf_dur < 2.2
-                or seg_dur < 2.2
-                or word_count < 6
-                or gap < 0.6
+                buf_dur < 2.8
+                or seg_dur < 2.8
+                or word_count < 8
+                or gap < 0.8
             )
         )
 
@@ -844,6 +899,16 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     return merged
 
 
+END_PUNCTUATION = {".", "?", "!", "。", "？", "！", "\u0964"}  # \u0964 = Devanagari danda
+
+def _terminal_punctuation() -> str:
+    code = (TARGET_LANG_CODE or "").lower()
+    if code in {"hi", "mr", "ne", "sa"}:
+        return "\u0964"
+    if code in {"zh", "ja", "ko"}:
+        return "。"
+    return "."
+
 def normalize_tts_text(text: str) -> str:
     """
     Clean translated text before passing to CosyVoice/TTS.
@@ -855,8 +920,8 @@ def normalize_tts_text(text: str) -> str:
     text = re.sub(r'\.{2,}', '.', text)    # ... or .. -> .
     text = re.sub(r'\s+', ' ', text)        # collapse whitespace
     # Ensure text ends with sentence-ending punctuation
-    if text[-1] not in '.?!\u0964':         # \u0964 = Devanagari danda
-        text += '.'
+    if text[-1] not in END_PUNCTUATION:
+        text += _terminal_punctuation()
     return text
 
 
@@ -885,12 +950,15 @@ _PRONUNCIATION_REPLACEMENTS = [
     (r"\bSyama\b", "Shyama"),
 ]
 
+PRONUNCIATION_LANG_CODES = {"hi", "en", "mr", "ne", "sa"}
+
 def normalize_tts_pronunciation(text: str) -> str:
     """Apply pronunciation replacements then standard text cleaning."""
     if not text:
         return text
-    for pattern, replacement in _PRONUNCIATION_REPLACEMENTS:
-        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    if (TARGET_LANG_CODE or "").lower() in PRONUNCIATION_LANG_CODES:
+        for pattern, replacement in _PRONUNCIATION_REPLACEMENTS:
+            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return normalize_tts_text(text)
 
 
@@ -1192,7 +1260,8 @@ Core rules:
 6. Preserve names, religious terms, cultural references, and important proper nouns accurately.
 7. If source text is mixed-language or contains a verse/quote, translate the meaning naturally.
 8. If the source segment is a fragment, translate it as a complete natural spoken phrase. Make output speakable.
-9. Return ONLY valid JSON. No markdown, no code fences, no commentary.
+9. Use prev_text and next_text ONLY as context. Do not translate them or include them in the output.
+10. Return ONLY valid JSON. No markdown, no code fences, no commentary.
 
 Duration rules:
 - duration < 1.5s: 1-3 short words only.
@@ -1309,17 +1378,26 @@ def translate_segments(segments: list[dict]) -> list[dict]:
     log.info(f"[Gemini] Translating {len(segments)} segments to {TARGET_LANG}...")
 
     # Build the translation request payload
-    seg_payload = [
-        {
+    def _context_snippet(value: str, limit: int = 140) -> str:
+        snippet = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(snippet) > limit:
+            snippet = snippet[:limit].rsplit(" ", 1)[0].strip()
+        return snippet
+
+    seg_payload = []
+    for idx, s in enumerate(segments):
+        prev_text = segments[idx - 1]["text"] if idx > 0 else ""
+        next_text = segments[idx + 1]["text"] if idx + 1 < len(segments) else ""
+        seg_payload.append({
             "id": s["id"],
             "start": s["start"],
             "end": s["end"],
             "duration": round(s["end"] - s["start"], 2),
             "text": s["text"],
             "speaker": s.get("speaker") or DEFAULT_SPEAKER_LABEL,
-        }
-        for s in segments
-    ]
+            "prev_text": _context_snippet(prev_text),
+            "next_text": _context_snippet(next_text),
+        })
 
     user_prompt = (
         f"Translate these merged dubbing segments into {TARGET_LANG}.\n"
@@ -1536,10 +1614,9 @@ def synthesize_segments_cosyvoice(
     source_code = (SOURCE_LANG_CODE or "").lower().strip()
     target_code = (TARGET_LANG_CODE or "").lower().strip()
     is_cross_lingual = bool(
-        source_code
-        and target_code
+        target_code
         and target_code not in ("", "auto")
-        and target_code != source_code
+        and (not source_code or source_code in ("", "auto") or target_code != source_code)
     )
     has_cross_lingual = hasattr(model, "inference_cross_lingual")
     use_cross_lingual = is_cross_lingual and has_cross_lingual
@@ -1647,6 +1724,12 @@ def synthesize_segments_cosyvoice(
     else:
         _zs_params_set = set(inspect.signature(model.inference_zero_shot).parameters.keys())
 
+    def _instruct_param(params: set[str]) -> Optional[str]:
+        for key in ("instruct_text", "instruct", "instruction", "prompt_instruction"):
+            if key in params:
+                return key
+        return None
+
     # ── Synthesize each segment ───────────────────────────────────────────────
     seg_audios: list[Path] = []
     total_segments = max(1, len(segments))
@@ -1693,6 +1776,10 @@ def synthesize_segments_cosyvoice(
             seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
 
         try:
+            emotion = str(seg.get("emotion", "neutral")).strip().lower()
+            emotion_instruction = ""
+            if emotion and emotion != "neutral":
+                emotion_instruction = f"Speak in a {emotion} tone."
             if use_cross_lingual:
                 # Use pre-computed signature set (not re-inspected each iteration)
                 _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if is_cosyvoice3 else text)
@@ -1705,8 +1792,9 @@ def synthesize_segments_cosyvoice(
                     raise RuntimeError(
                         f"Unsupported CosyVoice cross_lingual signature: {_cl_params_set}"
                     )
-                if "speed" in _cl_params_set:
-                    cl_args["speed"] = _safe_speaking_rate(seg.get("speaking_rate", 1.0))
+                instruct_param = _instruct_param(_cl_params_set)
+                if instruct_param and emotion_instruction:
+                    cl_args[instruct_param] = emotion_instruction
                 chunks = list(model.inference_cross_lingual(**cl_args))
             else:
                 # Use pre-computed signature set (not re-inspected each iteration)
@@ -1723,8 +1811,9 @@ def synthesize_segments_cosyvoice(
                     raise RuntimeError(
                         f"Unsupported CosyVoice zero-shot signature: {_zs_params_set}"
                     )
-                if "speed" in _zs_params_set:
-                    zs_args["speed"] = _safe_speaking_rate(seg.get("speaking_rate", 1.0))
+                instruct_param = _instruct_param(_zs_params_set)
+                if instruct_param and emotion_instruction:
+                    zs_args[instruct_param] = emotion_instruction
                 chunks = list(model.inference_zero_shot(**zs_args))
 
             tts_chunks = [
@@ -1884,15 +1973,14 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
         run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(duration), str(out_path))
         return out_path
 
-    if abs(actual_dur - target_duration) < 0.1:
+    if abs(actual_dur - target_duration) < 0.05:
         return audio_path  # close enough, no change needed
 
     ratio = actual_dur / max(target_duration, 0.1)
-    # Keep a wider clamp to reduce truncation while avoiding chipmunk voices.
-    # Short segments tolerate slightly faster stretch because the absolute
-    # perceptual shift is smaller than long segments, and it prevents cut-offs.
-    max_ratio = 1.8 if target_duration < 2.2 else 1.6
-    min_ratio = 0.75 if target_duration < 2.2 else 0.8
+    # Wider clamp to avoid hard truncation; prefer time-scaling over cut-offs.
+    # Short segments can tolerate more aggressive tempo shifts.
+    max_ratio = 2.6 if target_duration < 2.0 else 2.2
+    min_ratio = 0.6 if target_duration < 2.0 else 0.7
     ratio = max(min_ratio, min(max_ratio, ratio))
 
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
@@ -2317,20 +2405,22 @@ def main():
         log.info(f"Video duration: {video_duration:.1f}s")
 
         # â”€â”€ 2. Extract audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        update_progress("EXTRACTING", 8, "Extracting audio...")
-        full_audio = extract_audio(video_path, work_dir)
+        update_progress("EXTRACTING", 8, "Extracting high-quality audio...")
+        full_audio_hq = extract_audio(video_path, work_dir, sample_rate=44100, mono=True, label="audio_full")
+        transcription_audio = resample_audio(full_audio_hq, work_dir / "audio_full_16k.wav", 16000, mono=True)
+        reference_audio = full_audio_hq
 
         # â”€â”€ 3. Optional Demucs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         background_audio = None
-        transcription_audio = full_audio
 
         demucs_applied = False
         demucs_warning = ""
         if USE_DEMUCS:
             update_progress("EXTRACTING", 12, "Separating voice from background music...")
             try:
-                vocals_path, bg_path = run_demucs(full_audio, work_dir)
-                transcription_audio = vocals_path
+                vocals_path, bg_path = run_demucs(full_audio_hq, work_dir)
+                reference_audio = vocals_path
+                transcription_audio = resample_audio(vocals_path, work_dir / "vocals_16k.wav", 16000, mono=True)
                 background_audio = bg_path
                 demucs_applied = True
             except Exception as e:
@@ -2347,6 +2437,13 @@ def main():
         # â”€â”€ 5. Optional Diarization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if MULTI_SPEAKER:
             pre_labels = _effective_speaker_labels(segments)
+            label_counts: dict[str, int] = {}
+            for seg in segments:
+                label = str(seg.get("speaker") or DEFAULT_SPEAKER_LABEL)
+                label_counts[label] = label_counts.get(label, 0) + 1
+            total_labels = sum(label_counts.values()) or 1
+            dominant_share = max(label_counts.values(), default=0) / total_labels
+            override_labels = len(pre_labels) <= 1 or dominant_share > 0.9
             if not pre_labels and not os.environ.get("HF_TOKEN", ""):
                 warn_msg = (
                     "Multi-speaker requested but no reliable speaker labels were detected and HF_TOKEN is missing. "
@@ -2356,7 +2453,7 @@ def main():
                 update_progress("TRANSCRIBING", 28, "Identifying speakers...", {"speaker_warning": warn_msg})
             else:
                 update_progress("TRANSCRIBING", 28, "Identifying speakers...")
-            segments = diarize(transcription_audio, segments)
+            segments = diarize(transcription_audio, segments, override_existing=override_labels)
             post_labels = _effective_speaker_labels(segments)
             if len(post_labels) <= 1:
                 all_labels = _all_speaker_labels(segments)
@@ -2392,7 +2489,7 @@ def main():
                 update_progress("CLONING", 50, "Extracting per-speaker voice references...")
                 try:
                     speaker_refs, speaker_prompt_texts = extract_speaker_reference(
-                        transcription_audio, segments, work_dir
+                        reference_audio, segments, work_dir
                     )
                     log.info(
                         f"[Main] Per-speaker refs: "
@@ -2411,7 +2508,7 @@ def main():
         seg_dir.mkdir()
         seg_audio_paths, voice_was_cloned = synthesize_all(
             segments,
-            transcription_audio,
+            reference_audio,
             seg_dir,
             speaker_refs=speaker_refs,
             speaker_prompt_texts=speaker_prompt_texts,

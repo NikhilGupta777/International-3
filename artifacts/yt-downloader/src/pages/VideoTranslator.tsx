@@ -988,6 +988,50 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                     <p className="text-xs text-white/40 mt-0.5">{job?.filename ?? file?.name ?? "Translated video"}</p>
                   </div>
                 </div>
+                {(job?.voiceClone || job?.lipSync || job?.runtime || job?.segmentCount != null) && (
+                  <div className="flex flex-wrap gap-2 text-[11px] text-white/50">
+                    <span className={cn(
+                      "px-2 py-0.5 rounded-full border",
+                      job?.voiceClone
+                        ? (job?.voiceCloneApplied ? "border-emerald-400/40 text-emerald-300/80" : "border-amber-400/40 text-amber-300/80")
+                        : "border-white/15 text-white/40",
+                    )}>
+                      {job?.voiceClone
+                        ? (job?.voiceCloneApplied ? "Voice cloned" : "Neural fallback")
+                        : "Neural voice"}
+                    </span>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded-full border",
+                      job?.lipSync
+                        ? (job?.lipSyncApplied ? "border-emerald-400/40 text-emerald-300/80" : "border-amber-400/40 text-amber-300/80")
+                        : "border-white/15 text-white/40",
+                    )}>
+                      {job?.lipSync
+                        ? (job?.lipSyncApplied ? "Lip sync applied" : "Lip sync skipped")
+                        : "Lip sync off"}
+                    </span>
+                    {job?.runtime && (
+                      <span className="px-2 py-0.5 rounded-full border border-white/15 text-white/40">
+                        Runtime: {job.runtime}
+                      </span>
+                    )}
+                    {job?.segmentCount != null && (
+                      <span className="px-2 py-0.5 rounded-full border border-white/15 text-white/40">
+                        {job.segmentCount} segments
+                      </span>
+                    )}
+                  </div>
+                )}
+                {job?.voiceClone && job?.voiceCloneApplied === false && (
+                  <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/80">
+                    Voice cloning fell back to a neural voice. Check the debug log for the CosyVoice error.
+                  </div>
+                )}
+                {job?.runtime === "lambda-fast" && (
+                  <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200/80">
+                    Fast subtitle-only mode was used (no dubbed audio). Submit with full dubbing to clone voices.
+                  </div>
+                )}
                 {job?.videoUrl && (
                   <video
                     src={job.videoUrl}
