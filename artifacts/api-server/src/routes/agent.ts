@@ -1,5 +1,5 @@
 /**
- * AI Studio Copilot Agent Route â€” Full Agentic Execution
+ * AI Studio Copilot Agent Route — Full Agentic Execution
  * POST /api/agent/chat
  *
  * SSE events: text | tool_start | tool_progress | tool_done | artifact | navigate | error | done
@@ -68,7 +68,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
   }
 }
 
-// â”€â”€ Resolve base URL for internal API calls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Resolve base URL for internal API calls ───────────────────────────────
 function getApiBase(req: any): string {
   if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
   const proto = req.headers["x-forwarded-proto"] ?? "http";
@@ -2003,7 +2003,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
 }
 
 
-// â”€â”€ POST /api/agent/chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── POST /api/agent/chat ──────────────────────────────────────────────────
 router.post("/agent/chat", async (req, res) => {
   if (!isGeminiConfigured()) {
     res.status(503).json({ error: "AI Copilot not configured - add Vertex Gemini env or GEMINI_API_KEY." });
