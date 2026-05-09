@@ -219,7 +219,7 @@ export function Sidebar({
       </button>
 
       {drawerOpen && (
-        <div className="studio-drawer-backdrop" onClick={closeDrawer} aria-hidden="true" />
+        <div className="studio-drawer-backdrop cursor-pointer" onClick={closeDrawer} aria-hidden="true" />
       )}
 
       <div className={cn("gs-drawer", drawerOpen && "gs-drawer-open")}>

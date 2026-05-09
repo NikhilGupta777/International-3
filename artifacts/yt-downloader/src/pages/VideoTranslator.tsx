@@ -240,7 +240,7 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
       </div>
       <div className="text-center">
         <p className="text-base font-semibold text-white/80">Drop your video here</p>
-        <p className="text-sm text-white/40 mt-1">MP4, MOV, MKV, AVI, WebM Â· Max 2GB</p>
+        <p className="text-sm text-white/40 mt-1">MP4, MOV, MKV, AVI, WebM · Max 2GB</p>
       </div>
       <input ref={inputRef} type="file" accept=".mp4,.mov,.mkv,.avi,.webm" className="hidden"
         onChange={e => e.target.files?.[0] && onFile(e.target.files[0])} />
@@ -735,7 +735,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           </div>
           <div>
             <h1 className="text-xl font-bold text-white">Video Translator</h1>
-            <p className="text-sm text-white/40">GPU-powered voice cloning Â· 20 languages</p>
+            <p className="text-sm text-white/40">GPU-powered voice cloning · 20 languages</p>
           </div>
           {jobId && (
             <button onClick={reset} className="ml-auto p-2 rounded-xl bg-white/6 hover:bg-white/10 text-white/50 hover:text-white transition-colors">
@@ -868,7 +868,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
 
               <label className={cn("flex items-center gap-3 select-none", lipSyncAvailable ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
                 <div onClick={() => lipSyncAvailable && setLipSync(!lipSync)}
-                  className={cn("w-10 h-6 rounded-full transition-all relative",
+                  className={cn("w-10 h-6 rounded-full transition-all relative", lipSyncAvailable ? "cursor-pointer" : "cursor-not-allowed",
                     lipSyncAvailable && lipSync ? "bg-primary" : "bg-white/20")}>
                   <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all",
                     lipSyncAvailable && lipSync ? "left-[18px]" : "left-0.5")} />
