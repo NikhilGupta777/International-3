@@ -649,7 +649,7 @@ export default function Home({
           instead of a floating top-right panel. */}
       {(() => { void pushSupported; void pushConfigured; void pushPermission; void pushEnabling; void handleEnablePush; void openGuide; return null; })()}
 
-      {/* Ã¢â€â‚¬Ã¢â€â‚¬ Body: sidebar + content Ã¢â€â‚¬Ã¢â€â‚¬ */}
+      {/* Body: sidebar + content */}
       <div className="studio-body">
 
         {/* Sidebar */}
@@ -671,7 +671,7 @@ export default function Home({
         <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "overflow-hidden")} id="studio-content">
           <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
 
-            {/* Translator tab â€” full screen */}
+            {/* Translator tab - full screen */}
             {mode === "translator" && (
               canUseTranslator
                 ? <VideoTranslator lipSyncAvailable={Boolean(authFeatures?.translatorLipSyncAllowed)} />
@@ -710,7 +710,7 @@ export default function Home({
 
             {showAdmin && canUseAdmin && <AdminPanel />}
 
-            {/* Search bar Ã¢â‚¬â€ only for download + clips modes */}
+            {/* Search bar - only for download + clips modes */}
             {showSearch && (
               <div className="studio-search-wrap">
                 <form onSubmit={handleSearch}>
@@ -845,7 +845,7 @@ export default function Home({
               </motion.div>
             )}
 
-            {/* Ã¢â€â‚¬Ã¢â€â‚¬ Content panels Ã¢â€â‚¬Ã¢â€â‚¬ */}
+            {/* Content panels */}
 
             {/* Active download progress */}
             <AnimatePresence>
