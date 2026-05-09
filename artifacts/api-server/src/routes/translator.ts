@@ -473,6 +473,8 @@ function isLambdaFastCandidate(options: TranslatorOptions): boolean {
   // Lambda subtitle-only path: only used when CPU Batch queue is not configured.
   // When CPU queue IS configured, Neural Voice jobs go there for actual dubbing.
   if (isCpuBatchCandidate(options)) return false;
+  if (!TRANSLATOR_LAMBDA_FAST_ENABLED) return false;
+  if (options.translationMode !== "subtitle-only") return false;
   return (
     !options.voiceClone &&
     !options.lipSync &&
@@ -958,12 +960,18 @@ async function transcribeFastMediaUrl(mediaUrl: string, sourceLang: string): Pro
 async function translateSegmentsFast(segments: FastSegment[], targetLang: string): Promise<FastSegment[]> {
   if (!isGeminiConfigured()) throw new Error("Gemini is not configured. Add Vertex Gemini env or GEMINI_API_KEY.");
   const ai = createGeminiClient();
-  const payload = segments.map((seg, i) => ({ id: i + 1, text: seg.text }));
+  const payload = segments.map((seg, i) => ({
+    id: i + 1,
+    text: seg.text,
+    prev_text: segments[i - 1]?.text ?? "",
+    next_text: segments[i + 1]?.text ?? "",
+  }));
   const prompt = [
     `Translate each item to ${targetLang}.`,
     targetScriptInstruction(targetLang),
     "Translate meaning, tone, and intent like a skilled dubbing interpreter, not word-for-word.",
     "Keep each line natural, concise, and speakable in the target language.",
+    "Use prev_text and next_text ONLY as context. Do not translate them or include them in the output.",
     "Return ONLY a JSON array with objects: {\"id\": number, \"text\": string}.",
     "Do not add explanations, labels, transliteration, source text, or commentary.",
     JSON.stringify(payload),
