@@ -8,7 +8,7 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { isEmailApproved, type AuthRole } from "./lib/auth-access";
+import { isEmailApproved, hydrateAllowlistFromDdb, type AuthRole } from "./lib/auth-access";
 import { canUseSuperAgent, canUseTranslator, canUseTranslatorLipSync } from "./lib/admin-features";
 import {
   getHttpMetricsSnapshot,
@@ -38,6 +38,21 @@ if (!AUTH_PASS) {
 if (!AUTH_COOKIE_SECRET) {
   throw new Error("SESSION_SECRET or AUTH_COOKIE_SECRET must be set");
 }
+
+// Hydrate approved email allowlist from DynamoDB on cold start (best-effort,
+// falls back to env-var lists if ACCESS_TABLE is not set or DDB is unreachable).
+const allowlistHydrationPromise = hydrateAllowlistFromDdb().catch((err) => {
+  console.warn("[app] allowlist hydration failed:", err);
+});
+
+app.use(async (_req: Request, _res: Response, next: NextFunction) => {
+  try {
+    await allowlistHydrationPromise;
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 function secureEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
