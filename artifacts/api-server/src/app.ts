@@ -41,8 +41,17 @@ if (!AUTH_COOKIE_SECRET) {
 
 // Hydrate approved email allowlist from DynamoDB on cold start (best-effort,
 // falls back to env-var lists if ACCESS_TABLE is not set or DDB is unreachable).
-void hydrateAllowlistFromDdb().catch((err) => {
+const allowlistHydrationPromise = hydrateAllowlistFromDdb().catch((err) => {
   console.warn("[app] allowlist hydration failed:", err);
+});
+
+app.use(async (_req: Request, _res: Response, next: NextFunction) => {
+  try {
+    await allowlistHydrationPromise;
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 function secureEqual(a: string, b: string): boolean {
