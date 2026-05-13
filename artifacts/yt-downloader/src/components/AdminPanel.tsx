@@ -197,7 +197,7 @@ function Stat({
   );
 }
 
-/** Section — uses data-tab attribute so CSS can show/hide without nth-of-type */
+/** Section — uses data-section-tab attribute so CSS can show/hide without nth-of-type */
 function Section({
   icon, title, children, wide = false, tab,
 }: {
