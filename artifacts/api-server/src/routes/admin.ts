@@ -257,7 +257,7 @@ router.get("/overview", async (_req, res) => {
       geminiConfigured:
         isGeminiConfigured() ||
         configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
-      allowlistPersistence: Boolean(process.env.ACCESS_TABLE),
+      allowlistPersistence: configured(process.env.ACCESS_TABLE),
     },
     limits: {
       lambdaClipMaxDurationSeconds: Number(
