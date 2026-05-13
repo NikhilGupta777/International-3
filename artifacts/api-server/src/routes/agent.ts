@@ -24,7 +24,7 @@ const ALLOWED_MODELS = new Set([
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
-const POLL_INTERVAL_MS = 300;
+const POLL_INTERVAL_MS = 1500;
 const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "24", 10) || 24;
 const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
@@ -2039,7 +2039,13 @@ router.post("/agent/chat", async (req, res) => {
     return;
   }
 
-  const normalizedMessages = messages.map((message) => {
+  // Guard: limit incoming history to prevent excessively large payloads
+  const MAX_HISTORY_MESSAGES = 80;
+  const truncatedMessages = messages.length > MAX_HISTORY_MESSAGES
+    ? messages.slice(-MAX_HISTORY_MESSAGES)
+    : messages;
+
+  const normalizedMessages = truncatedMessages.map((message) => {
     const content =
       typeof message.content === "string"
         ? message.content

@@ -314,7 +314,10 @@ export function GetSubtitles() {
     tick(); // kick off immediately
   }, [toast]);
 
+  const startJobInFlightRef = useRef(false);
   const startJob = async (mode: InputMode, urlVal: string, fileVal: File | null, lang: string, trans: string) => {
+    if (startJobInFlightRef.current) return; // prevent overlapping startJob calls
+    startJobInFlightRef.current = true;
     pendingCancelRef.current = false;
     setLoading(true);
     setSrtContent(null);
@@ -415,11 +418,13 @@ export function GetSubtitles() {
 
       pollStatus(data.jobId, Date.now());
     } catch (err: any) {
-      if (pendingCancelRef.current) return; // suppress error if cancelled
+      if (pendingCancelRef.current) { startJobInFlightRef.current = false; return; } // suppress error if cancelled
       setLoading(false);
       setJobStatus("error");
       setJobError(err.message);
       toast({ title: "Error", description: err.message, variant: "destructive" });
+    } finally {
+      startJobInFlightRef.current = false;
     }
   };
 
