@@ -29,9 +29,20 @@ import {
 } from "../lib/admin-features";
 
 const router: IRouter = Router();
-const ddb = new DynamoDBClient({ region: process.env.YOUTUBE_QUEUE_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1" });
+const ddb = new DynamoDBClient({
+  region: process.env.YOUTUBE_QUEUE_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1",
+});
 const JOB_TABLE = process.env.YOUTUBE_QUEUE_JOB_TABLE ?? process.env.JOB_TABLE ?? "";
-const cleanupHistory: Array<{ ts: number; namespace: string; maxAgeHours: number; deletedCount: number; bytesFreed: number; scannedCount: number; ok: boolean; error?: string }> = [];
+const cleanupHistory: Array<{
+  ts: number;
+  namespace: string;
+  maxAgeHours: number;
+  deletedCount: number;
+  bytesFreed: number;
+  scannedCount: number;
+  ok: boolean;
+  error?: string;
+}> = [];
 
 function splitCsv(value: string | undefined): string[] {
   return (value ?? "")
@@ -72,34 +83,46 @@ function terminalStatus(status: string): boolean {
 async function listRecentDdbJobs(): Promise<any[]> {
   if (!JOB_TABLE) return [];
   const out = await ddb.send(new ScanCommand({ TableName: JOB_TABLE, Limit: 100 }));
-  return (out.Items ?? []).map((item) => {
-    const status = item.status?.S ?? "unknown";
-    const createdAt = parseDdbNumber(item.createdAt);
-    const updatedAt = parseDdbNumber(item.updatedAt);
-    const completedAt = parseDdbNumber(item.completedAt);
-    const type = item.type?.S === "translator" ? "translator" : (item.jobType?.S ?? item.type?.S ?? "job");
-    return {
-      jobId: item.jobId?.S ?? "",
-      type,
-      user: item.ownerId?.S ?? item.requesterId?.S ?? item.clientId?.S ?? "unknown",
-      status,
-      stage: item.step?.S ?? item.message?.S ?? status,
-      progressPct: parseDdbNumber(item.progressPct) ?? parseDdbNumber(item.progress),
-      startedAt: parseDdbNumber(item.startedAt) ?? createdAt,
-      createdAt,
-      updatedAt,
-      completedAt,
-      elapsedMs: completedAt && createdAt ? completedAt - createdAt : (createdAt && !terminalStatus(status) ? Date.now() - createdAt : null),
-      filename: item.filename?.S ?? null,
-      error: item.error?.S ?? (["error", "failed", "FAILED"].includes(status) ? item.message?.S : null),
-      outputAvailable: Boolean(item.s3Key?.S || item.outputKey?.S),
-      lipSync: item.lipSync?.BOOL ?? null,
-      translation: item.type?.S === "translator" || Boolean(item.targetLang?.S),
-      targetLang: item.targetLang?.S ?? null,
-      runtime: item.runtime?.S ?? null,
-      batchJobId: item.batchJobId?.S ?? null,
-    };
-  }).filter((job) => job.jobId);
+  return (out.Items ?? [])
+    .map((item) => {
+      const status = item.status?.S ?? "unknown";
+      const createdAt = parseDdbNumber(item.createdAt);
+      const updatedAt = parseDdbNumber(item.updatedAt);
+      const completedAt = parseDdbNumber(item.completedAt);
+      const type =
+        item.type?.S === "translator"
+          ? "translator"
+          : item.jobType?.S ?? item.type?.S ?? "job";
+      return {
+        jobId: item.jobId?.S ?? "",
+        type,
+        user: item.ownerId?.S ?? item.requesterId?.S ?? item.clientId?.S ?? "unknown",
+        status,
+        stage: item.step?.S ?? item.message?.S ?? status,
+        progressPct: parseDdbNumber(item.progressPct) ?? parseDdbNumber(item.progress),
+        startedAt: parseDdbNumber(item.startedAt) ?? createdAt,
+        createdAt,
+        updatedAt,
+        completedAt,
+        elapsedMs:
+          completedAt && createdAt
+            ? completedAt - createdAt
+            : createdAt && !terminalStatus(status)
+              ? Date.now() - createdAt
+              : null,
+        filename: item.filename?.S ?? null,
+        error:
+          item.error?.S ??
+          (["error", "failed", "FAILED"].includes(status) ? item.message?.S : null),
+        outputAvailable: Boolean(item.s3Key?.S || item.outputKey?.S),
+        lipSync: item.lipSync?.BOOL ?? null,
+        translation: item.type?.S === "translator" || Boolean(item.targetLang?.S),
+        targetLang: item.targetLang?.S ?? null,
+        runtime: item.runtime?.S ?? null,
+        batchJobId: item.batchJobId?.S ?? null,
+      };
+    })
+    .filter((job) => job.jobId);
 }
 
 function buildJobAnalytics(jobs: any[]) {
@@ -111,12 +134,16 @@ function buildJobAnalytics(jobs: any[]) {
   ] as const;
   const out: Record<string, { total: number; active: number; completed: number; failed: number }> = {};
   for (const [key, ms] of windows) {
-    const scoped = jobs.filter((job) => now - Number(job.updatedAt ?? job.createdAt ?? 0) <= ms);
+    const scoped = jobs.filter(
+      (job) => now - Number(job.updatedAt ?? job.createdAt ?? 0) <= ms,
+    );
     out[key] = {
       total: scoped.length,
       active: scoped.filter((job) => !terminalStatus(String(job.status))).length,
       completed: scoped.filter((job) => ["done", "DONE"].includes(String(job.status))).length,
-      failed: scoped.filter((job) => ["error", "failed", "FAILED"].includes(String(job.status))).length,
+      failed: scoped.filter((job) =>
+        ["error", "failed", "FAILED"].includes(String(job.status)),
+      ).length,
     };
   }
   return out;
@@ -160,6 +187,7 @@ function buildAlerts(args: {
   return alerts;
 }
 
+// ── GET /overview ─────────────────────────────────────────────────────────────
 router.get("/overview", async (_req, res) => {
   const http = getHttpMetricsSnapshot();
   const system = getSystemMetricsSnapshot();
@@ -168,17 +196,23 @@ router.get("/overview", async (_req, res) => {
   const access = listApprovedAccess();
   const runtime = getRuntimeFeatureState();
   const s3 = getS3StorageConfig();
-  const translatorConfigured = configured(process.env.TRANSLATOR_BATCH_JOB_QUEUE) && configured(process.env.TRANSLATOR_BATCH_JOB_DEFINITION);
+  const translatorConfigured =
+    configured(process.env.TRANSLATOR_BATCH_JOB_QUEUE) &&
+    configured(process.env.TRANSLATOR_BATCH_JOB_DEFINITION);
   const ddbJobs = await listRecentDdbJobs().catch((err) => {
     console.warn("[admin] failed to scan recent jobs", err);
     return [];
   });
   const liveJobs = [
-    ...(youtube as any).recentJobs ?? [],
-    ...(subtitles as any).recentJobs ?? [],
+    ...((youtube as any).recentJobs ?? []),
+    ...((subtitles as any).recentJobs ?? []),
     ...ddbJobs,
   ]
-    .sort((a, b) => Number(b.updatedAt ?? b.createdAt ?? 0) - Number(a.updatedAt ?? a.createdAt ?? 0))
+    .sort(
+      (a, b) =>
+        Number(b.updatedAt ?? b.createdAt ?? 0) -
+        Number(a.updatedAt ?? a.createdAt ?? 0),
+    )
     .slice(0, 80);
   const activeLiveJobs = liveJobs.filter((job) => !terminalStatus(String(job.status)));
 
@@ -198,8 +232,12 @@ router.get("/overview", async (_req, res) => {
       subtitles,
       translator: {
         configured: translatorConfigured,
-        queueName: configured(process.env.TRANSLATOR_BATCH_JOB_QUEUE) ? process.env.TRANSLATOR_BATCH_JOB_QUEUE : null,
-        jobDefinition: configured(process.env.TRANSLATOR_BATCH_JOB_DEFINITION) ? process.env.TRANSLATOR_BATCH_JOB_DEFINITION : null,
+        queueName: configured(process.env.TRANSLATOR_BATCH_JOB_QUEUE)
+          ? process.env.TRANSLATOR_BATCH_JOB_QUEUE
+          : null,
+        jobDefinition: configured(process.env.TRANSLATOR_BATCH_JOB_DEFINITION)
+          ? process.env.TRANSLATOR_BATCH_JOB_DEFINITION
+          : null,
       },
     },
     features: {
@@ -213,12 +251,21 @@ router.get("/overview", async (_req, res) => {
       subtitlesForceLambda: enabled(process.env.SUBTITLES_FORCE_LAMBDA, true),
       translatorBatchConfigured: translatorConfigured,
       s3StorageEnabled: isS3StorageEnabled(),
-      notificationsConfigured: configured(process.env.VAPID_PUBLIC_KEY) && configured(process.env.VAPID_PRIVATE_KEY),
-      geminiConfigured: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
+      notificationsConfigured:
+        configured(process.env.VAPID_PUBLIC_KEY) &&
+        configured(process.env.VAPID_PRIVATE_KEY),
+      geminiConfigured:
+        isGeminiConfigured() ||
+        configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
+      allowlistPersistence: Boolean(process.env.ACCESS_TABLE),
     },
     limits: {
-      lambdaClipMaxDurationSeconds: Number(process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 480),
-      subtitlesLambdaMaxDurationSeconds: Number(process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600),
+      lambdaClipMaxDurationSeconds: Number(
+        process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 480,
+      ),
+      subtitlesLambdaMaxDurationSeconds: Number(
+        process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600,
+      ),
       maxConcurrentClipJobs: youtube.limits.maxConcurrentClipJobs,
       maxConcurrentSubtitleJobs: subtitles.limits.maxConcurrentSubtitleJobs,
       translatorMaxRuntimeMinutes: translatorRuntimeMinutes(),
@@ -227,7 +274,9 @@ router.get("/overview", async (_req, res) => {
     },
     cost: {
       monthlyBudgetUsd: numberFromEnv("MONTHLY_BUDGET_USD", 20),
-      currentMonthUsageUsd: process.env.ADMIN_CURRENT_MONTH_USAGE_USD ? Number(process.env.ADMIN_CURRENT_MONTH_USAGE_USD) : null,
+      currentMonthUsageUsd: process.env.ADMIN_CURRENT_MONTH_USAGE_USD
+        ? Number(process.env.ADMIN_CURRENT_MONTH_USAGE_USD)
+        : null,
       gpuMaxRuntimeMinutes: translatorRuntimeMinutes(),
       gpuConcurrency: numberFromEnv("TRANSLATOR_MAX_CONCURRENT_JOBS", 1),
       notes: [
@@ -250,20 +299,83 @@ router.get("/overview", async (_req, res) => {
       cleanupHistory,
     },
     tools: [
-      { key: "super-agent", label: "Super Agent", status: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Routes user prompts to download, clip, subtitle, summarize, timestamp, translate, and sharing tools." },
-      { key: "download", label: "Download", status: isS3StorageEnabled() ? "ready" : "local-only", detail: "Full video/audio downloads with downloadable result cards." },
-      { key: "clip-cut", label: "Clip Cut", status: "ready", detail: `Lambda-fast clips up to ${process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 480}s when eligible.` },
-      { key: "best-clips", label: "Best Clips", status: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Finds viral moments and can send cuts to clip tooling." },
-      { key: "subtitles", label: "Subtitles", status: "ready", detail: `Lambda-fast subtitles up to ${process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600}s when eligible.` },
-      { key: "translator", label: "Translator", status: translatorConfigured ? "ready" : "needs-batch", detail: "GPU translation pipeline with optional voice cloning/lip sync." },
-      { key: "timestamps", label: "Timestamps", status: isGeminiConfigured() || configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY) ? "ready" : "needs-key", detail: "Chapter marker generation from video/audio." },
-      { key: "find-sabha", label: "Find Sabha", status: "ready", detail: "Searches sabha/date/video clues, including screenshot workflows where configured." },
-      { key: "share", label: "Share", status: isS3StorageEnabled() ? "ready" : "needs-s3", detail: "Large file sharing through cloud-backed signed links." },
-      { key: "google-auth", label: "Google Sign-In", status: enabled(process.env.GOOGLE_AUTH_ENABLED) ? "enabled" : "disabled", detail: "Approved Gmail allow-list login." },
+      {
+        key: "super-agent",
+        label: "Super Agent",
+        status:
+          isGeminiConfigured() ||
+          configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY)
+            ? "ready"
+            : "needs-key",
+        detail:
+          "Routes user prompts to download, clip, subtitle, summarize, timestamp, translate, and sharing tools.",
+      },
+      {
+        key: "download",
+        label: "Download",
+        status: isS3StorageEnabled() ? "ready" : "local-only",
+        detail: "Full video/audio downloads with downloadable result cards.",
+      },
+      {
+        key: "clip-cut",
+        label: "Clip Cut",
+        status: "ready",
+        detail: `Lambda-fast clips up to ${process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 480}s when eligible.`,
+      },
+      {
+        key: "best-clips",
+        label: "Best Clips",
+        status:
+          isGeminiConfigured() ||
+          configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY)
+            ? "ready"
+            : "needs-key",
+        detail: "Finds viral moments and can send cuts to clip tooling.",
+      },
+      {
+        key: "subtitles",
+        label: "Subtitles",
+        status: "ready",
+        detail: `Lambda-fast subtitles up to ${process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600}s when eligible.`,
+      },
+      {
+        key: "translator",
+        label: "Translator",
+        status: translatorConfigured ? "ready" : "needs-batch",
+        detail: "GPU translation pipeline with optional voice cloning/lip sync.",
+      },
+      {
+        key: "timestamps",
+        label: "Timestamps",
+        status:
+          isGeminiConfigured() ||
+          configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY)
+            ? "ready"
+            : "needs-key",
+        detail: "Chapter marker generation from video/audio.",
+      },
+      {
+        key: "find-sabha",
+        label: "Find Sabha",
+        status: "ready",
+        detail: "Searches sabha/date/video clues, including screenshot workflows where configured.",
+      },
+      {
+        key: "share",
+        label: "Share",
+        status: isS3StorageEnabled() ? "ready" : "needs-s3",
+        detail: "Large file sharing through cloud-backed signed links.",
+      },
+      {
+        key: "google-auth",
+        label: "Google Sign-In",
+        status: enabled(process.env.GOOGLE_AUTH_ENABLED) ? "enabled" : "disabled",
+        detail: "Approved Gmail allow-list login.",
+      },
     ],
     auth: {
       googleClientConfigured: Boolean(process.env.GOOGLE_CLIENT_ID),
-      persistence: "runtime",
+      persistence: process.env.ACCESS_TABLE ? "dynamodb" : "runtime",
       approvedUserCount: access.users.length,
       approvedAdminCount: access.admins.length,
       approvedUsers: access.users,
@@ -278,6 +390,7 @@ router.get("/overview", async (_req, res) => {
   });
 });
 
+// ── GET /settings ─────────────────────────────────────────────────────────────
 router.get("/settings", (_req, res) => {
   const access = listApprovedAccess();
   res.json({
@@ -290,9 +403,13 @@ router.get("/settings", (_req, res) => {
     processing: {
       youtubeQueuePrimaryJobTypes: splitCsv(process.env.YOUTUBE_QUEUE_PRIMARY_JOB_TYPES),
       lambdaClipMaxDurationSeconds: Number(process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 480),
-      subtitlesLambdaMaxDurationSeconds: Number(process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600),
+      subtitlesLambdaMaxDurationSeconds: Number(
+        process.env.SUBTITLES_LAMBDA_MAX_DURATION_SECONDS ?? 600,
+      ),
       translatorBatchJobQueue: process.env.TRANSLATOR_BATCH_JOB_QUEUE ? "configured" : "missing",
-      translatorBatchJobDefinition: process.env.TRANSLATOR_BATCH_JOB_DEFINITION ? "configured" : "missing",
+      translatorBatchJobDefinition: process.env.TRANSLATOR_BATCH_JOB_DEFINITION
+        ? "configured"
+        : "missing",
     },
     storage: {
       s3BucketConfigured: Boolean(process.env.S3_BUCKET),
@@ -302,19 +419,24 @@ router.get("/settings", (_req, res) => {
   });
 });
 
+// ── POST /jobs/youtube/:jobId/cancel ──────────────────────────────────────────
 router.post("/jobs/youtube/:jobId/cancel", async (req, res) => {
   try {
     const result = await cancelYoutubeQueueJob(String(req.params.jobId ?? ""));
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to cancel job" });
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : "Failed to cancel job" });
   }
 });
 
+// ── POST /maintenance/s3-cleanup ──────────────────────────────────────────────
 router.post("/maintenance/s3-cleanup", async (req, res) => {
   try {
     const body = req.body as { namespace?: unknown; maxAgeHours?: unknown };
-    const namespace = typeof body.namespace === "string" ? body.namespace.trim() : "";
+    const namespace =
+      typeof body.namespace === "string" ? body.namespace.trim() : "";
     const maxAgeHours = Number(body.maxAgeHours);
     if (!namespace) {
       res.status(400).json({ error: "Missing namespace" });
@@ -344,45 +466,66 @@ router.post("/maintenance/s3-cleanup", async (req, res) => {
       error: err instanceof Error ? err.message : "Failed to clean S3 objects",
     });
     cleanupHistory.splice(10);
-    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to clean S3 objects" });
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : "Failed to clean S3 objects" });
   }
 });
 
-router.post("/approved-emails", (req, res) => {
+// ── POST /approved-emails ─────────────────────────────────────────────────────
+router.post("/approved-emails", async (req, res) => {
   try {
     const body = req.body as { email?: unknown; role?: unknown };
     const email = typeof body.email === "string" ? body.email : "";
     const role: AuthRole = body.role === "admin" ? "admin" : "user";
-    const result = setApprovedEmail(email, role);
+    const result = await setApprovedEmail(email, role);
     res.json({ ok: true, ...result, access: listApprovedAccess() });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to update approved email" });
+    res
+      .status(400)
+      .json({ error: err instanceof Error ? err.message : "Failed to update approved email" });
   }
 });
 
-router.delete("/approved-emails/:email", (req, res) => {
-  const result = removeApprovedEmail(String(req.params.email ?? ""));
-  res.json({ ok: true, ...result, access: listApprovedAccess() });
+// ── DELETE /approved-emails/:email ────────────────────────────────────────────
+router.delete("/approved-emails/:email", async (req, res) => {
+  try {
+    const result = await removeApprovedEmail(String(req.params.email ?? ""));
+    res.json({ ok: true, ...result, access: listApprovedAccess() });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : "Failed to remove approved email" });
+  }
 });
 
+// ── POST /features ────────────────────────────────────────────────────────────
 router.post("/features", (req, res) => {
   try {
     const body = req.body as { key?: unknown; enabled?: unknown };
     const key = String(body.key ?? "") as RuntimeFeatureKey;
-    if (!["translatorEnabled", "translatorLipSyncEnabled", "superAgentEnabled"].includes(key)) {
+    if (
+      !["translatorEnabled", "translatorLipSyncEnabled", "superAgentEnabled"].includes(key)
+    ) {
       res.status(400).json({ error: "Unsupported feature key" });
       return;
     }
     const enabledValue =
       typeof body.enabled === "boolean"
         ? body.enabled
-        : ["1", "true", "yes", "on"].includes(String(body.enabled ?? "").toLowerCase());
+        : ["1", "true", "yes", "on"].includes(
+            String(body.enabled ?? "").toLowerCase(),
+          );
     res.json({ ok: true, runtime: setRuntimeFeature(key, enabledValue) });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to update feature" });
+    res
+      .status(400)
+      .json({ error: err instanceof Error ? err.message : "Failed to update feature" });
   }
 });
 
+// ── POST /permissions/:feature ────────────────────────────────────────────────
+// Handles: translator | super-agent | lipsync
 router.post("/permissions/:feature", (req, res) => {
   try {
     const body = req.body as { email?: unknown; allowed?: unknown };
@@ -390,7 +533,9 @@ router.post("/permissions/:feature", (req, res) => {
     const allowed =
       typeof body.allowed === "boolean"
         ? body.allowed
-        : ["1", "true", "yes", "on"].includes(String(body.allowed ?? "true").toLowerCase());
+        : ["1", "true", "yes", "on"].includes(
+            String(body.allowed ?? "true").toLowerCase(),
+          );
     const feature = String(req.params.feature ?? "");
     const runtime =
       feature === "translator"
@@ -406,10 +551,14 @@ router.post("/permissions/:feature", (req, res) => {
     }
     res.json({ ok: true, runtime });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to update permission" });
+    res
+      .status(400)
+      .json({ error: err instanceof Error ? err.message : "Failed to update permission" });
   }
 });
 
+// ── DELETE /permissions/:feature/:email ───────────────────────────────────────
+// Handles: translator | super-agent | lipsync
 router.delete("/permissions/:feature/:email", (req, res) => {
   try {
     const feature = String(req.params.feature ?? "");
@@ -428,29 +577,9 @@ router.delete("/permissions/:feature/:email", (req, res) => {
     }
     res.json({ ok: true, runtime });
   } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to remove permission" });
-  }
-});
-
-router.post("/permissions/lipsync", (req, res) => {
-  try {
-    const body = req.body as { email?: unknown; allowed?: unknown };
-    const email = typeof body.email === "string" ? body.email : "";
-    const allowed =
-      typeof body.allowed === "boolean"
-        ? body.allowed
-        : ["1", "true", "yes", "on"].includes(String(body.allowed ?? "true").toLowerCase());
-    res.json({ ok: true, runtime: setTranslatorLipSyncEmail(email, allowed) });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to update lip sync permission" });
-  }
-});
-
-router.delete("/permissions/lipsync/:email", (req, res) => {
-  try {
-    res.json({ ok: true, runtime: setTranslatorLipSyncEmail(String(req.params.email ?? ""), false) });
-  } catch (err) {
-    res.status(400).json({ error: err instanceof Error ? err.message : "Failed to remove lip sync permission" });
+    res
+      .status(400)
+      .json({ error: err instanceof Error ? err.message : "Failed to remove permission" });
   }
 });
 

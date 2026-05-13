@@ -56,7 +56,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 
 .admin-panel {
-  width: min(1180px, calc(100vw - 128px));
+  width: min(1180px, calc(100vw - 72px));
   height: 100%;
   overflow: auto;
   padding: 40px 24px 64px;
@@ -106,6 +106,17 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   color: rgba(255, 255, 255, 0.86);
   font-size: 13px;
   font-weight: 700;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.admin-refresh:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.admin-refresh:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .admin-alert {
@@ -125,6 +136,12 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 16px;
+}
+
+@media (max-width: 1024px) and (min-width: 901px) {
+  .admin-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .admin-tabs {
@@ -151,6 +168,13 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   color: rgba(255,255,255,0.55);
   font-size: 13px;
   font-weight: 800;
+  cursor: pointer;
+  transition: color 0.14s ease, background 0.14s ease;
+}
+
+.admin-tabs button:hover {
+  color: rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.05);
 }
 
 .admin-tabs button.is-active {
@@ -185,18 +209,12 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   display: none;
 }
 
-.admin-grid--overview > .admin-section:nth-of-type(2),
-.admin-grid--overview > .admin-section:nth-of-type(4),
-.admin-grid--overview > .admin-section:nth-of-type(11),
-.admin-grid--jobs > .admin-section:nth-of-type(1),
-.admin-grid--jobs > .admin-section:nth-of-type(3),
-.admin-grid--access > .admin-section:nth-of-type(5),
-.admin-grid--access > .admin-section:nth-of-type(9),
-.admin-grid--access > .admin-section:nth-of-type(10),
-.admin-grid--storage > .admin-section:nth-of-type(6),
-.admin-grid--storage > .admin-section:nth-of-type(7),
-.admin-grid--tools > .admin-section:nth-of-type(8),
-.admin-grid--tools > .admin-section:nth-of-type(12) {
+/* Show sections for each tab using data-section-tab attribute */
+.admin-grid--overview > [data-section-tab="overview"],
+.admin-grid--jobs > [data-section-tab="jobs"],
+.admin-grid--access > [data-section-tab="access"],
+.admin-grid--storage > [data-section-tab="storage"],
+.admin-grid--tools > [data-section-tab="tools"] {
   display: block;
 }
 
@@ -419,9 +437,30 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   background: rgba(255, 255, 255, 0.08);
   font-size: 0.78rem;
   font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.admin-toggle-row button.admin-toggle-on {
+.admin-toggle-btn {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  flex-shrink: 0;
+}
+
+.admin-toggle-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.admin-toggle-row button.admin-toggle-on,
+.admin-toggle-btn.admin-toggle-on {
   border-color: rgba(74, 222, 128, 0.45);
   color: #86efac;
   background: rgba(34, 197, 94, 0.14);
@@ -439,6 +478,11 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   grid-template-columns: minmax(0, 1fr) 96px 96px;
   gap: 8px;
   margin-top: 12px;
+}
+
+/* 2-column variant: input + button only (no role select) */
+.admin-email-form--2col {
+  grid-template-columns: minmax(0, 1fr) 96px;
 }
 
 .admin-email-form input,
@@ -461,6 +505,12 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   color: #bbf7d0;
   font-size: 13px;
   font-weight: 800;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.admin-email-form button:hover:not(:disabled) {
+  background: rgba(34, 197, 94, 0.22);
 }
 
 .admin-email-list span {
@@ -496,6 +546,48 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.58);
   font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.admin-email-list button:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fca5a5;
+}
+
+.admin-email-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.admin-pill-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.58);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.admin-pill-remove:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.2);
+  color: #fca5a5;
+}
+
+.admin-pill-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.admin-email-pill--removing {
+  opacity: 0.5;
 }
 
 .admin-action-row {
@@ -531,6 +623,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   color: #fde68a;
   font-size: 13px;
   font-weight: 800;
+  cursor: pointer;
 }
 
 .admin-action-row button:disabled,
@@ -679,6 +772,93 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   font-size: 13px;
 }
 
+/* ── Inline result messages (per-section) ───────────────────────────────── */
+.admin-result-msg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.admin-result-msg--ok {
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  background: rgba(34, 197, 94, 0.10);
+  color: #bbf7d0;
+}
+
+.admin-result-msg--error {
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: rgba(127, 29, 29, 0.20);
+  color: #fecaca;
+}
+
+/* ── Permission groups (translator / lipsync / super-agent) ─────────────── */
+.admin-perm-group {
+  margin-bottom: 20px;
+}
+
+.admin-perm-group:last-of-type {
+  margin-bottom: 0;
+}
+
+.admin-perm-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+  margin-bottom: 8px;
+}
+
+/* ── Loading skeleton ───────────────────────────────────────────────────── */
+.admin-skeleton-header {
+  height: 80px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  margin-bottom: 20px;
+  animation: admin-pulse 1.6s ease-in-out infinite;
+  width: min(1180px, calc(100vw - 72px));
+}
+
+.admin-skeleton-tabs {
+  height: 50px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  margin-bottom: 16px;
+  animation: admin-pulse 1.6s ease-in-out infinite 0.1s;
+  width: min(1180px, calc(100vw - 72px));
+}
+
+.admin-skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  width: min(1180px, calc(100vw - 72px));
+}
+
+.admin-skeleton-card {
+  height: 160px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  animation: admin-pulse 1.6s ease-in-out infinite 0.2s;
+}
+
+@keyframes admin-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* ── Warn alert variant ─────────────────────────────────────────────────── */
+.admin-alert--warn {
+  border-color: rgba(245, 158, 11, 0.38);
+  background: rgba(120, 53, 15, 0.18);
+  color: #fde68a;
+}
+
 .admin-cleanup-history {
   display: grid;
   gap: 8px;
@@ -718,6 +898,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   .admin-grid,
   .admin-stats,
   .admin-email-form,
+  .admin-email-form--2col,
   .admin-action-row,
   .admin-tool-grid,
   .admin-capability-list,
@@ -729,6 +910,10 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   .admin-section,
   .admin-section--wide {
     grid-column: 1;
+  }
+
+  .admin-skeleton-grid {
+    grid-template-columns: 1fr;
   }
 }
 
