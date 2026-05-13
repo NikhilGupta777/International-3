@@ -387,6 +387,7 @@ export const BestClips = forwardRef(function BestClips(
 
   const finishAnalysisWithError = useCallback(
     (message: string) => {
+      if (!analysisJobIdRef.current && !analysisStartRef.current) return; // already finished
       clearAnalysisStatusPolling();
       analysisJobIdRef.current = null;
       analysisStartRef.current = null;
@@ -398,6 +399,7 @@ export const BestClips = forwardRef(function BestClips(
 
   const finishAnalysisWithSuccess = useCallback(
     (msg: { clips?: BestClip[]; hasTranscript?: boolean; videoDuration?: number }) => {
+      if (!analysisJobIdRef.current && !analysisStartRef.current) return; // already finished
       const resultClips: BestClip[] = msg.clips ?? [];
       setClips(resultClips);
       setHasTranscript(msg.hasTranscript ?? false);
@@ -597,88 +599,6 @@ export const BestClips = forwardRef(function BestClips(
     }
   }
 
-  const handleDownloadClip = async (clip: BestClip) => {
-    const key = clipKey(clip);
-    if (downloadStates[key]?.status === "downloading") return;
-
-    setDownload(key, {
-      status: "downloading",
-      percent: 0,
-      message: "Starting…",
-      startedAt: Date.now(),
-    });
-
-    try {
-      const startRes = await fetch(`${BASE}/api/youtube/clip-cut`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: url.trim(),
-          startTime: clip.startSec,
-          endTime: clip.endSec,
-          quality: "best",
-        }),
-      });
-      const startData = await startRes.json();
-      if (!startRes.ok)
-        throw new Error(startData.error ?? "Failed to start download");
-
-      const { jobId } = startData;
-
-      for (let i = 0; i < 150; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const prog = await fetch(`${BASE}/api/youtube/progress/${jobId}`).then(
-          (r) => r.json(),
-        );
-
-        if (prog.status === "done") {
-          setDownload(key, {
-            status: "done",
-            percent: 100,
-            eta: null,
-            speed: null,
-          });
-          const link = document.createElement("a");
-          link.href = `${BASE}/api/youtube/file/${jobId}`;
-          link.download = `${clip.title}.mp4`;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          toast({
-            title: "Clip downloaded!",
-            description: `"${clip.title}" saved to your downloads.`,
-          });
-          return;
-        }
-        if (prog.status === "error")
-          throw new Error(prog.message ?? "Download failed");
-
-        const pct = prog.percent ?? 0;
-        setDownload(key, {
-          status: "downloading",
-          percent: pct,
-          eta: prog.eta ?? null,
-          speed: prog.speed ?? null,
-          message:
-            prog.status === "merging"
-              ? "Merging…"
-              : pct > 0
-                ? `${pct}%`
-                : "Preparing…",
-        });
-      }
-      throw new Error("Download timed out");
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Something went wrong";
-      setDownload(key, { status: "error", percent: 0, message: msg });
-      toast({
-        title: "Download failed",
-        description: msg,
-        variant: "destructive",
-      });
-    }
-  };
-
   const startClipDownload = async (clip: BestClip) => {
     const key = clipKey(clip);
     if (downloadStates[key]?.status === "downloading") return;
@@ -809,6 +729,8 @@ export const BestClips = forwardRef(function BestClips(
     const jobId = downloadStates[key]?.jobId;
     if (!jobId) return;
 
+    closeDownloadStream(key); // Stop polling immediately on cancel
+
     try {
       const res = await fetch(`${BASE}/api/youtube/cancel/${jobId}`, {
         method: "POST",
@@ -820,12 +742,13 @@ export const BestClips = forwardRef(function BestClips(
         throw new Error(data.error ?? "Failed to cancel download");
       }
       setDownload(key, {
-        status: "downloading",
-        message: "Cancelling...",
+        status: "cancelled",
+        message: "Cancelled",
+        percent: 0,
       });
       toast({
-        title: "Cancelling download",
-        description: `"${clip.title}" cancel request sent.`,
+        title: "Download cancelled",
+        description: `"${clip.title}" has been cancelled.`,
       });
     } catch (err) {
       toast({

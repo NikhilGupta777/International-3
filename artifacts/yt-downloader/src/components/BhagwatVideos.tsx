@@ -85,7 +85,7 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
     setError("");
     const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
     try {
-      const authUrl = `${BASE}/api/bhagwat/auth?password=${encodeURIComponent(pw)}`;
+      const authUrl = `${BASE}/api/bhagwat/auth`;
       const res = await fetch(authUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

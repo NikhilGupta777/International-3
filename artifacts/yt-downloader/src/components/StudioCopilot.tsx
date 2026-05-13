@@ -52,6 +52,7 @@ type SseEvent =
   | { type: "thinking"; runId?: string; stage?: string; iteration?: number; total?: number }
   | { type: "heartbeat"; runId?: string; ts?: number }
   | { type: "text"; content: string; runId?: string }
+  | { type: "text_delta"; content: string; runId?: string }
   | { type: "plan"; runId?: string; iteration?: number; steps: Array<{ tool: string; args: Record<string, any> }> }
   | { type: "tool_start"; runId?: string; toolId?: string; name: string; args: Record<string, any>; ts?: number }
   | { type: "tool_log"; runId?: string; toolId?: string; name: string; message: string; level?: "info" | "error" | "warn" }
@@ -436,6 +437,8 @@ export function StudioCopilot({
     url?: string;    // S3 URL for video/audio/docs
     previewUrl?: string; // object URL for image preview chip
   }>>([]);
+  const pendingAttachmentsRef = useRef(pendingAttachments);
+  pendingAttachmentsRef.current = pendingAttachments;
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -601,7 +604,7 @@ export function StudioCopilot({
   }, [updateSession]);
 
   const sendMessage = useCallback(async (text: string, attachmentsArg?: Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>) => {
-    const snapshotAttachments = attachmentsArg ?? pendingAttachments;
+    const snapshotAttachments = attachmentsArg ?? pendingAttachmentsRef.current;
     if ((!text.trim() && snapshotAttachments.length === 0) || streaming) return;
     const sessionId = ensureSession();
     setInput("");
@@ -715,7 +718,7 @@ export function StudioCopilot({
         if (evt.iteration !== undefined) setAgentIteration(evt.iteration);
         return;
       }
-      if (evt.type === "text") { setThinking(false); appendText(evt.content); return; }
+      if (evt.type === "text" || evt.type === "text_delta") { setThinking(false); appendText(evt.content); return; }
       if (evt.type === "plan") {
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "plan", steps: evt.steps, iteration: evt.iteration }] }));
         return;
@@ -904,7 +907,7 @@ export function StudioCopilot({
       setThinking(false);
       setAgentStage("idle");
     }
-  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg, pendingAttachments]);
+  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg]);
 
   // Consume incoming pendingPrompt (sent from home screen)
   const consumedPromptRef = useRef<string | null>(null);
@@ -922,6 +925,14 @@ export function StudioCopilot({
     abortRef.current?.abort();
     setStreaming(false); setThinking(false); setAgentStage("idle"); setAgentIteration(0);
   };
+
+  // Cleanup: abort any in-flight stream and stop speech recognition on unmount
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      recognitionRef.current?.stop();
+    };
+  }, []);
 
   const toggleVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;

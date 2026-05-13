@@ -441,6 +441,13 @@ export function ClipCutter() {
     [applyProgressUpdate, markJobLost],
   );
 
+  // Track active job IDs for the SSE effect — only open/close streams when jobs are added/removed
+  const activeJobIds = jobs
+    .filter((j) => j.status !== "done" && j.status !== "error" && j.status !== "cancelled")
+    .map((j) => j.jobId)
+    .sort()
+    .join(",");
+
   useEffect(() => {
     if (typeof EventSource === "undefined") return;
 
@@ -502,7 +509,8 @@ export function ClipCutter() {
         );
       };
     }
-  }, [jobs, applyProgressUpdate, closeJobStream, refreshJobOnce]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobIds, applyProgressUpdate, closeJobStream, refreshJobOnce]);
 
   useEffect(() => {
     return () => {
@@ -655,13 +663,14 @@ export function ClipCutter() {
     const ready = jobs.find((j) => j.status === "done" && !j.downloaded);
     if (!ready) return;
 
-    void downloadClip(ready).finally(() => {
-      setJobs((prev) =>
-        prev.map((j) =>
-          j.jobId === ready.jobId ? { ...j, downloaded: true } : j,
-        ),
-      );
-    });
+    // Mark as downloaded immediately to prevent duplicate triggers from re-renders
+    setJobs((prev) =>
+      prev.map((j) =>
+        j.jobId === ready.jobId ? { ...j, downloaded: true } : j,
+      ),
+    );
+
+    void downloadClip(ready);
   }, [downloadClip, jobs]);
 
   const downloadHistoryClip = useCallback((entry: ClipHistoryEntry) => {

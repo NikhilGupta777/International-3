@@ -135,6 +135,7 @@ export function Timestamps() {
   };
 
   const finishWithResult = (data: Partial<JobResult>) => {
+    if (statusRef.current !== "running") return; // guard against double-finish
     closeSSE();
     closePolling();
     statusRef.current = "done";
@@ -153,6 +154,7 @@ export function Timestamps() {
   };
 
   const failWithMessage = (message: string) => {
+    if (statusRef.current !== "running") return; // guard against double-finish
     closeSSE();
     closePolling();
     statusRef.current = "error";
@@ -234,6 +236,7 @@ export function Timestamps() {
       jobId = data.jobId;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start";
+      statusRef.current = "error";
       setStatus("error");
       setError(msg);
       toast({ title: "Error", description: msg, variant: "destructive" });
