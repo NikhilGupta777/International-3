@@ -1304,13 +1304,14 @@ async function executeTool(
       sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_subtitles", status: "processing", message: "Starting subtitle generation...", jobId: subtitleJobId, url: args.url } as any);
 
       const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${subtitleJobId}`, subtitleJobId, internalHeaders, isConnected, toolId, runId);
-      const srtUrl = `/api/subtitles/status/${subtitleJobId}/download?format=srt`;
+      const srtUrl = `/api/subtitles/status/${subtitleJobId}`;
       return {
         result: { jobId: subtitleJobId, srtFilename: final.srtFilename, url: args.url, language: args.language, translateTo: args.translateTo },
         artifact: {
           artifactType: "download",
           label: `Subtitles ready${args.translateTo ? ` (${args.translateTo})` : ""}: ${final.srtFilename ?? "subtitles.srt"}`,
           downloadUrl: srtUrl,
+          tab: "subtitles",
           jobId: subtitleJobId,
         },
       };

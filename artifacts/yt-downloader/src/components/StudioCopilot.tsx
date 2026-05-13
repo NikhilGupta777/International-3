@@ -52,6 +52,7 @@ type SseEvent =
   | { type: "thinking"; runId?: string; stage?: string; iteration?: number; total?: number }
   | { type: "heartbeat"; runId?: string; ts?: number }
   | { type: "text"; content: string; runId?: string }
+  | { type: "text_delta"; content: string; runId?: string }
   | { type: "plan"; runId?: string; iteration?: number; steps: Array<{ tool: string; args: Record<string, any> }> }
   | { type: "tool_start"; runId?: string; toolId?: string; name: string; args: Record<string, any>; ts?: number }
   | { type: "tool_log"; runId?: string; toolId?: string; name: string; message: string; level?: "info" | "error" | "warn" }
@@ -717,7 +718,7 @@ export function StudioCopilot({
         if (evt.iteration !== undefined) setAgentIteration(evt.iteration);
         return;
       }
-      if (evt.type === "text") { setThinking(false); appendText(evt.content); return; }
+      if (evt.type === "text" || evt.type === "text_delta") { setThinking(false); appendText(evt.content); return; }
       if (evt.type === "plan") {
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "plan", steps: evt.steps, iteration: evt.iteration }] }));
         return;

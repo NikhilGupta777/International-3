@@ -729,6 +729,8 @@ export const BestClips = forwardRef(function BestClips(
     const jobId = downloadStates[key]?.jobId;
     if (!jobId) return;
 
+    closeDownloadStream(key); // Stop polling immediately on cancel
+
     try {
       const res = await fetch(`${BASE}/api/youtube/cancel/${jobId}`, {
         method: "POST",
@@ -740,12 +742,13 @@ export const BestClips = forwardRef(function BestClips(
         throw new Error(data.error ?? "Failed to cancel download");
       }
       setDownload(key, {
-        status: "downloading",
-        message: "Cancelling...",
+        status: "cancelled",
+        message: "Cancelled",
+        percent: 0,
       });
       toast({
-        title: "Cancelling download",
-        description: `"${clip.title}" cancel request sent.`,
+        title: "Download cancelled",
+        description: `"${clip.title}" has been cancelled.`,
       });
     } catch (err) {
       toast({

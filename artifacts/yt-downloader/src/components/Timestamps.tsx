@@ -236,6 +236,7 @@ export function Timestamps() {
       jobId = data.jobId;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start";
+      statusRef.current = "error";
       setStatus("error");
       setError(msg);
       toast({ title: "Error", description: msg, variant: "destructive" });
