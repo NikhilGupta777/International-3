@@ -12,15 +12,23 @@ export type AuthRole = "admin" | "user";
 const approvedUsers = parseCsvSet(process.env.APPROVED_USER_EMAILS);
 const approvedAdmins = parseCsvSet(process.env.APPROVED_ADMIN_EMAILS);
 
-// ── DynamoDB persistence (optional — gracefully disabled when table is absent) ─
-const ddbClient =
-  process.env.ACCESS_TABLE
-    ? new DynamoDBClient({
-        region: process.env.AWS_DEFAULT_REGION ?? "us-east-1",
-      })
-    : null;
+function configured(value: string | undefined): string {
+  return value?.trim() ?? "";
+}
 
-const ACCESS_TABLE = process.env.ACCESS_TABLE ?? "";
+const ACCESS_TABLE = configured(process.env.ACCESS_TABLE);
+const DDB_REGION =
+  configured(process.env.YOUTUBE_QUEUE_REGION) ||
+  configured(process.env.AWS_DEFAULT_REGION) ||
+  "us-east-1";
+
+// ── DynamoDB persistence (optional — gracefully disabled when table is absent) ─
+const ddbClient = ACCESS_TABLE
+  ? new DynamoDBClient({
+      region: DDB_REGION,
+    })
+  : null;
+
 // Single-row document — PK: "allowlist", SK: "v1"
 const ALLOWLIST_PK = "allowlist";
 const ALLOWLIST_SK = "v1";
