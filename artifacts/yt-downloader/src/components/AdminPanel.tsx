@@ -159,7 +159,7 @@ function toneForTool(status: string): Tone {
 }
 
 function formatRelativeMs(value: number | null | undefined): string {
-  if (!value || value < 0) return "-";
+  if (value == null || value < 0) return "-";
   const seconds = Math.round(value / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
