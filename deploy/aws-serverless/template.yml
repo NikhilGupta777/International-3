@@ -36,6 +36,9 @@ Parameters:
   ApprovedAdminEmails:
     Type: String
     Default: ""
+  AccessTable:
+    Type: String
+    Default: ""
   AdminPanelEnabled:
     Type: String
     Default: "false"
@@ -237,6 +240,7 @@ Parameters:
     Default: mailto:ops@videomaking.in
 
 Conditions:
+  UseAccessTable: !Not [!Equals [!Ref AccessTable, ""]]
   UseCustomSiteBucket: !Not [!Equals [!Ref SiteBucketName, ""]]
   UseCustomDomain: !And
     - !Not [!Equals [!Ref SiteDomainName, ""]]
@@ -323,7 +327,12 @@ Resources:
                   - dynamodb:Scan
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
-                Resource: !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${YoutubeQueueJobTable}"
+                Resource:
+                  - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${YoutubeQueueJobTable}"
+                  - !If
+                    - UseAccessTable
+                    - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${AccessTable}"
+                    - !Ref AWS::NoValue
               - Effect: Allow
                 Action:
                   - batch:SubmitJob
@@ -384,6 +393,7 @@ Resources:
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
           APPROVED_USER_EMAILS: !Ref ApprovedUserEmails
           APPROVED_ADMIN_EMAILS: !Ref ApprovedAdminEmails
+          ACCESS_TABLE: !Ref AccessTable
           ADMIN_PANEL_ENABLED: !Ref AdminPanelEnabled
           BHAGWAT_PASSWORD: !Ref BhagwatPassword
           GEMINI_API_KEY: !Ref GeminiApiKey

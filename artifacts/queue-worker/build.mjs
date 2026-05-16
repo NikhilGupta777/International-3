@@ -7,10 +7,15 @@ await build({
   platform: "node",
   target: "node22",
   format: "esm",
+  external: ["ffmpeg-static"],
   sourcemap: true,
   banner: {
     js: `import { createRequire as __queueWorkerCreateRequire } from "node:module";
-const require = __queueWorkerCreateRequire(import.meta.url);`,
+import { fileURLToPath as __queueWorkerFileURLToPath } from "node:url";
+import { dirname as __queueWorkerDirname } from "node:path";
+const require = __queueWorkerCreateRequire(import.meta.url);
+const __filename = __queueWorkerFileURLToPath(import.meta.url);
+const __dirname = __queueWorkerDirname(__filename);`,
   },
   // Bundle runtime deps into worker output because this worker dynamically
   // imports api-server route modules. Keeping deps bundled avoids runtime

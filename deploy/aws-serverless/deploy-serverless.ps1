@@ -195,6 +195,7 @@ $parameterOverrides = @(
   "GoogleClientId=$(Get-OptionalEnv $envMap 'GOOGLE_CLIENT_ID')"
   "ApprovedUserEmails=$(Get-OptionalEnv $envMap 'APPROVED_USER_EMAILS')"
   "ApprovedAdminEmails=$(Get-OptionalEnv $envMap 'APPROVED_ADMIN_EMAILS')"
+  "AccessTable=$(Get-OptionalEnv $envMap 'ACCESS_TABLE' ($Prefix + '-access'))"
   "AdminPanelEnabled=$(Get-OptionalEnv $envMap 'ADMIN_PANEL_ENABLED' 'false')"
   "BhagwatPassword=$bhagwatPassword"
   "GeminiApiKey=$(Get-OptionalEnv $envMap 'GEMINI_API_KEY')"

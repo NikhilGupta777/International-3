@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import path from "path";
+import { fileURLToPath } from "url";
 import pino from "pino";
 import {
   DynamoDBClient,
@@ -29,9 +30,10 @@ const TURN_DELAY_MS = Math.max(0, Number.parseInt(process.env.NOTEBOOKLM_TURN_DE
 const TIMEOUT_MS = Math.max(60_000, Number.parseInt(process.env.NOTEBOOKLM_TIMEOUT_MS ?? "480000", 10) || 480_000);
 const LOCK_TTL_MS = Math.max(TIMEOUT_MS + 60_000, Number.parseInt(process.env.NOTEBOOKLM_LOCK_TTL_MS ?? "540000", 10) || 540_000);
 const LOCAL_QUEUE_LIMIT = Math.max(1, Number.parseInt(process.env.NOTEBOOKLM_LOCAL_QUEUE_LIMIT ?? "12", 10) || 12);
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH =
   process.env.NOTEBOOKLM_HELPER_PATH ??
-  path.resolve(__dirname, "../scripts/notebooklm_ask.py");
+  path.resolve(MODULE_DIR, "../scripts/notebooklm_ask.py");
 
 const ddb = LOCK_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 const s3 = AUTH_S3_KEY && S3_BUCKET ? new S3Client({ region: S3_REGION }) : null;

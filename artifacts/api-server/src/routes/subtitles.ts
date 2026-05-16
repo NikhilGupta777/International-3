@@ -83,6 +83,7 @@ function shouldQueueSubtitleUrlJob(durationSecs: number | null): boolean {
   if (!Number.isFinite(SUBTITLES_LAMBDA_MAX_DURATION_SECONDS) || SUBTITLES_LAMBDA_MAX_DURATION_SECONDS <= 0) {
     return true;
   }
+  if (durationSecs == null) return true;
   return durationSecs != null && durationSecs > SUBTITLES_LAMBDA_MAX_DURATION_SECONDS;
 }
 
@@ -151,6 +152,23 @@ const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
 // ── AssemblyAI — used for audio > 10 minutes ─────────────────────────────────
 const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
 const ASSEMBLYAI_THRESHOLD_SECS = 600; // 10 minutes
+const SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS = Math.max(
+  60_000,
+  Number.parseInt(
+    process.env.SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS ??
+      process.env.YTDLP_COMMAND_TIMEOUT_MS ??
+      "600000",
+    10,
+  ) || 600_000,
+);
+const SUBTITLES_YTDLP_PROBE_TIMEOUT_MS = Math.max(
+  15_000,
+  Number.parseInt(process.env.SUBTITLES_YTDLP_PROBE_TIMEOUT_MS ?? "45000", 10) || 45_000,
+);
+const SUBTITLES_MAX_YTDLP_ATTEMPTS = Math.max(
+  2,
+  Number.parseInt(process.env.SUBTITLES_MAX_YTDLP_ATTEMPTS ?? "5", 10) || 5,
+);
 
 // Base args applied to every yt-dlp call (matches youtube.ts for consistency).
 const YTDLP_BASE_ARGS: string[] = [
@@ -383,7 +401,9 @@ const SRT_YTDLP_FALLBACKS: string[][] = getSrtYoutubeFallbacks();
  * Supports cancellation via job.cancelled and retries with fallback clients on YouTube bot-blocks.
  */
 async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Promise<void> {
-  function spawnOnce(extraArgs: string[]): Promise<void> {
+  const downloadDeadline = Date.now() + SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS;
+
+  function spawnOnce(extraArgs: string[], timeoutMs: number): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const command = YTDLP_BIN || PYTHON_BIN;
       const commandArgs = YTDLP_BIN
@@ -391,20 +411,45 @@ async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Prom
         : ["-m", "yt_dlp", ...YTDLP_BASE_ARGS, ...extraArgs, ...args];
       const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
       let stderr = "";
+      let settled = false;
+      let timedOut = false;
+      let forceKill: NodeJS.Timeout | null = null;
+      const hardTimeout = setTimeout(() => {
+        timedOut = true;
+        stderr += `\nyt-dlp subtitles command timed out after ${Math.round(timeoutMs / 1000)} seconds`;
+        try { proc.kill("SIGTERM"); } catch {}
+        forceKill = setTimeout(() => {
+          try { proc.kill("SIGKILL"); } catch {}
+        }, 5_000);
+        forceKill.unref?.();
+      }, timeoutMs);
+      hardTimeout.unref?.();
+      const cleanup = () => {
+        clearInterval(cancelPoll);
+        clearTimeout(hardTimeout);
+        if (forceKill) clearTimeout(forceKill);
+      };
       proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
       const cancelPoll = setInterval(() => {
         if (job.cancelled) {
-          clearInterval(cancelPoll);
           try { proc.kill("SIGTERM"); } catch {}
         }
       }, 500);
       proc.on("close", (code) => {
-        clearInterval(cancelPoll);
+        if (settled) return;
+        settled = true;
+        cleanup();
         if (job.cancelled) resolve();
         else if (code === 0) resolve();
+        else if (timedOut) reject(new Error(stderr.slice(-500)));
         else reject(new Error(stderr.slice(-400) || `yt-dlp exited ${code}`));
       });
-      proc.on("error", (err) => { clearInterval(cancelPoll); reject(err); });
+      proc.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(err);
+      });
     });
   }
 
@@ -418,15 +463,27 @@ async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Prom
 
   let lastErr: Error | null = null;
   const attempted = new Set<string>();
+  let attemptsUsed = 0;
+
+  async function trySpawn(extra: string[]): Promise<boolean> {
+    if (job.cancelled) return true;
+    if (attemptsUsed >= SUBTITLES_MAX_YTDLP_ATTEMPTS) return false;
+    const remainingMs = downloadDeadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(`yt-dlp subtitles download timed out after ${Math.round(SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS / 1000)} seconds`);
+    }
+    const key = extra.join("\x01");
+    if (attempted.has(key)) return false;
+    attempted.add(key);
+    attemptsUsed += 1;
+    await spawnOnce(extra, Math.max(1_000, remainingMs));
+    return true;
+  }
 
   for (const extra of attemptPlans) {
     if (job.cancelled) return;
-    const key = extra.join("\x01");
-    if (attempted.has(key)) continue;
-    attempted.add(key);
     try {
-      await spawnOnce(extra);
-      return;
+      if (await trySpawn(extra)) return;
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error("yt-dlp failed");
       if (!isSrtYtBlocked(lastErr.message)) throw lastErr;
@@ -437,19 +494,15 @@ async function runYtDlpAudio(args: string[], job: { cancelled?: boolean }): Prom
     if (job.cancelled) return;
     const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
     for (const extra of plans) {
-      const key = extra.join("\x01");
-      if (attempted.has(key)) continue;
-      attempted.add(key);
       try {
-        await spawnOnce(extra);
-        return;
+        if (await trySpawn(extra)) return;
       } catch (err) {
         lastErr = err instanceof Error ? err : new Error("yt-dlp fallback failed");
       }
     }
   }
 
-  throw lastErr ?? new Error("yt-dlp: all clients failed");
+  throw lastErr ?? new Error(`yt-dlp: all clients failed after ${attemptsUsed} attempts`);
 }
 
 // ── In-memory job store ──────────────────────────────────────────────────────
@@ -469,10 +522,25 @@ async function probeUrlDurationSecs(url: string): Promise<number | null> {
       const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
       let stdout = "";
       let stderr = "";
+      let settled = false;
+      let timedOut = false;
+      const hardTimeout = setTimeout(() => {
+        timedOut = true;
+        stderr += `\nyt-dlp duration probe timed out after ${Math.round(SUBTITLES_YTDLP_PROBE_TIMEOUT_MS / 1000)} seconds`;
+        try { proc.kill("SIGTERM"); } catch {}
+      }, SUBTITLES_YTDLP_PROBE_TIMEOUT_MS);
+      hardTimeout.unref?.();
       proc.stdout?.on("data", (d: Buffer) => { stdout += d.toString(); });
       proc.stderr?.on("data", (d: Buffer) => { stderr += d.toString(); });
       proc.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(hardTimeout);
         if (code !== 0) {
+          if (timedOut) {
+            reject(new Error(stderr.slice(-500)));
+            return;
+          }
           reject(new Error(stderr.slice(-400) || `yt-dlp probe exited ${code}`));
           return;
         }
@@ -484,7 +552,12 @@ async function probeUrlDurationSecs(url: string): Promise<number | null> {
           resolve(null);
         }
       });
-      proc.on("error", reject);
+      proc.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(hardTimeout);
+        reject(err);
+      });
     });
   }
 
