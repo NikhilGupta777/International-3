@@ -7,7 +7,6 @@ await build({
   platform: "node",
   target: "node22",
   format: "esm",
-  external: ["ffmpeg-static"],
   sourcemap: true,
   banner: {
     js: `import { createRequire as __queueWorkerCreateRequire } from "node:module";
