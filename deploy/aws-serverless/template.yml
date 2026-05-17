@@ -202,7 +202,7 @@ Parameters:
     Default: "false"
   SubtitlesLambdaMaxDurationSeconds:
     Type: Number
-    Default: 600
+    Default: 780
   NotebookLmEnabled:
     Type: String
     Default: "false"
