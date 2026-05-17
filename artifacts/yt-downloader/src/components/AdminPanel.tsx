@@ -139,6 +139,20 @@ type AdminOverview = {
     recent: AdminJob[];
     analytics: Record<string, { total: number; active: number; completed: number; failed: number }>;
   };
+  userMessages?: {
+    emailSubmissionCount: number;
+    emailSubmissions: Array<{
+      email: string;
+      name: string;
+      loginMethod: "password" | "google" | "unknown";
+      loginEmail: string;
+      role: "admin" | "user";
+      source: "settings-email-notice";
+      userAgent: string;
+      submittedAt: number;
+      updatedAt: number;
+    }>;
+  };
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -363,7 +377,7 @@ export function AdminPanel() {
   const base = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   // ── Tab state ──────────────────────────────────────────────────────────────
-  const [tab, setTab] = useState<"overview" | "jobs" | "access" | "storage" | "tools">("overview");
+  const [tab, setTab] = useState<"overview" | "jobs" | "access" | "messages" | "storage" | "tools">("overview");
 
   // ── Data state ─────────────────────────────────────────────────────────────
   const [overview, setOverview] = useState<AdminOverview | null>(null);
@@ -678,14 +692,14 @@ export function AdminPanel() {
 
       {/* Tabs */}
       <nav className="admin-tabs" aria-label="Admin sections">
-        {(["overview", "jobs", "access", "storage", "tools"] as const).map((key) => (
+        {(["overview", "jobs", "access", "messages", "storage", "tools"] as const).map((key) => (
           <button
             key={key}
             type="button"
             className={tab === key ? "is-active" : ""}
             onClick={() => setTab(key)}
           >
-            {{ overview: "Overview", jobs: "Live Jobs", access: "Access", storage: "Storage", tools: "Tools" }[key]}
+            {{ overview: "Overview", jobs: "Live Jobs", access: "Access", messages: "User Messages", storage: "Storage", tools: "Tools" }[key]}
           </button>
         ))}
       </nav>
@@ -895,6 +909,38 @@ export function AdminPanel() {
         </Section>
 
         {/* ── STORAGE tab sections ──────────────────────────────────────── */}
+        <Section icon={<Users className="w-4 h-4" />} title="Submitted future-login emails" wide tab="messages">
+          <div className="admin-window-grid">
+            <div className="admin-window-card">
+              <strong>Total</strong>
+              <span>{overview?.userMessages?.emailSubmissionCount ?? 0} emails</span>
+              <em>Collected from the settings notice</em>
+            </div>
+          </div>
+          <div className="admin-email-submission-table">
+            {(overview?.userMessages?.emailSubmissions ?? []).length === 0 ? (
+              <div className="admin-empty">No submitted emails yet</div>
+            ) : (
+              overview?.userMessages?.emailSubmissions.map((item) => (
+                <div key={item.email} className="admin-email-submission-row">
+                  <div>
+                    <strong>{item.email}</strong>
+                    <span>{item.name || "No name submitted"}</span>
+                  </div>
+                  <div>
+                    <strong>{item.loginMethod}</strong>
+                    <span>{item.loginEmail || "password login"}</span>
+                  </div>
+                  <div>
+                    <strong>{item.submittedAt ? new Date(item.submittedAt).toLocaleString() : "-"}</strong>
+                    <span>{item.role}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </Section>
+
         <Section icon={<Cloud className="w-4 h-4" />} title="Storage and cleanup" wide tab="storage">
           <div className="admin-stats">
             <Stat

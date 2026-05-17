@@ -204,6 +204,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-grid--overview > .admin-section,
 .admin-grid--jobs > .admin-section,
 .admin-grid--access > .admin-section,
+.admin-grid--messages > .admin-section,
 .admin-grid--storage > .admin-section,
 .admin-grid--tools > .admin-section {
   display: none;
@@ -213,6 +214,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-grid--overview > [data-section-tab="overview"],
 .admin-grid--jobs > [data-section-tab="jobs"],
 .admin-grid--access > [data-section-tab="access"],
+.admin-grid--messages > [data-section-tab="messages"],
 .admin-grid--storage > [data-section-tab="storage"],
 .admin-grid--tools > [data-section-tab="tools"] {
   display: block;
@@ -4292,6 +4294,191 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .settings-toggle-row input:checked::after {
   transform: translateX(18px);
 }
+.future-email-top-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(251,191,36,0.22), transparent 34%),
+    linear-gradient(135deg, rgba(45,212,191,0.10), rgba(24,24,27,0.9));
+  box-shadow: 0 18px 50px rgba(0,0,0,0.22);
+}
+.future-email-top-notice div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.future-email-top-notice strong {
+  color: rgba(255,255,255,0.94);
+  font-size: 14px;
+}
+.future-email-top-notice span {
+  color: rgba(255,255,255,0.58);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.future-email-top-notice button,
+.future-email-modal-actions button,
+.settings-email-form button {
+  min-height: 42px;
+  border-radius: 12px;
+  padding: 0 15px;
+  border: 1px solid rgba(251,191,36,0.42);
+  background: linear-gradient(135deg, #f59e0b, #14b8a6);
+  color: #111827;
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.future-email-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0,0,0,0.62);
+  backdrop-filter: blur(14px);
+}
+.future-email-modal {
+  width: min(94vw, 520px);
+  border-radius: 28px;
+  padding: 26px;
+  border: 1px solid rgba(251,191,36,0.28);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(251,191,36,0.20), transparent 32%),
+    radial-gradient(circle at 92% 18%, rgba(20,184,166,0.18), transparent 34%),
+    linear-gradient(145deg, rgba(18,18,20,0.98), rgba(8,8,10,0.98));
+  box-shadow: 0 30px 110px rgba(0,0,0,0.58);
+}
+.future-email-eyebrow {
+  margin: 0 0 10px;
+  color: #fcd34d;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+.future-email-modal h2 {
+  margin: 0;
+  color: rgba(255,255,255,0.96);
+  font-size: clamp(28px, 6vw, 42px);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+}
+.future-email-modal p:not(.future-email-eyebrow) {
+  margin: 16px 0 0;
+  color: rgba(255,255,255,0.68);
+  font-size: 15px;
+  line-height: 1.65;
+}
+.future-email-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 22px;
+}
+.future-email-modal-actions button:last-child {
+  color: rgba(255,255,255,0.72);
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.12);
+}
+.settings-email-card {
+  margin-top: 18px;
+  margin-bottom: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(251,191,36,0.12), transparent 28%),
+    rgba(255,255,255,0.035);
+}
+.settings-email-card--focus {
+  border-color: rgba(251,191,36,0.72);
+  box-shadow: 0 0 0 1px rgba(251,191,36,0.34), 0 0 42px rgba(251,191,36,0.16);
+  animation: future-email-pulse 1.4s ease-in-out 3;
+}
+@keyframes future-email-pulse {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px); }
+}
+.settings-email-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  gap: 10px;
+}
+.settings-email-form input {
+  min-height: 42px;
+  border-radius: 12px;
+  padding: 0 13px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(0,0,0,0.18);
+  color: rgba(255,255,255,0.9);
+  outline: none;
+}
+.settings-email-form button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+.settings-success,
+.settings-error {
+  margin: 12px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+.settings-success { color: #86efac; }
+.settings-error { color: #fca5a5; }
+.admin-email-submission-table {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.admin-email-submission-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.035);
+}
+.admin-email-submission-row div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.admin-email-submission-row strong {
+  color: rgba(255,255,255,0.88);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.admin-email-submission-row span {
+  color: rgba(255,255,255,0.45);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 768px) {
+  .future-email-top-notice {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .future-email-top-notice button,
+  .future-email-modal-actions button {
+    width: 100%;
+  }
+  .future-email-modal {
+    padding: 22px;
+    border-radius: 24px;
+  }
+  .settings-email-form,
+  .admin-email-submission-row {
+    grid-template-columns: 1fr;
+  }
+}
 html.studio-light-mode body,
 html.studio-light-mode #root,
 html.studio-light-mode .studio-workspace,
@@ -4319,6 +4506,7 @@ html.studio-light-mode .admin-stat,
 html.studio-light-mode .admin-tabs,
 html.studio-light-mode .admin-window-card,
 html.studio-light-mode .admin-job-row,
+html.studio-light-mode .admin-email-submission-row,
 html.studio-light-mode .admin-cleanup-history div,
 html.studio-light-mode .admin-tool,
 html.studio-light-mode .admin-flag,
@@ -4358,6 +4546,7 @@ html.studio-light-mode .admin-stat-detail,
 html.studio-light-mode .admin-window-card span,
 html.studio-light-mode .admin-window-card em,
 html.studio-light-mode .admin-job-row span,
+html.studio-light-mode .admin-email-submission-row span,
 html.studio-light-mode .admin-cleanup-history span,
 html.studio-light-mode .help-page-step,
 html.studio-light-mode .settings-toggle-row small,
@@ -4368,6 +4557,7 @@ html.studio-light-mode .admin-header h1,
 html.studio-light-mode .admin-stat-value,
 html.studio-light-mode .admin-window-card strong,
 html.studio-light-mode .admin-job-row strong,
+html.studio-light-mode .admin-email-submission-row strong,
 html.studio-light-mode .admin-cleanup-history strong,
 html.studio-light-mode .admin-tool strong,
 html.studio-light-mode .settings-card h2,
@@ -4425,6 +4615,43 @@ html.studio-light-mode .settings-segment {
   background: rgba(39,30,17,0.05);
   border-color: rgba(39,30,17,0.12);
   color: rgba(24,20,16,0.72);
+}
+
+html.studio-light-mode .future-email-top-notice {
+  background:
+    radial-gradient(circle at 12% 0%, rgba(245,158,11,0.18), transparent 34%),
+    linear-gradient(135deg, rgba(255,255,255,0.9), rgba(240,253,250,0.86));
+  border-color: rgba(180,83,9,0.22);
+  box-shadow: 0 18px 50px rgba(92,64,29,0.12);
+}
+html.studio-light-mode .future-email-top-notice strong,
+html.studio-light-mode .future-email-modal h2 {
+  color: rgba(24,20,16,0.94);
+}
+html.studio-light-mode .future-email-top-notice span,
+html.studio-light-mode .future-email-modal p:not(.future-email-eyebrow) {
+  color: rgba(24,20,16,0.62);
+}
+html.studio-light-mode .future-email-modal-backdrop {
+  background: rgba(39,30,17,0.34);
+}
+html.studio-light-mode .future-email-modal {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(245,158,11,0.16), transparent 32%),
+    radial-gradient(circle at 92% 18%, rgba(20,184,166,0.12), transparent 34%),
+    linear-gradient(145deg, rgba(255,255,255,0.98), rgba(250,246,238,0.98));
+  border-color: rgba(180,83,9,0.22);
+  box-shadow: 0 30px 90px rgba(92,64,29,0.22);
+}
+html.studio-light-mode .future-email-modal-actions button:last-child {
+  color: rgba(24,20,16,0.68);
+  background: rgba(39,30,17,0.06);
+  border-color: rgba(39,30,17,0.12);
+}
+html.studio-light-mode .settings-email-form input {
+  background: rgba(255,255,255,0.86);
+  border-color: rgba(39,30,17,0.14);
+  color: #17130f;
 }
 
 html.studio-light-mode .studio-workspace,

@@ -10,6 +10,7 @@ import {
   setApprovedEmail,
   type AuthRole,
 } from "../lib/auth-access";
+import { listEmailSubmissions } from "../lib/email-submissions";
 import { cancelYoutubeQueueJob } from "../lib/youtube-queue";
 import {
   cleanupOldS3ObjectsDetailed,
@@ -196,6 +197,10 @@ router.get("/overview", async (_req, res) => {
   const access = listApprovedAccess();
   const runtime = getRuntimeFeatureState();
   const s3 = getS3StorageConfig();
+  const emailSubmissions = await listEmailSubmissions(200).catch((err) => {
+    console.warn("[admin] failed to scan email submissions", err);
+    return [];
+  });
   const translatorConfigured =
     configured(process.env.TRANSLATOR_BATCH_JOB_QUEUE) &&
     configured(process.env.TRANSLATOR_BATCH_JOB_DEFINITION);
@@ -382,6 +387,10 @@ router.get("/overview", async (_req, res) => {
       approvedAdmins: access.admins,
     },
     runtime,
+    userMessages: {
+      emailSubmissions,
+      emailSubmissionCount: emailSubmissions.length,
+    },
     jobs: {
       active: activeLiveJobs,
       recent: liveJobs,
@@ -391,6 +400,17 @@ router.get("/overview", async (_req, res) => {
 });
 
 // ── GET /settings ─────────────────────────────────────────────────────────────
+router.get("/email-submissions", async (_req, res) => {
+  try {
+    const submissions = await listEmailSubmissions(500);
+    res.json({ ok: true, submissions, count: submissions.length });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : "Failed to list email submissions" });
+  }
+});
+
 router.get("/settings", (_req, res) => {
   const access = listApprovedAccess();
   res.json({

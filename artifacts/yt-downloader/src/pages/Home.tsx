@@ -55,6 +55,12 @@ import {
   loadUserPreferences,
   subscribeToPreferenceChanges,
 } from "@/lib/user-preferences";
+import {
+  loadStoredEmailSubmission,
+  markDailyEmailPromptShown,
+  saveStoredEmailSubmission,
+  shouldShowDailyEmailPrompt,
+} from "@/lib/email-submission";
 
 type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "help" | "activity" | "admin" | "settings";
 
@@ -244,6 +250,9 @@ export default function Home({
   const [telegramUrl, setTelegramUrl] = useState("https://t.me/c/2852263933/3");
   const [helpInitialMode, setHelpInitialMode] = useState<GuideMode>("download");
   const [preferences, setPreferences] = useState(loadUserPreferences);
+  const [storedEmail, setStoredEmail] = useState(() => loadStoredEmailSubmission());
+  const [showEmailPrompt, setShowEmailPrompt] = useState(false);
+  const [settingsEmailFocus, setSettingsEmailFocus] = useState(false);
   const seenCompletionRef = useRef<Set<string>>(new Set());
   const initializedCompletionsRef = useRef(false);
   const { toast } = useToast();
@@ -401,6 +410,7 @@ export default function Home({
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
   const canUseTranslator = authFeatures?.translatorAllowed !== false;
   const canUseSuperAgent = authFeatures?.superAgentAllowed !== false;
+  const needsFutureEmail = !storedEmail && !authUser?.email;
 
 
   const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
@@ -640,8 +650,64 @@ export default function Home({
     if (el) el.scrollTop = 0;
   };
 
+  useEffect(() => {
+    if (!needsFutureEmail) return;
+    if (!shouldShowDailyEmailPrompt()) return;
+    const timer = window.setTimeout(() => {
+      setShowEmailPrompt(true);
+      markDailyEmailPromptShown();
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [needsFutureEmail]);
+
+  const openEmailSettings = () => {
+    setShowEmailPrompt(false);
+    setSettingsEmailFocus(true);
+    switchMode("settings");
+    window.setTimeout(() => {
+      document.getElementById("future-access-email")?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 80);
+  };
+
+  const handleEmailSubmitted = (email: string, name: string) => {
+    saveStoredEmailSubmission({ email, name: name || authUser?.name });
+    setStoredEmail(loadStoredEmailSubmission());
+    setSettingsEmailFocus(false);
+    setShowEmailPrompt(false);
+  };
+
   return (
     <div className="studio-workspace">
+      <AnimatePresence>
+        {showEmailPrompt && needsFutureEmail ? (
+          <motion.div
+            className="future-email-modal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="future-email-modal"
+              initial={{ opacity: 0, y: 24, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+            >
+              <p className="future-email-eyebrow">Important access notice</p>
+              <h2>Submit your name and personal email</h2>
+              <p>
+                Username/password login will no longer work from May 25, 2026. Please submit your name and the email address through which you want access to this website. All through the grace of Mahaprabhu Ji and Maa Radha Rani.
+              </p>
+              <div className="future-email-modal-actions">
+                <button type="button" onClick={openEmailSettings}>Submit name and email</button>
+                <button type="button" onClick={() => setShowEmailPrompt(false)}>Remind me later</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {/* Floating Help / Activity panel — pinned to top-right since the
           old topbar is removed in the new sidebar-based layout */}
@@ -659,6 +725,7 @@ export default function Home({
           showAdmin={canUseAdmin}
           superAgentEnabled={canUseSuperAgent}
           translatorEnabled={canUseTranslator}
+          emailMissing={needsFutureEmail}
           onNewChat={() => {
             if (!canUseSuperAgent) return;
             setPendingCopilotPrompt(null);
@@ -670,6 +737,15 @@ export default function Home({
         {/* Main scrollable content */}
         <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "overflow-hidden")} id="studio-content">
           <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
+            {needsFutureEmail ? (
+              <div className="future-email-top-notice">
+                <div>
+                  <strong>Future login email needed</strong>
+                  <span>Username/password login ends on May 25, 2026. Submit your name and personal email for future access.</span>
+                </div>
+                <button type="button" onClick={openEmailSettings}>Submit name and email</button>
+              </div>
+            ) : null}
 
             {/* Translator tab - full screen */}
             {mode === "translator" && (
@@ -705,6 +781,9 @@ export default function Home({
                 pushPermission={pushPermission}
                 pushEnabling={pushEnabling}
                 onTestSound={playSoftCompletionChime}
+                emailFocus={settingsEmailFocus}
+                submittedEmail={storedEmail?.email}
+                onEmailSubmitted={handleEmailSubmitted}
               />
             )}
 
@@ -1333,4 +1412,3 @@ function InlinePlayer({
     </div>
   );
 }
-

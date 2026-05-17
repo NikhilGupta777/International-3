@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { isEmailApproved, hydrateAllowlistFromDdb, type AuthRole } from "./lib/auth-access";
+import { saveEmailSubmission } from "./lib/email-submissions";
 import { canUseSuperAgent, canUseTranslator, canUseTranslatorLipSync } from "./lib/admin-features";
 import {
   getHttpMetricsSnapshot,
@@ -425,6 +426,31 @@ app.post("/api/auth/logout", (_req: Request, res: Response) => {
     path: "/",
   });
   res.json({ ok: true });
+});
+
+app.post("/api/email-submissions", async (req: Request, res: Response) => {
+  const session = getAuthSession(req);
+  if (!session.authenticated) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+
+  const body = req.body as { email?: unknown; name?: unknown };
+  try {
+    const record = await saveEmailSubmission({
+      email: typeof body.email === "string" ? body.email : "",
+      name: typeof body.name === "string" ? body.name : session.name,
+      loginMethod: session.method ?? "unknown",
+      loginEmail: session.email ?? "",
+      role: session.role ?? "user",
+      userAgent: String(req.headers["user-agent"] ?? ""),
+    });
+    res.json({ ok: true, submission: record });
+  } catch (err) {
+    res
+      .status(400)
+      .json({ error: err instanceof Error ? err.message : "Could not save email" });
+  }
 });
 
 app.use("/api", (req: Request, res: Response, next: NextFunction) => {
