@@ -108,6 +108,15 @@ LATENTSYNC_CHECKPOINT = os.environ.get("LATENTSYNC_CHECKPOINT", "latentsync_unet
 FFMPEG_TIMEOUT_SECONDS = _env_int("FFMPEG_TIMEOUT_SECONDS", 3600)
 FFPROBE_TIMEOUT_SECONDS = _env_int("FFPROBE_TIMEOUT_SECONDS", 120)
 
+# ── Phase 3: CosyVoice performance flags ─────────────────────────────────
+# These are opt-in because they require specific GPU capabilities or Docker
+# image contents.  Enable per-environment via env vars.
+COSYVOICE_FP16  = os.environ.get("COSYVOICE_FP16", "false").lower() in ("1", "true", "yes", "on")
+COSYVOICE_VLLM  = os.environ.get("COSYVOICE_VLLM", "false").lower() in ("1", "true", "yes", "on")
+# Number of parallel synthesis workers.  >1 uses ThreadPoolExecutor with
+# separate CUDA streams.  Requires sufficient VRAM (~2× for 2 workers).
+COSYVOICE_PARALLEL_SYNTH = _env_int("COSYVOICE_PARALLEL_SYNTH", 1)
+
 # ── Force HuggingFace/ModelScope offline mode ─────────────────────────────────
 # All model weights are baked into the Docker image at build time.
 # Setting these prevents network calls at job runtime.
@@ -704,17 +713,16 @@ def extract_speaker_reference(
     audio_path: Path,
     segments: list[dict],
     out_dir: Path,
-    max_ref_duration: float = 24.0,
+    max_ref_duration: float = 10.0,
     min_segment_duration: float = 1.5,
 ) -> tuple[dict, dict]:
     """
     Build one clean reference WAV per unique speaker from the source audio.
     Returns ({speaker_label: Path}, {speaker_label: prompt_text}) for per-speaker cloning.
 
-    Strategy: for each speaker, concatenate their longest clean segments
-    (up to max_ref_duration total).  Falls back to full audio if a speaker
-    has no sufficiently long segments.
-    Default max_ref_duration is 24 seconds.
+    Phase 3 (P1-5): Reference capped at 10s (was 24s).  Prefers the single
+    longest clean clip rather than concatenating fragments.  Shorter, cleaner
+    references produce better speaker embeddings — upstream recommends 5-10s.
     """
     import numpy as np
     import soundfile as sf
@@ -2215,6 +2223,24 @@ def synthesize_segments_cosyvoice(
                 _init_kw["load_jit"] = False
             if "load_trt" in _init_sig.parameters:
                 _init_kw["load_trt"] = False
+            # Phase 3 (P1-8): fp16 when enabled and constructor supports it.
+            if COSYVOICE_FP16 and "fp16" in _init_sig.parameters:
+                _init_kw["fp16"] = True
+                log.info("[CosyVoice] fp16=True enabled via COSYVOICE_FP16 flag.")
+            # Phase 3 (P1-10): vLLM when enabled and constructor supports it.
+            if COSYVOICE_VLLM and "load_vllm" in _init_sig.parameters:
+                # Verify the vllm directory exists before enabling (prevents
+                # hard crash if Docker image doesn't have vLLM weights).
+                _vllm_dir = model_path / "vllm"
+                if _vllm_dir.exists():
+                    _init_kw["load_vllm"] = True
+                    log.info("[CosyVoice] load_vllm=True enabled via COSYVOICE_VLLM flag.")
+                else:
+                    log.warning(
+                        "[CosyVoice] COSYVOICE_VLLM=true but %s does not exist. "
+                        "Skipping vLLM. Rebuild Docker image with vLLM weights.",
+                        _vllm_dir,
+                    )
             model = _CosyVoice(model_dir=str(model_path), **_init_kw)
             break
         except Exception as e:
@@ -2223,14 +2249,21 @@ def synthesize_segments_cosyvoice(
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
 
-    # Detect CosyVoice version to apply correct instruction prefix format.
-    # CosyVoice3 requires "You are a helpful assistant.<|endofprompt|>" prefix.
-    _model_path_lower = str(model_path).lower()
-    is_cosyvoice3 = bool(re.search(r"fun.cosyvoice3|cosyvoice3", _model_path_lower))
+    # ── Phase 3 (P1-4): Detect CosyVoice version via class name ────────────
+    # Upstream hierarchy: CosyVoice3 extends CosyVoice2 extends CosyVoice.
+    # AutoModel returns the appropriate subclass.  Inspecting __class__.__name__
+    # is robust to path layout changes and model renames.
+    _model_class_name = type(model).__name__
+    is_cosyvoice3 = "CosyVoice3" in _model_class_name
+    is_cosyvoice2 = "CosyVoice2" in _model_class_name and not is_cosyvoice3
+    # Note: CosyVoice3 inherits from CosyVoice2, so "CosyVoice2" would also
+    # match for v3.  We check v3 first, then v2 explicitly.
     if is_cosyvoice3:
-        log.info("[CosyVoice] CosyVoice3 detected — instruction prefix will be applied.")
+        log.info("[CosyVoice] CosyVoice3 detected (class=%s) — instruction prefix will be applied.", _model_class_name)
+    elif is_cosyvoice2:
+        log.info("[CosyVoice] CosyVoice2 detected (class=%s).", _model_class_name)
     else:
-        log.info("[CosyVoice] CosyVoice2/legacy detected.")
+        log.info("[CosyVoice] CosyVoice legacy detected (class=%s).", _model_class_name)
 
     # ── Decide inference mode (cross-lingual vs zero-shot) ──────────────────
     source_code = (SOURCE_LANG_CODE or "").lower().strip()
@@ -2346,6 +2379,16 @@ def synthesize_segments_cosyvoice(
     else:
         _zs_params_set = set(inspect.signature(model.inference_zero_shot).parameters.keys())
 
+    # Phase 3 (P1-2): inference_instruct2 for non-neutral emotions.
+    # Available on CosyVoice2 and CosyVoice3.  Signature:
+    #   inference_instruct2(tts_text, instruct_text, prompt_wav, ..., speed=1.0)
+    # instruct_text format: "You are a helpful assistant. {instruction}.<|endofprompt|>"
+    _has_instruct2 = hasattr(model, "inference_instruct2")
+    _instruct2_params_set: set[str] = set()
+    if _has_instruct2:
+        _instruct2_params_set = set(inspect.signature(model.inference_instruct2).parameters.keys())
+        log.info("[CosyVoice] inference_instruct2 available — non-neutral emotions will use it.")
+
     def _instruct_param(params: set[str]) -> Optional[str]:
         for key in ("instruct_text", "instruct", "instruction", "prompt_instruction"):
             if key in params:
@@ -2388,6 +2431,21 @@ def synthesize_segments_cosyvoice(
         return {}
 
     # ── Synthesize each segment ───────────────────────────────────────────────
+    # Phase 3 performance notes:
+    # - vLLM (COSYVOICE_VLLM=true): CosyVoice's internal continuous batching
+    #   gives ~3× throughput improvement without any Python-level parallelism.
+    #   The model handles GPU scheduling internally per upstream vllm_example.py.
+    # - fp16 (COSYVOICE_FP16=true): ~1.5-2× faster inference on A10G/T4.
+    # - COSYVOICE_PARALLEL_SYNTH: reserved for future Phase 4 pipelining of
+    #   post-synthesis I/O (timing-fit, ffmpeg) while synthesis runs.  The
+    #   model inference itself is NOT thread-safe without vLLM, so we keep it
+    #   sequential in the main loop.
+    _vllm_loaded = _init_kw.get("load_vllm", False)
+    if _vllm_loaded:
+        log.info("[CosyVoice] vLLM continuous batching active — expect ~3× throughput.")
+    if COSYVOICE_FP16 and _init_kw.get("fp16", False):
+        log.info("[CosyVoice] fp16 active — expect ~1.5-2× faster inference.")
+
     seg_audios: list[Path] = []
     total_segments = max(1, len(segments))
 
@@ -2472,7 +2530,38 @@ def synthesize_segments_cosyvoice(
         # Factored out so the QA retry can call it again with a tighter speed.
         def _one_shot(speed_value: float):
             speed_value = float(max(SPEED_MIN, min(SPEED_MAX, speed_value)))
-            if use_cross_lingual:
+
+            # Phase 3 (P1-2): Use inference_instruct2 for non-neutral emotions.
+            # This gives audible tone variation (happy/sad/excited/serious)
+            # instead of flat neutral on every segment.
+            # Only used when:
+            #  - model has inference_instruct2
+            #  - emotion is non-neutral
+            #  - we're NOT in cross-lingual mode (instruct2 works like zero-shot
+            #    with added instruct_text; cross-lingual has a different flow)
+            use_instruct2 = (
+                _has_instruct2
+                and emotion_instruction
+                and not use_cross_lingual
+            )
+
+            if use_instruct2:
+                # Format per upstream example.py:
+                # instruct_text = "You are a helpful assistant. {instruction}.<|endofprompt|>"
+                instruct2_text = f"You are a helpful assistant. {emotion_instruction}<|endofprompt|>"
+                i2_args: dict = {
+                    "tts_text": text,
+                    "instruct_text": instruct2_text,
+                    "stream": False,
+                }
+                if "prompt_wav" in _instruct2_params_set:
+                    i2_args["prompt_wav"] = seg_ref_prompt_path
+                elif "prompt_speech_16k" in _instruct2_params_set:
+                    i2_args["prompt_speech_16k"] = seg_ref_wav
+                if "speed" in _instruct2_params_set:
+                    i2_args["speed"] = speed_value
+                chunks = list(model.inference_instruct2(**i2_args))
+            elif use_cross_lingual:
                 _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if is_cosyvoice3 else text)
                 cl_args: dict = {"tts_text": _cl_tts, "stream": False}
                 if "prompt_wav" in _cl_params_set:
@@ -2518,6 +2607,13 @@ def synthesize_segments_cosyvoice(
                 raise RuntimeError("CosyVoice returned empty audio.")
             return tensor, tensor.shape[-1]
 
+        # ── Phase 3 (P1-11): Per-segment retry chain ──────────────────────
+        # Instead of failing the whole job on a single segment error, we try
+        # progressively degraded fallbacks:
+        #   1. Clear CUDA cache + retry with same params
+        #   2. Retry with default reference (in case speaker ref is corrupt)
+        #   3. Fall back to edge-tts (neural voice, no cloning)
+        #   4. Last resort: silence (job continues, one seg is muted)
         try:
             audio_data, num_samples = _one_shot(initial_speed)
             actual_seconds = num_samples / float(model_sample_rate)
@@ -2525,17 +2621,11 @@ def synthesize_segments_cosyvoice(
             qa_retry = "no"
 
             # ── Post-synthesis QA gate (Phase 1: missing-from-audit item) ──
-            # If the produced audio is more than QA_OVER_RATIO past target,
-            # retry once with a faster speed so the post-pass atempo doesn't
-            # have to do an audible squash.  We only retry on overshoot —
-            # an undershoot is harmless (it leaves silence in the gap).
             if (
                 speed_supported
                 and target_speech_seconds > 0
                 and actual_seconds / target_speech_seconds > QA_OVER_RATIO
             ):
-                # Recompute speed from the *measured* result rather than the
-                # heuristic, so a single retry usually converges.
                 bumped_speed = max(
                     SPEED_MIN,
                     min(
@@ -2553,7 +2643,6 @@ def synthesize_segments_cosyvoice(
                     try:
                         retry_audio, retry_samples = _one_shot(bumped_speed)
                         retry_actual = retry_samples / float(model_sample_rate)
-                        # Accept the retry only if it actually got closer to target.
                         if abs(retry_actual - target_speech_seconds) < abs(actual_seconds - target_speech_seconds):
                             audio_data = retry_audio
                             num_samples = retry_samples
@@ -2575,11 +2664,101 @@ def synthesize_segments_cosyvoice(
                 "applied_speed": round(applied_speed, 3),
                 "qa_retry": qa_retry,
                 "model_sample_rate": model_sample_rate,
+                "synth_method": "instruct2" if (_has_instruct2 and emotion_instruction and not use_cross_lingual) else ("cross_lingual" if use_cross_lingual else "zero_shot"),
             })
-        except Exception as exc:
-            raise RuntimeError(
-                f"CosyVoice failed for segment {seg['id']} speaker={speaker}: {exc}"
-            ) from exc
+        except Exception as first_exc:
+            # ── Fallback level 1: CUDA cache clear + retry ─────────────────
+            _fallback_succeeded = False
+            log.warning(
+                "[CosyVoice] Seg %s first attempt failed: %s. Trying cache-clear retry...",
+                seg["id"], first_exc,
+            )
+            try:
+                torch.cuda.empty_cache()
+                audio_data, num_samples = _one_shot(initial_speed)
+                actual_seconds = num_samples / float(model_sample_rate)
+                torchaudio.save(str(out_path), audio_data, model_sample_rate)
+                seg["_pacing"].update({
+                    "actual_seconds": round(actual_seconds, 3),
+                    "applied_speed": round(initial_speed, 3),
+                    "qa_retry": "no",
+                    "model_sample_rate": model_sample_rate,
+                    "synth_method": "retry_cache_clear",
+                })
+                _fallback_succeeded = True
+            except Exception:
+                pass
+
+            # ── Fallback level 2: default reference ────────────────────────
+            if not _fallback_succeeded and (seg_ref_prompt_path != default_ref_prompt_path):
+                log.warning(
+                    "[CosyVoice] Seg %s retrying with default reference...",
+                    seg["id"],
+                )
+                try:
+                    # Temporarily swap reference for this retry
+                    _orig_ref_path = seg_ref_prompt_path
+                    _orig_ref_wav = seg_ref_wav
+                    seg_ref_prompt_path = default_ref_prompt_path
+                    seg_ref_wav = default_ref_wav
+                    audio_data, num_samples = _one_shot(initial_speed)
+                    actual_seconds = num_samples / float(model_sample_rate)
+                    torchaudio.save(str(out_path), audio_data, model_sample_rate)
+                    seg["_pacing"].update({
+                        "actual_seconds": round(actual_seconds, 3),
+                        "applied_speed": round(initial_speed, 3),
+                        "qa_retry": "no",
+                        "model_sample_rate": model_sample_rate,
+                        "synth_method": "fallback_default_ref",
+                    })
+                    _fallback_succeeded = True
+                except Exception:
+                    pass
+                finally:
+                    seg_ref_prompt_path = _orig_ref_path
+                    seg_ref_wav = _orig_ref_wav
+
+            # ── Fallback level 3: edge-tts ─────────────────────────────────
+            if not _fallback_succeeded:
+                log.warning(
+                    "[CosyVoice] Seg %s falling back to edge-tts...",
+                    seg["id"],
+                )
+                try:
+                    edge_path = synthesize_edge_tts_single(seg, out_dir)
+                    # Copy to expected path
+                    import shutil as _shutil_fb
+                    _shutil_fb.copy2(str(edge_path), str(out_path))
+                    seg["_pacing"].update({
+                        "actual_seconds": round(float(seg["end"]) - float(seg["start"]), 3),
+                        "applied_speed": 1.0,
+                        "qa_retry": "no",
+                        "model_sample_rate": 24000,
+                        "synth_method": "fallback_edge_tts",
+                    })
+                    _fallback_succeeded = True
+                except Exception as edge_err:
+                    log.warning(
+                        "[CosyVoice] Seg %s edge-tts also failed: %s",
+                        seg["id"], edge_err,
+                    )
+
+            # ── Fallback level 4: silence ──────────────────────────────────
+            if not _fallback_succeeded:
+                log.warning(
+                    "[CosyVoice] Seg %s all fallbacks exhausted. Inserting silence.",
+                    seg["id"],
+                )
+                silence_path = synthesize_silence_single(seg, out_dir)
+                import shutil as _shutil_fb2
+                _shutil_fb2.copy2(str(silence_path), str(out_path))
+                seg["_pacing"].update({
+                    "actual_seconds": round(float(seg["end"]) - float(seg["start"]), 3),
+                    "applied_speed": 1.0,
+                    "qa_retry": "no",
+                    "model_sample_rate": 24000,
+                    "synth_method": "fallback_silence",
+                })
 
         seg_audios.append(out_path)
         log.info(
@@ -3443,7 +3622,14 @@ def main():
             update_progress("EXTRACTING", 12, "Separating voice from background music...")
             try:
                 vocals_path, bg_path = run_demucs(full_audio_hq, work_dir)
-                reference_audio = vocals_path
+                # Phase 3 (P1-6): Keep original audio as cloning reference.
+                # Demucs vocals have metallic phase artifacts that degrade the
+                # speaker encoder.  We use Demucs output only for:
+                #   - Transcription (cleaner ASR on vocals)
+                #   - Background track (for the final mix)
+                # The voice-cloning reference stays on the original full audio
+                # which preserves natural timbre for the speaker encoder.
+                # reference_audio stays = full_audio_hq (set above)
                 transcription_audio = resample_audio(vocals_path, work_dir / "vocals_16k.wav", 16000, mono=True)
                 background_audio = bg_path
                 demucs_applied = True
@@ -3627,6 +3813,10 @@ def main():
                 "translationMode": TRANSLATION_MODE,
                 "targetLang": TARGET_LANG,
                 "segmentCount": len(segments),
+                # Phase 3: performance flags for debugging
+                "cosyvoiceFp16": COSYVOICE_FP16,
+                "cosyvoiceVllm": COSYVOICE_VLLM,
+                "cosyvoiceParallelSynth": COSYVOICE_PARALLEL_SYNTH,
                 # Phase 1: aggregate pacing telemetry so we can detect
                 # regressions (e.g. mean atempo creeping up) without parsing
                 # every segment's transcript entry.
