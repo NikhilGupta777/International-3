@@ -3378,21 +3378,35 @@ def assemble_dubbed_audio(
     import soundfile as sf
 
     # ── P1-9: Emotion transition smoothing — minimum emotion window ───────
-    # If a single segment has a different emotion from both its left and right
-    # neighbours, it's likely a Gemini glitch (e.g. "excited" sandwiched between
-    # two "neutral" runs).  Flatten it to avoid a jarring 2-second tone change.
+    # Very short bounded emotion runs are likely Gemini glitches (e.g.
+    # "excited" sandwiched between two "neutral" runs). Flatten any run shorter
+    # than EMOTION_MIN_WINDOW to the surrounding emotion when both sides match.
     EMOTION_MIN_WINDOW = 2  # minimum consecutive segments for an emotion to hold
     EMOTION_TRANSITION_CROSSFADE_MS = 100  # wider crossfade at emotion boundaries
 
-    if len(segments) >= 3:
-        for i in range(1, len(segments) - 1):
-            this_emo = str(segments[i].get("emotion", "neutral")).strip().lower()
-            prev_emo = str(segments[i - 1].get("emotion", "neutral")).strip().lower()
-            next_emo = str(segments[i + 1].get("emotion", "neutral")).strip().lower()
-            if this_emo != prev_emo and this_emo != next_emo and prev_emo == next_emo:
-                # Isolated emotion flip — flatten to surrounding emotion
-                segments[i]["emotion"] = prev_emo
-                segments[i].setdefault("_pacing", {})["emotion_smoothed"] = f"{this_emo}->{prev_emo}"
+    if len(segments) >= 3 and EMOTION_MIN_WINDOW > 1:
+        normalized_emotions = [
+            str(seg.get("emotion", "neutral")).strip().lower() for seg in segments
+        ]
+        i = 0
+        while i < len(segments):
+            run_start = i
+            run_emo = normalized_emotions[i]
+            while i + 1 < len(segments) and normalized_emotions[i + 1] == run_emo:
+                i += 1
+            run_end = i
+            run_len = run_end - run_start + 1
+
+            if 0 < run_start and run_end < len(segments) - 1 and run_len < EMOTION_MIN_WINDOW:
+                prev_emo = normalized_emotions[run_start - 1]
+                next_emo = normalized_emotions[run_end + 1]
+                if prev_emo == next_emo and run_emo != prev_emo:
+                    for j in range(run_start, run_end + 1):
+                        segments[j]["emotion"] = prev_emo
+                        segments[j].setdefault("_pacing", {})["emotion_smoothed"] = f"{run_emo}->{prev_emo}"
+                        normalized_emotions[j] = prev_emo
+
+            i += 1
 
     # Pre-compute emotion transition flags for the placement loop
     _emotion_transitions: set[int] = set()
