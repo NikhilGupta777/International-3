@@ -1396,15 +1396,36 @@ def _get_gemini_client():
     return genai.Client(api_key=key)
 
 def _gemini_model_for_mode(mode: str) -> str:
-    # Allow a hard override via env var (useful for A/B testing or cost control).
+    """Return the Gemini model name for translation.
+
+    Phase 2 change: default to Flash (fast + cheap), with Pro available as
+    a quality fallback for segments that fail the native-script QA gate.
+
+    Model hierarchy (fastest → most capable):
+      gemini-2.5-flash       — GA, stable, works on both Vertex AI and API key
+      gemini-2.5-flash-lite  — even cheaper but less capable (not used here)
+      gemini-2.5-pro         — expensive, best quality (fallback for QA retries)
+    """
     env_override = os.environ.get("TRANSLATION_MODEL", "").strip()
     if env_override:
         return env_override
-    # Always use Gemini 3.1 Pro for translation — the Pro model produces the
-    # most natural dubbing phrasing, correct acronym handling, and tts_text
-    # quality that Flash cannot reliably match.  'mode' is kept as a parameter
-    # for backward compatibility but is intentionally ignored here.
-    return "gemini-3.1-pro-preview"
+    # Flash is ~25x cheaper and 3-5x faster than Pro.  Pro is used only when
+    # the script QA gate rejects a segment (P1-15) or for explicit "pro" mode.
+    if mode == "pro":
+        return "gemini-2.5-pro"
+    return "gemini-2.5-flash"
+
+
+def _gemini_fallback_model() -> str:
+    """Return the stronger model used for QA retries (native-script failures).
+
+    Uses Pro for maximum translation quality on the handful of segments
+    that fail the script gate.
+    """
+    env_override = os.environ.get("TRANSLATION_MODEL_FALLBACK", "").strip()
+    if env_override:
+        return env_override
+    return "gemini-2.5-pro"
 
 
 TRANSLATION_SYSTEM_PROMPT = """
@@ -1415,7 +1436,7 @@ Your task is to translate speech segments into natural spoken dubbing text for T
 Core rules:
 1. Translate meaning, emotion, tone, and intent — NOT word-for-word.
 2. Write speakable voice-over text, not subtitle fragments.
-3. Keep each translation close to the original segment duration.
+3. CRITICAL — each segment has a target_seconds and max_chars field. Your tts_text MUST NOT exceed max_chars. This is an absolute budget; violating it causes audible speed distortion.
 4. Do NOT output ellipses, filler dots, broken phrases, half-words, pronunciation hints, labels, brackets, or explanations.
 5. Every translated_text and tts_text must be natural when spoken aloud and must end with punctuation.
 6. Preserve names, religious terms, cultural references, and important proper nouns accurately.
@@ -1424,12 +1445,16 @@ Core rules:
 9. Use prev_text and next_text ONLY as context. Do not translate them or include them in the output.
 10. Return ONLY valid JSON. No markdown, no code fences, no commentary.
 
-Duration rules:
-- duration < 1.5s: 1-3 short words only.
-- 1.5s-3s: one short phrase.
-- 3s-6s: one natural sentence.
-- 6s-8s: one or two short sentences.
-Never write a long sentence for a short duration.
+Duration budget rules (CRITICAL for natural pacing):
+- Each segment includes target_seconds (how long the TTS slot is) and max_chars (hard character limit for tts_text).
+- If your translation would exceed max_chars, SHORTEN it. Rephrase with fewer words rather than cramming.
+- Prefer short natural phrasing over verbose literal translations.
+- target_seconds < 1.5: 1-3 short words only.
+- target_seconds 1.5-3.0: one short phrase (max 1 clause).
+- target_seconds 3.0-6.0: one natural sentence.
+- target_seconds 6.0-10.0: one or two short sentences.
+- target_seconds > 10.0: two to three sentences maximum.
+- Never produce a long sentence for a short target_seconds. Compress meaning instead.
 
 TTS pronunciation rules (CRITICAL — apply in the tts_text field):
 - Acronyms and abbreviations: NEVER write them as a single condensed word in tts_text.
@@ -1449,7 +1474,7 @@ Output exactly one object per input segment:
   {
     "id": <same segment_id>,
     "translated_text": "<human-readable subtitle text in target language>",
-    "tts_text": "<TTS-optimised text — acronyms spelled out, numbers as words>",
+    "tts_text": "<TTS-optimised text — acronyms spelled out, numbers as words — MUST be ≤ max_chars>",
     "emotion": "<neutral|happy|sad|excited|serious|questioning>",
     "speaking_rate": <number from 0.9 to 1.2>
   }
@@ -1531,84 +1556,211 @@ def _safe_speaking_rate(value) -> float:
     return max(0.9, min(1.2, rate))
 
 
+# ── Phase 2: per-segment duration budget for translation ──────────────────────
+# We compute a max_chars budget so Gemini knows exactly how much text can fit
+# in the TTS slot.  The budget uses CHARS_PER_SEC (from Phase 1) and adds a
+# small overshoot margin so the model doesn't under-translate.
+
+# Budget overshoot factor: allow 10% more chars than strict budget.  This gives
+# Gemini room for complete phrases.  The Phase 1 speed= solver + QA retry
+# still catches the remainder.
+_CHARS_BUDGET_OVERSHOOT = 1.10
+
+# Absolute minimum chars (prevents degenerate "1 char" budgets on very short segments)
+_MIN_CHARS_BUDGET = 8
+
+
+def compute_segment_max_chars(target_seconds: float, chars_per_sec: float) -> int:
+    """Compute maximum character budget for a segment's tts_text.
+
+    Uses the target speech duration and the language's chars-per-second rate.
+    Returns an integer character limit that Gemini must respect.
+    """
+    if target_seconds <= 0 or chars_per_sec <= 0:
+        return _MIN_CHARS_BUDGET
+    raw = target_seconds * chars_per_sec * _CHARS_BUDGET_OVERSHOOT
+    return max(_MIN_CHARS_BUDGET, int(math.ceil(raw)))
+
+
 def translate_segments(segments: list[dict]) -> list[dict]:
     """
     Translate all segments using Gemini with dubbing-aware prompts.
-    Adds 'translated_text', 'emotion', 'speaking_rate' to each segment.
+
+    Phase 2 redesign:
+      * Segments are split into chunks of TRANSLATION_CHUNK_SIZE (25).
+      * Up to TRANSLATION_MAX_PARALLEL (3) chunks execute concurrently.
+      * Each chunk has its own retry loop with:
+        - Global cap of TRANSLATION_MAX_ATTEMPTS (9) total tries.
+        - Exponential backoff with jitter.
+        - Immediate key rotation on 429 / quota errors.
+      * After all chunks resolve, the native-script QA gate (P1-15) checks
+        each segment and retries failures with the Pro fallback model.
+      * Pre-synthesis duration overshoot check retries segments whose
+        translated text exceeds the max_chars budget.
+
+    Adds 'translated_text', 'tts_text', 'emotion', 'speaking_rate' to each segment.
     """
+    import random
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     log.info(f"[Gemini] Translating {len(segments)} segments to {TARGET_LANG}...")
 
-    # Build the translation request payload
-    def _context_snippet(value: str, limit: int = 140) -> str:
+    # ── Tunables ──────────────────────────────────────────────────────────────
+    TRANSLATION_CHUNK_SIZE = _env_int("TRANSLATION_CHUNK_SIZE", 25)
+    TRANSLATION_MAX_PARALLEL = _env_int("TRANSLATION_MAX_PARALLEL", 3)
+    TRANSLATION_MAX_ATTEMPTS = _env_int("TRANSLATION_MAX_ATTEMPTS", 9)
+
+    # ── Build the per-segment payload ─────────────────────────────────────────
+    def _context_snippet(value: str, limit: int = 250) -> str:
+        """Context window for prev/next text — bumped to 250 chars (P1-17)."""
         snippet = re.sub(r"\s+", " ", str(value or "")).strip()
         if len(snippet) > limit:
             snippet = snippet[:limit].rsplit(" ", 1)[0].strip()
         return snippet
 
-    seg_payload = []
+    target_cps = chars_per_second_for_target()
+
+    seg_payload_all = []
     for idx, s in enumerate(segments):
         prev_text = segments[idx - 1]["text"] if idx > 0 else ""
         next_text = segments[idx + 1]["text"] if idx + 1 < len(segments) else ""
-        seg_payload.append({
+        seg_target_seconds = round(compute_target_speech_seconds(s), 2)
+        seg_max_chars = compute_segment_max_chars(seg_target_seconds, target_cps)
+        seg_payload_all.append({
             "id": s["id"],
             "start": s["start"],
             "end": s["end"],
             "duration": round(s["end"] - s["start"], 2),
+            "target_seconds": seg_target_seconds,
+            "max_chars": seg_max_chars,
             "text": s["text"],
             "speaker": s.get("speaker") or DEFAULT_SPEAKER_LABEL,
             "prev_text": _context_snippet(prev_text),
             "next_text": _context_snippet(next_text),
         })
 
-    user_prompt = (
-        f"Translate these merged dubbing segments into {TARGET_LANG}.\n"
-        f"{NATIVE_SCRIPT_RULE}\n"
-        f"{target_script_instruction(TARGET_LANG, TARGET_LANG_CODE)}\n\n"
-        f"Important:\n"
-        f"- These segments will be passed directly into TTS/voice cloning.\n"
-        f"- Make each translated_text natural, short, and speakable.\n"
-        f"- Respect each segment duration.\n"
-        f"- Do not output source text, transliteration, labels, explanations, or markdown.\n"
-        f"- Keep religious/devotional terms respectful and accurate.\n\n"
-        f"Segments JSON:\n{json.dumps(seg_payload, ensure_ascii=False, indent=2)}"
+    # ── Chunk the payload ─────────────────────────────────────────────────────
+    def _chunk_list(lst: list, size: int) -> list[list]:
+        return [lst[i : i + size] for i in range(0, len(lst), size)]
+
+    chunks = _chunk_list(seg_payload_all, TRANSLATION_CHUNK_SIZE)
+    log.info(
+        f"[Gemini] Split {len(seg_payload_all)} segments into {len(chunks)} chunks "
+        f"(chunk_size={TRANSLATION_CHUNK_SIZE}, max_parallel={TRANSLATION_MAX_PARALLEL})."
     )
 
     model = _gemini_model_for_mode(TRANSLATION_MODE)
-    translations = None
-    attempts = 0
 
-    while attempts < 3:
-        try:
-            client = _get_gemini_client()
-            response = client.models.generate_content(
-                model=model,
-                contents=user_prompt,
-                config={
-                    "system_instruction": TRANSLATION_SYSTEM_PROMPT,
-                    "temperature": 0.3,
-                    "response_mime_type": "application/json",
-                },
-            )
-            translations = _normalise_translation_response(json.loads(response.text))
-            break
-        except Exception as e:
-            attempts += 1
-            log.warning(f"[Gemini] Attempt {attempts} failed: {e}")
-            if attempts >= 3:
-                # On persistent failure, rotate to a different API key and retry once.
-                # If already exhausted, raise.
-                if _gemini_key_idx < len(GEMINI_KEYS):
-                    log.info(f"[Gemini] Rotating key and retrying (key index {_gemini_key_idx})...")
-                    attempts = 0  # reset counter for fresh attempt with new key
-                else:
-                    raise RuntimeError(f"Translation failed after all retries: {e}")
-            time.sleep(2 ** attempts)
+    # ── Single-chunk translation with capped retry + backoff ──────────────────
+    def _translate_chunk(chunk_payload: list[dict], chunk_idx: int) -> list[dict]:
+        """Translate one chunk of segments.  Retries with backoff + key rotation."""
+        user_prompt = (
+            f"Translate these merged dubbing segments into {TARGET_LANG}.\n"
+            f"{NATIVE_SCRIPT_RULE}\n"
+            f"{target_script_instruction(TARGET_LANG, TARGET_LANG_CODE)}\n\n"
+            f"Important:\n"
+            f"- These segments will be passed directly into TTS/voice cloning.\n"
+            f"- Make each translated_text natural, short, and speakable.\n"
+            f"- Each segment has target_seconds and max_chars. Your tts_text MUST NOT exceed max_chars characters.\n"
+            f"- If a faithful translation would exceed max_chars, rephrase more concisely — do not truncate.\n"
+            f"- Do not output source text, transliteration, labels, explanations, or markdown.\n"
+            f"- Keep religious/devotional terms respectful and accurate.\n\n"
+            f"Segments JSON:\n{json.dumps(chunk_payload, ensure_ascii=False, indent=2)}"
+        )
 
-    # Merge translations back into segments
-    if translations is None:
-        raise RuntimeError("Translation failed: Gemini returned no translations.")
+        total_attempts = 0
+        last_error = None
 
-    trans_map = {t["id"]: t for t in translations}
+        while total_attempts < TRANSLATION_MAX_ATTEMPTS:
+            total_attempts += 1
+            try:
+                client = _get_gemini_client()
+                response = client.models.generate_content(
+                    model=model,
+                    contents=user_prompt,
+                    config={
+                        "system_instruction": TRANSLATION_SYSTEM_PROMPT,
+                        "temperature": 0.3,
+                        "response_mime_type": "application/json",
+                    },
+                )
+                result = _normalise_translation_response(json.loads(response.text))
+                # Validate every segment ID is present
+                result_ids = {t["id"] for t in result}
+                expected_ids = {s["id"] for s in chunk_payload}
+                missing = expected_ids - result_ids
+                if missing:
+                    raise RuntimeError(
+                        f"Chunk {chunk_idx}: missing segment ids {sorted(missing)[:5]}"
+                    )
+                # Validate no empty translations
+                for t in result:
+                    txt = str(t.get("translated_text", "")).strip()
+                    if not txt:
+                        src = next(
+                            (s for s in chunk_payload if s["id"] == t["id"]), {}
+                        )
+                        if str(src.get("text", "")).strip():
+                            raise RuntimeError(
+                                f"Chunk {chunk_idx}: empty translated_text for id {t['id']}"
+                            )
+                log.info(
+                    f"[Gemini] Chunk {chunk_idx} ({len(chunk_payload)} segs) "
+                    f"translated on attempt {total_attempts}."
+                )
+                return result
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                # Immediate key rotation on quota/rate errors
+                is_rate_limit = any(
+                    kw in err_str for kw in ("429", "quota", "rate_limit", "resource_exhausted")
+                )
+                if is_rate_limit:
+                    log.warning(
+                        f"[Gemini] Chunk {chunk_idx} attempt {total_attempts}: "
+                        f"rate limit, rotating key."
+                    )
+                    # _get_gemini_client() already rotates; just retry quickly.
+                    time.sleep(0.5 + random.uniform(0, 0.5))
+                    continue
+                # Backoff with jitter for other errors
+                backoff = min(30.0, (2 ** total_attempts) + random.uniform(0, 1))
+                log.warning(
+                    f"[Gemini] Chunk {chunk_idx} attempt {total_attempts} failed: {e}. "
+                    f"Retrying in {backoff:.1f}s..."
+                )
+                time.sleep(backoff)
+
+        raise RuntimeError(
+            f"[Gemini] Chunk {chunk_idx} failed after {TRANSLATION_MAX_ATTEMPTS} attempts. "
+            f"Last error: {last_error}"
+        )
+
+    # ── Execute chunks in parallel ────────────────────────────────────────────
+    all_translations: list[dict] = []
+    if len(chunks) == 1:
+        # Single chunk — skip thread overhead
+        all_translations = _translate_chunk(chunks[0], 0)
+    else:
+        with ThreadPoolExecutor(max_workers=TRANSLATION_MAX_PARALLEL) as executor:
+            futures = {
+                executor.submit(_translate_chunk, chunk, idx): idx
+                for idx, chunk in enumerate(chunks)
+            }
+            chunk_results: dict[int, list[dict]] = {}
+            for future in as_completed(futures):
+                chunk_idx = futures[future]
+                # Let exceptions propagate — if one chunk fails after all retries,
+                # the entire translation job should fail rather than produce
+                # partial output.
+                chunk_results[chunk_idx] = future.result()
+            # Reassemble in order
+            for idx in range(len(chunks)):
+                all_translations.extend(chunk_results[idx])
+
+    # ── Merge translations back into segments ─────────────────────────────────
+    trans_map = {t["id"]: t for t in all_translations}
     missing = [seg["id"] for seg in segments if seg["id"] not in trans_map]
     if missing:
         raise RuntimeError(f"Gemini translation missing segment ids: {missing[:10]}")
@@ -1619,14 +1771,323 @@ def translate_segments(segments: list[dict]) -> list[dict]:
         if not translated and seg["text"].strip():
             raise RuntimeError(f"Missing translated_text for segment {seg['id']}")
         seg["translated_text"] = translated
-        # tts_text is the TTS-optimised version (acronyms spelled out, etc.).
-        # Fall back to translated_text if Gemini didn't return it.
         tts_raw = str(t.get("tts_text", "")).strip()
         seg["tts_text"] = tts_raw if tts_raw else translated
         seg["emotion"] = t.get("emotion", "neutral")
         seg["speaking_rate"] = _safe_speaking_rate(t.get("speaking_rate", 1.0))
 
-    log.info(f"[Gemini] Translation complete using {model}.")
+    log.info(
+        f"[Gemini] Translation complete: {len(segments)} segments, "
+        f"{len(chunks)} chunks, model={model}."
+    )
+
+    # ── Phase 2: Post-translation QA gates ────────────────────────────────────
+    # 1. Native-script QA gate (P1-15)
+    # 2. Duration overshoot retry (NEW)
+    segments = _qa_native_script(segments, target_cps)
+    segments = _qa_duration_overshoot(segments, target_cps)
+
+    return segments
+
+
+# ─── Phase 2: Native-script QA gate (P1-15) ──────────────────────────────────
+# Validates that tts_text is written in the correct Unicode script for the
+# target language.  Catches Hinglish, Roman Tamil, etc. and retries only the
+# failing segments with the Pro model.
+
+# Unicode ranges for script detection.  Each entry is a tuple of (start, end)
+# code point ranges that count as "native" for that language family.
+_SCRIPT_RANGES: dict[str, list[tuple[int, int]]] = {
+    # Devanagari (Hindi, Marathi, Nepali, Sanskrit)
+    "devanagari": [(0x0900, 0x097F), (0xA8E0, 0xA8FF), (0x11B00, 0x11B5F)],
+    # Bengali
+    "bengali": [(0x0980, 0x09FF)],
+    # Gurmukhi (Punjabi)
+    "gurmukhi": [(0x0A00, 0x0A7F)],
+    # Gujarati
+    "gujarati": [(0x0A80, 0x0AFF)],
+    # Odia
+    "odia": [(0x0B00, 0x0B7F)],
+    # Tamil
+    "tamil": [(0x0B80, 0x0BFF)],
+    # Telugu
+    "telugu": [(0x0C00, 0x0C7F)],
+    # Kannada
+    "kannada": [(0x0C80, 0x0CFF)],
+    # Malayalam
+    "malayalam": [(0x0D00, 0x0D7F)],
+    # Arabic / Urdu
+    "arabic": [(0x0600, 0x06FF), (0x0750, 0x077F), (0xFB50, 0xFDFF), (0xFE70, 0xFEFF)],
+    # CJK (Chinese, Japanese kanji)
+    "cjk": [(0x4E00, 0x9FFF), (0x3400, 0x4DBF), (0x2E80, 0x2EFF), (0x3000, 0x303F)],
+    # Hiragana + Katakana (Japanese)
+    "japanese_kana": [(0x3040, 0x309F), (0x30A0, 0x30FF), (0x31F0, 0x31FF)],
+    # Hangul (Korean)
+    "hangul": [(0xAC00, 0xD7AF), (0x1100, 0x11FF), (0x3130, 0x318F)],
+    # Cyrillic (Russian, Ukrainian)
+    "cyrillic": [(0x0400, 0x04FF), (0x0500, 0x052F)],
+}
+
+# Map target language code → which script ranges to check
+_LANG_TO_SCRIPT: dict[str, list[str]] = {
+    "hi": ["devanagari"], "mr": ["devanagari"], "ne": ["devanagari"], "sa": ["devanagari"],
+    "bn": ["bengali"], "pa": ["gurmukhi"], "gu": ["gujarati"],
+    "or": ["odia"], "ta": ["tamil"], "te": ["telugu"],
+    "kn": ["kannada"], "ml": ["malayalam"],
+    "ar": ["arabic"], "ur": ["arabic"],
+    "zh": ["cjk"], "ja": ["cjk", "japanese_kana"], "ko": ["hangul"],
+    "ru": ["cyrillic"], "uk": ["cyrillic"],
+}
+
+# Threshold: at least this fraction of non-space, non-punctuation chars must
+# be in the native script.  80% allows for embedded numbers, punctuation,
+# and occasional transliterated proper nouns.
+_NATIVE_SCRIPT_THRESHOLD = 0.80
+
+
+def _is_native_char(ch: str, script_keys: list[str]) -> bool:
+    """Check if a character falls within the given script ranges."""
+    cp = ord(ch)
+    for key in script_keys:
+        for start, end in _SCRIPT_RANGES.get(key, []):
+            if start <= cp <= end:
+                return True
+    return False
+
+
+def check_native_script(text: str, target_lang_code: str) -> bool:
+    """
+    Return True if text passes the native-script check for the target language.
+
+    Languages written in Latin script (English, Spanish, French, etc.) always pass.
+    For non-Latin targets, at least _NATIVE_SCRIPT_THRESHOLD of speakable characters
+    must be in the correct Unicode script range.
+    """
+    code = (target_lang_code or "").lower().strip()
+    if code not in _LANG_TO_SCRIPT:
+        # Latin-script languages or unknown — always pass
+        return True
+
+    script_keys = _LANG_TO_SCRIPT[code]
+    # Count only non-space, non-digit, non-ascii-punctuation chars
+    native_count = 0
+    total_count = 0
+    for ch in text:
+        if ch.isspace() or ch.isdigit():
+            continue
+        # Skip common punctuation (ASCII + some Unicode)
+        if ord(ch) < 0x0080 and not ch.isalpha():
+            continue
+        total_count += 1
+        if _is_native_char(ch, script_keys):
+            native_count += 1
+
+    if total_count == 0:
+        return True  # empty or all-digits/punctuation — pass
+    return (native_count / total_count) >= _NATIVE_SCRIPT_THRESHOLD
+
+
+def _qa_native_script(segments: list[dict], target_cps: float) -> list[dict]:
+    """
+    Post-translation QA: validate that tts_text uses the correct native script.
+
+    Segments that fail are retried individually with the Pro fallback model and
+    an explicit "Devanagari only" / "Tamil only" instruction.  If the retry also
+    fails, the segment is kept as-is (better than crashing) but flagged.
+    """
+    import random
+
+    code = (TARGET_LANG_CODE or "").lower().strip()
+    if code not in _LANG_TO_SCRIPT:
+        return segments  # Latin-script target — nothing to check
+
+    failed_segments: list[dict] = []
+    for seg in segments:
+        tts_text = seg.get("tts_text", "")
+        if tts_text and not check_native_script(tts_text, code):
+            failed_segments.append(seg)
+
+    if not failed_segments:
+        return segments
+
+    log.warning(
+        f"[QA-Script] {len(failed_segments)} segments failed native-script check. "
+        f"Retrying with Pro model..."
+    )
+
+    # Retry each failed segment individually with Pro
+    fallback_model = _gemini_fallback_model()
+    script_instruction = target_script_instruction(TARGET_LANG, TARGET_LANG_CODE)
+    retried = 0
+    fixed = 0
+
+    for seg in failed_segments:
+        seg_target_seconds = round(compute_target_speech_seconds(seg), 2)
+        seg_max_chars = compute_segment_max_chars(seg_target_seconds, target_cps)
+
+        retry_payload = [{
+            "id": seg["id"],
+            "start": seg["start"],
+            "end": seg["end"],
+            "duration": round(seg["end"] - seg["start"], 2),
+            "target_seconds": seg_target_seconds,
+            "max_chars": seg_max_chars,
+            "text": seg["text"],
+            "speaker": seg.get("speaker", ""),
+            "prev_text": "",
+            "next_text": "",
+        }]
+
+        retry_prompt = (
+            f"Translate this segment into {TARGET_LANG}.\n"
+            f"CRITICAL: {script_instruction}\n"
+            f"Do NOT use Roman/Latin script for the target language. "
+            f"Every word in tts_text MUST be in the native script.\n"
+            f"The tts_text must be ≤ {seg_max_chars} characters.\n\n"
+            f"Segment JSON:\n{json.dumps(retry_payload, ensure_ascii=False)}"
+        )
+
+        try:
+            client = _get_gemini_client()
+            response = client.models.generate_content(
+                model=fallback_model,
+                contents=retry_prompt,
+                config={
+                    "system_instruction": TRANSLATION_SYSTEM_PROMPT,
+                    "temperature": 0.2,
+                    "response_mime_type": "application/json",
+                },
+            )
+            result = _normalise_translation_response(json.loads(response.text))
+            if result and result[0].get("id") == seg["id"]:
+                new_tts = str(result[0].get("tts_text", "")).strip()
+                new_trans = str(result[0].get("translated_text", "")).strip()
+                if new_tts and check_native_script(new_tts, code):
+                    seg["tts_text"] = new_tts
+                    if new_trans:
+                        seg["translated_text"] = new_trans
+                    seg["emotion"] = result[0].get("emotion", seg.get("emotion", "neutral"))
+                    seg["speaking_rate"] = _safe_speaking_rate(
+                        result[0].get("speaking_rate", seg.get("speaking_rate", 1.0))
+                    )
+                    seg.setdefault("_translation_qa", {})["script_retry"] = "fixed"
+                    fixed += 1
+                else:
+                    seg.setdefault("_translation_qa", {})["script_retry"] = "still_failed"
+            else:
+                seg.setdefault("_translation_qa", {})["script_retry"] = "bad_response"
+        except Exception as e:
+            log.warning(f"[QA-Script] Pro retry failed for seg {seg['id']}: {e}")
+            seg.setdefault("_translation_qa", {})["script_retry"] = "error"
+        retried += 1
+        time.sleep(0.3 + random.uniform(0, 0.3))  # gentle rate limiting
+
+    log.info(
+        f"[QA-Script] Retried {retried} segments with Pro. "
+        f"Fixed {fixed}/{retried}."
+    )
+    return segments
+
+
+# ─── Phase 2: Duration overshoot retry (NEW) ─────────────────────────────────
+# After translation, predict the speech duration of each tts_text.  If it would
+# exceed the target by >15%, ask Gemini to shorten just that segment.  This
+# catches over-long translations BEFORE synthesis, preventing emergency speed
+# warping in Phase 1's synthesize loop.
+
+_DURATION_OVERSHOOT_THRESHOLD = 1.15  # 15% over budget → trigger retry
+_DURATION_OVERSHOOT_MAX_RETRIES = 1   # Only one "shorten" pass (diminishing returns)
+
+
+def _qa_duration_overshoot(segments: list[dict], target_cps: float) -> list[dict]:
+    """
+    Pre-synthesis duration check: if predicted TTS duration of tts_text exceeds
+    target_seconds by more than 15%, ask Gemini to shorten the segment.
+    """
+    import random
+
+    overshoot_segments: list[dict] = []
+    for seg in segments:
+        tts_text = seg.get("tts_text", "")
+        if not tts_text:
+            continue
+        target_seconds = compute_target_speech_seconds(seg)
+        if target_seconds <= 0:
+            continue
+        predicted = predict_segment_speech_seconds(tts_text, 1.0, target_cps)
+        if predicted / target_seconds > _DURATION_OVERSHOOT_THRESHOLD:
+            overshoot_segments.append(seg)
+
+    if not overshoot_segments:
+        return segments
+
+    log.info(
+        f"[QA-Duration] {len(overshoot_segments)} segments exceed duration budget "
+        f"by >{int((_DURATION_OVERSHOOT_THRESHOLD - 1) * 100)}%. Requesting shorter translations..."
+    )
+
+    model = _gemini_model_for_mode(TRANSLATION_MODE)
+    script_instruction = target_script_instruction(TARGET_LANG, TARGET_LANG_CODE)
+    shortened = 0
+
+    for seg in overshoot_segments:
+        seg_target_seconds = round(compute_target_speech_seconds(seg), 2)
+        seg_max_chars = compute_segment_max_chars(seg_target_seconds, target_cps)
+
+        shorten_prompt = (
+            f"The following translated TTS text is too long for its time slot.\n"
+            f"Target: {seg_target_seconds} seconds, max {seg_max_chars} characters.\n"
+            f"Current tts_text ({len(seg.get('tts_text', ''))} chars): "
+            f"{seg.get('tts_text', '')}\n\n"
+            f"Rewrite it shorter in {TARGET_LANG}. Keep the same meaning but use fewer words.\n"
+            f"{script_instruction}\n"
+            f"Return JSON: {{\"id\": {seg['id']}, \"tts_text\": \"<shortened>\", "
+            f"\"translated_text\": \"<subtitle version>\"}}"
+        )
+
+        try:
+            client = _get_gemini_client()
+            response = client.models.generate_content(
+                model=model,
+                contents=shorten_prompt,
+                config={
+                    "system_instruction": "You are a translation editor. Shorten the text to fit the time budget. Return only valid JSON.",
+                    "temperature": 0.2,
+                    "response_mime_type": "application/json",
+                },
+            )
+            result = json.loads(response.text)
+            if isinstance(result, list) and result:
+                result = result[0]
+            if isinstance(result, dict):
+                new_tts = str(result.get("tts_text", "")).strip()
+                new_trans = str(result.get("translated_text", "")).strip()
+                if new_tts and len(new_tts) < len(seg.get("tts_text", "")):
+                    # Verify the shortened version actually fits better
+                    new_predicted = predict_segment_speech_seconds(new_tts, 1.0, target_cps)
+                    old_predicted = predict_segment_speech_seconds(
+                        seg.get("tts_text", ""), 1.0, target_cps
+                    )
+                    if new_predicted < old_predicted:
+                        seg["tts_text"] = new_tts
+                        if new_trans:
+                            seg["translated_text"] = new_trans
+                        seg.setdefault("_translation_qa", {})["duration_retry"] = "shortened"
+                        shortened += 1
+                    else:
+                        seg.setdefault("_translation_qa", {})["duration_retry"] = "no_improvement"
+                else:
+                    seg.setdefault("_translation_qa", {})["duration_retry"] = "longer_or_empty"
+            else:
+                seg.setdefault("_translation_qa", {})["duration_retry"] = "bad_response"
+        except Exception as e:
+            log.warning(f"[QA-Duration] Shorten retry failed for seg {seg['id']}: {e}")
+            seg.setdefault("_translation_qa", {})["duration_retry"] = "error"
+        time.sleep(0.2 + random.uniform(0, 0.2))
+
+    log.info(
+        f"[QA-Duration] Shortened {shortened}/{len(overshoot_segments)} over-long segments."
+    )
     return segments
 
 
