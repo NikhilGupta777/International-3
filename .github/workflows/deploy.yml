@@ -322,12 +322,11 @@ jobs:
             echo "Base unchanged — will reuse existing base image, build slim only (~2-3 min)"
           fi
 
-      # ── Step 2a: Build base image (only when base files changed) ───────────
-      - name: Free disk space (base build only)
-        if: steps.detect_base.outputs.base_changed == 'true'
+      # ── Step 2a: Free runner disk before any translator image build ───────
+      - name: Free disk space for translator build
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
-          sudo docker system prune -af || true
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo docker system prune -af --volumes || true
           df -h
 
       - name: Ensure base ECR repo exists
