@@ -569,17 +569,31 @@ async function submitTranslatorBatchJob(
   s3Key: string,
   options: TranslatorOptions,
   useCpuQueue = false,
+  durationSeconds?: number,
 ): Promise<string> {
   const useFastGpuQueue = !useCpuQueue && options.lipSync && Boolean(BATCH_QUEUE_FAST);
   const queue   = useCpuQueue ? CPU_BATCH_QUEUE   : (useFastGpuQueue ? BATCH_QUEUE_FAST : BATCH_QUEUE);
   const jobDef  = useCpuQueue ? CPU_BATCH_JOB_DEF : BATCH_JOB_DEF;
   const runtime = useCpuQueue ? "batch-cpu"       : (useFastGpuQueue ? "batch-lipsync" : "batch");
 
+  // Phase 5 (P2-3): Dynamic Batch timeout based on video duration.
+  // Formula: max(900, source_duration × 6).  A 10-min video gets 60 min;
+  // a 25-min video gets 150 min.  Falls back to the static env-var default
+  // when duration is not known at submission time (direct GPU path).
+  const cpuTimeout = 1800;
+  let gpuTimeout = TRANSLATOR_BATCH_TIMEOUT_SECONDS;
+  if (durationSeconds && Number.isFinite(durationSeconds) && durationSeconds > 0) {
+    gpuTimeout = Math.max(900, Math.round(durationSeconds * 6));
+    // Never exceed the env-var configured maximum (safety cap)
+    gpuTimeout = Math.min(gpuTimeout, TRANSLATOR_BATCH_TIMEOUT_SECONDS);
+  }
+  const timeout = useCpuQueue ? cpuTimeout : gpuTimeout;
+
   const batchResult = await batch.send(new SubmitJobCommand({
     jobName:       `translator-${useCpuQueue ? "cpu-" : ""}${jobId.slice(0, 8)}`,
     jobQueue:      queue,
     jobDefinition: jobDef,
-    timeout:       { attemptDurationSeconds: useCpuQueue ? 1800 : TRANSLATOR_BATCH_TIMEOUT_SECONDS },
+    timeout:       { attemptDurationSeconds: timeout },
     containerOverrides: { environment: buildBatchEnvironment(jobId, s3Key, options) },
   }));
 
@@ -589,7 +603,7 @@ async function submitTranslatorBatchJob(
     UpdateExpression: "SET batchJobId = :batchJobId, timeoutSeconds = :timeoutSeconds, runtime = :runtime, updatedAt = :updatedAt",
     ExpressionAttributeValues: {
       ":batchJobId":      { S: String(batchResult.jobId) },
-      ":timeoutSeconds":  { N: String(useCpuQueue ? 1800 : TRANSLATOR_BATCH_TIMEOUT_SECONDS) },
+      ":timeoutSeconds":  { N: String(timeout) },
       ":runtime":         { S: runtime },
       ":updatedAt":       { N: String(Date.now()) },
     },
@@ -1013,7 +1027,7 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
         runtime: "batch",
         durationSeconds: Math.round(durationSeconds),
       });
-      await submitTranslatorBatchJob(jobId, s3Key, options);
+      await submitTranslatorBatchJob(jobId, s3Key, options, false, durationSeconds);
       return;
     }
 

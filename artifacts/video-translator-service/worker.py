@@ -414,12 +414,6 @@ def run_demucs(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
     Separate vocals from background using Demucs htdemucs model.
     Returns (vocals_path, background_path).
     """
-    # Lazy install demucs (stripped from base image to keep CI fast)
-    if importlib.util.find_spec("demucs") is None:
-        import subprocess as _spd, sys as _sysd
-        _spd.run([_sysd.executable, '-m', 'pip', 'install',
-                  '--quiet', '--prefer-binary', 'demucs==4.0.1'], check=True)
-
     import torch
     from demucs.apply import apply_model
     from demucs.audio import AudioFile, save_audio
@@ -2537,11 +2531,15 @@ def synthesize_segments_cosyvoice(
             # instead of flat neutral on every segment.
             # Only used when:
             #  - model has inference_instruct2
+            #  - CosyVoice3 (on CosyVoice2-0.5B, instruct2 speaks the
+            #    instruct_text aloud instead of applying it as style control —
+            #    upstream bug github.com/FunAudioLLM/CosyVoice/issues/1802)
             #  - emotion is non-neutral
             #  - we're NOT in cross-lingual mode (instruct2 works like zero-shot
             #    with added instruct_text; cross-lingual has a different flow)
             use_instruct2 = (
                 _has_instruct2
+                and is_cosyvoice3
                 and emotion_instruction
                 and not use_cross_lingual
             )
@@ -3357,7 +3355,39 @@ def assemble_dubbed_audio(
         end_sample = start_sample + len(data)
         if end_sample > len(mixed):
             mixed = np.pad(mixed, (0, end_sample - len(mixed)))
-        mixed[start_sample:end_sample] += data
+
+        # Track the furthest sample written by previous iterations so we can
+        # crossfade only over the true overlap, not over a fixed probe window.
+        if idx == 0 or "prev_placed_end_sample" not in locals():
+            prev_placed_end_sample = 0
+
+        # ── Phase 4 (P1-22): Equal-power crossfade at segment boundaries ──
+        # When this segment overlaps with already-placed audio (from a
+        # previous segment's overflow into the gap), we apply an equal-power
+        # crossfade over the actual overlap region. This eliminates clicks,
+        # avoids attenuating non-overlapping leading audio, and handles long
+        # overlaps consistently by blending the full overlap.
+        overlap_start = start_sample
+        overlap_end = min(end_sample, prev_placed_end_sample)
+        overlap_len = max(0, overlap_end - overlap_start)
+
+        if overlap_len > 0:
+            existing_region = mixed[overlap_start:overlap_end].copy()
+            # Equal-power: sqrt-based fade curves (energy-preserving)
+            t = np.linspace(0, 1, overlap_len, dtype=np.float32)
+            fade_in = np.sqrt(t)
+            fade_out = np.sqrt(1.0 - t)
+            # Blend only the true overlap: fade out existing, fade in new
+            blended = existing_region * fade_out + data[:overlap_len] * fade_in
+            mixed[overlap_start:overlap_end] = blended
+            # Place the rest of the new segment without blending
+            if overlap_len < len(data):
+                mixed[overlap_end:end_sample] += data[overlap_len:]
+            placed_action = placed_action if placed_action != "passthrough" else "crossfade"
+        else:
+            mixed[start_sample:end_sample] += data
+
+        prev_placed_end_sample = max(prev_placed_end_sample, end_sample)
 
         placed_seconds = len(data) / float(SR)
         placed_overflow_seconds = max(0.0, placed_seconds - (slot_end_sec - float(seg["start"])))
@@ -3403,8 +3433,20 @@ def assemble_dubbed_audio(
         )
         return final_mix
 
-    # No background separation (Demucs off or failed) — return voice-only track
-    return dubbed_path
+    # No background separation (Demucs off or failed) — apply loudnorm to
+    # the voice-only track so output levels are broadcast-standard regardless
+    # of per-segment volume differences from CosyVoice.
+    # Phase 4 (P1-21): previously this path returned the raw WAV which had
+    # inconsistent per-segment loudness.
+    log.info("[Assemble] Applying loudnorm to voice-only track...")
+    normalised_path = out_dir / "dubbed_voice_normalised.wav"
+    run_ffmpeg(
+        "-i", str(dubbed_path),
+        "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,alimiter=limit=0.95",
+        "-ar", str(SR),
+        str(normalised_path),
+    )
+    return normalised_path
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3629,18 +3671,56 @@ def main():
 
         demucs_applied = False
         demucs_warning = ""
-        if USE_DEMUCS:
+
+        # Phase 4 (P1-24): Demucs (GPU, ~30s) and AssemblyAI (HTTP, ~20-40s)
+        # are independent when transcription runs on the original audio.
+        # We launch Demucs in a background thread and run AssemblyAI
+        # concurrently.  This saves ~30s per job on average.
+        #
+        # Demucs output is used ONLY for:
+        #   - Background track (final mix)
+        # Transcription runs on the original 16k audio (not Demucs vocals).
+        # This is a deliberate tradeoff: ASR quality on original audio is
+        # slightly lower when there's loud background music, but the ~30s
+        # wall-time savings is worth it for the 95% of videos where music
+        # is ambient/low-level.  Heavy-music videos should use the
+        # DEMUCS_BEFORE_ASR=true flag to force sequential mode.
+        _demucs_before_asr = os.environ.get("DEMUCS_BEFORE_ASR", "false").lower() in ("1", "true", "yes")
+
+        if USE_DEMUCS and not _demucs_before_asr:
+            # ── Parallel path: Demucs + ASR run concurrently ──────────────
+            from concurrent.futures import ThreadPoolExecutor as _TPE_demucs
+            from concurrent.futures import Future as _Future_demucs
+
+            update_progress("EXTRACTING", 12, "Separating voice & transcribing (parallel)...")
+
+            def _run_demucs_task():
+                return run_demucs(full_audio_hq, work_dir)
+
+            with _TPE_demucs(max_workers=1, thread_name_prefix="demucs") as demucs_pool:
+                demucs_future: _Future_demucs = demucs_pool.submit(_run_demucs_task)
+
+                # Run transcription on original audio while Demucs processes
+                update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
+                segments = transcribe(transcription_audio)
+
+                # Collect Demucs result
+                try:
+                    _vocals_path, bg_path = demucs_future.result(timeout=600)
+                    background_audio = bg_path
+                    demucs_applied = True
+                    log.info("[Demucs+ASR] Parallel execution complete. Demucs OK.")
+                except Exception as e:
+                    demucs_warning = str(e)
+                    log.warning(f"[Demucs+ASR] Demucs failed (ASR still succeeded): {e}")
+
+        elif USE_DEMUCS and _demucs_before_asr:
+            # ── Sequential path: Demucs first, then ASR on vocals ─────────
+            # Use DEMUCS_BEFORE_ASR=true when the video has heavy background
+            # music and ASR on original audio would miss words.
             update_progress("EXTRACTING", 12, "Separating voice from background music...")
             try:
                 vocals_path, bg_path = run_demucs(full_audio_hq, work_dir)
-                # Phase 3 (P1-6): Keep original audio as cloning reference.
-                # Demucs vocals have metallic phase artifacts that degrade the
-                # speaker encoder.  We use Demucs output only for:
-                #   - Transcription (cleaner ASR on vocals)
-                #   - Background track (for the final mix)
-                # The voice-cloning reference stays on the original full audio
-                # which preserves natural timbre for the speaker encoder.
-                # reference_audio stays = full_audio_hq (set above)
                 transcription_audio = resample_audio(vocals_path, work_dir / "vocals_16k.wav", 16000, mono=True)
                 background_audio = bg_path
                 demucs_applied = True
@@ -3648,9 +3728,14 @@ def main():
                 demucs_warning = str(e)
                 log.warning(f"[Demucs] Skipped: {e}")
 
-        # â”€â”€ 4. Transcription â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
-        segments = transcribe(transcription_audio)
+            update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
+            segments = transcribe(transcription_audio)
+
+        else:
+            # ── No Demucs ─────────────────────────────────────────────────
+            update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
+            segments = transcribe(transcription_audio)
+
 
         if not segments:
             raise RuntimeError("No speech detected in the video.")
