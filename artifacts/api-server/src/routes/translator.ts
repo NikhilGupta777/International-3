@@ -1098,6 +1098,61 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
   }
 }
 
+const PROBE_S3_VIDEO_DURATION_TIMEOUT_MS = 15_000;
+
+async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> {
+  // Best-effort: download the video to a temp file, probe duration via ffprobe,
+  // then clean up. If it fails or the full download+probe workflow takes longer
+  // than 15s, return undefined so the caller falls back to the static timeout.
+  // This keeps the submit endpoint responsive even for large or slow uploads.
+  const tmpPath = join(tmpdir(), `probe-${randomUUID()}.mp4`);
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  let timedOut = false;
+
+  const probePromise = (async (): Promise<number> => {
+    await downloadS3ObjectToFile(s3Key, tmpPath);
+    return probeDurationSeconds(tmpPath);
+  })();
+
+  try {
+    const duration = await Promise.race<number | undefined>([
+      probePromise,
+      new Promise<undefined>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          resolve(undefined);
+        }, PROBE_S3_VIDEO_DURATION_TIMEOUT_MS);
+      }),
+    ]);
+
+    if (timedOut) {
+      console.warn(
+        `[Translator] Duration probe timed out after ${PROBE_S3_VIDEO_DURATION_TIMEOUT_MS}ms (non-blocking)`
+      );
+      return undefined;
+    }
+
+    return duration;
+  } catch (err) {
+    console.warn("[Translator] Duration probe failed (non-blocking):", err);
+    return undefined;
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+
+    void probePromise
+      .catch((err) => {
+        if (timedOut) {
+          console.warn("[Translator] Timed-out duration probe finished with error:", err);
+        }
+      })
+      .finally(() => {
+        rm(tmpPath, { force: true }).catch(() => {});
+      });
+  }
+}
+
 async function startTranslatorJob(jobId: string, s3Key: string, options: TranslatorOptions): Promise<{ runtime: string; batchJobId?: string }> {
   // Neural Voice (no GPU): route to CPU Fargate Batch queue for actual edge-tts dubbing.
   // The CPU worker runs worker.py with VOICE_CLONE=false — uses edge-tts, no CosyVoice.
@@ -1113,8 +1168,11 @@ async function startTranslatorJob(jobId: string, s3Key: string, options: Transla
     return { runtime: "lambda-fast" };
   }
 
-  // Clone Voice: GPU Batch queue
-  const batchJobId = await submitTranslatorBatchJob(jobId, s3Key, options, false);
+  // Clone Voice: GPU Batch queue.
+  // Probe video duration so we can compute a dynamic Batch timeout (P2-3).
+  // This is best-effort: if the probe fails we fall back to the static max.
+  const durationSeconds = await probeS3VideoDuration(s3Key);
+  const batchJobId = await submitTranslatorBatchJob(jobId, s3Key, options, false, durationSeconds);
   return { runtime: "batch", batchJobId };
 }
 
