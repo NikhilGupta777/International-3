@@ -64,8 +64,10 @@ const PENDING_QUEUE_STATES = new Set([
   "audio",
   "uploading",
   "transcribing",
+  "generating",
   "correcting",
   "translating",
+  "verifying",
 ]);
 const STALE_QUEUE_RECONCILE_MS = 90_000;
 const LOCAL_CLIP_STALE_MS =
@@ -205,6 +207,8 @@ async function submitYoutubeQueueJob(
   const durationSecs =
     typeof startSec === "number" && typeof endSec === "number" && Number.isFinite(endSec - startSec)
       ? Math.max(0, endSec - startSec)
+      : typeof input.meta?.durationSecs === "number" && Number.isFinite(input.meta.durationSecs)
+        ? Math.max(0, input.meta.durationSecs)
       : null;
   await ddb.send(
     new PutItemCommand({

@@ -11,6 +11,7 @@ import {
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
+  UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
@@ -604,6 +605,19 @@ export interface SrtJob {
 const jobs = new Map<string, SrtJob>();
 const CANCELLED_BY_USER = "Cancelled by user";
 const persistedSubtitleTimers = new Map<string, NodeJS.Timeout>();
+const ACTIVE_SUBTITLE_STALE_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.SUBTITLES_ACTIVE_STALE_MS ?? "1080000", 10) || 1_080_000,
+);
+const ACTIVE_SUBTITLE_STATUSES = new Set<JobStatus>([
+  "pending",
+  "audio",
+  "uploading",
+  "generating",
+  "correcting",
+  "translating",
+  "verifying",
+]);
 
 async function persistSubtitleJob(jobId: string, job: SrtJob): Promise<void> {
   if (!ddb || !JOB_TABLE) return;
@@ -668,6 +682,15 @@ function schedulePersistSubtitleJob(jobId: string, job: SrtJob): void {
   persistedSubtitleTimers.set(jobId, timeout);
 }
 
+async function flushSubtitleJobPersistence(jobId: string, job: SrtJob): Promise<void> {
+  const existing = persistedSubtitleTimers.get(jobId);
+  if (existing) {
+    clearTimeout(existing);
+    persistedSubtitleTimers.delete(jobId);
+  }
+  await persistSubtitleJob(jobId, job);
+}
+
 async function readPersistedSubtitleJob(jobId: string): Promise<{
   status: string;
   message: string | null;
@@ -678,6 +701,8 @@ async function readPersistedSubtitleJob(jobId: string): Promise<{
   durationSecs: number | null;
   progressPct: number | null;
   updatedAt: number | null;
+  jobType: string | null;
+  batchJobId: string | null;
 } | null> {
   if (!ddb || !JOB_TABLE) return null;
   const out = await ddb.send(new GetItemCommand({
@@ -697,7 +722,48 @@ async function readPersistedSubtitleJob(jobId: string): Promise<{
     durationSecs: item.durationSecs?.N ? Number(item.durationSecs.N) : null,
     progressPct: item.progressPct?.N ? Number(item.progressPct.N) : null,
     updatedAt: item.updatedAt?.N ? Number(item.updatedAt.N) : null,
+    jobType: item.jobType?.S ?? null,
+    batchJobId: item.batchJobId?.S ?? null,
   };
+}
+
+async function markStalePersistedSubtitleJob(jobId: string, updatedAt: number | null): Promise<{
+  status: "error";
+  message: string;
+  progressPct: number;
+  updatedAt: number;
+} | null> {
+  if (!ddb || !JOB_TABLE || !updatedAt || Date.now() - updatedAt < ACTIVE_SUBTITLE_STALE_MS) {
+    return null;
+  }
+  const now = Date.now();
+  const message = "Subtitle job stopped before completion. Please retry; long videos now use the worker queue.";
+  await ddb.send(new UpdateItemCommand({
+    TableName: JOB_TABLE,
+    Key: { jobId: { S: jobId } },
+    UpdateExpression: "SET #s = :s, #m = :m, #u = :u, progressPct = :p, completedAt = :c",
+    ConditionExpression: "#s IN (:pending,:audio,:uploading,:generating,:correcting,:translating,:verifying)",
+    ExpressionAttributeNames: {
+      "#s": "status",
+      "#m": "message",
+      "#u": "updatedAt",
+    },
+    ExpressionAttributeValues: {
+      ":s": { S: "error" },
+      ":m": { S: message },
+      ":u": { N: String(now) },
+      ":p": { N: "0" },
+      ":c": { N: String(now) },
+      ":pending": { S: "pending" },
+      ":audio": { S: "audio" },
+      ":uploading": { S: "uploading" },
+      ":generating": { S: "generating" },
+      ":correcting": { S: "correcting" },
+      ":translating": { S: "translating" },
+      ":verifying": { S: "verifying" },
+    },
+  }));
+  return { status: "error", message, progressPct: 0, updatedAt: now };
 }
 
 function trackSubtitleJob(jobId: string, job: SrtJob): SrtJob {
@@ -2366,6 +2432,7 @@ async function runSubtitleUrlJob(params: {
     });
   }
 
+  try {
   const cached = urlWavCache.get(params.normalizedUrl);
   if (cached && existsSync(cached.wavPath)) {
     logger.info({ normalizedUrl: params.normalizedUrl }, "WAV cache hit - skipping download and preprocessing");
@@ -2450,6 +2517,11 @@ async function runSubtitleUrlJob(params: {
       job.error = err.message || "Failed to download audio";
     }
     try { rmSync(audioDir, { recursive: true, force: true }); } catch {}
+  }
+  } finally {
+    await flushSubtitleJobPersistence(params.jobId, job).catch((err) =>
+      logger.warn({ err, jobId: params.jobId }, "Failed final subtitle job persistence flush"),
+    );
   }
 }
 
@@ -3095,6 +3167,77 @@ router.get("/subtitles/status/:jobId", async (req: Request, res: Response) => {
       return null;
     });
     if (persisted) {
+      if (persisted.batchJobId && isSubtitlesQueueEnabled()) {
+        const queueStatus = await getYoutubeQueueJobStatus(jobId).catch((err) => {
+          logger.warn({ err, jobId }, "Failed queued subtitle reconciliation before persisted response");
+          return null;
+        });
+        if (queueStatus) {
+          if (queueStatus.status === "done") {
+            const srt = queueStatus.s3Key ? await readTextFromS3(queueStatus.s3Key) : null;
+            const originalSrt = queueStatus.originalS3Key
+              ? await readTextFromS3(queueStatus.originalS3Key)
+              : null;
+            res.json({
+              status: queueStatus.status,
+              message: queueStatus.message,
+              filename: queueStatus.filename,
+              srt,
+              originalSrt,
+              originalFilename: queueStatus.originalFilename ?? null,
+              durationSecs: queueStatus.durationSecs ?? null,
+              progressPct: 100,
+              queue: {
+                updatedAt: queueStatus.updatedAt,
+                batchJobId: queueStatus.batchJobId,
+              },
+            });
+            return;
+          }
+          if (queueStatus.status === "error") {
+            res.json({
+              status: "error",
+              error: queueStatus.message ?? "Subtitle generation failed",
+              durationSecs: queueStatus.durationSecs ?? null,
+              progressPct: queueStatus.progressPct ?? 0,
+              queue: {
+                updatedAt: queueStatus.updatedAt,
+                batchJobId: queueStatus.batchJobId,
+              },
+            });
+            return;
+          }
+          res.json({
+            status: queueStatus.status,
+            message: queueStatus.message,
+            durationSecs: queueStatus.durationSecs ?? null,
+            progressPct: queueStatus.progressPct ?? 0,
+            queue: {
+              updatedAt: queueStatus.updatedAt,
+              batchJobId: queueStatus.batchJobId,
+            },
+          });
+          return;
+        }
+      }
+      if (
+        !persisted.batchJobId &&
+        ACTIVE_SUBTITLE_STATUSES.has(persisted.status as JobStatus)
+      ) {
+        const stale = await markStalePersistedSubtitleJob(jobId, persisted.updatedAt).catch((err) => {
+          logger.warn({ err, jobId }, "Failed stale persisted subtitle status update");
+          return null;
+        });
+        if (stale) {
+          res.json({
+            status: stale.status,
+            error: stale.message,
+            durationSecs: persisted.durationSecs,
+            progressPct: stale.progressPct,
+          });
+          return;
+        }
+      }
       if (persisted.status === "done") {
         const srt = persisted.s3Key ? await readTextFromS3(persisted.s3Key) : null;
         const originalSrt = persisted.originalS3Key ? await readTextFromS3(persisted.originalS3Key) : null;
