@@ -113,8 +113,9 @@ FFPROBE_TIMEOUT_SECONDS = _env_int("FFPROBE_TIMEOUT_SECONDS", 120)
 # image contents.  Enable per-environment via env vars.
 COSYVOICE_FP16  = os.environ.get("COSYVOICE_FP16", "false").lower() in ("1", "true", "yes", "on")
 COSYVOICE_VLLM  = os.environ.get("COSYVOICE_VLLM", "false").lower() in ("1", "true", "yes", "on")
-# Number of parallel synthesis workers.  >1 uses ThreadPoolExecutor with
-# separate CUDA streams.  Requires sufficient VRAM (~2× for 2 workers).
+# Reserved for future parallel synthesis support.  Current inference remains
+# sequential, so values >1 are accepted for forward compatibility but are a
+# no-op today.
 COSYVOICE_PARALLEL_SYNTH = _env_int("COSYVOICE_PARALLEL_SYNTH", 1)
 
 # ── Force HuggingFace/ModelScope offline mode ─────────────────────────────────
