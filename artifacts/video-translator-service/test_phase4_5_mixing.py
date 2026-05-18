@@ -179,8 +179,8 @@ class RequirementsHygieneTests(unittest.TestCase):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Extract package name (before ==, >=, <, etc.)
-            match = re.match(r"([a-zA-Z0-9_\-]+)", line)
+            # Extract package name (before ==, >=, <, etc.), including dotted names
+            match = re.match(r"([a-zA-Z0-9_.\-]+)", line)
             if match:
                 packages.append(match.group(1).lower().replace("-", "_"))
 
