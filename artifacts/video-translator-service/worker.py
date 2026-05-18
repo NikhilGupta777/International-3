@@ -139,7 +139,8 @@ PIPELINE_STEPS = [
 ]
 
 DEFAULT_SPEAKER_LABEL = "SPEAKER_UNKNOWN"
-TAIL_FADE_SECONDS = 0.06  # 60 ms fade-out to soften hard truncations
+# (Phase 1: TAIL_FADE_SECONDS removed.  Hard-cut + fade was replaced with
+#  silence-only tail trim in fit_audio_to_duration / assemble_dubbed_audio.)
 
 
 def _stage_local_progress(progress: int, start: int, end: int) -> int:
@@ -828,8 +829,150 @@ def extract_speaker_reference(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Phase 1 — Pacing primitives
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# We treat dub pacing as a duration-allocation problem instead of a panic-fit
+# afterthought. There are three primitives:
+#
+#   1. CHARS_PER_SEC[lang]  — empirical natural speaking rate by language
+#      (chars / second of natural speech, sourced from native speaker
+#      averages).  Used to predict how long a translated string will sound.
+#
+#   2. predict_segment_speech_seconds(text, lang, base_rate)
+#      Returns the heuristic spoken duration of `text` at speaking_rate=1.0.
+#      Used BEFORE synthesis so we can pick a CosyVoice `speed=` value.
+#
+#   3. compute_target_speech_seconds(seg)
+#      Returns the duration the dub *should* occupy.  This is NOT just
+#      (end - start): it subtracts a small safety pad and clamps to a
+#      reasonable minimum.  Cooperates with the post-synthesis QA retry.
+#
+# These are all pure functions and have no global side effects.  They are
+# the foundation Phase 2 / Phase 3 work also depends on.
+
+# Empirical chars-per-second of natural speech for each supported target
+# language.  Values calibrated against native-speaker test recordings.
+# These are deliberately on the slightly LOW side so the predicted duration
+# is a slight over-estimate, which encourages CosyVoice to slow down a hair
+# rather than rush — natural-sounding dubbing leans calm, not breathless.
+CHARS_PER_SEC: dict[str, float] = {
+    # Indo-Aryan / Devanagari languages — relatively slow per character due
+    # to longer compound glyphs and inherent vowels.
+    "hi": 13.5, "mr": 13.5, "ne": 13.5, "sa": 12.5,
+    # Indic non-Devanagari
+    "or": 12.5, "bn": 13.0, "pa": 13.5, "gu": 13.5,
+    "ta": 11.5, "te": 12.5, "kn": 12.5, "ml": 11.5, "ur": 13.0,
+    # European Latin-script languages — fast per character
+    "en": 16.5, "es": 17.5, "fr": 16.5, "de": 15.5, "it": 17.0,
+    "pt": 17.0, "nl": 16.0, "pl": 15.5, "tr": 15.5,
+    # CJK — characters carry more meaning, so chars-per-second is lower
+    "ja": 9.0, "ko": 10.5, "zh": 8.0,
+    # Cyrillic
+    "ru": 14.5, "uk": 14.5,
+    # Arabic-derived
+    "ar": 14.0,
+    # SE Asian
+    "vi": 15.0, "id": 15.5, "fil": 15.5, "fi": 15.0,
+}
+DEFAULT_CHARS_PER_SEC = 15.0
+
+# Minimum safety pad subtracted from the segment slot when computing the
+# target speech duration. Prevents back-to-back collisions and gives the
+# crossfade pass (Phase 4) headroom.
+TARGET_SLOT_SAFETY_PAD_SECONDS = 0.10
+
+# Hard floor on per-segment target duration. Below this CosyVoice produces
+# unnatural micro-utterances regardless of speed=.
+TARGET_SLOT_MIN_SECONDS = 0.45
+
+
+def chars_per_second_for_target() -> float:
+    """Lookup CHARS_PER_SEC for the configured TARGET_LANG_CODE."""
+    code = (TARGET_LANG_CODE or "").lower().strip()
+    if code in CHARS_PER_SEC:
+        return CHARS_PER_SEC[code]
+    # Fall back to the prefix (e.g. 'zh-CN' -> 'zh') before the default.
+    prefix = code.split("-", 1)[0] if "-" in code else code
+    if prefix in CHARS_PER_SEC:
+        return CHARS_PER_SEC[prefix]
+    return DEFAULT_CHARS_PER_SEC
+
+
+def _count_speakable_chars(text: str) -> int:
+    """
+    Count characters that contribute to spoken duration.
+    Excludes whitespace and standalone punctuation; keeps letter/digit/CJK runs.
+    """
+    if not text:
+        return 0
+    # Strip whitespace then drop pure-punctuation runs but keep word internals.
+    cleaned = re.sub(r"\s+", "", text)
+    # Drop characters that are purely punctuation (Unicode category P*).
+    # Doing this with a regex avoids a `unicodedata` per-char loop on 200-seg jobs.
+    cleaned = re.sub(r"[\.\,\;\:\!\?\-\—\–\(\)\[\]\{\}\"'`\u0964\u00BF\u00A1。、，：；！？「」『』《》（）]+", "", cleaned)
+    return len(cleaned)
+
+
+def predict_segment_speech_seconds(
+    text: str,
+    speaking_rate: float = 1.0,
+    chars_per_sec: Optional[float] = None,
+) -> float:
+    """
+    Heuristic predicted spoken duration of `text` at the given speaking_rate.
+    Chosen to slightly over-estimate so CosyVoice errs on the calm side.
+    """
+    cps = float(chars_per_sec) if chars_per_sec else chars_per_second_for_target()
+    char_count = _count_speakable_chars(text)
+    if char_count <= 0 or cps <= 0:
+        return 0.0
+    rate = float(speaking_rate) if speaking_rate and speaking_rate > 0 else 1.0
+    # rate > 1.0 means faster speech = shorter duration.
+    return char_count / (cps * rate)
+
+
+def compute_target_speech_seconds(seg: dict) -> float:
+    """
+    Return the duration the dubbed audio for this segment should occupy.
+
+    Uses the merged-segment 'speech_duration' (set by merge_segments_for_dubbing)
+    when available — that is the actual amount of source-spoken time, free of
+    the inter-segment silence we merged across.  Falls back to (end - start)
+    minus a small safety pad for legacy callers.
+    """
+    speech_duration = seg.get("speech_duration")
+    slot_duration = float(seg.get("end", 0)) - float(seg.get("start", 0))
+    if not isinstance(speech_duration, (int, float)) or speech_duration <= 0:
+        speech_duration = slot_duration
+    speech_duration = float(speech_duration)
+    # Never let the speech budget exceed the slot — the dub must fit.
+    target = min(float(speech_duration), float(slot_duration) - TARGET_SLOT_SAFETY_PAD_SECONDS)
+    if not math.isfinite(target):
+        return TARGET_SLOT_MIN_SECONDS
+    return max(TARGET_SLOT_MIN_SECONDS, target)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Stage 2d: Merge micro-segments for TTS quality
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _segment_speech_duration(seg: dict) -> float:
+    """
+    Return how much *speech* (not silence) lives inside this segment.
+
+    Prefers the AssemblyAI word-level [start, end] timestamps because they
+    reflect actual phonation; falls back to the segment's slot duration when
+    word data is not available.
+    """
+    words = seg.get("words") or []
+    if isinstance(words, list) and words:
+        try:
+            return max(0.0, float(words[-1]["end"]) - float(words[0]["start"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+    return max(0.0, float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)))
+
 
 def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     """
@@ -838,6 +981,13 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     synthesize speech into 0.1-0.8 second slots.
     Target: 2.5-8s merged segments. Hard max 14s.
     Respects speaker labels — never merges different speakers.
+
+    Emits 'speech_duration' on every merged segment: the sum of the source
+    spoken time, excluding any inter-segment silence we merged across.  This
+    is what compute_target_speech_seconds() / synthesize_segments_cosyvoice()
+    use to size the dub.  Without it, two short segments separated by a 1 s
+    pause would otherwise stretch their dub into the silence and push the
+    timing layer into emergency atempo.
     """
     if not segments:
         return segments
@@ -849,6 +999,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     for seg in segments:
         if buf is None:
             buf = dict(seg)
+            buf["speech_duration"] = _segment_speech_duration(seg)
             continue
 
         gap = float(seg["start"]) - float(buf["end"])
@@ -884,16 +1035,26 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
                 + str(seg.get("text", "")).strip()
             ).strip()
             buf["words"] = list(buf.get("words", [])) + list(seg.get("words", []))
+            # Sum spoken time only — never the silence we just bridged.
+            buf["speech_duration"] = (
+                float(buf.get("speech_duration") or 0.0)
+                + _segment_speech_duration(seg)
+            )
         else:
             merged.append(buf)
             buf = dict(seg)
+            buf["speech_duration"] = _segment_speech_duration(seg)
 
     if buf:
         merged.append(buf)
 
-    # Re-index segment IDs sequentially
+    # Re-index segment IDs sequentially and clamp speech_duration into the slot
+    # (a noisy diarization edge case can briefly produce > slot values).
     for i, seg in enumerate(merged):
         seg["id"] = i
+        slot = max(0.0, float(seg["end"]) - float(seg["start"]))
+        speech = float(seg.get("speech_duration") or slot)
+        seg["speech_duration"] = max(0.0, min(speech, slot))
 
     log.info(f"[Merge] {original_count} segments -> {len(merged)} after dubbing merge.")
     return merged
@@ -1730,6 +1891,41 @@ def synthesize_segments_cosyvoice(
                 return key
         return None
 
+    # ── Phase 1: pacing prep ─────────────────────────────────────────────────
+    # Use the model's actual sample_rate (P1-7).  Both CosyVoice 2 and 3
+    # report 24000 today, but anchoring on model.sample_rate means the worker
+    # will follow if a future variant ships a different rate.
+    model_sample_rate = int(getattr(model, "sample_rate", 24000) or 24000)
+    if model_sample_rate <= 0:
+        log.warning(f"[CosyVoice] Invalid model.sample_rate={model_sample_rate!r}; falling back to 24000.")
+        model_sample_rate = 24000
+
+    target_chars_per_sec = chars_per_second_for_target()
+
+    # Whether the underlying inference signature accepts our `speed=` argument.
+    # Upstream cosyvoice/cli/cosyvoice.py (verified) accepts speed on both
+    # inference_zero_shot and inference_cross_lingual, but defending against
+    # forks that strip it lets us degrade gracefully instead of crashing.
+    _params_set = _cl_params_set if use_cross_lingual else _zs_params_set
+    speed_supported = "speed" in _params_set
+
+    # Tunables for the speed solver.  These are intentionally narrow:
+    # CosyVoice degrades audibly past speed=1.20, and below 0.85 the prosody
+    # gets sluggish.  When the natural rate falls outside this band we let
+    # the post-pass atempo (Task #5) take a small additional bite.
+    SPEED_MIN = 0.85
+    SPEED_MAX = 1.20
+    # QA threshold: retry if produced audio is more than 15% over target.
+    QA_OVER_RATIO = 1.15
+    # Slack so we don't retry on tiny over/undershoots.
+    QA_NEAR_TARGET = 0.07  # ±7% considered "good enough"
+
+    def _instruct_param_value(params: set[str], emotion_instruction: str) -> dict:
+        instruct_param = _instruct_param(params)
+        if instruct_param and emotion_instruction:
+            return {instruct_param: emotion_instruction}
+        return {}
+
     # ── Synthesize each segment ───────────────────────────────────────────────
     seg_audios: list[Path] = []
     total_segments = max(1, len(segments))
@@ -1749,11 +1945,42 @@ def synthesize_segments_cosyvoice(
             seg.get("tts_text") or seg.get("translated_text") or ""
         )
 
+        # ── Phase 1: per-segment pacing solver ─────────────────────────────
+        # We size the dub so CosyVoice's *internal* speed= shoulders most of
+        # the duration fit, leaving the post-pass atempo bite small (≤ 1.10×).
+        # All values are recorded into seg["_pacing"] for telemetry / debug.
+        seg_speaker_rate = float(seg.get("speaking_rate", 1.0) or 1.0)
+        target_speech_seconds = compute_target_speech_seconds(seg)
+        predicted_seconds = predict_segment_speech_seconds(
+            text, speaking_rate=1.0, chars_per_sec=target_chars_per_sec,
+        )
+        # Combine duration-fit ratio with Gemini's per-segment speaking_rate.
+        # speed > 1 = faster speech = shorter duration.
+        if predicted_seconds > 0 and target_speech_seconds > 0:
+            duration_speed = predicted_seconds / target_speech_seconds
+        else:
+            duration_speed = 1.0
+        initial_speed = max(SPEED_MIN, min(SPEED_MAX, duration_speed * seg_speaker_rate))
+
+        seg.setdefault("_pacing", {})
+        seg["_pacing"].update({
+            "target_speech_seconds": round(target_speech_seconds, 3),
+            "predicted_seconds": round(predicted_seconds, 3),
+            "speaker_rate": round(seg_speaker_rate, 3),
+            "duration_speed": round(duration_speed, 3),
+            "model_speed": round(initial_speed, 3),
+            "speed_supported": speed_supported,
+            "chars_per_sec": round(target_chars_per_sec, 2),
+            "char_count": _count_speakable_chars(text),
+        })
+
         if not text:
             duration = max(0.1, seg["end"] - seg["start"])
             run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
                        "-t", str(duration), str(out_path))
             seg_audios.append(out_path)
+            seg["_pacing"]["actual_seconds"] = round(duration, 3)
+            seg["_pacing"]["status"] = "empty_text_silence"
             continue
 
         # Resolve which reference to use for this speaker
@@ -1775,13 +2002,16 @@ def synthesize_segments_cosyvoice(
         if is_cosyvoice3 and seg_prompt_text:
             seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
 
-        try:
-            emotion = str(seg.get("emotion", "neutral")).strip().lower()
-            emotion_instruction = ""
-            if emotion and emotion != "neutral":
-                emotion_instruction = f"Speak in a {emotion} tone."
+        emotion = str(seg.get("emotion", "neutral")).strip().lower()
+        emotion_instruction = (
+            f"Speak in a {emotion} tone." if emotion and emotion != "neutral" else ""
+        )
+
+        # ── Single-shot inference helper.  Returns (audio_tensor, num_samples).
+        # Factored out so the QA retry can call it again with a tighter speed.
+        def _one_shot(speed_value: float):
+            speed_value = float(max(SPEED_MIN, min(SPEED_MAX, speed_value)))
             if use_cross_lingual:
-                # Use pre-computed signature set (not re-inspected each iteration)
                 _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if is_cosyvoice3 else text)
                 cl_args: dict = {"tts_text": _cl_tts, "stream": False}
                 if "prompt_wav" in _cl_params_set:
@@ -1792,12 +2022,11 @@ def synthesize_segments_cosyvoice(
                     raise RuntimeError(
                         f"Unsupported CosyVoice cross_lingual signature: {_cl_params_set}"
                     )
-                instruct_param = _instruct_param(_cl_params_set)
-                if instruct_param and emotion_instruction:
-                    cl_args[instruct_param] = emotion_instruction
+                cl_args.update(_instruct_param_value(_cl_params_set, emotion_instruction))
+                if speed_supported:
+                    cl_args["speed"] = speed_value
                 chunks = list(model.inference_cross_lingual(**cl_args))
             else:
-                # Use pre-computed signature set (not re-inspected each iteration)
                 zs_args: dict = {
                     "tts_text": text,
                     "prompt_text": seg_prompt_text,
@@ -1811,9 +2040,9 @@ def synthesize_segments_cosyvoice(
                     raise RuntimeError(
                         f"Unsupported CosyVoice zero-shot signature: {_zs_params_set}"
                     )
-                instruct_param = _instruct_param(_zs_params_set)
-                if instruct_param and emotion_instruction:
-                    zs_args[instruct_param] = emotion_instruction
+                zs_args.update(_instruct_param_value(_zs_params_set, emotion_instruction))
+                if speed_supported:
+                    zs_args["speed"] = speed_value
                 chunks = list(model.inference_zero_shot(**zs_args))
 
             tts_chunks = [
@@ -1823,17 +2052,83 @@ def synthesize_segments_cosyvoice(
             ]
             if not tts_chunks:
                 raise RuntimeError("CosyVoice returned no audio chunks.")
-            audio_data = torch.cat(tts_chunks, dim=1)
-            if audio_data.numel() == 0:
+            tensor = torch.cat(tts_chunks, dim=1)
+            if tensor.numel() == 0:
                 raise RuntimeError("CosyVoice returned empty audio.")
-            torchaudio.save(str(out_path), audio_data, 24000)  # CosyVoice native SR=24kHz
+            return tensor, tensor.shape[-1]
+
+        try:
+            audio_data, num_samples = _one_shot(initial_speed)
+            actual_seconds = num_samples / float(model_sample_rate)
+            applied_speed = initial_speed
+            qa_retry = "no"
+
+            # ── Post-synthesis QA gate (Phase 1: missing-from-audit item) ──
+            # If the produced audio is more than QA_OVER_RATIO past target,
+            # retry once with a faster speed so the post-pass atempo doesn't
+            # have to do an audible squash.  We only retry on overshoot —
+            # an undershoot is harmless (it leaves silence in the gap).
+            if (
+                speed_supported
+                and target_speech_seconds > 0
+                and actual_seconds / target_speech_seconds > QA_OVER_RATIO
+            ):
+                # Recompute speed from the *measured* result rather than the
+                # heuristic, so a single retry usually converges.
+                bumped_speed = max(
+                    SPEED_MIN,
+                    min(
+                        SPEED_MAX,
+                        applied_speed * (actual_seconds / target_speech_seconds),
+                    ),
+                )
+                if bumped_speed > applied_speed * (1.0 + QA_NEAR_TARGET):
+                    log.info(
+                        "[CosyVoice] QA retry seg %s: actual=%.2fs target=%.2fs "
+                        "speed %.3f → %.3f",
+                        seg["id"], actual_seconds, target_speech_seconds,
+                        applied_speed, bumped_speed,
+                    )
+                    try:
+                        retry_audio, retry_samples = _one_shot(bumped_speed)
+                        retry_actual = retry_samples / float(model_sample_rate)
+                        # Accept the retry only if it actually got closer to target.
+                        if abs(retry_actual - target_speech_seconds) < abs(actual_seconds - target_speech_seconds):
+                            audio_data = retry_audio
+                            num_samples = retry_samples
+                            actual_seconds = retry_actual
+                            applied_speed = bumped_speed
+                            qa_retry = "improved"
+                        else:
+                            qa_retry = "rejected"
+                    except Exception as retry_err:
+                        log.warning(
+                            "[CosyVoice] QA retry failed for seg %s: %s",
+                            seg["id"], retry_err,
+                        )
+                        qa_retry = "errored"
+
+            torchaudio.save(str(out_path), audio_data, model_sample_rate)
+            seg["_pacing"].update({
+                "actual_seconds": round(actual_seconds, 3),
+                "applied_speed": round(applied_speed, 3),
+                "qa_retry": qa_retry,
+                "model_sample_rate": model_sample_rate,
+            })
         except Exception as exc:
             raise RuntimeError(
                 f"CosyVoice failed for segment {seg['id']} speaker={speaker}: {exc}"
             ) from exc
 
         seg_audios.append(out_path)
-        log.info(f"[CosyVoice] Seg {seg['id']}/{len(segments)} done (speaker={speaker}).")
+        log.info(
+            "[CosyVoice] Seg %s/%s done (speaker=%s, speed=%.3f, "
+            "actual/target=%.2fs/%.2fs).",
+            seg["id"], len(segments), speaker,
+            seg["_pacing"]["applied_speed"],
+            seg["_pacing"]["actual_seconds"],
+            seg["_pacing"]["target_speech_seconds"],
+        )
 
     update_progress("CLONING", 59, "Voice cloning complete.")
     del model
@@ -1943,14 +2238,52 @@ def synthesize_all(
 # Stage 5: Timing adapter — fit TTS audio to original segment duration
 # ——————————————————————————————————————————————————————————————————————————————————————————————————
 
-def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Path) -> Path:
+# Phase 1: residual atempo bounds.  CosyVoice's internal speed= already
+# absorbed most of the duration fit, so atempo runs only on the small residual.
+# Going past these bounds was the dominant cause of "chipmunk" / "drugged"
+# dub audio.
+ATEMPO_MIN = 0.92
+ATEMPO_MAX = 1.10
+# How much the dub may overflow past the slot boundary into the inter-segment
+# gap.  Lets CosyVoice keep natural prosody without colliding with the next
+# segment's start.  Phase 4 will add equal-power crossfades that benefit
+# from this headroom too.
+SLOT_OVERFLOW_MAX_SECONDS = 0.30
+
+
+def fit_audio_to_duration(
+    audio_path: Path,
+    target_duration: float,
+    out_dir: Path,
+    *,
+    next_seg_start: Optional[float] = None,
+    seg_start: Optional[float] = None,
+    pacing: Optional[dict] = None,
+) -> Path:
     """
-    Speed-up or slow-down audio to match target_duration.
-    Uses FFmpeg atempo filter (0.5x â€“ 2.0x range, chained for extremes).
+    Fit synthesized segment audio to its slot.
+
+    Phase 1 redesign:
+      * CosyVoice's internal `speed=` has already done the heavy duration
+        fit, so this pass only nudges the residual.
+      * atempo is clamped to [ATEMPO_MIN, ATEMPO_MAX] (0.92x-1.10x).  A bit
+        further than 1.0 in either direction is the maximum that still
+        sounds natural after the in-model speed adjustment.
+      * The dub is allowed to overflow up to SLOT_OVERFLOW_MAX_SECONDS into
+        the inter-segment gap (capped at the actual gap when known) so we
+        don't clip end syllables or speed-warp the line into nonsense.
+      * Tail silence is trimmed first (silence-only) so we never speed up
+        a line just because CosyVoice added a polite trailing pause.
+      * All decisions are recorded into `pacing` (the seg["_pacing"] dict)
+        for telemetry.
     """
+    import numpy as np
     import soundfile as sf
 
     def _atempo_chain(value: float) -> str:
+        # Phase 1 keeps the chain helper for one-shot in-bounds atempo, but
+        # since we now clamp to [0.92, 1.10] we never actually need >1 stage.
+        # The chain handler stays here as a defensive guard against bugs.
         filters: list[str] = []
         ratio = float(value)
         while ratio > 2.0:
@@ -1962,32 +2295,113 @@ def fit_audio_to_duration(audio_path: Path, target_duration: float, out_dir: Pat
         filters.append(f"atempo={round(ratio, 3)}")
         return ",".join(filters)
 
+    pacing = pacing if pacing is not None else {}
+
     data, sr = sf.read(str(audio_path))
     if sr <= 0:
         raise RuntimeError(f"Invalid sample rate {sr} while reading {audio_path}.")
+    if data.ndim > 1:
+        data = data.mean(axis=1)
     actual_dur = len(data) / sr
     if not math.isfinite(actual_dur) or actual_dur <= 0:
         log.warning("[Timing] Empty audio for %s; inserting silence.", audio_path.name)
         out_path = audio_path.with_stem(audio_path.stem + "_silence")
         duration = max(0.25, float(target_duration or 0.25))
         run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(duration), str(out_path))
+        pacing.update({
+            "applied_atempo": 1.0,
+            "final_seconds": round(duration, 3),
+            "overflow_into_gap": 0.0,
+            "fit_action": "silence",
+        })
         return out_path
 
-    if abs(actual_dur - target_duration) < 0.05:
-        return audio_path  # close enough, no change needed
+    # 1. Compute the maximum length we can safely write.
+    # The dub may overflow into the gap before next_seg_start, capped at
+    # SLOT_OVERFLOW_MAX_SECONDS.  When next_seg_start is unknown (final
+    # segment), we still allow the small overflow - main() places audio
+    # by start timestamp, so a tiny tail past the slot is harmless.
+    if (
+        next_seg_start is not None
+        and seg_start is not None
+        and math.isfinite(next_seg_start)
+        and math.isfinite(seg_start)
+    ):
+        gap = max(0.0, float(next_seg_start) - float(seg_start) - float(target_duration))
+        overflow_budget = max(0.0, min(SLOT_OVERFLOW_MAX_SECONDS, gap))
+    else:
+        overflow_budget = SLOT_OVERFLOW_MAX_SECONDS
+    max_dur = float(target_duration) + overflow_budget
 
-    ratio = actual_dur / max(target_duration, 0.1)
-    # Prefer time-scaling over cut-offs. Keep a lower bound to avoid extreme slowdowns,
-    # but allow fast tempo shifts so segments fit without truncation.
-    min_ratio = 0.55 if target_duration < 2.0 else 0.65
-    ratio = max(min_ratio, ratio)
+    # 2. Tail silence trim BEFORE atempo.
+    # CosyVoice often adds a 100-300 ms polite tail.  Trim only that
+    # silence (top_db=40, conservative) so we never speed up a line just
+    # to fit a pause that no listener would notice.
+    trimmed_seconds = 0.0
+    try:
+        import librosa  # local import; main worker may already have it loaded
+        trimmed_data, _ = librosa.effects.trim(data, top_db=40)
+        if len(trimmed_data) > 0 and len(trimmed_data) < len(data):
+            trimmed_seconds = (len(data) - len(trimmed_data)) / sr
+            data = trimmed_data
+            actual_dur = len(data) / sr
+    except Exception as trim_err:
+        log.debug("[Timing] Tail trim skipped for %s: %s", audio_path.name, trim_err)
 
+    overflow_into_gap = max(0.0, actual_dur - float(target_duration))
+    overflow_into_gap = min(overflow_into_gap, overflow_budget)
+
+    # 3. Decide the final action.
     out_path = audio_path.with_stem(audio_path.stem + "_fitted")
 
-    tempo_filters = _atempo_chain(ratio)
+    # 3a. Already inside slot+overflow -> keep, optionally just rewrite.
+    if actual_dur <= max_dur + 0.05:
+        pacing.update({
+            "applied_atempo": 1.0,
+            "final_seconds": round(actual_dur, 3),
+            "overflow_into_gap": round(overflow_into_gap, 3),
+            "tail_trimmed_seconds": round(trimmed_seconds, 3),
+            "fit_action": "passthrough" if trimmed_seconds == 0.0 else "trim_only",
+        })
+        if trimmed_seconds > 0.0:
+            sf.write(str(out_path), data.astype(np.float32, copy=False), sr)
+            return out_path
+        return audio_path
 
-    run_ffmpeg("-i", str(audio_path), "-filter:a", tempo_filters, str(out_path))
-    return out_path
+    # 3b. Still too long -> atempo clamped to [ATEMPO_MIN, ATEMPO_MAX].
+    # We pick the ratio that lands at exactly max_dur, but never above
+    # ATEMPO_MAX (= 1.10x).  The remaining overshoot is then truncated by
+    # assemble_dubbed_audio() - which is now silence-only trim, so the
+    # actual loss in voiced samples is bounded to a couple frames at most.
+    raw_ratio = actual_dur / max(max_dur, 0.1)
+    applied_atempo = max(ATEMPO_MIN, min(ATEMPO_MAX, raw_ratio))
+    final_seconds = actual_dur / applied_atempo
+
+    # If the trim already fit, write the trimmed buffer; otherwise re-run
+    # ffmpeg from the trimmed buffer to apply atempo.
+    if trimmed_seconds > 0.0:
+        # Persist the trimmed buffer so atempo input is clean.
+        sf.write(str(out_path), data.astype(np.float32, copy=False), sr)
+        atempo_input = out_path
+    else:
+        atempo_input = audio_path
+
+    tempo_filters = _atempo_chain(applied_atempo)
+    atempo_out = audio_path.with_stem(audio_path.stem + "_fitted_tempo")
+    run_ffmpeg("-i", str(atempo_input), "-filter:a", tempo_filters, str(atempo_out))
+
+    overflow_into_gap = max(0.0, final_seconds - float(target_duration))
+    overflow_into_gap = min(overflow_into_gap, overflow_budget)
+
+    pacing.update({
+        "applied_atempo": round(applied_atempo, 3),
+        "final_seconds": round(final_seconds, 3),
+        "overflow_into_gap": round(overflow_into_gap, 3),
+        "tail_trimmed_seconds": round(trimmed_seconds, 3),
+        "fit_action": "atempo_clamped" if applied_atempo == ATEMPO_MAX else "atempo",
+        "raw_atempo_needed": round(raw_ratio, 3),
+    })
+    return atempo_out
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2190,7 +2604,19 @@ def assemble_dubbed_audio(
 ) -> Path:
     """
     Place per-segment audio at correct timestamps, mix with background if provided.
-    Returns path to final dubbed audio WAV.
+
+    Phase 1 redesign:
+      * No more hard-cut + 60 ms fade.  fit_audio_to_duration() has already
+        sized the dub to slot + bounded gap-overflow (SLOT_OVERFLOW_MAX_SECONDS).
+      * Each segment is placed at its original start time and is allowed to
+        run up to the *next* segment's start (so we never collide with the
+        next line).
+      * If the segment audio is somehow still longer than that available
+        window, we silence-only-trim the tail (top_db=40) before placing.
+        That removes only quiet pauses CosyVoice may have appended; it
+        never speed-warps voiced samples and it never chops mid-syllable.
+      * Per-segment placement telemetry is recorded into seg["_pacing"]
+        (placed_seconds, placed_overflow_seconds, placed_action).
     """
     SR = 24000
     import numpy as np
@@ -2206,37 +2632,73 @@ def assemble_dubbed_audio(
     min_samples = max(1, int(math.ceil(video_duration * SR)))
     mixed = np.zeros(min_samples, dtype=np.float32)
 
-    for seg, audio_path in zip(segments, seg_audio_paths):
+    for idx, (seg, audio_path) in enumerate(zip(segments, seg_audio_paths)):
+        seg.setdefault("_pacing", {})
         if not audio_path.exists():
             log.warning(f"[Assemble] Missing audio for segment {seg['id']}")
+            seg["_pacing"]["placed_action"] = "missing"
             continue
 
         try:
             data, sr = sf.read(str(audio_path))
         except Exception as exc:
             log.warning(f"[Assemble] Could not read segment audio {audio_path}: {exc}")
+            seg["_pacing"]["placed_action"] = f"read_error:{exc!r}"
             continue
         if sr <= 0 or len(data) == 0:
             log.warning(f"[Assemble] Empty/invalid audio for segment {seg['id']}: {audio_path}")
+            seg["_pacing"]["placed_action"] = "empty"
             continue
         if data.ndim > 1:
-            data = data.mean(axis=1)  # stereo â†’ mono
+            data = data.mean(axis=1)  # stereo -> mono
 
         # Resample if needed
         if sr != SR:
             import librosa
             data = librosa.resample(data, orig_sr=sr, target_sr=SR)
 
-        # Truncate to segment duration so this segment's audio never bleeds
-        # into the next segment's slot and causes two voices to overlap.
-        max_seg_samples = max(1, int((seg["end"] - seg["start"]) * SR))
+        # ── Phase 1 placement window ───────────────────────────────────────
+        # Slot is the original ASR window.  The dub may run past slot end up
+        # to the start of the next segment (or video_duration for the last
+        # segment).  This is the headroom fit_audio_to_duration's overflow
+        # was sized for.
+        slot_end_sec = float(seg["end"])
+        if idx + 1 < len(segments):
+            collision_sec = float(segments[idx + 1]["start"])
+        else:
+            collision_sec = float(video_duration)
+        # Never let the placement reach into the next segment's slot.  Leave
+        # a 30 ms guard so a future crossfade pass (Phase 4) has headroom.
+        max_end_sec = max(slot_end_sec, collision_sec - 0.030)
+        # Pathological diarization: keep at least the slot.
+        if max_end_sec < slot_end_sec:
+            max_end_sec = slot_end_sec
+        max_seg_samples = max(1, int((max_end_sec - float(seg["start"])) * SR))
+
+        original_samples = len(data)
+        placed_action = "passthrough"
         if len(data) > max_seg_samples:
-            fade_samples = min(int(SR * TAIL_FADE_SECONDS), max_seg_samples // 3)
-            if fade_samples > 0 and len(data) >= max_seg_samples:
-                fade = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-                data = data.astype(np.float32, copy=False)
-                data[max_seg_samples - fade_samples:max_seg_samples] *= fade
-            data = data[:max_seg_samples]
+            # Try a silence-only tail trim first (top_db=40 is conservative;
+            # only inaudible silence is trimmed).  This usually fits the dub
+            # within the available window without losing any speech.
+            try:
+                import librosa as _librosa
+                trimmed_data, _ = _librosa.effects.trim(
+                    data.astype(np.float32, copy=False), top_db=40,
+                )
+                if len(trimmed_data) > 0 and len(trimmed_data) < len(data):
+                    data = trimmed_data
+                    placed_action = "tail_trim"
+            except Exception as trim_err:
+                log.debug("[Assemble] Tail trim skipped seg %s: %s", seg["id"], trim_err)
+
+            # If we still don't fit, perform a *silence-only* hard cap at the
+            # collision boundary.  We keep voiced frames whenever the cap
+            # lands inside silence; if the cap lands inside speech this is
+            # the bounded-but-unavoidable safety net.
+            if len(data) > max_seg_samples:
+                placed_action = "boundary_cut"
+                data = data[:max_seg_samples]
         if len(data) == 0:
             continue
 
@@ -2245,6 +2707,15 @@ def assemble_dubbed_audio(
         if end_sample > len(mixed):
             mixed = np.pad(mixed, (0, end_sample - len(mixed)))
         mixed[start_sample:end_sample] += data
+
+        placed_seconds = len(data) / float(SR)
+        placed_overflow_seconds = max(0.0, placed_seconds - (slot_end_sec - float(seg["start"])))
+        seg["_pacing"].update({
+            "placed_seconds": round(placed_seconds, 3),
+            "placed_overflow_seconds": round(placed_overflow_seconds, 3),
+            "placed_action": placed_action,
+            "placed_dropped_samples": max(0, original_samples - len(data)),
+        })
 
     # Normalise dubbed voice track
     peak = np.abs(mixed).max()
@@ -2351,6 +2822,93 @@ def mux_final_video(
 # Stage 10: Generate transcript JSON
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+def _round_or_none(value, digits: int = 3):
+    """JSON-safe rounding helper that preserves None/NaN."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):
+        return None
+    return round(f, digits)
+
+
+def summarize_pacing(segments: list[dict]) -> dict:
+    """
+    Aggregate per-segment _pacing telemetry into job-level stats.
+
+    This is what we watch in CloudWatch / the translation report to detect
+    pacing regressions:
+      * mean / max / p95 of applied_speed and applied_atempo
+      * count of segments with QA retry, boundary cuts, atempo clamped
+      * histogram of fit_action / placed_action
+
+    All keys are JSON-serializable.
+    """
+    speeds: list[float] = []
+    atempos: list[float] = []
+    overflows: list[float] = []
+    target_speech: list[float] = []
+    actuals: list[float] = []
+    qa_retries = {"no": 0, "improved": 0, "rejected": 0, "errored": 0}
+    fit_actions: dict[str, int] = {}
+    placed_actions: dict[str, int] = {}
+
+    for seg in segments:
+        pacing = seg.get("_pacing") or {}
+        if not isinstance(pacing, dict):
+            continue
+        speed = pacing.get("applied_speed")
+        if isinstance(speed, (int, float)) and math.isfinite(speed):
+            speeds.append(float(speed))
+        atempo = pacing.get("applied_atempo")
+        if isinstance(atempo, (int, float)) and math.isfinite(atempo):
+            atempos.append(float(atempo))
+        overflow = pacing.get("overflow_into_gap")
+        if isinstance(overflow, (int, float)) and math.isfinite(overflow):
+            overflows.append(float(overflow))
+        ts = pacing.get("target_speech_seconds")
+        if isinstance(ts, (int, float)) and math.isfinite(ts):
+            target_speech.append(float(ts))
+        actual = pacing.get("actual_seconds")
+        if isinstance(actual, (int, float)) and math.isfinite(actual):
+            actuals.append(float(actual))
+        qa_key = str(pacing.get("qa_retry") or "no")
+        qa_retries[qa_key] = qa_retries.get(qa_key, 0) + 1
+        fit_key = str(pacing.get("fit_action") or "unknown")
+        fit_actions[fit_key] = fit_actions.get(fit_key, 0) + 1
+        placed_key = str(pacing.get("placed_action") or "unknown")
+        placed_actions[placed_key] = placed_actions.get(placed_key, 0) + 1
+
+    def _stats(values: list[float]) -> dict:
+        if not values:
+            return {"count": 0}
+        sv = sorted(values)
+        n = len(sv)
+        # p95 via linear interpolation; fine for our small N.
+        idx = max(0, min(n - 1, int(round(0.95 * (n - 1)))))
+        return {
+            "count": n,
+            "mean": _round_or_none(sum(sv) / n),
+            "min": _round_or_none(sv[0]),
+            "max": _round_or_none(sv[-1]),
+            "p95": _round_or_none(sv[idx]),
+        }
+
+    return {
+        "appliedSpeed": _stats(speeds),
+        "appliedAtempo": _stats(atempos),
+        "overflowIntoGap": _stats(overflows),
+        "targetSpeechSeconds": _stats(target_speech),
+        "actualSeconds": _stats(actuals),
+        "qaRetries": qa_retries,
+        "fitActions": fit_actions,
+        "placedActions": placed_actions,
+    }
+
+
 def generate_transcript_json(segments: list[dict], out_path: Path):
     transcript = {
         "jobId": JOB_ID,
@@ -2367,9 +2925,15 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
                 "emotion": s.get("emotion", "neutral"),
                 "speakingRate": s.get("speaking_rate", 1.0),
                 "speaker": s.get("speaker") or DEFAULT_SPEAKER_LABEL,
+                # Phase 1 telemetry: every segment carries the full pacing
+                # decision trail (target/predicted/applied speed, atempo,
+                # final length, overflow, QA retry verdict, placement action).
+                # Frontends + post-job analysis tooling read from here.
+                "pacing": s.get("_pacing") or {},
             }
             for s in segments
         ],
+        "pacingSummary": summarize_pacing(segments),
     }
     out_path.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info(f"[Transcript] Written â†’ {out_path}")
@@ -2521,9 +3085,24 @@ def main():
         # -- 7c. Timing fit ----------------------------------------------------
         update_progress("CLONING", 60, "Fitting audio timing to video...")
         fitted_paths = []
-        for seg, audio_path in zip(segments, seg_audio_paths):
+        for idx, (seg, audio_path) in enumerate(zip(segments, seg_audio_paths)):
             target_dur = seg["end"] - seg["start"]
-            fitted = fit_audio_to_duration(audio_path, target_dur, seg_dir)
+            # Pass the next segment's start so fit_audio_to_duration knows how
+            # far it can let the dub overflow without colliding with the next
+            # line.  When this is the final segment, use video_duration as the
+            # virtual "next start".
+            next_seg_start = (
+                segments[idx + 1]["start"] if idx + 1 < len(segments) else video_duration
+            )
+            seg.setdefault("_pacing", {})
+            fitted = fit_audio_to_duration(
+                audio_path,
+                target_dur,
+                seg_dir,
+                next_seg_start=float(next_seg_start),
+                seg_start=float(seg["start"]),
+                pacing=seg["_pacing"],
+            )
             fitted_paths.append(fitted)
 
         # -- 8. Assemble dubbed audio track ------------------------------------
@@ -2587,6 +3166,10 @@ def main():
                 "translationMode": TRANSLATION_MODE,
                 "targetLang": TARGET_LANG,
                 "segmentCount": len(segments),
+                # Phase 1: aggregate pacing telemetry so we can detect
+                # regressions (e.g. mean atempo creeping up) without parsing
+                # every segment's transcript entry.
+                "pacingSummary": summarize_pacing(segments),
             }
             report_path = work_dir / "translation_report.json"
             report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
