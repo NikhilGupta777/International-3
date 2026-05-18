@@ -50,8 +50,8 @@ class WorkerGuardTests(unittest.TestCase):
     def test_speaking_rate_is_clamped_and_non_finite_safe(self):
         self.assertEqual(self.worker._safe_speaking_rate("bad"), 1.0)
         self.assertEqual(self.worker._safe_speaking_rate(math.inf), 1.0)
-        self.assertEqual(self.worker._safe_speaking_rate(0.1), 0.9)
-        self.assertEqual(self.worker._safe_speaking_rate(9), 1.2)
+        self.assertEqual(self.worker._safe_speaking_rate(0.1), 0.8)   # widened from 0.9 (P3-4)
+        self.assertEqual(self.worker._safe_speaking_rate(9), 1.3)     # widened from 1.2 (P3-4)
 
 
 if __name__ == "__main__":
