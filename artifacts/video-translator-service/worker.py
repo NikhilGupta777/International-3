@@ -3485,6 +3485,7 @@ def assemble_dubbed_audio(
         )
     min_samples = max(1, int(math.ceil(video_duration * SR)))
     mixed = np.zeros(min_samples, dtype=np.float32)
+    prev_placed_end_sample = 0
 
     for idx, (seg, audio_path) in enumerate(zip(segments, seg_audio_paths)):
         seg.setdefault("_pacing", {})
@@ -3563,9 +3564,6 @@ def assemble_dubbed_audio(
 
         # Track the furthest sample written by previous iterations so we can
         # crossfade only over the true overlap, not over a fixed probe window.
-        if idx == 0 or "prev_placed_end_sample" not in locals():
-            prev_placed_end_sample = 0
-
         # ── Phase 4 (P1-22): Equal-power crossfade at segment boundaries ──
         # When this segment overlaps with already-placed audio (from a
         # previous segment's overflow into the gap), we apply an equal-power
