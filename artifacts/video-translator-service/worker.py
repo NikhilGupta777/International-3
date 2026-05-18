@@ -3356,35 +3356,38 @@ def assemble_dubbed_audio(
         if end_sample > len(mixed):
             mixed = np.pad(mixed, (0, end_sample - len(mixed)))
 
+        # Track the furthest sample written by previous iterations so we can
+        # crossfade only over the true overlap, not over a fixed probe window.
+        if idx == 0 or "prev_placed_end_sample" not in locals():
+            prev_placed_end_sample = 0
+
         # ── Phase 4 (P1-22): Equal-power crossfade at segment boundaries ──
         # When this segment overlaps with already-placed audio (from a
         # previous segment's overflow into the gap), we apply an equal-power
-        # crossfade over the overlap region.  This eliminates clicks and
-        # produces smooth transitions between adjacent dubbed lines.
-        CROSSFADE_SAMPLES = int(0.025 * SR)  # 25 ms crossfade
+        # crossfade over the actual overlap region. This eliminates clicks,
+        # avoids attenuating non-overlapping leading audio, and handles long
+        # overlaps consistently by blending the full overlap.
         overlap_start = start_sample
-        overlap_end = min(end_sample, start_sample + CROSSFADE_SAMPLES)
-        # Only crossfade if there's existing audio to blend with
-        if idx > 0 and overlap_end > overlap_start:
-            overlap_len = overlap_end - overlap_start
+        overlap_end = min(end_sample, prev_placed_end_sample)
+        overlap_len = max(0, overlap_end - overlap_start)
+
+        if overlap_len > 0:
             existing_region = mixed[overlap_start:overlap_end].copy()
-            has_existing = np.any(existing_region != 0)
-            if has_existing:
-                # Equal-power: sqrt-based fade curves (energy-preserving)
-                t = np.linspace(0, 1, overlap_len, dtype=np.float32)
-                fade_in = np.sqrt(t)
-                fade_out = np.sqrt(1.0 - t)
-                # Blend: fade out existing, fade in new
-                blended = existing_region * fade_out + data[:overlap_len] * fade_in
-                mixed[overlap_start:overlap_end] = blended
-                # Place the rest of the new segment without blending
-                if overlap_len < len(data):
-                    mixed[overlap_end:end_sample] += data[overlap_len:]
-                placed_action = placed_action if placed_action != "passthrough" else "crossfade"
-            else:
-                mixed[start_sample:end_sample] += data
+            # Equal-power: sqrt-based fade curves (energy-preserving)
+            t = np.linspace(0, 1, overlap_len, dtype=np.float32)
+            fade_in = np.sqrt(t)
+            fade_out = np.sqrt(1.0 - t)
+            # Blend only the true overlap: fade out existing, fade in new
+            blended = existing_region * fade_out + data[:overlap_len] * fade_in
+            mixed[overlap_start:overlap_end] = blended
+            # Place the rest of the new segment without blending
+            if overlap_len < len(data):
+                mixed[overlap_end:end_sample] += data[overlap_len:]
+            placed_action = placed_action if placed_action != "passthrough" else "crossfade"
         else:
             mixed[start_sample:end_sample] += data
+
+        prev_placed_end_sample = max(prev_placed_end_sample, end_sample)
 
         placed_seconds = len(data) / float(SR)
         placed_overflow_seconds = max(0.0, placed_seconds - (slot_end_sec - float(seg["start"])))
