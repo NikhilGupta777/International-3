@@ -2549,7 +2549,16 @@ def synthesize_segments_cosyvoice(
             if use_instruct2:
                 # Format per upstream example.py:
                 # instruct_text = "You are a helpful assistant. {instruction}.<|endofprompt|>"
-                instruct2_text = f"You are a helpful assistant. {emotion_instruction}<|endofprompt|>"
+                normalized_emotion_instruction = (emotion_instruction or "").strip()
+                if (
+                    normalized_emotion_instruction
+                    and normalized_emotion_instruction[-1] not in ".!?"
+                ):
+                    normalized_emotion_instruction += "."
+                instruct2_text = (
+                    f"You are a helpful assistant. "
+                    f"{normalized_emotion_instruction}<|endofprompt|>"
+                )
                 i2_args: dict = {
                     "tts_text": text,
                     "instruct_text": instruct2_text,
