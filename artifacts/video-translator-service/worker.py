@@ -98,7 +98,7 @@ HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "hugg
 # Runtime downloads disabled by default — all models must be baked into the
 # Docker image.  Set =1 only for dev/testing.
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "0").lower() == "1"
-# Allow automatic neural fallback when cloning fails (aligned with UI messaging).
+# Allow automatic neural fallback when cloning fails (aligned with UI and API messaging).
 ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "true").lower() == "true"
 ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "true").lower() == "true"
 # CosyVoice3 (Fun-CosyVoice3-0.5B-2512) is the current recommended model.
