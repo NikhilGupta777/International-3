@@ -30,6 +30,8 @@ export interface ActiveTranslatorJob {
   progress: number;
   step: string;
   status: string;
+  /** P2-13: Client-side file fingerprint for duplicate detection */
+  fileFingerprint?: string;
 }
 
 function readArray<T>(key: string): T[] {
