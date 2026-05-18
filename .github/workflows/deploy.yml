@@ -368,6 +368,7 @@ jobs:
             --provenance=false --sbom=false \
             -f artifacts/video-translator-service/Dockerfile.base \
             --build-arg DOWNLOAD_MODELS_AT_BUILD="$DOWNLOAD_MODELS" \
+            --build-arg RUN_MODEL_SMOKE_TEST="false" \
             -t "$BASE_URI" \
             --push artifacts/video-translator-service/
           echo "base_uri=${BASE_URI}" >> "$GITHUB_OUTPUT"

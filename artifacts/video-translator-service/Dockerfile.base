@@ -29,6 +29,7 @@ ENV ALLOW_RUNTIME_MODEL_DOWNLOADS=0
 ENV PYTHONPATH=/model-cache/CosyVoice:/model-cache/CosyVoice/third_party/Matcha-TTS
 
 ARG DOWNLOAD_MODELS_AT_BUILD=true
+ARG RUN_MODEL_SMOKE_TEST=true
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_DEFAULT_TIMEOUT=300
@@ -272,10 +273,10 @@ if "load_trt" in _sig.parameters:
 model = AutoModel(model_dir=model_dir, **_kw)
 print("CosyVoice3 AutoModel construction OK")
 PY
-RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ] && [ "$RUN_MODEL_SMOKE_TEST" = "true" ]; then \
       python /tmp/smoke_test_model.py; \
     else \
-      echo "Skipping model construction smoke test (models not baked in)"; \
+      echo "Skipping model construction smoke test (disabled or models not baked in)"; \
     fi && rm -f /tmp/smoke_test_model.py
 
 # ── Pre-download LatentSync checkpoint (~700 MB) ─────────────────────────────
