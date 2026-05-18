@@ -567,23 +567,26 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       // P2-13: Client-side idempotency — detect duplicate uploads.
       // Hash the first 1MB + file size as a fingerprint. If a recent active
       // job has the same hash, warn the user instead of creating a duplicate.
-      const hashSlice = file.slice(0, 1024 * 1024);
-      const hashBuffer = await hashSlice.arrayBuffer();
-      const digestBuffer = await crypto.subtle.digest("SHA-256", hashBuffer);
-      const digestHex = Array.from(new Uint8Array(digestBuffer))
-        .map((byte) => byte.toString(16).padStart(2, "0"))
-        .join("");
-      const fileFingerprint = `${digestHex}-${file.size}`;
-      const existingDuplicate = loadActiveTranslatorJobs().find(
-        j => j.fileFingerprint === fileFingerprint && Date.now() - j.startedAt < 3600_000
-      );
-      if (existingDuplicate) {
-        const confirmDuplicate = window.confirm(
-          `You already submitted this video ${Math.round((Date.now() - existingDuplicate.startedAt) / 60000)} minutes ago (Job: ${existingDuplicate.jobId.slice(0, 8)}…). Submit again anyway?`
+      let fileFingerprint: string | undefined;
+      if (globalThis.crypto?.subtle) {
+        const hashSlice = file.slice(0, 1024 * 1024);
+        const hashBuffer = await hashSlice.arrayBuffer();
+        const digestBuffer = await globalThis.crypto.subtle.digest("SHA-256", hashBuffer);
+        const digestHex = Array.from(new Uint8Array(digestBuffer))
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join("");
+        fileFingerprint = `${digestHex}-${file.size}`;
+        const existingDuplicate = loadActiveTranslatorJobs().find(
+          j => j.fileFingerprint === fileFingerprint && Date.now() - j.startedAt < 3600_000
         );
-        if (!confirmDuplicate) {
-          setUploading(false);
-          return;
+        if (existingDuplicate) {
+          const confirmDuplicate = window.confirm(
+            `You already submitted this video ${Math.round((Date.now() - existingDuplicate.startedAt) / 60000)} minutes ago (Job: ${existingDuplicate.jobId.slice(0, 8)}…). Submit again anyway?`
+          );
+          if (!confirmDuplicate) {
+            setUploading(false);
+            return;
+          }
         }
       }
 

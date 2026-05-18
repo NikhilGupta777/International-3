@@ -206,35 +206,35 @@ class RequirementsHygieneTests(unittest.TestCase):
 class DynamicBatchTimeoutTests(unittest.TestCase):
     """Verify the dynamic timeout formula: max(900, duration * 6), capped at env max."""
 
-    def _compute_timeout(self, duration_seconds, max_timeout=3000):
+    def _compute_timeout(self, duration_seconds, max_timeout=10800, fallback_timeout=3000):
         """Mirror the TypeScript logic in Python for testing."""
         if duration_seconds and math.isfinite(duration_seconds) and duration_seconds > 0:
             gpu_timeout = max(900, round(duration_seconds * 6))
             gpu_timeout = min(gpu_timeout, max_timeout)
         else:
-            gpu_timeout = max_timeout
+            gpu_timeout = min(fallback_timeout, max_timeout)
         return gpu_timeout
 
     def test_short_video_gets_minimum_900s(self):
         """A 2-min video: 120 * 6 = 720 -> clamped to 900."""
         self.assertEqual(self._compute_timeout(120), 900)
 
-    def test_10min_video_gets_capped_at_3000(self):
-        """A 10-min video: 600 * 6 = 3600 -> capped at 3000 (env default)."""
-        self.assertEqual(self._compute_timeout(600), 3000)
+    def test_10min_video_gets_3600s(self):
+        """A 10-min video: 600 * 6 = 3600."""
+        self.assertEqual(self._compute_timeout(600), 3600)
 
     def test_5min_video_gets_1800s(self):
         """A 5-min video: 300 * 6 = 1800."""
         self.assertEqual(self._compute_timeout(300), 1800)
 
     def test_unknown_duration_uses_static_default(self):
-        """When duration is None, fall back to max_timeout."""
+        """When duration is None, fall back to the smaller static fallback."""
         self.assertEqual(self._compute_timeout(None), 3000)
         self.assertEqual(self._compute_timeout(0), 3000)
 
     def test_never_exceeds_env_max(self):
-        """A 60-min video: 3600 * 6 = 21600 -> capped at 3000."""
-        self.assertEqual(self._compute_timeout(3600), 3000)
+        """A 60-min video: 3600 * 6 = 21600 -> capped at 10800."""
+        self.assertEqual(self._compute_timeout(3600), 10800)
 
     def test_custom_max_timeout(self):
         """Higher env-var max allows longer timeouts."""

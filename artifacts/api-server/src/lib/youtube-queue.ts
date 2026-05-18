@@ -456,7 +456,20 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
           message = "Queue job finished but no downloadable file was produced. Please retry.";
         }
       } else if (["SUBMITTED", "PENDING", "RUNNABLE", "STARTING", "RUNNING"].includes(job.status ?? "")) {
-        status = status === "queued" ? "queued" : "running";
+        const batchState = job.status ?? "";
+        const previousStatus = status;
+        if (batchState === "STARTING") {
+          status = "running";
+          message = "Worker container is starting...";
+        } else if (batchState === "RUNNING") {
+          status = "running";
+          message = previousStatus === "queued" ? "Worker is processing the job..." : (message ?? "Worker is processing the job...");
+        } else {
+          status = "queued";
+          message = batchState === "RUNNABLE"
+            ? "Waiting for Fargate capacity..."
+            : "Queued - starting soon...";
+        }
       }
 
       await ddb.send(

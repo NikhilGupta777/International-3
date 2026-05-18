@@ -63,8 +63,15 @@ const PUBLIC_SITE_URL = (
   "https://videomaking.in"
 ).replace(/\/+$/, "");
 const TRANSLATOR_BATCH_TIMEOUT_SECONDS = Math.max(
-  60,
-  Math.min(3000, Number(process.env.TRANSLATOR_BATCH_TIMEOUT_SECONDS ?? "3000") || 3000),
+  900,
+  Math.min(21600, Number(process.env.TRANSLATOR_BATCH_TIMEOUT_SECONDS ?? "10800") || 10800),
+);
+const TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS = Math.max(
+  900,
+  Math.min(
+    TRANSLATOR_BATCH_TIMEOUT_SECONDS,
+    Number(process.env.TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS ?? "3000") || 3000,
+  ),
 );
 const TRANSLATOR_MAX_VIDEO_SIZE_BYTES = Math.max(
   1,
@@ -578,10 +585,10 @@ async function submitTranslatorBatchJob(
 
   // Phase 5 (P2-3): Dynamic Batch timeout based on video duration.
   // Formula: max(900, source_duration × 6).  A 10-min video gets 60 min;
-  // a 25-min video gets 150 min.  Falls back to the static env-var default
-  // when duration is not known at submission time (direct GPU path).
+  // a 25-min video gets 150 min. Unknown duration falls back to the smaller
+  // static timeout so cost stays bounded when duration probing fails.
   const cpuTimeout = 1800;
-  let gpuTimeout = TRANSLATOR_BATCH_TIMEOUT_SECONDS;
+  let gpuTimeout = TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS;
   if (durationSeconds && Number.isFinite(durationSeconds) && durationSeconds > 0) {
     gpuTimeout = Math.max(900, Math.round(durationSeconds * 6));
     // Never exceed the env-var configured maximum (safety cap)
@@ -636,10 +643,14 @@ function runCommand(command: string, args: string[], timeoutMs = 120_000): Promi
   });
 }
 
-async function downloadS3ObjectToFile(key: string, filePath: string): Promise<void> {
-  const result = await s3.send(new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+async function downloadS3ObjectToFile(key: string, filePath: string, abortSignal?: AbortSignal): Promise<void> {
+  const result = await s3.send(
+    new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }),
+    abortSignal ? { abortSignal } : undefined,
+  );
   if (!result.Body) throw new Error("Input object has no body");
   await mkdir(dirname(filePath), { recursive: true });
+  if (abortSignal?.aborted) throw new Error("S3 download aborted");
   await pipeline(result.Body as NodeJS.ReadableStream, createWriteStream(filePath));
 }
 
@@ -1023,7 +1034,7 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
     }), { expiresIn: 3600 });
     const { segments, durationSeconds } = await transcribeFastMediaUrl(mediaUrl, options.sourceLang);
     if (durationSeconds > TRANSLATOR_LAMBDA_FAST_MAX_SECONDS) {
-      await updateTranslatorJob(jobId, "QUEUED", 0, "Video is over 10 minutes; starting GPU worker...", {
+      await updateTranslatorJob(jobId, "QUEUED", 0, "Video is over the fast subtitle limit; starting GPU worker...", {
         runtime: "batch",
         durationSeconds: Math.round(durationSeconds),
       });
@@ -1108,9 +1119,10 @@ async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> 
   const tmpPath = join(tmpdir(), `probe-${randomUUID()}.mp4`);
   let timeoutHandle: NodeJS.Timeout | undefined;
   let timedOut = false;
+  const abortController = new AbortController();
 
   const probePromise = (async (): Promise<number> => {
-    await downloadS3ObjectToFile(s3Key, tmpPath);
+    await downloadS3ObjectToFile(s3Key, tmpPath, abortController.signal);
     return probeDurationSeconds(tmpPath);
   })();
 
@@ -1120,6 +1132,7 @@ async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> 
       new Promise<undefined>((resolve) => {
         timeoutHandle = setTimeout(() => {
           timedOut = true;
+          abortController.abort();
           resolve(undefined);
         }, PROBE_S3_VIDEO_DURATION_TIMEOUT_MS);
       }),
@@ -1144,7 +1157,7 @@ async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> 
     void probePromise
       .catch((err) => {
         if (timedOut) {
-          console.warn("[Translator] Timed-out duration probe finished with error:", err);
+          console.warn("[Translator] Timed-out duration probe stopped with error:", err);
         }
       })
       .finally(() => {
