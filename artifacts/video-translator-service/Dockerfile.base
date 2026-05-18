@@ -58,10 +58,12 @@ RUN pip install --no-cache-dir \
 # requirements.txt changes do NOT invalidate these git clone layers.
 # --recurse-submodules is CRITICAL — it pulls in third_party/Matcha-TTS.
 RUN git clone --depth 1 --recurse-submodules \
-    https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice
+    https://github.com/FunAudioLLM/CosyVoice.git /model-cache/CosyVoice \
+    && rm -rf /model-cache/CosyVoice/.git
 
 RUN git clone --depth 1 \
-    https://github.com/bytedance/LatentSync.git /model-cache/LatentSync
+    https://github.com/bytedance/LatentSync.git /model-cache/LatentSync \
+    && rm -rf /model-cache/LatentSync/.git
 
 # ── Pre-install LatentSync deps (filtered to avoid torch conflicts) ───────────
 # LatentSync has its own requirements.txt. We install it here (skipping torch/
@@ -329,3 +331,17 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
     else \
       echo "Skipping VAE pre-download during Docker build"; \
     fi && rm -f /tmp/download_vae.py
+
+# Final image cleanup. The GitHub-hosted runner exports this very large base
+# image through BuildKit, so every cache directory left behind increases the
+# chance of "no space left on device" during layer export.
+RUN rm -rf \
+      /root/.cache/pip \
+      /root/.cache/torch \
+      /tmp/* \
+      /var/tmp/* \
+      /model-cache/huggingface/hub/.locks \
+      /model-cache/modelscope/._____temp \
+      /model-cache/modelscope/tmp* \
+      /model-cache/CosyVoice/.git \
+      /model-cache/LatentSync/.git

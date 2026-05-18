@@ -325,8 +325,23 @@ jobs:
       # ── Step 2a: Free runner disk before any translator image build ───────
       - name: Free disk space for translator build
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          df -h
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile || true
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache \
+            /usr/local/.ghcup \
+            /usr/share/swift \
+            /usr/local/share/powershell \
+            /opt/az \
+            /opt/microsoft \
+            "$AGENT_TOOLSDIRECTORY"
           sudo docker system prune -af --volumes || true
+          docker buildx prune -af || true
           df -h
 
       - name: Ensure base ECR repo exists
@@ -348,14 +363,12 @@ jobs:
             DOWNLOAD_MODELS="true"
           fi
           BASE_URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_BASE_REPO }}:${TAG}"
-          docker buildx build \
+          BUILDKIT_PROGRESS=plain docker buildx build \
             --platform linux/amd64 \
             --provenance=false --sbom=false \
             -f artifacts/video-translator-service/Dockerfile.base \
             --build-arg DOWNLOAD_MODELS_AT_BUILD="$DOWNLOAD_MODELS" \
             -t "$BASE_URI" \
-            --cache-from type=gha,scope=translator-base-image \
-            --cache-to type=gha,mode=max,scope=translator-base-image \
             --push artifacts/video-translator-service/
           echo "base_uri=${BASE_URI}" >> "$GITHUB_OUTPUT"
           echo "Base image pushed: ${BASE_URI}"
