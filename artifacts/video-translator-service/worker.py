@@ -2674,7 +2674,8 @@ def synthesize_segments_cosyvoice(
                 seg["id"], first_exc,
             )
             try:
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 audio_data, num_samples = _one_shot(initial_speed)
                 actual_seconds = num_samples / float(model_sample_rate)
                 torchaudio.save(str(out_path), audio_data, model_sample_rate)
