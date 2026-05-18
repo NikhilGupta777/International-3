@@ -561,13 +561,11 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "ALLOW_VOICE_CLONE_FALLBACK", value: process.env.TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK ?? "true" },
     { name: "ALLOW_LIP_SYNC_FALLBACK",    value: process.env.TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK    ?? "false" },
     { name: "ALLOW_RUNTIME_MODEL_DOWNLOADS", value: TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS },
-    // Force demucs + multi-speaker ON when voice cloning is requested —
-    // background separation and speaker diarization are needed for best quality.
-    // Demucs htdemucs model is now baked into the Docker image (requirements.txt +
-    // Dockerfile pre-download step) so there is no runtime download penalty.
-    // Force ON whenever voice cloning is requested for best quality.
-    { name: "USE_DEMUCS",    value: String(options.useDemucs || options.voiceClone) },
-    { name: "MULTI_SPEAKER", value: String(options.multiSpeaker || options.voiceClone) },
+    // Preserve the explicit frontend/API toggles. Forcing these on for every
+    // voice-clone job makes short single-speaker clips pay the Demucs and
+    // diarization cost even when the user disabled those quality-heavy paths.
+    { name: "USE_DEMUCS",    value: String(options.useDemucs) },
+    { name: "MULTI_SPEAKER", value: String(options.multiSpeaker) },
   ];
 }
 
@@ -1276,6 +1274,8 @@ router.post("/submit", async (req: Request, res: Response) => {
         ownerId:     { S: ownerId },
         voiceClone:  { BOOL: options.voiceClone },
         lipSync:     { BOOL: options.lipSync },
+        useDemucs:   { BOOL: options.useDemucs },
+        multiSpeaker: { BOOL: options.multiSpeaker },
         runtime:     { S: isLambdaFastCandidate(options) ? "lambda-fast" : "batch" },
         createdAt:   { N: String(now) },
         updatedAt:   { N: String(now) },
@@ -1370,6 +1370,8 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
         ownerId:     { S: ownerId },
         voiceClone:  { BOOL: options.voiceClone },
         lipSync:     { BOOL: options.lipSync },
+        useDemucs:   { BOOL: options.useDemucs },
+        multiSpeaker: { BOOL: options.multiSpeaker },
         runtime:     { S: isLambdaFastCandidate(options) ? "lambda-fast" : "batch" },
         createdAt:   { N: String(now) },
         updatedAt:   { N: String(now) },
@@ -1420,6 +1422,8 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
       voiceClone:   item.voiceClone?.BOOL,
       voiceCloneApplied: item.voiceCloneApplied?.BOOL,
       lipSync:      item.lipSync?.BOOL,
+      useDemucs:    item.useDemucs?.BOOL,
+      multiSpeaker: item.multiSpeaker?.BOOL,
       runtime:      item.runtime?.S,
       segmentCount: item.segmentCount ? parseInt(item.segmentCount.N!) : undefined,
       batchJobId:   item.batchJobId?.S,

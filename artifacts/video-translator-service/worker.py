@@ -84,10 +84,11 @@ if not SOURCE_LANG_CODE and SOURCE_LANG not in ("", "auto"):
     SOURCE_LANG_CODE = SOURCE_LANG[:2].lower()
 VOICE_CLONE         = os.environ.get("VOICE_CLONE", "true").lower() == "true"
 LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
-# Demucs and multi-speaker default ON when voice cloning — delivers the
-# best quality without the user having to know to enable them.
-USE_DEMUCS          = os.environ.get("USE_DEMUCS", "true").lower() == "true"
-MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "true").lower() == "true"
+# Demucs and diarization are quality-heavy options. The API/frontend decide
+# when to enable them; default OFF prevents hidden multi-minute work in direct
+# worker invocations that omit these env vars.
+USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
+MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "false").lower() == "true"
 ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
 LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | latentsync_hq
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget
@@ -1325,8 +1326,8 @@ def _ensure_cosyvoice() -> Path:
             "Rebuild the Docker image."
         )
     # Verify model weights are present (downloaded at build time via modelscope).
-    # We accept either CosyVoice2-0.5B or CosyVoice3-0.5B — the Dockerfile
-    # downloads v2 (publicly available). v3 is tried at runtime but falls back to v2.
+    # We prefer CosyVoice3, but still accept CosyVoice2 as an explicit
+    # backward-compatible fallback if an old base image is still running.
     #
     # modelscope cache layout differs by version:
     #   modelscope >=1.16 → <cache>/hub/models/iic/<model>
@@ -1339,7 +1340,7 @@ def _ensure_cosyvoice() -> Path:
     if found is None:
         raise RuntimeError(
             f"CosyVoice model weights not found under {MODELSCOPE_CACHE}/hub/(iic|models/iic)/. "
-            "Expected CosyVoice2-0.5B or CosyVoice3-0.5B. "
+            "Expected Fun-CosyVoice3-0.5B, CosyVoice3-0.5B, or CosyVoice2-0.5B. "
             "Set ALLOW_RUNTIME_MODEL_DOWNLOADS=1 or rebuild with DOWNLOAD_MODELS_AT_BUILD=true."
         )
     log.info(f"[CosyVoice] Repo: {cv_dir}  |  Weights: {found} verified OK")
@@ -2291,6 +2292,31 @@ def synthesize_segments_cosyvoice(
     import torch
     import torchaudio
 
+    log.info(
+        "[GPU] torch=%s cuda=%s",
+        getattr(torch, "__version__", "unknown"),
+        torch.cuda.is_available(),
+    )
+    if torch.cuda.is_available():
+        try:
+            log.info("[GPU] device=%s", torch.cuda.get_device_name(0))
+        except Exception as exc:
+            log.warning("[GPU] Could not read CUDA device name: %s", exc)
+        try:
+            smi = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu", "--format=csv,noheader"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if smi.stdout.strip():
+                log.info("[GPU] nvidia-smi: %s", smi.stdout.strip())
+            elif smi.stderr.strip():
+                log.warning("[GPU] nvidia-smi stderr: %s", smi.stderr.strip()[-500:])
+        except Exception as exc:
+            log.warning("[GPU] nvidia-smi unavailable: %s", exc)
+
     cv_dir = _ensure_cosyvoice()
     if str(cv_dir) not in sys.path:
         sys.path.insert(0, str(cv_dir))
@@ -2691,6 +2717,8 @@ def synthesize_segments_cosyvoice(
         # Factored out so the QA retry can call it again with a tighter speed.
         def _one_shot(speed_value: float):
             speed_value = float(max(SPEED_MIN, min(SPEED_MAX, speed_value)))
+            inference_mode = "unknown"
+            inference_started = time.perf_counter()
 
             # Phase 3 (P1-2): Use inference_instruct2 for non-neutral emotions.
             # This gives audible tone variation (happy/sad/excited/serious)
@@ -2711,6 +2739,7 @@ def synthesize_segments_cosyvoice(
             )
 
             if use_instruct2:
+                inference_mode = "instruct2"
                 # Format per upstream example.py:
                 # instruct_text = "You are a helpful assistant. {instruction}.<|endofprompt|>"
                 normalized_emotion_instruction = (emotion_instruction or "").strip()
@@ -2736,6 +2765,7 @@ def synthesize_segments_cosyvoice(
                     i2_args["speed"] = speed_value
                 chunks = list(cosy_model.inference_instruct2(**i2_args))
             elif use_cross_lingual:
+                inference_mode = "cross_lingual"
                 _cl_tts = _cosyvoice3_prompt(text)
                 cl_args: dict = {"tts_text": _cl_tts, "stream": False}
                 if "prompt_wav" in _cl_params_set:
@@ -2751,6 +2781,7 @@ def synthesize_segments_cosyvoice(
                     cl_args["speed"] = speed_value
                 chunks = list(cosy_model.inference_cross_lingual(**cl_args))
             else:
+                inference_mode = "zero_shot"
                 zs_args: dict = {
                     "tts_text": text,
                     "prompt_text": seg_prompt_text,
@@ -2779,7 +2810,8 @@ def synthesize_segments_cosyvoice(
             tensor = torch.cat(tts_chunks, dim=1)
             if tensor.numel() == 0:
                 raise RuntimeError("CosyVoice returned empty audio.")
-            return tensor, tensor.shape[-1]
+            inference_wall_seconds = time.perf_counter() - inference_started
+            return tensor, tensor.shape[-1], inference_wall_seconds, inference_mode
 
         # ── Phase 3 (P1-11): Per-segment retry chain ──────────────────────
         # Instead of failing the whole job on a single segment error, we try
@@ -2789,7 +2821,7 @@ def synthesize_segments_cosyvoice(
         #   3. Fall back to edge-tts (neural voice, no cloning)
         #   4. Last resort: silence (job continues, one seg is muted)
         try:
-            audio_data, num_samples = _one_shot(initial_speed)
+            audio_data, num_samples, inference_wall_seconds, inference_mode = _one_shot(initial_speed)
             actual_seconds = num_samples / float(model_sample_rate)
             applied_speed = initial_speed
             qa_retry = "no"
@@ -2815,12 +2847,14 @@ def synthesize_segments_cosyvoice(
                         applied_speed, bumped_speed,
                     )
                     try:
-                        retry_audio, retry_samples = _one_shot(bumped_speed)
+                        retry_audio, retry_samples, retry_wall_seconds, retry_mode = _one_shot(bumped_speed)
                         retry_actual = retry_samples / float(model_sample_rate)
                         if abs(retry_actual - target_speech_seconds) < abs(actual_seconds - target_speech_seconds):
                             audio_data = retry_audio
                             num_samples = retry_samples
                             actual_seconds = retry_actual
+                            inference_wall_seconds = retry_wall_seconds
+                            inference_mode = retry_mode
                             applied_speed = bumped_speed
                             qa_retry = "improved"
                         else:
@@ -2838,7 +2872,9 @@ def synthesize_segments_cosyvoice(
                 "applied_speed": round(applied_speed, 3),
                 "qa_retry": qa_retry,
                 "model_sample_rate": model_sample_rate,
-                "synth_method": "instruct2" if (_has_instruct2 and emotion_instruction and not use_cross_lingual) else ("cross_lingual" if use_cross_lingual else "zero_shot"),
+                "synth_method": inference_mode,
+                "inference_wall_seconds": round(inference_wall_seconds, 3),
+                "rtf": round(inference_wall_seconds / max(actual_seconds, 0.001), 3),
             })
         except Exception as first_exc:
             # ── Fallback level 1: CUDA cache clear + retry ─────────────────
@@ -2850,7 +2886,7 @@ def synthesize_segments_cosyvoice(
             try:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                audio_data, num_samples = _one_shot(initial_speed)
+                audio_data, num_samples, inference_wall_seconds, inference_mode = _one_shot(initial_speed)
                 actual_seconds = num_samples / float(model_sample_rate)
                 torchaudio.save(str(out_path), audio_data, model_sample_rate)
                 seg["_pacing"].update({
@@ -2859,6 +2895,8 @@ def synthesize_segments_cosyvoice(
                     "qa_retry": "no",
                     "model_sample_rate": model_sample_rate,
                     "synth_method": "retry_cache_clear",
+                    "inference_wall_seconds": round(inference_wall_seconds, 3),
+                    "rtf": round(inference_wall_seconds / max(actual_seconds, 0.001), 3),
                 })
                 _fallback_succeeded = True
             except Exception:
@@ -2876,7 +2914,7 @@ def synthesize_segments_cosyvoice(
                     _orig_ref_wav = seg_ref_wav
                     seg_ref_prompt_path = default_ref_prompt_path
                     seg_ref_wav = default_ref_wav
-                    audio_data, num_samples = _one_shot(initial_speed)
+                    audio_data, num_samples, inference_wall_seconds, inference_mode = _one_shot(initial_speed)
                     actual_seconds = num_samples / float(model_sample_rate)
                     torchaudio.save(str(out_path), audio_data, model_sample_rate)
                     seg["_pacing"].update({
@@ -2885,6 +2923,8 @@ def synthesize_segments_cosyvoice(
                         "qa_retry": "no",
                         "model_sample_rate": model_sample_rate,
                         "synth_method": "fallback_default_ref",
+                        "inference_wall_seconds": round(inference_wall_seconds, 3),
+                        "rtf": round(inference_wall_seconds / max(actual_seconds, 0.001), 3),
                     })
                     _fallback_succeeded = True
                 except Exception:
@@ -2962,11 +3002,14 @@ def synthesize_segments_cosyvoice(
         seg_audios.append(out_path)
         log.info(
             "[CosyVoice] Seg %s/%s done (speaker=%s, speed=%.3f, "
-            "actual/target=%.2fs/%.2fs).",
+            "actual/target=%.2fs/%.2fs, wall=%.2fs, rtf=%.2f, method=%s).",
             seg["id"], len(segments), speaker,
             seg["_pacing"]["applied_speed"],
             seg["_pacing"]["actual_seconds"],
             seg["_pacing"]["target_speech_seconds"],
+            float(seg["_pacing"].get("inference_wall_seconds", 0.0) or 0.0),
+            float(seg["_pacing"].get("rtf", 0.0) or 0.0),
+            seg["_pacing"].get("synth_method", "unknown"),
         )
 
     update_progress("CLONING", 59, "Voice cloning complete.")
@@ -3931,6 +3974,15 @@ def main():
 
     log.info(f"=== Translator Worker starting. JobId={JOB_ID} ===")
     log.info(f"Target: {TARGET_LANG} ({TARGET_LANG_CODE}), LipSync={LIP_SYNC}, VoiceClone={VOICE_CLONE}")
+    log.info(
+        "[Config] useDemucs=%s multiSpeaker=%s model=%s runtimeDownloads=%s fp16=%s vllm=%s",
+        USE_DEMUCS,
+        MULTI_SPEAKER,
+        COSYVOICE_MODEL_ID,
+        ALLOW_RUNTIME_MODEL_DOWNLOADS,
+        COSYVOICE_FP16,
+        COSYVOICE_VLLM,
+    )
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"translator_{JOB_ID}_"))
     log.info(f"Working directory: {work_dir}")
