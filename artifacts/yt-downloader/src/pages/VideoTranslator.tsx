@@ -318,8 +318,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             setJob(null);
             setJobId(null);
           }
+          return false;
         }
-        return;
+        return true;
       }
       const data = await readJsonResponse(r);
       setJob(data);
@@ -363,41 +364,57 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           transcriptUrl: result?.transcriptUrl,
         });
         refreshHistory();
+        return false;
       } else if (data.status === "FAILED") {
         clearTimeout(pollRef.current!);
         removeActiveTranslatorJob(id);
         refreshHistory();
         setError(data.error ?? "Translation failed");
+        return false;
       } else if (data.status === "CANCELLED" || data.status === "EXPIRED") {
         clearTimeout(pollRef.current!);
         removeActiveTranslatorJob(id);
         refreshHistory();
+        return false;
       }
+      return true;
     } catch (e: any) {
       setError(e?.message);
+      return true;
     }
   }, [fetchResult, file?.name, jobId, refreshHistory, srcLang, tgtLang]);
 
   useEffect(() => {
     if (!jobId) return;
     pollStartRef.current = Date.now();
+    let isActive = true;
 
     // P2-9: Progressive poll backoff — 2s for first 60s, 5s until 3min, 10s after.
     const schedulePoll = () => {
+      if (!isActive) return;
       const elapsed = Date.now() - pollStartRef.current;
       let interval: number;
       if (elapsed < 60_000) interval = 2000;
       else if (elapsed < 180_000) interval = 5000;
       else interval = 10_000;
-      pollRef.current = setTimeout(() => {
-        pollStatus(jobId);
-        schedulePoll();
+      pollRef.current = setTimeout(async () => {
+        const shouldContinue = await pollStatus(jobId);
+        if (isActive && shouldContinue) {
+          schedulePoll();
+        }
       }, interval);
     };
 
-    pollStatus(jobId);
-    schedulePoll();
-    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
+    void (async () => {
+      const shouldContinue = await pollStatus(jobId);
+      if (isActive && shouldContinue) {
+        schedulePoll();
+      }
+    })();
+    return () => {
+      isActive = false;
+      if (pollRef.current) clearTimeout(pollRef.current);
+    };
   }, [jobId, pollStatus]);
 
   useEffect(() => {
