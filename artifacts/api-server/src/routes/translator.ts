@@ -1098,21 +1098,58 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
   }
 }
 
+const PROBE_S3_VIDEO_DURATION_TIMEOUT_MS = 15_000;
+
 async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> {
   // Best-effort: download the video to a temp file, probe duration via ffprobe,
-  // then clean up.  If it fails or takes too long, return undefined so the
-  // caller falls back to the static timeout.  Timeout is 15s — fast enough
-  // for the submit endpoint to not feel sluggish.
+  // then clean up. If it fails or the full download+probe workflow takes longer
+  // than 15s, return undefined so the caller falls back to the static timeout.
+  // This keeps the submit endpoint responsive even for large or slow uploads.
   const tmpPath = join(tmpdir(), `probe-${randomUUID()}.mp4`);
-  try {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  let timedOut = false;
+
+  const probePromise = (async (): Promise<number> => {
     await downloadS3ObjectToFile(s3Key, tmpPath);
-    const duration = await probeDurationSeconds(tmpPath);
+    return probeDurationSeconds(tmpPath);
+  })();
+
+  try {
+    const duration = await Promise.race<number | undefined>([
+      probePromise,
+      new Promise<undefined>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true;
+          resolve(undefined);
+        }, PROBE_S3_VIDEO_DURATION_TIMEOUT_MS);
+      }),
+    ]);
+
+    if (timedOut) {
+      console.warn(
+        `[Translator] Duration probe timed out after ${PROBE_S3_VIDEO_DURATION_TIMEOUT_MS}ms (non-blocking)`
+      );
+      return undefined;
+    }
+
     return duration;
   } catch (err) {
     console.warn("[Translator] Duration probe failed (non-blocking):", err);
     return undefined;
   } finally {
-    rm(tmpPath, { force: true }).catch(() => {});
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+
+    void probePromise
+      .catch((err) => {
+        if (timedOut) {
+          console.warn("[Translator] Timed-out duration probe finished with error:", err);
+        }
+      })
+      .finally(() => {
+        rm(tmpPath, { force: true }).catch(() => {});
+      });
   }
 }
 
