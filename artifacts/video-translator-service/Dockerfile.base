@@ -121,14 +121,14 @@ RUN pip install --no-cache-dir --force-reinstall --no-deps \
 RUN pip install --no-cache-dir pyopenjtalk==0.3.4 || true
 
 # CosyVoice uses ONNXRuntime for frontend ONNX models. The base image is
-# CUDA 12.1 + cuDNN 8, so the normal PyPI onnxruntime-gpu 1.18.x wheel is
-# wrong: it is CUDA 11 and fails at runtime with missing libcublasLt.so.11.
-# Use the official CUDA-12 feed for 1.18.1 (cuDNN 8 compatible).
+# CUDA 12.1 + cuDNN 8. ONNXRuntime 1.18.0 is the matching CUDA-12/cuDNN-8
+# wheel. 1.18.1 and 1.19+ require cuDNN 9 on CUDA 12, while normal PyPI
+# 1.18.x wheels can link CUDA 11 and fail with missing libcublasLt.so.11.
 RUN pip uninstall -y onnxruntime onnxruntime-gpu || true \
     && pip install --no-cache-dir \
       --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
       --extra-index-url https://pypi.org/simple \
-      onnxruntime-gpu==1.18.1
+      onnxruntime-gpu==1.18.0
 
 # Build-time ABI check. This does not require a GPU; it verifies the installed
 # provider links against CUDA 12 libraries instead of the broken CUDA 11 wheel.
