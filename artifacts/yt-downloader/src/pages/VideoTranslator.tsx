@@ -256,6 +256,10 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [tgtLang, setTgtLang] = useState("en");
   const [voiceStyle, setVoiceStyle] = useState<"original" | "female">("original");
   const [lipSync, setLipSync] = useState(false);
+  const [translationMode, setTranslationMode] = useState<"full" | "subtitle-only">("full");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [keepBackgroundMusic, setKeepBackgroundMusic] = useState(true);
+  const [multiSpeaker, setMultiSpeaker] = useState(true);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<any>(null);
   const [transcript, setTranscript] = useState<any[]>([]);
@@ -560,6 +564,28 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         throw new Error("Video is larger than the 2GB upload limit.");
       }
 
+      // P2-13: Client-side idempotency — detect duplicate uploads.
+      // Hash the first 1MB + file size as a fingerprint.  If a recent active
+      // job has the same hash, warn the user instead of creating a duplicate.
+      const hashSlice = file.slice(0, 1024 * 1024);
+      const hashBuffer = await hashSlice.arrayBuffer();
+      const hashArray = new Uint8Array(hashBuffer);
+      let hashSum = 0;
+      for (let i = 0; i < hashArray.length; i++) hashSum = ((hashSum << 5) - hashSum + hashArray[i]) | 0;
+      const fileFingerprint = `${hashSum.toString(36)}-${file.size}`;
+      const existingDuplicate = loadActiveTranslatorJobs().find(
+        j => j.fileFingerprint === fileFingerprint && Date.now() - j.startedAt < 3600_000
+      );
+      if (existingDuplicate) {
+        const confirmDuplicate = window.confirm(
+          `You already submitted this video ${Math.round((Date.now() - existingDuplicate.startedAt) / 60000)} minutes ago (Job: ${existingDuplicate.jobId.slice(0, 8)}…). Submit again anyway?`
+        );
+        if (!confirmDuplicate) {
+          setUploading(false);
+          return;
+        }
+      }
+
       // Step 1: Get S3 presigned PUT URL
       const presignRes = await fetch(
         `${API}/presign?filename=${encodeURIComponent(file.name)}&contentType=${encodeURIComponent(file.type || "video/mp4")}`,
@@ -580,7 +606,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       if (!uploadRes.ok) throw new Error("S3 upload failed");
 
       // Step 3: Submit Batch job
-      const isVoiceClone = voiceStyle === "original";
+      const isVoiceClone = voiceStyle === "original" && translationMode === "full";
       const submitRes = await fetch(`${API}/submit`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...translatorAuthHeaders() },
@@ -592,11 +618,16 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           targetLangCode: tgtLang,
           sourceLang: srcLang,
           voiceClone: isVoiceClone,
-          lipSync: lipSyncAvailable && lipSync,
+          lipSync: lipSyncAvailable && lipSync && translationMode === "full",
           lipSyncQuality: "latentsync",
-          // Enable speaker diarization automatically when voice cloning so each
-          // speaker in the video gets their own cloned voice reference.
-          multiSpeaker: isVoiceClone,
+          translationMode,
+          // P2-8: multiSpeaker controlled by user toggle (defaults to true
+          // when voice cloning).  Single-speaker vlogs can disable this to
+          // skip diarization and save ~1-2 min.
+          multiSpeaker: isVoiceClone ? multiSpeaker : false,
+          // P2-7: background music separation (Demucs).  When disabled,
+          // the dubbed audio is voice-only with no background music mix.
+          useDemucs: keepBackgroundMusic && translationMode === "full",
         }),
       });
       if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");
@@ -615,6 +646,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         progress: 0,
         step: "Job queued, waiting for worker...",
         status: "QUEUED",
+        fileFingerprint,
       });
       setJobId(newJobId);
       refreshHistory();
@@ -900,17 +932,89 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                 )}
               </div>
 
-              <label className={cn("flex items-center gap-3 select-none", lipSyncAvailable ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
-                <div onClick={() => lipSyncAvailable && setLipSync(!lipSync)}
-                  className={cn("w-10 h-6 rounded-full transition-all relative", lipSyncAvailable ? "cursor-pointer" : "cursor-not-allowed",
-                    lipSyncAvailable && lipSync ? "bg-primary" : "bg-white/20")}>
+              {/* P2-1: Translation Mode — explicit choice between full dubbing and subtitles only */}
+              <div className="flex flex-col gap-2">
+                <label className="text-xs text-white/40 font-medium uppercase tracking-wider">Translation Mode</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setTranslationMode("full")}
+                    className={cn("flex-1 py-2.5 rounded-xl text-sm font-medium border transition-all",
+                      translationMode === "full" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
+                  >
+                    🎬 Full Dubbing
+                  </button>
+                  <button
+                    onClick={() => setTranslationMode("subtitle-only")}
+                    className={cn("flex-1 py-2.5 rounded-xl text-sm font-medium border transition-all",
+                      translationMode === "subtitle-only" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
+                  >
+                    📝 Subtitles Only
+                  </button>
+                </div>
+                {translationMode === "subtitle-only" && (
+                  <p className="text-[11px] text-blue-300/60 flex items-center gap-1.5">
+                    <span>ℹ️</span>
+                    Fast mode: generates translated SRT subtitles without voice dubbing.
+                  </p>
+                )}
+              </div>
+
+              {/* P2-7: Advanced Settings — collapsible */}
+              {translationMode === "full" && (
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={() => setShowAdvanced(v => !v)}
+                    className="flex items-center gap-2 text-xs text-white/40 hover:text-white/60 transition-colors font-medium uppercase tracking-wider"
+                  >
+                    <span>{showAdvanced ? "▾" : "▸"} Advanced Settings</span>
+                  </button>
+                  {showAdvanced && (
+                    <div className="flex flex-col gap-3 pl-2 border-l-2 border-white/[0.06] ml-1">
+                      {/* Background music toggle */}
+                      <label className="flex items-center gap-3 select-none cursor-pointer">
+                        <div onClick={() => setKeepBackgroundMusic(!keepBackgroundMusic)}
+                          className={cn("w-10 h-6 rounded-full transition-all relative cursor-pointer",
+                            keepBackgroundMusic ? "bg-primary" : "bg-white/20")}>
+                          <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all",
+                            keepBackgroundMusic ? "left-[18px]" : "left-0.5")} />
+                        </div>
+                        <div>
+                          <p className="text-sm text-white/80 font-medium">Keep Background Music</p>
+                          <p className="text-xs text-white/40">Separates and re-mixes original background audio with dubbed voice</p>
+                        </div>
+                      </label>
+
+                      {/* P2-8: Multi-speaker toggle */}
+                      {voiceStyle === "original" && (
+                        <label className="flex items-center gap-3 select-none cursor-pointer">
+                          <div onClick={() => setMultiSpeaker(!multiSpeaker)}
+                            className={cn("w-10 h-6 rounded-full transition-all relative cursor-pointer",
+                              multiSpeaker ? "bg-primary" : "bg-white/20")}>
+                            <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all",
+                              multiSpeaker ? "left-[18px]" : "left-0.5")} />
+                          </div>
+                          <div>
+                            <p className="text-sm text-white/80 font-medium">Multi-Speaker Detection</p>
+                            <p className="text-xs text-white/40">Disable for single-speaker vlogs to save ~1-2 min processing time</p>
+                          </div>
+                        </label>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <label className={cn("flex items-center gap-3 select-none", lipSyncAvailable && translationMode === "full" ? "cursor-pointer" : "cursor-not-allowed opacity-60")}>
+                <div onClick={() => lipSyncAvailable && translationMode === "full" && setLipSync(!lipSync)}
+                  className={cn("w-10 h-6 rounded-full transition-all relative", lipSyncAvailable && translationMode === "full" ? "cursor-pointer" : "cursor-not-allowed",
+                    lipSyncAvailable && lipSync && translationMode === "full" ? "bg-primary" : "bg-white/20")}>
                   <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all",
-                    lipSyncAvailable && lipSync ? "left-[18px]" : "left-0.5")} />
+                    lipSyncAvailable && lipSync && translationMode === "full" ? "left-[18px]" : "left-0.5")} />
                 </div>
                 <div>
                   <p className="text-sm text-white/80 font-medium">Lip Sync (LatentSync)</p>
                   <p className="text-xs text-white/40">
-                    {lipSyncAvailable ? "Enabled for your account; uses the fast GPU queue" : "Limited to selected approved users"}
+                    {!lipSyncAvailable ? "Limited to selected approved users" : translationMode !== "full" ? "Only available in Full Dubbing mode" : "Enabled for your account; uses the fast GPU queue"}
                   </p>
                 </div>
               </label>
