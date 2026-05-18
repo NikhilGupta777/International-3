@@ -1111,7 +1111,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     return merged
 
 
-END_PUNCTUATION = {".", "?", "!", "。", "？", "！", "\u0964", "；", "：", "\uff1f", "\uff01", "\u0965"}  # \u0964/\u0965 = Devanagari danda/double-danda; \uff1f/\uff01 = fullwidth ?/!
+END_PUNCTUATION = {".", "?", "!", "。", "？", "！", "\u0964", "；", "：", "\u0965"}  # \u0964/\u0965 = Devanagari danda/double-danda
 
 def _terminal_punctuation() -> str:
     code = (TARGET_LANG_CODE or "").lower()
