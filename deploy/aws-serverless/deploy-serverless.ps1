@@ -231,6 +231,7 @@ $parameterOverrides = @(
   "TranslatorCpuBatchJobQueue=$(Get-OptionalEnv $envMap 'TRANSLATOR_CPU_BATCH_JOB_QUEUE')"
   "TranslatorCpuBatchJobDefinition=$(Get-OptionalEnv $envMap 'TRANSLATOR_CPU_BATCH_JOB_DEFINITION')"
   "TranslatorBatchTimeoutSeconds=$(Get-OptionalEnv $envMap 'TRANSLATOR_BATCH_TIMEOUT_SECONDS' '3000')"
+  "TranslatorBatchFallbackTimeoutSeconds=$(Get-OptionalEnv $envMap 'TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS' '3000')"
   "TranslatorMaxVideoSizeBytes=$(Get-OptionalEnv $envMap 'TRANSLATOR_MAX_VIDEO_SIZE_BYTES' '2147483648')"
   "TranslatorAllowRuntimeModelDownloads=$(Get-OptionalEnv $envMap 'TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS' '0')"
   "TranslatorCosyVoiceModelId=$(Get-OptionalEnv $envMap 'TRANSLATOR_COSYVOICE_MODEL_ID' 'FunAudioLLM/Fun-CosyVoice3-0.5B-2512')"
