@@ -1473,6 +1473,50 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
             f"pip stderr:\n{result.stderr[-2000:]}"
         )
 
+
+def _verify_onnxruntime_cuda_stack() -> None:
+    """Fail fast when the CosyVoice ONNX frontend cannot use CUDA.
+
+    A CUDA-11 onnxruntime-gpu wheel inside our CUDA-12 image silently falls
+    back to CPU with errors like missing libcublasLt.so.11. That makes short
+    translator jobs look like CPU jobs even though torch.cuda is available.
+    """
+    try:
+        import onnxruntime as ort
+    except Exception as exc:
+        raise RuntimeError(f"ONNXRuntime is not importable: {exc}") from exc
+
+    providers = ort.get_available_providers()
+    log.info("[ONNXRuntime] providers=%s", providers)
+    if "CUDAExecutionProvider" not in providers:
+        raise RuntimeError(
+            "ONNXRuntime CUDAExecutionProvider is unavailable; CosyVoice "
+            "frontend ONNX models would run on CPU."
+        )
+
+    try:
+        provider_lib = Path(ort.__file__).parent / "capi" / "libonnxruntime_providers_cuda.so"
+        if not provider_lib.exists():
+            raise RuntimeError(f"provider library missing: {provider_lib}")
+        ldd = subprocess.run(
+            ["ldd", str(provider_lib)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        linked = f"{ldd.stdout}\n{ldd.stderr}"
+        if "libcublasLt.so.11" in linked:
+            raise RuntimeError(
+                "ONNXRuntime is the CUDA-11 wheel inside a CUDA-12 image "
+                "(links libcublasLt.so.11). Rebuild the translator base image "
+                "with the CUDA-12 ONNXRuntime package."
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        log.warning("[ONNXRuntime] CUDA ABI check skipped: %s", exc)
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 3: Translation (Gemini dubbing-aware)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2324,6 +2368,7 @@ def synthesize_segments_cosyvoice(
     if str(matcha_root) not in sys.path:
         sys.path.insert(0, str(matcha_root))
 
+    _verify_onnxruntime_cuda_stack()
     _ensure_cosyvoice_yaml_compatibility()
     _CosyVoice = _import_cosyvoice_class()
 
