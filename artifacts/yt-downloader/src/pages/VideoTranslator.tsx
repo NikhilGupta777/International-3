@@ -405,12 +405,13 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       }, interval);
     };
 
-    void (async () => {
+    const startPolling = async () => {
       const shouldContinue = await pollStatus(jobId);
       if (isActive && shouldContinue) {
         schedulePoll();
       }
-    })();
+    };
+    void startPolling();
     return () => {
       isActive = false;
       if (pollRef.current) clearTimeout(pollRef.current);
