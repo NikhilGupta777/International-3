@@ -584,13 +584,14 @@ async function submitTranslatorBatchJob(
   const runtime = useCpuQueue ? "batch-cpu"       : (useFastGpuQueue ? "batch-lipsync" : "batch");
 
   // Phase 5 (P2-3): Dynamic Batch timeout based on video duration.
-  // Formula: max(900, source_duration × 6).  A 10-min video gets 60 min;
-  // a 25-min video gets 150 min. Unknown duration falls back to the smaller
-  // static timeout so cost stays bounded when duration probing fails.
+  // Formula: max(configured cold-start floor, source_duration × 6).
+  // CosyVoice cold start can exceed 15 min even for short videos, so the floor
+  // must be the configured fallback timeout rather than a hard-coded 900s.
+  // Unknown duration also uses the same bounded fallback.
   const cpuTimeout = 1800;
   let gpuTimeout = TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS;
   if (durationSeconds && Number.isFinite(durationSeconds) && durationSeconds > 0) {
-    gpuTimeout = Math.max(900, Math.round(durationSeconds * 6));
+    gpuTimeout = Math.max(TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS, Math.round(durationSeconds * 6));
     // Never exceed the env-var configured maximum (safety cap)
     gpuTimeout = Math.min(gpuTimeout, TRANSLATOR_BATCH_TIMEOUT_SECONDS);
   }
