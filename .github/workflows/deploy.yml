@@ -379,25 +379,45 @@ jobs:
           echo "base_uri=${BASE_URI}" >> "$GITHUB_OUTPUT"
           echo "Reusing existing base image: ${BASE_URI}"
 
-      # ── Step 3: Build slim translator image (always, fast ~2-3 min) ────────
-      # Uses Dockerfile (slim): FROM base + COPY worker.py + pyflakes validation.
-      # The validation step FAILS THE BUILD if worker.py has syntax errors or
-      # undefined names — preventing broken code from ever reaching production.
+      # Step 3: Push slim translator image without unpacking the huge base.
+      # GitHub-hosted runners cannot reliably unpack the 20 GB GPU base image.
+      # Validate worker.py, create a tiny /app code layer, and append it to the
+      # remote base image with crane so only the code layer is uploaded.
       - name: Build & push slim translator image
         id: slim_push
         run: |
           TAG="${GITHUB_SHA::8}"
           BASE_IMAGE="${{ steps.base_push.outputs.base_uri || steps.base_resolve.outputs.base_uri }}"
           SLIM_URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_REPO }}:${TAG}"
-          docker buildx build \
-            --platform linux/amd64 \
-            --provenance=false --sbom=false \
-            -f artifacts/video-translator-service/Dockerfile \
-            --build-arg BASE_IMAGE="$BASE_IMAGE" \
-            -t "$SLIM_URI" \
-            --cache-from type=gha,scope=translator-slim-image \
-            --cache-to type=gha,mode=max,scope=translator-slim-image \
-            --push artifacts/video-translator-service/
+
+          python -m py_compile artifacts/video-translator-service/worker.py
+          python -m pip install --quiet pyflakes
+          pyflakes artifacts/video-translator-service/worker.py
+
+          CRANE_VERSION="v0.21.5"
+          curl -fsSL "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            -o /tmp/go-containerregistry.tar.gz
+          sudo tar -xzf /tmp/go-containerregistry.tar.gz -C /usr/local/bin crane
+          crane version
+
+          REGISTRY="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com"
+          crane auth login -u AWS -p "$(aws ecr get-login-password --region "${{ env.AWS_REGION }}")" "$REGISTRY"
+
+          LAYER_ROOT="$(mktemp -d)"
+          mkdir -p "$LAYER_ROOT/app"
+          cp artifacts/video-translator-service/worker.py "$LAYER_ROOT/app/worker.py"
+          cp artifacts/video-translator-service/runtime_deps.py "$LAYER_ROOT/app/runtime_deps.py"
+          tar --numeric-owner --owner=0 --group=0 -C "$LAYER_ROOT" -cf /tmp/translator-code-layer.tar app
+
+          crane mutate "$BASE_IMAGE" \
+            --append /tmp/translator-code-layer.tar \
+            --entrypoint /usr/bin/env \
+            --cmd python --cmd -u --cmd worker.py \
+            --env NVIDIA_DISABLE_REQUIRE=1 \
+            --workdir /app \
+            --set-platform linux/amd64 \
+            --tag "$SLIM_URI"
+
           echo "image_uri=${SLIM_URI}" >> "$GITHUB_OUTPUT"
           echo "Slim translator image pushed: ${SLIM_URI}"
 

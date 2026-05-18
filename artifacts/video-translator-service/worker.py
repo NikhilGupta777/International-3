@@ -2381,6 +2381,7 @@ def synthesize_segments_cosyvoice(
             log.warning(f"[CosyVoice] Failed loading {model_name}: {e}")
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
+    cosy_model = model
 
     # ── Phase 3 (P1-4): Detect CosyVoice version via class name ────────────
     # Upstream hierarchy: CosyVoice3 extends CosyVoice2 extends CosyVoice.
@@ -2727,7 +2728,7 @@ def synthesize_segments_cosyvoice(
                     i2_args["prompt_speech_16k"] = seg_ref_wav
                 if "speed" in _instruct2_params_set:
                     i2_args["speed"] = speed_value
-                chunks = list(model.inference_instruct2(**i2_args))
+                chunks = list(cosy_model.inference_instruct2(**i2_args))
             elif use_cross_lingual:
                 _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if (is_cosyvoice3 and COSYVOICE3_INJECT_PROMPT_PREFIX) else text)
                 cl_args: dict = {"tts_text": _cl_tts, "stream": False}
@@ -2742,7 +2743,7 @@ def synthesize_segments_cosyvoice(
                 cl_args.update(_instruct_param_value(_cl_params_set, emotion_instruction))
                 if speed_supported:
                     cl_args["speed"] = speed_value
-                chunks = list(model.inference_cross_lingual(**cl_args))
+                chunks = list(cosy_model.inference_cross_lingual(**cl_args))
             else:
                 zs_args: dict = {
                     "tts_text": text,
@@ -2760,7 +2761,7 @@ def synthesize_segments_cosyvoice(
                 zs_args.update(_instruct_param_value(_zs_params_set, emotion_instruction))
                 if speed_supported:
                     zs_args["speed"] = speed_value
-                chunks = list(model.inference_zero_shot(**zs_args))
+                chunks = list(cosy_model.inference_zero_shot(**zs_args))
 
             tts_chunks = [
                 c["tts_speech"]
@@ -2939,7 +2940,8 @@ def synthesize_segments_cosyvoice(
         )
 
     update_progress("CLONING", 59, "Voice cloning complete.")
-    del model
+    model = None
+    cosy_model = None
     torch.cuda.empty_cache()
     log.info("[CosyVoice] Voice cloning complete.")
     return seg_audios
