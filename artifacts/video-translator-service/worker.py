@@ -118,13 +118,11 @@ COSYVOICE_VLLM  = os.environ.get("COSYVOICE_VLLM", "false").lower() in ("1", "tr
 # no-op today.
 COSYVOICE_PARALLEL_SYNTH = _env_int("COSYVOICE_PARALLEL_SYNTH", 1)
 
-# P1-3 A/B test flag: whether to inject the manual "<|endofprompt|>" prefix
-# into prompt_text (zero-shot) and tts_text (cross-lingual) for CosyVoice3.
-# Default: OFF (no injection).  Upstream frontend_* functions already handle
-# the template internally.  Set COSYVOICE3_INJECT_PROMPT_PREFIX=true to re-enable
-# for A/B comparison against the old behavior.
+# CosyVoice3's LLM asserts that either tts_text or prompt_text contains the
+# "<|endofprompt|>" delimiter.  Keep this enabled by default; without it the
+# model returns no audio and the worker can end up producing a silent dub.
 COSYVOICE3_INJECT_PROMPT_PREFIX = os.environ.get(
-    "COSYVOICE3_INJECT_PROMPT_PREFIX", "false"
+    "COSYVOICE3_INJECT_PROMPT_PREFIX", "true"
 ).lower() in ("1", "true", "yes", "on")
 
 # ── Force HuggingFace/ModelScope offline mode ─────────────────────────────────
@@ -2564,6 +2562,15 @@ def synthesize_segments_cosyvoice(
             return {instruct_param: emotion_instruction}
         return {}
 
+    def _cosyvoice3_prompt(value: str, assistant_prompt: str = "You are a helpful assistant.") -> str:
+        """CosyVoice3 requires the end-of-prompt delimiter in text or prompt_text."""
+        cleaned = str(value or "").strip()
+        if not is_cosyvoice3 or not COSYVOICE3_INJECT_PROMPT_PREFIX:
+            return cleaned
+        if "<|endofprompt|>" in cleaned:
+            return cleaned
+        return f"{assistant_prompt}<|endofprompt|>{cleaned}"
+
     # ── Synthesize each segment ───────────────────────────────────────────────
     # Phase 3 performance notes:
     # - vLLM (COSYVOICE_VLLM=true): CosyVoice's internal continuous batching
@@ -2669,12 +2676,11 @@ def synthesize_segments_cosyvoice(
         seg_prompt_text = speaker_prompt_texts.get(speaker)
         if not seg_prompt_text:
             seg_prompt_text = global_prompt_text
-        # CosyVoice3 zero-shot: instruction prefix in prompt_text.
-        # P1-3: Disabled by default — upstream frontend_* handles the template
-        # internally.  Double-wrapping with <|endofprompt|> can truncate context.
-        # Set COSYVOICE3_INJECT_PROMPT_PREFIX=true to re-enable for A/B testing.
-        if is_cosyvoice3 and seg_prompt_text and COSYVOICE3_INJECT_PROMPT_PREFIX:
-            seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
+        # CosyVoice3 zero-shot: ensure prompt_text includes the required
+        # delimiter. Missing it causes the LLM worker to assert and emit no
+        # audio.
+        if seg_prompt_text:
+            seg_prompt_text = _cosyvoice3_prompt(seg_prompt_text)
 
         emotion = str(seg.get("emotion", "neutral")).strip().lower()
         emotion_instruction = (
@@ -2730,7 +2736,7 @@ def synthesize_segments_cosyvoice(
                     i2_args["speed"] = speed_value
                 chunks = list(cosy_model.inference_instruct2(**i2_args))
             elif use_cross_lingual:
-                _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if (is_cosyvoice3 and COSYVOICE3_INJECT_PROMPT_PREFIX) else text)
+                _cl_tts = _cosyvoice3_prompt(text)
                 cl_args: dict = {"tts_text": _cl_tts, "stream": False}
                 if "prompt_wav" in _cl_params_set:
                     cl_args["prompt_wav"] = seg_ref_prompt_path
@@ -2912,7 +2918,31 @@ def synthesize_segments_cosyvoice(
                         seg["id"], edge_err,
                     )
 
-            # ── Fallback level 4: silence ──────────────────────────────────
+            # ── Fallback level 4: gTTS emergency voice ─────────────────────
+            if not _fallback_succeeded:
+                log.warning(
+                    "[CosyVoice] Seg %s falling back to gTTS emergency voice...",
+                    seg["id"],
+                )
+                try:
+                    gtts_path = synthesize_gtts_single(seg, out_dir)
+                    import shutil as _shutil_gtts
+                    _shutil_gtts.copy2(str(gtts_path), str(out_path))
+                    seg["_pacing"].update({
+                        "actual_seconds": round(float(seg["end"]) - float(seg["start"]), 3),
+                        "applied_speed": 1.0,
+                        "qa_retry": "no",
+                        "model_sample_rate": 24000,
+                        "synth_method": "fallback_gtts",
+                    })
+                    _fallback_succeeded = True
+                except Exception as gtts_err:
+                    log.warning(
+                        "[CosyVoice] Seg %s gTTS also failed: %s",
+                        seg["id"], gtts_err,
+                    )
+
+            # ── Fallback level 5: silence ──────────────────────────────────
             if not _fallback_succeeded:
                 log.warning(
                     "[CosyVoice] Seg %s all fallbacks exhausted. Inserting silence.",
@@ -3006,6 +3036,30 @@ def synthesize_all(
                 speaker_refs=speaker_refs,
                 speaker_prompt_texts=speaker_prompt_texts,
             )
+            cloned_methods = {
+                "zero_shot",
+                "cross_lingual",
+                "instruct2",
+                "retry_cache_clear",
+                "fallback_default_ref",
+            }
+            synth_methods = [
+                str((seg.get("_pacing") or {}).get("synth_method", "unknown"))
+                for seg in segments
+            ]
+            cloned_count = sum(1 for method in synth_methods if method in cloned_methods)
+            fallback_count = len(synth_methods) - cloned_count
+            silence_count = sum(1 for method in synth_methods if method == "fallback_silence")
+            clone_ratio = cloned_count / max(1, len(synth_methods))
+            log.info(
+                "[TTS] CosyVoice segment audit: cloned=%s fallback=%s silence=%s total=%s methods=%s",
+                cloned_count, fallback_count, silence_count, len(synth_methods), synth_methods,
+            )
+            if clone_ratio < 0.80 or silence_count > 0:
+                raise RuntimeError(
+                    f"CosyVoice did not produce a reliable cloned dub "
+                    f"({cloned_count}/{len(synth_methods)} cloned, {silence_count} silent)."
+                )
             log.info("[TTS] CosyVoice voice cloning succeeded.")
             return paths, True
         except Exception as cv_err:
