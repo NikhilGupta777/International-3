@@ -997,8 +997,10 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
       aggressively (16 s, gap 2.4 s) creates mega-segments that CosyVoice
       must then rush through.  We tune the thresholds per target language
       family:
-        - Indic (hi/mr/bn/ta/te/etc): max 12 s, gap ≤ 0.8 s, target 3-7 s
-        - CJK (zh/ja/ko): max 12 s, gap ≤ 1.0 s, target 3-7 s
+        - Indic (hi/mr/bn/ta/te/etc): max 12 s, gap ≤ 0.8 s normally,
+          or ≤ 1.2 s for short segments; target 3-7 s
+        - CJK (zh/ja/ko): max 12 s, gap ≤ 1.0 s normally, or ≤ 1.4 s
+          for short segments; target 3-7 s
         - Latin/European (en/es/fr/de/etc): max 14 s, gap ≤ 1.2 s, target 4-8 s
 
     Respects speaker labels — never merges different speakers.
