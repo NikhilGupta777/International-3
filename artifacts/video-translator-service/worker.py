@@ -99,8 +99,8 @@ HF_HOME             = Path(os.environ.get("HF_HOME", str(MODEL_CACHE_DIR / "hugg
 # Docker image.  Set =1 only for dev/testing.
 ALLOW_RUNTIME_MODEL_DOWNLOADS = os.environ.get("ALLOW_RUNTIME_MODEL_DOWNLOADS", "0").lower() == "1"
 # Allow automatic neural fallback when cloning fails (aligned with UI messaging).
-ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "true").lower() == "true"
-ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "false").lower() == "true"
+ALLOW_VOICE_CLONE_FALLBACK = os.environ.get("ALLOW_VOICE_CLONE_FALLBACK", "false").lower() == "true"
+ALLOW_LIP_SYNC_FALLBACK    = os.environ.get("ALLOW_LIP_SYNC_FALLBACK",    "true").lower() == "true"
 # CosyVoice3 (Fun-CosyVoice3-0.5B-2512) is the current recommended model.
 COSYVOICE_MODEL_ID  = os.environ.get("COSYVOICE_MODEL_ID", "FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
 LATENTSYNC_REPO_ID  = os.environ.get("LATENTSYNC_REPO_ID", "ByteDance/LatentSync")
@@ -259,9 +259,20 @@ def update_progress(status: str, progress: int, step: str, extra: Optional[dict]
 
 def mark_failed(error: str):
     log.error(f"[FATAL] Job failed: {error}")
+    # Determine which pipeline stage failed based on the last known status.
+    # This gives the frontend a clear "Failed at: Voice Cloning" instead of
+    # the confusing "FAILED 65%" display.
+    failed_stage = "unknown"
+    for item in PIPELINE_STEPS:
+        if _LAST_PIPELINE_STATUS in item["statuses"]:
+            failed_stage = item["name"]
+            break
     # We send the technical error to the 'step' field so it shows up prominently in the UI,
     # and also to a dedicated 'error' field for the API.
-    update_progress("FAILED", _LAST_PIPELINE_PROGRESS, f"Error: {error}", {"error": error})
+    update_progress("FAILED", _LAST_PIPELINE_PROGRESS, f"Error: {error}", {
+        "error": error,
+        "failedStage": failed_stage,
+    })
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -611,6 +622,55 @@ def transcribe(audio_path: Path) -> list[dict]:
         log.warning("[AssemblyAI] Utterances were empty after filtering; falling back to word segmentation.")
 
     # ── Path B: word-based segmentation (single-speaker / fallback) ──────────
+    # P1-19: Even for single-speaker, prefer AssemblyAI utterances as natural
+    # sentence boundaries (they're more linguistically accurate than our naive
+    # 0.45s-gap heuristic).  Label all utterances as SPEAKER_A.
+    if not MULTI_SPEAKER and utterances:
+        segments: list[dict] = []
+        for utt in utterances:
+            utt_start = utt.start / 1000.0
+            utt_end   = utt.end   / 1000.0
+            text      = (utt.text or "").strip()
+            if not text:
+                continue
+
+            utt_words = [
+                {"word": w.text, "start": w.start / 1000.0, "end": w.end / 1000.0}
+                for w in all_words
+                if utt_start - 0.05 <= w.start / 1000.0 <= utt_end + 0.05
+            ]
+
+            # Split long utterances (>10s) at natural pauses
+            if utt_end - utt_start > 10.0 and utt_words:
+                class _FakeWord2:
+                    def __init__(self, d):
+                        self.text  = d["word"]
+                        self.start = int(d["start"] * 1000)
+                        self.end   = int(d["end"]   * 1000)
+                sub = _build_segments_from_words(
+                    [_FakeWord2(w) for w in utt_words], speaker_label="SPEAKER_A"
+                )
+                for s in sub:
+                    s["id"] = len(segments)
+                    segments.append(s)
+            else:
+                segments.append({
+                    "id":      len(segments),
+                    "start":   utt_start,
+                    "end":     utt_end,
+                    "text":    text,
+                    "speaker": "SPEAKER_A",
+                    "words":   utt_words,
+                })
+
+        if segments:
+            log.info(
+                f"[AssemblyAI] Built {len(segments)} segments from utterances "
+                f"(single-speaker mode, P1-19)."
+            )
+            return segments
+        log.warning("[AssemblyAI] Utterances empty in single-speaker mode; falling back to word segmentation.")
+
     if not all_words:
         return []
 
