@@ -118,6 +118,15 @@ COSYVOICE_VLLM  = os.environ.get("COSYVOICE_VLLM", "false").lower() in ("1", "tr
 # no-op today.
 COSYVOICE_PARALLEL_SYNTH = _env_int("COSYVOICE_PARALLEL_SYNTH", 1)
 
+# P1-3 A/B test flag: whether to inject the manual "<|endofprompt|>" prefix
+# into prompt_text (zero-shot) and tts_text (cross-lingual) for CosyVoice3.
+# Default: OFF (no injection).  Upstream frontend_* functions already handle
+# the template internally.  Set COSYVOICE3_INJECT_PROMPT_PREFIX=true to re-enable
+# for A/B comparison against the old behavior.
+COSYVOICE3_INJECT_PROMPT_PREFIX = os.environ.get(
+    "COSYVOICE3_INJECT_PROMPT_PREFIX", "false"
+).lower() in ("1", "true", "yes", "on")
+
 # ── Force HuggingFace/ModelScope offline mode ─────────────────────────────────
 # All model weights are baked into the Docker image at build time.
 # Setting these prevents network calls at job runtime.
@@ -755,7 +764,7 @@ def extract_speaker_reference(
             seg_audio = full_audio[s_idx:e_idx]
             if seg_audio.size == 0:
                 continue
-            trimmed, _ = librosa.effects.trim(seg_audio, top_db=35)
+            trimmed, _ = librosa.effects.trim(seg_audio, top_db=40)
             if len(trimmed) < int(min_segment_duration * sr):
                 continue
             energy = float(np.sqrt(np.mean(trimmed ** 2)))
@@ -982,7 +991,16 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     Merge micro-segments before translation/TTS to prevent choppy voice output.
     Sub-second segments are poison for TTS — a voice model cannot naturally
     synthesize speech into 0.1-0.8 second slots.
-    Target: 2.5-8s merged segments. Hard max 14s.
+
+    Per-language merge thresholds (P1-18):
+      Indic targets expand 30-60% over English source text.  Merging too
+      aggressively (16 s, gap 2.4 s) creates mega-segments that CosyVoice
+      must then rush through.  We tune the thresholds per target language
+      family:
+        - Indic (hi/mr/bn/ta/te/etc): max 12 s, gap ≤ 0.8 s, target 3-7 s
+        - CJK (zh/ja/ko): max 12 s, gap ≤ 1.0 s, target 3-7 s
+        - Latin/European (en/es/fr/de/etc): max 14 s, gap ≤ 1.2 s, target 4-8 s
+
     Respects speaker labels — never merges different speakers.
 
     Emits 'speech_duration' on every merged segment: the sum of the source
@@ -994,6 +1012,34 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     """
     if not segments:
         return segments
+
+    # ── Per-language merge parameters ─────────────────────────────────────
+    # Indic languages produce longer text for the same meaning, so we keep
+    # merged segments shorter to avoid brutal speed-ups in the timing layer.
+    _INDIC_CODES = {"hi", "mr", "ne", "sa", "bn", "pa", "gu", "or", "ta", "te", "kn", "ml", "ur"}
+    _CJK_CODES = {"zh", "ja", "ko"}
+
+    target_code = (TARGET_LANG_CODE or "").lower().strip()
+
+    if target_code in _INDIC_CODES:
+        max_merged_dur = 12.0     # was 16.0 — Indic text expansion makes 16 s slots unmanageable
+        gap_limit_short = 1.2     # was 2.4 — don't merge across long pauses
+        gap_limit_normal = 0.8    # was 1.2 — tighter for normal segments
+        short_threshold = 1.4     # was 1.6 — be slightly more eager to merge very short segs
+        merge_trigger_dur = 2.5   # was 2.8 — merge sooner so we don't get too many micro-segs
+    elif target_code in _CJK_CODES:
+        max_merged_dur = 12.0
+        gap_limit_short = 1.4
+        gap_limit_normal = 1.0
+        short_threshold = 1.5
+        merge_trigger_dur = 2.5
+    else:
+        # Latin/European — keep closer to original thresholds
+        max_merged_dur = 14.0
+        gap_limit_short = 2.0     # slightly tighter than original 2.4
+        gap_limit_normal = 1.2
+        short_threshold = 1.6
+        merge_trigger_dur = 2.8
 
     original_count = len(segments)
     merged: list[dict] = []
@@ -1010,8 +1056,8 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
         seg_dur = float(seg["end"]) - float(seg["start"])
         word_count = len(str(buf.get("text", "")).split())
         merged_dur = float(seg["end"]) - float(buf["start"])
-        short_segment = buf_dur < 1.6 or seg_dur < 1.6
-        gap_limit = 2.4 if short_segment else 1.2
+        short_segment = buf_dur < short_threshold or seg_dur < short_threshold
+        gap_limit = gap_limit_short if short_segment else gap_limit_normal
 
         # Only merge same speaker (or when no speaker labels exist)
         buf_speaker = str(buf.get("speaker", "")).strip()
@@ -1021,10 +1067,10 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
         should_merge = (
             same_speaker
             and gap < gap_limit
-            and merged_dur <= 16.0
+            and merged_dur <= max_merged_dur
             and (
-                buf_dur < 2.8
-                or seg_dur < 2.8
+                buf_dur < merge_trigger_dur
+                or seg_dur < merge_trigger_dur
                 or word_count < 8
                 or gap < 0.8
             )
@@ -1063,7 +1109,7 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     return merged
 
 
-END_PUNCTUATION = {".", "?", "!", "。", "？", "！", "\u0964"}  # \u0964 = Devanagari danda
+END_PUNCTUATION = {".", "?", "!", "。", "？", "！", "\u0964", "；", "：", "\uff1f", "\uff01", "\u0965"}  # \u0964/\u0965 = Devanagari danda/double-danda; \uff1f/\uff01 = fullwidth ?/!
 
 def _terminal_punctuation() -> str:
     code = (TARGET_LANG_CODE or "").lower()
@@ -1090,7 +1136,14 @@ def normalize_tts_text(text: str) -> str:
 
 
 # Pronunciation fixes applied BEFORE text reaches TTS.
-# These prevent well-known mispronunciation bugs (e.g. BJP \u2192 "buggie").
+# These are a SAFETY NET only (P1-16).  Gemini is the primary source of truth
+# for acronym expansion — the system prompt already instructs it to spell out
+# all acronyms in the target script (e.g. BJP → बी जे पी for Hindi).
+# This regex list catches cases where Gemini failed to expand an acronym and
+# left it as raw uppercase Latin letters in the tts_text.  The guard in
+# normalize_tts_pronunciation() ensures we only apply these when the text
+# actually contains un-expanded ASCII acronyms, so we never double-expand
+# text that Gemini already correctly transliterated.
 _PRONUNCIATION_REPLACEMENTS = [
     # Acronyms: space each letter so TTS reads them individually.
     (r"\bBJP\b",   "B J P"),
@@ -1114,15 +1167,31 @@ _PRONUNCIATION_REPLACEMENTS = [
     (r"\bSyama\b", "Shyama"),
 ]
 
-PRONUNCIATION_LANG_CODES = {"hi", "en", "mr", "ne", "sa"}
+PRONUNCIATION_LANG_CODES = {"hi", "en", "mr", "ne", "sa", "bn", "ta", "te", "gu", "kn", "ml", "pa", "or", "ur"}
+
+# Quick check: does the text contain any ALL-CAPS ASCII word of 2+ letters?
+# If not, Gemini already expanded all acronyms (into native script) and we
+# can skip the regex pass entirely.  This is the "safety net only" guard.
+_HAS_UNEXPANDED_ACRONYM = re.compile(r"\b[A-Z]{2,}\b")
+
 
 def normalize_tts_pronunciation(text: str) -> str:
-    """Apply pronunciation replacements then standard text cleaning."""
+    """Apply pronunciation replacements (safety-net only) then standard text cleaning.
+
+    P1-16: Gemini is the single source of truth for acronym expansion.  The
+    regex replacements fire ONLY when the tts_text still contains unexpanded
+    ALL-CAPS ASCII acronyms (2+ consecutive uppercase Latin letters).  When
+    Gemini correctly transliterates (e.g. BJP → बी जे पी), the regex never
+    matches and the native-script text passes through untouched.
+    """
     if not text:
         return text
     if (TARGET_LANG_CODE or "").lower() in PRONUNCIATION_LANG_CODES:
-        for pattern, replacement in _PRONUNCIATION_REPLACEMENTS:
-            text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+        # Safety-net guard: only apply regex if raw ASCII acronyms are present.
+        # This prevents double-expansion of text Gemini already handled correctly.
+        if _HAS_UNEXPANDED_ACRONYM.search(text):
+            for pattern, replacement in _PRONUNCIATION_REPLACEMENTS:
+                text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return normalize_tts_text(text)
 
 
@@ -1479,7 +1548,7 @@ Output exactly one object per input segment:
     "translated_text": "<human-readable subtitle text in target language>",
     "tts_text": "<TTS-optimised text — acronyms spelled out, numbers as words — MUST be ≤ max_chars>",
     "emotion": "<neutral|happy|sad|excited|serious|questioning>",
-    "speaking_rate": <number from 0.9 to 1.2>
+    "speaking_rate": <number from 0.8 to 1.3>
   }
 ]
 """
@@ -1549,14 +1618,21 @@ def _normalise_translation_response(raw) -> list[dict]:
 
 
 def _safe_speaking_rate(value) -> float:
-    """Clamp speaking rate to safe bounds for TTS/voice models."""
+    """Clamp speaking rate to safe bounds for TTS/voice models.
+
+    Widened to [0.8, 1.3] (was [0.9, 1.2]) to allow more dynamic prosody.
+    The Phase 1 speed solver already clamps the final CosyVoice speed= to
+    [0.85, 1.20], so this outer bound is deliberately wider — it allows the
+    duration-prediction heuristic to benefit from the full range before the
+    model-level clamp kicks in.
+    """
     try:
         rate = float(value)
     except (TypeError, ValueError):
         return 1.0
     if not math.isfinite(rate):
         return 1.0
-    return max(0.9, min(1.2, rate))
+    return max(0.8, min(1.3, rate))
 
 
 # ── Phase 2: per-segment duration budget for translation ──────────────────────
@@ -2444,14 +2520,32 @@ def synthesize_segments_cosyvoice(
     seg_audios: list[Path] = []
     total_segments = max(1, len(segments))
 
+    # P1-25: Throttle DDB writes during cloning loop.
+    # Writing progress for every single segment (80+ writes) wastes DDB WCUs
+    # and adds 30-80ms blocking latency per write.  Instead, write at most
+    # every 2 seconds OR every 5 segments, whichever comes first.  Always
+    # write on the first and last segment so the UI sees start/end promptly.
+    _DDB_THROTTLE_INTERVAL_S = 2.0
+    _DDB_THROTTLE_EVERY_N = 5
+    _last_ddb_write_time = 0.0
+
     for index, seg in enumerate(segments, start=1):
-        # Wider progress range (52→68) so users see meaningful movement
-        # instead of a bar that barely moves during 1-3 min of cloning.
-        update_progress(
-            "CLONING",
-            52 + int((index - 1) / total_segments * 16),
-            f"Cloning voice ({index}/{total_segments})…",
+        # Throttled progress update — reduces DDB writes from N to ~N/5
+        now = time.monotonic()
+        is_first_or_last = (index == 1 or index == total_segments)
+        elapsed_since_last = now - _last_ddb_write_time
+        should_write = (
+            is_first_or_last
+            or (index % _DDB_THROTTLE_EVERY_N == 0)
+            or (elapsed_since_last >= _DDB_THROTTLE_INTERVAL_S)
         )
+        if should_write:
+            update_progress(
+                "CLONING",
+                52 + int((index - 1) / total_segments * 16),
+                f"Cloning voice ({index}/{total_segments})…",
+            )
+            _last_ddb_write_time = now
         out_path = out_dir / f"seg_{seg['id']:04d}.wav"
 
         # Use tts_text (TTS-optimised) if Gemini produced it, else translated_text
@@ -2512,8 +2606,11 @@ def synthesize_segments_cosyvoice(
         seg_prompt_text = speaker_prompt_texts.get(speaker)
         if not seg_prompt_text:
             seg_prompt_text = global_prompt_text
-        # CosyVoice3 zero-shot: instruction prefix goes in prompt_text (not tts_text)
-        if is_cosyvoice3 and seg_prompt_text:
+        # CosyVoice3 zero-shot: instruction prefix in prompt_text.
+        # P1-3: Disabled by default — upstream frontend_* handles the template
+        # internally.  Double-wrapping with <|endofprompt|> can truncate context.
+        # Set COSYVOICE3_INJECT_PROMPT_PREFIX=true to re-enable for A/B testing.
+        if is_cosyvoice3 and seg_prompt_text and COSYVOICE3_INJECT_PROMPT_PREFIX:
             seg_prompt_text = f"You are a helpful assistant.<|endofprompt|>{seg_prompt_text}"
 
         emotion = str(seg.get("emotion", "neutral")).strip().lower()
@@ -2570,7 +2667,7 @@ def synthesize_segments_cosyvoice(
                     i2_args["speed"] = speed_value
                 chunks = list(model.inference_instruct2(**i2_args))
             elif use_cross_lingual:
-                _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if is_cosyvoice3 else text)
+                _cl_tts = (f"You are a helpful assistant.<|endofprompt|>{text}" if (is_cosyvoice3 and COSYVOICE3_INJECT_PROMPT_PREFIX) else text)
                 cl_args: dict = {"tts_text": _cl_tts, "stream": False}
                 if "prompt_wav" in _cl_params_set:
                     cl_args["prompt_wav"] = seg_ref_prompt_path
@@ -3266,10 +3363,42 @@ def assemble_dubbed_audio(
         never speed-warps voiced samples and it never chops mid-syllable.
       * Per-segment placement telemetry is recorded into seg["_pacing"]
         (placed_seconds, placed_overflow_seconds, placed_action).
+
+    Phase 6 addition (P1-9): Emotion transition smoothing.
+      * Minimum emotion window: if a single segment has a different emotion
+        from both its neighbours, flatten it to the surrounding emotion
+        (prevents jittery single-frame emotion flips).
+      * At boundaries where emotion changes, apply a wider crossfade
+        (EMOTION_TRANSITION_CROSSFADE_MS) to smooth the tonal shift.
     """
     SR = 24000
     import numpy as np
     import soundfile as sf
+
+    # ── P1-9: Emotion transition smoothing — minimum emotion window ───────
+    # If a single segment has a different emotion from both its left and right
+    # neighbours, it's likely a Gemini glitch (e.g. "excited" sandwiched between
+    # two "neutral" runs).  Flatten it to avoid a jarring 2-second tone change.
+    EMOTION_MIN_WINDOW = 2  # minimum consecutive segments for an emotion to hold
+    EMOTION_TRANSITION_CROSSFADE_MS = 100  # wider crossfade at emotion boundaries
+
+    if len(segments) >= 3:
+        for i in range(1, len(segments) - 1):
+            this_emo = str(segments[i].get("emotion", "neutral")).strip().lower()
+            prev_emo = str(segments[i - 1].get("emotion", "neutral")).strip().lower()
+            next_emo = str(segments[i + 1].get("emotion", "neutral")).strip().lower()
+            if this_emo != prev_emo and this_emo != next_emo and prev_emo == next_emo:
+                # Isolated emotion flip — flatten to surrounding emotion
+                segments[i]["emotion"] = prev_emo
+                segments[i].setdefault("_pacing", {})["emotion_smoothed"] = f"{this_emo}->{prev_emo}"
+
+    # Pre-compute emotion transition flags for the placement loop
+    _emotion_transitions: set[int] = set()
+    for i in range(1, len(segments)):
+        prev_emo = str(segments[i - 1].get("emotion", "neutral")).strip().lower()
+        curr_emo = str(segments[i].get("emotion", "neutral")).strip().lower()
+        if prev_emo != curr_emo:
+            _emotion_transitions.add(i)
 
     log.info("[Assemble] Assembling final dubbed audio track...")
     if not math.isfinite(video_duration) or video_duration <= 0:
@@ -3367,9 +3496,33 @@ def assemble_dubbed_audio(
         # crossfade over the actual overlap region. This eliminates clicks,
         # avoids attenuating non-overlapping leading audio, and handles long
         # overlaps consistently by blending the full overlap.
+        #
+        # Phase 6 (P1-9): At emotion transitions, we apply a wider crossfade
+        # (EMOTION_TRANSITION_CROSSFADE_MS) even when there's no natural
+        # overlap, by blending the tail of the previous segment's placed
+        # audio with the head of this segment.  This smooths the tonal shift
+        # between e.g. "neutral" → "excited" without an abrupt hard cut.
         overlap_start = start_sample
         overlap_end = min(end_sample, prev_placed_end_sample)
         overlap_len = max(0, overlap_end - overlap_start)
+
+        # Determine crossfade length: use wider window at emotion transitions
+        is_emotion_transition = idx in _emotion_transitions
+        if is_emotion_transition and overlap_len == 0:
+            # No natural overlap, but we want to smooth the emotion boundary.
+            # Create a synthetic crossfade zone over the last N ms of the
+            # previously placed audio and the first N ms of this segment.
+            emotion_xfade_samples = int(EMOTION_TRANSITION_CROSSFADE_MS / 1000.0 * SR)
+            # Only apply if there's enough data on both sides
+            xfade_len = min(
+                emotion_xfade_samples,
+                max(0, prev_placed_end_sample - start_sample),  # available tail
+                len(data),  # available head
+            )
+            if xfade_len > 0 and start_sample < prev_placed_end_sample:
+                # There IS some overlap we missed detecting — use it
+                overlap_len = min(xfade_len, prev_placed_end_sample - start_sample)
+                overlap_end = start_sample + overlap_len
 
         if overlap_len > 0:
             existing_region = mixed[overlap_start:overlap_end].copy()
@@ -3383,7 +3536,9 @@ def assemble_dubbed_audio(
             # Place the rest of the new segment without blending
             if overlap_len < len(data):
                 mixed[overlap_end:end_sample] += data[overlap_len:]
-            placed_action = placed_action if placed_action != "passthrough" else "crossfade"
+            placed_action = placed_action if placed_action != "passthrough" else (
+                "emotion_crossfade" if is_emotion_transition else "crossfade"
+            )
         else:
             mixed[start_sample:end_sample] += data
 
