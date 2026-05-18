@@ -125,9 +125,9 @@ RUN pip install --no-cache-dir pyopenjtalk==0.3.4 || true
 # wheel. 1.18.1 and 1.19+ require cuDNN 9 on CUDA 12, while normal PyPI
 # 1.18.x wheels can link CUDA 11 and fail with missing libcublasLt.so.11.
 RUN pip uninstall -y onnxruntime onnxruntime-gpu || true \
-    && pip install --no-cache-dir \
+    && pip install --no-cache-dir coloredlogs flatbuffers humanfriendly \
+    && pip install --no-cache-dir --force-reinstall --no-deps \
       --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ \
-      --extra-index-url https://pypi.org/simple \
       onnxruntime-gpu==1.18.0
 
 # Build-time ABI check. This does not require a GPU; it verifies the installed
