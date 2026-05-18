@@ -122,20 +122,43 @@ class ReferenceCapTests(unittest.TestCase):
 class DemucsReferenceTests(unittest.TestCase):
     """P1-6: When Demucs is on, reference stays = original audio."""
 
+    def _has_direct_reference_reassignment_to_vocals(self, func):
+        """Return True if func directly assigns reference_audio = vocals_path."""
+        import ast
+        import inspect
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(func))
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if len(node.targets) != 1:
+                continue
+
+            target = node.targets[0]
+            value = node.value
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "reference_audio"
+                and isinstance(value, ast.Name)
+                and value.id == "vocals_path"
+            ):
+                return True
+
+        return False
+
     def test_reference_not_reassigned_to_vocals(self):
         """
-        In the main() flow, reference_audio should NOT be set to vocals_path
-        when Demucs runs.  We verify this by checking the source code pattern.
+        In the main() flow, reference_audio should NOT be directly reassigned
+        to vocals_path when Demucs runs.
         """
         import worker
-        import inspect
 
-        source = inspect.getsource(worker.main)
-        # The old pattern was: reference_audio = vocals_path
-        # Phase 3 removed that line.  Verify it's gone.
-        self.assertNotIn("reference_audio = vocals_path", source)
-        # The comment about Phase 3 should be present
-        self.assertIn("P1-6", source)
+        self.assertFalse(
+            self._has_direct_reference_reassignment_to_vocals(worker.main)
+        )
 
 
 class Instruct2Tests(unittest.TestCase):
