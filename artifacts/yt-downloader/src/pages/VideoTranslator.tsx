@@ -266,13 +266,14 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [history, setHistory] = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
   const [debugLog, setDebugLog] = useState<{ ts: number; level: "info" | "warn" | "error"; msg: string }[]>([]);
   const [showDebug, setShowDebug] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollStartRef = useRef<number>(0);
 
   const appendLog = (level: "info" | "warn" | "error", msg: string) =>
     setDebugLog(prev => {
       const last = prev[prev.length - 1];
       if (last?.level === level && last.msg === msg) return prev;
-      return [...prev.slice(-49), { ts: Date.now(), level, msg }];
+      return [...prev.slice(-199), { ts: Date.now(), level, msg }];
     });
 
   const refreshHistory = useCallback(() => {
@@ -312,13 +313,14 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         if (r.status === 404 || r.status === 410) {
           removeActiveTranslatorJob(id);
           refreshHistory();
-          clearInterval(pollRef.current!);
+          clearTimeout(pollRef.current!);
           if (jobId === id) {
             setJob(null);
             setJobId(null);
           }
+          return false;
         }
-        return;
+        return true;
       }
       const data = await readJsonResponse(r);
       setJob(data);
@@ -343,7 +345,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         refreshHistory();
       }
       if (data.status === "DONE") {
-        clearInterval(pollRef.current!);
+        clearTimeout(pollRef.current!);
         const result = await fetchResult(id);
         removeActiveTranslatorJob(id);
         saveTranslatorHistory({
@@ -362,26 +364,58 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           transcriptUrl: result?.transcriptUrl,
         });
         refreshHistory();
+        return false;
       } else if (data.status === "FAILED") {
-        clearInterval(pollRef.current!);
+        clearTimeout(pollRef.current!);
         removeActiveTranslatorJob(id);
         refreshHistory();
         setError(data.error ?? "Translation failed");
+        return false;
       } else if (data.status === "CANCELLED" || data.status === "EXPIRED") {
-        clearInterval(pollRef.current!);
+        clearTimeout(pollRef.current!);
         removeActiveTranslatorJob(id);
         refreshHistory();
+        return false;
       }
+      return true;
     } catch (e: any) {
       setError(e?.message);
+      return true;
     }
   }, [fetchResult, file?.name, jobId, refreshHistory, srcLang, tgtLang]);
 
   useEffect(() => {
     if (!jobId) return;
-    pollRef.current = setInterval(() => pollStatus(jobId), 2000);
-    pollStatus(jobId);
-    return () => clearInterval(pollRef.current!);
+    pollStartRef.current = Date.now();
+    let isActive = true;
+
+    // P2-9: Progressive poll backoff — 2s for first 60s, 5s until 3min, 10s after.
+    const schedulePoll = () => {
+      if (!isActive) return;
+      const elapsed = Date.now() - pollStartRef.current;
+      let interval: number;
+      if (elapsed < 60_000) interval = 2000;
+      else if (elapsed < 180_000) interval = 5000;
+      else interval = 10_000;
+      pollRef.current = setTimeout(async () => {
+        const shouldContinue = await pollStatus(jobId);
+        if (isActive && shouldContinue) {
+          schedulePoll();
+        }
+      }, interval);
+    };
+
+    const startPolling = async () => {
+      const shouldContinue = await pollStatus(jobId);
+      if (isActive && shouldContinue) {
+        schedulePoll();
+      }
+    };
+    void startPolling();
+    return () => {
+      isActive = false;
+      if (pollRef.current) clearTimeout(pollRef.current);
+    };
   }, [jobId, pollStatus]);
 
   useEffect(() => {
@@ -592,13 +626,13 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   };
 
   const reset = () => {
-    clearInterval(pollRef.current!);
+    clearTimeout(pollRef.current!);
     setFile(null); setJobId(null); setJob(null);
     setTranscript([]); setError(null); setShowTranscript(false);
   };
 
   const openActiveEntry = (entry: ActiveTranslatorJob) => {
-    clearInterval(pollRef.current!);
+    clearTimeout(pollRef.current!);
     setFile(null);
     setError(null);
     setTranscript([]);
@@ -627,7 +661,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       removeActiveTranslatorJob(id);
       refreshHistory();
       if (jobId === id) {
-        clearInterval(pollRef.current!);
+        clearTimeout(pollRef.current!);
         setJob((prev: any) => ({ ...(prev ?? { jobId: id }), status: "CANCELLED", step: "Cancelled by user." }));
         setError(null);
       }
@@ -638,7 +672,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   };
 
   const openHistoryEntry = async (entry: TranslatorHistoryEntry) => {
-    clearInterval(pollRef.current!);
+    clearTimeout(pollRef.current!);
     setFile(null);
     setError(null);
     setTranscript([]);
