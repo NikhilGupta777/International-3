@@ -86,6 +86,10 @@ const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
 const FFMPEG_BIN = process.env.FFMPEG_BIN || "/opt/bin/ffmpeg";
 const FFPROBE_BIN = process.env.FFPROBE_BIN || "/opt/bin/ffprobe";
 const TRANSLATOR_TEXT_MODEL = process.env.TRANSLATOR_TEXT_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const TRANSLATOR_URL_FETCH_TIMEOUT_MS = Math.max(
+  5000,
+  Math.min(120000, Number(process.env.TRANSLATOR_URL_FETCH_TIMEOUT_MS ?? "45000") || 45000),
+);
 const VERTEX_ENV_NAMES = [
   "GOOGLE_GENAI_USE_VERTEXAI",
   "GOOGLE_CLOUD_PROJECT",
@@ -218,7 +222,25 @@ function assertPublicHttpUrl(rawUrl: string): URL {
   if (!["http:", "https:"].includes(url.protocol)) {
     throw new Error("fileUrl must be an HTTP or HTTPS URL.");
   }
+  if (url.username || url.password) {
+    throw new Error("fileUrl must not include credentials.");
+  }
   const host = url.hostname.toLowerCase();
+  if (host === "") {
+    throw new Error("fileUrl host is required.");
+  }
+  if (host.endsWith(".internal") || host.endsWith(".local")) {
+    throw new Error("fileUrl must be a public URL.");
+  }
+  if (
+    host === "[::1]" ||
+    host === "::1" ||
+    host.startsWith("fc") ||
+    host.startsWith("fd") ||
+    host.startsWith("fe80:")
+  ) {
+    throw new Error("fileUrl must be a public URL.");
+  }
   if (
     host === "localhost" ||
     host === "127.0.0.1" ||
@@ -250,7 +272,34 @@ function translatorErrorStatus(error: any): number {
 }
 
 async function downloadUrlToTempFile(url: URL, destination: string): Promise<{ bytes: number; contentType: string }> {
-  const downloadRes = await fetch(url);
+  const timeout = AbortSignal.timeout(TRANSLATOR_URL_FETCH_TIMEOUT_MS);
+  const maxRedirects = 3;
+  let currentUrl = url;
+  let downloadRes: Response | undefined;
+
+  for (let i = 0; i <= maxRedirects; i += 1) {
+    downloadRes = await fetch(currentUrl, {
+      redirect: "manual",
+      signal: timeout,
+    });
+    if (downloadRes.status >= 300 && downloadRes.status < 400) {
+      const location = downloadRes.headers.get("location");
+      if (!location) {
+        throw new Error("Redirect response missing location header.");
+      }
+      const nextUrl = assertPublicHttpUrl(new URL(location, currentUrl).toString());
+      currentUrl = nextUrl;
+      continue;
+    }
+    break;
+  }
+
+  if (!downloadRes) {
+    throw new Error("Failed to download file from URL.");
+  }
+  if (downloadRes.status >= 300 && downloadRes.status < 400) {
+    throw new Error("Too many redirects while downloading file.");
+  }
   if (!downloadRes.ok) {
     throw new Error(`Failed to download file from URL: ${downloadRes.status}`);
   }
@@ -281,6 +330,14 @@ async function downloadUrlToTempFile(url: URL, destination: string): Promise<{ b
     throw new Error("Downloaded video is empty.");
   }
   return { bytes, contentType };
+}
+
+function isConditionalWriteFailure(error: unknown): boolean {
+  const err = error as { name?: string; message?: string } | undefined;
+  return (
+    err?.name === "ConditionalCheckFailedException" ||
+    String(err?.message ?? "").includes("ConditionalCheckFailedException")
+  );
 }
 
 // Map AWS Batch intermediate states → human-readable step messages shown
@@ -1260,6 +1317,7 @@ router.post("/submit", async (req: Request, res: Response) => {
     // Create DynamoDB job record
     await ddb.send(new PutItemCommand({
       TableName: DDB_TABLE,
+      ConditionExpression: "attribute_not_exists(jobId)",
       Item: {
         jobId:       { S: jobId },
         type:        { S: "translator" },
@@ -1286,6 +1344,9 @@ router.post("/submit", async (req: Request, res: Response) => {
     return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED", lipsyncWarning: resolvedLipSync.warning });
   } catch (err: any) {
     console.error("[Translator] /submit error:", err);
+    if (isConditionalWriteFailure(err)) {
+      return res.status(409).json({ error: "A translation job with this jobId already exists." });
+    }
     return res.status(translatorErrorStatus(err)).json({ error: err.message });
   }
 });
@@ -1356,6 +1417,7 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
     const now = Date.now();
     await ddb.send(new PutItemCommand({
       TableName: DDB_TABLE,
+      ConditionExpression: "attribute_not_exists(jobId)",
       Item: {
         jobId:       { S: jobId },
         type:        { S: "translator" },
@@ -1382,6 +1444,9 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
     return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED", lipsyncWarning: resolvedLipSync.warning });
   } catch (err: any) {
     console.error("[Translator] /submit-from-url error:", err);
+    if (isConditionalWriteFailure(err)) {
+      return res.status(409).json({ error: "A translation job with this jobId already exists." });
+    }
     return res.status(translatorErrorStatus(err)).json({ error: err.message });
   }
 });
@@ -1452,6 +1517,7 @@ router.get("/history", async (req: Request, res: Response) => {
         FilterExpression: "#type = :type AND #ownerId = :ownerId",
         ExpressionAttributeNames: { "#type": "type", "#ownerId": "ownerId" },
         ExpressionAttributeValues: { ":type": { S: "translator" }, ":ownerId": { S: ownerId } },
+        Limit: Math.max(50, limit * 4),
         ExclusiveStartKey: exclusiveStartKey,
       }));
       items.push(...(result.Items ?? []));
@@ -1460,7 +1526,7 @@ router.get("/history", async (req: Request, res: Response) => {
     }
 
     const syncedItems = await Promise.all(
-      items.slice(0, 80).map((item) => syncTerminalBatchState(item).catch(() => item)),
+      items.slice(0, Math.max(20, limit * 2)).map((item) => syncTerminalBatchState(item).catch(() => item)),
     );
 
     const jobs = syncedItems

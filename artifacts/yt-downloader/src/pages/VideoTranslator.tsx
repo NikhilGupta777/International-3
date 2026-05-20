@@ -291,7 +291,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     const result = await readJsonResponse(tr);
     return {
       ...(result as { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string }),
-      shareUrl: translatorShareUrl(id),
+      shareUrl: result.shareUrl ?? translatorShareUrl(id),
     };
   }, []);
 
@@ -363,7 +363,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           progress: 100,
           segmentCount: data.segmentCount,
           videoUrl: result?.videoUrl,
-          shareUrl: translatorShareUrl(id),
+          shareUrl: result?.shareUrl ?? translatorShareUrl(id),
           srtUrl: result?.srtUrl,
           transcriptUrl: result?.transcriptUrl,
         });
@@ -458,7 +458,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                 progress: 100,
                 segmentCount: statusItem.segmentCount,
                 videoUrl: urls?.videoUrl,
-                shareUrl: translatorShareUrl(activeJob.jobId),
+                shareUrl: urls?.shareUrl ?? translatorShareUrl(activeJob.jobId),
                 srtUrl: urls?.srtUrl,
                 transcriptUrl: urls?.transcriptUrl,
               });
@@ -509,7 +509,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
               progress: 100,
               segmentCount: item.segmentCount,
               videoUrl: urls?.videoUrl ?? existing?.videoUrl,
-              shareUrl: translatorShareUrl(item.jobId),
+              shareUrl: urls?.shareUrl ?? translatorShareUrl(item.jobId),
               srtUrl: urls?.srtUrl ?? existing?.srtUrl,
               transcriptUrl: urls?.transcriptUrl ?? existing?.transcriptUrl,
             });
@@ -624,7 +624,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           voiceClone: isVoiceClone,
           lipSync: lipSyncAvailable && lipSync && translationMode === "full",
           lipSyncQuality: "latentsync",
-          translationMode,
+          translationMode: translationMode === "subtitle-only" ? "subtitle-only" : "default",
           // P2-8: multiSpeaker controlled by user toggle (defaults to true
           // when voice cloning).  Single-speaker vlogs can disable this to
           // skip diarization and save ~1-2 min.
@@ -728,7 +728,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     });
     const result = await fetchResult(entry.jobId);
     if (result) {
-      const updated = { ...entry, ...result, shareUrl: translatorShareUrl(entry.jobId) };
+      const updated = { ...entry, ...result, shareUrl: result?.shareUrl ?? translatorShareUrl(entry.jobId) };
       saveTranslatorHistory(updated);
       refreshHistory();
     }
