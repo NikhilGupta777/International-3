@@ -141,6 +141,11 @@ function clientStripTags(text: string): string {
     .replace(/^\[TOOL\].*$/gim, "")
     .replace(/\[SUGGESTIONS:[^\]]*\]/gi, "")
     .replace(/\[SUGOESTIONS:[^\]]*\]/gi, "")
+    // Strip leaked tool result markers [Tool: name | Args: ... | Result: ...]
+    .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
+    // Strip leaked artifact markers [TextArtifact: ...] and [Artifact: ...]
+    .replace(/\[TextArtifact:[^\]]*\][^\[]*/gi, "")
+    .replace(/\[Artifact:[^\]]*\]/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -694,10 +699,18 @@ export function StudioCopilot({
       upsertMsg(sessionId, assistantMsgId, updater);
     };
     const cleanAssistantText = (content: string) =>
-      content.replace(
-        /\[?\/api\/(?:youtube\/file|subtitles\/status|translator\/share)\/[^\]\s)]+(?:\]\(\/api\/(?:youtube\/file|subtitles\/status|translator\/share)\/[^)]+\))?/g,
-        "the button above",
-      );
+      content
+        .replace(
+          /\[?\/api\/(?:youtube\/file|subtitles\/status|translator\/share)\/[^\]\s)]+(?:\]\(\/api\/(?:youtube\/file|subtitles\/status|translator\/share)\/[^)]+\))?/g,
+          "the button above",
+        )
+        // Strip S3 presigned URLs (long AWS URLs with signatures)
+        .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "the download button above")
+        // Strip leaked [Tool: ...] markers from model output
+        .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
+        // Strip leaked Result JSON objects
+        .replace(/\{"\w+(?:Url|url)":\s*"https?:\/\/[^"]*"[^}]*\}/g, "");
+
     const appendText = (content: string) => {
       const cleaned = cleanAssistantText(content);
       if (!cleaned.trim()) return;

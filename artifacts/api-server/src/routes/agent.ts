@@ -117,6 +117,12 @@ function stripReasoningTags(text: string): string {
     // [SUGGESTIONS: "a" | "b" | "c"] — parsed separately, must not render
     .replace(/\[SUGGESTIONS:[^\]]*\]/gi, "")
     .replace(/\[SUGOESTIONS:[^\]]*\]/gi, "") // typo variant the model emits
+    // Strip leaked tool result markers the model may echo from history
+    .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
+    .replace(/\[TextArtifact:[^\]]*\][^\[]*/gi, "")
+    .replace(/\[Artifact:[^\]]*\]/gi, "")
+    // Strip raw S3 presigned URLs (long AWS URLs with signatures)
+    .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
     // Collapse excess blank lines left by stripping
     .replace(/\n{3,}/g, "\n\n")
     .trim();
