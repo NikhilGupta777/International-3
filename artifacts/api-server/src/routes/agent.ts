@@ -831,11 +831,7 @@ Never echo tool result JSON, S3 URLs, presigned URLs, or internal API paths in y
 
 # SUGGESTIONS
 
-When useful, include one suggestions marker at the very end of the reply on its own line. Skip it for simple confirmations, direct factual answers, and errors.
-
-[SUGGESTIONS: "suggestion one" | "suggestion two" | "suggestion three"]
-
-Suggestions can be 1 or max 2 concrete next actions on this same video/topic (e.g. "Generate timestamps", "Download in 1080p"), not generic prompts. Do not mention this marker in the normal answer text.`;
+Do not include suggestions. Never output the [SUGGESTIONS: ...] marker.`;
 
 
 
