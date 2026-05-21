@@ -179,6 +179,29 @@ function renderMd(text: string): React.ReactNode {
   return result;
 }
 
+// ── Streaming markdown renderer — animates the last ~10 words ─────────────────
+function renderStreamingMd(text: string): React.ReactNode {
+  // Split into tokens (words with their leading whitespace preserved)
+  const tokens = text.split(/(?=\s)/);
+  const totalTokens = tokens.length;
+  // Only animate the trailing 10 tokens — older ones render static
+  const ANIMATE_WINDOW = 10;
+
+  const result: React.ReactNode[] = [];
+
+  for (let i = 0; i < totalTokens; i++) {
+    const token = tokens[i];
+    const shouldAnimate = i >= totalTokens - ANIMATE_WINDOW;
+
+    if (shouldAnimate) {
+      result.push(<span key={`st-${i}`} className="stream-token">{token}</span>);
+    } else {
+      result.push(<span key={`st-${i}`}>{token}</span>);
+    }
+  }
+
+  return result;
+}
 // ── ToolCard ──────────────────────────────────────────────────────────────────
 function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
@@ -328,7 +351,7 @@ function CopyBubble({ text }: { text: string }) {
   );
 }
 
-function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void }) {
+function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void; isStreaming?: boolean }) {
   const isUser = message.role === "user";
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
@@ -351,10 +374,12 @@ function MessageBubble({ message, onNavigate, onRetry }: { message: Message; onN
             const cleanContent = clientStripTags(part.content);
             if (!cleanContent.trim()) return null;
             const isErrorMsg = !isUser && cleanContent.startsWith("⚠️");
+            // Determine if this is the last text part being actively streamed
+            const isLastTextPart = !isUser && isStreaming && i === message.parts.filter(p => p.kind === "text").length - 1;
             return (
               <div key={i} className={cn("group/bubble relative rounded-2xl px-4 py-3 text-sm leading-relaxed",
                 isUser ? "bg-[#dc2626] text-white rounded-tr-sm" : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md")}>
-                {isUser ? cleanContent : renderMd(cleanContent)}
+                {isUser ? cleanContent : (isLastTextPart ? renderStreamingMd(cleanContent) : renderMd(cleanContent))}
                 {/* Copy button — assistant messages only, hover-reveal */}
                 {!isUser && (
                   <div className="absolute top-2 right-2 flex gap-1">
@@ -1130,7 +1155,7 @@ export function StudioCopilot({
                 const handleRetry = isLastAssistant && lastUserTextRef.current
                   ? () => void sendMessage(lastUserTextRef.current)
                   : undefined;
-                return <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} onRetry={handleRetry} />;
+                return <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} />;
               })}
             </AnimatePresence>
 
