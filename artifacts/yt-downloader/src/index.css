@@ -1944,8 +1944,25 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 .stream-token {
   display: inline;
-  animation: streamIn 0.22s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  opacity: 0;
+  animation: streamIn 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
   will-change: transform, opacity;
+}
+
+/* Blinking cursor at end of streaming text */
+@keyframes cursorBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.stream-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: rgba(248, 113, 113, 0.9);
+  border-radius: 1px;
+  animation: cursorBlink 1s step-end infinite;
 }
 
 /* Tool card pulse */

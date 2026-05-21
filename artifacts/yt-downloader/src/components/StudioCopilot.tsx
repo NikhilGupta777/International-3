@@ -179,26 +179,85 @@ function renderMd(text: string): React.ReactNode {
   return result;
 }
 
-// ── Streaming markdown renderer — animates the last ~10 words ─────────────────
+// ── Streaming markdown renderer — keeps markdown formatting, animates trailing words ──
 function renderStreamingMd(text: string): React.ReactNode {
-  // Split into tokens (words with their leading whitespace preserved)
-  const tokens = text.split(/(?=\s)/);
-  const totalTokens = tokens.length;
-  // Only animate the trailing 10 tokens — older ones render static
-  const ANIMATE_WINDOW = 10;
-
+  const lines = text.split("\n");
   const result: React.ReactNode[] = [];
+  const ANIMATE_WINDOW = 8; // animate last N words of the final line
 
-  for (let i = 0; i < totalTokens; i++) {
-    const token = tokens[i];
-    const shouldAnimate = i >= totalTokens - ANIMATE_WINDOW;
-
-    if (shouldAnimate) {
-      result.push(<span key={`st-${i}`} className="stream-token">{token}</span>);
-    } else {
-      result.push(<span key={`st-${i}`}>{token}</span>);
+  // Inline parser that can optionally animate trailing tokens
+  const inlineAnimated = (str: string, key: string, animateTrailing: boolean): React.ReactNode => {
+    const parts: React.ReactNode[] = [];
+    const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    let last = 0; let m; let k = 0;
+    // First pass: parse markdown into segments
+    const segments: Array<{ text: string; type: "plain" | "bold" | "code" }> = [];
+    while ((m = re.exec(str)) !== null) {
+      if (m.index > last) segments.push({ text: str.slice(last, m.index), type: "plain" });
+      const tok = m[0];
+      if (tok.startsWith("**")) segments.push({ text: tok.slice(2, -2), type: "bold" });
+      else segments.push({ text: tok.slice(1, -1), type: "code" });
+      last = m.index + tok.length;
     }
-  }
+    if (last < str.length) segments.push({ text: str.slice(last), type: "plain" });
+
+    if (!animateTrailing) {
+      // Static render — same as renderMd
+      for (const seg of segments) {
+        if (seg.type === "bold") parts.push(<strong key={`${key}-b${k++}`}>{seg.text}</strong>);
+        else if (seg.type === "code") parts.push(<code key={`${key}-c${k++}`}>{seg.text}</code>);
+        else parts.push(<span key={`${key}-t${k++}`}>{seg.text}</span>);
+      }
+      return parts;
+    }
+
+    // Animated render — split all text into words, animate the last ANIMATE_WINDOW
+    const allWords: Array<{ word: string; type: "plain" | "bold" | "code" }> = [];
+    for (const seg of segments) {
+      const words = seg.text.split(/(?=\s)/);
+      for (const w of words) {
+        if (w) allWords.push({ word: w, type: seg.type });
+      }
+    }
+
+    const animStart = Math.max(0, allWords.length - ANIMATE_WINDOW);
+    for (let i = 0; i < allWords.length; i++) {
+      const { word, type } = allWords[i];
+      const shouldAnimate = i >= animStart;
+      const cls = shouldAnimate ? "stream-token" : undefined;
+      const delay = shouldAnimate ? { animationDelay: `${(i - animStart) * 25}ms` } : undefined;
+
+      if (type === "bold") {
+        parts.push(<strong key={`${key}-w${k++}`} className={cls} style={delay}>{word}</strong>);
+      } else if (type === "code") {
+        parts.push(<code key={`${key}-w${k++}`} className={cls} style={delay}>{word}</code>);
+      } else {
+        parts.push(<span key={`${key}-w${k++}`} className={cls} style={delay}>{word}</span>);
+      }
+    }
+    return parts;
+  };
+
+  const lastNonEmptyIdx = lines.length - 1 - [...lines].reverse().findIndex(l => l.trim() !== "");
+
+  lines.forEach((line, li) => {
+    const isLastLine = li === lastNonEmptyIdx;
+    const olMatch = /^(\d+)\.\s+(.*)/.exec(line);
+    const ulMatch = /^[-*]\s+(.*)/.exec(line);
+
+    if (olMatch) {
+      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/40 shrink-0">{olMatch[1]}.</span><span>{inlineAnimated(olMatch[2], `ol${li}`, isLastLine)}</span></div>);
+    } else if (ulMatch) {
+      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">•</span><span>{inlineAnimated(ulMatch[1], `ul${li}`, isLastLine)}</span></div>);
+    } else if (line.trim() === "") {
+      if (li < lines.length - 1) result.push(<div key={li} className="h-2" />);
+    } else {
+      result.push(<div key={li}>{inlineAnimated(line, `ln${li}`, isLastLine)}</div>);
+    }
+  });
+
+  // Blinking cursor at the end
+  result.push(<span key="cursor" className="stream-cursor" />);
 
   return result;
 }
