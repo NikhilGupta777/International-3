@@ -17,7 +17,6 @@ const router = Router();
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.5-flash";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
-const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const ALLOWED_MODELS = new Set([
   "gemini-3.5-flash",
 ]);
@@ -482,11 +481,13 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "create_image",
-    description: "Create a new image from a text prompt. If the user attached an existing image and asks to modify/edit it, use edit_image instead. Use create_image only for generating new images from scratch.",
+    description: "Create a new image from a text prompt. If the user attached an existing image and asks to modify/edit it, use edit_image instead. Use create_image only for generating new images from scratch. IMPORTANT: Before calling this tool, deeply understand what the user actually wants — their intent, mood, use case, and visual style. Then craft a rich, detailed prompt yourself (scene composition, lighting, color palette, style, camera angle, mood, key elements) that will produce the best possible image. Never pass the user's raw text as the prompt — always rewrite it into a production-quality image generation prompt. Choose the best aspectRatio automatically based on the use case.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        prompt: { type: Type.STRING, description: "Detailed visual prompt for the image to create." },
+        prompt: { type: Type.STRING, description: "A rich, detailed image generation prompt YOU craft. Include: subject, scene composition, lighting, color palette, art style, camera angle, mood, and key visual elements. Never pass user's raw text — always enhance it into a professional prompt." },
+        aspectRatio: { type: Type.STRING, description: "Aspect ratio: '16:9' (YouTube thumbnails, banners, desktop wallpapers), '9:16' (Instagram/YouTube stories, reels, phone wallpapers), '4:3' (presentations, classic photos), '3:2' (DSLR-style photos), '1:1' (profile pictures, social media posts, icons), '4:5' (Instagram portrait posts), '21:9' (ultrawide cinematic banners). Pick the best fit for the content and use case." },
+        imageSize: { type: Type.STRING, description: "Resolution: '1K' (standard), '2K' (high quality). Default: 1K." },
       },
       required: ["prompt"],
     },
@@ -504,11 +505,11 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "edit_image",
-    description: "Edit the latest attached image according to user instructions while preserving the important parts of the original image.",
+    description: "Edit the latest attached image according to user instructions while preserving the important parts of the original image. IMPORTANT: Understand what the user actually wants changed, then craft a precise, detailed editing prompt — specify exactly what to change, what to preserve, the desired visual style/mood, and any constraints. Never pass vague instructions like 'make it better'.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        instructions: { type: Type.STRING, description: "Precise edit instructions." },
+        instructions: { type: Type.STRING, description: "A detailed editing prompt YOU craft from the user's intent. Specify: what exactly to change, what to keep untouched, desired style/mood/colors, and constraints. Be specific about visual outcomes." },
       },
       required: ["instructions"],
     },
@@ -525,27 +526,27 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "write_video_script",
-    description: "Write a production-ready video script, narration, hook, shot list, or storyboard for a requested topic, style, duration, and language.",
+    description: "Write a production-ready video script, narration, hook, shot list, or storyboard. IMPORTANT: Before calling, deeply understand the user's vision — their target audience, platform (YouTube/Shorts/Reels/TikTok), tone, and goal. Then craft a rich topic brief with context, not just the raw topic.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        topic: { type: Type.STRING, description: "Video topic or idea." },
+        topic: { type: Type.STRING, description: "A detailed brief YOU craft from the user's idea. Include: core topic, target audience, platform context, key points to cover, desired emotional arc, and any specific requirements the user mentioned." },
         duration: { type: Type.STRING, description: "Target duration, e.g. 30 seconds, 3 minutes, 8 minutes." },
         language: { type: Type.STRING, description: "Output language. Default follows the user." },
-        style: { type: Type.STRING, description: "Tone/style, e.g. cinematic, devotional, news, documentary, shorts." },
+        style: { type: Type.STRING, description: "Tone/style, e.g. cinematic, devotional, news, documentary, shorts, motivational, educational, storytelling." },
       },
       required: ["topic"],
     },
   },
   {
     name: "generate_seo_pack",
-    description: "Generate a YouTube SEO package: title options, description, tags, hashtags, pinned comment, and thumbnail text.",
+    description: "Generate a YouTube SEO package: title options, description, tags, hashtags, pinned comment, and thumbnail text. IMPORTANT: Before calling, understand the video's content, niche, and target audience. Craft a detailed topic brief with context — include video title, key themes, competitor context, trending angles, and the creator's goals. Never pass a bare topic like 'cooking video'.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        topic: { type: Type.STRING, description: "Video topic, URL title, transcript summary, or idea." },
+        topic: { type: Type.STRING, description: "A detailed brief YOU craft. Include: video title/topic, key themes and talking points, target niche/audience, content style, and any competitive or trending context that would help generate better SEO." },
         language: { type: Type.STRING, description: "Output language. Default follows the user." },
-        audience: { type: Type.STRING, description: "Target audience or niche." },
+        audience: { type: Type.STRING, description: "Target audience, niche, and platform context." },
       },
       required: ["topic"],
     },
@@ -613,12 +614,12 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "analyze_youtube_video",
-    description: "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video.",
+    description: "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video. IMPORTANT: Craft a detailed, specific analytical question — not just 'summarize'. Include what aspects to focus on, what format the answer should be in, and any context from the conversation that would help produce the most useful analysis.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL (must be public)" },
-        question: { type: Type.STRING, description: "What you want to know about the video. Be specific for best results." },
+        question: { type: Type.STRING, description: "A detailed analytical question YOU craft. Be specific: what aspects to analyze, what format to return (bullet points, timestamps, quotes, etc.), what context matters, and what would be most useful for the user's actual goal." },
       },
       required: ["url", "question"],
     },
@@ -736,13 +737,13 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "translate this video / dub in Hindi/Spanish" | translate_video only |
 | "what's trending / latest news / who is X" | web_search first, then maybe a video tool |
 | "read this article/page/source" | read_web_page |
-| "create/generate an image" | create_image |
+| "create/generate an image" | create_image — understand user intent deeply, craft a rich detailed prompt (composition, lighting, style, mood, colors), and pick the right aspect ratio for the use case (16:9 for thumbnails, 9:16 for stories/reels, 1:1 for social posts, etc.) |
 | "make this attached image clearer / enhance / restore" | enhance_image |
-| "edit this attached image" | edit_image |
+| "edit this attached image" | edit_image — craft a precise editing prompt from user intent (what to change, what to preserve, style, constraints) |
 | "what is in this image" | describe_image only when user needs structured artifact/card; otherwise answer directly |
 | "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
-| "write script / storyboard / shot list" | write_video_script only when user needs downloadable file; otherwise answer directly |
-| "SEO title/description/tags/thumbnail text" | generate_seo_pack only when user needs structured artifact export; otherwise answer directly |
+| "write script / storyboard / shot list" | write_video_script — craft a detailed topic brief (audience, platform, tone, key points, emotional arc) before calling; only when user needs downloadable file, otherwise answer directly |
+| "SEO title/description/tags/thumbnail text" | generate_seo_pack — craft a detailed context brief (video content, niche, trends, goals) before calling; only when user needs structured artifact export, otherwise answer directly |
 | "full package / do everything / complete package" | do_full_package |
 | "give link again / show result again / where is file" | repeat_last_artifact |
 | "continue/check running jobs / active jobs" | check_active_jobs |
@@ -903,18 +904,24 @@ async function generateImageArtifact(params: {
   prompt: string;
   inputImage?: { data: string; mimeType: string };
   filenamePrefix: string;
+  aspectRatio?: string;
+  imageSize?: string;
 }): Promise<{ imageUrl: string; filename: string; text: string }> {
   const ai = createGeminiClient();
   const parts: any[] = [{ text: params.prompt }];
   if (params.inputImage) {
     parts.push({ inlineData: { mimeType: params.inputImage.mimeType, data: params.inputImage.data } });
   }
+  const VALID_RATIOS = new Set(["1:1","1:4","1:8","2:3","3:2","3:4","4:1","4:3","4:5","5:4","8:1","9:16","16:9","21:9"]);
+  const VALID_SIZES = new Set(["512","1K","2K","4K"]);
+  const aspectRatio = params.aspectRatio && VALID_RATIOS.has(params.aspectRatio) ? params.aspectRatio : undefined;
+  const imageSize = params.imageSize && VALID_SIZES.has(params.imageSize) ? params.imageSize : undefined;
   const resp = await ai.models.generateContent({
     model: process.env.COPILOT_IMAGE_MODEL ?? "gemini-3.1-flash-image-preview",
     contents: [{ role: "user", parts }],
     config: {
       responseModalities: [Modality.TEXT, Modality.IMAGE] as any,
-      temperature: 0.25,
+      ...(aspectRatio || imageSize ? { responseFormat: { image: { ...(aspectRatio ? { aspectRatio } : {}), ...(imageSize ? { imageSize } : {}) } } } : {}),
     },
   } as any);
 
@@ -1000,14 +1007,6 @@ async function readAttachmentText(req: any): Promise<{ content: string; name: st
     return { content: await r.text(), name: attachment.name, mimeType: contentType };
   }
   return null;
-}
-
-function srtTimeToVtt(time: string): string {
-  return time.replace(",", ".");
-}
-
-function vttTimeToSrt(time: string): string {
-  return time.replace(".", ",");
 }
 
 function convertSubtitleText(content: string, inputFormat: string, outputFormat: string): string {
@@ -1489,7 +1488,7 @@ async function executeTool(
       let data: any = { status: "not_found" };
       for (const endpoint of [`${apiBase}/youtube/progress/${args.jobId}`, `${apiBase}/subtitles/status/${args.jobId}`, `${apiBase}/translator/status/${args.jobId}`]) {
         const r = await fetch(endpoint, { headers: internalHeaders }).catch(() => null);
-        if (r?.ok) { data = await r.json().catch(() => null); if (data) break; }
+        if (r?.ok) { const parsed = await r.json().catch(() => null); if (parsed) { data = parsed; break; } }
       }
       return { result: data };
     }
@@ -1508,7 +1507,7 @@ async function executeTool(
       const SERPER_KEY = process.env.SERPER_API_KEY;
 
       try {
-        // Primary: Gemini 2.0 Flash with googleSearch grounding
+        // Primary: Gemini with googleSearch grounding
         // Note: googleSearch grounding cannot be mixed with functionDeclarations
         // in the same request, so we use a separate AI client call here.
         const searchAi = createGeminiClient();
@@ -1699,11 +1698,15 @@ async function executeTool(
     case "create_image": {
       const prompt = String(args.prompt ?? "").trim();
       if (!prompt) throw new Error("Image prompt is required.");
-      logTool("Creating image", { prompt });
+      const aspectRatio = String(args.aspectRatio ?? "").trim() || undefined;
+      const imageSize = String(args.imageSize ?? "").trim() || undefined;
+      logTool("Creating image", { prompt, aspectRatio, imageSize });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Creating image..." });
       const image = await generateImageArtifact({
-        prompt: `Create a high-quality production-ready image for this request:\n${prompt}`,
+        prompt,
         filenamePrefix: "created-image",
+        aspectRatio,
+        imageSize,
       });
       return {
         result: image,
@@ -1964,7 +1967,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       // The model receives the actual video frames + audio — it truly watches the video.
       const videoAi = createGeminiClient();
       const videoResp = await videoAi.models.generateContent({
-        model: ULTRA_MODEL, // Use Pro/Ultra for best video understanding
+        model: ULTRA_MODEL,
         contents: [{
           role: "user",
           parts: [
@@ -2149,7 +2152,7 @@ router.post("/agent/chat", async (req, res) => {
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
               thinkingConfig: {
-                thinkingLevel: (activeModel === ULTRA_MODEL && requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
+                thinkingLevel: (requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
               },
             },
           });
@@ -2170,18 +2173,17 @@ router.post("/agent/chat", async (req, res) => {
       // causes INVALID_ARGUMENT: "Function call is missing a thought_signature".
       const rawFcParts: any[] = [];
 
+      let streamedTextLive = false;
       for await (const chunk of stream!) {
         if (!isConnected()) break;
 
-        // ── @google/genai v1.x: chunk.text is the incremental text token ───────
-        // This is the CORRECT way to get real-time per-token streaming.
-        // chunk.candidates[0].content.parts is the OLD v0 API and may batch tokens.
-        const chunkText = chunk.text;           // string | undefined
+        const chunkText = chunk.text;
         if (chunkText) {
           fullText += chunkText;
+          sseEvent(res, { type: "text_delta", content: chunkText, runId });
+          streamedTextLive = true;
         }
 
-        // Function calls are in candidates[0].content.parts (no change needed here)
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
           if (p.functionCall) {
@@ -2209,6 +2211,8 @@ router.post("/agent/chat", async (req, res) => {
         break;
       }
 
+      emptyResponseRetries = 0;
+
       // ── 2b. No function calls → final answer, parse suggestions, done ─────
       if (functionCalls.length === 0) {
         // Extract [SUGGESTIONS: "a" | "b" | "c"] from the final text
@@ -2217,7 +2221,10 @@ router.post("/agent/chat", async (req, res) => {
           const items = sugMatch[1].split("|").map(s => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
           if (items.length > 0) sseEvent(res, { type: "suggestions", items, runId } as any);
         }
-        sseEvent(res, { type: "text", content: fullText, runId });
+        // Only send full text event if we didn't already stream it via text_delta
+        if (!streamedTextLive) {
+          sseEvent(res, { type: "text", content: fullText, runId });
+        }
         break;
       }
 
@@ -2232,13 +2239,16 @@ router.post("/agent/chat", async (req, res) => {
       // ── 4. Execute tools sequentially ─────────────────────────────────────
       const toolResults: any[] = [];
       let iterationHadError = false;
-      const preToolText = stripReasoningTags(fullText);
-      if (preToolText) {
-        sseEvent(res, {
-          type: "text_delta",
-          runId,
-          content: preToolText + "\n\n"
-        });
+      // Only emit pre-tool text if it wasn't already streamed live
+      if (!streamedTextLive) {
+        const preToolText = stripReasoningTags(fullText);
+        if (preToolText) {
+          sseEvent(res, {
+            type: "text_delta",
+            runId,
+            content: preToolText + "\n\n"
+          });
+        }
       }
 
       const runToolCall = async (
