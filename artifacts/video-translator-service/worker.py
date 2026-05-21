@@ -1578,19 +1578,12 @@ def _gemini_model_for_mode(mode: str) -> str:
     Phase 2 change: default to Flash (fast + cheap), with Pro available as
     a quality fallback for segments that fail the native-script QA gate.
 
-    Model hierarchy (fastest → most capable):
-      gemini-2.5-flash       — GA, stable, works on both Vertex AI and API key
-      gemini-2.5-flash-lite  — even cheaper but less capable (not used here)
-      gemini-2.5-pro         — expensive, best quality (fallback for QA retries)
+    Model: gemini-3.5-flash for all modes (thinking level handles quality differentiation).
     """
     env_override = os.environ.get("TRANSLATION_MODEL", "").strip()
     if env_override:
         return env_override
-    # Flash is ~25x cheaper and 3-5x faster than Pro.  Pro is used only when
-    # the script QA gate rejects a segment (P1-15) or for explicit "pro" mode.
-    if mode == "pro":
-        return "gemini-2.5-pro"
-    return "gemini-2.5-flash"
+    return "gemini-3.5-flash"
 
 
 def _gemini_fallback_model() -> str:
@@ -1602,7 +1595,7 @@ def _gemini_fallback_model() -> str:
     env_override = os.environ.get("TRANSLATION_MODEL_FALLBACK", "").strip()
     if env_override:
         return env_override
-    return "gemini-2.5-pro"
+    return "gemini-3.5-flash"
 
 
 TRANSLATION_SYSTEM_PROMPT = """

@@ -1,5 +1,5 @@
 ﻿// Gemini caller using Google Generative Language OpenAI-compatible endpoint.
-const MODEL = Deno.env.get("KATHA_GEMINI_MODEL") || Deno.env.get("GEMINI_MODEL") || "gemini-2.5-flash";
+const MODEL = Deno.env.get("KATHA_GEMINI_MODEL") || Deno.env.get("GEMINI_MODEL") || "gemini-3.5-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 
 function getGeminiKeys(): string[] {

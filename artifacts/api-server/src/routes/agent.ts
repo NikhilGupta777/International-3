@@ -14,13 +14,12 @@ import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 
 const router = Router();
 
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3-flash-preview";
-const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-2.5-pro";
-const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash"; // for grounded web search
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
+const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.5-flash";
+const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
 const _FAST_MODEL = process.env.COPILOT_FAST_MODEL; // reserved for future fast-path
 const ALLOWED_MODELS = new Set([
-  "gemini-3-flash-preview", "gemini-2.5-flash",
-  "gemini-2.5-pro", "gemini-2.5-flash-lite",
+  "gemini-3.5-flash",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -911,7 +910,7 @@ async function generateImageArtifact(params: {
     parts.push({ inlineData: { mimeType: params.inputImage.mimeType, data: params.inputImage.data } });
   }
   const resp = await ai.models.generateContent({
-    model: process.env.COPILOT_IMAGE_MODEL ?? "gemini-2.5-flash-image",
+    model: process.env.COPILOT_IMAGE_MODEL ?? "gemini-3.1-flash-image-preview",
     contents: [{ role: "user", parts }],
     config: {
       responseModalities: [Modality.TEXT, Modality.IMAGE] as any,
@@ -941,7 +940,7 @@ async function textModelArtifact(label: string, prompt: string): Promise<{ resul
   const resp = await ai.models.generateContent({
     model: ULTRA_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    config: { temperature: 0.25, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+    config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
   });
   const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
   if (!content) throw new Error(`${label} returned no content`);
@@ -1514,7 +1513,7 @@ async function executeTool(
         // in the same request, so we use a separate AI client call here.
         const searchAi = createGeminiClient();
         const searchResp = await searchAi.models.generateContent({
-          model: SEARCH_MODEL, // gemini-2.5-flash — supports grounding + is free tier
+          model: SEARCH_MODEL,
           contents: [{
             role: "user", parts: [{
               text: [
@@ -1526,7 +1525,6 @@ async function executeTool(
           }],
           config: {
             tools: [{ googleSearch: {} }] as any,
-            temperature: 0.1,
             maxOutputTokens: Math.min(4096, AGENT_MAX_OUTPUT_TOKENS),
           },
         });
@@ -1783,7 +1781,7 @@ async function executeTool(
             { inlineData: { mimeType: image.mimeType, data: image.data } },
           ],
         }],
-        config: { temperature: 0.2, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
       });
       const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
       return { result: { content }, artifact: { artifactType: "text", label: "Image Description", content } };
@@ -1804,7 +1802,7 @@ async function executeTool(
             { inlineData: { mimeType: image.mimeType, data: image.data } },
           ],
         }],
-        config: { temperature: 0.1, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
       });
       const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
       return { result: { content }, artifact: { artifactType: "text", label: "Extracted Text", content } };
@@ -1857,7 +1855,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
               { fileData: { fileUri: attachment.url } } as any,
             ],
           }],
-          config: { temperature: 0.2, maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+          config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
         });
         const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
         return { result: { filename: attachment.name, content }, artifact: { artifactType: "text", label: `Read ${attachment.name}`, content } };
@@ -1944,7 +1942,6 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
         }],
         config: {
           tools: [{ codeExecution: {} }] as any,
-          temperature: 0.15,
           maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192),
         },
       } as any);
@@ -1976,7 +1973,6 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
           ],
         }],
         config: {
-          temperature: 0.2,
           maxOutputTokens: 8192,
         },
       });
@@ -2151,13 +2147,10 @@ router.post("/agent/chat", async (req, res) => {
               systemInstruction: SYSTEM_PROMPT,
               tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
-              temperature: 0.2,
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
-              ...(activeModel.includes("thinking") ? {
-                thinkingConfig: {
-                  thinkingBudget: Number.parseInt(process.env.COPILOT_THINKING_BUDGET ?? "4096", 10) || 4096,
-                },
-              } : {}),
+              thinkingConfig: {
+                thinkingLevel: (activeModel === ULTRA_MODEL && requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
+              },
             },
           });
           streamErr = null;

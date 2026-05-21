@@ -16,19 +16,19 @@ class TranslationModelSelectionTests(unittest.TestCase):
         cls.worker = import_worker()
 
     def test_default_model_is_flash(self):
-        """Default translation model should be gemini-2.5-flash (fast, cheap)."""
+        """Default translation model should be gemini-3.5-flash."""
         model = self.worker._gemini_model_for_mode("default")
-        self.assertEqual(model, "gemini-2.5-flash")
+        self.assertEqual(model, "gemini-3.5-flash")
 
-    def test_pro_mode_returns_pro(self):
-        """Explicit 'pro' mode should return the Pro model."""
+    def test_pro_mode_returns_flash(self):
+        """All modes now use gemini-3.5-flash."""
         model = self.worker._gemini_model_for_mode("pro")
-        self.assertEqual(model, "gemini-2.5-pro")
+        self.assertEqual(model, "gemini-3.5-flash")
 
-    def test_fallback_model_is_pro(self):
-        """QA fallback model should be Pro."""
+    def test_fallback_model_is_flash(self):
+        """QA fallback model should be gemini-3.5-flash."""
         model = self.worker._gemini_fallback_model()
-        self.assertEqual(model, "gemini-2.5-pro")
+        self.assertEqual(model, "gemini-3.5-flash")
 
     def test_env_override_respected(self):
         """TRANSLATION_MODEL env override should take precedence."""

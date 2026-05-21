@@ -299,7 +299,7 @@ if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
 delete process.env.GOOGLE_API_KEY;
 
 // ── Gemini image generation ───────────────────────────────────────────────────
-// Priority: Replit AI integration (gemini-2.5-flash-image) → own GEMINI_API_KEY (gemini-3.1-flash-image-preview)
+// Priority: Replit AI integration (gemini-3.1-flash-image-preview) → own GEMINI_API_KEY (gemini-3.1-flash-image-preview)
 
 const IMAGE_PROMPT_PREFIX = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for video content with a spiritual and reverential tone.
 The image should visually represent: `;
@@ -465,7 +465,7 @@ async function withTimeout<T>(
   }
 }
 
-async function generateImageViaReplit(prompt: string, model = "gemini-2.5-flash-image"): Promise<Buffer> {
+async function generateImageViaReplit(prompt: string, model = "gemini-3.1-flash-image-preview"): Promise<Buffer> {
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   if (!baseUrl || !apiKey) throw new Error("Replit AI integration not configured");
@@ -489,7 +489,7 @@ async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
     try {
       const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
       const response = await client.models.generateContent({
-        model: "gemini-2.5-flash-image",
+        model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
         config: {
           responseModalities: [Modality.TEXT, Modality.IMAGE],
@@ -526,7 +526,7 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
   if (replitReady) {
     try {
       const bytes = await withTimeout(
-        generateImageViaReplit(prompt, "gemini-2.5-flash-image"),
+        generateImageViaReplit(prompt, "gemini-3.1-flash-image-preview"),
         IMAGE_GEN_TIMEOUT_MS,
         "Replit flash image generation",
       );
@@ -550,11 +550,9 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
 }
 
 // ── Gemini text generation ─────────────────────────────────────────────────────
-// Replit integration: gemini-3.1-pro-preview -> own key fallback
+// Replit integration: gemini-3.5-flash -> own key fallback
 const OWN_KEY_TEXT_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-pro",
+  "gemini-3.5-flash",
 ] as const;
 const BHAGWAT_REVIEW_TIMEOUT_MS = Number(
   process.env.BHAGWAT_REVIEW_TIMEOUT_MS ?? 90_000,
@@ -591,7 +589,7 @@ async function ownKeyGeminiContent(
   if (keys.length === 0 && replitBase && replitKey) {
     const client = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
     const result = await client.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: [{ role: "user", parts: [{ text: userContent }] }],
       ...(systemInstruction && { config: { systemInstruction } }),
     });
@@ -644,7 +642,7 @@ async function ownKeyGeminiStream(
   if (keys.length === 0 && replitBase && replitKey) {
     const client = new GoogleGenAI({ apiKey: replitKey, httpOptions: { apiVersion: "", baseUrl: replitBase } });
     const stream = client.models.generateContentStream({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.5-flash",
       contents: [{ role: "user", parts: [{ text: userContent }] }],
       ...(systemInstruction && { config: { systemInstruction } }),
     });
@@ -708,13 +706,13 @@ async function geminiProContent(
     try {
       const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
       const result = await client.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3.5-flash",
         contents: [{ role: "user", parts: [{ text: userContent }] }],
         ...(systemInstruction && { config: { systemInstruction } }),
       });
       return (result as any).text ?? "";
     } catch (err) {
-      console.warn("[bhagwat/text] Replit gemini-3.1-pro-preview failed, falling back to own key:", (err as Error).message);
+      console.warn("[bhagwat/text] Replit gemini-3.5-flash failed, falling back to own key:", (err as Error).message);
     }
   }
 
@@ -734,7 +732,7 @@ async function geminiProStream(
     try {
       const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
       const stream = client.models.generateContentStream({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-3.5-flash",
         contents: [{ role: "user", parts: [{ text: userContent }] }],
         ...(systemInstruction && { config: { systemInstruction } }),
       });
@@ -744,7 +742,7 @@ async function geminiProStream(
       }
       return fullText;
     } catch (err) {
-      console.warn("[bhagwat/text] Replit gemini-3.1-pro-preview stream failed, falling back to own key:", (err as Error).message);
+      console.warn("[bhagwat/text] Replit gemini-3.5-flash stream failed, falling back to own key:", (err as Error).message);
       fullText = "";
     }
   }

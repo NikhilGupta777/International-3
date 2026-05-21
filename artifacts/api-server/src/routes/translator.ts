@@ -85,7 +85,7 @@ const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
 );
 const FFMPEG_BIN = process.env.FFMPEG_BIN || "/opt/bin/ffmpeg";
 const FFPROBE_BIN = process.env.FFPROBE_BIN || "/opt/bin/ffprobe";
-const TRANSLATOR_TEXT_MODEL = process.env.TRANSLATOR_TEXT_MODEL || process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const TRANSLATOR_TEXT_MODEL = process.env.TRANSLATOR_TEXT_MODEL || process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const TRANSLATOR_URL_FETCH_TIMEOUT_MS = Math.max(
   5000,
   Math.min(120000, Number(process.env.TRANSLATOR_URL_FETCH_TIMEOUT_MS ?? "45000") || 45000),
@@ -609,7 +609,7 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "ASR_MODEL",         value: options.asrModel },
     { name: "TRANSLATION_MODE",  value: options.translationMode },
     // Allow overriding the exact Gemini model ID used for translation via Lambda env.
-    // Defaults to gemini-3.1-pro-preview in the worker when blank.
+    // Defaults to gemini-3.5-flash in the worker when blank.
     { name: "TRANSLATION_MODEL", value: process.env.TRANSLATION_MODEL ?? "" },
     // CosyVoice3 model ID — passed explicitly so no job uses an old baked-in default.
     { name: "COSYVOICE_MODEL_ID", value: process.env.TRANSLATOR_COSYVOICE_MODEL_ID ?? "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" },
@@ -1061,7 +1061,7 @@ async function translateSegmentsFast(segments: FastSegment[], targetLang: string
   const resp = await ai.models.generateContent({
     model: TRANSLATOR_TEXT_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    config: { temperature: 0.2, maxOutputTokens: 8192 },
+    config: { maxOutputTokens: 8192 },
   } as any);
   const text = (resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim();
   const cleaned = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();

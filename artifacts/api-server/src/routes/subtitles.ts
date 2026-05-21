@@ -1194,12 +1194,10 @@ function getReplitGenAI(): GoogleGenAI | null {
 }
 
 // Passes 1 & 2 (audio-dependent): use personal keys only with key rotation.
-// gemini-3-flash-preview is primary (fast transcription).
-// gemini-2.5-pro is the quality fallback.
+// gemini-3.5-flash is primary (fast transcription).
 // Rotates to the next key on 429 rate limit. Throws if all keys are exhausted.
 const KEY_ROTATION_MODELS = [
-  "gemini-3-flash-preview",
-  "gemini-2.5-pro",
+  "gemini-3.5-flash",
 ];
 
 async function generateWithKeyRotation(
@@ -2079,7 +2077,7 @@ async function processAudio(
             (model) => ({
               model,
               contents: [{ role: "user", parts: [{ text: buildTextOnlyCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
-              config: { temperature: 0.1, maxOutputTokens: 65536 },
+              config: { maxOutputTokens: 65536 },
             }),
             "SRT text correction (AssemblyAI path)",
           );
@@ -2125,7 +2123,7 @@ async function processAudio(
               const result = await client.models.generateContent({
                 model,
                 contents: [{ role: "user", parts: [{ inlineData: { mimeType, data: audioBase64 } }, { text: buildSrtPrompt(language, durationSrt) }] }],
-                config: { temperature: 0.1, maxOutputTokens: 65536 },
+                config: { maxOutputTokens: 65536 },
               });
               rawSrt = result.text?.trim() ?? "";
               logger.info({ model }, "Initial subtitle transcription completed via Vertex inline audio");
@@ -2216,7 +2214,7 @@ async function processAudio(
               const result = await client.models.generateContent({
                 model,
                 contents: [{ role: "user", parts: [{ fileData: { mimeType, fileUri } }, { text: buildSrtPrompt(language, durationSrt) }] }],
-                config: { temperature: 0.1, maxOutputTokens: 65536 },
+                config: { maxOutputTokens: 65536 },
               });
               rawSrt = result.text?.trim() ?? "";
               logger.info({ model, keyLabel }, "Initial subtitle transcription completed");
@@ -2302,7 +2300,7 @@ async function processAudio(
       job.message = `Translating subtitles to ${translateTo}...`;
 
       const translatedRaw = await generateWithReplitFirst(
-        "gemini-2.5-pro",
+        "gemini-3.5-flash",
         (model) => ({
           model,
           contents: [
@@ -2312,7 +2310,6 @@ async function processAudio(
             },
           ],
           config: {
-            temperature: 0.2,
             maxOutputTokens: 65536,
           },
         }),
@@ -2331,7 +2328,7 @@ async function processAudio(
       job.message = `Verifying ${translateTo} translation...`;
 
       const verifiedRaw = await generateWithReplitFirst(
-        "gemini-2.5-pro",
+        "gemini-3.5-flash",
         (model) => ({
           model,
           contents: [
@@ -2341,7 +2338,6 @@ async function processAudio(
             },
           ],
           config: {
-            temperature: 0.1,
             maxOutputTokens: 65536,
           },
         }),
