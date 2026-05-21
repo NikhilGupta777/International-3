@@ -1181,10 +1181,10 @@ async function executeTool(
       const data = await r.json().catch(() => ({ error: "Failed to fetch info" })) as any;
       // Build a readable summary for the artifact card
       const infoLines: string[] = [];
-      if (data.title) infoLines.push(`📹 ${data.title}`);
-      if (data.duration) infoLines.push(`⏱ Duration: ${data.duration}`);
-      if (data.uploader) infoLines.push(`👤 ${data.uploader}`);
-      if (data.view_count != null) infoLines.push(`👁 ${Number(data.view_count).toLocaleString()} views`);
+      if (data.title) infoLines.push(data.title);
+      if (data.duration) infoLines.push(`Duration: ${data.duration}`);
+      if (data.uploader) infoLines.push(`Channel: ${data.uploader}`);
+      if (data.view_count != null) infoLines.push(`${Number(data.view_count).toLocaleString()} views`);
       return {
         result: data,
         ...(infoLines.length > 0 ? {
@@ -1335,7 +1335,7 @@ async function executeTool(
       await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
       return {
         result: { jobId, message: "Best clips analysis complete. View results in the Best Clips tab." },
-        artifact: { artifactType: "tab_link", label: "✅ Best Clips ready — open tab to download", tab: "clips", jobId },
+        artifact: { artifactType: "tab_link", label: "Best Clips ready — open tab to download", tab: "clips", jobId },
       };
     }
 
@@ -1358,12 +1358,23 @@ async function executeTool(
       sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_timestamps", status: "processing", message: "Starting timestamp generation...", jobId, url: args.url } as any);
 
       const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
+      // Format timestamps as readable text
+      let tsContent = "";
+      if (final.timestamps) {
+        if (typeof final.timestamps === "string") {
+          tsContent = final.timestamps;
+        } else if (Array.isArray(final.timestamps)) {
+          tsContent = final.timestamps.map((t: any) => `${t.time ?? t.timestamp ?? ""} ${t.title ?? t.label ?? t.text ?? ""}`).join("\n");
+        } else {
+          tsContent = JSON.stringify(final.timestamps, null, 2);
+        }
+      }
       return {
         result: { jobId, timestamps: final.timestamps },
-        artifact: final.timestamps ? {
+        artifact: tsContent ? {
           artifactType: "text",
           label: "Timestamps generated",
-          content: typeof final.timestamps === "string" ? final.timestamps : JSON.stringify(final.timestamps, null, 2),
+          content: tsContent,
         } : undefined,
       };
     }
@@ -1664,9 +1675,17 @@ async function executeTool(
         }
         jobs.push({ jobId, status: status ?? "not_found" });
       }
+      // Format as human-readable summary instead of raw JSON
+      const summaryLines = jobs.map((j, i) => {
+        const s = j.status;
+        if (s === "not_found") return `${i + 1}. Job ${j.jobId.slice(0, 8)}... — not found`;
+        const pct = s?.percent != null ? ` (${s.percent}%)` : "";
+        const step = s?.step ?? s?.status ?? "unknown";
+        return `${i + 1}. Job ${j.jobId.slice(0, 8)}... — ${step}${pct}`;
+      });
       return {
         result: { jobs },
-        artifact: { artifactType: "text", label: "Active Jobs", content: JSON.stringify(jobs, null, 2) },
+        artifact: { artifactType: "text", label: "Active Jobs", content: summaryLines.join("\n") },
       };
     }
 
@@ -1682,9 +1701,14 @@ async function executeTool(
         }
         cancelled.push({ jobId, result: data ?? "not_found_or_not_cancellable" });
       }
+      // Format as human-readable summary instead of raw JSON
+      const cancelLines = cancelled.map((c, i) => {
+        const outcome = c.result === "not_found_or_not_cancellable" ? "not found or already done" : "cancelled";
+        return `${i + 1}. Job ${c.jobId.slice(0, 8)}... — ${outcome}`;
+      });
       return {
         result: { cancelled },
-        artifact: { artifactType: "text", label: "Cancelled Jobs", content: JSON.stringify(cancelled, null, 2) },
+        artifact: { artifactType: "text", label: "Cancelled Jobs", content: cancelLines.join("\n") },
       };
     }
 
@@ -2174,14 +2198,29 @@ router.post("/agent/chat", async (req, res) => {
       const rawFcParts: any[] = [];
 
       let streamedTextLive = false;
+      let pendingTextBuf = "";
       for await (const chunk of stream!) {
         if (!isConnected()) break;
 
         const chunkText = chunk.text;
         if (chunkText) {
           fullText += chunkText;
-          sseEvent(res, { type: "text_delta", content: chunkText, runId });
-          streamedTextLive = true;
+          pendingTextBuf += chunkText;
+          // Hold back text that might be a partial [SUGGESTIONS:...] marker.
+          // Flush everything before the potential marker start.
+          const markerIdx = pendingTextBuf.lastIndexOf("[SUGGEST");
+          if (markerIdx === -1) {
+            sseEvent(res, { type: "text_delta", content: pendingTextBuf, runId });
+            pendingTextBuf = "";
+            streamedTextLive = true;
+          } else {
+            const safe = pendingTextBuf.slice(0, markerIdx);
+            if (safe) {
+              sseEvent(res, { type: "text_delta", content: safe, runId });
+              streamedTextLive = true;
+            }
+            pendingTextBuf = pendingTextBuf.slice(markerIdx);
+          }
         }
 
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
@@ -2190,6 +2229,14 @@ router.post("/agent/chat", async (req, res) => {
             functionCalls.push({ id: p.functionCall.id, name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
             rawFcParts.push(p);
           }
+        }
+      }
+      // Flush remaining buffered text (strip suggestions marker if complete)
+      if (pendingTextBuf) {
+        const cleaned = pendingTextBuf.replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "").trimEnd();
+        if (cleaned) {
+          sseEvent(res, { type: "text_delta", content: cleaned, runId });
+          streamedTextLive = true;
         }
       }
 
