@@ -825,6 +825,9 @@ For completed download/clip/subtitle/image artifacts:
 
 Do not output any of these internal markers in visible replies:
 [REASONING] [reasoning] [THOUGHT] [JUDGE] [PLAN] [EXECUTE] [SAY] [WAIT] [TOOL]
+[Tool: ...] [TextArtifact: ...] [Artifact: ...]
+
+Never echo tool result JSON, S3 URLs, presigned URLs, or internal API paths in your visible text. The user sees results through artifact cards and download buttons — not raw data in chat.
 
 # SUGGESTIONS
 
@@ -2212,20 +2215,38 @@ router.post("/agent/chat", async (req, res) => {
         if (chunkText) {
           fullText += chunkText;
           pendingTextBuf += chunkText;
-          // Hold back text that might be a partial [SUGGESTIONS:...] marker.
-          // Flush everything before the potential marker start.
-          const markerIdx = pendingTextBuf.lastIndexOf("[SUGGEST");
-          if (markerIdx === -1) {
+          // Hold back text that might be a partial internal marker.
+          // Check for any marker pattern that should not reach the client:
+          // [SUGGEST..., [Tool:..., [TextArtifact:..., [Artifact:...
+          const markerPatterns = ["[SUGGEST", "[Tool:", "[TextArtifact:", "[Artifact:"];
+          let holdIdx = -1;
+          for (const pat of markerPatterns) {
+            // Check for full pattern start or partial match at the end of buffer
+            const idx = pendingTextBuf.lastIndexOf(pat);
+            if (idx !== -1 && (holdIdx === -1 || idx < holdIdx)) {
+              holdIdx = idx;
+            }
+            // Also check for partial pattern at the very end (e.g. "[Too" or "[Tex")
+            for (let pLen = 1; pLen < pat.length; pLen++) {
+              if (pendingTextBuf.endsWith(pat.slice(0, pLen))) {
+                const partialIdx = pendingTextBuf.length - pLen;
+                if (holdIdx === -1 || partialIdx < holdIdx) {
+                  holdIdx = partialIdx;
+                }
+              }
+            }
+          }
+          if (holdIdx === -1) {
             sseEvent(res, { type: "text_delta", content: pendingTextBuf, runId });
             pendingTextBuf = "";
             streamedTextLive = true;
           } else {
-            const safe = pendingTextBuf.slice(0, markerIdx);
+            const safe = pendingTextBuf.slice(0, holdIdx);
             if (safe) {
               sseEvent(res, { type: "text_delta", content: safe, runId });
               streamedTextLive = true;
             }
-            pendingTextBuf = pendingTextBuf.slice(markerIdx);
+            pendingTextBuf = pendingTextBuf.slice(holdIdx);
           }
         }
 
@@ -2237,9 +2258,16 @@ router.post("/agent/chat", async (req, res) => {
           }
         }
       }
-      // Flush remaining buffered text (strip suggestions marker if complete)
+      // Flush remaining buffered text (strip internal markers if present)
       if (pendingTextBuf) {
-        const cleaned = pendingTextBuf.replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "").trimEnd();
+        const cleaned = pendingTextBuf
+          .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
+          .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
+          .replace(/\[TextArtifact:[^\]]*\][^\[]*/gi, "")
+          .replace(/\[Artifact:[^\]]*\]/gi, "")
+          .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
+          .replace(/\{"\w+(?:Url|url)":\s*"https?:\/\/[^"]*"[^}]*\}/g, "")
+          .trimEnd();
         if (cleaned) {
           sseEvent(res, { type: "text_delta", content: cleaned, runId });
           streamedTextLive = true;
