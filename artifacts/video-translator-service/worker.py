@@ -2493,15 +2493,30 @@ def synthesize_segments_cosyvoice(
         rw, rs = torchaudio.load(str(ref_path))
         if rw.shape[0] > 1:
             rw = rw.mean(0, keepdim=True)
+        # CosyVoice's frontend re-loads the prompt audio at TWO sample rates:
+        # 16 kHz for the speech-token + speaker-embedding extractors and
+        # 24 kHz for the speech-feature extractor (mel/flow conditioning).
+        # If we save the cached file at 16 kHz, the 24 kHz extractor has to
+        # upsample and gets no useful information above 8 kHz, which audibly
+        # dulls the cloned timbre.  We keep an in-memory 16 kHz tensor for
+        # forks that take a tensor argument, but write the cached WAV at
+        # 24 kHz so upstream's load_wav(prompt_wav, 24000) sees real
+        # high-frequency content.
         if rs != 16000:
-            rw = torchaudio.functional.resample(rw, rs, 16000)
-        rw = rw[:, : 16000 * 30]  # cap at 30 s
-        # Use a safe filename for the cached 16 kHz WAV
+            rw_16k = torchaudio.functional.resample(rw, rs, 16000)
+        else:
+            rw_16k = rw
+        if rs != 24000:
+            rw_24k = torchaudio.functional.resample(rw, rs, 24000)
+        else:
+            rw_24k = rw
+        rw_16k = rw_16k[:, : 16000 * 30]  # cap at 30 s
+        rw_24k = rw_24k[:, : 24000 * 30]
         safe_spk = re.sub(r"[^A-Za-z0-9_\-]", "_", speaker)
-        fname = out_dir / f"ref_{safe_spk}_16k.wav"
-        torchaudio.save(str(fname), rw, 16000)
-        _ref_cache[key] = (rw, str(fname))
-        return rw, str(fname)
+        fname = out_dir / f"ref_{safe_spk}_24k.wav"
+        torchaudio.save(str(fname), rw_24k, 24000)
+        _ref_cache[key] = (rw_16k, str(fname))
+        return rw_16k, str(fname)
 
     # Pre-warm default reference
     default_ref_wav, default_ref_prompt_path = _load_ref(default_reference_audio, "default")
@@ -2626,14 +2641,33 @@ def synthesize_segments_cosyvoice(
             return {instruct_param: emotion_instruction}
         return {}
 
-    def _cosyvoice3_prompt(value: str, assistant_prompt: str = "You are a helpful assistant.") -> str:
-        """CosyVoice3 requires the end-of-prompt delimiter in text or prompt_text."""
+    def _cosyvoice3_prompt(value: str, assistant_prompt: str = "") -> str:
+        """Inject CosyVoice3's '<|endofprompt|>' delimiter without polluting
+        the text with the instruct2-only assistant prefix.
+
+        The CosyVoice3 LLM asserts that either tts_text or prompt_text
+        contains '<|endofprompt|>'.  Without it the worker silently emits
+        no audio.  Earlier this helper prepended
+        'You are a helpful assistant.<|endofprompt|>' — but that prefix is
+        the instruct2 calling convention.  For zero-shot it gets baked into
+        prompt_text (which is supposed to be the verbatim transcription of
+        the reference audio), confusing the speaker conditioning; for
+        cross-lingual it gets prepended to tts_text, which the model can
+        partially synthesise as audible filler.
+
+        We now inject only the bare delimiter at the head of the value, so
+        upstream's frontend.text_normalize gets clean content followed by
+        the required token.  The optional assistant_prompt argument is kept
+        for callers that explicitly want the instruct-style prefix.
+        """
         cleaned = str(value or "").strip()
         if not is_cosyvoice3 or not COSYVOICE3_INJECT_PROMPT_PREFIX:
             return cleaned
         if "<|endofprompt|>" in cleaned:
             return cleaned
-        return f"{assistant_prompt}<|endofprompt|>{cleaned}"
+        if assistant_prompt:
+            return f"{assistant_prompt}<|endofprompt|>{cleaned}"
+        return f"<|endofprompt|>{cleaned}"
 
     # ── Synthesize each segment ───────────────────────────────────────────────
     # Phase 3 performance notes:
@@ -3124,22 +3158,31 @@ def synthesize_all(
                 "retry_cache_clear",
                 "fallback_default_ref",
             }
+            # Segments that legitimately produced silence because the source
+            # had no spoken content there.  These should not pollute the
+            # clone-ratio metric — there was nothing to clone in the first
+            # place, so calling them "fallback" is misleading and can cause
+            # the 80% clone-ratio gate to fail on perfectly fine jobs that
+            # happened to contain a few non-speech windows.
+            non_clone_legitimate_methods = {"empty_text_silence"}
             synth_methods = [
                 str((seg.get("_pacing") or {}).get("synth_method", "unknown"))
                 for seg in segments
             ]
             cloned_count = sum(1 for method in synth_methods if method in cloned_methods)
-            fallback_count = len(synth_methods) - cloned_count
+            legitimate_count = sum(1 for method in synth_methods if method in non_clone_legitimate_methods)
+            audit_total = max(1, len(synth_methods) - legitimate_count)
+            fallback_count = len(synth_methods) - cloned_count - legitimate_count
             silence_count = sum(1 for method in synth_methods if method == "fallback_silence")
-            clone_ratio = cloned_count / max(1, len(synth_methods))
+            clone_ratio = cloned_count / audit_total
             log.info(
-                "[TTS] CosyVoice segment audit: cloned=%s fallback=%s silence=%s total=%s methods=%s",
-                cloned_count, fallback_count, silence_count, len(synth_methods), synth_methods,
+                "[TTS] CosyVoice segment audit: cloned=%s fallback=%s silence=%s legitimate_silence=%s total=%s methods=%s",
+                cloned_count, fallback_count, silence_count, legitimate_count, len(synth_methods), synth_methods,
             )
             if clone_ratio < 0.80 or silence_count > 0:
                 raise RuntimeError(
                     f"CosyVoice did not produce a reliable cloned dub "
-                    f"({cloned_count}/{len(synth_methods)} cloned, {silence_count} silent)."
+                    f"({cloned_count}/{audit_total} cloned, {silence_count} silent)."
                 )
             log.info("[TTS] CosyVoice voice cloning succeeded.")
             return paths, True
@@ -3764,10 +3807,15 @@ def assemble_dubbed_audio(
             "placed_dropped_samples": max(0, original_samples - len(data)),
         })
 
-    # Normalise dubbed voice track
-    peak = np.abs(mixed).max()
-    if peak > 0:
-        mixed = mixed / peak * 0.9
+    # Clip-safe pre-write guard.  Previously we peak-normalised every
+    # segment-mixed track to 0.9, which throws away dynamic range AND
+    # fights the loudnorm pass that runs immediately after.  We now only
+    # scale the buffer down when the summed segment audio would otherwise
+    # clip when written as PCM_16 (sf.write default).  Quiet tracks pass
+    # through untouched and arrive at loudnorm with their original SNR.
+    peak = float(np.abs(mixed).max()) if mixed.size else 0.0
+    if peak > 1.0:
+        mixed = mixed * (0.98 / peak)
 
     dubbed_path = out_dir / "dubbed_voice.wav"
     sf.write(str(dubbed_path), mixed, SR)
@@ -3782,15 +3830,25 @@ def assemble_dubbed_audio(
             "-i", str(background_audio),
             "-filter_complex",
             (
-                # Fix: aformat=channel_layouts=mono on sidechain + bg so that
-                # sidechaincompress gets explicit channel layouts on both inputs.
-                # Without this, FFmpeg 4.4 on Ubuntu 22.04 fails with
-                # "No channel layout for input 1".
-                "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11,asplit=2[voice_mix][voice_ctrl_raw];"
-                "[voice_ctrl_raw]aformat=channel_layouts=mono[voice_ctrl];"
+                # Sidechain-compress the background so it ducks under the voice,
+                # then sum (NOT average) the voice with the ducked background.
+                #
+                # Volume math:
+                #   * Voice is loudnorm'd to I=-16 LUFS — the broadcast target.
+                #   * Background is loudnorm'd to I=-24 LUFS, then ratio=4
+                #     sidechain-ducked under the voice control signal.
+                #   * amix `normalize=0` keeps the inputs at their original
+                #     gain (default normalize=1 averages, halving each input
+                #     and giving a perceived ~-22 LUFS final voice — the
+                #     "quiet output" symptom).
+                #   * `duration=longest` lets the background continue past
+                #     the last spoken segment so the video tail isn't silent.
+                #   * alimiter at 0.95 catches any sum overshoot without
+                #     squashing the dynamic range.
+                "[0:a]loudnorm=I=-16:TP=-1.5:LRA=11,aformat=channel_layouts=mono,asplit=2[voice_mix][voice_ctrl];"
                 "[1:a]loudnorm=I=-24:TP=-2:LRA=18,aformat=channel_layouts=mono[bg];"
-                "[bg][voice_ctrl]sidechaincompress=threshold=0.04:ratio=8:attack=20:release=250[bd];"
-                "[voice_mix][bd]amix=inputs=2:duration=first:dropout_transition=0,"
+                "[bg][voice_ctrl]sidechaincompress=threshold=0.05:ratio=4:attack=20:release=250[bd];"
+                "[voice_mix][bd]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
                 "alimiter=limit=0.95[out]"
             ),
             "-map", "[out]",
