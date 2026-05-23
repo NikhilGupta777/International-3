@@ -98,6 +98,16 @@ function translatorShareUrl(jobId: string): string {
   return `${window.location.origin}${path}`;
 }
 
+// Build a descriptive download filename: "my_video_translated_hi.mp4"
+// Falls back to "translated_video.mp4" when filename is missing.
+function translatedVideoFilename(filename?: string, langCode?: string): string {
+  const base = filename
+    ? filename.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_\-]/g, "_").slice(0, 60)
+    : "video";
+  const lang = langCode ? `_${langCode}` : "";
+  return `${base}_translated${lang}.mp4`;
+}
+
 // ── Step config ─────────────────────────────────────────────────────────────
 const STEP_ICONS: Record<string, React.ReactNode> = {
   download: <Download className="w-4 h-4" />,
@@ -1270,7 +1280,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                 )}
                 <div className="flex gap-3">
                   {job?.videoUrl && (
-                    <a href={job.videoUrl} download="translated_video.mp4"
+                    <a href={job.videoUrl} download={translatedVideoFilename(job?.filename, job?.targetLangCode)}
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-white text-sm transition-all"
                       style={{ background: "linear-gradient(135deg,#16a34a,#15803d)", boxShadow: "0 4px 16px rgba(22,163,74,0.3)" }}>
                       <Download className="w-4 h-4" /> Download Video
@@ -1342,7 +1352,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                     {entry.videoUrl && (
                       <a
                         href={entry.videoUrl}
-                        download="translated_video.mp4"
+                        download={translatedVideoFilename(entry.filename, entry.targetLangCode)}
                         className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
                         title="Download"
                       >
