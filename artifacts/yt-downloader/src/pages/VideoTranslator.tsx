@@ -196,19 +196,30 @@ function TranscriptPanel({ segments }: { segments: any[] }) {
         <span className="text-xs text-white/30 ml-auto">{segments.length} segments</span>
       </div>
       <div className="max-h-64 overflow-y-auto">
-        {segments.map((s, i) => (
-          <div key={i} className="px-4 py-2 border-b border-white/[0.04] last:border-0">
-            <div className="flex items-start gap-3">
-              <span className="text-[10px] text-white/30 font-mono shrink-0 mt-0.5">
-                {String(Math.floor(s.start / 60)).padStart(2, "0")}:{String(Math.floor(s.start % 60)).padStart(2, "0")}
-              </span>
-              <div className="flex-1 min-w-0 space-y-0.5">
-                <p className="text-xs text-white/50 line-through">{s.originalText}</p>
-                <p className="text-sm text-white/90">{s.translatedText}</p>
+        {segments.map((s, i) => {
+          // Worker transcript: { start (seconds), originalText, translatedText }
+          // Lambda-fast transcript: { startMs (ms), text (original), translatedText }
+          // Normalise both shapes so the panel always shows correct data.
+          const startSec: number =
+            typeof s.start === "number" ? s.start : (s.startMs ?? 0) / 1000;
+          const originalText: string = s.originalText ?? s.text ?? "";
+          const translatedText: string = s.translatedText ?? "";
+          return (
+            <div key={i} className="px-4 py-2 border-b border-white/[0.04] last:border-0">
+              <div className="flex items-start gap-3">
+                <span className="text-[10px] text-white/30 font-mono shrink-0 mt-0.5">
+                  {String(Math.floor(startSec / 60)).padStart(2, "0")}:{String(Math.floor(startSec % 60)).padStart(2, "0")}
+                </span>
+                <div className="flex-1 min-w-0 space-y-0.5">
+                  {originalText && (
+                    <p className="text-xs text-white/50 line-through">{originalText}</p>
+                  )}
+                  <p className="text-sm text-white/90">{translatedText || originalText}</p>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
