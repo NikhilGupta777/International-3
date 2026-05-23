@@ -79,9 +79,34 @@ TARGET_LANG         = os.environ.get("TARGET_LANG", "Hindi")
 TARGET_LANG_CODE    = os.environ.get("TARGET_LANG_CODE", "hi")
 SOURCE_LANG         = os.environ.get("SOURCE_LANG", "auto")
 SOURCE_LANG_CODE    = os.environ.get("SOURCE_LANG_CODE", "")
-# Best-effort: derive code from SOURCE_LANG name when explicit code is absent
+# Best-effort: derive a BCP-47 code from SOURCE_LANG when an explicit
+# SOURCE_LANG_CODE is absent.  The naive [:2] slice was broken for several
+# languages (e.g. "Filipino" → "fi" which is Finnish, "Chinese" → "ch"
+# which is invalid).  Use an explicit map keyed on both codes and display
+# names so the worker handles every language the frontend exposes.
 if not SOURCE_LANG_CODE and SOURCE_LANG not in ("", "auto"):
-    SOURCE_LANG_CODE = SOURCE_LANG[:2].lower()
+    _LANG_NAME_TO_CODE: dict[str, str] = {
+        # language codes pass through unchanged
+        "en": "en", "es": "es", "fr": "fr", "de": "de", "pt": "pt",
+        "it": "it", "ja": "ja", "ko": "ko", "zh": "zh", "ar": "ar",
+        "ru": "ru", "hi": "hi", "nl": "nl", "pl": "pl", "tr": "tr",
+        "uk": "uk", "vi": "vi", "id": "id", "fil": "fil", "fi": "fi",
+        "bn": "bn", "gu": "gu", "kn": "kn", "ml": "ml", "mr": "mr",
+        "ta": "ta", "te": "te", "ur": "ur", "pa": "pa", "or": "or",
+        "sa": "sa", "ne": "ne",
+        # display names (lowercase) → code
+        "english": "en", "spanish": "es", "french": "fr", "german": "de",
+        "portuguese": "pt", "italian": "it", "japanese": "ja",
+        "korean": "ko", "chinese": "zh", "arabic": "ar", "russian": "ru",
+        "hindi": "hi", "dutch": "nl", "polish": "pl", "turkish": "tr",
+        "ukrainian": "uk", "vietnamese": "vi", "indonesian": "id",
+        "filipino": "fil", "finnish": "fi", "bengali": "bn",
+        "gujarati": "gu", "kannada": "kn", "malayalam": "ml",
+        "marathi": "mr", "tamil": "ta", "telugu": "te", "urdu": "ur",
+        "punjabi": "pa", "odia": "or", "oriya": "or", "sanskrit": "sa",
+        "nepali": "ne", "mandarin": "zh", "cantonese": "zh",
+    }
+    SOURCE_LANG_CODE = _LANG_NAME_TO_CODE.get(SOURCE_LANG.lower().strip(), "")
 VOICE_CLONE         = os.environ.get("VOICE_CLONE", "true").lower() == "true"
 LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
 # Demucs and diarization are quality-heavy options. The API/frontend decide
