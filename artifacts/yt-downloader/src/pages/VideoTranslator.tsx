@@ -823,6 +823,28 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const backendSteps: TranslatorStep[] | null = Array.isArray(job?.steps) && job.steps.length > 0 ? job.steps : null;
   const derivedSteps: TranslatorStep[] | null = backendSteps ?? (isProcessing || isDone
     ? PIPELINE_STEPS.map((s) => {
+      // Mark steps as skipped when the job was not configured to run them.
+      // lip_sync: skipped when job.lipSync is explicitly false (user didn't enable it).
+      // voice_generation: skipped when voiceClone=false (Neural Voice or subtitle-only).
+      // We rely on job.lipSync / job.voiceClone from the API status response
+      // (set during submit). Fall back gracefully when the fields are absent
+      // (e.g. older jobs that predate these fields).
+      if (s.name === "lip_sync" && job?.lipSync === false) {
+        return {
+          name: s.name,
+          label: s.label,
+          status: "skipped" as const,
+          message: "Lip sync disabled for this job.",
+        };
+      }
+      if (s.name === "voice_generation" && job?.voiceClone === false) {
+        return {
+          name: s.name,
+          label: "Generating neural voice",
+          status: isDone ? "completed" as const : (overallPct >= s.thresholdPct ? "completed" as const : overallPct >= PIPELINE_STEPS.find(p => p.name === "translation")!.thresholdPct ? "running" as const : "pending" as const),
+          message: undefined,
+        };
+      }
       const isCurrentStatus = s.status_keys.includes(job?.status ?? "");
       const isPastThreshold = overallPct >= s.thresholdPct;
       const isBeforeThreshold = overallPct < s.thresholdPct && !isCurrentStatus;
