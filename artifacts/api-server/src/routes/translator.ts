@@ -525,9 +525,16 @@ function isCpuBatchCandidate(options: TranslatorOptions): boolean {
   // Neural Voice jobs (no GPU): edge-tts dubbing on Fargate CPU.
   // Requires TRANSLATOR_CPU_BATCH_JOB_QUEUE + TRANSLATOR_CPU_BATCH_JOB_DEFINITION.
   // Falls back to GPU queue when CPU queue not configured (safe degradation).
+  //
+  // NOTE: subtitle-only must NOT route here. The Python worker ignores
+  // TRANSLATION_MODE and would run the full edge-tts dubbing pipeline anyway,
+  // so a user who picked "Subtitles Only" would still get an audible dubbed
+  // track. Subtitle-only goes through the Lambda fast path which actually
+  // honours the mode and emits only SRT + transcript.
   return (
     !options.voiceClone &&
     !options.lipSync &&
+    options.translationMode !== "subtitle-only" &&
     Boolean(CPU_BATCH_QUEUE) &&
     Boolean(CPU_BATCH_JOB_DEF)
   );
