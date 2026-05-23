@@ -1,4 +1,4 @@
-﻿"""
+"""
 AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -3919,9 +3919,15 @@ def _fmt_timestamp(seconds: float) -> str:
 def generate_srt(segments: list[dict], out_path: Path):
     lines = []
     idx = 1
+    skipped = 0
     for seg in segments:
-        text = seg.get("translated_text", seg.get("text", "")).strip()
+        # Use only the translated text -- never fall back to source-language
+        # text. For a dubbed video the SRT must match the dubbed audio; a
+        # source-language subtitle on a translated audio track is confusing
+        # and incorrect. If a segment has no translation, skip it.
+        text = seg.get("translated_text", "").strip()
         if not text:
+            skipped += 1
             continue
         lines.append(str(idx))
         lines.append(f"{_fmt_timestamp(seg['start'])} --> {_fmt_timestamp(seg['end'])}")
@@ -3929,7 +3935,9 @@ def generate_srt(segments: list[dict], out_path: Path):
         lines.append("")
         idx += 1
     out_path.write_text("\n".join(lines), encoding="utf-8")
-    log.info(f"[SRT] Written {idx - 1} subtitle entries â†’ {out_path}")
+    if skipped:
+        log.warning(f"[SRT] Skipped {skipped} segment(s) with no translated_text.")
+    log.info(f"[SRT] Written {idx - 1} subtitle entries -> {out_path}")
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
