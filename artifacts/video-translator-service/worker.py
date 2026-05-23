@@ -2838,8 +2838,14 @@ def synthesize_segments_cosyvoice(
                 chunks = list(cosy_model.inference_instruct2(**i2_args))
             elif use_cross_lingual:
                 inference_mode = "cross_lingual"
-                _cl_tts = _cosyvoice3_prompt(text)
-                cl_args: dict = {"tts_text": _cl_tts, "stream": False}
+                # Cross-lingual: pass tts_text as-is — do NOT wrap with
+                # _cosyvoice3_prompt().  For cross-lingual there is no
+                # prompt_text argument; the <|endofprompt|> requirement is
+                # satisfied by the prompt audio path internally.  Wrapping
+                # tts_text with the delimiter causes the LLM to partially
+                # synthesise the token as audible filler (the bug described
+                # in the _cosyvoice3_prompt docstring).
+                cl_args: dict = {"tts_text": text, "stream": False}
                 if "prompt_wav" in _cl_params_set:
                     cl_args["prompt_wav"] = seg_ref_prompt_path
                 elif "prompt_speech_16k" in _cl_params_set:
