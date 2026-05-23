@@ -300,9 +300,17 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
 
   const appendLog = (level: "info" | "warn" | "error", msg: string) =>
     setDebugLog(prev => {
-      const last = prev[prev.length - 1];
-      if (last?.level === level && last.msg === msg) return prev;
-      return [...prev.slice(-199), { ts: Date.now(), level, msg }];
+      // Dedup: suppress if the identical level+msg was logged within the last 30s.
+      // The previous check only looked at the last entry, so the same message
+      // could re-appear if any other message came in between (common during
+      // polling when status is unchanged for several polls).
+      const now = Date.now();
+      const DEDUP_WINDOW_MS = 30_000;
+      const isDuplicate = prev.some(
+        e => e.level === level && e.msg === msg && now - e.ts < DEDUP_WINDOW_MS
+      );
+      if (isDuplicate) return prev;
+      return [...prev.slice(-199), { ts: now, level, msg }];
     });
 
   const refreshHistory = useCallback(() => {
