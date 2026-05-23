@@ -409,6 +409,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           progress: data.progress ?? activeMeta?.progress ?? 0,
           step: data.step ?? activeMeta?.step ?? "",
           status: data.status ?? activeMeta?.status ?? "QUEUED",
+          // Persist voiceClone/lipSync so re-opening the job shows the correct badge.
+          voiceClone: data.voiceClone ?? activeMeta?.voiceClone,
+          lipSync: data.lipSync ?? activeMeta?.lipSync,
         });
         refreshHistory();
       }
@@ -717,6 +720,8 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         step: "Job queued, waiting for worker...",
         status: "QUEUED",
         fileFingerprint,
+        voiceClone: isVoiceClone,
+        lipSync: lipSyncAvailable && lipSync && translationMode === "full",
       });
       setJobId(newJobId);
       refreshHistory();
@@ -751,6 +756,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       targetLangCode: entry.targetLangCode,
       sourceLang: entry.sourceLang,
       createdAt: entry.startedAt,
+      // Include voiceClone/lipSync so the result badge (Voice cloned vs Neural
+      // fallback) renders correctly when re-opening an active job. Without these
+      // the badge always shows "Neural fallback" because job.voiceClone===undefined.
+      voiceClone: entry.voiceClone,
+      lipSync: entry.lipSync,
     });
   };
 
