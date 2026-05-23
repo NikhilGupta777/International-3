@@ -98,21 +98,23 @@ function translatorShareUrl(jobId: string): string {
   return `${window.location.origin}${path}`;
 }
 
-// â”€â”€ Step config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── Step config ─────────────────────────────────────────────────────────────
 const STEP_ICONS: Record<string, React.ReactNode> = {
+  download: <Download className="w-4 h-4" />,
   audio_extraction: <Volume2 className="w-4 h-4" />,
   transcription: <Subtitles className="w-4 h-4" />,
   translation: <Languages className="w-4 h-4" />,
   voice_generation: <Mic className="w-4 h-4" />,
   lip_sync: <Film className="w-4 h-4" />,
   video_merge: <Wand2 className="w-4 h-4" />,
+  upload: <Upload className="w-4 h-4" />,
 };
 const STEP_COLORS: Record<string, string> = {
   completed: "text-green-400 border-green-500/30 bg-green-500/8",
-  running: "text-blue-400  border-blue-500/30  bg-blue-500/8",
-  failed: "text-red-400   border-red-500/30   bg-red-500/8",
-  skipped: "text-white/30  border-white/10     bg-white/3",
-  pending: "text-white/40  border-white/10     bg-white/3",
+  running: "text-blue-400 border-blue-500/30 bg-blue-500/8",
+  failed: "text-red-400 border-red-500/30 bg-red-500/8",
+  skipped: "text-white/30 border-white/10 bg-white/[0.03]",
+  pending: "text-white/40 border-white/10 bg-white/[0.03]",
 };
 
 // â”€â”€ Select component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -270,8 +272,10 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [history, setHistory] = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
   const [debugLog, setDebugLog] = useState<{ ts: number; level: "info" | "warn" | "error"; msg: string }[]>([]);
   const [showDebug, setShowDebug] = useState(false);
+  const [stuckWarning, setStuckWarning] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollStartRef = useRef<number>(0);
+  const lastProgressRef = useRef<{ progress: number; status: string; ts: number }>({ progress: 0, status: "", ts: 0 });
 
   const appendLog = (level: "info" | "warn" | "error", msg: string) =>
     setDebugLog(prev => {
@@ -317,10 +321,16 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         if (r.status === 404 || r.status === 410) {
           removeActiveTranslatorJob(id);
           refreshHistory();
-          clearTimeout(pollRef.current!);
+          if (pollRef.current) clearTimeout(pollRef.current);
           if (jobId === id) {
             setJob(null);
             setJobId(null);
+            // Surface to the user instead of silently dropping the job.
+            toast({
+              title: "Translation no longer available",
+              description: "This job was removed or expired on the server.",
+              variant: "destructive",
+            });
           }
           return false;
         }
@@ -328,6 +338,31 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       }
       const data = await readJsonResponse(r);
       setJob(data);
+      // Stuck-job detector — surface a warning if status+progress haven't
+      // moved for more than 5 minutes.  Helps users notice when a Batch
+      // worker has hung instead of just sitting on a stale "QUEUED 0%".
+      const progressNow = Number(data.progress ?? 0);
+      const statusNow = String(data.status ?? "");
+      const isTerminal = ["DONE", "FAILED", "CANCELLED", "EXPIRED"].includes(statusNow);
+      if (isTerminal) {
+        lastProgressRef.current = { progress: progressNow, status: statusNow, ts: Date.now() };
+        setStuckWarning(null);
+      } else if (
+        lastProgressRef.current.progress === progressNow &&
+        lastProgressRef.current.status === statusNow &&
+        lastProgressRef.current.ts > 0
+      ) {
+        const stalledMs = Date.now() - lastProgressRef.current.ts;
+        if (stalledMs > 5 * 60_000) {
+          setStuckWarning(
+            `No progress in ${Math.round(stalledMs / 60_000)} min — the worker may be stuck. ` +
+            "You can wait, or cancel and retry.",
+          );
+        }
+      } else {
+        lastProgressRef.current = { progress: progressNow, status: statusNow, ts: Date.now() };
+        setStuckWarning(null);
+      }
       // Append real step/warning/error messages to debug log
       if (data.step) appendLog(data.status === "FAILED" ? "error" : "info", `[${data.status}] ${data.step}`);
       if (data.lipsyncWarning) appendLog("warn", `[LIPSYNC] ${data.lipsyncWarning}`);
@@ -349,7 +384,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         refreshHistory();
       }
       if (data.status === "DONE") {
-        clearTimeout(pollRef.current!);
+        if (pollRef.current) clearTimeout(pollRef.current);
         const result = await fetchResult(id);
         removeActiveTranslatorJob(id);
         saveTranslatorHistory({
@@ -370,13 +405,13 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         refreshHistory();
         return false;
       } else if (data.status === "FAILED") {
-        clearTimeout(pollRef.current!);
+        if (pollRef.current) clearTimeout(pollRef.current);
         removeActiveTranslatorJob(id);
         refreshHistory();
         setError(data.error ?? "Translation failed");
         return false;
       } else if (data.status === "CANCELLED" || data.status === "EXPIRED") {
-        clearTimeout(pollRef.current!);
+        if (pollRef.current) clearTimeout(pollRef.current);
         removeActiveTranslatorJob(id);
         refreshHistory();
         return false;
@@ -391,6 +426,8 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   useEffect(() => {
     if (!jobId) return;
     pollStartRef.current = Date.now();
+    lastProgressRef.current = { progress: 0, status: "", ts: 0 };
+    setStuckWarning(null);
     let isActive = true;
 
     // P2-9: Progressive poll backoff — 2s for first 60s, 5s until 3min, 10s after.
@@ -662,13 +699,15 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   };
 
   const reset = () => {
-    clearTimeout(pollRef.current!);
+    if (pollRef.current) clearTimeout(pollRef.current);
     setFile(null); setJobId(null); setJob(null);
     setTranscript([]); setError(null); setShowTranscript(false);
+    setStuckWarning(null);
+    lastProgressRef.current = { progress: 0, status: "", ts: 0 };
   };
 
   const openActiveEntry = (entry: ActiveTranslatorJob) => {
-    clearTimeout(pollRef.current!);
+    if (pollRef.current) clearTimeout(pollRef.current);
     setFile(null);
     setError(null);
     setTranscript([]);
@@ -697,7 +736,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       removeActiveTranslatorJob(id);
       refreshHistory();
       if (jobId === id) {
-        clearTimeout(pollRef.current!);
+        if (pollRef.current) clearTimeout(pollRef.current);
         setJob((prev: any) => ({ ...(prev ?? { jobId: id }), status: "CANCELLED", step: "Cancelled by user." }));
         setError(null);
       }
@@ -708,7 +747,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   };
 
   const openHistoryEntry = async (entry: TranslatorHistoryEntry) => {
-    clearTimeout(pollRef.current!);
+    if (pollRef.current) clearTimeout(pollRef.current);
     setFile(null);
     setError(null);
     setTranscript([]);
@@ -913,7 +952,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                 <div className="flex gap-2">
                   <button
                     onClick={() => setVoiceStyle("original")}
+                    disabled={translationMode === "subtitle-only"}
                     className={cn("flex-1 py-3 rounded-xl text-sm font-medium border transition-all flex flex-col items-center gap-1",
+                      translationMode === "subtitle-only" ? "bg-white/[0.04] border-white/[0.06] text-white/30 cursor-not-allowed" :
                       voiceStyle === "original" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
                   >
                     <span>🎤 Clone Voice</span>
@@ -921,19 +962,26 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                   </button>
                   <button
                     onClick={() => setVoiceStyle("female")}
+                    disabled={translationMode === "subtitle-only"}
                     className={cn("flex-1 py-3 rounded-xl text-sm font-medium border transition-all flex flex-col items-center gap-1",
+                      translationMode === "subtitle-only" ? "bg-white/[0.04] border-white/[0.06] text-white/30 cursor-not-allowed" :
                       voiceStyle === "female" ? "bg-primary/20 border-primary/50 text-primary" : "bg-white/[0.04] border-white/[0.08] text-white/50 hover:text-white/80")}
                   >
                     <span>👩 Neural Voice</span>
                     <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300/80 border border-emerald-400/20">Always Available</span>
                   </button>
                 </div>
-                {voiceStyle === "original" && (
+                {translationMode === "subtitle-only" ? (
+                  <p className="text-[11px] text-blue-300/60 flex items-center gap-1.5">
+                    <span>ℹ️</span>
+                    Voice style is unused in Subtitles Only mode — only the SRT is generated.
+                  </p>
+                ) : voiceStyle === "original" ? (
                   <p className="text-[11px] text-amber-300/60 flex items-center gap-1.5">
                     <span>⚠️</span>
                     Requires GPU worker. Auto-falls back to Neural Voice if unavailable.
                   </p>
-                )}
+                ) : null}
               </div>
 
               {/* P2-1: Translation Mode — explicit choice between full dubbing and subtitles only */}
@@ -1067,6 +1115,12 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                   <motion.div className="h-full bg-gradient-to-r from-primary to-orange-400 rounded-full"
                     animate={{ width: `${Math.max(2, overallPct)}%` }} transition={{ duration: 0.6 }} />
                 </div>
+                {stuckWarning && (
+                  <div className="mt-3 flex items-start gap-3 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-200 text-xs">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span className="flex-1">{stuckWarning}</span>
+                  </div>
+                )}
               </>
             )}
             {/* Steps + Debug log */}
