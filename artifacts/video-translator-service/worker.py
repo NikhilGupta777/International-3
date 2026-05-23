@@ -2510,8 +2510,8 @@ def synthesize_segments_cosyvoice(
             rw_24k = torchaudio.functional.resample(rw, rs, 24000)
         else:
             rw_24k = rw
-        rw_16k = rw_16k[:, : 16000 * 30]  # cap at 30 s
-        rw_24k = rw_24k[:, : 24000 * 30]
+        rw_16k = rw_16k[:, : 16000 * 10]  # cap at 10 s — upstream best practice (5-10 s)
+        rw_24k = rw_24k[:, : 24000 * 10]  # cap at 10 s — longer refs confuse speaker encoder
         safe_spk = re.sub(r"[^A-Za-z0-9_\-]", "_", speaker)
         fname = out_dir / f"ref_{safe_spk}_24k.wav"
         torchaudio.save(str(fname), rw_24k, 24000)
