@@ -98,6 +98,16 @@ function translatorShareUrl(jobId: string): string {
   return `${window.location.origin}${path}`;
 }
 
+// Build a descriptive download filename: "my_video_translated_hi.mp4"
+// Falls back to "translated_video.mp4" when filename is missing.
+function translatedVideoFilename(filename?: string, langCode?: string): string {
+  const base = filename
+    ? filename.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_\-]/g, "_").slice(0, 60)
+    : "video";
+  const lang = langCode ? `_${langCode}` : "";
+  return `${base}_translated${lang}.mp4`;
+}
+
 // ── Step config ─────────────────────────────────────────────────────────────
 const STEP_ICONS: Record<string, React.ReactNode> = {
   download: <Download className="w-4 h-4" />,
@@ -196,19 +206,30 @@ function TranscriptPanel({ segments }: { segments: any[] }) {
         <span className="text-xs text-white/30 ml-auto">{segments.length} segments</span>
       </div>
       <div className="max-h-64 overflow-y-auto">
-        {segments.map((s, i) => (
-          <div key={i} className="px-4 py-2 border-b border-white/[0.04] last:border-0">
-            <div className="flex items-start gap-3">
-              <span className="text-[10px] text-white/30 font-mono shrink-0 mt-0.5">
-                {String(Math.floor(s.start / 60)).padStart(2, "0")}:{String(Math.floor(s.start % 60)).padStart(2, "0")}
-              </span>
-              <div className="flex-1 min-w-0 space-y-0.5">
-                <p className="text-xs text-white/50 line-through">{s.originalText}</p>
-                <p className="text-sm text-white/90">{s.translatedText}</p>
+        {segments.map((s, i) => {
+          // Worker transcript: { start (seconds), originalText, translatedText }
+          // Lambda-fast transcript: { startMs (ms), text (original), translatedText }
+          // Normalise both shapes so the panel always shows correct data.
+          const startSec: number =
+            typeof s.start === "number" ? s.start : (s.startMs ?? 0) / 1000;
+          const originalText: string = s.originalText ?? s.text ?? "";
+          const translatedText: string = s.translatedText ?? "";
+          return (
+            <div key={i} className="px-4 py-2 border-b border-white/[0.04] last:border-0">
+              <div className="flex items-start gap-3">
+                <span className="text-[10px] text-white/30 font-mono shrink-0 mt-0.5">
+                  {String(Math.floor(startSec / 60)).padStart(2, "0")}:{String(Math.floor(startSec % 60)).padStart(2, "0")}
+                </span>
+                <div className="flex-1 min-w-0 space-y-0.5">
+                  {originalText && (
+                    <p className="text-xs text-white/50 line-through">{originalText}</p>
+                  )}
+                  <p className="text-sm text-white/90">{translatedText || originalText}</p>
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -279,9 +300,17 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
 
   const appendLog = (level: "info" | "warn" | "error", msg: string) =>
     setDebugLog(prev => {
-      const last = prev[prev.length - 1];
-      if (last?.level === level && last.msg === msg) return prev;
-      return [...prev.slice(-199), { ts: Date.now(), level, msg }];
+      // Dedup: suppress if the identical level+msg was logged within the last 30s.
+      // The previous check only looked at the last entry, so the same message
+      // could re-appear if any other message came in between (common during
+      // polling when status is unchanged for several polls).
+      const now = Date.now();
+      const DEDUP_WINDOW_MS = 30_000;
+      const isDuplicate = prev.some(
+        e => e.level === level && e.msg === msg && now - e.ts < DEDUP_WINDOW_MS
+      );
+      if (isDuplicate) return prev;
+      return [...prev.slice(-199), { ts: now, level, msg }];
     });
 
   const refreshHistory = useCallback(() => {
@@ -380,6 +409,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           progress: data.progress ?? activeMeta?.progress ?? 0,
           step: data.step ?? activeMeta?.step ?? "",
           status: data.status ?? activeMeta?.status ?? "QUEUED",
+          // Persist voiceClone/lipSync so re-opening the job shows the correct badge.
+          voiceClone: data.voiceClone ?? activeMeta?.voiceClone,
+          lipSync: data.lipSync ?? activeMeta?.lipSync,
         });
         refreshHistory();
       }
@@ -688,6 +720,8 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         step: "Job queued, waiting for worker...",
         status: "QUEUED",
         fileFingerprint,
+        voiceClone: isVoiceClone,
+        lipSync: lipSyncAvailable && lipSync && translationMode === "full",
       });
       setJobId(newJobId);
       refreshHistory();
@@ -722,6 +756,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       targetLangCode: entry.targetLangCode,
       sourceLang: entry.sourceLang,
       createdAt: entry.startedAt,
+      // Include voiceClone/lipSync so the result badge (Voice cloned vs Neural
+      // fallback) renders correctly when re-opening an active job. Without these
+      // the badge always shows "Neural fallback" because job.voiceClone===undefined.
+      voiceClone: entry.voiceClone,
+      lipSync: entry.lipSync,
     });
   };
 
@@ -812,6 +851,28 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const backendSteps: TranslatorStep[] | null = Array.isArray(job?.steps) && job.steps.length > 0 ? job.steps : null;
   const derivedSteps: TranslatorStep[] | null = backendSteps ?? (isProcessing || isDone
     ? PIPELINE_STEPS.map((s) => {
+      // Mark steps as skipped when the job was not configured to run them.
+      // lip_sync: skipped when job.lipSync is explicitly false (user didn't enable it).
+      // voice_generation: skipped when voiceClone=false (Neural Voice or subtitle-only).
+      // We rely on job.lipSync / job.voiceClone from the API status response
+      // (set during submit). Fall back gracefully when the fields are absent
+      // (e.g. older jobs that predate these fields).
+      if (s.name === "lip_sync" && job?.lipSync === false) {
+        return {
+          name: s.name,
+          label: s.label,
+          status: "skipped" as const,
+          message: "Lip sync disabled for this job.",
+        };
+      }
+      if (s.name === "voice_generation" && job?.voiceClone === false) {
+        return {
+          name: s.name,
+          label: "Generating neural voice",
+          status: isDone ? "completed" as const : (overallPct >= s.thresholdPct ? "completed" as const : overallPct >= PIPELINE_STEPS.find(p => p.name === "translation")!.thresholdPct ? "running" as const : "pending" as const),
+          message: undefined,
+        };
+      }
       const isCurrentStatus = s.status_keys.includes(job?.status ?? "");
       const isPastThreshold = overallPct >= s.thresholdPct;
       const isBeforeThreshold = overallPct < s.thresholdPct && !isCurrentStatus;
@@ -1237,7 +1298,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                 )}
                 <div className="flex gap-3">
                   {job?.videoUrl && (
-                    <a href={job.videoUrl} download="translated_video.mp4"
+                    <a href={job.videoUrl} download={translatedVideoFilename(job?.filename, job?.targetLangCode)}
                       className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-white text-sm transition-all"
                       style={{ background: "linear-gradient(135deg,#16a34a,#15803d)", boxShadow: "0 4px 16px rgba(22,163,74,0.3)" }}>
                       <Download className="w-4 h-4" /> Download Video
@@ -1309,7 +1370,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                     {entry.videoUrl && (
                       <a
                         href={entry.videoUrl}
-                        download="translated_video.mp4"
+                        download={translatedVideoFilename(entry.filename, entry.targetLangCode)}
                         className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
                         title="Download"
                       >

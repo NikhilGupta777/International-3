@@ -1,4 +1,4 @@
-﻿"""
+"""
 AWS Batch GPU Worker - Video Translator
 =======================================
 One-shot CLI script. Invoked by AWS Batch as:
@@ -79,9 +79,34 @@ TARGET_LANG         = os.environ.get("TARGET_LANG", "Hindi")
 TARGET_LANG_CODE    = os.environ.get("TARGET_LANG_CODE", "hi")
 SOURCE_LANG         = os.environ.get("SOURCE_LANG", "auto")
 SOURCE_LANG_CODE    = os.environ.get("SOURCE_LANG_CODE", "")
-# Best-effort: derive code from SOURCE_LANG name when explicit code is absent
+# Best-effort: derive a BCP-47 code from SOURCE_LANG when an explicit
+# SOURCE_LANG_CODE is absent.  The naive [:2] slice was broken for several
+# languages (e.g. "Filipino" → "fi" which is Finnish, "Chinese" → "ch"
+# which is invalid).  Use an explicit map keyed on both codes and display
+# names so the worker handles every language the frontend exposes.
 if not SOURCE_LANG_CODE and SOURCE_LANG not in ("", "auto"):
-    SOURCE_LANG_CODE = SOURCE_LANG[:2].lower()
+    _LANG_NAME_TO_CODE: dict[str, str] = {
+        # language codes pass through unchanged
+        "en": "en", "es": "es", "fr": "fr", "de": "de", "pt": "pt",
+        "it": "it", "ja": "ja", "ko": "ko", "zh": "zh", "ar": "ar",
+        "ru": "ru", "hi": "hi", "nl": "nl", "pl": "pl", "tr": "tr",
+        "uk": "uk", "vi": "vi", "id": "id", "fil": "fil", "fi": "fi",
+        "bn": "bn", "gu": "gu", "kn": "kn", "ml": "ml", "mr": "mr",
+        "ta": "ta", "te": "te", "ur": "ur", "pa": "pa", "or": "or",
+        "sa": "sa", "ne": "ne",
+        # display names (lowercase) → code
+        "english": "en", "spanish": "es", "french": "fr", "german": "de",
+        "portuguese": "pt", "italian": "it", "japanese": "ja",
+        "korean": "ko", "chinese": "zh", "arabic": "ar", "russian": "ru",
+        "hindi": "hi", "dutch": "nl", "polish": "pl", "turkish": "tr",
+        "ukrainian": "uk", "vietnamese": "vi", "indonesian": "id",
+        "filipino": "fil", "finnish": "fi", "bengali": "bn",
+        "gujarati": "gu", "kannada": "kn", "malayalam": "ml",
+        "marathi": "mr", "tamil": "ta", "telugu": "te", "urdu": "ur",
+        "punjabi": "pa", "odia": "or", "oriya": "or", "sanskrit": "sa",
+        "nepali": "ne", "mandarin": "zh", "cantonese": "zh",
+    }
+    SOURCE_LANG_CODE = _LANG_NAME_TO_CODE.get(SOURCE_LANG.lower().strip(), "")
 VOICE_CLONE         = os.environ.get("VOICE_CLONE", "true").lower() == "true"
 LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
 # Demucs and diarization are quality-heavy options. The API/frontend decide
@@ -2510,8 +2535,8 @@ def synthesize_segments_cosyvoice(
             rw_24k = torchaudio.functional.resample(rw, rs, 24000)
         else:
             rw_24k = rw
-        rw_16k = rw_16k[:, : 16000 * 30]  # cap at 30 s
-        rw_24k = rw_24k[:, : 24000 * 30]
+        rw_16k = rw_16k[:, : 16000 * 10]  # cap at 10 s — upstream best practice (5-10 s)
+        rw_24k = rw_24k[:, : 24000 * 10]  # cap at 10 s — longer refs confuse speaker encoder
         safe_spk = re.sub(r"[^A-Za-z0-9_\-]", "_", speaker)
         fname = out_dir / f"ref_{safe_spk}_24k.wav"
         torchaudio.save(str(fname), rw_24k, 24000)
@@ -2838,8 +2863,14 @@ def synthesize_segments_cosyvoice(
                 chunks = list(cosy_model.inference_instruct2(**i2_args))
             elif use_cross_lingual:
                 inference_mode = "cross_lingual"
-                _cl_tts = _cosyvoice3_prompt(text)
-                cl_args: dict = {"tts_text": _cl_tts, "stream": False}
+                # Cross-lingual: pass tts_text as-is — do NOT wrap with
+                # _cosyvoice3_prompt().  For cross-lingual there is no
+                # prompt_text argument; the <|endofprompt|> requirement is
+                # satisfied by the prompt audio path internally.  Wrapping
+                # tts_text with the delimiter causes the LLM to partially
+                # synthesise the token as audible filler (the bug described
+                # in the _cosyvoice3_prompt docstring).
+                cl_args: dict = {"tts_text": text, "stream": False}
                 if "prompt_wav" in _cl_params_set:
                     cl_args["prompt_wav"] = seg_ref_prompt_path
                 elif "prompt_speech_16k" in _cl_params_set:
@@ -3888,9 +3919,15 @@ def _fmt_timestamp(seconds: float) -> str:
 def generate_srt(segments: list[dict], out_path: Path):
     lines = []
     idx = 1
+    skipped = 0
     for seg in segments:
-        text = seg.get("translated_text", seg.get("text", "")).strip()
+        # Use only the translated text -- never fall back to source-language
+        # text. For a dubbed video the SRT must match the dubbed audio; a
+        # source-language subtitle on a translated audio track is confusing
+        # and incorrect. If a segment has no translation, skip it.
+        text = seg.get("translated_text", "").strip()
         if not text:
+            skipped += 1
             continue
         lines.append(str(idx))
         lines.append(f"{_fmt_timestamp(seg['start'])} --> {_fmt_timestamp(seg['end'])}")
@@ -3898,7 +3935,9 @@ def generate_srt(segments: list[dict], out_path: Path):
         lines.append("")
         idx += 1
     out_path.write_text("\n".join(lines), encoding="utf-8")
-    log.info(f"[SRT] Written {idx - 1} subtitle entries â†’ {out_path}")
+    if skipped:
+        log.warning(f"[SRT] Skipped {skipped} segment(s) with no translated_text.")
+    log.info(f"[SRT] Written {idx - 1} subtitle entries -> {out_path}")
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

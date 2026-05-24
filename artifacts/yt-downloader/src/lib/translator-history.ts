@@ -32,6 +32,10 @@ export interface ActiveTranslatorJob {
   status: string;
   /** P2-13: Client-side file fingerprint for duplicate detection */
   fileFingerprint?: string;
+  /** Whether voice cloning was requested for this job */
+  voiceClone?: boolean;
+  /** Whether lip sync was requested for this job */
+  lipSync?: boolean;
 }
 
 function readArray<T>(key: string): T[] {

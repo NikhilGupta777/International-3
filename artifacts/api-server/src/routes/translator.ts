@@ -1111,12 +1111,24 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
     });
     const translated = await translateSegmentsFast(segments, options.targetLang);
     await writeFile(srtPath, segmentsToSrt(translated), "utf8");
+    // Normalise to the canonical worker.py transcript schema so every
+    // consumer (TranscriptPanel, analytics, future SDKs) sees the same shape
+    // regardless of which runtime produced the job.
+    // Worker schema:  { id, start (sec), end (sec), originalText, translatedText }
+    // Lambda-fast raw: { startMs (ms), endMs (ms), text, translatedText }
+    const canonicalSegments = translated.map((seg, idx) => ({
+      id: idx,
+      start: seg.startMs / 1000,
+      end: seg.endMs / 1000,
+      originalText: seg.text,
+      translatedText: seg.translatedText ?? seg.text,
+    }));
     await writeFile(transcriptPath, JSON.stringify({
       jobId,
       mode: "lambda-fast-subtitle-translation",
       targetLang: options.targetLang,
       durationSeconds,
-      segments: translated,
+      segments: canonicalSegments,
     }, null, 2), "utf8");
 
     const prefix = `translator-jobs/${jobId}`;
