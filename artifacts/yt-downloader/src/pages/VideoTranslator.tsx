@@ -276,7 +276,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
   const [srcLang, setSrcLang] = useState("auto");
-  const [tgtLang, setTgtLang] = useState("en");
+  const [tgtLang, setTgtLang] = useState("hi");
   const [voiceStyle, setVoiceStyle] = useState<"original" | "female">("original");
   const [lipSync, setLipSync] = useState(false);
   const [translationMode, setTranslationMode] = useState<"full" | "subtitle-only">("full");
@@ -323,7 +323,15 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     if (!tr.ok) return null;
     const result = await readJsonResponse(tr);
     return {
-      ...(result as { videoUrl?: string; shareUrl?: string; srtUrl?: string; transcriptUrl?: string }),
+      ...(result as {
+        videoUrl?: string;
+        shareUrl?: string;
+        srtUrl?: string;
+        transcriptUrl?: string;
+        voiceCloneApplied?: boolean;
+        lipSyncApplied?: boolean;
+        runtime?: string;
+      }),
       shareUrl: result.shareUrl ?? translatorShareUrl(id),
     };
   }, []);
