@@ -183,7 +183,18 @@ function renderMd(text: string): React.ReactNode {
 function renderStreamingMd(text: string): React.ReactNode {
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
-  const ANIMATE_WINDOW = 8; // animate last N words of the final line
+  const ANIMATE_WINDOW = 80; // animate last N graphemes of the final line
+
+  const splitGraphemes = (value: string): string[] => {
+    try {
+      const SegmenterCtor = (Intl as any).Segmenter;
+      if (SegmenterCtor) {
+        const segmenter = new SegmenterCtor(undefined, { granularity: "grapheme" });
+        return Array.from(segmenter.segment(value), (entry: any) => entry.segment);
+      }
+    } catch { /* fallback below */ }
+    return Array.from(value);
+  };
 
   // Inline parser that can optionally animate trailing tokens
   const inlineAnimated = (str: string, key: string, animateTrailing: boolean): React.ReactNode => {
@@ -211,28 +222,28 @@ function renderStreamingMd(text: string): React.ReactNode {
       return parts;
     }
 
-    // Animated render — split all text into words, animate the last ANIMATE_WINDOW
-    const allWords: Array<{ word: string; type: "plain" | "bold" | "code" }> = [];
+    // Animated render — split all text into graphemes for a smoother typewriter feel.
+    const allChars: Array<{ char: string; type: "plain" | "bold" | "code" }> = [];
     for (const seg of segments) {
-      const words = seg.text.split(/(?=\s)/);
-      for (const w of words) {
-        if (w) allWords.push({ word: w, type: seg.type });
+      const chars = splitGraphemes(seg.text);
+      for (const ch of chars) {
+        if (ch) allChars.push({ char: ch, type: seg.type });
       }
     }
 
-    const animStart = Math.max(0, allWords.length - ANIMATE_WINDOW);
-    for (let i = 0; i < allWords.length; i++) {
-      const { word, type } = allWords[i];
+    const animStart = Math.max(0, allChars.length - ANIMATE_WINDOW);
+    for (let i = 0; i < allChars.length; i++) {
+      const { char, type } = allChars[i];
       const shouldAnimate = i >= animStart;
       const cls = shouldAnimate ? "stream-token" : undefined;
-      const delay = shouldAnimate ? { animationDelay: `${(i - animStart) * 25}ms` } : undefined;
+      const delay = shouldAnimate ? { animationDelay: `${Math.min((i - animStart) * 8, 420)}ms` } : undefined;
 
       if (type === "bold") {
-        parts.push(<strong key={`${key}-w${k++}`} className={cls} style={delay}>{word}</strong>);
+        parts.push(<strong key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</strong>);
       } else if (type === "code") {
-        parts.push(<code key={`${key}-w${k++}`} className={cls} style={delay}>{word}</code>);
+        parts.push(<code key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</code>);
       } else {
-        parts.push(<span key={`${key}-w${k++}`} className={cls} style={delay}>{word}</span>);
+        parts.push(<span key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</span>);
       }
     }
     return parts;
