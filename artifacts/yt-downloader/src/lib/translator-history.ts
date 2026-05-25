@@ -18,6 +18,18 @@ export interface TranslatorHistoryEntry {
   srtUrl?: string;
   transcriptUrl?: string;
   segmentCount?: number;
+  /** Whether voice cloning was requested for this job */
+  voiceClone?: boolean;
+  /** Whether voice cloning was actually applied (false = fell back to neural) */
+  voiceCloneApplied?: boolean;
+  /** Warning message when voice cloning fell back to neural voice */
+  voiceCloneWarning?: string;
+  /** Whether lip sync was requested */
+  lipSync?: boolean;
+  /** Whether lip sync was actually applied */
+  lipSyncApplied?: boolean;
+  /** Runtime used: batch | batch-cpu | lambda-fast | batch-lipsync */
+  runtime?: string;
 }
 
 export interface ActiveTranslatorJob {
