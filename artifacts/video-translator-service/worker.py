@@ -2863,14 +2863,11 @@ def synthesize_segments_cosyvoice(
                 chunks = list(cosy_model.inference_instruct2(**i2_args))
             elif use_cross_lingual:
                 inference_mode = "cross_lingual"
-                # Cross-lingual: pass tts_text as-is — do NOT wrap with
-                # _cosyvoice3_prompt().  For cross-lingual there is no
-                # prompt_text argument; the <|endofprompt|> requirement is
-                # satisfied by the prompt audio path internally.  Wrapping
-                # tts_text with the delimiter causes the LLM to partially
-                # synthesise the token as audible filler (the bug described
-                # in the _cosyvoice3_prompt docstring).
-                cl_args: dict = {"tts_text": text, "stream": False}
+                # CosyVoice3's cross-lingual path still needs the delimiter in
+                # the text stream. Removing it makes the model return no audio
+                # for every segment, which then triggers a full neural fallback.
+                _cl_tts = _cosyvoice3_prompt(text)
+                cl_args: dict = {"tts_text": _cl_tts, "stream": False}
                 if "prompt_wav" in _cl_params_set:
                     cl_args["prompt_wav"] = seg_ref_prompt_path
                 elif "prompt_speech_16k" in _cl_params_set:
@@ -3002,8 +2999,11 @@ def synthesize_segments_cosyvoice(
                     "rtf": round(inference_wall_seconds / max(actual_seconds, 0.001), 3),
                 })
                 _fallback_succeeded = True
-            except Exception:
-                pass
+            except Exception as retry_exc:
+                log.warning(
+                    "[CosyVoice] Seg %s cache-clear retry failed: %s",
+                    seg["id"], retry_exc,
+                )
 
             # ── Fallback level 2: default reference ────────────────────────
             if not _fallback_succeeded and (seg_ref_prompt_path != default_ref_prompt_path):
@@ -3030,8 +3030,11 @@ def synthesize_segments_cosyvoice(
                         "rtf": round(inference_wall_seconds / max(actual_seconds, 0.001), 3),
                     })
                     _fallback_succeeded = True
-                except Exception:
-                    pass
+                except Exception as default_ref_err:
+                    log.warning(
+                        "[CosyVoice] Seg %s default-reference retry failed: %s",
+                        seg["id"], default_ref_err,
+                    )
                 finally:
                     seg_ref_prompt_path = _orig_ref_path
                     seg_ref_wav = _orig_ref_wav
