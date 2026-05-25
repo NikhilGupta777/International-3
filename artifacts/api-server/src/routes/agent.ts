@@ -25,6 +25,9 @@ const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
 const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "24", 10) || 24;
 const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
+const ENABLE_NATIVE_AGENT_SEARCH = !/^(0|false|no|off)$/i.test(
+  String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "true").trim(),
+);
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
   "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
@@ -410,7 +413,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "web_search",
-    description: "Search the web for real-time information. Use when the user asks about current events, video details not in metadata, trends, recommendations, or anything requiring up-to-date knowledge. Returns search results with titles, snippets, URLs, and sources. Use maxResults up to 10-20 when the user needs broad research.",
+    description: "Fallback structured web search. Prefer the model's native Google Search grounding for ordinary current-info questions; use this only when the user explicitly asks for raw/source-list search diagnostics, broad research results, or native grounding was insufficient. Returns a grounded synthesized answer plus source URLs. Use maxResults up to 10-20 when broad research is required.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -631,6 +634,23 @@ const STUDIO_TOOLS: any[] = [
     },
   },
 ];
+
+function buildAgentTools(includeNativeSearch: boolean): any[] {
+  const tools: any[] = [];
+  if (includeNativeSearch && ENABLE_NATIVE_AGENT_SEARCH) {
+    // Keep Google Search in the main model turn so ordinary searches avoid an
+    // extra web_search function-call round trip.
+    tools.push({ googleSearch: {} });
+  }
+  tools.push({ functionDeclarations: STUDIO_TOOLS as any });
+  return tools;
+}
+
+function isNativeToolConfigError(error: unknown): boolean {
+  const message = String((error as any)?.message ?? error ?? "");
+  return /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(message);
+}
+
 const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot, an action-focused assistant inside a YouTube/video production web app.
 
 Your job is to help the user create, edit, analyze, download, subtitle, translate, package, and publish video/media content.
@@ -714,7 +734,7 @@ Every tool call must have complete, specific arguments. Preserve the user's impo
 
 For tools with prompt/question/instructions fields, write a production-quality instruction with: user goal, source/context, output format, language, quality bar, constraints, and what to avoid. Never pass vague prompts like "summarize", "fix this", or "make SEO".
 
-For deep web research: call web_search with enough maxResults, inspect multiple sources, and call read_web_page on important results when snippets are insufficient.
+Native Google Search grounding is available in your normal answer path. For ordinary current-information or web-search questions, answer directly with native grounding instead of calling web_search first. Use web_search only when the user explicitly asks for raw search diagnostics/source lists, broad result collection, or the native grounded answer is insufficient. Use read_web_page only for exact URLs or after choosing a high-value deep page; avoid reading bare homepages unless the homepage itself is the target.
 
 # WHEN TO ACT VS ASK
 
@@ -1513,6 +1533,8 @@ async function executeTool(
       const query = String(args.query ?? "").trim();
       const requestedMax = Number(args.maxResults ?? 10);
       const maxResults = Math.max(1, Math.min(20, Number.isFinite(requestedMax) ? requestedMax : 10));
+      const startedAt = Date.now();
+      if (!query) throw new Error("Search query is required.");
       logTool("Searching the web", { query, maxResults });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Searching: "${query}"...` });
 
@@ -1523,9 +1545,9 @@ async function executeTool(
       const SERPER_KEY = process.env.SERPER_API_KEY;
 
       try {
-        // Primary: Gemini with googleSearch grounding
-        // Note: googleSearch grounding cannot be mixed with functionDeclarations
-        // in the same request, so we use a separate AI client call here.
+        // Fallback structured search path. The main agent turn also receives
+        // native Google Search; this tool is for explicit source-list/debug use
+        // or when the model needs a structured search artifact.
         const searchAi = createGeminiClient();
         const searchResp = await searchAi.models.generateContent({
           model: SEARCH_MODEL,
@@ -1555,7 +1577,17 @@ async function executeTool(
         });
         const uniqueSources = [...new Set(sources)].slice(0, maxResults);
         const sourcesText = uniqueSources.length > 0 ? `\n\nSources:\n${uniqueSources.map((s, i) => `[${i + 1}] ${s}`).join("\n")}` : "";
-        return { result: { query, answer: groundedAnswer + sourcesText, grounded: true, sources: uniqueSources } };
+        return {
+          result: {
+            query,
+            answer: groundedAnswer + sourcesText,
+            grounded: true,
+            sources: uniqueSources,
+            sourceCount: uniqueSources.length,
+            elapsedMs: Date.now() - startedAt,
+            note: "This is a synthesized grounded-search result, not raw SERP HTML. Use read_web_page on selected deep URLs when exact page text matters.",
+          },
+        };
       } catch (groundingErr: any) {
         logTool(`Grounding failed (${groundingErr?.message}), trying fallbacks`, {});
         // Fallback 1: Tavily
@@ -1570,7 +1602,14 @@ async function executeTool(
             const results = (data.results ?? []).slice(0, maxResults).map((item: any, i: number) =>
               `[${i + 1}] ${item.title}\n${item.content ?? item.snippet ?? ""}\n${item.raw_content ? `Page content excerpt: ${String(item.raw_content).slice(0, 4000)}\n` : ""}Source: ${item.url}`
             ).join("\n\n");
-            return { result: { query, answer: (data.answer ? `${data.answer}\n\n` : "") + results, results: data.results?.slice(0, maxResults) ?? [] } };
+            return {
+              result: {
+                query,
+                answer: (data.answer ? `${data.answer}\n\n` : "") + results,
+                results: data.results?.slice(0, maxResults) ?? [],
+                elapsedMs: Date.now() - startedAt,
+              },
+            };
           }
         }
         // Fallback 2: Serper
@@ -1586,7 +1625,7 @@ async function executeTool(
             const results = organic.map((item: any, i: number) =>
               `[${i + 1}] ${item.title}\n${item.snippet ?? ""}\nSource: ${item.link}`
             ).join("\n\n");
-            return { result: { query, answer: results, results: organic } };
+            return { result: { query, answer: results, results: organic, elapsedMs: Date.now() - startedAt } };
           }
         }
         // All methods failed
@@ -2157,6 +2196,7 @@ router.post("/agent/chat", async (req, res) => {
 
     let iterations = 0;
     let emptyResponseRetries = 0;
+    let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH;
 
     while (iterations < MAX_ITERATIONS && isConnected()) {
       iterations++;
@@ -2177,7 +2217,7 @@ router.post("/agent/chat", async (req, res) => {
             contents: loopContents,
             config: {
               systemInstruction: SYSTEM_PROMPT,
-              tools: [{ functionDeclarations: STUDIO_TOOLS as any }],
+              tools: buildAgentTools(useNativeSearchTools),
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
               thinkingConfig: {
@@ -2189,6 +2229,12 @@ router.post("/agent/chat", async (req, res) => {
           break; // success
         } catch (e: any) {
           streamErr = e;
+          if (useNativeSearchTools && isNativeToolConfigError(e)) {
+            console.warn(`[agent] native Google Search tool config failed; retrying function-only tools: ${e?.message ?? e}`);
+            useNativeSearchTools = false;
+            attempt--;
+            continue;
+          }
           const isEmptyOutputErr = /model output must contain|both be empty/i.test(e?.message ?? "");
           if (!isEmptyOutputErr || attempt === 2) break; // non-retryable or max attempts
         }
