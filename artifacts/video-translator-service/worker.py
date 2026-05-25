@@ -2781,7 +2781,7 @@ def synthesize_segments_cosyvoice(
                        "-t", str(duration), str(out_path))
             seg_audios.append(out_path)
             seg["_pacing"]["actual_seconds"] = round(duration, 3)
-            seg["_pacing"]["status"] = "empty_text_silence"
+            seg["_pacing"]["synth_method"] = "empty_text_silence"
             continue
 
         # Resolve which reference to use for this speaker
