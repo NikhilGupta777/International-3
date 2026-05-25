@@ -1749,9 +1749,13 @@ router.get("/result/:jobId", async (req: Request, res: Response) => {
       shareUrl: shareUrl(req, jobId),
       srtUrl,
       transcriptUrl,
+      voiceClone:        result.Item.voiceClone?.BOOL,
       voiceCloneApplied: result.Item.voiceCloneApplied?.BOOL,
-      lipSyncApplied: result.Item.lipSyncApplied?.BOOL,
-      runtime: result.Item.runtime?.S,
+      voiceCloneWarning: result.Item.voice_clone_warning?.S,
+      lipSync:           result.Item.lipSync?.BOOL,
+      lipSyncApplied:    result.Item.lipSyncApplied?.BOOL,
+      runtime:           result.Item.runtime?.S,
+      segmentCount:      result.Item.segmentCount ? parseInt(result.Item.segmentCount.N!) : undefined,
     });
   } catch (err: any) {
     console.error("[Translator] /result error:", err);
