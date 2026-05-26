@@ -232,7 +232,13 @@ function assertPublicHttpUrl(rawUrl: string): URL {
   if (host.endsWith(".internal") || host.endsWith(".local")) {
     throw new Error("fileUrl must be a public URL.");
   }
-  if (host === "[::1]" || host === "::1") {
+  if (
+    host === "[::1]" ||
+    host === "::1" ||
+    host.startsWith("fc") ||
+    host.startsWith("fd") ||
+    host.startsWith("fe80:")
+  ) {
     throw new Error("fileUrl must be a public URL.");
   }
   if (
@@ -1058,12 +1064,12 @@ async function translateSegmentsFast(segments: FastSegment[], targetLang: string
     const durationSec = Math.max(0.2, (seg.endMs - seg.startMs) / 1000);
     const maxChars = Math.max(8, Math.ceil(durationSec * 15));
     return {
-    id: i + 1,
-    text: seg.text,
-    duration_sec: Number(durationSec.toFixed(2)),
-    max_chars: maxChars,
-    prev_text: segments[i - 1]?.text ?? "",
-    next_text: segments[i + 1]?.text ?? "",
+      id: i + 1,
+      text: seg.text,
+      duration_sec: Number(durationSec.toFixed(2)),
+      max_chars: maxChars,
+      prev_text: segments[i - 1]?.text ?? "",
+      next_text: segments[i + 1]?.text ?? "",
     };
   });
   const prompt = [
