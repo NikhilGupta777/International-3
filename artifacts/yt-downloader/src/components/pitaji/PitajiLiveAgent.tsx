@@ -103,17 +103,28 @@ export default function PitajiLiveAgent() {
           pushChat(
             "info",
             evt.mode === "youtube_direct"
-              ? "Pipeline: direct YouTube watching via Gemini"
+              ? "Pipeline: direct YouTube watching via Gemini 2.5 Flash"
               : `Pipeline: audio split into ${evt.chunks ?? "?"} chunks via Vertex AI`,
           );
           break;
-        case "stage":
-          if (evt.stage === "analyzing") {
-            pushChat("thinking", "Watching the full video and extracting clips…");
+        case "stage": {
+          const evtAny = evt as { stage: string; chunk?: number; total?: number };
+          if (evtAny.stage === "downloading") {
+            pushChat("thinking", "Downloading audio from YouTube…");
+          } else if (evtAny.stage === "splitting") {
+            pushChat("thinking", "Splitting audio into chunks for analysis…");
+          } else if (evtAny.stage === "analyzing") {
+            const chunkPart =
+              evtAny.chunk && evtAny.total
+                ? ` (chunk ${evtAny.chunk} of ${evtAny.total})`
+                : "";
+            pushChat("thinking", `Watching${chunkPart} and extracting clips…`);
           } else {
-            pushChat("info", `Stage: ${evt.stage}${evt.chunk ? ` (chunk ${evt.chunk})` : ""}`);
+            const tail = evtAny.chunk ? ` (chunk ${evtAny.chunk})` : "";
+            pushChat("info", `Stage: ${evtAny.stage}${tail}`);
           }
           break;
+        }
         case "warning":
           pushChat("warn", evt.message);
           break;

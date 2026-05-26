@@ -43,8 +43,24 @@ import {
 } from "../lib/pitaji-store";
 import { isYoutubeUrl, normalizeYoutubeUrl, extractYoutubeVideoId } from "../lib/pitaji-url";
 import { setupSse, sseFlush } from "../lib/sse";
-import { analyzeYoutubeDirect } from "../lib/pitaji-analysis";
+import {
+  analyzeAudioChunkInline,
+  analyzeYoutubeDirect,
+  isLikelyDuplicateClip,
+} from "../lib/pitaji-analysis";
+import {
+  PITAJI_AUDIO_OVERLAP_SEC,
+  PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN,
+  cleanupJobTmpDir,
+  downloadAudioToTmp,
+  ensureJobTmpDir,
+  pickChunkCount,
+  probeAudioDurationSec,
+  splitAudioIntoChunks,
+  tryUnlink,
+} from "../lib/pitaji-audio-pipeline";
 import { isGeminiConfigured } from "../lib/gemini-client";
+import { join } from "path";
 
 const router: IRouter = Router();
 
@@ -187,14 +203,12 @@ router.get("/pitaji/jobs/:jobId", async (req: Request, res: Response) => {
 });
 
 // ── /analyze ──────────────────────────────────────────────────────────────
-// SSE-streaming analysis endpoint. For Phase 2 we only handle the
-// YouTube-direct path (≤ THRESHOLD_2_MIN). Long videos return a clear error
-// pointing the user at Phase 3 (audio split + Vertex AI).
-
-const PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN = Math.max(
-  1,
-  Number.parseInt(process.env.PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN ?? "40", 10) || 40,
-);
+// SSE-streaming analysis endpoint. Two paths, picked from the probed video
+// duration:
+//   * youtube_direct (≤ PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN minutes) — pass
+//     the URL straight to Gemini 2.5 Flash via fileData (Phase 2).
+//   * audio_split   (> threshold) — yt-dlp -x → ffmpeg N-way split
+//     → Vertex Gemini 2.5 Flash on each chunk via inlineData (Phase 3).
 
 function sseSend(res: Response, payload: object): void {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -337,25 +351,17 @@ router.post("/pitaji/analyze", async (req: Request, res: Response) => {
     channel: meta.channel ?? null,
   });
 
-  // Decide pipeline. Phase 2 only handles youtube_direct.
-  const durationMin =
-    typeof meta.durationSec === "number" ? meta.durationSec / 60 : 0;
-  const overThreshold = durationMin > PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN;
-  const pipelineMode = "youtube_direct" as const;
+  // Decide pipeline based on probed duration.
+  const durationSec = typeof meta.durationSec === "number" ? meta.durationSec : 0;
+  const chunkCount = durationSec > 0 ? pickChunkCount(durationSec) : 1;
+  const pipelineMode: "youtube_direct" | "audio_split" =
+    chunkCount <= 1 ? "youtube_direct" : "audio_split";
   sseSend(res, {
     type: "pipeline_choice",
     mode: pipelineMode,
-    overThreshold,
+    chunks: chunkCount > 1 ? chunkCount : undefined,
     thresholdMin: PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN,
   });
-  if (overThreshold) {
-    sseSend(res, {
-      type: "warning",
-      message:
-        `This video is longer than ${PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN} minutes. ` +
-        "We will still try direct analysis; the dedicated audio-split path is wired up in Phase 3.",
-    });
-  }
 
   // Persist meta + pipeline mode so /jobs/:id reflects them immediately.
   try {
@@ -365,12 +371,11 @@ router.post("/pitaji/analyze", async (req: Request, res: Response) => {
       durationSec: meta.durationSec,
       channel: meta.channel,
       pipelineMode,
+      chunks: chunkCount > 1 ? chunkCount : undefined,
     });
   } catch (err) {
     req_logger_warn(req, err, "Failed to update analyze job after meta probe");
   }
-
-  sseSend(res, { type: "stage", stage: "analyzing" });
 
   // Load operator clip-instructions from settings (best-effort).
   let clipInstructions = "";
@@ -383,28 +388,103 @@ router.post("/pitaji/analyze", async (req: Request, res: Response) => {
 
   const collected: PitajiClip[] = [];
   let lastFlushAt = 0;
+  const persistClip = (c: PitajiClip) => {
+    collected.push(c);
+    sseSend(res, { type: "clip", clip: c });
+    const now2 = Date.now();
+    if (now2 - lastFlushAt > 5_000) {
+      lastFlushAt = now2;
+      updateAnalyzeJob(jobId, { clips: [...collected] }).catch((err) => {
+        req_logger_warn(req, err, "Periodic clips flush failed");
+      });
+    }
+  };
 
   try {
-    const result = await analyzeYoutubeDirect({
-      youtubeUrl: normalized,
-      totalDurationSec: meta.durationSec,
-      clipInstructions,
-      signal: abortSignalFromClose(res),
-      onClip: (clip) => {
-        if (aborted) return;
-        collected.push(clip);
-        sseSend(res, { type: "clip", clip });
-        // Persist progress periodically — keeps history live during long runs.
-        const now2 = Date.now();
-        if (now2 - lastFlushAt > 5_000) {
-          lastFlushAt = now2;
-          // Fire-and-forget; failures don't break the stream.
-          updateAnalyzeJob(jobId, { clips: [...collected] }).catch((err) => {
-            req_logger_warn(req, err, "Periodic clips flush failed");
-          });
-        }
-      },
-    });
+    if (pipelineMode === "youtube_direct") {
+      sseSend(res, { type: "stage", stage: "analyzing" });
+      await analyzeYoutubeDirect({
+        youtubeUrl: normalized,
+        totalDurationSec: meta.durationSec,
+        clipInstructions,
+        signal: abortSignalFromClose(res),
+        onClip: persistClip,
+      });
+    } else {
+      // Audio-split path. All steps run inside this Lambda (yt-dlp +
+      // ffmpeg + Vertex). /tmp is cleaned up in finally.
+      const tmpDir = ensureJobTmpDir(jobId);
+      const fullAudio = join(tmpDir, "full.m4a");
+      const ctrlSignal = abortSignalFromClose(res);
+
+      sseSend(res, { type: "stage", stage: "downloading" });
+      try {
+        await downloadAudioToTmp({
+          youtubeUrl: normalized,
+          outPath: fullAudio,
+          signal: ctrlSignal,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Audio download failed";
+        throw new Error(`Audio download failed: ${message}`);
+      }
+
+      // Probe the actual duration we got — falls back to meta if probe fails.
+      let probedDuration = 0;
+      try {
+        probedDuration = await probeAudioDurationSec(fullAudio);
+      } catch (err) {
+        req_logger_warn(req, err, "ffprobe failed — using YouTube metadata duration instead");
+      }
+      const totalDurationSec = probedDuration > 0 ? probedDuration : durationSec;
+
+      sseSend(res, { type: "stage", stage: "splitting" });
+      const chunks = await splitAudioIntoChunks({
+        inPath: fullAudio,
+        outDir: tmpDir,
+        totalDurationSec,
+        chunkCount,
+        overlapSec: PITAJI_AUDIO_OVERLAP_SEC,
+        signal: ctrlSignal,
+      });
+      // Free the full-length file as soon as the chunks exist — it can be
+      // 50 MB+ and Lambda /tmp has limited room.
+      tryUnlink(fullAudio);
+
+      // Sequentially analyze each chunk so SSE events arrive in order and
+      // we can dedupe overlapping clips against the running collection.
+      for (const ch of chunks) {
+        if (ctrlSignal.aborted) break;
+        sseSend(res, {
+          type: "stage",
+          stage: "analyzing",
+          chunk: ch.index,
+          total: ch.total,
+        });
+        await analyzeAudioChunkInline({
+          chunkPath: ch.path,
+          mimeType: ch.mimeType,
+          chunkOffsetSec: ch.offsetSec,
+          chunkDurationSec: ch.durationSec,
+          totalDurationSec,
+          chunkIndex: ch.index,
+          chunkTotal: ch.total,
+          clipInstructions,
+          signal: ctrlSignal,
+          onClip: (clip) => {
+            // Dedupe clips that fall in the overlap region between
+            // adjacent chunks (Q&A or topic spanning the cut).
+            if (isLikelyDuplicateClip(clip, collected, PITAJI_AUDIO_OVERLAP_SEC)) {
+              return;
+            }
+            persistClip(clip);
+          },
+        });
+        // Drop the chunk as soon as it's analyzed — keeps /tmp usage low
+        // for very long videos with 3 chunks.
+        tryUnlink(ch.path);
+      }
+    }
 
     if (aborted) {
       try {
@@ -426,7 +506,7 @@ router.post("/pitaji/analyze", async (req: Request, res: Response) => {
 
     sseSend(res, {
       type: "summary",
-      totalClips: result.totalClips,
+      totalClips: collected.length,
       jobId,
     });
     sseSend(res, { type: "done" });
@@ -442,6 +522,9 @@ router.post("/pitaji/analyze", async (req: Request, res: Response) => {
     sseSend(res, { type: "done" });
   } finally {
     res.off("close", onClose);
+    if (pipelineMode === "audio_split") {
+      cleanupJobTmpDir(jobId);
+    }
     if (!res.writableEnded) {
       res.end();
     }
