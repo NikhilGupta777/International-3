@@ -521,7 +521,19 @@ const staticDir =
 
 if (!DISABLE_STATIC_SERVE && existsSync(staticDir)) {
   logger.info({ staticDir }, "Serving static frontend files");
-  app.use(express.static(staticDir));
+  // Hashed assets (JS/CSS) can be cached forever; index.html must always revalidate
+  app.use(express.static(staticDir, {
+    maxAge: "1y",
+    immutable: true,
+    setHeaders(res, filePath) {
+      // index.html and any non-hashed file should never be cached
+      if (filePath.endsWith(".html") || filePath.endsWith(".json")) {
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Expires", "0");
+      }
+    },
+  }));
   // SPA fallback — serve index.html for any non-/api path that doesn't
   // match a static file (handles client-side routing).
   // Explicitly exclude /api/* so API 404s still return proper JSON errors.
@@ -538,6 +550,9 @@ if (!DISABLE_STATIC_SERVE && existsSync(staticDir)) {
       return;
     }
 
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
     res.sendFile(join(staticDir, "index.html"));
   });
 } else if (!DISABLE_STATIC_SERVE) {
