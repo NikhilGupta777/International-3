@@ -8,6 +8,10 @@ import Home, { type AuthFeatures, type AuthUser } from "@/pages/Home";
 import NotFound from "@/pages/not-found";
 import { cn } from "@/lib/utils";
 import { InstallBanner } from "@/components/InstallBanner";
+import PitajiLogin from "@/pages/PitajiLogin";
+import PitajiHome from "@/pages/PitajiHome";
+import { getPitajiSession, logoutPitaji } from "@/lib/pitaji-api";
+import "@/styles/pitaji.css";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,6 +23,33 @@ const queryClient = new QueryClient({
 });
 
 const AUTH_HINT_KEY = "videomaking.authenticated";
+const WORKSPACE_KEY = "vm.workspace";
+type Workspace = "videomaking" | "pitaji";
+
+function readInitialWorkspace(): Workspace {
+  if (typeof window === "undefined") return "videomaking";
+  // 1. URL hash takes precedence so deep links work: e.g. /#pitaji
+  if (window.location.hash.replace(/^#/, "").trim().toLowerCase() === "pitaji") {
+    return "pitaji";
+  }
+  // 2. Persisted choice
+  const stored = window.localStorage.getItem(WORKSPACE_KEY);
+  if (stored === "pitaji") return "pitaji";
+  return "videomaking";
+}
+
+function setStoredWorkspace(ws: Workspace): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(WORKSPACE_KEY, ws);
+  // Keep the hash in sync so a refresh stays on the same workspace.
+  if (ws === "pitaji") {
+    if (window.location.hash !== "#pitaji") {
+      window.history.replaceState(null, "", `${window.location.pathname}#pitaji`);
+    }
+  } else if (window.location.hash === "#pitaji") {
+    window.history.replaceState(null, "", window.location.pathname);
+  }
+}
 
 type AuthConfig = {
   googleAuthEnabled: boolean;
@@ -98,6 +129,10 @@ function AuthOverlay({
 }
 
 function App() {
+  const [workspace, setWorkspace] = useState<Workspace>(readInitialWorkspace);
+  const [pitajiAuthChecked, setPitajiAuthChecked] = useState(false);
+  const [pitajiAuthed, setPitajiAuthed] = useState(false);
+  const [pitajiUser, setPitajiUser] = useState<string>("");
   const [authChecked, setAuthChecked] = useState(false);
   const [authenticated, setAuthenticated] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -306,11 +341,87 @@ function App() {
     }
   };
 
+  // ── Pita Ji workspace session probe ────────────────────────────────────────
+  // Independent from the VideoMaking auth flow. Only runs when the user is
+  // currently in the Pita Ji workspace; otherwise the probe is skipped to avoid
+  // an extra request on every cold load of the main app.
+  useEffect(() => {
+    if (workspace !== "pitaji") {
+      setPitajiAuthChecked(false);
+      return;
+    }
+    let mounted = true;
+    (async () => {
+      try {
+        const session = await getPitajiSession();
+        if (!mounted) return;
+        if (session.authenticated) {
+          setPitajiAuthed(true);
+          setPitajiUser(session.user?.username ?? "pitaji");
+        } else {
+          setPitajiAuthed(false);
+          setPitajiUser("");
+        }
+      } catch {
+        if (mounted) {
+          setPitajiAuthed(false);
+          setPitajiUser("");
+        }
+      } finally {
+        if (mounted) setPitajiAuthChecked(true);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [workspace]);
+
+  const switchWorkspace = (next: Workspace) => {
+    setStoredWorkspace(next);
+    setWorkspace(next);
+  };
+
+  const handlePitajiLoggedIn = (username: string) => {
+    setPitajiUser(username);
+    setPitajiAuthed(true);
+  };
+
+  const handlePitajiLogout = async () => {
+    try {
+      await logoutPitaji();
+    } catch {
+      // local state below is authoritative
+    } finally {
+      setPitajiAuthed(false);
+      setPitajiUser("");
+    }
+  };
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <div className="relative h-full w-full">
-          {!authChecked ? (
+          {workspace === "pitaji" ? (
+            !pitajiAuthChecked ? (
+              <AuthOverlay
+                eyebrow="Pita Ji Live"
+                title="Loading workspace"
+                subtitle="Verifying session..."
+                compact
+              />
+            ) : pitajiAuthed ? (
+              <PitajiHome
+                username={pitajiUser}
+                onLogout={handlePitajiLogout}
+                onSwitchWorkspace={() => switchWorkspace("videomaking")}
+              />
+            ) : (
+              <PitajiLogin
+                onAuthenticated={handlePitajiLoggedIn}
+                onSwitchWorkspace={() => switchWorkspace("videomaking")}
+              />
+            )
+          ) : !authChecked ? (
             <AuthOverlay
               eyebrow="Secure Access"
               title="Loading VideoMaking Studio"
@@ -363,6 +474,14 @@ function App() {
                   {googleSubmitting ? <p className="auth-help">Checking Google approval...</p> : null}
                 </div>
               ) : null}
+
+              <button
+                type="button"
+                className="pj-workspace-switcher"
+                onClick={() => switchWorkspace("pitaji")}
+              >
+                Open Pita Ji Live workspace →
+              </button>
             </AuthOverlay>
           )}
         </div>

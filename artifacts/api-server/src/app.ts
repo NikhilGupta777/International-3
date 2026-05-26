@@ -463,6 +463,13 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     next();
     return;
   }
+  // Pita Ji workspace has its own independent auth scope (pitaji_auth cookie).
+  // The pitaji router enforces its own gating internally — bypass the
+  // videomaking_auth check here so the two workspaces never share sessions.
+  if (req.path.startsWith("/pitaji/") || req.path === "/pitaji") {
+    next();
+    return;
+  }
   if (req.path.startsWith("/admin/")) {
     if (!ADMIN_PANEL_ENABLED) {
       res.status(404).json({ error: "Admin panel is not enabled" });

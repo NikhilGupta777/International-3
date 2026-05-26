@@ -11,6 +11,7 @@ import agentRouter from "./agent";
 import translatorRouter from "./translator";
 import adminRouter from "./admin";
 import notebookRouter from "./notebook";
+import pitajiRouter from "./pitaji";
 
 const router: IRouter = Router();
 
@@ -26,5 +27,6 @@ router.use(agentRouter);
 router.use("/translator", translatorRouter);
 router.use("/admin", adminRouter);
 router.use(notebookRouter);
+router.use(pitajiRouter);
 
 export default router;
