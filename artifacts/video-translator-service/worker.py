@@ -532,8 +532,11 @@ def transcribe(audio_path: Path) -> list[dict]:
     transcriber = aai.Transcriber()
     config_args = {"speaker_labels": MULTI_SPEAKER}
 
-    if SOURCE_LANG != "auto" and SOURCE_LANG in ASSEMBLYAI_LANG_MAP:
-        config_args["language_code"] = ASSEMBLYAI_LANG_MAP[SOURCE_LANG]
+    # Use the resolved language code (not display name) for the AssemblyAI lookup.
+    # SOURCE_LANG may be a display name like "English"; SOURCE_LANG_CODE is "en".
+    _src_code = SOURCE_LANG_CODE or SOURCE_LANG.lower().strip()
+    if SOURCE_LANG != "auto" and _src_code in ASSEMBLYAI_LANG_MAP:
+        config_args["language_code"] = ASSEMBLYAI_LANG_MAP[_src_code]
     else:
         config_args["language_detection"] = True
 
@@ -568,7 +571,7 @@ def transcribe(audio_path: Path) -> list[dict]:
             text = " ".join(w["word"] for w in cur_words).strip()
             if text:
                 entry: dict = {
-                    "id": len(segs),
+                    "id": len(segs) + 1,
                     "start": seg_start_t,
                     "end": end_t,
                     "text": text,
@@ -601,6 +604,15 @@ def transcribe(audio_path: Path) -> list[dict]:
             flush(cur_words[-1]["end"])
         return segs
 
+    # Lightweight adapter so utterance words (dicts) can be passed to
+    # _build_segments_from_words which expects objects with .text/.start/.end.
+    class _WordAdapter:
+        __slots__ = ("text", "start", "end")
+        def __init__(self, d: dict):
+            self.text  = d["word"]
+            self.start = int(d["start"] * 1000)
+            self.end   = int(d["end"]   * 1000)
+
     # ── Path A: multi-speaker via AssemblyAI utterances ───────────────────────
     # When speaker_labels=True AssemblyAI returns utterances each tagged with a
     # speaker letter ('A', 'B', ...).  Use these directly — this is far more
@@ -626,20 +638,15 @@ def transcribe(audio_path: Path) -> list[dict]:
             ]
 
             if utt_words:
-                class _FakeWord:
-                    def __init__(self, d):
-                        self.text  = d["word"]
-                        self.start = int(d["start"] * 1000)
-                        self.end   = int(d["end"]   * 1000)
                 sub = _build_segments_from_words(
-                    [_FakeWord(w) for w in utt_words], speaker_label=speaker
+                    [_WordAdapter(w) for w in utt_words], speaker_label=speaker
                 )
                 for s in sub:
-                    s["id"] = len(segments)
+                    s["id"] = len(segments) + 1
                     segments.append(s)
             else:
                 segments.append({
-                    "id":      len(segments),
+                    "id":      len(segments) + 1,
                     "start":   utt_start,
                     "end":     utt_end,
                     "text":    text,
@@ -677,20 +684,15 @@ def transcribe(audio_path: Path) -> list[dict]:
             ]
 
             if utt_words:
-                class _FakeWord2:
-                    def __init__(self, d):
-                        self.text  = d["word"]
-                        self.start = int(d["start"] * 1000)
-                        self.end   = int(d["end"]   * 1000)
                 sub = _build_segments_from_words(
-                    [_FakeWord2(w) for w in utt_words], speaker_label="SPEAKER_A"
+                    [_WordAdapter(w) for w in utt_words], speaker_label="SPEAKER_A"
                 )
                 for s in sub:
-                    s["id"] = len(segments)
+                    s["id"] = len(segments) + 1
                     segments.append(s)
             else:
                 segments.append({
-                    "id":      len(segments),
+                    "id":      len(segments) + 1,
                     "start":   utt_start,
                     "end":     utt_end,
                     "text":    text,
@@ -3273,12 +3275,14 @@ def synthesize_gtts_single(seg: dict, out_dir: Path) -> Path:
     out_path = out_dir / f"seg_{seg['id']:04d}_gtts.mp3"
     wav_path = out_path.with_suffix(".wav")
     gtts_lang = GTTS_LANG_MAP.get(TARGET_LANG_CODE, TARGET_LANG_CODE)
-    gTTS(text=normalize_tts_pronunciation(seg["translated_text"]), lang=gtts_lang).save(str(out_path))
+    text = normalize_tts_pronunciation(seg.get("tts_text") or seg.get("translated_text") or "")
+    gTTS(text=text, lang=gtts_lang).save(str(out_path))
     run_ffmpeg("-i", str(out_path), "-ar", "24000", "-ac", "1", str(wav_path))
     return wav_path
 
 def synthesize_silence_single(seg: dict, out_dir: Path) -> Path:
     """Last-resort segment fallback so one bad TTS segment does not fail the video."""
+    seg.setdefault("_pacing", {})["synth_method"] = "fallback_silence"
     out_path = out_dir / f"seg_{seg['id']:04d}_silence.wav"
     duration = max(0.25, float(seg.get("end", 0)) - float(seg.get("start", 0)))
     run_ffmpeg("-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(duration), str(out_path))

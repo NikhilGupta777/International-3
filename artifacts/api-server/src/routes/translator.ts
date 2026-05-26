@@ -52,7 +52,7 @@ const BATCH_JOB_DEF = process.env.TRANSLATOR_BATCH_JOB_DEFINITION!;
 // CPU Fargate queue — used for Neural Voice (no GPU) jobs.
 // Falls back to GPU queue if not configured.
 const CPU_BATCH_QUEUE   = process.env.TRANSLATOR_CPU_BATCH_JOB_QUEUE ?? "";
-const CPU_BATCH_JOB_DEF = process.env.TRANSLATOR_CPU_BATCH_JOB_DEFINITION ?? "";;
+const CPU_BATCH_JOB_DEF = process.env.TRANSLATOR_CPU_BATCH_JOB_DEFINITION ?? "";
 const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? "";
 const GEMINI_KEY_2 = process.env.GEMINI_API_KEY_2 ?? "";
 const GEMINI_KEY_3 = process.env.GEMINI_API_KEY_3 ?? "";
@@ -1261,6 +1261,34 @@ async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> 
   }
 }
 
+async function createTranslatorJobRecord(jobId: string, s3Key: string, options: TranslatorOptions, ownerId: string): Promise<void> {
+  const now = Date.now();
+  await ddb.send(new PutItemCommand({
+    TableName: DDB_TABLE,
+    ConditionExpression: "attribute_not_exists(jobId)",
+    Item: {
+      jobId:       { S: jobId },
+      type:        { S: "translator" },
+      status:      { S: "QUEUED" },
+      progress:    { N: "0" },
+      step:        { S: isLambdaFastCandidate(options) ? "Queued for fast Lambda translation..." : "Job queued, waiting for worker..." },
+      s3InputKey:  { S: s3Key },
+      filename:    { S: options.filename },
+      targetLang:  { S: options.targetLang },
+      targetLangCode: { S: options.targetLangCode },
+      sourceLang:  { S: options.sourceLang },
+      ownerId:     { S: ownerId },
+      voiceClone:  { BOOL: options.voiceClone },
+      lipSync:     { BOOL: options.lipSync },
+      useDemucs:   { BOOL: options.useDemucs },
+      multiSpeaker: { BOOL: options.multiSpeaker },
+      runtime:     { S: isLambdaFastCandidate(options) ? "lambda-fast" : "batch" },
+      createdAt:   { N: String(now) },
+      updatedAt:   { N: String(now) },
+    },
+  }));
+}
+
 async function startTranslatorJob(jobId: string, s3Key: string, options: TranslatorOptions): Promise<{ runtime: string; batchJobId?: string }> {
   // Neural Voice (no GPU): route to CPU Fargate Batch queue for actual edge-tts dubbing.
   // The CPU worker runs worker.py with VOICE_CLONE=false — uses edge-tts, no CosyVoice.
@@ -1336,7 +1364,6 @@ router.post("/submit", async (req: Request, res: Response) => {
     }
     await assertUploadedTranslatorObject(String(jobId), String(s3Key));
 
-    const now = Date.now();
     const resolvedLipSync = resolveRequestedLipSync(req, res, lipSync);
     const options: TranslatorOptions = {
       targetLang: String(targetLang),
@@ -1353,31 +1380,7 @@ router.post("/submit", async (req: Request, res: Response) => {
       filename: typeof filename === "string" && filename.trim() ? filename.trim() : "video.mp4",
     };
 
-    // Create DynamoDB job record
-    await ddb.send(new PutItemCommand({
-      TableName: DDB_TABLE,
-      ConditionExpression: "attribute_not_exists(jobId)",
-      Item: {
-        jobId:       { S: jobId },
-        type:        { S: "translator" },
-        status:      { S: "QUEUED" },
-        progress:    { N: "0" },
-        step:        { S: isLambdaFastCandidate(options) ? "Queued for fast Lambda translation..." : "Job queued, waiting for worker..." },
-        s3InputKey:  { S: s3Key },
-        filename:    { S: options.filename },
-        targetLang:  { S: options.targetLang },
-        targetLangCode: { S: options.targetLangCode },
-        sourceLang:  { S: options.sourceLang },
-        ownerId:     { S: ownerId },
-        voiceClone:  { BOOL: options.voiceClone },
-        lipSync:     { BOOL: options.lipSync },
-        useDemucs:   { BOOL: options.useDemucs },
-        multiSpeaker: { BOOL: options.multiSpeaker },
-        runtime:     { S: isLambdaFastCandidate(options) ? "lambda-fast" : "batch" },
-        createdAt:   { N: String(now) },
-        updatedAt:   { N: String(now) },
-      },
-    }));
+    await createTranslatorJobRecord(jobId, s3Key, options, ownerId);
 
     const started = await startTranslatorJob(jobId, s3Key, options);
     return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED", lipsyncWarning: resolvedLipSync.warning });
@@ -1453,31 +1456,7 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
       await rm(tempDir, { recursive: true, force: true }).catch(() => {});
     }
 
-    const now = Date.now();
-    await ddb.send(new PutItemCommand({
-      TableName: DDB_TABLE,
-      ConditionExpression: "attribute_not_exists(jobId)",
-      Item: {
-        jobId:       { S: jobId },
-        type:        { S: "translator" },
-        status:      { S: "QUEUED" },
-        progress:    { N: "0" },
-        step:        { S: isLambdaFastCandidate(options) ? "Queued for fast Lambda translation..." : "Job queued, waiting for worker..." },
-        s3InputKey:  { S: s3Key },
-        filename:    { S: options.filename },
-        targetLang:  { S: options.targetLang },
-        targetLangCode: { S: options.targetLangCode },
-        sourceLang:  { S: options.sourceLang },
-        ownerId:     { S: ownerId },
-        voiceClone:  { BOOL: options.voiceClone },
-        lipSync:     { BOOL: options.lipSync },
-        useDemucs:   { BOOL: options.useDemucs },
-        multiSpeaker: { BOOL: options.multiSpeaker },
-        runtime:     { S: isLambdaFastCandidate(options) ? "lambda-fast" : "batch" },
-        createdAt:   { N: String(now) },
-        updatedAt:   { N: String(now) },
-      },
-    }));
+    await createTranslatorJobRecord(jobId, s3Key, options, ownerId);
 
     const started = await startTranslatorJob(jobId, s3Key, options);
     return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED", lipsyncWarning: resolvedLipSync.warning });
@@ -1493,7 +1472,6 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
 // ── GET /status/:jobId ────────────────────────────────────────────────────────
 // Reads real-time job status from DynamoDB (updated by the Python worker).
 router.get("/status/:jobId", async (req: Request, res: Response) => {
-
   try {
     const jobId = String(req.params.jobId);
 
@@ -1541,8 +1519,8 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
   }
 });
 
-// ── GET /result/:jobId ────────────────────────────────────────────────────────
-// Returns presigned GET URLs for the final output files.
+// ── GET /history ─────────────────────────────────────────────────────────────
+// Returns paginated list of translator jobs for the current user.
 router.get("/history", async (req: Request, res: Response) => {
   try {
     const ownerId = getRequesterId(req);

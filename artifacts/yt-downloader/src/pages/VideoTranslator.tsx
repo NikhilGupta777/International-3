@@ -993,7 +993,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         )}
 
         <>
-          <>
+          {!isProcessing && <>
             {/* Drop zone */}
             <DropZone onFile={setFile} disabled={uploading} />
             {file && (
@@ -1154,7 +1154,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             >
               {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploading...</> : <><Languages className="w-5 h-5" /> Translate Video</>}
             </button>
-          </>
+          </>}
         </>
 
         {jobId && (
