@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Send, Bot, User, Loader2, CheckCircle, ChevronRight,
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
-  ArrowLeft, Pencil, Share2, MoreHorizontal, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
+  ArrowLeft, Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
   ImagePlus, Music2, Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -116,11 +116,11 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
   timestamps: <AlarmClock className="w-3.5 h-3.5" />, upload: <UploadCloud className="w-3.5 h-3.5" />,
 };
 const STARTERS = [
-  { icon: <Scissors className="w-4 h-4" />, text: "Cut a clip from 5:32 to 6:23" },
-  { icon: <Sparkles className="w-4 h-4" />, text: "Find the best clips from this video" },
-  { icon: <Captions className="w-4 h-4" />, text: "Generate Hindi subtitles for a video" },
-  { icon: <AlarmClock className="w-4 h-4" />, text: "Create chapter timestamps" },
-  { icon: <Download className="w-4 h-4" />, text: "Download this YouTube video in 1080p" },
+  { icon: <Scissors className="w-4 h-4" />, text: "Cut a clip from a YouTube video" },
+  { icon: <Sparkles className="w-4 h-4" />, text: "Find the best clips from a YouTube video" },
+  { icon: <Captions className="w-4 h-4" />, text: "Generate subtitles for a YouTube video" },
+  { icon: <AlarmClock className="w-4 h-4" />, text: "Create chapter timestamps for a video" },
+  { icon: <Download className="w-4 h-4" />, text: "Download a YouTube video in 1080p" },
   { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
 
@@ -129,10 +129,7 @@ function clientStripTags(text: string): string {
   return text
     .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
     .replace(/\[THOUGHT\][\s\S]*?\[\/THOUGHT\]/gi, "")
-    .replace(/\[RESPONSE\][\s\S]*?\[\/RESPONSE\]/gi, "")
-    .replace(/\[JUDGE\][\s\S]*?\[\/JUDGE\]/gi, "")
-    .replace(/^\[THOUGHT\].*$/gim, "")
-    .replace(/^\[RESPONSE\].*$/gim, "")
+    .replace(/\[\/?RESPONSE\]/gi, "")
     .replace(/^\[JUDGE\].*$/gim, "")
     .replace(/^\[PLAN\].*$/gim, "")
     .replace(/^\[EXECUTE\].*$/gim, "")
@@ -345,7 +342,7 @@ function TextArtifact({ label, content }: { label: string; content: string }) {
         <span className="text-xs font-semibold text-white/70">{label}</span>
         <button onClick={copyText} className="text-[10px] text-white/40 hover:text-white/80 px-2 py-0.5 rounded bg-white/6">{copied ? "✓ Copied" : "Copy"}</button>
       </div>
-      <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-48 whitespace-pre-wrap">{content}</pre>
+      <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-80 whitespace-pre-wrap">{content}</pre>
     </div>
   );
 }
@@ -483,6 +480,34 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
   );
 }
 
+// ── Error Boundary ───────────────────────────────────────────────────────────
+class CopilotErrorBoundary extends React.Component<
+  { children: React.ReactNode; onReset?: () => void },
+  { hasError: boolean; error?: Error }
+> {
+  state = { hasError: false, error: undefined as Error | undefined };
+  static getDerivedStateFromError(error: Error) { return { hasError: true, error }; }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="copilot-wrap flex items-center justify-center">
+          <div className="text-center px-6 py-8 max-w-sm">
+            <p className="text-white/80 text-sm font-semibold mb-2">Something went wrong</p>
+            <p className="text-white/40 text-xs mb-4">{this.state.error?.message ?? "An unexpected error occurred"}</p>
+            <button
+              onClick={() => { this.setState({ hasError: false, error: undefined }); this.props.onReset?.(); }}
+              className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-white/70 text-xs font-medium transition-colors"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ── Main StudioCopilot ────────────────────────────────────────────────────────
 export function StudioCopilot({
   onNavigate,
@@ -513,6 +538,8 @@ export function StudioCopilot({
     try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch { }
   }, [ultra]);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const userIsNearBottom = useRef(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -652,6 +679,7 @@ export function StudioCopilot({
   const sessionIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
   const lastUserTextRef = useRef<string>("");
+  const lastUserAttachmentsRef = useRef<Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>>([]);
 
 
   // Load sessions on mount
@@ -665,8 +693,16 @@ export function StudioCopilot({
 
   useEffect(() => { sessionIdRef.current = currentSessionId; }, [currentSessionId]);
   useEffect(() => { messagesRef.current = currentMessages; }, [currentMessages]);
-  useEffect(() => { if (sessions.length > 0) saveSessions(sessions); }, [sessions]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [currentMessages]);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (sessions.length === 0) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => saveSessions(sessions), 500);
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
+  }, [sessions]);
+  useEffect(() => {
+    if (userIsNearBottom.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [currentMessages]);
   // Editable session title state
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -708,6 +744,8 @@ export function StudioCopilot({
     if ((!text.trim() && snapshotAttachments.length === 0) || streaming) return;
     const sessionId = ensureSession();
     setInput("");
+    // Keep preview object URLs alive here because persisted message bubbles and retry flows
+    // may still reference `previewUrl` after send. Revoke them only when those consumers are removed.
     setPendingAttachments([]);
     setSuggestions([]); // clear suggestions on new send
     const userMsgId = crypto.randomUUID();
@@ -740,12 +778,15 @@ export function StudioCopilot({
     setAgentStage("planning");
     setPasteUrl(null); // dismiss paste pill when message is sent
     lastUserTextRef.current = text; // track for retry
+    lastUserAttachmentsRef.current = snapshotAttachments;
     abortRef.current = new AbortController();
 
     // Build history — include completed tool results as text so the agent
     // has full multi-turn memory of what tools ran and what they returned.
-    const history = [...(messagesRef.current), { id: userMsgId, role: "user" as const, parts: userParts, timestamp: new Date() }]
-      .map(m => {
+    const allMsgs = [...(messagesRef.current), { id: userMsgId, role: "user" as const, parts: userParts, timestamp: new Date() }];
+    const history = allMsgs
+      .map((m, idx) => {
+        const isLatestUserMsg = idx === allMsgs.length - 1;
         const textParts = m.parts
           .filter((p: any) => p.kind === "text")
           .map((p: any) => p.content)
@@ -781,10 +822,17 @@ export function StudioCopilot({
             .join("\n")
           : "";
         const content = [textParts, toolSummary, artifactSummary].filter(Boolean).join("\n").trim();
+        // Only include full attachment data (base64 images) for the latest user message.
+        // Older messages get a lightweight reference to avoid huge payloads.
         const msgAttachments = m.role === "user"
           ? m.parts
             .filter((p: any) => p.kind === "attachment")
-            .map((p: any) => ({ type: p.type, name: p.name, mimeType: p.mimeType, data: p.data, url: p.url }))
+            .map((p: any) => {
+              if (!isLatestUserMsg && p.type === "image") {
+                return { type: p.type, name: p.name, mimeType: p.mimeType };
+              }
+              return { type: p.type, name: p.name, mimeType: p.mimeType, data: p.data, url: p.url };
+            })
           : undefined;
         return { role: m.role === "user" ? "user" as const : "model" as const, content, ...(msgAttachments ? { attachments: msgAttachments } : {}) };
       })
@@ -1042,13 +1090,25 @@ export function StudioCopilot({
     };
   }, []);
 
+  const detectVoiceLang = (): string => {
+    const recentText = currentMessages.slice(-6)
+      .filter(m => m.role === "user")
+      .flatMap(m => m.parts.filter(p => p.kind === "text").map(p => (p as any).content as string))
+      .join(" ");
+    // Detect Devanagari script or common Hindi/Hinglish patterns
+    if (/[ऀ-ॿ]/.test(recentText) || /\b(kya|hai|ka|ke|ki|mein|ko|bhi|nahi|yeh|woh|karo|haan|nahi|video|bhai)\b/i.test(recentText)) {
+      return "hi-IN";
+    }
+    return "en-US";
+  };
+
   const toggleVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) return;
     if (listening) { recognitionRef.current?.stop(); setListening(false); return; }
     const r = new SR();
     recognitionRef.current = r;
-    r.continuous = false; r.interimResults = false; r.lang = "en-US";
+    r.continuous = false; r.interimResults = false; r.lang = detectVoiceLang();
     r.onresult = (ev: any) => { setInput(p => p + (p ? " " : "") + (ev.results[0]?.[0]?.transcript ?? "")); setListening(false); };
     r.onend = () => setListening(false);
     r.onerror = () => setListening(false);
@@ -1071,9 +1131,14 @@ export function StudioCopilot({
   };
 
   const handleShare = () => {
-    const url = window.location.href;
+    const textParts = currentMessages
+      .filter(m => m.role === "user")
+      .flatMap(m => m.parts.filter(p => p.kind === "text").map(p => (p as any).content as string))
+      .slice(0, 5);
+    const summary = textParts.length > 0 ? textParts.join("\n") : window.location.href;
     if (navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(url);
+      void navigator.clipboard.writeText(summary);
+      toast({ title: "Copied to clipboard", description: "Chat summary copied" });
     }
   };
 
@@ -1085,6 +1150,7 @@ export function StudioCopilot({
   };
 
   return (
+    <CopilotErrorBoundary onReset={handleNewChat}>
     <div className="copilot-wrap">
       {/* ── Genspark Header ── */}
       <div className="gs-chat-header">
@@ -1155,9 +1221,6 @@ export function StudioCopilot({
           >
             <SquarePen className="w-4 h-4" />
           </button>
-          <button className="gs-chat-icon-btn" title="More" aria-label="More options">
-            <MoreHorizontal className="w-4 h-4" />
-          </button>
         </div>
       </div>
 
@@ -1199,7 +1262,7 @@ export function StudioCopilot({
             Super Agent
             <span className="gs-welcome-dot" aria-hidden="true" />
           </h1>
-          <p className="gs-welcome-sub">Ask anything — I can plan, run tools, and build for you.</p>
+          <p className="gs-welcome-sub">Download, clip, subtitle, translate, and analyze YouTube videos — or ask anything.</p>
           <div className="gs-welcome-starters">
             {STARTERS.map((s, i) => (
               <button
@@ -1217,13 +1280,17 @@ export function StudioCopilot({
 
       {/* ── Messages ── */}
       {!isEmpty && (
-        <div className="flex-1 overflow-y-auto px-4 py-4 copilot-messages">
+        <div className="flex-1 overflow-y-auto px-4 py-4 copilot-messages" ref={messagesContainerRef}
+          onScroll={() => {
+            const el = messagesContainerRef.current;
+            if (el) userIsNearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+          }}>
           <div className="agent-msg-col">
             <AnimatePresence initial={false}>
               {currentMessages.map((msg, idx) => {
                 const isLastAssistant = msg.role === "assistant" && idx === currentMessages.length - 1;
                 const handleRetry = isLastAssistant && lastUserTextRef.current
-                  ? () => void sendMessage(lastUserTextRef.current)
+                  ? () => void sendMessage(lastUserTextRef.current, lastUserAttachmentsRef.current.length > 0 ? lastUserAttachmentsRef.current : undefined)
                   : undefined;
                 return <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} />;
               })}
@@ -1371,10 +1438,10 @@ export function StudioCopilot({
                       {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
                       <span>Upload Files</span>
                     </button>
-                    <button type="button" className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                    <button type="button" className="gs-plus-menu-item"
+                      onClick={() => { setInput("Create an image: "); setShowPlusMenu(false); }}>
                       <ImagePlus className="w-4 h-4" />
-                      <span>Create Images</span>
-                      <span className="gs-plus-menu-badge">Soon</span>
+                      <span>Create Image</span>
                     </button>
                     <button type="button" className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
                       <Music2 className="w-4 h-4" />
@@ -1441,5 +1508,6 @@ export function StudioCopilot({
         </form>
       </div>
     </div>
+    </CopilotErrorBoundary>
   );
 }

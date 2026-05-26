@@ -1023,7 +1023,9 @@ async function readAttachmentText(req: any): Promise<{ content: string; name: st
     return { content, name: attachment.name, mimeType: attachment.mimeType };
   }
   if (url) {
-    const r = await fetch(url);
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 30000);
+    const r = await fetch(url, { signal: ac.signal }).finally(() => clearTimeout(timer));
     if (!r.ok) throw new Error(`Could not read uploaded file: ${r.status}`);
     const contentType = r.headers.get("content-type") ?? attachment.mimeType;
     if (contentType.includes("pdf")) {
@@ -1147,9 +1149,25 @@ function htmlToReadableText(html: string): string {
     .trim();
 }
 
+function isInternalHost(hostname: string): boolean {
+  // Block AWS metadata, loopback, and private RFC-1918 ranges
+  if (hostname === "localhost" || hostname === "[::1]") return true;
+  const parts = hostname.split(".").map(Number);
+  if (parts.length === 4 && parts.every(n => n >= 0 && n <= 255)) {
+    if (parts[0] === 127) return true;                              // 127.x.x.x
+    if (parts[0] === 10) return true;                               // 10.x.x.x
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16-31.x.x
+    if (parts[0] === 192 && parts[1] === 168) return true;         // 192.168.x.x
+    if (parts[0] === 169 && parts[1] === 254) return true;         // 169.254.x.x (AWS metadata)
+    if (parts[0] === 0) return true;                                // 0.x.x.x
+  }
+  return false;
+}
+
 async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ title?: string; finalUrl: string; contentType: string; text: string }> {
   const parsed = new URL(url);
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http/https URLs can be read.");
+  if (isInternalHost(parsed.hostname)) throw new Error("Cannot read internal/private network URLs.");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
@@ -1672,24 +1690,34 @@ async function executeTool(
         return sub;
       };
 
+      // Phase 1: metadata first (needed by SEO pack)
       await runStep("get_video_info", { url });
-      await runStep("download_video", { url, quality });
-      await runStep("analyze_youtube_video", {
-        url,
-        question: `Summarize this video for a creator. Include key points, emotional hooks, reusable quotes, and content opportunities.${args.instructions ? ` Focus: ${args.instructions}` : ""}`,
-      });
-      await runStep("generate_timestamps", { url });
-      await runStep("generate_seo_pack", {
-        topic: results.get_video_info?.title ?? url,
-        audience: args.instructions ?? "YouTube audience",
-      });
-      try {
-        await runStep("get_youtube_captions", { url, language });
-      } catch (err: any) {
-        results.get_youtube_captions = { error: err?.message ?? "Direct captions unavailable" };
-        await runStep("generate_subtitles", { url, language });
+
+      // Phase 2: run independent heavy tasks in parallel
+      const phase2 = await Promise.allSettled([
+        runStep("download_video", { url, quality }),
+        runStep("analyze_youtube_video", {
+          url,
+          question: `Summarize this video for a creator. Include key points, emotional hooks, reusable quotes, and content opportunities.${args.instructions ? ` Focus: ${args.instructions}` : ""}`,
+        }),
+        runStep("generate_timestamps", { url }),
+        runStep("generate_seo_pack", {
+          topic: results.get_video_info?.title ?? url,
+          audience: args.instructions ?? "YouTube audience",
+        }),
+        (async () => {
+          try {
+            await runStep("get_youtube_captions", { url, language });
+          } catch (err: any) {
+            results.get_youtube_captions = { error: err?.message ?? "Direct captions unavailable" };
+            await runStep("generate_subtitles", { url, language });
+          }
+        })(),
+        runStep("find_best_clips", { url, instructions: args.instructions ?? "" }),
+      ]);
+      for (const r of phase2) {
+        if (r.status === "rejected") console.warn(`[agent] full_package step failed: ${r.reason?.message ?? r.reason}`);
       }
-      await runStep("find_best_clips", { url, instructions: args.instructions ?? "" });
 
       return {
         result: { completed: true, results, artifactCount: artifacts.length },
