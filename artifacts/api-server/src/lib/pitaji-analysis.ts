@@ -2,11 +2,11 @@
 //
 // Two paths:
 //   * analyzeYoutubeDirect — Phase 2: pass the canonical YouTube watch URL
-//     to Gemini 2.5 Flash via `fileData` (same trick used by the existing
+//     to Gemini Flash via `fileData` (same trick used by the existing
 //     agent + youtube routes). Used when the video is at or below the
 //     PITAJI_AUDIO_CHUNK_2_THRESHOLD_MIN minutes threshold.
 //   * analyzeAudioChunkInline — Phase 3: read a chunked audio m4a file
-//     from /tmp, pass it as base64 inlineData to Vertex Gemini 2.5 Flash.
+//     from /tmp, pass it as base64 inlineData to Vertex Gemini Flash.
 //     Each chunk's prompt is told its offset in the original video so the
 //     model returns chunk-relative timestamps; the caller re-bases them.
 //
