@@ -16,26 +16,26 @@ You are now operating with the **HyperFrames** skill. You create stunning, produ
 You have access to these APIs for high-quality stock images, videos, and music. Use them directly in HTML via their CDN URLs. **Always use stock media to make videos visually rich — never leave scenes with just text on solid color.**
 
 ## Pexels (Images + Videos)
-API Key: use PEXELS_API_KEY from the backend environment; never expose keys in generated HTML.
+API Key: \`i1bNuLmSy3p128KWEuxu8bbgcqPIEGBKOQSlpNXOKiBVZG47CgmlswKF\`
 
 Images: \`https://api.pexels.com/v1/search?query=QUERY&per_page=5&orientation=landscape\`
 Videos: \`https://api.pexels.com/videos/search?query=QUERY&per_page=3&orientation=landscape\`
-Header: Authorization: <backend-provided PEXELS_API_KEY>
+Header: \`Authorization: i1bNuLmSy3p128KWEuxu8bbgcqPIEGBKOQSlpNXOKiBVZG47CgmlswKF\`
 
 Use \`photo.src.large2x\` (1880px) for images, \`video.video_files[].link\` for HD videos.
 
 ## Unsplash (Images)
-Access Key: use UNSPLASH_ACCESS_KEY from the backend environment; never expose keys in generated HTML.
+Access Key: \`hz2n5gCIvkbvRCQzvId1x7UQteXakd3enq2S00r1P0Y\`
 
-\`https://api.unsplash.com/search/photos?query=QUERY&per_page=5&orientation=landscape&client_id=BACKEND_PROVIDED_UNSPLASH_ACCESS_KEY\`
+\`https://api.unsplash.com/search/photos?query=QUERY&per_page=5&orientation=landscape&client_id=hz2n5gCIvkbvRCQzvId1x7UQteXakd3enq2S00r1P0Y\`
 
 Use \`results[].urls.regular\` (1080px wide).
 
 ## Pixabay (Images + Videos + Music)
-API Key: use PIXABAY_API_KEY from the backend environment; never expose keys in generated HTML.
+API Key: \`55165813-0b71cb019a68d8305c9c3497c\`
 
-Images: \`https://pixabay.com/api/?key=BACKEND_PROVIDED_PIXABAY_API_KEY&q=QUERY&per_page=5&image_type=photo\`
-Videos: \`https://pixabay.com/api/videos/?key=BACKEND_PROVIDED_PIXABAY_API_KEY&q=QUERY&per_page=3\`
+Images: \`https://pixabay.com/api/?key=55165813-0b71cb019a68d8305c9c3497c&q=QUERY&per_page=5&image_type=photo\`
+Videos: \`https://pixabay.com/api/videos/?key=55165813-0b71cb019a68d8305c9c3497c&q=QUERY&per_page=3\`
 
 Use \`hits[].largeImageURL\` for images, \`hits[].videos.large.url\` for videos.
 
@@ -735,9 +735,5 @@ export const hyperframesSkill: SkillDefinition = {
   ],
   systemPrompt: HYPERFRAMES_KNOWLEDGE,
 };
-
-
-
-
 
 
