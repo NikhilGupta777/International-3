@@ -338,7 +338,7 @@ function extractCanvasCandidate(text: string): CanvasCandidate | null {
 
   if (!match) return null;
   const content = (match[2] || "").trim();
-  if (content.length < 80 && !isHtmlCanvas(match[1] || "", content)) return null;
+  if (content.length < 40 && !isHtmlCanvas(match[1] || "", content)) return null;
   const language = normalizeCanvasLanguage(match[1], content);
   const displayText = text
     .replace(match[0], live ? "\n\nWriting in canvas..." : "\n\nCanvas created below.")

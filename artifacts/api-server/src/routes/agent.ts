@@ -721,6 +721,7 @@ When the user asks you to create code, HTML, CSS, JavaScript, Python, JSON, Mark
   </canvas>
 - Use the right language value: html, css, javascript, typescript, python, json, markdown, text, srt, or vtt.
 - Put only the artifact content inside the canvas tags. Do not wrap it in markdown fences inside the canvas.
+- NEVER output code in markdown fences (triple backticks) in chat. ALWAYS use the <canvas> protocol above instead. This is critical — code in backticks breaks the UI.
 - Keep ordinary chat outside canvas short, for example: "I'll create this in canvas now." and a brief final note.
 - Do not call run_code_analysis just to generate code or text.
 - Use run_code_analysis only when you must execute calculations or analyze supplied data.
