@@ -1764,24 +1764,7 @@ export function StudioCopilot({
               ))}
             </div>
           )}
-          {/* Active skill chips above textarea */}
-          {activeSkills.length > 0 && (
-            <div className="gs-active-skill-row">
-              {activeSkills.map(sid => {
-                const skill = availableSkills.find(s => s.id === sid);
-                const label = skill?.id ?? sid;
-                return (
-                  <div key={sid} className="gs-active-skill-chip">
-                    <span className="gs-active-skill-slash">/</span>
-                    <span>{label}</span>
-                    <button type="button" onClick={() => removeActiveSkill(sid)} className="gs-active-skill-chip-x" aria-label={`Remove ${label} skill`}>
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          {/* Active skill inline prefix inside textarea area */}
           {/* Slash command menu */}
           {showSlashMenu && slashFilteredSkills.length > 0 && (
             <div className="gs-slash-menu" ref={slashMenuRef}>
@@ -1813,8 +1796,17 @@ export function StudioCopilot({
               })}
             </div>
           )}
+          <div className="gs-input-textarea-wrap">
+            {activeSkills.length > 0 && (
+              <span className="gs-inline-skill-prefix" onClick={() => removeActiveSkill(activeSkills[activeSkills.length - 1])}>
+                {activeSkills.map(sid => {
+                  const skill = availableSkills.find(s => s.id === sid);
+                  return `/${skill?.id ?? sid}`;
+                }).join(" ")}
+              </span>
+            )}
           <textarea
-            className="gs-input-textarea"
+            className="gs-input-textarea gs-input-textarea-inline"
             value={input}
             onChange={e => {
               const val = e.target.value;
@@ -1847,6 +1839,7 @@ export function StudioCopilot({
                 }
               }
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); }
+              if (e.key === "Backspace" && !input && activeSkills.length > 0) { removeActiveSkill(activeSkills[activeSkills.length - 1]); }
             }}
             onPaste={async e => {
               // Support pasting images from clipboard (Ctrl+V)
@@ -1858,10 +1851,11 @@ export function StudioCopilot({
                 if (file) await handleFileUpload({ target: { files: [file] } } as any);
               }
             }}
-            placeholder="Ask anything, create anything"
+            placeholder={activeSkills.length > 0 ? "" : "Ask anything, create anything"}
             rows={1}
             style={{ resize: "none", overflow: "hidden", minHeight: 28 }}
           />
+          </div>
 
           <div className="gs-input-row">
             <div className="gs-input-row-left">

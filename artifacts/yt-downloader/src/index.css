@@ -3460,6 +3460,28 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   gap: 6px;
   padding: 10px 12px 0;
 }
+.gs-input-textarea-wrap {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0;
+}
+.gs-inline-skill-prefix {
+  display: inline-flex;
+  align-items: center;
+  color: #38bdf8;
+  font-size: 0.92rem;
+  font-weight: 700;
+  white-space: nowrap;
+  padding: 12px 0 12px 14px;
+  line-height: 1.4;
+  user-select: none;
+  cursor: pointer;
+}
+.gs-input-textarea.gs-input-textarea-inline {
+  flex: 1;
+  min-width: 0;
+}
 .gs-active-skill-chip {
   display: inline-flex;
   align-items: center;
@@ -4988,6 +5010,9 @@ html.studio-light-mode .gs-active-skill-chip-x {
 }
 html.studio-light-mode .gs-active-skill-chip-x:hover {
   color: rgba(3,105,161,0.85) !important;
+}
+html.studio-light-mode .gs-inline-skill-prefix {
+  color: rgba(2,132,199,0.95) !important;
 }
 
 html.studio-light-mode [class*="bg-white/5"],
