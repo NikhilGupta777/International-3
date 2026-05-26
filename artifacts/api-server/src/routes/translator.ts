@@ -232,13 +232,7 @@ function assertPublicHttpUrl(rawUrl: string): URL {
   if (host.endsWith(".internal") || host.endsWith(".local")) {
     throw new Error("fileUrl must be a public URL.");
   }
-  if (
-    host === "[::1]" ||
-    host === "::1" ||
-    host.startsWith("fc") ||
-    host.startsWith("fd") ||
-    host.startsWith("fe80:")
-  ) {
+  if (host === "[::1]" || host === "::1") {
     throw new Error("fileUrl must be a public URL.");
   }
   if (
@@ -798,16 +792,22 @@ function msToSrt(ms: number): string {
 function wordsToSegments(words: Array<{ start?: number; end?: number; text?: string }>): FastSegment[] {
   const segments: FastSegment[] = [];
   let current: FastSegment | null = null;
+  const MAX_WORDS_PER_SEGMENT = 12;
+  const MAX_MS_PER_SEGMENT = 5200;
+  const GAP_BREAK_MS = 850;
+  const TERMINAL_PUNCTUATION = /[.!?।！？]$/u;
   for (const word of words) {
     const text = String(word.text ?? "").trim();
     const start = Number(word.start);
     const end = Number(word.end);
     if (!text || !Number.isFinite(start) || !Number.isFinite(end)) continue;
+    const previousEndsSentence = current ? TERMINAL_PUNCTUATION.test(current.text.trim()) : false;
     const shouldStart =
       !current ||
-      current.text.split(/\s+/).length >= 8 ||
-      start - current.startMs >= 4500 ||
-      start - current.endMs > 900;
+      previousEndsSentence ||
+      current.text.split(/\s+/).length >= MAX_WORDS_PER_SEGMENT ||
+      start - current.startMs >= MAX_MS_PER_SEGMENT ||
+      start - current.endMs > GAP_BREAK_MS;
     if (shouldStart) {
       current = { startMs: start, endMs: end, text };
       segments.push(current);
@@ -852,7 +852,7 @@ function targetScriptInstruction(targetLang: string): string {
 function toAssemblyLanguageCode(language: string): string | undefined {
   const normalized = language.trim().toLowerCase();
   if (!normalized || normalized === "auto") return undefined;
-  if (/^[a-z]{2}(-[a-z]{2})?$/i.test(normalized)) return normalized;
+  if (/^[a-z]{2,3}(-[a-z]{2})?$/i.test(normalized)) return normalized;
   const map: Record<string, string> = {
     english: "en",
     hindi: "hi",
@@ -864,6 +864,8 @@ function toAssemblyLanguageCode(language: string): string | undefined {
     japanese: "ja",
     korean: "ko",
     chinese: "zh",
+    mandarin: "zh",
+    cantonese: "zh",
     arabic: "ar",
     russian: "ru",
     dutch: "nl",
@@ -874,6 +876,10 @@ function toAssemblyLanguageCode(language: string): string | undefined {
     bengali: "bn",
     gujarati: "gu",
     marathi: "mr",
+    indonesian: "id",
+    vietnamese: "vi",
+    filipino: "fil",
+    finnish: "fi",
     tamil: "ta",
     telugu: "te",
     punjabi: "pa",
@@ -1048,17 +1054,25 @@ async function transcribeFastMediaUrl(mediaUrl: string, sourceLang: string): Pro
 async function translateSegmentsFast(segments: FastSegment[], targetLang: string): Promise<FastSegment[]> {
   if (!isGeminiConfigured()) throw new Error("Gemini is not configured. Add Vertex Gemini env or GEMINI_API_KEY.");
   const ai = createGeminiClient();
-  const payload = segments.map((seg, i) => ({
+  const payload = segments.map((seg, i) => {
+    const durationSec = Math.max(0.2, (seg.endMs - seg.startMs) / 1000);
+    const maxChars = Math.max(8, Math.ceil(durationSec * 15));
+    return {
     id: i + 1,
     text: seg.text,
+    duration_sec: Number(durationSec.toFixed(2)),
+    max_chars: maxChars,
     prev_text: segments[i - 1]?.text ?? "",
     next_text: segments[i + 1]?.text ?? "",
-  }));
+    };
+  });
   const prompt = [
     `Translate each item to ${targetLang}.`,
     targetScriptInstruction(targetLang),
     "Translate meaning, tone, and intent like a skilled dubbing interpreter, not word-for-word.",
     "Keep each line natural, concise, and speakable in the target language.",
+    "Each translated line MUST fit its time slot and stay within max_chars.",
+    "If needed, rewrite shorter while preserving intent and tone.",
     "Use prev_text and next_text ONLY as context. Do not translate them or include them in the output.",
     "Return ONLY a JSON array with objects: {\"id\": number, \"text\": string}.",
     "Do not add explanations, labels, transliteration, source text, or commentary.",
@@ -1117,7 +1131,7 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
     // Worker schema:  { id, start (sec), end (sec), originalText, translatedText }
     // Lambda-fast raw: { startMs (ms), endMs (ms), text, translatedText }
     const canonicalSegments = translated.map((seg, idx) => ({
-      id: idx,
+      id: idx + 1,
       start: seg.startMs / 1000,
       end: seg.endMs / 1000,
       originalText: seg.text,

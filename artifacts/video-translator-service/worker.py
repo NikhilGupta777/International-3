@@ -793,6 +793,48 @@ def _all_speaker_labels(segments: list[dict]) -> list[str]:
             labels.add(label)
     return sorted(labels)
 
+
+def collapse_speaker_label_noise(segments: list[dict]) -> list[dict]:
+    """
+    Collapse spurious low-coverage speaker labels into the dominant speaker.
+
+    In single-speaker videos with background voices/noise, diarization may emit
+    tiny runs of extra labels. Those fragments trigger per-speaker cloning and
+    create audible voice hopping. If one speaker owns almost all timeline, map
+    very small speaker shares back to the dominant label.
+    """
+    durations: dict[str, float] = {}
+    for seg in segments:
+        speaker = str(seg.get("speaker") or DEFAULT_SPEAKER_LABEL)
+        duration = max(0.0, float(seg.get("end", 0.0)) - float(seg.get("start", 0.0)))
+        durations[speaker] = durations.get(speaker, 0.0) + duration
+
+    total = sum(durations.values())
+    if total <= 0 or len(durations) <= 1:
+        return segments
+
+    dominant_speaker = max(durations, key=durations.get)
+    dominant_share = durations[dominant_speaker] / total
+    if dominant_share < 0.75:
+        return segments
+
+    relabelled = 0
+    for seg in segments:
+        speaker = str(seg.get("speaker") or DEFAULT_SPEAKER_LABEL)
+        speaker_share = durations.get(speaker, 0.0) / total
+        if speaker != dominant_speaker and speaker_share < 0.08:
+            seg["speaker"] = dominant_speaker
+            relabelled += 1
+
+    if relabelled:
+        log.info(
+            "[Diarize] Collapsed %s low-share speaker segments to dominant label %s (share=%.2f).",
+            relabelled,
+            dominant_speaker,
+            dominant_share,
+        )
+    return segments
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2c: Per-speaker voice reference extraction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4248,6 +4290,8 @@ def main():
                     warn_msg,
                 )
                 update_progress("TRANSCRIBING", 28, "Identifying speakers...", {"speaker_warning": warn_msg})
+            else:
+                segments = collapse_speaker_label_noise(segments)
 
         # ── 5b. Merge micro-segments for TTS quality ─────────────────
         # Must run AFTER diarization so speaker labels are available.
