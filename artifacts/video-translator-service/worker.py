@@ -549,6 +549,10 @@ def transcribe(audio_path: Path) -> list[dict]:
     def _build_segments_from_words(word_list, speaker_label: Optional[str] = None) -> list[dict]:
         if not word_list:
             return []
+        max_words = 6
+        max_duration = 5.0
+        gap_break = 0.45
+        terminal_punctuation = re.compile(r"[.!?।！？]$")
         segs: list[dict] = []
         cur_words: list[dict] = []
         seg_start_t = word_list[0].start / 1000.0
@@ -578,7 +582,13 @@ def transcribe(audio_path: Path) -> list[dict]:
                 prev_end = cur_words[-1]["end"]
                 gap = w_start - prev_end
                 dur = w_start - seg_start_t
-                if gap > 0.45 or dur > 8.0:
+                prev_word = str(cur_words[-1].get("word", "")).strip()
+                if (
+                    len(cur_words) >= max_words
+                    or gap > gap_break
+                    or dur >= max_duration
+                    or terminal_punctuation.search(prev_word)
+                ):
                     flush(prev_end)
                     seg_start_t = w_start
             cur_words.append({"word": w.text, "start": w_start, "end": w_end})
@@ -611,9 +621,7 @@ def transcribe(audio_path: Path) -> list[dict]:
                 if utt_start - 0.05 <= w.start / 1000.0 <= utt_end + 0.05
             ]
 
-            # Split utterances longer than 10 s at natural pause boundaries
-            if utt_end - utt_start > 10.0 and utt_words:
-                # Build dummy Word-like objects the helper can use
+            if utt_words:
                 class _FakeWord:
                     def __init__(self, d):
                         self.text  = d["word"]
@@ -664,8 +672,7 @@ def transcribe(audio_path: Path) -> list[dict]:
                 if utt_start - 0.05 <= w.start / 1000.0 <= utt_end + 0.05
             ]
 
-            # Split long utterances (>10s) at natural pauses
-            if utt_end - utt_start > 10.0 and utt_words:
+            if utt_words:
                 class _FakeWord2:
                     def __init__(self, d):
                         self.text  = d["word"]
@@ -1150,20 +1157,20 @@ def merge_segments_for_dubbing(segments: list[dict]) -> list[dict]:
     target_code = (TARGET_LANG_CODE or "").lower().strip()
 
     if target_code in _INDIC_CODES:
-        max_merged_dur = 12.0     # was 16.0 — Indic text expansion makes 16 s slots unmanageable
+        max_merged_dur = 7.5      # keep Gemini/TTS units near subtitle timing
         gap_limit_short = 1.2     # was 2.4 — don't merge across long pauses
         gap_limit_normal = 0.8    # was 1.2 — tighter for normal segments
         short_threshold = 1.4     # was 1.6 — be slightly more eager to merge very short segs
         merge_trigger_dur = 2.5   # was 2.8 — merge sooner so we don't get too many micro-segs
     elif target_code in _CJK_CODES:
-        max_merged_dur = 12.0
+        max_merged_dur = 7.5
         gap_limit_short = 1.4
         gap_limit_normal = 1.0
         short_threshold = 1.5
         merge_trigger_dur = 2.5
     else:
         # Latin/European — keep closer to original thresholds
-        max_merged_dur = 14.0
+        max_merged_dur = 8.5
         gap_limit_short = 2.0     # slightly tighter than original 2.4
         gap_limit_normal = 1.2
         short_threshold = 1.6

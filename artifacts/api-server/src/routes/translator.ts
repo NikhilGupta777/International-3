@@ -792,8 +792,8 @@ function msToSrt(ms: number): string {
 function wordsToSegments(words: Array<{ start?: number; end?: number; text?: string }>): FastSegment[] {
   const segments: FastSegment[] = [];
   let current: FastSegment | null = null;
-  const MAX_WORDS_PER_SEGMENT = 12;
-  const MAX_MS_PER_SEGMENT = 5200;
+  const MAX_WORDS_PER_SEGMENT = 6;
+  const MAX_MS_PER_SEGMENT = 5000;
   const GAP_BREAK_MS = 850;
   const TERMINAL_PUNCTUATION = /[.!?।！？]$/u;
   for (const word of words) {
