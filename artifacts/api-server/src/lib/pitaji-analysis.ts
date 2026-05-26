@@ -10,8 +10,9 @@
 //     Each chunk's prompt is told its offset in the original video so the
 //     model returns chunk-relative timestamps; the caller re-bases them.
 //
-// Model is pinned to `gemini-2.5-flash` to match the rest of the app
-// (subtitles, agent search, copilot search). When
+// Model is pinned to `gemini-3.5-flash` to match the rest of the app
+// (agent.ts AGENT_MODEL/ULTRA_MODEL/SEARCH_MODEL, subtitles.ts audio analyze,
+// youtube.ts subtitle fix, video translator service). When
 // GOOGLE_GENAI_USE_VERTEXAI=true (the production setting), the call is
 // routed through Vertex AI automatically — no code change here.
 
@@ -29,8 +30,8 @@ import {
 import type { PitajiClip, PitajiClipKind } from "./pitaji-store";
 
 export const PITAJI_ANALYSIS_MODEL =
-  (process.env.PITAJI_ANALYSIS_MODEL ?? "gemini-2.5-flash").trim() ||
-  "gemini-2.5-flash";
+  (process.env.PITAJI_ANALYSIS_MODEL ?? "gemini-3.5-flash").trim() ||
+  "gemini-3.5-flash";
 
 const PITAJI_MAX_OUTPUT_TOKENS = Math.max(
   4096,
