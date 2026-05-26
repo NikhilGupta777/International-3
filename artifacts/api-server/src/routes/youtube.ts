@@ -730,8 +730,14 @@ const YTDLP_MAX_INFO_ATTEMPTS = Math.max(
 // Resolve ffmpeg: prefer the system binary (NixOS/Replit has a full ffmpeg on PATH
 // that is more stable than the bundled ffmpeg-static which can segfault on NixOS).
 function findFfmpeg(): string | null {
+  // Allow explicit env override (avoids path-style issues on Windows)
+  if (process.env.FFMPEG_BIN) {
+    console.log(`[ffmpeg] Using FFMPEG_BIN env: ${process.env.FFMPEG_BIN}`);
+    return process.env.FFMPEG_BIN;
+  }
   try {
-    const p = execFileSync("which", ["ffmpeg"], { encoding: "utf8" }).trim();
+    const cmd = process.platform === "win32" ? "where" : "which";
+    const p = execFileSync(cmd, ["ffmpeg"], { encoding: "utf8" }).trim().split(/\r?\n/)[0];
     if (p) { console.log(`[ffmpeg] Using system ffmpeg: ${p}`); return p; }
   } catch {}
   if (ffmpegStatic) { console.log(`[ffmpeg] Using ffmpeg-static: ${ffmpegStatic}`); return ffmpegStatic; }

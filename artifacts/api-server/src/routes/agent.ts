@@ -11,6 +11,7 @@ import { randomUUID } from "crypto";
 import { setupSse } from "../lib/sse";
 import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3 } from "../lib/s3-storage";
 import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 
 const router = Router();
 
@@ -104,8 +105,8 @@ async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
 // ── Strip model-internal tags before sending to client ─────────────────────
 // Gemini 3 Flash / Pro can emit reasoning, thought, response wrappers, and our
 // own [SUGGESTIONS:] marker. None of these should reach the browser as raw text.
-function stripReasoningTags(text: string): string {
-  return text
+function stripReasoningTags(text: string, isDelta = false): string {
+  let result = text
     // Paired tags with content
     .replace(/\[REASONING\][\s\S]*?\[\/REASONING\]/gi, "")
     .replace(/\[reasoning\][\s\S]*?\[\/reasoning\]/gi, "")
@@ -127,18 +128,26 @@ function stripReasoningTags(text: string): string {
     // Strip raw S3 presigned URLs (long AWS URLs with signatures)
     .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
     // Collapse excess blank lines left by stripping
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/\n{3,}/g, "\n\n");
+  // Only trim final/complete text — NOT streaming deltas, which may be
+  // whitespace-only chunks (spaces between words). Trimming deltas drops
+  // spaces and causes words to concatenate ("willwrite", "leveragesstandard").
+  if (!isDelta) result = result.trim();
+  return result;
 }
 
 // ── SSE helper — writes and flushes immediately ───────────────────────────
 function sseEvent(res: any, payload: object) {
-  // Strip reasoning traces from text events
-  const safePayload = ((payload as any).type === "text" || (payload as any).type === "text_delta") && (payload as any).content
-    ? { ...(payload as any), content: stripReasoningTags((payload as any).content) }
+  const type = (payload as any).type;
+  const isTextEvent = type === "text" || type === "text_delta";
+  const isDelta = type === "text_delta";
+  // Strip reasoning traces from text events — preserve whitespace in deltas
+  const safePayload = isTextEvent && (payload as any).content
+    ? { ...(payload as any), content: stripReasoningTags((payload as any).content, isDelta) }
     : payload;
-  // Skip empty text events (after stripping)
-  if (((safePayload as any).type === "text" || (safePayload as any).type === "text_delta") && !(safePayload as any).content) return;
+  // Skip empty text events (after stripping) — but never skip whitespace-only
+  // deltas, which are spaces between words that must be preserved
+  if (isTextEvent && !(safePayload as any).content) return;
   res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
   // Triple-layer flush to guarantee real-time delivery:
   // 1. Express compression middleware (if present)
@@ -2120,6 +2129,11 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
 }
 
 
+// ── GET /api/agent/skills — list available skills ────────────────────────
+router.get("/agent/skills", (_req, res) => {
+  res.json({ skills: getSkillsManifest() });
+});
+
 // ── POST /api/agent/chat ──────────────────────────────────────────────────
 router.post("/agent/chat", async (req, res) => {
   if (!isGeminiConfigured()) {
@@ -2128,7 +2142,7 @@ router.post("/agent/chat", async (req, res) => {
   }
   (req as any).agentRunJobIds = new Set<string>();
 
-  const { messages = [], model: requestedModel } = req.body as {
+  const { messages = [], model: requestedModel, skills: activeSkills = [] } = req.body as {
     messages: Array<{
       role: "user" | "model";
       content?: string;
@@ -2149,6 +2163,7 @@ router.post("/agent/chat", async (req, res) => {
       }>;
     }>;
     model?: string;
+    skills?: string[];
   };
 
   if (!messages.length) {
@@ -2202,7 +2217,8 @@ router.post("/agent/chat", async (req, res) => {
 
   const runId = randomUUID();
   sseEvent(res, { type: "run_start", runId, ts: Date.now(), model: activeModel, ultra: requestedModel === "ultra" });
-  console.log(`[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${normalizedMessages.length}`);
+  const skillPromptAddendum = buildSkillPrompt(activeSkills);
+  console.log(`[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${normalizedMessages.length} skills=[${activeSkills.join(",")}] skillPromptLen=${skillPromptAddendum.length}`);
 
   // Heartbeat every 8s — below ALB (60s), nginx (75s), Cloudflare (100s) idle timeouts
   const keepAlive = setInterval(() => {
@@ -2267,12 +2283,13 @@ router.post("/agent/chat", async (req, res) => {
             model: activeModel,
             contents: loopContents,
             config: {
-              systemInstruction: SYSTEM_PROMPT,
+              systemInstruction: SYSTEM_PROMPT + skillPromptAddendum,
               tools: buildAgentTools(useNativeSearchTools),
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
               thinkingConfig: {
                 thinkingLevel: (requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
+                includeThoughts: true,
               },
             },
           });
@@ -2388,6 +2405,17 @@ router.post("/agent/chat", async (req, res) => {
       };
       for await (const chunk of stream!) {
         if (!isConnected()) break;
+
+        // ── Extract thought summaries from Gemini's thinking mode ────────
+        // When includeThoughts is true, parts with thought===true contain
+        // the model's reasoning summary. Stream these to the client so
+        // users can see what the agent is thinking in real time.
+        const chunkParts = chunk.candidates?.[0]?.content?.parts ?? [];
+        for (const tp of chunkParts) {
+          if (tp.thought && tp.text) {
+            sseEvent(res, { type: "thought_delta", runId, content: tp.text });
+          }
+        }
 
         const chunkText = chunk.text;
         if (chunkText) {

@@ -63,6 +63,7 @@ type SseEvent =
   | { type: "canvas_start"; runId?: string; canvasId: string; label: string; language?: string }
   | { type: "canvas_delta"; runId?: string; canvasId: string; content: string }
   | { type: "canvas_done"; runId?: string; canvasId: string }
+  | { type: "thought_delta"; content: string; runId?: string }
   | { type: "suggestions"; items: string[]; runId?: string }
   | { type: "error"; message: string }
   | { type: "done"; runId?: string; ts?: number };
@@ -722,9 +723,26 @@ export function StudioCopilot({
   const [thinking, setThinking] = useState(false);
   const [agentStage, setAgentStage] = useState<"idle" | "planning" | "executing" | "verifying">("idle");
   const [agentIteration, setAgentIteration] = useState(0);
+  const [thoughtText, setThoughtText] = useState("");
+  const [showThoughts, setShowThoughts] = useState(false);
+  const [activeToolLabel, setActiveToolLabel] = useState<string | null>(null);
+  const [thoughtLabel, setThoughtLabel] = useState<string | null>(null);
   const [pasteUrl, setPasteUrl] = useState<string | null>(null);
   const [ultra, setUltra] = useState<boolean>(readUltraInitial);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  // ── Skills ──
+  type SkillMeta = { id: string; name: string; description: string; icon: string; category: string; starters?: string[]; tags?: string[] };
+  const [availableSkills, setAvailableSkills] = useState<SkillMeta[]>([]);
+  const [activeSkills, setActiveSkills] = useState<string[]>([]);
+  const activeSkillsRef = useRef<string[]>([]);
+  useEffect(() => {
+    activeSkillsRef.current = activeSkills;
+  }, [activeSkills]);
+  // Slash command state
+  const [showSlashMenu, setShowSlashMenu] = useState(false);
+  const [slashQuery, setSlashQuery] = useState("");
+  const [slashMenuIndex, setSlashMenuIndex] = useState(0);
+  const slashMenuRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
   useEffect(() => {
     try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch { }
@@ -732,6 +750,7 @@ export function StudioCopilot({
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const userIsNearBottom = useRef(true);
+  const thoughtContentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -747,6 +766,60 @@ export function StudioCopilot({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showPlusMenu]);
+
+  // Fetch available skills on mount
+  useEffect(() => {
+    fetch(`${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/agent/skills`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.skills) setAvailableSkills(d.skills); })
+      .catch(() => {});
+  }, []);
+  // Click-outside for slash menu
+  useEffect(() => {
+    if (!showSlashMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (slashMenuRef.current && !slashMenuRef.current.contains(e.target as Node)) setShowSlashMenu(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showSlashMenu]);
+
+  // Filtered skills for slash menu
+  const slashFilteredSkills = availableSkills.filter(s =>
+    !slashQuery || s.name.toLowerCase().includes(slashQuery.toLowerCase()) || s.id.toLowerCase().includes(slashQuery.toLowerCase())
+  );
+
+  // Handle slash command detection in input
+  const handleSlashInput = useCallback((value: string) => {
+    // Check if input starts with / (slash command trigger)
+    const slashMatch = value.match(/^\/(\S*)$/);
+    if (slashMatch) {
+      setSlashQuery(slashMatch[1]);
+      setShowSlashMenu(true);
+      setSlashMenuIndex(0);
+    } else {
+      setShowSlashMenu(false);
+      setSlashQuery("");
+    }
+  }, []);
+
+  // Select a skill from the slash menu
+  const selectSlashSkill = useCallback((skill: SkillMeta) => {
+    const current = activeSkillsRef.current;
+    const next = current.includes(skill.id) ? current.filter(s => s !== skill.id) : [...current, skill.id];
+    activeSkillsRef.current = next;
+    setActiveSkills(next);
+    setInput("");
+    setShowSlashMenu(false);
+    setSlashQuery("");
+  }, []);
+
+  // Remove an active skill chip
+  const removeActiveSkill = useCallback((skillId: string) => {
+    const next = activeSkillsRef.current.filter(s => s !== skillId);
+    activeSkillsRef.current = next;
+    setActiveSkills(next);
+  }, []);
 
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
     type: "image" | "video" | "audio" | "document";
@@ -895,6 +968,11 @@ export function StudioCopilot({
   useEffect(() => {
     if (userIsNearBottom.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [currentMessages]);
+  // Auto-scroll thought content to bottom as new thoughts stream in
+  useEffect(() => {
+    const el = thoughtContentRef.current;
+    if (el && showThoughts) el.scrollTop = el.scrollHeight;
+  }, [thoughtText, showThoughts]);
   // Editable session title state
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -933,6 +1011,7 @@ export function StudioCopilot({
 
   const sendMessage = useCallback(async (text: string, attachmentsArg?: Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>) => {
     const snapshotAttachments = attachmentsArg ?? pendingAttachmentsRef.current;
+    const snapshotSkills = activeSkillsRef.current;
     if ((!text.trim() && snapshotAttachments.length === 0) || streaming) return;
     const sessionId = ensureSession();
     setInput("");
@@ -968,6 +1047,10 @@ export function StudioCopilot({
     setStreaming(true);
     setThinking(true);
     setAgentStage("planning");
+    setThoughtText("");
+    setShowThoughts(false);
+    setActiveToolLabel(null);
+    setThoughtLabel(null);
     setPasteUrl(null); // dismiss paste pill when message is sent
     lastUserTextRef.current = text; // track for retry
     lastUserAttachmentsRef.current = snapshotAttachments;
@@ -1048,11 +1131,14 @@ export function StudioCopilot({
 
     const appendText = (content: string) => {
       const cleaned = cleanAssistantText(content);
-      if (!cleaned.trim()) return;
+      // Allow whitespace-only deltas (spaces between words) — only skip truly empty
+      if (!cleaned) return;
       patchAssistant(m => {
         const parts = [...m.parts];
         const last = parts[parts.length - 1];
         if (last?.kind === "text") return { ...m, parts: [...parts.slice(0, -1), { kind: "text", content: last.content + cleaned }] };
+        // Don't start a new text part with just whitespace — wait for real content
+        if (!cleaned.trim()) return m;
         return { ...m, parts: [...parts, { kind: "text", content: cleaned }] };
       });
     };
@@ -1063,16 +1149,36 @@ export function StudioCopilot({
       if (evt.type === "thinking") {
         setThinking(true);
         if (evt.stage) setAgentStage(evt.stage as "idle" | "planning" | "executing" | "verifying");
-        if (evt.iteration !== undefined) setAgentIteration(evt.iteration);
+        if (evt.iteration !== undefined) {
+          setAgentIteration(evt.iteration);
+          // Add separator between iteration thoughts (skip first)
+          if (evt.iteration > 1) setThoughtText(prev => prev ? prev + "\n\n" : prev);
+        }
         return;
       }
-      if (evt.type === "text" || evt.type === "text_delta") { setThinking(false); appendText(evt.content); return; }
+      if (evt.type === "thought_delta") {
+        setThoughtText(prev => {
+          const updated = prev + evt.content;
+          // Extract the latest **bold title** from thought text to use as dynamic label
+          const boldMatches = updated.match(/\*\*([^*]+)\*\*/g);
+          if (boldMatches && boldMatches.length > 0) {
+            const latest = boldMatches[boldMatches.length - 1].replace(/\*\*/g, "").trim();
+            if (latest.length > 3 && latest.length < 80) setThoughtLabel(latest);
+          }
+          return updated;
+        });
+        return;
+      }
+      if (evt.type === "text" || evt.type === "text_delta") { setThinking(false); setActiveToolLabel(null); appendText(evt.content); return; }
       if (evt.type === "plan") {
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "plan", steps: evt.steps, iteration: evt.iteration }] }));
         return;
       }
       if (evt.type === "tool_start") {
-        setThinking(false);
+        // Show tool name in thinking indicator while tool runs
+        const meta = TOOL_META[evt.name];
+        setActiveToolLabel(meta?.label ?? evt.name.replace(/_/g, " "));
+        setThinking(true);
         patchAssistant(m => {
           const exists = m.parts.some(p => p.kind === "tool_start" && (p as any).toolId === evt.toolId);
           if (exists) return m;
@@ -1148,7 +1254,7 @@ export function StudioCopilot({
         return;
       }
       if (evt.type === "tool_done") {
-        setThinking(false);
+        setActiveToolLabel(null);
         patchAssistant(m => ({
           ...m, parts: m.parts.map(p =>
             p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done))
@@ -1259,7 +1365,7 @@ export function StudioCopilot({
     try {
       const resp = await fetch(`${BASE}/api/agent/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history, model: ultra ? "ultra" : "default" }),
+        body: JSON.stringify({ messages: history, model: ultra ? "ultra" : "default", skills: snapshotSkills }),
         signal: abortRef.current.signal,
       });
       if (!resp.ok || !resp.body) throw new Error(`Server error: ${resp.status}`);
@@ -1532,24 +1638,58 @@ export function StudioCopilot({
               })}
             </AnimatePresence>
 
-            {/* Thinking indicator — shows live agent stage from SSE events */}
+            {/* Thinking indicator — shows live agent reasoning from Gemini thought summaries */}
             {thinking && (() => {
+              // Dynamic label: active tool name > stage label
               const stageLabel: Record<string, string> = {
-                planning: "Planning",
+                planning: "Thinking",
                 executing: "Working",
                 verifying: "Checking",
                 idle: "Thinking",
               };
-              const label = stageLabel[agentStage] ?? "Thinking";
+              // Priority: thought summary title > active tool name > stage label
+              const label = thoughtLabel ?? activeToolLabel ?? stageLabel[agentStage] ?? "Thinking";
+              const hasThoughts = thoughtText.trim().length > 0;
               return (
                 <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                  className="gs-thinking">
-                  <span className="gs-thinking-text">{label}</span>
-                  <span className="gs-thinking-dots">
-                    <span>.</span><span>.</span><span>.</span>
-                  </span>
-                  <span className="gs-thinking-cursor" />
-                  <span className="gs-thinking-pulse" />
+                  className="gs-thinking-block">
+                  {/* Header row — always visible */}
+                  <div
+                    className="gs-thinking-header"
+                    onClick={() => hasThoughts && setShowThoughts(prev => !prev)}
+                    style={{ cursor: hasThoughts ? "pointer" : "default" }}
+                  >
+                    <span className="gs-thinking-text">{label}</span>
+                    <span className="gs-thinking-dots">
+                      <span>.</span><span>.</span><span>.</span>
+                    </span>
+                    {hasThoughts && (
+                      <button
+                        type="button"
+                        className="gs-thinking-toggle"
+                        onClick={(e) => { e.stopPropagation(); setShowThoughts(prev => !prev); }}
+                      >
+                        {showThoughts ? "Hide thinking" : "Show thinking"}
+                        <ChevronRight className={cn("w-3 h-3 transition-transform", showThoughts && "rotate-90")} />
+                      </button>
+                    )}
+                  </div>
+                  {/* Collapsible thought content */}
+                  <AnimatePresence>
+                    {showThoughts && hasThoughts && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2, ease: "easeInOut" }}
+                        className="gs-thinking-content"
+                      >
+                        <div ref={thoughtContentRef} className="gs-thinking-content-inner">
+                          {thoughtText}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </motion.div>
               );
             })()}
@@ -1624,11 +1764,90 @@ export function StudioCopilot({
               ))}
             </div>
           )}
+          {/* Active skill chips above textarea */}
+          {activeSkills.length > 0 && (
+            <div className="gs-active-skill-row">
+              {activeSkills.map(sid => {
+                const skill = availableSkills.find(s => s.id === sid);
+                const label = skill?.id ?? sid;
+                return (
+                  <div key={sid} className="gs-active-skill-chip">
+                    <span className="gs-active-skill-slash">/</span>
+                    <span>{label}</span>
+                    <button type="button" onClick={() => removeActiveSkill(sid)} className="gs-active-skill-chip-x" aria-label={`Remove ${label} skill`}>
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {/* Slash command menu */}
+          {showSlashMenu && slashFilteredSkills.length > 0 && (
+            <div className="gs-slash-menu" ref={slashMenuRef}>
+              <div className="gs-slash-menu-header">Skills</div>
+              {slashFilteredSkills.map((skill, i) => {
+                const isActive = activeSkills.includes(skill.id);
+                return (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    className={cn("gs-slash-menu-item", i === slashMenuIndex && "gs-slash-menu-item-focused", isActive && "gs-slash-menu-item-active")}
+                    onMouseEnter={() => setSlashMenuIndex(i)}
+                    onClick={() => selectSlashSkill(skill)}
+                  >
+                    <div className="gs-slash-menu-item-left">
+                      <div className="gs-slash-menu-item-icon">
+                        <Sparkles className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="gs-slash-menu-item-name">
+                          /{skill.id}
+                          {isActive && <span className="gs-slash-menu-item-badge">Active</span>}
+                        </div>
+                        <div className="gs-slash-menu-item-desc">{skill.description}</div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <textarea
             className="gs-input-textarea"
             value={input}
-            onChange={e => { setInput(e.target.value); e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px"; }}
-            onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); } }}
+            onChange={e => {
+              const val = e.target.value;
+              setInput(val);
+              handleSlashInput(val);
+              e.target.style.height = "auto";
+              e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+            }}
+            onKeyDown={e => {
+              if (showSlashMenu && slashFilteredSkills.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setSlashMenuIndex(i => (i + 1) % slashFilteredSkills.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setSlashMenuIndex(i => (i - 1 + slashFilteredSkills.length) % slashFilteredSkills.length);
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  selectSlashSkill(slashFilteredSkills[slashMenuIndex]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setShowSlashMenu(false);
+                  return;
+                }
+              }
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); }
+            }}
             onPaste={async e => {
               // Support pasting images from clipboard (Ctrl+V)
               const items = Array.from(e.clipboardData?.items ?? []);
