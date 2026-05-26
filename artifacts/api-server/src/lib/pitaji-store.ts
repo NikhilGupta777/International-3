@@ -346,14 +346,34 @@ export async function deleteAnalyzeJob(jobId: string): Promise<void> {
  * grows we can later add a GSI on `kind`.
  */
 export async function listAnalyzeJobs(limit = 50): Promise<PitajiAnalyzeJob[]> {
-  const out = await client().send(
-    new ScanCommand({
-      TableName: TABLE_NAME,
-      FilterExpression: "#kind = :kind",
-      ExpressionAttributeNames: { "#kind": "kind" },
-      ExpressionAttributeValues: { ":kind": { S: "pitaji-analyze" } },
-      Limit: 500,
-    }),
+  const normalizedLimit = Math.max(1, Math.min(500, limit));
+  const collected: PitajiAnalyzeJob[] = [];
+  let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+
+  for (let page = 0; page < 10; page += 1) {
+    const out = await client().send(
+      new ScanCommand({
+        TableName: TABLE_NAME,
+        FilterExpression: "#kind = :kind",
+        ExpressionAttributeNames: { "#kind": "kind" },
+        ExpressionAttributeValues: { ":kind": { S: "pitaji-analyze" } },
+        Limit: Math.max(100, normalizedLimit * 4),
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    );
+
+    const pageItems = (out.Items ?? [])
+      .map(decodeAnalyzeJob)
+      .filter((x): x is PitajiAnalyzeJob => x !== null);
+    collected.push(...pageItems);
+
+    exclusiveStartKey = out.LastEvaluatedKey as Record<string, AttributeValue> | undefined;
+    if (!exclusiveStartKey || collected.length >= normalizedLimit * 8) break;
+  }
+
+  collected.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  return collected.slice(0, normalizedLimit);
+}
   );
   const items = (out.Items ?? [])
     .map(decodeAnalyzeJob)
