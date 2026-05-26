@@ -501,17 +501,35 @@ export async function updateClipDispatch(
 }
 
 export async function listClipDispatchesByParent(parentJobId: string): Promise<PitajiClipDispatch[]> {
-  const out = await client().send(
-    new ScanCommand({
-      TableName: TABLE_NAME,
-      FilterExpression: "#kind = :kind AND #parent = :parent",
-      ExpressionAttributeNames: { "#kind": "kind", "#parent": "parentJobId" },
-      ExpressionAttributeValues: {
-        ":kind": { S: "pitaji-clip" },
-        ":parent": { S: parentJobId },
-      },
-    }),
-  );
+  const collected: PitajiClipDispatch[] = [];
+  let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+
+  for (let page = 0; page < 10; page += 1) {
+    const out = await client().send(
+      new ScanCommand({
+        TableName: TABLE_NAME,
+        FilterExpression: "#kind = :kind AND #parent = :parent",
+        ExpressionAttributeNames: { "#kind": "kind", "#parent": "parentJobId" },
+        ExpressionAttributeValues: {
+          ":kind": { S: "pitaji-clip" },
+          ":parent": { S: parentJobId },
+        },
+        Limit: 500,
+        ...(exclusiveStartKey ? { ExclusiveStartKey: exclusiveStartKey } : {}),
+      }),
+    );
+
+    const pageItems = (out.Items ?? [])
+      .map(decodeClipDispatch)
+      .filter((x): x is PitajiClipDispatch => x !== null);
+    collected.push(...pageItems);
+
+    exclusiveStartKey = out.LastEvaluatedKey as Record<string, AttributeValue> | undefined;
+    if (!exclusiveStartKey || collected.length >= 2000) break;
+  }
+
+  return collected.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+}
   return (out.Items ?? [])
     .map(decodeClipDispatch)
     .filter((x): x is PitajiClipDispatch => x !== null)
