@@ -374,13 +374,6 @@ export async function listAnalyzeJobs(limit = 50): Promise<PitajiAnalyzeJob[]> {
   collected.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
   return collected.slice(0, normalizedLimit);
 }
-  );
-  const items = (out.Items ?? [])
-    .map(decodeAnalyzeJob)
-    .filter((x): x is PitajiAnalyzeJob => x !== null);
-  items.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-  return items.slice(0, Math.max(1, Math.min(500, limit)));
-}
 
 // ── Clip dispatch CRUD ───────────────────────────────────────────────────────
 
@@ -529,11 +522,6 @@ export async function listClipDispatchesByParent(parentJobId: string): Promise<P
   }
 
   return collected.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
-}
-  return (out.Items ?? [])
-    .map(decodeClipDispatch)
-    .filter((x): x is PitajiClipDispatch => x !== null)
-    .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
 }
 
 // ── Settings (singleton) ─────────────────────────────────────────────────────

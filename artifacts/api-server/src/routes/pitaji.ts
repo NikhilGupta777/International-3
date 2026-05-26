@@ -62,7 +62,12 @@ import {
   tryUnlink,
 } from "../lib/pitaji-audio-pipeline";
 import { isGeminiConfigured } from "../lib/gemini-client";
+import { isS3StorageEnabled, getS3SignedDownloadUrl, uploadFileToS3 } from "../lib/s3-storage";
+import { generateThumbnailForClip } from "../lib/pitaji-thumbnail";
+import { putSettings, updateClipDispatch, getClipDispatch, type PitajiSettings } from "../lib/pitaji-store";
+import { startClipCutInProcess, getClipCutProgress } from "./youtube";
 import { join } from "path";
+import crypto from "crypto";
 
 const router: IRouter = Router();
 
@@ -771,7 +776,7 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
 
     if (action === "cut" || action === "both") {
       try {
-        const child = await dispatchClipCut({
+        const child = dispatchClipCut({
           youtubeUrl: job.youtubeUrl,
           startSec: clip.startSec,
           endSec: clip.endSec,
@@ -788,11 +793,27 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
       }
     }
 
+    if (action === "thumbnail" || action === "both") {
+      dispatchRec.status = dispatchRec.status === "cutting" ? "cutting" : "thumbnail-pending";
+    }
+
     try {
       await putClipDispatch(dispatchRec);
     } catch (err) {
       req_logger_warn(req, err, "Failed to persist clip dispatch record");
     }
+
+    // Fire-and-forget thumbnail generation
+    if (action === "thumbnail" || action === "both") {
+      generateThumbnailForClip({
+        dispatchJobId: pitajiClipId,
+        parentJobId: jobId,
+        clip,
+      }).catch((err) => {
+        req_logger_warn(req, err, `Thumbnail fire-and-forget failed for ${pitajiClipId}`);
+      });
+    }
+
     dispatched.push({
       pitajiClipId,
       clipId: clip.id,
@@ -858,48 +879,20 @@ router.get("/pitaji/jobs/:jobId/dispatches", async (req: Request, res: Response)
 });
 
 // ── Internal helpers ──────────────────────────────────────────────────────
+// Clip-cut dispatch uses the same in-process path as the main VideoMaking
+// clip cutter — no HTTP round-trip, works identically in Lambda and local dev.
 
-const INTERNAL_BASE_URL = (() => {
-  const fromEnv = (process.env.INTERNAL_API_BASE ?? "").trim().replace(/\/+$/, "");
-  return fromEnv || "";
-})();
-const INTERNAL_AGENT_HEADER = "X-Internal-Agent";
-const INTERNAL_AGENT_SECRET =
-  process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
-
-async function dispatchClipCut(params: {
+function dispatchClipCut(params: {
   youtubeUrl: string;
   startSec: number;
   endSec: number;
-}): Promise<{ jobId: string; status?: string }> {
-  const apiBase = INTERNAL_BASE_URL ? `${INTERNAL_BASE_URL}/api` : "";
-  if (!apiBase.startsWith("http")) {
-    throw new Error("INTERNAL_API_BASE is not configured (Lambda warm-start should have set it)");
-  }
-  const r = await fetch(`${apiBase}/youtube/clip-cut`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      [INTERNAL_AGENT_HEADER]: INTERNAL_AGENT_SECRET,
-    },
-    body: JSON.stringify({
-      url: params.youtubeUrl,
-      startTime: params.startSec,
-      endTime: params.endSec,
-      quality: "best",
-    }),
+}): { jobId: string; status?: string } {
+  return startClipCutInProcess({
+    youtubeUrl: params.youtubeUrl,
+    startSec: params.startSec,
+    endSec: params.endSec,
+    quality: "best",
   });
-  if (!r.ok) {
-    let msg = `clip-cut returned ${r.status}`;
-    try {
-      const data = (await r.json()) as { error?: string };
-      if (data?.error) msg = data.error;
-    } catch { /* ignore */ }
-    throw new Error(msg);
-  }
-  const data = (await r.json()) as { jobId?: string; status?: string };
-  if (!data.jobId) throw new Error("clip-cut response missing jobId");
-  return { jobId: data.jobId, status: data.status };
 }
 
 async function fetchClipCutProgress(childJobId: string): Promise<{
@@ -909,29 +902,7 @@ async function fetchClipCutProgress(childJobId: string): Promise<{
   s3Key?: string | null;
   filename?: string | null;
 } | null> {
-  const apiBase = INTERNAL_BASE_URL ? `${INTERNAL_BASE_URL}/api` : "";
-  if (!apiBase.startsWith("http")) return null;
-  try {
-    const r = await fetch(`${apiBase}/youtube/progress/${encodeURIComponent(childJobId)}`, {
-      headers: { [INTERNAL_AGENT_HEADER]: INTERNAL_AGENT_SECRET },
-    });
-    if (!r.ok) return null;
-    const data = (await r.json()) as Record<string, unknown>;
-    return {
-      status: typeof data.status === "string" ? data.status : undefined,
-      message: typeof data.message === "string" ? data.message : null,
-      progressPct:
-        typeof data.progressPct === "number"
-          ? data.progressPct
-          : typeof data.percent === "number"
-            ? data.percent
-            : null,
-      s3Key: typeof data.s3Key === "string" ? data.s3Key : null,
-      filename: typeof data.filename === "string" ? data.filename : null,
-    };
-  } catch {
-    return null;
-  }
+  return getClipCutProgress(childJobId);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -980,6 +951,307 @@ function req_logger_warn(req: Request | undefined, err: unknown, msg: string): v
   }
   console.warn(`[pitaji] ${msg}:`, err);
 }
+
+// ── Phase 5 — Settings save + speaker/reference upload + thumbnails ─────────
+
+// POST /api/pitaji/settings — save master prompt + clip instructions
+router.post("/pitaji/settings", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.status(503).json({ error: "Pita Ji store is not configured" });
+    return;
+  }
+  try {
+    const body = req.body as {
+      thumbnailPrompt?: unknown;
+      clipInstructions?: unknown;
+    };
+    const current = await getSettings();
+    const updated: PitajiSettings = {
+      ...current,
+      thumbnailPrompt:
+        typeof body.thumbnailPrompt === "string"
+          ? body.thumbnailPrompt
+          : current.thumbnailPrompt ?? "",
+      clipInstructions:
+        typeof body.clipInstructions === "string"
+          ? body.clipInstructions
+          : current.clipInstructions ?? "",
+      updatedAt: Date.now(),
+    };
+    await putSettings(updated);
+    res.json({ ok: true });
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to save Pita Ji settings");
+    res.status(500).json({ error: "Failed to save settings" });
+  }
+});
+
+// POST /api/pitaji/settings/speaker — upload a speaker image (base64 dataURL)
+router.post("/pitaji/settings/speaker", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled() || !isS3StorageEnabled()) {
+    res.status(503).json({ error: "Store/S3 not configured" });
+    return;
+  }
+  try {
+    const body = req.body as { label?: unknown; dataUrl?: unknown };
+    const label = typeof body.label === "string" ? body.label.trim() : "";
+    const dataUrl = typeof body.dataUrl === "string" ? body.dataUrl : "";
+    if (!label || !dataUrl) {
+      res.status(400).json({ error: "label and dataUrl are required" });
+      return;
+    }
+    // Parse data:image/png;base64,... or data:image/jpeg;base64,...
+    const match = dataUrl.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
+    if (!match) {
+      res.status(400).json({ error: "Invalid dataUrl format (must be data:image/...;base64,...)" });
+      return;
+    }
+    const ext = match[1].replace("jpeg", "jpg");
+    const buf = Buffer.from(match[2], "base64");
+    if (buf.length > 5 * 1024 * 1024) {
+      res.status(400).json({ error: "Image too large (max 5 MB)" });
+      return;
+    }
+    const id = `spk_${crypto.randomBytes(6).toString("hex")}`;
+    const tmpDir = join(process.env.TMPDIR ?? process.env.TMP ?? "/tmp", `pitaji-spk-${id}`);
+    const { mkdirSync, writeFileSync, rmSync } = await import("fs");
+    mkdirSync(tmpDir, { recursive: true });
+    const tmpPath = join(tmpDir, `${id}.${ext}`);
+    writeFileSync(tmpPath, buf);
+    const s3Result = await uploadFileToS3({
+      localPath: tmpPath,
+      jobId: "settings/speakers",
+      namespace: "pitaji",
+      filename: `${id}.${ext}`,
+      contentType: `image/${ext === "jpg" ? "jpeg" : ext}`,
+    });
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    const settings = await getSettings();
+    const speakers = [...(settings.speakers ?? [])];
+    if (speakers.length >= 5) {
+      res.status(400).json({ error: "Maximum 5 speaker images" });
+      return;
+    }
+    speakers.push({ id, label, s3Key: s3Result.key, uploadedAt: Date.now() });
+    await putSettings({ ...settings, speakers, updatedAt: Date.now() });
+    res.json({ ok: true, speaker: { id, label, s3Key: s3Result.key } });
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to upload speaker image");
+    res.status(500).json({ error: "Failed to upload speaker image" });
+  }
+});
+
+// DELETE /api/pitaji/settings/speaker/:id
+router.delete("/pitaji/settings/speaker/:id", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.status(503).json({ error: "Store not configured" });
+    return;
+  }
+  try {
+    const id = String(req.params.id ?? "").trim();
+    const settings = await getSettings();
+    const speakers = (settings.speakers ?? []).filter((s) => s.id !== id);
+    await putSettings({ ...settings, speakers, updatedAt: Date.now() });
+    res.json({ ok: true });
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to delete speaker image");
+    res.status(500).json({ error: "Failed to delete speaker image" });
+  }
+});
+
+// POST /api/pitaji/settings/reference — upload a reference thumbnail
+router.post("/pitaji/settings/reference", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled() || !isS3StorageEnabled()) {
+    res.status(503).json({ error: "Store/S3 not configured" });
+    return;
+  }
+  try {
+    const body = req.body as { dataUrl?: unknown };
+    const dataUrl = typeof body.dataUrl === "string" ? body.dataUrl : "";
+    if (!dataUrl) {
+      res.status(400).json({ error: "dataUrl is required" });
+      return;
+    }
+    const match = dataUrl.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
+    if (!match) {
+      res.status(400).json({ error: "Invalid dataUrl format" });
+      return;
+    }
+    const ext = match[1].replace("jpeg", "jpg");
+    const buf = Buffer.from(match[2], "base64");
+    if (buf.length > 5 * 1024 * 1024) {
+      res.status(400).json({ error: "Image too large (max 5 MB)" });
+      return;
+    }
+    const id = `ref_${crypto.randomBytes(6).toString("hex")}`;
+    const tmpDir = join(process.env.TMPDIR ?? process.env.TMP ?? "/tmp", `pitaji-ref-${id}`);
+    const { mkdirSync, writeFileSync, rmSync } = await import("fs");
+    mkdirSync(tmpDir, { recursive: true });
+    const tmpPath = join(tmpDir, `${id}.${ext}`);
+    writeFileSync(tmpPath, buf);
+    const s3Result = await uploadFileToS3({
+      localPath: tmpPath,
+      jobId: "settings/references",
+      namespace: "pitaji",
+      filename: `${id}.${ext}`,
+      contentType: `image/${ext === "jpg" ? "jpeg" : ext}`,
+    });
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    const settings = await getSettings();
+    const references = [...(settings.references ?? [])];
+    if (references.length >= 10) {
+      res.status(400).json({ error: "Maximum 10 reference thumbnails" });
+      return;
+    }
+    references.push({ id, s3Key: s3Result.key, uploadedAt: Date.now() });
+    await putSettings({ ...settings, references, updatedAt: Date.now() });
+    res.json({ ok: true, reference: { id, s3Key: s3Result.key } });
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to upload reference thumbnail");
+    res.status(500).json({ error: "Failed to upload reference thumbnail" });
+  }
+});
+
+// DELETE /api/pitaji/settings/reference/:id
+router.delete("/pitaji/settings/reference/:id", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.status(503).json({ error: "Store not configured" });
+    return;
+  }
+  try {
+    const id = String(req.params.id ?? "").trim();
+    const settings = await getSettings();
+    const references = (settings.references ?? []).filter((r) => r.id !== id);
+    await putSettings({ ...settings, references, updatedAt: Date.now() });
+    res.json({ ok: true });
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to delete reference thumbnail");
+    res.status(500).json({ error: "Failed to delete reference thumbnail" });
+  }
+});
+
+// GET /api/pitaji/clips/:pjcId/thumbnail — signed S3 redirect
+router.get("/pitaji/clips/:pjcId/thumbnail", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  try {
+    const pjcId = String(req.params.pjcId ?? "").trim();
+    const dispatch = await getClipDispatch(pjcId);
+    if (!dispatch || !dispatch.thumbnailS3Key) {
+      res.status(404).json({ error: "Thumbnail not found" });
+      return;
+    }
+    const url = await getS3SignedDownloadUrl({
+      key: dispatch.thumbnailS3Key,
+      filename: `thumbnail-${dispatch.clip?.id ?? pjcId}.png`,
+    });
+    res.redirect(302, url);
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to get thumbnail URL");
+    res.status(500).json({ error: "Failed to get thumbnail URL" });
+  }
+});
+
+// GET /api/pitaji/clips/:pjcId/cut — signed S3 redirect for cut MP4
+router.get("/pitaji/clips/:pjcId/cut", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  try {
+    const pjcId = String(req.params.pjcId ?? "").trim();
+    const dispatch = await getClipDispatch(pjcId);
+    if (!dispatch || !dispatch.cutS3Key) {
+      // Try to fetch from the child cut job progress
+      if (dispatch?.cutChildJobId) {
+        const progress = await fetchClipCutProgress(dispatch.cutChildJobId);
+        if (progress?.s3Key) {
+          // Update the dispatch record while we're here
+          await updateClipDispatch(pjcId, {
+            cutS3Key: progress.s3Key,
+            cutFilename: progress.filename ?? undefined,
+          }).catch(() => {});
+          const url = await getS3SignedDownloadUrl({
+            key: progress.s3Key,
+            filename: progress.filename ?? `clip-${pjcId}.mp4`,
+          });
+          res.redirect(302, url);
+          return;
+        }
+      }
+      res.status(404).json({ error: "Cut file not found" });
+      return;
+    }
+    const url = await getS3SignedDownloadUrl({
+      key: dispatch.cutS3Key,
+      filename: dispatch.cutFilename ?? `clip-${pjcId}.mp4`,
+    });
+    res.redirect(302, url);
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to get cut URL");
+    res.status(500).json({ error: "Failed to get cut URL" });
+  }
+});
+
+// GET /api/pitaji/clips/:pjcId — full clip detail (dispatch + progress + signed URLs)
+router.get("/pitaji/clips/:pjcId", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  try {
+    const pjcId = String(req.params.pjcId ?? "").trim();
+    const dispatch = await getClipDispatch(pjcId);
+    if (!dispatch) {
+      res.status(404).json({ error: "Clip dispatch not found" });
+      return;
+    }
+    // Roll up latest cut progress
+    let cutProgress: Awaited<ReturnType<typeof fetchClipCutProgress>> = null;
+    if (dispatch.cutChildJobId) {
+      cutProgress = await fetchClipCutProgress(dispatch.cutChildJobId);
+      // Lazily persist S3 key if we got it
+      if (cutProgress?.s3Key && !dispatch.cutS3Key) {
+        await updateClipDispatch(pjcId, {
+          cutS3Key: cutProgress.s3Key,
+          cutFilename: cutProgress.filename ?? undefined,
+        }).catch(() => {});
+      }
+    }
+    // Build signed URLs
+    const effectiveCutKey = dispatch.cutS3Key || cutProgress?.s3Key;
+    let cutDownloadUrl: string | null = null;
+    let thumbnailUrl: string | null = null;
+    if (effectiveCutKey) {
+      try {
+        cutDownloadUrl = await getS3SignedDownloadUrl({
+          key: effectiveCutKey,
+          filename: dispatch.cutFilename || cutProgress?.filename || `clip-${pjcId}.mp4`,
+        });
+      } catch { /* ignore */ }
+    }
+    if (dispatch.thumbnailS3Key) {
+      try {
+        thumbnailUrl = await getS3SignedDownloadUrl({
+          key: dispatch.thumbnailS3Key,
+          filename: `thumbnail-${dispatch.clip?.id ?? pjcId}.png`,
+        });
+      } catch { /* ignore */ }
+    }
+
+    res.json({
+      dispatch: stripDispatchForClient(dispatch),
+      cutProgress,
+      cutDownloadUrl,
+      thumbnailUrl,
+    });
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to get clip detail");
+    res.status(500).json({ error: "Failed to get clip detail" });
+  }
+});
 
 // Surface the cookie name + auth probe for any other module that needs them.
 export {

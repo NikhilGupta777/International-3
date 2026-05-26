@@ -96,7 +96,7 @@ export async function analyzeYoutubeDirect(args: AnalyzeYoutubeArgs): Promise<An
           // actual video. Same idiom used at:
           //   routes/agent.ts:2104   (analyze_youtube_video tool)
           //   routes/youtube.ts:3722 (legacy clip helper)
-          { fileData: { fileUri: args.youtubeUrl } } as unknown as never,
+          { fileData: { fileUri: args.youtubeUrl, mimeType: "video/mp4" } } as unknown as never,
         ],
       },
     ],

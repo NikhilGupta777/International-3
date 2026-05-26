@@ -4897,6 +4897,136 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
   });
 });
 
+/**
+ * Start a clip-cut job — same logic as POST /youtube/clip-cut but callable
+ * directly without HTTP.  Handles both the Batch queue path (production,
+ * long clips) and the in-process path (Lambda/local, short clips).
+ * Used by Pita Ji dispatch so it works identically everywhere.
+ */
+export function startClipCutInProcess(params: {
+  youtubeUrl: string;
+  startSec: number;
+  endSec: number;
+  quality?: string;
+}): { jobId: string; status: string } {
+  const jobId = randomUUID();
+  const normalizedUrl = normalizeInputUrl(params.youtubeUrl);
+
+  // Production: long clips go through AWS Batch / Fargate queue
+  if (
+    isYoutubeQueuePrimaryEnabledFor("clip-cut") &&
+    !shouldRunClipInLambda(params.startSec, params.endSec)
+  ) {
+    submitYoutubeQueuePrimaryJob({
+      jobId,
+      jobType: "clip-cut",
+      sourceUrl: normalizedUrl,
+      meta: {
+        startTime: params.startSec,
+        endTime: params.endSec,
+        quality: params.quality ?? "best",
+        notifyClientKey: null,
+      },
+    }).catch(() => {});
+    return { jobId, status: "queued" };
+  }
+
+  // In-process path (Lambda or local dev)
+  const job: DownloadJob = {
+    status: "pending",
+    percent: 0,
+    speed: null,
+    eta: null,
+    filename: null,
+    filesize: null,
+    message: "Starting clip cut...",
+    progressLine: null,
+    progressSource: null,
+    startedAt: Date.now(),
+    completedAt: null,
+    filePath: null,
+    url: normalizedUrl,
+    formatId: "clip",
+    audioOnly: false,
+    ext: "mp4",
+    clipStart: params.startSec,
+    clipEnd: params.endSec,
+    clipQuality: params.quality ?? "best",
+  };
+
+  jobs.set(jobId, job);
+
+  // Persist to DynamoDB (fire-and-forget)
+  putYoutubeQueueLocalJob({
+    jobId,
+    jobType: "clip-cut",
+    sourceUrl: normalizedUrl,
+    status: "pending",
+    message: job.message ?? "Starting clip cut...",
+    progressPct: 0,
+    filename: job.filename,
+    durationSecs: params.endSec - params.startSec,
+    startedAt: job.startedAt ?? Date.now(),
+  }).catch(() => {});
+
+  // Enqueue the actual FFmpeg work
+  enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
+    const j = jobs.get(jobId);
+    if (j) {
+      const message = err instanceof Error ? err.message : "Clip cut failed";
+      if (message === CANCELLED_BY_USER || j.cancelled) {
+        j.status = "cancelled";
+        j.message = CANCELLED_BY_USER;
+      } else {
+        j.status = "error";
+        j.message = message;
+        j.percent = 0;
+      }
+      persistClipJobState(jobId, j);
+    }
+  });
+
+  return { jobId, status: "pending" };
+}
+
+/**
+ * Read clip-cut job progress by jobId — in-process lookup first, then
+ * DynamoDB fallback (for Batch-queued jobs or after Lambda restart).
+ */
+export async function getClipCutProgress(childJobId: string): Promise<{
+  status?: string;
+  message?: string | null;
+  progressPct?: number | null;
+  s3Key?: string | null;
+  filename?: string | null;
+} | null> {
+  // In-memory (in-process jobs)
+  const job = jobs.get(childJobId);
+  if (job) {
+    return {
+      status: job.status,
+      message: job.message,
+      progressPct: job.percent,
+      s3Key: job.filePath ?? null,
+      filename: job.filename,
+    };
+  }
+  // DynamoDB fallback (Batch-queued or post-restart)
+  try {
+    const qs = await getYoutubeQueueJobStatus(childJobId);
+    if (!qs) return null;
+    return {
+      status: qs.status,
+      message: qs.message,
+      progressPct: null,
+      s3Key: qs.s3Key ?? null,
+      filename: null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default router;
 
 export function getYoutubeOpsSnapshot() {

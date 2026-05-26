@@ -1984,7 +1984,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
             role: "user",
             parts: [
               { text: `${task}\nReturn practical, concise results for a creator/editor.` },
-              { fileData: { fileUri: attachment.url } } as any,
+              { fileData: { fileUri: attachment.url, mimeType: "video/mp4" } } as any,
             ],
           }],
           config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
@@ -2101,7 +2101,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
           role: "user",
           parts: [
             { text: question },
-            { fileData: { fileUri: videoUrl } } as any,
+            { fileData: { fileUri: videoUrl, mimeType: "video/mp4" } } as any,
           ],
         }],
         config: {

@@ -21,6 +21,7 @@ import { streamPitajiAnalyze, type PitajiAnalyzeEvent, type PitajiClip,
   dispatchPitajiClips, listPitajiDispatches, streamPitajiRefine,
   type PitajiDispatchAction, type PitajiDispatchView,
 } from "@/lib/pitaji-api";
+import PitajiClipDetail from "./PitajiClipDetail";
 
 type ChatLine =
   | { id: string; kind: "thinking" | "info" | "warn" | "error" | "ok"; text: string; ts: number }
@@ -70,6 +71,7 @@ export default function PitajiLiveAgent() {
   const [refining, setRefining] = useState(false);
   const [dispatching, setDispatching] = useState(false);
   const [dispatches, setDispatches] = useState<PitajiDispatchView[]>([]);
+  const [detailPjcId, setDetailPjcId] = useState<string | null>(null);
   // Map clipId → most recent dispatch row (so we can render inline status)
   const dispatchByClip = useMemo(() => {
     const m = new Map<string, PitajiDispatchView>();
@@ -122,7 +124,7 @@ export default function PitajiLiveAgent() {
           pushChat(
             "info",
             evt.mode === "youtube_direct"
-              ? "Pipeline: direct YouTube watching via Gemini 2.5 Flash"
+              ? "Pipeline: direct YouTube watching via Gemini 3.5 Flash"
               : `Pipeline: audio split into ${evt.chunks ?? "?"} chunks via Vertex AI`,
           );
           break;
@@ -535,28 +537,47 @@ export default function PitajiLiveAgent() {
                           <h4 className="pj-clip-title">{clip.title}</h4>
                           <span className="pj-clip-duration">{clipDurationLabel(clip)}</span>
                           {dispatchInfo ? (
-                            <span
-                              className={`pj-status pj-status--${
-                                cutStatus === "done"
-                                  ? "done"
+                            <>
+                              <span
+                                className={`pj-status pj-status--${
+                                  cutStatus === "done"
+                                    ? "done"
+                                    : cutStatus === "error"
+                                      ? "error"
+                                      : cutStatus === "cancelled"
+                                        ? "cancelled"
+                                        : "running"
+                                }`}
+                                title={dispatchInfo.cutProgress?.message ?? dispatchInfo.error ?? ""}
+                              >
+                                {cutStatus === "done"
+                                  ? "Cut ready"
                                   : cutStatus === "error"
-                                    ? "error"
+                                    ? "Cut failed"
                                     : cutStatus === "cancelled"
-                                      ? "cancelled"
-                                      : "running"
-                              }`}
-                              title={dispatchInfo.cutProgress?.message ?? dispatchInfo.error ?? ""}
-                            >
-                              {cutStatus === "done"
-                                ? "Cut ready"
-                                : cutStatus === "error"
-                                  ? "Cut failed"
-                                  : cutStatus === "cancelled"
-                                    ? "Cancelled"
-                                    : cutPct != null
-                                      ? `Cutting ${Math.round(cutPct)}%`
-                                      : "Cutting…"}
-                            </span>
+                                      ? "Cancelled"
+                                      : cutPct != null
+                                        ? `Cutting ${Math.round(cutPct)}%`
+                                        : "Cutting…"}
+                              </span>
+                              {dispatchInfo.thumbnailS3Key ? (
+                                <span className="pj-status pj-status--done">🖼 Thumb</span>
+                              ) : (dispatchInfo.action === "thumbnail" || dispatchInfo.action === "both") && !dispatchInfo.thumbnailS3Key ? (
+                                <span className="pj-status pj-status--running">🖼 Gen…</span>
+                              ) : null}
+                              {(cutStatus === "done" || dispatchInfo.thumbnailS3Key) ? (
+                                <button
+                                  type="button"
+                                  className="pj-clip-detail-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setDetailPjcId(dispatchInfo.jobId);
+                                  }}
+                                >
+                                  Detail →
+                                </button>
+                              ) : null}
+                            </>
                           ) : null}
                         </div>
                         <p className="pj-clip-summary">{clip.summary}</p>
@@ -635,17 +656,18 @@ export default function PitajiLiveAgent() {
                   <button
                     type="button"
                     className="pj-button-ghost"
-                    disabled
-                    title="Coming in Phase 5"
+                    disabled={dispatching || keptCount === 0 || !jobId}
+                    onClick={() => void dispatch("thumbnail")}
+                    title="Generate thumbnails for selected clips"
                   >
-                    Thumbnail
+                    {dispatching ? "Dispatching…" : "Thumbnail"}
                   </button>
                   <button
                     type="button"
                     className="pj-button-primary"
                     disabled={dispatching || keptCount === 0 || !jobId}
                     onClick={() => void dispatch("both")}
-                    title="Cut + thumbnail (thumbnail lands in Phase 5; cut runs now)"
+                    title="Cut selected clips + generate thumbnails in the background"
                   >
                     {dispatching ? "Dispatching…" : "Both"}
                   </button>
@@ -687,6 +709,10 @@ export default function PitajiLiveAgent() {
       ) : null}
 
       {error && runState !== "running" ? <div className="pj-alert">{error}</div> : null}
+
+      {detailPjcId ? (
+        <PitajiClipDetail pjcId={detailPjcId} onClose={() => setDetailPjcId(null)} />
+      ) : null}
     </section>
   );
 }

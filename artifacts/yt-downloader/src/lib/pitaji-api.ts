@@ -68,6 +68,85 @@ export async function getPitajiSettings(): Promise<PitajiSettings> {
   return request<PitajiSettings>("/api/pitaji/settings");
 }
 
+export async function savePitajiSettings(data: {
+  thumbnailPrompt?: string;
+  clipInstructions?: string;
+}): Promise<{ ok: boolean }> {
+  return request("/api/pitaji/settings", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function uploadSpeakerImage(
+  label: string,
+  dataUrl: string,
+): Promise<{ ok: boolean; speaker: { id: string; label: string; s3Key: string } }> {
+  return request("/api/pitaji/settings/speaker", {
+    method: "POST",
+    body: JSON.stringify({ label, dataUrl }),
+  });
+}
+
+export async function deleteSpeakerImage(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/pitaji/settings/speaker/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function uploadReferenceImage(
+  dataUrl: string,
+): Promise<{ ok: boolean; reference: { id: string; s3Key: string } }> {
+  return request("/api/pitaji/settings/reference", {
+    method: "POST",
+    body: JSON.stringify({ dataUrl }),
+  });
+}
+
+export async function deleteReferenceImage(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/pitaji/settings/reference/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+export type PitajiClipDetail = {
+  dispatch: PitajiDispatchView;
+  cutProgress: {
+    status?: string;
+    message?: string | null;
+    progressPct?: number | null;
+    s3Key?: string | null;
+    filename?: string | null;
+  } | null;
+  cutDownloadUrl: string | null;
+  thumbnailUrl: string | null;
+};
+
+export async function getPitajiClipDetail(pjcId: string): Promise<PitajiClipDetail> {
+  return request<PitajiClipDetail>(`/api/pitaji/clips/${encodeURIComponent(pjcId)}`);
+}
+
+export async function getPitajiJob(jobId: string): Promise<{
+  job: {
+    jobId: string;
+    status: string;
+    youtubeUrl: string;
+    videoId?: string;
+    videoTitle?: string;
+    durationSec?: number;
+    channel?: string;
+    pipelineMode?: string;
+    chunks?: number;
+    clips: PitajiClip[];
+    error?: string;
+    createdAt: number;
+    updatedAt: number;
+  };
+  dispatches: PitajiDispatchView[];
+}> {
+  return request(`/api/pitaji/jobs/${encodeURIComponent(jobId)}`);
+}
+
 export type PitajiJobSummary = {
   jobId: string;
   status: string;
