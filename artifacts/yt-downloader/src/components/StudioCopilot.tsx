@@ -744,10 +744,8 @@ export function StudioCopilot({
     if ((!text.trim() && snapshotAttachments.length === 0) || streaming) return;
     const sessionId = ensureSession();
     setInput("");
-    // Revoke object URLs from sent attachments to prevent memory leaks
-    for (const att of snapshotAttachments) {
-      if (att.previewUrl) URL.revokeObjectURL(att.previewUrl);
-    }
+    // Keep preview object URLs alive here because persisted message bubbles and retry flows
+    // may still reference `previewUrl` after send. Revoke them only when those consumers are removed.
     setPendingAttachments([]);
     setSuggestions([]); // clear suggestions on new send
     const userMsgId = crypto.randomUUID();
