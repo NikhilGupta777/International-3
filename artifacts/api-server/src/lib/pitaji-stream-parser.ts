@@ -55,11 +55,16 @@ export class PitajiClipStreamParser<T = unknown> {
     this.buffer += chunk;
     const out: T[] = [];
 
-    // Walk characters from where we left off — for objStart we use absolute
-    // indexes in `buffer` (we never shrink the buffer mid-object). After we
-    // emit each completed object, we slice everything up to its end so the
-    // working buffer stays small.
-    let i = this.phase === "in-object" ? this.objStart + 1 + (this.computeOffsetIntoObj()) : this.cursorIntoBuffer();
+    // Walk characters. If we're mid-object from a previous chunk, re-scan the
+    // current object from its start (we don't track an incremental cursor), so
+    // depth/string state is consistent across chunk boundaries.
+    let i = 0;
+    if (this.phase === "in-object" && this.objStart >= 0) {
+      i = this.objStart + 1;
+      this.depth = 1;
+      this.inString = false;
+      this.escapeNext = false;
+    }
 
     for (; i < this.buffer.length; i += 1) {
       const ch = this.buffer[i];
