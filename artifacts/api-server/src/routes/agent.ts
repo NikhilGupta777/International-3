@@ -2334,6 +2334,9 @@ router.post("/agent/chat", async (req, res) => {
       };
       const emitCanvasRoutedText = (text: string, final = false) => {
         canvasRouteBuf += text;
+        // Strip markdown code fences that wrap a canvas tag (model sometimes does this)
+        canvasRouteBuf = canvasRouteBuf.replace(/```[a-zA-Z]*\s*\n(\s*<canvas\b)/gi, "$1");
+        canvasRouteBuf = canvasRouteBuf.replace(/<\/canvas>\s*\n```/gi, "</canvas>");
         const openRe = /<canvas\b([^>]*)>/i;
         const closeTag = "</canvas>";
         while (canvasRouteBuf) {
@@ -2441,6 +2444,17 @@ router.post("/agent/chat", async (req, res) => {
                   holdIdx = partialIdx;
                 }
               }
+            }
+          }
+          // Also hold back partial <canvas tags at the end of buffer
+          const canvasTag = "<canvas";
+          for (let pLen = 1; pLen <= canvasTag.length; pLen++) {
+            if (pendingTextBuf.toLowerCase().endsWith(canvasTag.slice(0, pLen))) {
+              const partialIdx = pendingTextBuf.length - pLen;
+              if (holdIdx === -1 || partialIdx < holdIdx) {
+                holdIdx = partialIdx;
+              }
+              break;
             }
           }
           if (holdIdx === -1) {
