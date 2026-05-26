@@ -35,7 +35,9 @@ import {
   listAnalyzeJobs,
   listClipDispatchesByParent,
   newAnalyzeJobId,
+  newClipJobId,
   putAnalyzeJob,
+  putClipDispatch,
   updateAnalyzeJob,
   type PitajiAnalyzeJob,
   type PitajiClip,
@@ -535,6 +537,401 @@ function abortSignalFromClose(res: Response): AbortSignal {
   const ctrl = new AbortController();
   res.once("close", () => ctrl.abort());
   return ctrl.signal;
+}
+
+// ── /jobs/:jobId/refine — multi-turn clip refinement chat ─────────────────
+// User chats with the model to adjust clips: shift timestamps, merge,
+// split, add new clips, drop clips, rewrite metadata. The model receives
+// the current clip list + user message and returns BOTH a natural-language
+// reply and an updated clips array. Server replaces the persisted clips
+// and SSE-streams the diff to the client.
+
+const PITAJI_REFINE_SYSTEM_PROMPT = `
+You are an editor refining a list of broadcast-worthy video clips a Pita Ji
+analysis pipeline previously extracted. The operator will give you the
+current clips list (JSON) and a natural-language instruction. Your job:
+
+  1. Apply the requested changes (shift bounds, add/remove/merge/split clips,
+     edit titles or descriptions, adjust hashtags, etc.).
+  2. Keep every clip you did NOT need to change exactly as it was — preserve
+     each clip's "id" so the client can match and update in place.
+  3. New clips you add must NOT have an "id" field — the server will mint one.
+  4. Times are integer seconds, clips MUST NOT overlap, endSec > startSec.
+  5. Preserve full per-clip publish bundle fields (title, summary,
+     suggestedTitle, description, hashtags, pinnedComment, kind, speakerHint,
+     and question/answer for kind=qna).
+
+OUTPUT FORMAT — STRICT:
+  {
+    "reply": "<≤2 short sentences explaining what you changed>",
+    "clips": [ <full updated clip objects, in chronological order> ]
+  }
+  No prose outside the JSON. No code fences.
+`;
+
+router.post("/pitaji/jobs/:jobId/refine", async (req: Request, res: Response) => {
+  if (!isGeminiConfigured()) {
+    res.status(503).json({ error: "AI is not configured." });
+    return;
+  }
+  if (!isPitajiStoreEnabled()) {
+    res.status(503).json({ error: "Pita Ji store is not configured." });
+    return;
+  }
+
+  const jobId = String(req.params.jobId ?? "").trim();
+  if (!/^pj_[A-Za-z0-9]+$/.test(jobId)) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
+  const message = String((req.body as { message?: unknown })?.message ?? "").trim();
+  if (!message) {
+    res.status(400).json({ error: "message is required" });
+    return;
+  }
+
+  const job = await getAnalyzeJob(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  const existingClips = Array.isArray(job.clips) ? job.clips : [];
+
+  setupSse(res);
+  sseSend(res, { type: "run_start", jobId, ts: Date.now() });
+
+  try {
+    const { createGeminiClient } = await import("../lib/gemini-client");
+    const ai = createGeminiClient();
+    const userPrompt = [
+      "Current clips (JSON):",
+      JSON.stringify({ clips: existingClips }),
+      "",
+      "Operator instruction:",
+      message,
+    ].join("\n");
+
+    const resp = await ai.models.generateContent({
+      model:
+        (process.env.PITAJI_REFINE_MODEL ?? process.env.PITAJI_ANALYSIS_MODEL ?? "gemini-3.5-flash").trim() ||
+        "gemini-3.5-flash",
+      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+      config: {
+        systemInstruction: PITAJI_REFINE_SYSTEM_PROMPT,
+        responseMimeType: "application/json",
+        maxOutputTokens: 32_768,
+      },
+    });
+
+    const text = (resp.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => (typeof (p as { text?: unknown }).text === "string" ? (p as { text: string }).text : ""))
+      .join("")
+      .trim();
+
+    let parsed: { reply?: string; clips?: unknown[] };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error("Model returned invalid JSON for refine");
+    }
+
+    const reply = typeof parsed.reply === "string" ? parsed.reply : "Updated.";
+    const incoming = Array.isArray(parsed.clips) ? parsed.clips : [];
+
+    // Re-mint ids for any clip that lacks one (newly added by the model)
+    // and keep existing ids stable so the client can match-and-replace.
+    const crypto = await import("node:crypto");
+    const updated: PitajiClip[] = incoming
+      .map((raw): PitajiClip | null => {
+        const o = raw as Record<string, unknown>;
+        const start = Number(o.startSec);
+        const end = Number(o.endSec);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+        const kindRaw = String(o.kind ?? "topic").toLowerCase();
+        const kind = kindRaw === "qna" ? ("qna" as const) : ("topic" as const);
+        const id =
+          typeof o.id === "string" && o.id.length > 0
+            ? o.id
+            : `clip_${crypto.randomBytes(6).toString("hex")}`;
+        const tags = Array.isArray(o.hashtags)
+          ? (o.hashtags as unknown[]).filter((x): x is string => typeof x === "string")
+          : [];
+        const clip: PitajiClip = {
+          id,
+          kind,
+          title: typeof o.title === "string" ? o.title : "Untitled",
+          summary: typeof o.summary === "string" ? o.summary : "",
+          startSec: Math.max(0, Math.round(start)),
+          endSec: Math.max(Math.round(start) + 1, Math.round(end)),
+          speakerHint: typeof o.speakerHint === "string" ? o.speakerHint : "primary",
+          suggestedTitle: typeof o.suggestedTitle === "string" ? o.suggestedTitle : "",
+          description: typeof o.description === "string" ? o.description : "",
+          hashtags: tags.slice(0, 8),
+          pinnedComment: typeof o.pinnedComment === "string" ? o.pinnedComment : "",
+        };
+        if (kind === "qna") {
+          clip.question = typeof o.question === "string" ? o.question : "";
+          clip.answer = typeof o.answer === "string" ? o.answer : "";
+        }
+        return clip;
+      })
+      .filter((c): c is PitajiClip => c !== null)
+      .sort((a, b) => a.startSec - b.startSec);
+
+    // Persist + emit. Client clears its clip list on `clips_replaced` and
+    // re-renders from the events that follow.
+    await updateAnalyzeJob(jobId, { clips: updated });
+    sseSend(res, { type: "text", message: reply });
+    sseSend(res, { type: "clips_replaced", total: updated.length });
+    for (const c of updated) {
+      sseSend(res, { type: "clip", clip: c });
+    }
+    sseSend(res, { type: "summary", totalClips: updated.length, jobId });
+    sseSend(res, { type: "done" });
+  } catch (err) {
+    const m = err instanceof Error ? err.message : "Refine failed";
+    req_logger_warn(req, err, "Pita Ji refine failed");
+    sseSend(res, { type: "error", message: m });
+    sseSend(res, { type: "done" });
+  } finally {
+    if (!res.writableEnded) res.end();
+  }
+});
+
+// ── /jobs/:jobId/dispatch — fire cut + thumbnail jobs in background ───────
+// User picks the clips they want and clicks Cut / Thumbnail / Both. The
+// dispatcher creates a pjc_<uuid> dispatch record per clip in DDB, calls
+// the existing /api/youtube/clip-cut endpoint internally for cuts, and
+// (Phase 5) will enqueue the thumbnail agent. Returns the list of created
+// dispatch ids immediately — the work continues in the background.
+
+interface DispatchRequestBody {
+  clipIds?: unknown;
+  action?: unknown;
+}
+
+router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.status(503).json({ error: "Pita Ji store is not configured." });
+    return;
+  }
+
+  const jobId = String(req.params.jobId ?? "").trim();
+  if (!/^pj_[A-Za-z0-9]+$/.test(jobId)) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
+  const body = req.body as DispatchRequestBody;
+  const wantedIds = Array.isArray(body.clipIds)
+    ? body.clipIds.filter((x): x is string => typeof x === "string")
+    : [];
+  const action = body.action === "thumbnail" || body.action === "both" || body.action === "cut"
+    ? (body.action as "cut" | "thumbnail" | "both")
+    : null;
+  if (wantedIds.length === 0 || !action) {
+    res.status(400).json({ error: "clipIds[] and action ('cut'|'thumbnail'|'both') are required" });
+    return;
+  }
+
+  const job = await getAnalyzeJob(jobId);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+    return;
+  }
+  const allClips = Array.isArray(job.clips) ? job.clips : [];
+  const byId = new Map(allClips.map((c) => [c.id, c]));
+  const clipsToDispatch = wantedIds
+    .map((id) => byId.get(id))
+    .filter((c): c is PitajiClip => Boolean(c));
+  if (clipsToDispatch.length === 0) {
+    res.status(400).json({ error: "No matching clips found in this job" });
+    return;
+  }
+
+  const dispatched: Array<{
+    pitajiClipId: string;
+    clipId: string;
+    cutChildJobId?: string;
+    cutError?: string;
+  }> = [];
+  const now = Date.now();
+
+  for (const clip of clipsToDispatch) {
+    const pitajiClipId = newClipJobId();
+    const dispatchRec: PitajiClipDispatch = {
+      jobId: pitajiClipId,
+      kind: "pitaji-clip",
+      parentJobId: jobId,
+      clip,
+      action,
+      status: action === "thumbnail" ? "thumbnail-pending" : "queued",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    if (action === "cut" || action === "both") {
+      try {
+        const child = await dispatchClipCut({
+          youtubeUrl: job.youtubeUrl,
+          startSec: clip.startSec,
+          endSec: clip.endSec,
+        });
+        dispatchRec.cutChildJobId = child.jobId;
+        dispatchRec.status = "cutting";
+      } catch (err) {
+        const m = err instanceof Error ? err.message : "Failed to start cut job";
+        dispatchRec.status = "error";
+        dispatchRec.error = m;
+        dispatched.push({ pitajiClipId, clipId: clip.id, cutError: m });
+        try { await putClipDispatch(dispatchRec); } catch (e2) { req_logger_warn(req, e2, "putClipDispatch failed"); }
+        continue;
+      }
+    }
+
+    try {
+      await putClipDispatch(dispatchRec);
+    } catch (err) {
+      req_logger_warn(req, err, "Failed to persist clip dispatch record");
+    }
+    dispatched.push({
+      pitajiClipId,
+      clipId: clip.id,
+      cutChildJobId: dispatchRec.cutChildJobId,
+    });
+  }
+
+  // Mark parent as "dispatched" once at least one cut started successfully.
+  try {
+    await updateAnalyzeJob(jobId, { status: "dispatched" });
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to mark parent job dispatched");
+  }
+
+  res.json({ ok: true, dispatched });
+});
+
+// ── /jobs/:jobId/dispatches — list dispatches with rolled-up cut progress ──
+// Frontend polls this every few seconds while clips are being cut.
+
+router.get("/pitaji/jobs/:jobId/dispatches", async (req: Request, res: Response) => {
+  if (!isPitajiStoreEnabled()) {
+    res.json({ dispatches: [] });
+    return;
+  }
+  const jobId = String(req.params.jobId ?? "").trim();
+  if (!/^pj_[A-Za-z0-9]+$/.test(jobId)) {
+    res.status(400).json({ error: "Invalid jobId" });
+    return;
+  }
+
+  let dispatches: PitajiClipDispatch[] = [];
+  try {
+    dispatches = await listClipDispatchesByParent(jobId);
+  } catch (err) {
+    req_logger_warn(req, err, "Failed to list dispatches");
+    res.status(500).json({ error: "Failed to list dispatches" });
+    return;
+  }
+
+  // Roll up the child cut-job status from /api/youtube/progress so the
+  // client can show live "Cutting → 42%" pills inline.
+  const enriched = await Promise.all(
+    dispatches.map(async (d) => {
+      let cutProgress: {
+        status?: string;
+        message?: string | null;
+        progressPct?: number | null;
+        s3Key?: string | null;
+        filename?: string | null;
+      } | null = null;
+      if (d.cutChildJobId) {
+        cutProgress = await fetchClipCutProgress(d.cutChildJobId);
+      }
+      return {
+        ...stripDispatchForClient(d),
+        cutProgress,
+      };
+    }),
+  );
+
+  res.json({ dispatches: enriched });
+});
+
+// ── Internal helpers ──────────────────────────────────────────────────────
+
+const INTERNAL_BASE_URL = (() => {
+  const fromEnv = (process.env.INTERNAL_API_BASE ?? "").trim().replace(/\/+$/, "");
+  return fromEnv || "";
+})();
+const INTERNAL_AGENT_HEADER = "X-Internal-Agent";
+const INTERNAL_AGENT_SECRET =
+  process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+
+async function dispatchClipCut(params: {
+  youtubeUrl: string;
+  startSec: number;
+  endSec: number;
+}): Promise<{ jobId: string; status?: string }> {
+  const apiBase = INTERNAL_BASE_URL ? `${INTERNAL_BASE_URL}/api` : "";
+  if (!apiBase.startsWith("http")) {
+    throw new Error("INTERNAL_API_BASE is not configured (Lambda warm-start should have set it)");
+  }
+  const r = await fetch(`${apiBase}/youtube/clip-cut`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      [INTERNAL_AGENT_HEADER]: INTERNAL_AGENT_SECRET,
+    },
+    body: JSON.stringify({
+      url: params.youtubeUrl,
+      startTime: params.startSec,
+      endTime: params.endSec,
+      quality: "best",
+    }),
+  });
+  if (!r.ok) {
+    let msg = `clip-cut returned ${r.status}`;
+    try {
+      const data = (await r.json()) as { error?: string };
+      if (data?.error) msg = data.error;
+    } catch { /* ignore */ }
+    throw new Error(msg);
+  }
+  const data = (await r.json()) as { jobId?: string; status?: string };
+  if (!data.jobId) throw new Error("clip-cut response missing jobId");
+  return { jobId: data.jobId, status: data.status };
+}
+
+async function fetchClipCutProgress(childJobId: string): Promise<{
+  status?: string;
+  message?: string | null;
+  progressPct?: number | null;
+  s3Key?: string | null;
+  filename?: string | null;
+} | null> {
+  const apiBase = INTERNAL_BASE_URL ? `${INTERNAL_BASE_URL}/api` : "";
+  if (!apiBase.startsWith("http")) return null;
+  try {
+    const r = await fetch(`${apiBase}/youtube/progress/${encodeURIComponent(childJobId)}`, {
+      headers: { [INTERNAL_AGENT_HEADER]: INTERNAL_AGENT_SECRET },
+    });
+    if (!r.ok) return null;
+    const data = (await r.json()) as Record<string, unknown>;
+    return {
+      status: typeof data.status === "string" ? data.status : undefined,
+      message: typeof data.message === "string" ? data.message : null,
+      progressPct:
+        typeof data.progressPct === "number"
+          ? data.progressPct
+          : typeof data.percent === "number"
+            ? data.percent
+            : null,
+      s3Key: typeof data.s3Key === "string" ? data.s3Key : null,
+      filename: typeof data.filename === "string" ? data.filename : null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

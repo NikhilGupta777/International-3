@@ -196,3 +196,137 @@ export async function streamPitajiAnalyze(opts: PitajiAnalyzeOptions): Promise<v
     throw err;
   }
 }
+
+
+// ── Dispatch (Phase 4) ──────────────────────────────────────────────────────
+
+export type PitajiDispatchAction = "cut" | "thumbnail" | "both";
+
+export type PitajiDispatched = {
+  pitajiClipId: string;
+  clipId: string;
+  cutChildJobId?: string;
+  cutError?: string;
+};
+
+export async function dispatchPitajiClips(
+  jobId: string,
+  clipIds: string[],
+  action: PitajiDispatchAction,
+): Promise<{ ok: boolean; dispatched: PitajiDispatched[] }> {
+  return request(`/api/pitaji/jobs/${encodeURIComponent(jobId)}/dispatch`, {
+    method: "POST",
+    body: JSON.stringify({ clipIds, action }),
+  });
+}
+
+export type PitajiDispatchView = {
+  jobId: string;
+  parentJobId: string;
+  action: PitajiDispatchAction;
+  status: string;
+  clip: PitajiClip;
+  cutChildJobId?: string;
+  cutS3Key?: string;
+  cutFilename?: string;
+  thumbnailChildJobId?: string;
+  thumbnailS3Key?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+  cutProgress?: {
+    status?: string;
+    message?: string | null;
+    progressPct?: number | null;
+    s3Key?: string | null;
+    filename?: string | null;
+  } | null;
+};
+
+export async function listPitajiDispatches(
+  jobId: string,
+): Promise<{ dispatches: PitajiDispatchView[] }> {
+  return request<{ dispatches: PitajiDispatchView[] }>(
+    `/api/pitaji/jobs/${encodeURIComponent(jobId)}/dispatches`,
+  );
+}
+
+// ── Refine SSE (Phase 4) ────────────────────────────────────────────────────
+
+export type PitajiRefineEvent =
+  | { type: "run_start"; jobId: string; ts?: number }
+  | { type: "text"; message: string }
+  | { type: "clips_replaced"; total: number }
+  | { type: "clip"; clip: PitajiClip }
+  | { type: "summary"; totalClips: number; jobId: string }
+  | { type: "error"; message: string }
+  | { type: "done" };
+
+export type PitajiRefineOptions = {
+  jobId: string;
+  message: string;
+  signal?: AbortSignal;
+  onEvent: (evt: PitajiRefineEvent) => void;
+};
+
+export async function streamPitajiRefine(opts: PitajiRefineOptions): Promise<void> {
+  const res = await fetch(
+    `${BASE}/api/pitaji/jobs/${encodeURIComponent(opts.jobId)}/refine`,
+    {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+      },
+      body: JSON.stringify({ message: opts.message }),
+      signal: opts.signal,
+    },
+  );
+  if (!res.ok || !res.body) {
+    let m = `Request failed (${res.status})`;
+    try {
+      const d = (await res.json()) as { error?: string };
+      if (d?.error) m = d.error;
+    } catch { /* ignore */ }
+    throw new Error(m);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const handleFrame = (frame: string): void => {
+    const data = frame
+      .split(/\r?\n/)
+      .filter((l) => l.startsWith("data:"))
+      .map((l) => l.slice(5).replace(/^\s/, ""))
+      .join("\n")
+      .trim();
+    if (!data) return;
+    try {
+      const evt = JSON.parse(data) as PitajiRefineEvent;
+      opts.onEvent(evt);
+    } catch {
+      /* swallow malformed frame */
+    }
+  };
+
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        handleFrame(frame);
+      }
+    }
+    if (buffer.trim().length > 0) handleFrame(buffer);
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") return;
+    throw err;
+  }
+}

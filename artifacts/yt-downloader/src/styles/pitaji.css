@@ -1103,3 +1103,11 @@
   background: linear-gradient(180deg, #ef4444, #b91c1c);
   color: #fff5f5;
 }
+
+
+/* ── Refine input row (Phase 4) ────────────────────────────────────────────── */
+
+.pj-refine-form {
+  margin-top: 14px;
+  max-width: 780px;
+}
