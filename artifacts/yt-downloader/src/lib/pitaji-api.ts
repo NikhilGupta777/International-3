@@ -192,7 +192,7 @@ export async function streamPitajiAnalyze(opts: PitajiAnalyzeOptions): Promise<v
     }
     if (buffer.trim().length > 0) handleFrame(buffer);
   } catch (err) {
-    if (err instanceof DOMException && err.name === "AbortError") return;
+    // Let callers distinguish user aborts (AbortError) from other failures.
     throw err;
   }
 }
