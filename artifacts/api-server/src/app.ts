@@ -512,6 +512,15 @@ app.use("/api/agent", (_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// Pita Ji workspace also streams analysis events — same Nagle bypass.
+app.use("/api/pitaji", (_req: Request, res: Response, next: NextFunction) => {
+  const socket = (res as any).socket;
+  if (socket && typeof socket.setNoDelay === "function") {
+    socket.setNoDelay(true);
+  }
+  next();
+});
+
 app.use("/api", router);
 app.use("/api", (_req: Request, res: Response) => {
   res.status(404).json({ error: "API route not found" });
