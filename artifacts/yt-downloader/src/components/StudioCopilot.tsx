@@ -5,7 +5,7 @@ import {
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
   ArrowLeft, Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
-  ImagePlus, Music2, Terminal,
+  ImagePlus, Music2, Terminal, Eye,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -269,6 +269,85 @@ function renderStreamingMd(text: string): React.ReactNode {
 
   return result;
 }
+
+type CanvasCandidate = {
+  label: string;
+  language: string;
+  content: string;
+  displayText: string;
+  live: boolean;
+};
+
+const CANVAS_LANGUAGE_EXT: Record<string, string> = {
+  html: "html",
+  css: "css",
+  javascript: "js",
+  js: "js",
+  typescript: "ts",
+  ts: "ts",
+  jsx: "jsx",
+  tsx: "tsx",
+  python: "py",
+  py: "py",
+  json: "json",
+  markdown: "md",
+  md: "md",
+  text: "txt",
+  txt: "txt",
+  srt: "srt",
+  vtt: "vtt",
+};
+
+function normalizeCanvasLanguage(language?: string, content?: string): string {
+  const clean = String(language || "").trim().toLowerCase().replace(/[^a-z0-9+#.-]/g, "");
+  if (clean) return clean;
+  const sample = String(content || "").slice(0, 500).toLowerCase();
+  if (sample.includes("<!doctype html") || sample.includes("<html")) return "html";
+  if (/^\s*[{[]/.test(sample)) return "json";
+  return "text";
+}
+
+function canvasFilename(language: string): string {
+  const ext = CANVAS_LANGUAGE_EXT[language] || "txt";
+  return `agent-canvas.${ext}`;
+}
+
+function isHtmlCanvas(language: string, content: string): boolean {
+  const lang = normalizeCanvasLanguage(language, content);
+  return lang === "html" || /<!doctype html|<html[\s>]/i.test(content);
+}
+
+function extractCanvasCandidate(text: string): CanvasCandidate | null {
+  const closed = Array.from(text.matchAll(/```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*?)```/g));
+  let match: RegExpMatchArray | null = null;
+  let live = false;
+
+  if (closed.length > 0) {
+    match = closed.reduce((best, item) => (item[2].length > best[2].length ? item : best), closed[0]);
+  } else {
+    const open = text.match(/```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*)$/);
+    if (open) {
+      match = open;
+      live = true;
+    }
+  }
+
+  if (!match) return null;
+  const content = (match[2] || "").trim();
+  if (content.length < 80 && !isHtmlCanvas(match[1] || "", content)) return null;
+  const language = normalizeCanvasLanguage(match[1], content);
+  const displayText = text
+    .replace(match[0], live ? "\n\nWriting in canvas..." : "\n\nCanvas created below.")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return {
+    label: canvasFilename(language),
+    language,
+    content,
+    displayText,
+    live,
+  };
+}
 // ── ToolCard ──────────────────────────────────────────────────────────────────
 function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
@@ -333,13 +412,17 @@ function PlanCard({ part }: { part: MessagePart & { kind: "plan" } }) {
 }
 
 // ── TextArtifact (own component so useState is always at top level) ───────────
-function TextArtifact({ label, content, downloadUrl }: { label: string; content: string; downloadUrl?: string }) {
+function TextArtifact({ label, content, downloadUrl, language, live }: { label: string; content: string; downloadUrl?: string; language?: string; live?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"code" | "preview">("code");
+  const normalizedLanguage = normalizeCanvasLanguage(language, content);
+  const canPreview = isHtmlCanvas(normalizedLanguage, content);
   const copyText = () => { void navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const downloadName = label || canvasFilename(normalizedLanguage);
   const artifactUrl = React.useMemo(
-    () => downloadUrl || `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`,
-    [content, downloadUrl],
+    () => downloadUrl || `data:${canPreview ? "text/html" : "text/plain"};charset=utf-8,${encodeURIComponent(content)}`,
+    [canPreview, content, downloadUrl],
   );
   const preview = content.length > 3200 ? `${content.slice(0, 3200)}\n\n...` : content;
   return (
@@ -351,14 +434,17 @@ function TextArtifact({ label, content, downloadUrl }: { label: string; content:
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-bold text-cyan-100 truncate">{label}</p>
-            <p className="text-[11px] text-white/40 mt-0.5">{content.length.toLocaleString()} chars - canvas ready</p>
+            <p className="text-[11px] text-white/40 mt-0.5">{content.length.toLocaleString()} chars - {live ? "writing live" : "canvas ready"}{canPreview ? " - preview supported" : ""}</p>
           </div>
           <div className="flex items-center gap-1.5">
+            {canPreview && (
+              <button onClick={() => { setView("preview"); setOpen(true); }} className="hidden sm:inline-flex text-[11px] text-emerald-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-emerald-500/14 hover:bg-emerald-500/22 border border-emerald-300/15 font-semibold">Preview</button>
+            )}
             <button onClick={() => setOpen(true)} className="text-[11px] text-cyan-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-cyan-400/14 hover:bg-cyan-400/22 border border-cyan-300/15 font-semibold">Open canvas</button>
             <button onClick={copyText} title="Copy" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
-            <a href={artifactUrl} download={label || "agent-output.txt"} title="Download" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
+            <a href={artifactUrl} download={downloadName} title="Download" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
               <Download className="w-3.5 h-3.5" />
             </a>
           </div>
@@ -387,24 +473,43 @@ function TextArtifact({ label, content, downloadUrl }: { label: string; content:
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold text-white truncate">{label}</p>
-                  <p className="text-[11px] text-white/40">Agent canvas - preview, copy, download</p>
+                  <p className="text-[11px] text-white/40">Agent canvas - {live ? "live writing, " : ""}preview, copy, download</p>
                 </div>
+                {canPreview && (
+                  <div className="hidden sm:flex items-center gap-1 p-1 rounded-xl bg-white/6 border border-white/8">
+                    <button onClick={() => setView("code")} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "code" ? "bg-cyan-400/18 text-cyan-100" : "text-white/55 hover:text-white")}>
+                      <Terminal className="w-3.5 h-3.5" /> Code
+                    </button>
+                    <button onClick={() => setView("preview")} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "preview" ? "bg-emerald-500/18 text-emerald-100" : "text-white/55 hover:text-white")}>
+                      <Eye className="w-3.5 h-3.5" /> Preview
+                    </button>
+                  </div>
+                )}
                 <button onClick={copyText} className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/7 hover:bg-white/12 text-xs font-semibold text-white/75">
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} {copied ? "Copied" : "Copy"}
                 </button>
-                <a href={artifactUrl} download={label || "agent-output.txt"} className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/18 hover:bg-emerald-500/25 text-xs font-semibold text-emerald-100 border border-emerald-300/15">
+                <a href={artifactUrl} download={downloadName} className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/18 hover:bg-emerald-500/25 text-xs font-semibold text-emerald-100 border border-emerald-300/15">
                   <Download className="w-3.5 h-3.5" /> Download
                 </a>
                 <button onClick={() => setOpen(false)} className="p-2 rounded-xl bg-white/7 hover:bg-white/12 text-white/60 hover:text-white">
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              <pre className="flex-1 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{content}</pre>
+              {canPreview && view === "preview" ? (
+                <iframe
+                  title={downloadName}
+                  sandbox="allow-scripts allow-forms allow-popups allow-modals"
+                  srcDoc={content}
+                  className="flex-1 w-full bg-white"
+                />
+              ) : (
+                <pre className="flex-1 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{content}</pre>
+              )}
               <div className="sm:hidden grid grid-cols-2 gap-2 p-3 border-t border-white/10 bg-white/[0.035]">
                 <button onClick={copyText} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white/8 text-xs font-semibold text-white/75">
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} {copied ? "Copied" : "Copy"}
                 </button>
-                <a href={artifactUrl} download={label || "agent-output.txt"} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/20 text-xs font-semibold text-emerald-100">
+                <a href={artifactUrl} download={downloadName} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/20 text-xs font-semibold text-emerald-100">
                   <Download className="w-3.5 h-3.5" /> Download
                 </a>
               </div>
@@ -511,24 +616,39 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
             if (!cleanContent.trim()) return null;
             const isErrorMsg = !isUser && cleanContent.startsWith("⚠️");
             // Determine if this is the last text part being actively streamed
-            const isLastTextPart = !isUser && isStreaming && i === message.parts.filter(p => p.kind === "text").length - 1;
+            const textPartIndexes = message.parts.map((p, idx) => p.kind === "text" ? idx : -1).filter(idx => idx >= 0);
+            const isLastTextPart = !isUser && isStreaming && i === textPartIndexes[textPartIndexes.length - 1];
+            const canvas = !isUser ? extractCanvasCandidate(cleanContent) : null;
+            const visibleText = canvas?.displayText || cleanContent;
             return (
-              <div key={i} className={cn("group/bubble relative rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                isUser ? "bg-[#dc2626] text-white rounded-tr-sm" : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md")}>
-                {isUser ? cleanContent : (isLastTextPart ? renderStreamingMd(cleanContent) : renderMd(cleanContent))}
-                {/* Copy button — assistant messages only, hover-reveal */}
-                {!isUser && (
-                  <div className="absolute top-2 right-2 flex gap-1">
-                    <CopyBubble text={part.content} />
-                    {/* Retry button on error messages */}
-                    {isErrorMsg && onRetry && (
-                      <button onClick={onRetry} title="Retry" className="opacity-0 group-hover/bubble:opacity-100 transition-opacity p-1 rounded-md hover:bg-white/10 text-white/30 hover:text-white/70">
-                        <RotateCcw className="w-3 h-3" />
-                      </button>
+              <React.Fragment key={i}>
+                {visibleText.trim() && (
+                  <div className={cn("group/bubble relative rounded-2xl px-4 py-3 text-sm leading-relaxed",
+                    isUser ? "bg-[#dc2626] text-white rounded-tr-sm" : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md")}>
+                    {isUser ? cleanContent : (isLastTextPart ? renderStreamingMd(visibleText) : renderMd(visibleText))}
+                    {/* Copy button — assistant messages only, hover-reveal */}
+                    {!isUser && (
+                      <div className="absolute top-2 right-2 flex gap-1">
+                        <CopyBubble text={part.content} />
+                        {/* Retry button on error messages */}
+                        {isErrorMsg && onRetry && (
+                          <button onClick={onRetry} title="Retry" className="opacity-0 group-hover/bubble:opacity-100 transition-opacity p-1 rounded-md hover:bg-white/10 text-white/30 hover:text-white/70">
+                            <RotateCcw className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
-              </div>
+                {canvas && (
+                  <TextArtifact
+                    label={canvas.label}
+                    content={canvas.content}
+                    language={canvas.language}
+                    live={isLastTextPart && canvas.live}
+                  />
+                )}
+              </React.Fragment>
             );
           }
           if (part.kind === "tool_start") return <ToolCard key={i} part={part} />;

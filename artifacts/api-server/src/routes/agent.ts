@@ -611,7 +611,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "run_code_analysis",
-    description: "Use Gemini code execution for CSV/JSON/text calculations, tables, simple charts, statistics, and data analysis.",
+    description: "Use Gemini code execution only for CSV/JSON/text calculations, tables, simple charts, statistics, and data analysis. Do not use this tool just to write or generate code; answer with a fenced code block or use export_text_file when the user asks for a downloadable file.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -685,6 +685,7 @@ Match the user's language:
 
 Use your own intelligence first. Do NOT call tools for:
 - Normal writing, rewriting, brainstorming, script drafts, hooks, thumbnail text, titles, descriptions, hashtags
+- Code generation, HTML/CSS/JS/Python snippets, document drafting, or canvas-style writing when the user only wants content shown in chat/canvas
 - SEO ideas, content strategy, video improvement suggestions
 - Explaining what you can do, answering general questions
 - Simple pasted text/SRT/CSV/JSON analysis
@@ -700,6 +701,16 @@ Call tools only when the user needs a real app action or unavailable information
 - Code or data calculation
 
 Always use the smallest, cheapest correct tool. Do not call a more expensive or slower tool when a simpler one solves the task.
+
+# CANVAS AND CODE OUTPUT
+
+When the user asks you to create code, HTML, CSS, JavaScript, Python, JSON, Markdown, a document, or any long editable artifact:
+- Write the main artifact in one fenced code block with a specific language tag, for example \`\`\`html, \`\`\`python, \`\`\`markdown, or \`\`\`json.
+- Put only the artifact content inside the code block. Keep explanation before or after it short.
+- Do not call run_code_analysis just to generate code or text.
+- Use run_code_analysis only when you must execute calculations or analyze supplied data.
+- If the user asks to export, download, save, or create a file, call export_text_file with the same complete artifact content.
+- For previewable web artifacts, prefer a single complete HTML file with inline CSS/JS unless the user explicitly asks for multiple files.
 
 # AVOID BAD AUTOMATION
 
