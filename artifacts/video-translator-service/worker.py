@@ -40,6 +40,10 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
+# ── Disable ONNX Runtime TensorRT engine caching ────────────────────────────
+# Even if TRT is available, prevent it from writing multi-GB cache files to /tmp.
+os.environ.setdefault("ORT_TENSORRT_ENGINE_CACHE_ENABLE", "0")
+
 import boto3
 
 from runtime_deps import pip_install_command, write_runtime_requirements
@@ -1553,6 +1557,12 @@ def _verify_onnxruntime_cuda_stack() -> None:
     A CUDA-11 onnxruntime-gpu wheel inside our CUDA-12 image silently falls
     back to CPU with errors like missing libcublasLt.so.11. That makes short
     translator jobs look like CPU jobs even though torch.cuda is available.
+
+    Also monkey-patches ``ort.InferenceSession`` to exclude TensorRT from the
+    default provider list.  When TensorrtExecutionProvider is compiled into the
+    ORT binary, it tries to compile TRT engines on first use (~2-3 min on T4).
+    CUDAExecutionProvider is equally fast for CosyVoice's small frontend ONNX
+    models, so we force CUDA-only to avoid the cold-start penalty.
     """
     try:
         import onnxruntime as ort
@@ -1565,6 +1575,28 @@ def _verify_onnxruntime_cuda_stack() -> None:
         raise RuntimeError(
             "ONNXRuntime CUDAExecutionProvider is unavailable; CosyVoice "
             "frontend ONNX models would run on CPU."
+        )
+
+    # Monkey-patch InferenceSession to exclude TensorRT.  CosyVoice's frontend
+    # creates sessions without specifying providers, so ORT picks TRT first
+    # (highest priority in the compiled binary).  TRT engine compilation on
+    # Tesla T4 takes 2-3 minutes per cold start — pure overhead since CUDA EP
+    # is equally fast for these small ONNX models (~5 MB each).
+    if "TensorrtExecutionProvider" in providers:
+        _SAFE_PROVIDERS = [p for p in providers if p != "TensorrtExecutionProvider"]
+        _OrigSession = ort.InferenceSession
+
+        class _PatchedSession(_OrigSession):
+            def __init__(self, *args, **kwargs):
+                if "providers" not in kwargs:
+                    kwargs["providers"] = _SAFE_PROVIDERS
+                super().__init__(*args, **kwargs)
+
+        ort.InferenceSession = _PatchedSession
+        log.info(
+            "[ONNXRuntime] TensorrtExecutionProvider excluded — using %s to avoid "
+            "2-3 min TRT engine compilation on cold start.",
+            _SAFE_PROVIDERS,
         )
 
     try:
@@ -2427,6 +2459,9 @@ def synthesize_segments_cosyvoice(
         except Exception as exc:
             log.warning("[GPU] nvidia-smi unavailable: %s", exc)
 
+    update_progress("CLONING", 52, "Loading CosyVoice model (CUDA init)...")
+    _model_load_t0 = time.monotonic()
+
     cv_dir = _ensure_cosyvoice()
     if str(cv_dir) not in sys.path:
         sys.path.insert(0, str(cv_dir))
@@ -2517,6 +2552,8 @@ def synthesize_segments_cosyvoice(
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
     cosy_model = model
+    _model_load_dur = time.monotonic() - _model_load_t0
+    log.info("[CosyVoice] Model loaded in %.1fs", _model_load_dur)
 
     # ── Phase 3 (P1-4): Detect CosyVoice version via class name ────────────
     # Upstream hierarchy: CosyVoice3 extends CosyVoice2 extends CosyVoice.
@@ -2593,6 +2630,41 @@ def synthesize_segments_cosyvoice(
 
     # Pre-warm default reference
     default_ref_wav, default_ref_prompt_path = _load_ref(default_reference_audio, "default")
+
+    # ── Warmup inference — pre-compile CUDA kernels / JIT graphs ────────────
+    # The first CosyVoice inference triggers CUDA kernel JIT compilation,
+    # cuDNN autotuning, and ONNX session initialization.  Without a warmup
+    # this shows up as a mysterious 1-3 min silence before the first real
+    # segment produces audio.  Running a tiny dummy inference here makes all
+    # that overhead visible and shifts it into a named pipeline phase.
+    # Uses the capped 10s reference (default_ref_prompt_path) — NOT the raw
+    # full-length video audio — to keep the warmup fast.
+    update_progress("CLONING", 52, "Warming up CUDA kernels...")
+    _warmup_t0 = time.monotonic()
+    try:
+        log.info("[CosyVoice] Running warmup inference (pre-compiling CUDA kernels)...")
+        _warmup_text = "Warmup."
+        if is_cosyvoice3 and COSYVOICE3_INJECT_PROMPT_PREFIX:
+            _warmup_text = "<|endofprompt|>Warmup."
+        _warmup_done = False
+        if hasattr(model, "inference_zero_shot"):
+            for _wchunk in model.inference_zero_shot(
+                _warmup_text, _warmup_text, default_ref_prompt_path
+            ):
+                _warmup_done = True
+                break  # one chunk is enough to trigger all kernel compilation
+        if not _warmup_done and hasattr(model, "inference_cross_lingual"):
+            for _wchunk in model.inference_cross_lingual(
+                _warmup_text, default_ref_prompt_path
+            ):
+                break
+        _warmup_dur = time.monotonic() - _warmup_t0
+        log.info("[CosyVoice] Warmup complete in %.1fs — CUDA kernels ready.", _warmup_dur)
+    except Exception as _warmup_err:
+        _warmup_dur = time.monotonic() - _warmup_t0
+        log.warning("[CosyVoice] Warmup failed after %.1fs (non-fatal): %s", _warmup_dur, _warmup_err)
+
+    update_progress("CLONING", 53, "CUDA kernels ready. Preparing voice synthesis...")
 
     # Pre-warm per-speaker refs so load errors are caught before synthesis
     if speaker_refs:
@@ -2783,7 +2855,7 @@ def synthesize_segments_cosyvoice(
         if should_write:
             update_progress(
                 "CLONING",
-                52 + int((index - 1) / total_segments * 16),
+                54 + int((index - 1) / total_segments * 14),
                 f"Cloning voice ({index}/{total_segments})…",
             )
             _last_ddb_write_time = now
