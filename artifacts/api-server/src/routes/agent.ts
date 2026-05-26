@@ -1086,8 +1086,9 @@ function convertSubtitleText(content: string, inputFormat: string, outputFormat:
 async function downloadableTextArtifact(filename: string, content: string): Promise<object> {
   if (!isS3StorageEnabled()) {
     return {
-      artifactType: "download",
+      artifactType: "text",
       label: filename,
+      content: content.slice(0, 120000),
       downloadUrl: `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`,
     };
   }
@@ -1102,7 +1103,12 @@ async function downloadableTextArtifact(filename: string, content: string): Prom
     filename: uploaded.filename,
     expiresInSec: 7 * 24 * 60 * 60,
   });
-  return { artifactType: "download", label: uploaded.filename, downloadUrl };
+  return {
+    artifactType: "text",
+    label: uploaded.filename,
+    content: content.slice(0, 120000),
+    downloadUrl,
+  };
 }
 
 function scanKnownJobIds(req: any): string[] {

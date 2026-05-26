@@ -333,17 +333,86 @@ function PlanCard({ part }: { part: MessagePart & { kind: "plan" } }) {
 }
 
 // ── TextArtifact (own component so useState is always at top level) ───────────
-function TextArtifact({ label, content }: { label: string; content: string }) {
+function TextArtifact({ label, content, downloadUrl }: { label: string; content: string; downloadUrl?: string }) {
   const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
   const copyText = () => { void navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const artifactUrl = React.useMemo(
+    () => downloadUrl || `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`,
+    [content, downloadUrl],
+  );
+  const preview = content.length > 3200 ? `${content.slice(0, 3200)}\n\n...` : content;
   return (
-    <div className="rounded-xl border border-white/12 bg-white/[0.04] overflow-hidden">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-white/8">
-        <span className="text-xs font-semibold text-white/70">{label}</span>
-        <button onClick={copyText} className="text-[10px] text-white/40 hover:text-white/80 px-2 py-0.5 rounded bg-white/6">{copied ? "✓ Copied" : "Copy"}</button>
+    <>
+      <div className="rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/10 via-white/[0.045] to-emerald-400/8 overflow-hidden shadow-[0_16px_60px_rgba(8,145,178,0.10)]">
+        <div className="flex items-start gap-3 px-3 py-3 border-b border-white/8">
+          <div className="mt-0.5 p-2 rounded-xl bg-cyan-400/12 border border-cyan-300/15">
+            <SquarePen className="w-4 h-4 text-cyan-200" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-cyan-100 truncate">{label}</p>
+            <p className="text-[11px] text-white/40 mt-0.5">{content.length.toLocaleString()} chars - canvas ready</p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setOpen(true)} className="text-[11px] text-cyan-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-cyan-400/14 hover:bg-cyan-400/22 border border-cyan-300/15 font-semibold">Open canvas</button>
+            <button onClick={copyText} title="Copy" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+            <a href={artifactUrl} download={label || "agent-output.txt"} title="Download" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
+              <Download className="w-3.5 h-3.5" />
+            </a>
+          </div>
+        </div>
+        <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-56 whitespace-pre-wrap bg-black/20">{preview}</pre>
       </div>
-      <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-80 whitespace-pre-wrap">{content}</pre>
-    </div>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] bg-black/72 backdrop-blur-md flex items-center justify-center p-3 sm:p-6"
+            onClick={() => setOpen(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 12, scale: 0.98 }}
+              className="w-full max-w-6xl h-[86vh] rounded-3xl border border-white/12 bg-[#080d10] shadow-2xl overflow-hidden flex flex-col"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-white/[0.035]">
+                <div className="p-2 rounded-xl bg-cyan-400/12 border border-cyan-300/15">
+                  <SquarePen className="w-4 h-4 text-cyan-200" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-bold text-white truncate">{label}</p>
+                  <p className="text-[11px] text-white/40">Agent canvas - preview, copy, download</p>
+                </div>
+                <button onClick={copyText} className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/7 hover:bg-white/12 text-xs font-semibold text-white/75">
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} {copied ? "Copied" : "Copy"}
+                </button>
+                <a href={artifactUrl} download={label || "agent-output.txt"} className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/18 hover:bg-emerald-500/25 text-xs font-semibold text-emerald-100 border border-emerald-300/15">
+                  <Download className="w-3.5 h-3.5" /> Download
+                </a>
+                <button onClick={() => setOpen(false)} className="p-2 rounded-xl bg-white/7 hover:bg-white/12 text-white/60 hover:text-white">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <pre className="flex-1 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{content}</pre>
+              <div className="sm:hidden grid grid-cols-2 gap-2 p-3 border-t border-white/10 bg-white/[0.035]">
+                <button onClick={copyText} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white/8 text-xs font-semibold text-white/75">
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} {copied ? "Copied" : "Copy"}
+                </button>
+                <a href={artifactUrl} download={label || "agent-output.txt"} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-emerald-500/20 text-xs font-semibold text-emerald-100">
+                  <Download className="w-3.5 h-3.5" /> Download
+                </a>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
@@ -390,7 +459,7 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
     );
   }
   if (part.artifactType === "text" && part.content) {
-    return <TextArtifact label={part.label} content={part.content} />;
+    return <TextArtifact label={part.label} content={part.content} downloadUrl={part.downloadUrl} />;
   }
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/8 px-3 py-2.5 flex items-center gap-3">
