@@ -60,6 +60,9 @@ type SseEvent =
   | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
   | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string }
+  | { type: "canvas_start"; runId?: string; canvasId: string; label: string; language?: string }
+  | { type: "canvas_delta"; runId?: string; canvasId: string; content: string }
+  | { type: "canvas_done"; runId?: string; canvasId: string }
   | { type: "suggestions"; items: string[]; runId?: string }
   | { type: "error"; message: string }
   | { type: "done"; runId?: string; ts?: number };
@@ -70,7 +73,7 @@ type MessagePart =
   | { kind: "attachment"; type: string; name: string; mimeType: string; data?: string; url?: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
   | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
-  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string };
+  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string; language?: string; canvasId?: string; live?: boolean };
 
 type Message = { id: string; role: "user" | "assistant"; parts: MessagePart[]; timestamp: Date };
 
@@ -563,8 +566,8 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
       </div>
     );
   }
-  if (part.artifactType === "text" && part.content) {
-    return <TextArtifact label={part.label} content={part.content} downloadUrl={part.downloadUrl} />;
+  if (part.artifactType === "text" && (part.content || part.live)) {
+    return <TextArtifact label={part.label} content={part.content ?? ""} downloadUrl={part.downloadUrl} language={part.language} live={part.live} />;
   }
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/8 px-3 py-2.5 flex items-center gap-3">
@@ -1191,6 +1194,50 @@ export function StudioCopilot({
       if (evt.type === "navigate") { if (onNavigate) onNavigate(evt.tab); return; }
       if (evt.type === "artifact") {
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, content: evt.content }] }));
+        return;
+      }
+      if (evt.type === "canvas_start") {
+        setThinking(false);
+        patchAssistant(m => {
+          const exists = m.parts.some(p => p.kind === "artifact" && (p as any).canvasId === evt.canvasId);
+          if (exists) return m;
+          return {
+            ...m,
+            parts: [
+              ...m.parts,
+              {
+                kind: "artifact",
+                artifactType: "text",
+                label: evt.label,
+                content: "",
+                language: evt.language,
+                canvasId: evt.canvasId,
+                live: true,
+              },
+            ],
+          };
+        });
+        return;
+      }
+      if (evt.type === "canvas_delta") {
+        setThinking(false);
+        patchAssistant(m => ({
+          ...m,
+          parts: m.parts.map(p =>
+            p.kind === "artifact" && (p as any).canvasId === evt.canvasId
+              ? { ...p, content: `${(p as any).content ?? ""}${evt.content}`, live: true }
+              : p),
+        }));
+        return;
+      }
+      if (evt.type === "canvas_done") {
+        patchAssistant(m => ({
+          ...m,
+          parts: m.parts.map(p =>
+            p.kind === "artifact" && (p as any).canvasId === evt.canvasId
+              ? { ...p, live: false }
+              : p),
+        }));
         return;
       }
       if (evt.type === "error") {

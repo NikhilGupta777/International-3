@@ -705,8 +705,14 @@ Always use the smallest, cheapest correct tool. Do not call a more expensive or 
 # CANVAS AND CODE OUTPUT
 
 When the user asks you to create code, HTML, CSS, JavaScript, Python, JSON, Markdown, a document, or any long editable artifact:
-- Write the main artifact in one fenced code block with a specific language tag, for example \`\`\`html, \`\`\`python, \`\`\`markdown, or \`\`\`json.
-- Put only the artifact content inside the code block. Keep explanation before or after it short.
+- Write the main artifact directly into canvas, not as ordinary chat text.
+- To write canvas content, output exactly this hidden protocol:
+  <canvas title="Descriptive Filename.html" language="html">
+  ...complete artifact content only...
+  </canvas>
+- Use the right language value: html, css, javascript, typescript, python, json, markdown, text, srt, or vtt.
+- Put only the artifact content inside the canvas tags. Do not wrap it in markdown fences inside the canvas.
+- Keep ordinary chat outside canvas short, for example: "I'll create this in canvas now." and a brief final note.
 - Do not call run_code_analysis just to generate code or text.
 - Use run_code_analysis only when you must execute calculations or analyze supplied data.
 - If the user asks to export, download, save, or create a file, call export_text_file with the same complete artifact content.
@@ -2295,6 +2301,91 @@ router.post("/agent/chat", async (req, res) => {
 
       let streamedTextLive = false;
       let pendingTextBuf = "";
+      let canvasRouteBuf = "";
+      let activeCanvas: { id: string; label: string; language: string } | null = null;
+      const parseCanvasAttrs = (raw: string): { label: string; language: string } => {
+        const attrs: Record<string, string> = {};
+        raw.replace(/([a-zA-Z0-9_-]+)\s*=\s*"([^"]*)"/g, (_m, key, value) => {
+          attrs[String(key).toLowerCase()] = String(value);
+          return "";
+        });
+        const language = (attrs.language || attrs.lang || "text").replace(/[^a-zA-Z0-9+#.-]/g, "").toLowerCase() || "text";
+        const defaultExt = language === "python" ? "py" : language === "javascript" ? "js" : language === "typescript" ? "ts" : language === "markdown" ? "md" : language;
+        const label = (attrs.title || attrs.filename || `agent-canvas.${defaultExt || "txt"}`).slice(0, 120);
+        return { label, language };
+      };
+      const emitCanvasRoutedText = (text: string, final = false) => {
+        canvasRouteBuf += text;
+        const openRe = /<canvas\b([^>]*)>/i;
+        const closeTag = "</canvas>";
+        while (canvasRouteBuf) {
+          if (activeCanvas) {
+            const lower = canvasRouteBuf.toLowerCase();
+            const closeIdx = lower.indexOf(closeTag);
+            if (closeIdx === -1) {
+              const keep = final ? 0 : closeTag.length - 1;
+              const emit = canvasRouteBuf.slice(0, Math.max(0, canvasRouteBuf.length - keep));
+              if (emit) {
+                sseEvent(res, { type: "canvas_delta", runId, canvasId: activeCanvas.id, content: emit });
+                streamedTextLive = true;
+              }
+              canvasRouteBuf = keep ? canvasRouteBuf.slice(-keep) : "";
+              if (final) {
+                sseEvent(res, { type: "canvas_done", runId, canvasId: activeCanvas.id });
+                streamedTextLive = true;
+                activeCanvas = null;
+              }
+              return;
+            }
+            const body = canvasRouteBuf.slice(0, closeIdx);
+            if (body) {
+              sseEvent(res, { type: "canvas_delta", runId, canvasId: activeCanvas.id, content: body });
+              streamedTextLive = true;
+            }
+            sseEvent(res, { type: "canvas_done", runId, canvasId: activeCanvas.id });
+            streamedTextLive = true;
+            activeCanvas = null;
+            canvasRouteBuf = canvasRouteBuf.slice(closeIdx + closeTag.length);
+            continue;
+          }
+
+          const open = openRe.exec(canvasRouteBuf);
+          if (!open) {
+            const lower = canvasRouteBuf.toLowerCase();
+            const partialIdx = lower.lastIndexOf("<canvas");
+            if (!final && partialIdx !== -1 && !canvasRouteBuf.slice(partialIdx).includes(">")) {
+              const chat = canvasRouteBuf.slice(0, partialIdx);
+              if (chat) {
+                sseEvent(res, { type: "text_delta", content: chat, runId });
+                streamedTextLive = true;
+              }
+              canvasRouteBuf = canvasRouteBuf.slice(partialIdx);
+              return;
+            }
+            sseEvent(res, { type: "text_delta", content: canvasRouteBuf, runId });
+            streamedTextLive = true;
+            canvasRouteBuf = "";
+            return;
+          }
+
+          const before = canvasRouteBuf.slice(0, open.index);
+          if (before) {
+            sseEvent(res, { type: "text_delta", content: before, runId });
+            streamedTextLive = true;
+          }
+          const attrs = parseCanvasAttrs(open[1] || "");
+          activeCanvas = { id: randomUUID().slice(0, 12), label: attrs.label, language: attrs.language };
+          sseEvent(res, {
+            type: "canvas_start",
+            runId,
+            canvasId: activeCanvas.id,
+            label: activeCanvas.label,
+            language: activeCanvas.language,
+          });
+          streamedTextLive = true;
+          canvasRouteBuf = canvasRouteBuf.slice((open.index || 0) + open[0].length);
+        }
+      };
       for await (const chunk of stream!) {
         if (!isConnected()) break;
 
@@ -2324,14 +2415,12 @@ router.post("/agent/chat", async (req, res) => {
             }
           }
           if (holdIdx === -1) {
-            sseEvent(res, { type: "text_delta", content: pendingTextBuf, runId });
+            emitCanvasRoutedText(pendingTextBuf);
             pendingTextBuf = "";
-            streamedTextLive = true;
           } else {
             const safe = pendingTextBuf.slice(0, holdIdx);
             if (safe) {
-              sseEvent(res, { type: "text_delta", content: safe, runId });
-              streamedTextLive = true;
+              emitCanvasRoutedText(safe);
             }
             pendingTextBuf = pendingTextBuf.slice(holdIdx);
           }
@@ -2356,10 +2445,10 @@ router.post("/agent/chat", async (req, res) => {
           .replace(/\{"\w+(?:Url|url)":\s*"https?:\/\/[^"]*"[^}]*\}/g, "")
           .trimEnd();
         if (cleaned) {
-          sseEvent(res, { type: "text_delta", content: cleaned, runId });
-          streamedTextLive = true;
+          emitCanvasRoutedText(cleaned, true);
         }
       }
+      if (canvasRouteBuf || activeCanvas) emitCanvasRoutedText("", true);
 
       if (!isConnected()) break;
 
