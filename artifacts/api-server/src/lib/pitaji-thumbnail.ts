@@ -55,9 +55,6 @@ export async function generateThumbnailForClip(args: GenerateThumbnailArgs): Pro
   );
 
   try {
-    // Mark as running
-    await updateClipDispatch(dispatchJobId, { status: "cutting" }).catch(() => {});
-
     if (!isGeminiConfigured()) {
       throw new Error("Gemini is not configured — cannot generate thumbnails");
     }
@@ -92,10 +89,12 @@ export async function generateThumbnailForClip(args: GenerateThumbnailArgs): Pro
       contentType: "image/png",
     });
 
-    // Update dispatch record
+    // Update dispatch record. For "both", thumbnail completion must not mark
+    // the cut MP4 as ready; the cut status is rolled up separately.
+    const current = await getClipDispatch(dispatchJobId).catch(() => null);
     await updateClipDispatch(dispatchJobId, {
       thumbnailS3Key: s3Result.key,
-      status: "done",
+      ...(current?.action === "thumbnail" ? { status: "done" as const } : {}),
     });
 
     console.log(
@@ -105,8 +104,9 @@ export async function generateThumbnailForClip(args: GenerateThumbnailArgs): Pro
     const message = err instanceof Error ? err.message : "Thumbnail generation failed";
     console.error(`[pitaji-thumbnail] Error for ${dispatchJobId}:`, err);
     try {
+      const current = await getClipDispatch(dispatchJobId).catch(() => null);
       await updateClipDispatch(dispatchJobId, {
-        status: "error",
+        ...(current?.action === "thumbnail" ? { status: "error" as const } : {}),
         error: `Thumbnail: ${message}`,
       });
     } catch {

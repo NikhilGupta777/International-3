@@ -322,6 +322,29 @@ export type PitajiDispatchView = {
   } | null;
 };
 
+export function pitajiDispatchHasCut(d: PitajiDispatchView): boolean {
+  return d.action === "cut" || d.action === "both";
+}
+
+export function pitajiDispatchCutStatus(d: PitajiDispatchView): string | null {
+  if (!pitajiDispatchHasCut(d)) return null;
+  if (d.cutProgress?.status) return d.cutProgress.status;
+  if (d.cutS3Key || d.cutProgress?.s3Key) return "done";
+  if (d.status === "error") return "error";
+  return d.status || "queued";
+}
+
+export function pitajiDispatchCutReady(d: PitajiDispatchView): boolean {
+  return pitajiDispatchHasCut(d) && (
+    d.cutProgress?.status === "done" ||
+    Boolean(d.cutS3Key || d.cutProgress?.s3Key)
+  );
+}
+
+export function pitajiDispatchThumbnailReady(d: PitajiDispatchView): boolean {
+  return Boolean(d.thumbnailS3Key);
+}
+
 export async function listPitajiDispatches(
   jobId: string,
 ): Promise<{ dispatches: PitajiDispatchView[] }> {

@@ -199,9 +199,10 @@ router.get("/pitaji/jobs/:jobId", async (req: Request, res: Response) => {
     } catch {
       dispatches = [];
     }
+    const enriched = await Promise.all(dispatches.map(enrichDispatchWithProgress));
     res.json({
       job: stripJobForClient(job),
-      dispatches: dispatches.map(stripDispatchForClient),
+      dispatches: enriched,
     });
   } catch (err) {
     req_logger_warn(req, err, "Failed to load Pita Ji job");
@@ -856,24 +857,7 @@ router.get("/pitaji/jobs/:jobId/dispatches", async (req: Request, res: Response)
 
   // Roll up the child cut-job status from /api/youtube/progress so the
   // client can show live "Cutting → 42%" pills inline.
-  const enriched = await Promise.all(
-    dispatches.map(async (d) => {
-      let cutProgress: {
-        status?: string;
-        message?: string | null;
-        progressPct?: number | null;
-        s3Key?: string | null;
-        filename?: string | null;
-      } | null = null;
-      if (d.cutChildJobId) {
-        cutProgress = await fetchClipCutProgress(d.cutChildJobId);
-      }
-      return {
-        ...stripDispatchForClient(d),
-        cutProgress,
-      };
-    }),
-  );
+  const enriched = await Promise.all(dispatches.map(enrichDispatchWithProgress));
 
   res.json({ dispatches: enriched });
 });
@@ -903,6 +887,58 @@ async function fetchClipCutProgress(childJobId: string): Promise<{
   filename?: string | null;
 } | null> {
   return getClipCutProgress(childJobId);
+}
+
+type EnrichedDispatch = ReturnType<typeof stripDispatchForClient> & {
+  cutProgress: Awaited<ReturnType<typeof fetchClipCutProgress>>;
+};
+
+async function enrichDispatchWithProgress(d: PitajiClipDispatch): Promise<EnrichedDispatch> {
+  let cutProgress: Awaited<ReturnType<typeof fetchClipCutProgress>> = null;
+  if (d.cutChildJobId) {
+    cutProgress = await fetchClipCutProgress(d.cutChildJobId);
+  }
+
+  const patch: Partial<Omit<PitajiClipDispatch, "jobId" | "kind" | "createdAt">> = {};
+  const hasCut = d.action === "cut" || d.action === "both";
+  const cutReady = Boolean(d.cutS3Key || cutProgress?.s3Key);
+
+  if (cutProgress?.s3Key && !d.cutS3Key) {
+    patch.cutS3Key = cutProgress.s3Key;
+    patch.cutFilename = cutProgress.filename ?? undefined;
+  }
+
+  if (hasCut) {
+    if (cutProgress?.status === "error") {
+      patch.status = "error";
+      patch.error = cutProgress.message ?? d.error;
+    } else if (cutProgress?.status === "cancelled") {
+      patch.status = "error";
+      patch.error = cutProgress.message ?? d.error ?? "Cut job was cancelled";
+    } else if (cutReady || cutProgress?.status === "done") {
+      patch.status = d.action === "both" && !d.thumbnailS3Key ? "thumbnail-pending" : "done";
+    } else if (cutProgress?.status || d.cutChildJobId) {
+      patch.status = "cutting";
+    }
+  } else if (d.action === "thumbnail") {
+    if (d.error) patch.status = "error";
+    else if (d.thumbnailS3Key) patch.status = "done";
+    else patch.status = "thumbnail-pending";
+  }
+
+  const shouldPersist = Object.keys(patch).some((key) => {
+    const nextValue = patch[key as keyof typeof patch];
+    const currentValue = (d as unknown as Record<string, unknown>)[key];
+    return nextValue !== undefined && nextValue !== currentValue;
+  });
+  if (shouldPersist) {
+    await updateClipDispatch(d.jobId, patch).catch(() => {});
+  }
+
+  return {
+    ...stripDispatchForClient({ ...d, ...patch }),
+    cutProgress,
+  };
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1208,41 +1244,31 @@ router.get("/pitaji/clips/:pjcId", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Clip dispatch not found" });
       return;
     }
-    // Roll up latest cut progress
-    let cutProgress: Awaited<ReturnType<typeof fetchClipCutProgress>> = null;
-    if (dispatch.cutChildJobId) {
-      cutProgress = await fetchClipCutProgress(dispatch.cutChildJobId);
-      // Lazily persist S3 key if we got it
-      if (cutProgress?.s3Key && !dispatch.cutS3Key) {
-        await updateClipDispatch(pjcId, {
-          cutS3Key: cutProgress.s3Key,
-          cutFilename: cutProgress.filename ?? undefined,
-        }).catch(() => {});
-      }
-    }
+    const enriched = await enrichDispatchWithProgress(dispatch);
+    const cutProgress = enriched.cutProgress;
     // Build signed URLs
-    const effectiveCutKey = dispatch.cutS3Key || cutProgress?.s3Key;
+    const effectiveCutKey = enriched.cutS3Key || cutProgress?.s3Key;
     let cutDownloadUrl: string | null = null;
     let thumbnailUrl: string | null = null;
     if (effectiveCutKey) {
       try {
         cutDownloadUrl = await getS3SignedDownloadUrl({
           key: effectiveCutKey,
-          filename: dispatch.cutFilename || cutProgress?.filename || `clip-${pjcId}.mp4`,
+          filename: enriched.cutFilename || cutProgress?.filename || `clip-${pjcId}.mp4`,
         });
       } catch { /* ignore */ }
     }
-    if (dispatch.thumbnailS3Key) {
+    if (enriched.thumbnailS3Key) {
       try {
         thumbnailUrl = await getS3SignedDownloadUrl({
-          key: dispatch.thumbnailS3Key,
-          filename: `thumbnail-${dispatch.clip?.id ?? pjcId}.png`,
+          key: enriched.thumbnailS3Key,
+          filename: `thumbnail-${enriched.clip?.id ?? pjcId}.png`,
         });
       } catch { /* ignore */ }
     }
 
     res.json({
-      dispatch: stripDispatchForClient(dispatch),
+      dispatch: enriched,
       cutProgress,
       cutDownloadUrl,
       thumbnailUrl,

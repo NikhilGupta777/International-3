@@ -19,7 +19,14 @@ import {
   MessageSquare,
   FileText,
 } from "lucide-react";
-import { getPitajiClipDetail, type PitajiClipDetail as ClipDetailT } from "@/lib/pitaji-api";
+import {
+  getPitajiClipDetail,
+  pitajiDispatchCutReady,
+  pitajiDispatchCutStatus,
+  pitajiDispatchHasCut,
+  pitajiDispatchThumbnailReady,
+  type PitajiClipDetail as ClipDetailT,
+} from "@/lib/pitaji-api";
 
 interface Props {
   pjcId: string;
@@ -82,8 +89,14 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
   // Auto-refresh while cutting (every 2 seconds)
   useEffect(() => {
     if (!data) return;
-    const cutStatus = data.cutProgress?.status ?? data.dispatch?.status;
-    const isActive = cutStatus && cutStatus !== "done" && cutStatus !== "error" && cutStatus !== "cancelled";
+    const cutStatus = pitajiDispatchCutStatus(data.dispatch);
+    const hasCut = pitajiDispatchHasCut(data.dispatch);
+    const thumbPending =
+      (data.dispatch.action === "thumbnail" || data.dispatch.action === "both") &&
+      !pitajiDispatchThumbnailReady(data.dispatch) &&
+      !data.dispatch.error &&
+      data.dispatch.status !== "error";
+    const isActive = (hasCut && cutStatus && cutStatus !== "done" && cutStatus !== "error" && cutStatus !== "cancelled") || thumbPending;
     if (!isActive) {
       if (pollRef.current) clearInterval(pollRef.current);
       pollRef.current = null;
@@ -107,12 +120,27 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
   }, [onClose]);
 
   const clip = data?.dispatch?.clip;
-  const cutStatus = data?.cutProgress?.status ?? data?.dispatch?.status;
-  const cutDone = cutStatus === "done";
+  const cutStatus = data?.dispatch ? pitajiDispatchCutStatus(data.dispatch) : null;
+  const hasCut = data?.dispatch ? pitajiDispatchHasCut(data.dispatch) : false;
+  const cutDone = data?.dispatch ? pitajiDispatchCutReady(data.dispatch) : false;
   const isError = cutStatus === "error";
-  const isCutting = cutStatus && !cutDone && !isError && cutStatus !== "cancelled";
+  const isCutting = hasCut && cutStatus && !cutDone && !isError && cutStatus !== "cancelled";
   const cutPct = typeof data?.cutProgress?.progressPct === "number" ? data.cutProgress.progressPct : null;
   const thumbnailUrl = data?.thumbnailUrl;
+  const thumbnailReady = data?.dispatch ? pitajiDispatchThumbnailReady(data.dispatch) : false;
+  const thumbnailPending = Boolean(
+    data?.dispatch &&
+      (data.dispatch.action === "thumbnail" || data.dispatch.action === "both") &&
+      !thumbnailReady &&
+      !data.dispatch.error &&
+      data.dispatch.status !== "error",
+  );
+  const thumbnailFailed = Boolean(
+    data?.dispatch &&
+      (data.dispatch.action === "thumbnail" || data.dispatch.action === "both") &&
+      !thumbnailReady &&
+      data.dispatch.error,
+  );
 
   return (
     <div className="pj-detail-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -153,17 +181,22 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
                 <span>Status</span>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span className={`pj-status pj-status--${cutDone ? "done" : isError ? "error" : cutStatus === "cancelled" ? "cancelled" : "running"}`}>
-                  {cutDone
-                    ? "Ready to download"
-                    : isError
-                      ? "Cut failed"
-                      : cutStatus === "cancelled"
-                        ? "Cancelled"
-                        : cutPct != null
-                          ? `Cutting ${Math.round(cutPct)}%`
-                          : cutStatus ?? "Unknown"}
-                </span>
+                {hasCut ? (
+                  <span className={`pj-status pj-status--${cutDone ? "done" : isError ? "error" : cutStatus === "cancelled" ? "cancelled" : "running"}`}>
+                    {cutDone
+                      ? "Ready to download"
+                      : isError
+                        ? "Cut failed"
+                        : cutStatus === "cancelled"
+                          ? "Cancelled"
+                          : cutPct != null
+                            ? `Cutting ${Math.round(cutPct)}%`
+                            : cutStatus ?? "Unknown"}
+                  </span>
+                ) : null}
+                {thumbnailReady ? <span className="pj-status pj-status--done">Thumbnail ready</span> : null}
+                {thumbnailFailed ? <span className="pj-status pj-status--error">Thumbnail failed</span> : null}
+                {thumbnailPending ? <span className="pj-status pj-status--running">Thumbnail pending</span> : null}
                 {isCutting && (
                   <Loader2 size={14} strokeWidth={2.5} className="pj-spin" style={{ color: "var(--pj-accent)" }} />
                 )}

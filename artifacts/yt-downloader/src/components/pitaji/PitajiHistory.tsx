@@ -15,6 +15,10 @@ import {
   type PitajiDispatchView,
   type PitajiClip,
   getPitajiClipDetail,
+  pitajiDispatchCutReady,
+  pitajiDispatchCutStatus,
+  pitajiDispatchHasCut,
+  pitajiDispatchThumbnailReady,
 } from "@/lib/pitaji-api";
 import PitajiClipDetail from "./PitajiClipDetail";
 import { useToast } from "./PitajiToast";
@@ -106,10 +110,12 @@ export default function PitajiHistory() {
 
       if (notify) {
         for (const d of dispatches) {
-          const currStatus = d.cutProgress?.status ?? d.status;
+          const currStatus = pitajiDispatchHasCut(d)
+            ? pitajiDispatchCutStatus(d) ?? d.status
+            : d.status;
           const prevStatus = prevStatusRef.current.get(d.jobId);
           if (prevStatus && prevStatus !== "done" && currStatus === "done") {
-            toast("success", `Clip ready: ${d.clip.suggestedTitle || d.clip.title}`);
+            toast("success", `${pitajiDispatchHasCut(d) ? "Clip ready" : "Thumbnail ready"}: ${d.clip.suggestedTitle || d.clip.title}`);
           } else if (prevStatus && prevStatus !== "error" && currStatus === "error") {
             toast("error", `Cut failed: ${d.clip.suggestedTitle || d.clip.title}`);
           }
@@ -117,7 +123,10 @@ export default function PitajiHistory() {
         }
       } else {
         for (const d of dispatches) {
-          prevStatusRef.current.set(d.jobId, d.cutProgress?.status ?? d.status ?? "unknown");
+          prevStatusRef.current.set(
+            d.jobId,
+            (pitajiDispatchHasCut(d) ? pitajiDispatchCutStatus(d) : d.status) ?? "unknown",
+          );
         }
       }
 
@@ -161,8 +170,14 @@ export default function PitajiHistory() {
         const fd = folderData.get(jobId);
         if (!fd || fd.loading) continue;
         const hasActive = fd.dispatches.some((d) => {
-          const s = d.cutProgress?.status ?? d.status;
-          return s !== "done" && s !== "error" && s !== "cancelled";
+          if (pitajiDispatchHasCut(d) && !pitajiDispatchCutReady(d)) {
+            const s = pitajiDispatchCutStatus(d);
+            return s !== "error" && s !== "cancelled";
+          }
+          if ((d.action === "thumbnail" || d.action === "both") && !pitajiDispatchThumbnailReady(d) && !d.error) {
+            return d.status !== "error";
+          }
+          return false;
         });
         if (!hasActive && fd.dispatches.length > 0) continue;
         try {
@@ -171,10 +186,12 @@ export default function PitajiHistory() {
 
           // Check for newly completed cuts → toast
           for (const d of dispatches) {
-            const currStatus = d.cutProgress?.status ?? d.status;
+            const currStatus = pitajiDispatchHasCut(d)
+              ? pitajiDispatchCutStatus(d) ?? d.status
+              : d.status;
             const prevStatus = prevStatusRef.current.get(d.jobId);
             if (prevStatus && prevStatus !== "done" && currStatus === "done") {
-              toast("success", `Clip ready: ${d.clip.suggestedTitle || d.clip.title}`);
+              toast("success", `${pitajiDispatchHasCut(d) ? "Clip ready" : "Thumbnail ready"}: ${d.clip.suggestedTitle || d.clip.title}`);
             } else if (prevStatus && prevStatus !== "error" && currStatus === "error") {
               toast("error", `Cut failed: ${d.clip.suggestedTitle || d.clip.title}`);
             }
@@ -227,7 +244,10 @@ export default function PitajiHistory() {
           const dispatches = data.dispatches ?? [];
           // Seed prev status map
           for (const d of dispatches) {
-            prevStatusRef.current.set(d.jobId, d.cutProgress?.status ?? d.status ?? "unknown");
+            prevStatusRef.current.set(
+              d.jobId,
+              (pitajiDispatchHasCut(d) ? pitajiDispatchCutStatus(d) : d.status) ?? "unknown",
+            );
           }
           setFolderData((prev) => {
             const next = new Map(prev);
@@ -253,8 +273,7 @@ export default function PitajiHistory() {
       const fd = folderData.get(jobId);
       if (!fd) return;
       const readyDispatches = fd.dispatches.filter((d) => {
-        const s = d.cutProgress?.status ?? d.status;
-        return s === "done" && (d.cutS3Key || d.cutProgress?.s3Key);
+        return pitajiDispatchCutReady(d);
       });
       if (readyDispatches.length === 0) {
         toast("info", "No clips ready to download yet");
@@ -336,7 +355,7 @@ export default function PitajiHistory() {
             // Count dispatched clips only
             const dispatchedCount = fd ? fd.dispatches.length : 0;
             const readyCount = fd
-              ? fd.dispatches.filter((d) => (d.cutProgress?.status ?? d.status) === "done").length
+              ? fd.dispatches.filter(pitajiDispatchCutReady).length
               : 0;
 
             return (
@@ -419,14 +438,25 @@ export default function PitajiHistory() {
                         <ul className="pj-folder-clips-grid">
                           {fd.dispatches.map((d, idx) => {
                             const clip = d.clip;
-                            const cutStatus = d.cutProgress?.status ?? d.status;
+                            const hasCut = pitajiDispatchHasCut(d);
+                            const cutStatus = pitajiDispatchCutStatus(d);
                             const cutPct =
                               typeof d.cutProgress?.progressPct === "number"
                                 ? d.cutProgress.progressPct
                                 : null;
-                            const isDone = cutStatus === "done";
+                            const isDone = pitajiDispatchCutReady(d);
                             const isError = cutStatus === "error";
-                            const isCutting = !isDone && !isError && cutStatus !== "cancelled";
+                            const isCutting = hasCut && !isDone && !isError && cutStatus !== "cancelled";
+                            const thumbnailReady = pitajiDispatchThumbnailReady(d);
+                            const thumbnailPending =
+                              (d.action === "thumbnail" || d.action === "both") &&
+                              !thumbnailReady &&
+                              !d.error &&
+                              d.status !== "error";
+                            const thumbnailFailed =
+                              (d.action === "thumbnail" || d.action === "both") &&
+                              !thumbnailReady &&
+                              Boolean(d.error);
 
                             return (
                               <li key={d.jobId} className="pj-folder-clip">
@@ -447,24 +477,32 @@ export default function PitajiHistory() {
                                 </div>
 
                                 <div className="pj-folder-clip-status">
-                                  <span
-                                    className={`pj-status pj-status--${
-                                      isDone ? "done" : isError ? "error" : cutStatus === "cancelled" ? "cancelled" : "running"
-                                    }`}
-                                  >
-                                    {isDone
-                                      ? "Ready"
-                                      : isError
-                                        ? "Failed"
-                                        : cutStatus === "cancelled"
-                                          ? "Cancelled"
-                                          : cutPct != null
-                                            ? `Cutting ${Math.round(cutPct)}%`
-                                            : "Cutting..."}
-                                  </span>
-                                  {d.thumbnailS3Key && (
+                                  {hasCut ? (
+                                    <span
+                                      className={`pj-status pj-status--${
+                                        isDone ? "done" : isError ? "error" : cutStatus === "cancelled" ? "cancelled" : "running"
+                                      }`}
+                                    >
+                                      {isDone
+                                        ? "Ready"
+                                        : isError
+                                          ? "Failed"
+                                          : cutStatus === "cancelled"
+                                            ? "Cancelled"
+                                            : cutPct != null
+                                              ? `Cutting ${Math.round(cutPct)}%`
+                                              : "Cutting..."}
+                                    </span>
+                                  ) : null}
+                                  {thumbnailReady && (
                                     <span className="pj-status pj-status--done">Thumb</span>
                                   )}
+                                  {thumbnailPending ? (
+                                    <span className="pj-status pj-status--running">Thumb...</span>
+                                  ) : null}
+                                  {thumbnailFailed ? (
+                                    <span className="pj-status pj-status--error">Thumb failed</span>
+                                  ) : null}
                                 </div>
 
                                 {/* Progress bar for in-progress cuts */}
