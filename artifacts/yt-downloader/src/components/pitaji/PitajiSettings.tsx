@@ -91,7 +91,7 @@ export default function PitajiSettings() {
     setError("");
     try {
       const dataUrl = await fileToDataUrl(file);
-      const resp = await uploadSpeakerImage(label, dataUrl);
+      await uploadSpeakerImage(label, dataUrl);
       // Refresh settings
       const fresh = await getPitajiSettings();
       setSettings(fresh);

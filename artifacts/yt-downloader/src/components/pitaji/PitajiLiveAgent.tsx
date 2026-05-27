@@ -76,6 +76,10 @@ export default function PitajiLiveAgent() {
   const [refining, setRefining] = useState(false);
   const [dispatching, setDispatching] = useState(false);
   const [dispatches, setDispatches] = useState<PitajiDispatchView[]>([]);
+  // Stable ref so polling interval reads fresh dispatches without being in the
+  // useEffect dep array (avoids tearing down/recreating the interval on every poll).
+  const dispatchesRef = useRef(dispatches);
+  dispatchesRef.current = dispatches;
   const [detailPjcId, setDetailPjcId] = useState<string | null>(null);
   // Map clipId → most recent dispatch row (so we can render inline status)
   const dispatchByClip = useMemo(() => {
@@ -159,20 +163,19 @@ export default function PitajiLiveAgent() {
           );
           break;
         case "stage": {
-          const evtAny = evt as { stage: string; chunk?: number; total?: number };
-          if (evtAny.stage === "downloading") {
+          if (evt.stage === "downloading") {
             pushChat("thinking", "Downloading audio from YouTube…");
-          } else if (evtAny.stage === "splitting") {
+          } else if (evt.stage === "splitting") {
             pushChat("thinking", "Splitting audio into chunks for analysis…");
-          } else if (evtAny.stage === "analyzing") {
+          } else if (evt.stage === "analyzing") {
             const chunkPart =
-              evtAny.chunk && evtAny.total
-                ? ` (chunk ${evtAny.chunk} of ${evtAny.total})`
+              evt.chunk && evt.total
+                ? ` (chunk ${evt.chunk} of ${evt.total})`
                 : "";
             pushChat("thinking", `Watching${chunkPart} and extracting clips…`);
           } else {
-            const tail = evtAny.chunk ? ` (chunk ${evtAny.chunk})` : "";
-            pushChat("info", `Stage: ${evtAny.stage}${tail}`);
+            const tail = evt.chunk ? ` (chunk ${evt.chunk})` : "";
+            pushChat("info", `Stage: ${evt.stage}${tail}`);
           }
           break;
         }
@@ -219,6 +222,7 @@ export default function PitajiLiveAgent() {
     setPipeline(null);
     setJobId(null);
     setDispatches([]);
+    setEditingClipId(null);
     prevDispatchStatusRef.current.clear();
     setRunState("running");
     toast("info", "Analysis started");
@@ -299,21 +303,33 @@ export default function PitajiLiveAgent() {
   );
 
   // Once any dispatches exist, poll their status every 4 seconds until
-  // every cut child job is in a terminal state.
+  // every cut child job is in a terminal state. Uses dispatchesRef so the
+  // interval isn't torn down on every data update (same fix as PitajiHistory).
   useEffect(() => {
-    if (!jobId || dispatches.length === 0) return;
-    const allDone = dispatches.every((d) => {
-      if (pitajiDispatchHasCut(d) && !pitajiDispatchCutReady(d)) {
-        const s = pitajiDispatchCutStatus(d);
-        return s === "error" || s === "cancelled";
-      }
-      if ((d.action === "thumbnail" || d.action === "both") && !pitajiDispatchThumbnailReady(d) && !d.error) {
-        return d.status === "error";
-      }
-      return true;
-    });
-    if (allDone) return;
+    if (!jobId) return;
+
+    const hasActiveWork = (): boolean => {
+      const ds = dispatchesRef.current;
+      if (ds.length === 0) return false;
+      return !ds.every((d) => {
+        if (pitajiDispatchHasCut(d) && !pitajiDispatchCutReady(d)) {
+          const s = pitajiDispatchCutStatus(d);
+          return s === "error" || s === "cancelled";
+        }
+        if ((d.action === "thumbnail" || d.action === "both") && !pitajiDispatchThumbnailReady(d) && !d.error) {
+          return d.status === "error";
+        }
+        return true;
+      });
+    };
+
+    if (!hasActiveWork()) return;
+
     const t = window.setInterval(async () => {
+      if (!hasActiveWork()) {
+        window.clearInterval(t);
+        return;
+      }
       try {
         const next = await listPitajiDispatches(jobId);
         applyDispatchNotifications(next.dispatches);
@@ -322,7 +338,10 @@ export default function PitajiLiveAgent() {
       }
     }, 4000);
     return () => window.clearInterval(t);
-  }, [jobId, dispatches, applyDispatchNotifications]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- dispatches.length
+  // triggers the effect when dispatches first appear; the ref avoids restarts
+  // on every data update thereafter.
+  }, [jobId, dispatches.length, applyDispatchNotifications]);
 
   const downloadDispatch = useCallback(
     async (pjcId: string) => {

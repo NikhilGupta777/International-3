@@ -42,9 +42,7 @@ export function isYoutubeUrl(url: string): boolean {
     const host = u.hostname.toLowerCase();
     return (
       host.includes("youtube.com") ||
-      host.includes("youtu.be") ||
-      host === "m.youtube.com" ||
-      host === "music.youtube.com"
+      host.includes("youtu.be")
     );
   } catch {
     // bare id → still treated as YouTube

@@ -65,6 +65,10 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Stable ref so the polling interval reads fresh data without being in the
+  // useEffect dep array (same pattern as PitajiHistory).
+  const dataRef = useRef(data);
+  dataRef.current = data;
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -86,29 +90,39 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
     void load();
   }, [load]);
 
-  // Auto-refresh while cutting (every 2 seconds)
+  // Auto-refresh while cutting (every 2 seconds).
+  // Uses dataRef so the interval is NOT torn down on every data update —
+  // otherwise setData inside load(true) changes `data`, re-runs the effect,
+  // and resets the 2s timer from zero every tick.
   useEffect(() => {
-    if (!data) return;
-    const cutStatus = pitajiDispatchCutStatus(data.dispatch);
-    const hasCut = pitajiDispatchHasCut(data.dispatch);
-    const thumbPending =
-      (data.dispatch.action === "thumbnail" || data.dispatch.action === "both") &&
-      !pitajiDispatchThumbnailReady(data.dispatch) &&
-      !data.dispatch.error &&
-      data.dispatch.status !== "error";
-    const isActive = (hasCut && cutStatus && cutStatus !== "done" && cutStatus !== "error" && cutStatus !== "cancelled") || thumbPending;
-    if (!isActive) {
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = null;
-      return;
-    }
+    const shouldPoll = (): boolean => {
+      const d = dataRef.current;
+      if (!d) return false;
+      const cs = pitajiDispatchCutStatus(d.dispatch);
+      const hc = pitajiDispatchHasCut(d.dispatch);
+      const tp =
+        (d.dispatch.action === "thumbnail" || d.dispatch.action === "both") &&
+        !pitajiDispatchThumbnailReady(d.dispatch) &&
+        !d.dispatch.error &&
+        d.dispatch.status !== "error";
+      return (hc && !!cs && cs !== "done" && cs !== "error" && cs !== "cancelled") || tp;
+    };
+
+    // Initial check — if already terminal, don't start the interval.
+    if (!shouldPoll()) return;
+
     pollRef.current = setInterval(() => {
+      if (!shouldPoll()) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = null;
+        return;
+      }
       void load(true);
     }, 2000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [data, load]);
+  }, [load]);
 
   // Close on Escape
   useEffect(() => {

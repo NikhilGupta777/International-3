@@ -153,14 +153,4 @@ export class PitajiClipStreamParser<T = unknown> {
   hasSeenArray(): boolean {
     return this.sawArray;
   }
-
-  private cursorIntoBuffer(): number {
-    // After buffer slicing above, we always restart from index 0.
-    return 0;
-  }
-
-  // We don't actually use a separate offset — kept for symmetry / clarity.
-  private computeOffsetIntoObj(): number {
-    return 0;
-  }
 }

@@ -7,6 +7,7 @@ import {
   PlayCircle,
   FolderOpen,
   Film,
+  Loader2,
 } from "lucide-react";
 import {
   listPitajiJobs,
@@ -82,9 +83,16 @@ export default function PitajiHistory() {
   // Folder expand state
   const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
   const [folderData, setFolderData] = useState<Map<string, FolderData>>(new Map());
+  // Stable ref for polling — avoids tearing down the interval on every data update
+  const folderDataRef = useRef(folderData);
+  folderDataRef.current = folderData;
+  const openFoldersRef = useRef(openFolders);
+  openFoldersRef.current = openFolders;
 
   // Clip detail overlay
   const [detailPjcId, setDetailPjcId] = useState<string | null>(null);
+  // Track which clip is currently fetching its download URL
+  const [downloadingPjcId, setDownloadingPjcId] = useState<string | null>(null);
 
   // Track previous dispatch statuses for toast notifications
   const prevStatusRef = useRef<Map<string, string>>(new Map());
@@ -148,12 +156,14 @@ export default function PitajiHistory() {
     void refresh();
   }, [refresh]);
 
-  // Live polling — every 4 seconds, refresh open folders with in-progress jobs
+  // Live polling — every 4 seconds, refresh open folders with in-progress jobs.
+  // Uses refs for folderData / openFolders so the interval is NOT torn down on
+  // every data update (avoids resetting the 4s timer continuously).
   useEffect(() => {
     const handleVisibility = () => {
       if (document.hidden) return;
       void refresh(true);
-      for (const jobId of openFolders) {
+      for (const jobId of openFoldersRef.current) {
         void refreshFolder(jobId).catch(() => {});
       }
     };
@@ -166,8 +176,8 @@ export default function PitajiHistory() {
       void refresh(true);
 
       // Refresh any open folders that have in-progress dispatches
-      for (const jobId of openFolders) {
-        const fd = folderData.get(jobId);
+      for (const jobId of openFoldersRef.current) {
+        const fd = folderDataRef.current.get(jobId);
         if (!fd || fd.loading) continue;
         const hasActive = fd.dispatches.some((d) => {
           if (pitajiDispatchHasCut(d) && !pitajiDispatchCutReady(d)) {
@@ -217,7 +227,7 @@ export default function PitajiHistory() {
       window.clearInterval(t);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, [openFolders, folderData, refresh, refreshFolder, toast]);
+  }, [refresh, refreshFolder, toast]);
 
   const toggleFolder = useCallback(
     async (job: PitajiJobSummary) => {
@@ -267,10 +277,11 @@ export default function PitajiHistory() {
     [folderData],
   );
 
-  // Download all ready clips in a folder
+  // Download all ready clips in a folder — uses hidden anchor clicks instead of
+  // window.open to avoid pop-up blockers that fire after the first tab.
   const downloadAll = useCallback(
     async (jobId: string) => {
-      const fd = folderData.get(jobId);
+      const fd = folderDataRef.current.get(jobId);
       if (!fd) return;
       const readyDispatches = fd.dispatches.filter((d) => {
         return pitajiDispatchCutReady(d);
@@ -284,16 +295,22 @@ export default function PitajiHistory() {
         try {
           const detail = await getPitajiClipDetail(d.jobId);
           if (detail.cutDownloadUrl) {
-            window.open(detail.cutDownloadUrl, "_blank");
+            const a = document.createElement("a");
+            a.href = detail.cutDownloadUrl;
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
           }
         } catch {
           toast("error", `Could not get download URL for ${d.clip.title}`);
         }
-        // Small delay between opening tabs
-        await new Promise((r) => setTimeout(r, 500));
+        // Small delay between downloads
+        await new Promise((r) => setTimeout(r, 600));
       }
     },
-    [folderData, toast],
+    [toast],
   );
 
   return (
@@ -547,9 +564,11 @@ export default function PitajiHistory() {
                                     <button
                                       type="button"
                                       className="pj-download-btn"
+                                      disabled={downloadingPjcId === d.jobId}
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         void (async () => {
+                                          setDownloadingPjcId(d.jobId);
                                           try {
                                             const detail = await getPitajiClipDetail(d.jobId);
                                             if (detail.cutDownloadUrl) {
@@ -557,12 +576,18 @@ export default function PitajiHistory() {
                                             }
                                           } catch {
                                             toast("error", "Could not get download URL");
+                                          } finally {
+                                            setDownloadingPjcId(null);
                                           }
                                         })();
                                       }}
                                     >
-                                      <Download size={12} strokeWidth={2.5} />
-                                      Download
+                                      {downloadingPjcId === d.jobId ? (
+                                        <Loader2 size={12} strokeWidth={2.5} className="pj-spin" />
+                                      ) : (
+                                        <Download size={12} strokeWidth={2.5} />
+                                      )}
+                                      {downloadingPjcId === d.jobId ? "Loading…" : "Download"}
                                     </button>
                                   )}
                                   <button

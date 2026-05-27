@@ -198,7 +198,7 @@ export type PitajiAnalyzeEvent =
       thresholdMin?: number;
       chunks?: number;
     }
-  | { type: "stage"; stage: string; chunk?: number; percent?: number }
+  | { type: "stage"; stage: string; chunk?: number; total?: number; percent?: number }
   | { type: "warning"; message: string }
   | { type: "thinking"; message: string }
   | { type: "clip"; clip: PitajiClip }

@@ -644,7 +644,7 @@ router.post("/pitaji/jobs/:jobId/refine", async (req: Request, res: Response) =>
 
     // Re-mint ids for any clip that lacks one (newly added by the model)
     // and keep existing ids stable so the client can match-and-replace.
-    const crypto = await import("node:crypto");
+    // `crypto` is already imported at the top of this file.
     const updated: PitajiClip[] = incoming
       .map((raw): PitajiClip | null => {
         const o = raw as Record<string, unknown>;
