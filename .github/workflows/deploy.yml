@@ -610,6 +610,7 @@ jobs:
           GOOGLE_GENAI_USE_VERTEXAI_SECRET: ${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}
         run: |
           printf '%s' "$ENV_GREEN_CONTENT_SECRET" > /tmp/.env.green
+          sed -i 's/\r$//' /tmp/.env.green
           upsert_env() {
             local key="$1"
             local value="$2"
@@ -626,7 +627,7 @@ jobs:
           }
           read_env() {
             local key="$1"
-            grep -m1 "^${key}=" /tmp/.env.green | cut -d= -f2- || true
+            grep -m1 "^${key}=" /tmp/.env.green | cut -d= -f2- | tr -d '\r' || true
           }
           upsert_env "YOUTUBE_BATCH_JOB_DEFINITION" "${{ needs.build-worker.outputs.batch_job_def }}"
           upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
