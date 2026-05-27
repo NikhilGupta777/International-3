@@ -16,12 +16,14 @@ import {
   MessageSquare,
   PlayCircle,
   Pencil,
+  Download,
 } from "lucide-react";
 import { streamPitajiAnalyze, type PitajiAnalyzeEvent, type PitajiClip,
-  dispatchPitajiClips, listPitajiDispatches, streamPitajiRefine,
+  dispatchPitajiClips, listPitajiDispatches, streamPitajiRefine, getPitajiClipDetail,
   type PitajiDispatchAction, type PitajiDispatchView,
 } from "@/lib/pitaji-api";
 import PitajiClipDetail from "./PitajiClipDetail";
+import { useToast } from "./PitajiToast";
 
 type ChatLine =
   | { id: string; kind: "thinking" | "info" | "warn" | "error" | "ok"; text: string; ts: number }
@@ -56,6 +58,7 @@ function cryptoId(): string {
 }
 
 export default function PitajiLiveAgent() {
+  const { toast } = useToast();
   const [url, setUrl] = useState("");
   const [runState, setRunState] = useState<RunState>("idle");
   const [chat, setChat] = useState<ChatLine[]>([]);
@@ -84,6 +87,7 @@ export default function PitajiLiveAgent() {
 
   const abortRef = useRef<AbortController | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const prevDispatchStatusRef = useRef<Map<string, string>>(new Map());
 
   // Scroll chat to bottom on new lines.
   useEffect(() => {
@@ -94,6 +98,27 @@ export default function PitajiLiveAgent() {
   const pushChat = useCallback((kind: ChatLine["kind"], text: string) => {
     setChat((prev) => [...prev, { id: cryptoId(), kind, text, ts: Date.now() }]);
   }, []);
+
+  const applyDispatchNotifications = useCallback(
+    (nextDispatches: PitajiDispatchView[]) => {
+      for (const d of nextDispatches) {
+        const currStatus = d.cutProgress?.status ?? d.status ?? "unknown";
+        const prevStatus = prevDispatchStatusRef.current.get(d.jobId);
+        if (prevStatus && prevStatus !== "done" && currStatus === "done") {
+          const title = d.clip.suggestedTitle || d.clip.title;
+          toast("success", `Clip ready: ${title}`);
+          pushChat("ok", `Clip ready: ${title}`);
+        } else if (prevStatus && prevStatus !== "error" && currStatus === "error") {
+          const title = d.clip.suggestedTitle || d.clip.title;
+          toast("error", `Cut failed: ${title}`);
+          pushChat("error", `Cut failed: ${title}`);
+        }
+        prevDispatchStatusRef.current.set(d.jobId, currStatus);
+      }
+      setDispatches(nextDispatches);
+    },
+    [pushChat, toast],
+  );
 
   const handleEvent = useCallback(
     (evt: PitajiAnalyzeEvent) => {
@@ -189,7 +214,9 @@ export default function PitajiLiveAgent() {
     setPipeline(null);
     setJobId(null);
     setDispatches([]);
+    prevDispatchStatusRef.current.clear();
     setRunState("running");
+    toast("info", "Analysis started");
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -236,11 +263,13 @@ export default function PitajiLiveAgent() {
         }…`,
       );
       try {
+        toast("info", `Queued ${ids.length} selected clip${ids.length === 1 ? "" : "s"}`);
         const resp = await dispatchPitajiClips(jobId, ids, action);
         const errs = resp.dispatched.filter((d) => d.cutError);
         const oks = resp.dispatched.filter((d) => !d.cutError);
         if (oks.length > 0) {
           pushChat("ok", `${oks.length} ${oks.length === 1 ? "job" : "jobs"} queued in the background.`);
+          toast("success", `${oks.length} ${oks.length === 1 ? "clip" : "clips"} queued`);
         }
         for (const e of errs) {
           pushChat("error", `Could not dispatch ${e.clipId.slice(0, 8)}: ${e.cutError}`);
@@ -248,7 +277,7 @@ export default function PitajiLiveAgent() {
         // Kick off an immediate refresh so badges appear right away.
         try {
           const next = await listPitajiDispatches(jobId);
-          setDispatches(next.dispatches);
+          applyDispatchNotifications(next.dispatches);
         } catch {
           /* polling effect will catch up */
         }
@@ -256,11 +285,12 @@ export default function PitajiLiveAgent() {
         const m = err instanceof Error ? err.message : "Dispatch failed";
         setError(m);
         pushChat("error", m);
+        toast("error", m);
       } finally {
         setDispatching(false);
       }
     },
-    [jobId, clips, keep, pushChat],
+    [jobId, clips, keep, pushChat, toast, applyDispatchNotifications],
   );
 
   // Once any dispatches exist, poll their status every 4 seconds until
@@ -275,13 +305,29 @@ export default function PitajiLiveAgent() {
     const t = window.setInterval(async () => {
       try {
         const next = await listPitajiDispatches(jobId);
-        setDispatches(next.dispatches);
+        applyDispatchNotifications(next.dispatches);
       } catch {
         /* keep last good list */
       }
     }, 4000);
     return () => window.clearInterval(t);
-  }, [jobId, dispatches]);
+  }, [jobId, dispatches, applyDispatchNotifications]);
+
+  const downloadDispatch = useCallback(
+    async (pjcId: string) => {
+      try {
+        const detail = await getPitajiClipDetail(pjcId);
+        if (detail.cutDownloadUrl) {
+          window.open(detail.cutDownloadUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
+        toast("info", "Download is not ready yet");
+      } catch (err) {
+        toast("error", err instanceof Error ? err.message : "Could not get download URL");
+      }
+    },
+    [toast],
+  );
 
   // Multi-turn refine — server replaces the clips array atomically, then
   // streams the new list back so we can re-render in place.
@@ -561,25 +607,45 @@ export default function PitajiLiveAgent() {
                                         : "Cutting…"}
                               </span>
                               {dispatchInfo.thumbnailS3Key ? (
-                                <span className="pj-status pj-status--done">🖼 Thumb</span>
+                                <span className="pj-status pj-status--done">Thumb</span>
                               ) : (dispatchInfo.action === "thumbnail" || dispatchInfo.action === "both") && !dispatchInfo.thumbnailS3Key ? (
-                                <span className="pj-status pj-status--running">🖼 Gen…</span>
+                                <span className="pj-status pj-status--running">Thumb...</span>
                               ) : null}
                               {(cutStatus === "done" || dispatchInfo.thumbnailS3Key) ? (
-                                <button
-                                  type="button"
-                                  className="pj-clip-detail-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setDetailPjcId(dispatchInfo.jobId);
-                                  }}
-                                >
-                                  Detail →
-                                </button>
+                                <div className="pj-clip-inline-actions">
+                                  {cutStatus === "done" ? (
+                                    <button
+                                      type="button"
+                                      className="pj-clip-detail-btn"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void downloadDispatch(dispatchInfo.jobId);
+                                      }}
+                                    >
+                                      <Download size={11} strokeWidth={2.5} aria-hidden />
+                                      Download
+                                    </button>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    className="pj-clip-detail-btn"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDetailPjcId(dispatchInfo.jobId);
+                                    }}
+                                  >
+                                    Detail -&gt;
+                                  </button>
+                                </div>
                               ) : null}
                             </>
                           ) : null}
                         </div>
+                        {dispatchInfo && cutStatus && cutStatus !== "done" && cutStatus !== "error" && cutStatus !== "cancelled" ? (
+                          <div className="pj-progress-bar pj-progress-bar--clip">
+                            <div className="pj-progress-fill" style={{ width: `${cutPct ?? 5}%` }} />
+                          </div>
+                        ) : null}
                         <p className="pj-clip-summary">{clip.summary}</p>
                         <div className="pj-clip-times">
                           {isEditing ? (

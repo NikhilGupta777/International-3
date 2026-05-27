@@ -1,11 +1,12 @@
-// Phase 5 — Full clip detail modal/drawer. Shows:
+// Phase 5 — Full clip detail modal/drawer with auto-refresh.
 //   * Thumbnail (with re-generate button)
 //   * Suggested title, description, hashtags, pinned comment (each with copy)
-//   * Summary
+//   * Summary, Q&A
 //   * Source URL + timestamps
+//   * Live progress bar while cutting
 //   * Download MP4 button
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   X,
   Download,
@@ -13,12 +14,10 @@ import {
   Check,
   Image as ImageIcon,
   Loader2,
-  RefreshCw,
   PlayCircle,
   Hash,
   MessageSquare,
   FileText,
-  AlertTriangle,
 } from "lucide-react";
 import { getPitajiClipDetail, type PitajiClipDetail as ClipDetailT } from "@/lib/pitaji-api";
 
@@ -58,23 +57,45 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
   const [data, setData] = useState<ClipDetailT | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
+    if (!silent) setError("");
     try {
       const d = await getPitajiClipDetail(pjcId);
       setData(d);
+      return d;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load clip");
+      if (!silent) setError(err instanceof Error ? err.message : "Failed to load clip");
+      return null;
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [pjcId]);
 
+  // Initial load
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Auto-refresh while cutting (every 2 seconds)
+  useEffect(() => {
+    if (!data) return;
+    const cutStatus = data.cutProgress?.status ?? data.dispatch?.status;
+    const isActive = cutStatus && cutStatus !== "done" && cutStatus !== "error" && cutStatus !== "cancelled";
+    if (!isActive) {
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = null;
+      return;
+    }
+    pollRef.current = setInterval(() => {
+      void load(true);
+    }, 2000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [data, load]);
 
   // Close on Escape
   useEffect(() => {
@@ -88,6 +109,9 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
   const clip = data?.dispatch?.clip;
   const cutStatus = data?.cutProgress?.status ?? data?.dispatch?.status;
   const cutDone = cutStatus === "done";
+  const isError = cutStatus === "error";
+  const isCutting = cutStatus && !cutDone && !isError && cutStatus !== "cancelled";
+  const cutPct = typeof data?.cutProgress?.progressPct === "number" ? data.cutProgress.progressPct : null;
   const thumbnailUrl = data?.thumbnailUrl;
 
   return (
@@ -103,7 +127,7 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
         {loading ? (
           <div className="pj-detail-loading">
             <Loader2 size={24} className="pj-spin" />
-            <span>Loading…</span>
+            <span>Loading...</span>
           </div>
         ) : error ? (
           <div className="pj-alert">{error}</div>
@@ -122,6 +146,47 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
                 </div>
               )}
             </section>
+
+            {/* Status + Progress */}
+            <section className="pj-detail-section">
+              <div className="pj-detail-label">
+                <span>Status</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className={`pj-status pj-status--${cutDone ? "done" : isError ? "error" : cutStatus === "cancelled" ? "cancelled" : "running"}`}>
+                  {cutDone
+                    ? "Ready to download"
+                    : isError
+                      ? "Cut failed"
+                      : cutStatus === "cancelled"
+                        ? "Cancelled"
+                        : cutPct != null
+                          ? `Cutting ${Math.round(cutPct)}%`
+                          : cutStatus ?? "Unknown"}
+                </span>
+                {isCutting && (
+                  <Loader2 size={14} strokeWidth={2.5} className="pj-spin" style={{ color: "var(--pj-accent)" }} />
+                )}
+              </div>
+              {isCutting && (
+                <div className="pj-progress-bar" style={{ marginTop: 8 }}>
+                  <div className="pj-progress-fill" style={{ width: `${cutPct ?? 5}%` }} />
+                </div>
+              )}
+            </section>
+
+            {/* Download */}
+            {data?.cutDownloadUrl && (
+              <a
+                href={data.cutDownloadUrl}
+                className="pj-button-primary pj-detail-download"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Download size={15} strokeWidth={2} />
+                <span>Download MP4</span>
+              </a>
+            )}
 
             {/* Title */}
             {clip.suggestedTitle ? (
@@ -205,35 +270,12 @@ export default function PitajiClipDetail({ pjcId, onClose }: Props) {
                 <span>Time range</span>
               </div>
               <p className="pj-detail-value pj-detail-times">
-                {formatHMS(clip.startSec)} → {formatHMS(clip.endSec)}
+                {formatHMS(clip.startSec)} -&gt; {formatHMS(clip.endSec)}
                 <span className="pj-detail-duration">
                   ({Math.round(clip.endSec - clip.startSec)}s)
                 </span>
               </p>
             </section>
-
-            {/* Status */}
-            <section className="pj-detail-section">
-              <div className="pj-detail-label">
-                <span>Status</span>
-              </div>
-              <span className={`pj-status pj-status--${cutDone ? "done" : cutStatus === "error" ? "error" : "running"}`}>
-                {cutStatus ?? data?.dispatch?.status ?? "unknown"}
-              </span>
-            </section>
-
-            {/* Download */}
-            {data?.cutDownloadUrl ? (
-              <a
-                href={data.cutDownloadUrl}
-                className="pj-button-primary pj-detail-download"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Download size={15} strokeWidth={2} />
-                <span>Download MP4</span>
-              </a>
-            ) : null}
           </div>
         )}
       </div>

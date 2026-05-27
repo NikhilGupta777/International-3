@@ -1,16 +1,28 @@
-import { useCallback, useEffect, useState } from "react";
-import { History as HistoryIcon, RefreshCw, ChevronRight, ArrowLeft } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  History as HistoryIcon,
+  RefreshCw,
+  ChevronRight,
+  Download,
+  PlayCircle,
+  FolderOpen,
+  Film,
+} from "lucide-react";
 import {
   listPitajiJobs,
   getPitajiJob,
   type PitajiJobSummary,
   type PitajiDispatchView,
   type PitajiClip,
+  getPitajiClipDetail,
 } from "@/lib/pitaji-api";
 import PitajiClipDetail from "./PitajiClipDetail";
+import { useToast } from "./PitajiToast";
+
+/* ── Helpers ────────────────────────────────────────────────────────────── */
 
 function formatDuration(sec?: number): string {
-  if (!sec || sec <= 0) return "—";
+  if (!sec || sec <= 0) return "--";
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = Math.floor(sec % 60);
@@ -20,7 +32,7 @@ function formatDuration(sec?: number): string {
 }
 
 function formatRelative(ms?: number): string {
-  if (!ms) return "—";
+  if (!ms) return "--";
   const diff = Math.max(0, Date.now() - ms);
   const minutes = Math.floor(diff / 60_000);
   if (minutes < 1) return "just now";
@@ -41,171 +53,266 @@ function formatHMS(sec: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function ytThumbnail(videoId?: string): string | null {
+  if (!videoId) return null;
+  return `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+}
+
+/* ── Types for expanded folder data ─────────────────────────────────────── */
+
+type FolderData = {
+  clips: PitajiClip[];
+  dispatches: PitajiDispatchView[];
+  loading: boolean;
+};
+
+/* ── Component ──────────────────────────────────────────────────────────── */
+
 export default function PitajiHistory() {
+  const { toast } = useToast();
   const [jobs, setJobs] = useState<PitajiJobSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  // Expanded job detail view
-  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
-  const [expandedClips, setExpandedClips] = useState<PitajiClip[]>([]);
-  const [expandedDispatches, setExpandedDispatches] = useState<PitajiDispatchView[]>([]);
-  const [expandedLoading, setExpandedLoading] = useState(false);
-  const [expandedJob, setExpandedJob] = useState<PitajiJobSummary | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number>(0);
+
+  // Folder expand state
+  const [openFolders, setOpenFolders] = useState<Set<string>>(new Set());
+  const [folderData, setFolderData] = useState<Map<string, FolderData>>(new Map());
+
   // Clip detail overlay
   const [detailPjcId, setDetailPjcId] = useState<string | null>(null);
 
-  const refresh = async () => {
-    setLoading(true);
+  // Track previous dispatch statuses for toast notifications
+  const prevStatusRef = useRef<Map<string, string>>(new Map());
+
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const data = await listPitajiJobs(100);
       setJobs(data.jobs ?? []);
+      setLastUpdated(Date.now());
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load history");
+      if (!silent) setError(err instanceof Error ? err.message : "Could not load history");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, []);
 
+  const refreshFolder = useCallback(
+    async (jobId: string, notify = true) => {
+      const data = await getPitajiJob(jobId);
+      const dispatches = data.dispatches ?? [];
+
+      if (notify) {
+        for (const d of dispatches) {
+          const currStatus = d.cutProgress?.status ?? d.status;
+          const prevStatus = prevStatusRef.current.get(d.jobId);
+          if (prevStatus && prevStatus !== "done" && currStatus === "done") {
+            toast("success", `Clip ready: ${d.clip.suggestedTitle || d.clip.title}`);
+          } else if (prevStatus && prevStatus !== "error" && currStatus === "error") {
+            toast("error", `Cut failed: ${d.clip.suggestedTitle || d.clip.title}`);
+          }
+          prevStatusRef.current.set(d.jobId, currStatus ?? "unknown");
+        }
+      } else {
+        for (const d of dispatches) {
+          prevStatusRef.current.set(d.jobId, d.cutProgress?.status ?? d.status ?? "unknown");
+        }
+      }
+
+      setFolderData((prev) => {
+        const next = new Map(prev);
+        next.set(jobId, {
+          clips: data.job.clips ?? [],
+          dispatches,
+          loading: false,
+        });
+        return next;
+      });
+    },
+    [toast],
+  );
+
+  // Initial load
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
 
-  const openJob = useCallback(async (job: PitajiJobSummary) => {
-    setExpandedJobId(job.jobId);
-    setExpandedJob(job);
-    setExpandedLoading(true);
-    try {
-      const data = await getPitajiJob(job.jobId);
-      setExpandedClips(data.job.clips ?? []);
-      setExpandedDispatches(data.dispatches ?? []);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load job");
-    } finally {
-      setExpandedLoading(false);
-    }
-  }, []);
+  // Live polling — every 4 seconds, refresh open folders with in-progress jobs
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.hidden) return;
+      void refresh(true);
+      for (const jobId of openFolders) {
+        void refreshFolder(jobId).catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
 
-  const closeJob = () => {
-    setExpandedJobId(null);
-    setExpandedClips([]);
-    setExpandedDispatches([]);
-    setExpandedJob(null);
-  };
+    const t = window.setInterval(async () => {
+      if (document.hidden) return;
 
-  // Build dispatch lookup by clipId
-  const dispatchByClip = new Map<string, PitajiDispatchView>();
-  for (const d of expandedDispatches) {
-    const existing = dispatchByClip.get(d.clip.id);
-    if (!existing || d.updatedAt > existing.updatedAt) dispatchByClip.set(d.clip.id, d);
-  }
+      // Refresh the job list silently
+      void refresh(true);
 
-  // Expanded detail view
-  if (expandedJobId && expandedJob) {
-    return (
-      <section className="pj-history">
-        <header className="pj-history-header">
-          <div>
-            <button type="button" className="pj-button-ghost" onClick={closeJob}>
-              <ArrowLeft size={14} strokeWidth={2} />
-              <span>Back</span>
-            </button>
-            <h1 className="pj-h1" style={{ marginTop: 8 }}>
-              {expandedJob.videoTitle ?? expandedJob.youtubeUrl}
-            </h1>
-            <p className="pj-history-subtitle">
-              {expandedJob.channel ? `${expandedJob.channel} · ` : ""}
-              {formatDuration(expandedJob.durationSec)} · {expandedJob.clipCount}{" "}
-              {expandedJob.clipCount === 1 ? "clip" : "clips"} · {expandedJob.status}
-            </p>
-          </div>
-        </header>
+      // Refresh any open folders that have in-progress dispatches
+      for (const jobId of openFolders) {
+        const fd = folderData.get(jobId);
+        if (!fd || fd.loading) continue;
+        const hasActive = fd.dispatches.some((d) => {
+          const s = d.cutProgress?.status ?? d.status;
+          return s !== "done" && s !== "error" && s !== "cancelled";
+        });
+        if (!hasActive && fd.dispatches.length > 0) continue;
+        try {
+          const data = await getPitajiJob(jobId);
+          const dispatches = data.dispatches ?? [];
 
-        {expandedLoading ? (
-          <div className="pj-detail-loading">
-            <RefreshCw size={18} className="pj-spin" />
-            <span>Loading clips…</span>
-          </div>
-        ) : expandedClips.length === 0 ? (
-          <div className="pj-empty">
-            <h3>No clips in this job</h3>
-          </div>
-        ) : (
-          <ul className="pj-history-clips-list">
-            {expandedClips.map((clip, idx) => {
-              const dispatch = dispatchByClip.get(clip.id);
-              const hasCut = dispatch?.cutS3Key || dispatch?.cutProgress?.s3Key;
-              const hasThumb = dispatch?.thumbnailS3Key;
-              return (
-                <li key={clip.id} className="pj-history-clip-card">
-                  <div className="pj-history-clip-main">
-                    <span className="pj-history-clip-idx">{idx + 1}</span>
-                    <div className="pj-history-clip-info">
-                      <h4>{clip.suggestedTitle || clip.title}</h4>
-                      <p className="pj-history-clip-meta">
-                        <span className={`pj-clip-kind pj-clip-kind--${clip.kind}`}>
-                          {clip.kind === "qna" ? "Q&A" : "Topic"}
-                        </span>
-                        <span>{formatHMS(clip.startSec)} → {formatHMS(clip.endSec)}</span>
-                        <span>({Math.round(clip.endSec - clip.startSec)}s)</span>
-                      </p>
-                      <p className="pj-history-clip-summary">{clip.summary}</p>
-                    </div>
-                  </div>
-                  <div className="pj-history-clip-actions">
-                    {dispatch ? (
-                      <>
-                        {hasCut ? (
-                          <span className="pj-status pj-status--done">Cut ✓</span>
-                        ) : dispatch.cutChildJobId ? (
-                          <span className="pj-status pj-status--running">Cutting…</span>
-                        ) : null}
-                        {hasThumb ? (
-                          <span className="pj-status pj-status--done">Thumb ✓</span>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="pj-clip-detail-btn"
-                          onClick={() => setDetailPjcId(dispatch.jobId)}
-                        >
-                          Detail <ChevronRight size={12} strokeWidth={2.5} />
-                        </button>
-                      </>
-                    ) : (
-                      <span className="pj-status pj-status--idle">Not dispatched</span>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+          // Check for newly completed cuts → toast
+          for (const d of dispatches) {
+            const currStatus = d.cutProgress?.status ?? d.status;
+            const prevStatus = prevStatusRef.current.get(d.jobId);
+            if (prevStatus && prevStatus !== "done" && currStatus === "done") {
+              toast("success", `Clip ready: ${d.clip.suggestedTitle || d.clip.title}`);
+            } else if (prevStatus && prevStatus !== "error" && currStatus === "error") {
+              toast("error", `Cut failed: ${d.clip.suggestedTitle || d.clip.title}`);
+            }
+            prevStatusRef.current.set(d.jobId, currStatus ?? "unknown");
+          }
 
-        {detailPjcId ? (
-          <PitajiClipDetail pjcId={detailPjcId} onClose={() => setDetailPjcId(null)} />
-        ) : null}
-      </section>
-    );
-  }
+          setFolderData((prev) => {
+            const next = new Map(prev);
+            next.set(jobId, {
+              clips: data.job.clips ?? [],
+              dispatches,
+              loading: false,
+            });
+            return next;
+          });
+        } catch {
+          /* keep last good data */
+        }
+      }
+    }, 4000);
+
+    return () => {
+      window.clearInterval(t);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [openFolders, folderData, refresh, refreshFolder, toast]);
+
+  const toggleFolder = useCallback(
+    async (job: PitajiJobSummary) => {
+      const jobId = job.jobId;
+      setOpenFolders((prev) => {
+        const next = new Set(prev);
+        if (next.has(jobId)) {
+          next.delete(jobId);
+        } else {
+          next.add(jobId);
+        }
+        return next;
+      });
+
+      // If opening and not yet loaded, fetch
+      if (!folderData.has(jobId)) {
+        setFolderData((prev) => {
+          const next = new Map(prev);
+          next.set(jobId, { clips: [], dispatches: [], loading: true });
+          return next;
+        });
+        try {
+          const data = await getPitajiJob(jobId);
+          const dispatches = data.dispatches ?? [];
+          // Seed prev status map
+          for (const d of dispatches) {
+            prevStatusRef.current.set(d.jobId, d.cutProgress?.status ?? d.status ?? "unknown");
+          }
+          setFolderData((prev) => {
+            const next = new Map(prev);
+            next.set(jobId, { clips: data.job.clips ?? [], dispatches, loading: false });
+            return next;
+          });
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Could not load job");
+          setFolderData((prev) => {
+            const next = new Map(prev);
+            next.set(jobId, { clips: [], dispatches: [], loading: false });
+            return next;
+          });
+        }
+      }
+    },
+    [folderData],
+  );
+
+  // Download all ready clips in a folder
+  const downloadAll = useCallback(
+    async (jobId: string) => {
+      const fd = folderData.get(jobId);
+      if (!fd) return;
+      const readyDispatches = fd.dispatches.filter((d) => {
+        const s = d.cutProgress?.status ?? d.status;
+        return s === "done" && (d.cutS3Key || d.cutProgress?.s3Key);
+      });
+      if (readyDispatches.length === 0) {
+        toast("info", "No clips ready to download yet");
+        return;
+      }
+      toast("info", `Downloading ${readyDispatches.length} clip${readyDispatches.length > 1 ? "s" : ""}...`);
+      for (const d of readyDispatches) {
+        try {
+          const detail = await getPitajiClipDetail(d.jobId);
+          if (detail.cutDownloadUrl) {
+            window.open(detail.cutDownloadUrl, "_blank");
+          }
+        } catch {
+          toast("error", `Could not get download URL for ${d.clip.title}`);
+        }
+        // Small delay between opening tabs
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    },
+    [folderData, toast],
+  );
 
   return (
     <section className="pj-history">
       <header className="pj-history-header">
         <div>
           <p className="pj-eyebrow">Workspace</p>
-          <h1 className="pj-h1">History</h1>
+          <h1 className="pj-h1">
+            <FolderOpen size={24} strokeWidth={2} aria-hidden />
+            History
+          </h1>
           <p className="pj-history-subtitle">
-            Every analyzed live-stream and the clips it produced.
+            Every analyzed live-stream organized by video. Only dispatched clips appear inside each folder.
           </p>
         </div>
-        <button type="button" className="pj-button-ghost" onClick={refresh} disabled={loading}>
-          <RefreshCw size={14} strokeWidth={2} className={loading ? "pj-spin" : undefined} aria-hidden />
-          <span>{loading ? "Refreshing" : "Refresh"}</span>
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {lastUpdated > 0 && (
+            <span className="pj-last-updated">Updated {formatRelative(lastUpdated)}</span>
+          )}
+          <button type="button" className="pj-button-ghost" onClick={() => refresh()} disabled={loading}>
+            <RefreshCw size={14} strokeWidth={2} className={loading ? "pj-spin" : undefined} aria-hidden />
+            <span>{loading ? "Refreshing" : "Refresh"}</span>
+          </button>
+        </div>
       </header>
 
       {error ? <div className="pj-alert">{error}</div> : null}
 
+      {/* Loading skeleton */}
+      {loading && jobs.length === 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="pj-skeleton pj-skeleton-folder" />
+          ))}
+        </div>
+      ) : null}
+
+      {/* Empty state */}
       {!loading && jobs.length === 0 && !error ? (
         <div className="pj-empty">
           <div className="pj-empty-icon" aria-hidden>
@@ -214,47 +321,214 @@ export default function PitajiHistory() {
           <h3>No live-stream analyses yet</h3>
           <p>
             Once you analyze your first stream from the Live tab, completed clips and their assets
-            will appear here.
+            will appear here organized by video.
           </p>
         </div>
       ) : null}
 
+      {/* Folder list */}
       {jobs.length > 0 ? (
-        <ul className="pj-history-list">
-          {jobs.map((j) => (
-            <li
-              key={j.jobId}
-              className="pj-history-item pj-history-item--clickable"
-              onClick={() => openJob(j)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter") openJob(j); }}
-            >
-              <div className="pj-history-item-main">
-                <h3 className="pj-history-item-title">{j.videoTitle ?? j.youtubeUrl}</h3>
-                <p className="pj-history-item-meta">
-                  {j.channel ? <span>{j.channel}</span> : null}
-                  <span>{formatDuration(j.durationSec)}</span>
-                  <span>
-                    {j.clipCount} {j.clipCount === 1 ? "clip" : "clips"}
-                  </span>
-                  {j.pipelineMode ? (
-                    <span className="pj-history-pill">
-                      {j.pipelineMode === "audio_split"
-                        ? `Audio · ${j.chunks ?? "?"} chunks`
-                        : "YouTube direct"}
-                    </span>
-                  ) : null}
-                </p>
-              </div>
-              <div className="pj-history-item-side">
-                <span className={`pj-status pj-status--${j.status}`}>{j.status}</span>
-                <span className="pj-history-time">{formatRelative(j.updatedAt)}</span>
-                <ChevronRight size={14} strokeWidth={2} className="pj-history-chevron" />
-              </div>
-            </li>
-          ))}
+        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 8 }}>
+          {jobs.map((j) => {
+            const isOpen = openFolders.has(j.jobId);
+            const fd = folderData.get(j.jobId);
+            const thumb = ytThumbnail(j.videoId);
+            // Count dispatched clips only
+            const dispatchedCount = fd ? fd.dispatches.length : 0;
+            const readyCount = fd
+              ? fd.dispatches.filter((d) => (d.cutProgress?.status ?? d.status) === "done").length
+              : 0;
+
+            return (
+              <li key={j.jobId} className={`pj-folder${isOpen ? " is-open" : ""}`}>
+                {/* Folder header */}
+                <div
+                  className="pj-folder-header"
+                  onClick={() => toggleFolder(j)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      void toggleFolder(j);
+                    }
+                  }}
+                >
+                  {thumb ? (
+                    <img src={thumb} alt="" className="pj-folder-thumb" loading="lazy" />
+                  ) : (
+                    <div className="pj-folder-thumb-placeholder">
+                      <Film size={18} strokeWidth={1.8} />
+                    </div>
+                  )}
+                  <div className="pj-folder-info">
+                    <h3 className="pj-folder-title">{j.videoTitle ?? j.youtubeUrl}</h3>
+                    <div className="pj-folder-meta">
+                      {j.channel ? <span>{j.channel}</span> : null}
+                      <span>{formatDuration(j.durationSec)}</span>
+                      <span>{j.clipCount} clip{j.clipCount !== 1 ? "s" : ""} found</span>
+                      <span>{formatRelative(j.updatedAt)}</span>
+                    </div>
+                  </div>
+                  <div className="pj-folder-right">
+                    <span className={`pj-status pj-status--${j.status}`}>{j.status}</span>
+                    {dispatchedCount > 0 && (
+                      <span className="pj-folder-count">
+                        {readyCount}/{dispatchedCount} ready
+                      </span>
+                    )}
+                    <ChevronRight size={16} strokeWidth={2} className="pj-folder-chevron" />
+                  </div>
+                </div>
+
+                {/* Folder body — only dispatched clips */}
+                {isOpen && (
+                  <div className="pj-folder-body">
+                    {fd?.loading ? (
+                      <div className="pj-detail-loading">
+                        <RefreshCw size={16} className="pj-spin" />
+                        <span>Loading clips...</span>
+                      </div>
+                    ) : fd && fd.dispatches.length === 0 ? (
+                      <div style={{ padding: "16px 0", textAlign: "center", color: "var(--pj-fg-2)", fontSize: 13 }}>
+                        No clips dispatched for this video yet. Go to the Live tab to cut clips.
+                      </div>
+                    ) : fd ? (
+                      <>
+                        {/* Action bar */}
+                        <div className="pj-folder-actions">
+                          <span className="pj-folder-actions-label">
+                            {fd.dispatches.length} dispatched clip{fd.dispatches.length !== 1 ? "s" : ""}
+                          </span>
+                          {readyCount > 0 && (
+                            <button
+                              type="button"
+                              className="pj-download-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void downloadAll(j.jobId);
+                              }}
+                            >
+                              <Download size={12} strokeWidth={2.5} />
+                              Download All ({readyCount})
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Clip grid */}
+                        <ul className="pj-folder-clips-grid">
+                          {fd.dispatches.map((d, idx) => {
+                            const clip = d.clip;
+                            const cutStatus = d.cutProgress?.status ?? d.status;
+                            const cutPct =
+                              typeof d.cutProgress?.progressPct === "number"
+                                ? d.cutProgress.progressPct
+                                : null;
+                            const isDone = cutStatus === "done";
+                            const isError = cutStatus === "error";
+                            const isCutting = !isDone && !isError && cutStatus !== "cancelled";
+
+                            return (
+                              <li key={d.jobId} className="pj-folder-clip">
+                                <div className="pj-folder-clip-top">
+                                  <span className="pj-folder-clip-idx">{idx + 1}</span>
+                                  <span className={`pj-clip-kind pj-clip-kind--${clip.kind}`}>
+                                    {clip.kind === "qna" ? "Q&A" : "Topic"}
+                                  </span>
+                                  <h4 className="pj-folder-clip-title">
+                                    {clip.suggestedTitle || clip.title}
+                                  </h4>
+                                </div>
+
+                                <div className="pj-folder-clip-times">
+                                  <PlayCircle size={11} strokeWidth={2.5} style={{ display: "inline", verticalAlign: "middle" }} />{" "}
+                                  {formatHMS(clip.startSec)} -&gt; {formatHMS(clip.endSec)}
+                                  {" "}({Math.round(clip.endSec - clip.startSec)}s)
+                                </div>
+
+                                <div className="pj-folder-clip-status">
+                                  <span
+                                    className={`pj-status pj-status--${
+                                      isDone ? "done" : isError ? "error" : cutStatus === "cancelled" ? "cancelled" : "running"
+                                    }`}
+                                  >
+                                    {isDone
+                                      ? "Ready"
+                                      : isError
+                                        ? "Failed"
+                                        : cutStatus === "cancelled"
+                                          ? "Cancelled"
+                                          : cutPct != null
+                                            ? `Cutting ${Math.round(cutPct)}%`
+                                            : "Cutting..."}
+                                  </span>
+                                  {d.thumbnailS3Key && (
+                                    <span className="pj-status pj-status--done">Thumb</span>
+                                  )}
+                                </div>
+
+                                {/* Progress bar for in-progress cuts */}
+                                {isCutting && (
+                                  <div className="pj-progress-bar">
+                                    <div
+                                      className="pj-progress-fill"
+                                      style={{ width: `${cutPct ?? 5}%` }}
+                                    />
+                                  </div>
+                                )}
+
+                                {/* Action buttons */}
+                                <div className="pj-folder-clip-actions">
+                                  {isDone && (
+                                    <button
+                                      type="button"
+                                      className="pj-download-btn"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void (async () => {
+                                          try {
+                                            const detail = await getPitajiClipDetail(d.jobId);
+                                            if (detail.cutDownloadUrl) {
+                                              window.open(detail.cutDownloadUrl, "_blank", "noopener,noreferrer");
+                                            }
+                                          } catch {
+                                            toast("error", "Could not get download URL");
+                                          }
+                                        })();
+                                      }}
+                                    >
+                                      <Download size={12} strokeWidth={2.5} />
+                                      Download
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className="pj-download-btn pj-download-btn--ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDetailPjcId(d.jobId);
+                                    }}
+                                  >
+                                    Detail
+                                  </button>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </>
+                    ) : null}
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ul>
+      ) : null}
+
+      {/* Clip detail overlay */}
+      {detailPjcId ? (
+        <PitajiClipDetail pjcId={detailPjcId} onClose={() => setDetailPjcId(null)} />
       ) : null}
     </section>
   );

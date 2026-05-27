@@ -3,6 +3,7 @@ import PitajiSidebar from "@/components/pitaji/PitajiSidebar";
 import PitajiLiveAgent from "@/components/pitaji/PitajiLiveAgent";
 import PitajiHistory from "@/components/pitaji/PitajiHistory";
 import PitajiSettings from "@/components/pitaji/PitajiSettings";
+import { PitajiToastProvider } from "@/components/pitaji/PitajiToast";
 
 export type PitajiTab = "live" | "history" | "settings";
 
@@ -24,19 +25,21 @@ export default function PitajiHome({ username, onLogout, onSwitchWorkspace }: Pr
   const [tab, setTab] = useState<PitajiTab>("live");
 
   return (
-    <div className="pj-shell">
-      <PitajiSidebar
-        active={tab}
-        onChange={setTab}
-        username={username}
-        onLogout={onLogout}
-        onSwitchWorkspace={onSwitchWorkspace}
-      />
-      <main className="pj-main">
-        {tab === "live" ? <PitajiLiveAgent /> : null}
-        {tab === "history" ? <PitajiHistory /> : null}
-        {tab === "settings" ? <PitajiSettings /> : null}
-      </main>
-    </div>
+    <PitajiToastProvider>
+      <div className="pj-shell">
+        <PitajiSidebar
+          active={tab}
+          onChange={setTab}
+          username={username}
+          onLogout={onLogout}
+          onSwitchWorkspace={onSwitchWorkspace}
+        />
+        <main className="pj-main">
+          {tab === "live" ? <PitajiLiveAgent /> : null}
+          {tab === "history" ? <PitajiHistory /> : null}
+          {tab === "settings" ? <PitajiSettings /> : null}
+        </main>
+      </div>
+    </PitajiToastProvider>
   );
 }
