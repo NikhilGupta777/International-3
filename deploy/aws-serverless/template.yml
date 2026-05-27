@@ -42,6 +42,16 @@ Parameters:
   AdminPanelEnabled:
     Type: String
     Default: "false"
+  PitajiFeatureEnabled:
+    Type: String
+    Default: "false"
+  PitajiUsername:
+    Type: String
+    Default: "pitaji"
+  PitajiPassword:
+    Type: String
+    NoEcho: true
+    Default: ""
   BhagwatPassword:
     Type: String
     NoEcho: true
@@ -398,6 +408,9 @@ Resources:
           APPROVED_ADMIN_EMAILS: !Ref ApprovedAdminEmails
           ACCESS_TABLE: !Ref AccessTable
           ADMIN_PANEL_ENABLED: !Ref AdminPanelEnabled
+          PITAJI_FEATURE_ENABLED: !Ref PitajiFeatureEnabled
+          PITAJI_USERNAME: !Ref PitajiUsername
+          PITAJI_PASSWORD: !Ref PitajiPassword
           BHAGWAT_PASSWORD: !Ref BhagwatPassword
           GEMINI_API_KEY: !Ref GeminiApiKey
           GEMINI_API_KEY_2: !Ref GeminiApiKey2
