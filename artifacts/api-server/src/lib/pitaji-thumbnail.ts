@@ -18,7 +18,7 @@ import { join } from "path";
 import crypto from "crypto";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "./gemini-client";
-import { uploadFileToS3, isS3StorageEnabled } from "./s3-storage";
+import { uploadFileToS3, isS3StorageEnabled, readBufferFromS3 } from "./s3-storage";
 import {
   getSettings,
   getClipDispatch,
@@ -94,6 +94,7 @@ export async function generateThumbnailForClip(args: GenerateThumbnailArgs): Pro
     const current = await getClipDispatch(dispatchJobId).catch(() => null);
     await updateClipDispatch(dispatchJobId, {
       thumbnailS3Key: s3Result.key,
+      thumbnailStatus: "done",
       ...(current?.action === "thumbnail" ? { status: "done" as const } : {}),
     });
 
@@ -106,6 +107,7 @@ export async function generateThumbnailForClip(args: GenerateThumbnailArgs): Pro
     try {
       const current = await getClipDispatch(dispatchJobId).catch(() => null);
       await updateClipDispatch(dispatchJobId, {
+        thumbnailStatus: "error",
         ...(current?.action === "thumbnail" ? { status: "error" as const } : {}),
         error: `Thumbnail: ${message}`,
       });
@@ -170,6 +172,8 @@ async function generateImageBytes(
   _speakers: PitajiSpeakerImage[],
   _references: PitajiReferenceThumbnail[],
 ): Promise<Buffer> {
+  const imageParts = await buildReferenceImageParts(_speakers, _references);
+
   // Try Replit integration first
   const replitBaseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const replitApiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
@@ -181,7 +185,7 @@ async function generateImageBytes(
       });
       const response = await client.models.generateContent({
         model: THUMBNAIL_MODEL,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        contents: [{ role: "user", parts: [...imageParts, { text: prompt }] }],
         config: { responseModalities: [Modality.IMAGE] },
       });
       return extractImageBytes(response);
@@ -204,7 +208,7 @@ async function generateImageBytes(
         : new GoogleGenAI({ apiKey: keys[i] });
       const response = await client.models.generateContent({
         model: THUMBNAIL_MODEL,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        contents: [{ role: "user", parts: [...imageParts, { text: prompt }] }],
         config: {
           responseModalities: [Modality.TEXT, Modality.IMAGE],
           imageConfig: { aspectRatio: "16:9", imageSize: "2K" } as any,
@@ -220,6 +224,39 @@ async function generateImageBytes(
     }
   }
   throw lastErr ?? new Error("All image generation attempts failed");
+}
+
+async function buildReferenceImageParts(
+  speakers: PitajiSpeakerImage[],
+  references: PitajiReferenceThumbnail[],
+): Promise<Array<{ inlineData: { mimeType: string; data: string } }>> {
+  const picked = [
+    ...speakers.slice(0, 2).map((img) => img.s3Key),
+    ...references.slice(0, 3).map((img) => img.s3Key),
+  ];
+  const parts: Array<{ inlineData: { mimeType: string; data: string } }> = [];
+  for (const key of picked) {
+    try {
+      const bytes = await readBufferFromS3(key);
+      if (bytes.length === 0 || bytes.length > 5 * 1024 * 1024) continue;
+      parts.push({
+        inlineData: {
+          mimeType: inferImageMimeType(key),
+          data: bytes.toString("base64"),
+        },
+      });
+    } catch (err) {
+      console.warn("[pitaji-thumbnail] Could not load reference image:", key, err);
+    }
+  }
+  return parts;
+}
+
+function inferImageMimeType(key: string): string {
+  const lower = key.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  return "image/png";
 }
 
 function extractImageBytes(response: unknown): Buffer {

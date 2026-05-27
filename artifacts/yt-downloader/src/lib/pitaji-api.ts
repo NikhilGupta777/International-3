@@ -59,8 +59,8 @@ export async function logoutPitaji(): Promise<void> {
 export type PitajiSettings = {
   thumbnailPrompt: string;
   clipInstructions: string;
-  speakers: Array<{ id: string; label: string; s3Key: string; uploadedAt: number }>;
-  references: Array<{ id: string; s3Key: string; uploadedAt: number }>;
+  speakers: Array<{ id: string; label: string; s3Key: string; uploadedAt: number; url?: string | null }>;
+  references: Array<{ id: string; s3Key: string; uploadedAt: number; url?: string | null }>;
   updatedAt: number;
 };
 
@@ -158,6 +158,10 @@ export type PitajiJobSummary = {
   pipelineMode?: "youtube_direct" | "audio_split";
   chunks?: number;
   clipCount: number;
+  dispatchedCount?: number;
+  cutReadyCount?: number;
+  thumbnailReadyCount?: number;
+  activeDispatchCount?: number;
   createdAt: number;
   updatedAt: number;
 };
@@ -286,6 +290,7 @@ export type PitajiDispatched = {
   clipId: string;
   cutChildJobId?: string;
   cutError?: string;
+  reused?: boolean;
 };
 
 export async function dispatchPitajiClips(
@@ -304,10 +309,12 @@ export type PitajiDispatchView = {
   parentJobId: string;
   action: PitajiDispatchAction;
   status: string;
+  cutStatus?: string;
   clip: PitajiClip;
   cutChildJobId?: string;
   cutS3Key?: string;
   cutFilename?: string;
+  thumbnailStatus?: string;
   thumbnailChildJobId?: string;
   thumbnailS3Key?: string;
   error?: string;
@@ -328,6 +335,7 @@ export function pitajiDispatchHasCut(d: PitajiDispatchView): boolean {
 
 export function pitajiDispatchCutStatus(d: PitajiDispatchView): string | null {
   if (!pitajiDispatchHasCut(d)) return null;
+  if (d.cutStatus && d.cutStatus !== "not-requested") return d.cutStatus;
   if (d.cutProgress?.status) return d.cutProgress.status;
   if (d.cutS3Key || d.cutProgress?.s3Key) return "done";
   if (d.status === "error") return "error";
@@ -342,7 +350,7 @@ export function pitajiDispatchCutReady(d: PitajiDispatchView): boolean {
 }
 
 export function pitajiDispatchThumbnailReady(d: PitajiDispatchView): boolean {
-  return Boolean(d.thumbnailS3Key);
+  return d.thumbnailStatus === "done" || Boolean(d.thumbnailS3Key);
 }
 
 export async function listPitajiDispatches(

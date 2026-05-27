@@ -62,7 +62,7 @@ import {
   tryUnlink,
 } from "../lib/pitaji-audio-pipeline";
 import { isGeminiConfigured } from "../lib/gemini-client";
-import { isS3StorageEnabled, getS3SignedDownloadUrl, uploadFileToS3 } from "../lib/s3-storage";
+import { isS3StorageEnabled, getS3SignedDownloadUrl, uploadFileToS3, deleteS3Object } from "../lib/s3-storage";
 import { generateThumbnailForClip } from "../lib/pitaji-thumbnail";
 import { putSettings, updateClipDispatch, getClipDispatch, type PitajiSettings } from "../lib/pitaji-store";
 import { startClipCutInProcess, getClipCutProgress } from "./youtube";
@@ -133,13 +133,7 @@ router.get("/pitaji/settings", async (_req: Request, res: Response) => {
   }
   try {
     const settings = await getSettings();
-    res.json({
-      thumbnailPrompt: settings.thumbnailPrompt ?? "",
-      clipInstructions: settings.clipInstructions ?? "",
-      speakers: settings.speakers ?? [],
-      references: settings.references ?? [],
-      updatedAt: settings.updatedAt ?? 0,
-    });
+    res.json(await settingsForClient(settings));
   } catch (err) {
     req_logger_warn(_req, err, "Failed to load Pita Ji settings");
     res.status(500).json({ error: "Failed to load settings" });
@@ -155,8 +149,8 @@ router.get("/pitaji/jobs", async (req: Request, res: Response) => {
   try {
     const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 50)));
     const jobs = await listAnalyzeJobs(limit);
-    res.json({
-      jobs: jobs.map((j) => ({
+    const jobViews = await Promise.all(
+      jobs.map(async (j) => ({
         jobId: j.jobId,
         status: j.status,
         youtubeUrl: j.youtubeUrl,
@@ -167,9 +161,13 @@ router.get("/pitaji/jobs", async (req: Request, res: Response) => {
         pipelineMode: j.pipelineMode,
         chunks: j.chunks,
         clipCount: Array.isArray(j.clips) ? j.clips.length : 0,
+        ...(await dispatchSummaryForJob(j.jobId)),
         createdAt: j.createdAt,
         updatedAt: j.updatedAt,
       })),
+    );
+    res.json({
+      jobs: jobViews,
     });
   } catch (err) {
     req_logger_warn(req, err, "Failed to list Pita Ji jobs");
@@ -754,16 +752,87 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
     return;
   }
 
+  const existingDispatches = await listClipDispatchesByParent(jobId).catch(() => []);
+  const existingByClip = new Map(
+    existingDispatches.map((d) => [d.clip.id, d]),
+  );
+
   const dispatched: Array<{
     pitajiClipId: string;
     clipId: string;
     cutChildJobId?: string;
     cutError?: string;
+    reused?: boolean;
   }> = [];
   const now = Date.now();
 
   for (const clip of clipsToDispatch) {
+    const existing = existingByClip.get(clip.id);
+    if (existing) {
+      const wantsCut = action === "cut" || action === "both";
+      const wantsThumb = action === "thumbnail" || action === "both";
+      const existingHasCut = existing.action === "cut" || existing.action === "both";
+      const existingHasThumb = existing.action === "thumbnail" || existing.action === "both";
+      const patch: Partial<Omit<PitajiClipDispatch, "jobId" | "kind" | "createdAt">> = {};
+      let cutError: string | undefined;
+
+      if (wantsCut && !existingHasCut) {
+        patch.action = existingHasThumb ? "both" : "cut";
+        patch.cutStatus = "queued";
+        try {
+          const child = dispatchClipCut({
+            youtubeUrl: job.youtubeUrl,
+            startSec: clip.startSec,
+            endSec: clip.endSec,
+          });
+          patch.cutChildJobId = child.jobId;
+          patch.cutStatus = child.status === "queued" ? "queued" : "running";
+          patch.status = "cutting";
+        } catch (err) {
+          cutError = err instanceof Error ? err.message : "Failed to start cut job";
+          patch.cutStatus = "error";
+          patch.status = "error";
+          patch.error = cutError;
+        }
+      }
+
+      if (wantsThumb && !existingHasThumb) {
+        patch.action = wantsCut || existingHasCut ? "both" : "thumbnail";
+        patch.thumbnailStatus = "running";
+        if (patch.status !== "cutting" && patch.status !== "error") {
+          patch.status = existingHasCut || wantsCut ? existing.status : "thumbnail-pending";
+        }
+      }
+
+      if (Object.keys(patch).length > 0) {
+        await updateClipDispatch(existing.jobId, patch).catch((err) => {
+          req_logger_warn(req, err, "Failed to update reused clip dispatch record");
+        });
+      }
+
+      if (wantsThumb && !existingHasThumb) {
+        generateThumbnailForClip({
+          dispatchJobId: existing.jobId,
+          parentJobId: jobId,
+          clip,
+        }).catch((err) => {
+          req_logger_warn(req, err, `Thumbnail fire-and-forget failed for ${existing.jobId}`);
+        });
+      }
+
+      dispatched.push({
+        pitajiClipId: existing.jobId,
+        clipId: clip.id,
+        cutChildJobId: patch.cutChildJobId ?? existing.cutChildJobId,
+        cutError,
+        reused: true,
+      });
+      continue;
+    }
+
     const pitajiClipId = newClipJobId();
+    const cutRequested = action === "cut" || action === "both";
+    const thumbRequested = action === "thumbnail" || action === "both";
     const dispatchRec: PitajiClipDispatch = {
       jobId: pitajiClipId,
       kind: "pitaji-clip",
@@ -771,6 +840,8 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
       clip,
       action,
       status: action === "thumbnail" ? "thumbnail-pending" : "queued",
+      cutStatus: cutRequested ? "queued" : "not-requested",
+      thumbnailStatus: thumbRequested ? "queued" : "not-requested",
       createdAt: now,
       updatedAt: now,
     };
@@ -783,10 +854,12 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
           endSec: clip.endSec,
         });
         dispatchRec.cutChildJobId = child.jobId;
+        dispatchRec.cutStatus = child.status === "queued" ? "queued" : "running";
         dispatchRec.status = "cutting";
       } catch (err) {
         const m = err instanceof Error ? err.message : "Failed to start cut job";
         dispatchRec.status = "error";
+        dispatchRec.cutStatus = "error";
         dispatchRec.error = m;
         dispatched.push({ pitajiClipId, clipId: clip.id, cutError: m });
         try { await putClipDispatch(dispatchRec); } catch (e2) { req_logger_warn(req, e2, "putClipDispatch failed"); }
@@ -795,6 +868,7 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
     }
 
     if (action === "thumbnail" || action === "both") {
+      dispatchRec.thumbnailStatus = "running";
       dispatchRec.status = dispatchRec.status === "cutting" ? "cutting" : "thumbnail-pending";
     }
 
@@ -910,20 +984,35 @@ async function enrichDispatchWithProgress(d: PitajiClipDispatch): Promise<Enrich
 
   if (hasCut) {
     if (cutProgress?.status === "error") {
+      patch.cutStatus = "error";
       patch.status = "error";
       patch.error = cutProgress.message ?? d.error;
     } else if (cutProgress?.status === "cancelled") {
+      patch.cutStatus = "cancelled";
       patch.status = "error";
       patch.error = cutProgress.message ?? d.error ?? "Cut job was cancelled";
     } else if (cutReady || cutProgress?.status === "done") {
+      patch.cutStatus = "done";
       patch.status = d.action === "both" && !d.thumbnailS3Key ? "thumbnail-pending" : "done";
     } else if (cutProgress?.status || d.cutChildJobId) {
+      patch.cutStatus = cutProgress?.status === "queued" ? "queued" : "running";
       patch.status = "cutting";
     }
   } else if (d.action === "thumbnail") {
-    if (d.error) patch.status = "error";
-    else if (d.thumbnailS3Key) patch.status = "done";
-    else patch.status = "thumbnail-pending";
+    if (d.error) {
+      patch.thumbnailStatus = "error";
+      patch.status = "error";
+    } else if (d.thumbnailS3Key) {
+      patch.thumbnailStatus = "done";
+      patch.status = "done";
+    } else {
+      patch.thumbnailStatus = "running";
+      patch.status = "thumbnail-pending";
+    }
+  } else if (d.action === "both") {
+    if (d.error && !d.thumbnailS3Key) patch.thumbnailStatus = "error";
+    else if (d.thumbnailS3Key) patch.thumbnailStatus = "done";
+    else patch.thumbnailStatus = d.thumbnailStatus ?? "running";
   }
 
   const shouldPersist = Object.keys(patch).some((key) => {
@@ -942,6 +1031,70 @@ async function enrichDispatchWithProgress(d: PitajiClipDispatch): Promise<Enrich
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+async function settingsForClient(settings: PitajiSettings) {
+  const signed = async (key: string, filename: string): Promise<string | null> => {
+    if (!isS3StorageEnabled()) return null;
+    try {
+      return await getS3SignedDownloadUrl({ key, filename });
+    } catch {
+      return null;
+    }
+  };
+  return {
+    thumbnailPrompt: settings.thumbnailPrompt ?? "",
+    clipInstructions: settings.clipInstructions ?? "",
+    speakers: await Promise.all(
+      (settings.speakers ?? []).map(async (s) => ({
+        ...s,
+        url: await signed(s.s3Key, `${s.id}.png`),
+      })),
+    ),
+    references: await Promise.all(
+      (settings.references ?? []).map(async (r) => ({
+        ...r,
+        url: await signed(r.s3Key, `${r.id}.png`),
+      })),
+    ),
+    updatedAt: settings.updatedAt ?? 0,
+  };
+}
+
+async function dispatchSummaryForJob(jobId: string): Promise<{
+  dispatchedCount: number;
+  cutReadyCount: number;
+  thumbnailReadyCount: number;
+  activeDispatchCount: number;
+}> {
+  try {
+    const dispatches = await listClipDispatchesByParent(jobId);
+    let cutReadyCount = 0;
+    let thumbnailReadyCount = 0;
+    let activeDispatchCount = 0;
+    for (const d of dispatches) {
+      const hasCut = d.action === "cut" || d.action === "both";
+      const hasThumbnail = d.action === "thumbnail" || d.action === "both";
+      if (hasCut && d.cutS3Key) cutReadyCount += 1;
+      if (hasThumbnail && d.thumbnailS3Key) thumbnailReadyCount += 1;
+      const cutActive = hasCut && !d.cutS3Key && d.status !== "error";
+      const thumbnailActive = hasThumbnail && !d.thumbnailS3Key && !d.error;
+      if (cutActive || thumbnailActive) activeDispatchCount += 1;
+    }
+    return {
+      dispatchedCount: dispatches.length,
+      cutReadyCount,
+      thumbnailReadyCount,
+      activeDispatchCount,
+    };
+  } catch {
+    return {
+      dispatchedCount: 0,
+      cutReadyCount: 0,
+      thumbnailReadyCount: 0,
+      activeDispatchCount: 0,
+    };
+  }
+}
 
 function stripJobForClient(job: PitajiAnalyzeJob) {
   return {
@@ -967,10 +1120,12 @@ function stripDispatchForClient(d: PitajiClipDispatch) {
     parentJobId: d.parentJobId,
     action: d.action,
     status: d.status,
+    cutStatus: d.cutStatus,
     clip: d.clip,
     cutChildJobId: d.cutChildJobId,
     cutS3Key: d.cutS3Key,
     cutFilename: d.cutFilename,
+    thumbnailStatus: d.thumbnailStatus,
     thumbnailChildJobId: d.thumbnailChildJobId,
     thumbnailS3Key: d.thumbnailS3Key,
     error: d.error,
@@ -1086,8 +1241,10 @@ router.delete("/pitaji/settings/speaker/:id", async (req: Request, res: Response
   try {
     const id = String(req.params.id ?? "").trim();
     const settings = await getSettings();
+    const removed = (settings.speakers ?? []).find((s) => s.id === id);
     const speakers = (settings.speakers ?? []).filter((s) => s.id !== id);
     await putSettings({ ...settings, speakers, updatedAt: Date.now() });
+    if (removed?.s3Key) void deleteS3Object(removed.s3Key);
     res.json({ ok: true });
   } catch (err) {
     req_logger_warn(req, err, "Failed to delete speaker image");
@@ -1157,8 +1314,10 @@ router.delete("/pitaji/settings/reference/:id", async (req: Request, res: Respon
   try {
     const id = String(req.params.id ?? "").trim();
     const settings = await getSettings();
+    const removed = (settings.references ?? []).find((r) => r.id === id);
     const references = (settings.references ?? []).filter((r) => r.id !== id);
     await putSettings({ ...settings, references, updatedAt: Date.now() });
+    if (removed?.s3Key) void deleteS3Object(removed.s3Key);
     res.json({ ok: true });
   } catch (err) {
     req_logger_warn(req, err, "Failed to delete reference thumbnail");

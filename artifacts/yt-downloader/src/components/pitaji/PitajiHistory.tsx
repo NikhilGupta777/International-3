@@ -352,11 +352,27 @@ export default function PitajiHistory() {
             const isOpen = openFolders.has(j.jobId);
             const fd = folderData.get(j.jobId);
             const thumb = ytThumbnail(j.videoId);
-            // Count dispatched clips only
-            const dispatchedCount = fd ? fd.dispatches.length : 0;
+            // Count dispatched clips only. Summary counts come from /jobs so
+            // folders are useful before the user expands them.
+            const dispatchedCount = fd ? fd.dispatches.length : j.dispatchedCount ?? 0;
             const readyCount = fd
               ? fd.dispatches.filter(pitajiDispatchCutReady).length
-              : 0;
+              : j.cutReadyCount ?? 0;
+            const thumbnailReadyCount = fd
+              ? fd.dispatches.filter(pitajiDispatchThumbnailReady).length
+              : j.thumbnailReadyCount ?? 0;
+            const activeDispatchCount = fd
+              ? fd.dispatches.filter((d) => {
+                  if (pitajiDispatchHasCut(d) && !pitajiDispatchCutReady(d)) {
+                    const s = pitajiDispatchCutStatus(d);
+                    return s !== "error" && s !== "cancelled";
+                  }
+                  if ((d.action === "thumbnail" || d.action === "both") && !pitajiDispatchThumbnailReady(d) && !d.error) {
+                    return d.status !== "error";
+                  }
+                  return false;
+                }).length
+              : j.activeDispatchCount ?? 0;
 
             return (
               <li key={j.jobId} className={`pj-folder${isOpen ? " is-open" : ""}`}>
@@ -393,7 +409,17 @@ export default function PitajiHistory() {
                     <span className={`pj-status pj-status--${j.status}`}>{j.status}</span>
                     {dispatchedCount > 0 && (
                       <span className="pj-folder-count">
-                        {readyCount}/{dispatchedCount} ready
+                        {readyCount}/{dispatchedCount} MP4
+                      </span>
+                    )}
+                    {thumbnailReadyCount > 0 && (
+                      <span className="pj-folder-count pj-folder-count--muted">
+                        {thumbnailReadyCount} thumb
+                      </span>
+                    )}
+                    {activeDispatchCount > 0 && (
+                      <span className="pj-folder-count pj-folder-count--active">
+                        {activeDispatchCount} active
                       </span>
                     )}
                     <ChevronRight size={16} strokeWidth={2} className="pj-folder-chevron" />

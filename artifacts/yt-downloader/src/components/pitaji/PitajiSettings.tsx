@@ -222,7 +222,11 @@ export default function PitajiSettings() {
             {speakers.map((s) => (
               <div key={s.id} className="pj-settings-image-chip">
                 <div className="pj-settings-image-avatar" title={s.label}>
-                  {s.label?.charAt(0)?.toUpperCase() ?? "?"}
+                  {s.url ? (
+                    <img src={s.url} alt="" loading="lazy" />
+                  ) : (
+                    s.label?.charAt(0)?.toUpperCase() ?? "?"
+                  )}
                 </div>
                 <span className="pj-settings-image-label">{s.label}</span>
                 <button
@@ -287,7 +291,11 @@ export default function PitajiSettings() {
             {references.map((r) => (
               <div key={r.id} className="pj-settings-image-chip">
                 <div className="pj-settings-image-avatar pj-settings-image-avatar--ref">
-                  <ImageIcon size={14} strokeWidth={2} />
+                  {r.url ? (
+                    <img src={r.url} alt="" loading="lazy" />
+                  ) : (
+                    <ImageIcon size={14} strokeWidth={2} />
+                  )}
                 </div>
                 <span className="pj-settings-image-label">{r.id.slice(0, 10)}</span>
                 <button

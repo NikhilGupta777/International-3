@@ -116,6 +116,14 @@ export type PitajiClipDispatchStatus =
   | "done"
   | "error";
 
+export type PitajiAssetStatus =
+  | "not-requested"
+  | "queued"
+  | "running"
+  | "done"
+  | "error"
+  | "cancelled";
+
 export interface PitajiClipDispatch {
   jobId: string; // pjc_*
   kind: "pitaji-clip";
@@ -123,9 +131,11 @@ export interface PitajiClipDispatch {
   clip: PitajiClip;
   action: "cut" | "thumbnail" | "both";
   status: PitajiClipDispatchStatus;
+  cutStatus?: PitajiAssetStatus;
   cutChildJobId?: string; // points to a youtube clip-cut job
   cutS3Key?: string;
   cutFilename?: string;
+  thumbnailStatus?: PitajiAssetStatus;
   thumbnailChildJobId?: string;
   thumbnailS3Key?: string;
   error?: string;
@@ -385,9 +395,11 @@ function encodeClipDispatch(rec: PitajiClipDispatch): Record<string, AttributeVa
     clip: J(rec.clip),
     action: S(rec.action),
     status: S(rec.status),
+    cutStatus: S(rec.cutStatus),
     cutChildJobId: S(rec.cutChildJobId),
     cutS3Key: S(rec.cutS3Key),
     cutFilename: S(rec.cutFilename),
+    thumbnailStatus: S(rec.thumbnailStatus),
     thumbnailChildJobId: S(rec.thumbnailChildJobId),
     thumbnailS3Key: S(rec.thumbnailS3Key),
     error: S(rec.error),
@@ -409,9 +421,11 @@ function decodeClipDispatch(item: Record<string, AttributeValue>): PitajiClipDis
     clip,
     action: (readS(item, "action") as PitajiClipDispatch["action"]) ?? "cut",
     status: (readS(item, "status") as PitajiClipDispatchStatus) ?? "queued",
+    cutStatus: readS(item, "cutStatus") as PitajiAssetStatus | undefined,
     cutChildJobId: readS(item, "cutChildJobId"),
     cutS3Key: readS(item, "cutS3Key"),
     cutFilename: readS(item, "cutFilename"),
+    thumbnailStatus: readS(item, "thumbnailStatus") as PitajiAssetStatus | undefined,
     thumbnailChildJobId: readS(item, "thumbnailChildJobId"),
     thumbnailS3Key: readS(item, "thumbnailS3Key"),
     error: readS(item, "error"),
@@ -464,9 +478,11 @@ export async function updateClipDispatch(
       case "parentJobId":
       case "action":
       case "status":
+      case "cutStatus":
       case "cutChildJobId":
       case "cutS3Key":
       case "cutFilename":
+      case "thumbnailStatus":
       case "thumbnailChildJobId":
       case "thumbnailS3Key":
       case "error":
