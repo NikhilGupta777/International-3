@@ -2408,6 +2408,7 @@ router.post("/agent/chat", async (req, res) => {
           canvasRouteBuf = canvasRouteBuf.slice((open.index || 0) + open[0].length);
         }
       };
+      let lastGroundingMeta: any = null;
       for await (const chunk of stream!) {
         if (!isConnected()) break;
 
@@ -2421,6 +2422,10 @@ router.post("/agent/chat", async (req, res) => {
             sseEvent(res, { type: "thought_delta", runId, content: tp.text });
           }
         }
+
+        // ── Track grounding metadata from native Google Search grounding ─
+        const gm = chunk.candidates?.[0]?.groundingMetadata as any;
+        if (gm) lastGroundingMeta = gm;
 
         const chunkText = chunk.text;
         if (chunkText) {
@@ -2525,6 +2530,19 @@ router.post("/agent/chat", async (req, res) => {
         // Only send full text event if we didn't already stream it via text_delta
         if (!streamedTextLive) {
           sseEvent(res, { type: "text", content: fullText, runId });
+        }
+        // Emit grounding sources if native Google Search grounding was used.
+        // Sends source URLs (for [1][2] citations) + the required Google Search
+        // suggestions widget HTML.
+        if (lastGroundingMeta) {
+          const chunks = (lastGroundingMeta.groundingChunks ?? []).map((c: any) => ({
+            title: c.web?.title ?? "",
+            uri: c.web?.uri ?? "",
+          })).filter((c: any) => c.uri);
+          const searchEntryPoint = lastGroundingMeta.searchEntryPoint?.renderedContent ?? null;
+          if (chunks.length > 0 || searchEntryPoint) {
+            sseEvent(res, { type: "grounding_sources", runId, chunks, searchEntryPoint } as any);
+          }
         }
         break;
       }

@@ -65,6 +65,7 @@ type SseEvent =
   | { type: "canvas_done"; runId?: string; canvasId: string }
   | { type: "thought_delta"; content: string; runId?: string }
   | { type: "suggestions"; items: string[]; runId?: string }
+  | { type: "grounding_sources"; runId?: string; chunks: Array<{ title: string; uri: string }>; searchEntryPoint?: string | null }
   | { type: "error"; message: string }
   | { type: "done"; runId?: string; ts?: number };
 
@@ -76,7 +77,8 @@ type MessagePart =
   | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
   | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string; language?: string; canvasId?: string; live?: boolean };
 
-type Message = { id: string; role: "user" | "assistant"; parts: MessagePart[]; timestamp: Date };
+type GroundingSource = { title: string; uri: string };
+type Message = { id: string; role: "user" | "assistant"; parts: MessagePart[]; timestamp: Date; groundingSources?: GroundingSource[]; searchEntryPoint?: string | null };
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
 const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
@@ -152,7 +154,7 @@ function clientStripTags(text: string): string {
 }
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
-function renderMd(text: string): React.ReactNode {
+function renderMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
   lines.forEach((line, li) => {
@@ -160,13 +162,25 @@ function renderMd(text: string): React.ReactNode {
     const ulMatch = /^[-*]\s+(.*)/.exec(line);
     const inline = (str: string, key: string): React.ReactNode => {
       const parts: React.ReactNode[] = [];
-      const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+      // Match bold, code, and citation [N] patterns
+      const re = /(\*\*[^*]+\*\*|`[^`]+`|\[\d+\])/g;
       let last = 0; let m; let k = 0;
       while ((m = re.exec(str)) !== null) {
         if (m.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, m.index)}</span>);
         const tok = m[0];
         if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2, -2)}</strong>);
-        else parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1, -1)}</code>);
+        else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1, -1)}</code>);
+        else {
+          // Citation [N]
+          const idx = parseInt(tok.slice(1, -1), 10) - 1;
+          const src = sources?.[idx];
+          parts.push(src
+            ? <a key={`${key}-ref${k++}`} href={src.uri} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center justify-center w-4 h-4 text-[9px] font-semibold rounded bg-white/10 hover:bg-white/20 text-white/60 hover:text-white/90 transition-colors align-super leading-none mx-0.5 no-underline"
+                title={src.title}>{idx + 1}</a>
+            : <span key={`${key}-ref${k++}`} className="text-white/40 text-[9px] align-super">{tok}</span>
+          );
+        }
         last = m.index + tok.length;
       }
       if (last < str.length) parts.push(<span key={`${key}-e`}>{str.slice(last)}</span>);
@@ -181,7 +195,7 @@ function renderMd(text: string): React.ReactNode {
 }
 
 // ── Streaming markdown renderer — keeps markdown formatting, animates trailing words ──
-function renderStreamingMd(text: string): React.ReactNode {
+function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
   const ANIMATE_WINDOW = 80; // animate last N graphemes of the final line
@@ -200,15 +214,16 @@ function renderStreamingMd(text: string): React.ReactNode {
   // Inline parser that can optionally animate trailing tokens
   const inlineAnimated = (str: string, key: string, animateTrailing: boolean): React.ReactNode => {
     const parts: React.ReactNode[] = [];
-    const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    const re = /(\*\*[^*]+\*\*|`[^`]+`|\[\d+\])/g;
     let last = 0; let m; let k = 0;
     // First pass: parse markdown into segments
-    const segments: Array<{ text: string; type: "plain" | "bold" | "code" }> = [];
+    const segments: Array<{ text: string; type: "plain" | "bold" | "code" | "cite" }> = [];
     while ((m = re.exec(str)) !== null) {
       if (m.index > last) segments.push({ text: str.slice(last, m.index), type: "plain" });
       const tok = m[0];
       if (tok.startsWith("**")) segments.push({ text: tok.slice(2, -2), type: "bold" });
-      else segments.push({ text: tok.slice(1, -1), type: "code" });
+      else if (tok.startsWith("`")) segments.push({ text: tok.slice(1, -1), type: "code" });
+      else segments.push({ text: tok, type: "cite" });
       last = m.index + tok.length;
     }
     if (last < str.length) segments.push({ text: str.slice(last), type: "plain" });
@@ -218,17 +233,28 @@ function renderStreamingMd(text: string): React.ReactNode {
       for (const seg of segments) {
         if (seg.type === "bold") parts.push(<strong key={`${key}-b${k++}`}>{seg.text}</strong>);
         else if (seg.type === "code") parts.push(<code key={`${key}-c${k++}`}>{seg.text}</code>);
-        else parts.push(<span key={`${key}-t${k++}`}>{seg.text}</span>);
+        else if (seg.type === "cite") {
+          const idx = parseInt(seg.text.slice(1, -1), 10) - 1;
+          const src = sources?.[idx];
+          parts.push(src
+            ? <a key={`${key}-ref${k++}`} href={src.uri} target="_blank" rel="noopener noreferrer"
+                className="inline-flex items-center justify-center w-4 h-4 text-[9px] font-semibold rounded bg-white/10 hover:bg-white/20 text-white/60 hover:text-white/90 transition-colors align-super leading-none mx-0.5 no-underline"
+                title={src.title}>{idx + 1}</a>
+            : <span key={`${key}-ref${k++}`} className="text-white/40 text-[9px] align-super">{seg.text}</span>
+          );
+        } else parts.push(<span key={`${key}-t${k++}`}>{seg.text}</span>);
       }
       return parts;
     }
 
     // Animated render — split all text into graphemes for a smoother typewriter feel.
+    // cite segments are rendered inline without animation (they're tiny superscripts).
     const allChars: Array<{ char: string; type: "plain" | "bold" | "code" }> = [];
     for (const seg of segments) {
+      if (seg.type === "cite") continue; // rendered below via parts
       const chars = splitGraphemes(seg.text);
       for (const ch of chars) {
-        if (ch) allChars.push({ char: ch, type: seg.type });
+        if (ch) allChars.push({ char: ch, type: seg.type as "plain" | "bold" | "code" });
       }
     }
 
@@ -629,7 +655,7 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
                 {visibleText.trim() && (
                   <div className={cn("group/bubble relative rounded-2xl px-4 py-3 text-sm leading-relaxed",
                     isUser ? "bg-[#dc2626] text-white rounded-tr-sm" : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md")}>
-                    {isUser ? cleanContent : (isLastTextPart ? renderStreamingMd(visibleText) : renderMd(visibleText))}
+                    {isUser ? cleanContent : (isLastTextPart ? renderStreamingMd(visibleText, message.groundingSources) : renderMd(visibleText, message.groundingSources))}
                     {/* Copy button — assistant messages only, hover-reveal */}
                     {!isUser && (
                       <div className="absolute top-2 right-2 flex gap-1">
@@ -660,6 +686,23 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
           if (part.kind === "artifact") return <ArtifactCard key={i} part={part} onNavigate={onNavigate} />;
           return null;
         })}
+        {/* Grounding sources — shown when Gemini native Google Search grounding was used */}
+        {!isUser && message.groundingSources && message.groundingSources.length > 0 && (
+          <div className="flex flex-col gap-1.5 mt-1">
+            {message.searchEntryPoint && (
+              <div className="text-[10px] text-white/30 px-1" dangerouslySetInnerHTML={{ __html: message.searchEntryPoint }} />
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              {message.groundingSources.map((src, si) => (
+                <a key={si} href={src.uri} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.07] hover:bg-white/[0.08] hover:border-white/[0.12] transition-colors text-[10px] text-white/50 hover:text-white/80 no-underline max-w-[200px]">
+                  <span className="shrink-0 text-white/30 font-medium">[{si + 1}]</span>
+                  <span className="truncate">{src.title || new URL(src.uri).hostname}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
         {message.parts.some(p => p.kind === "text" ? (p as any).content?.trim() : true) && (
           <span className="text-[10px] text-white/25 px-1">{message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         )}
@@ -1170,6 +1213,14 @@ export function StudioCopilot({
         return;
       }
       if (evt.type === "text" || evt.type === "text_delta") { setThinking(false); setActiveToolLabel(null); appendText(evt.content); return; }
+      if (evt.type === "grounding_sources") {
+        patchAssistant(m => ({
+          ...m,
+          groundingSources: evt.chunks,
+          searchEntryPoint: evt.searchEntryPoint ?? null,
+        }));
+        return;
+      }
       if (evt.type === "plan") {
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "plan", steps: evt.steps, iteration: evt.iteration }] }));
         return;
