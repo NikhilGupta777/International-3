@@ -1194,9 +1194,10 @@ function getReplitGenAI(): GoogleGenAI | null {
 }
 
 // Passes 1 & 2 (audio-dependent): use personal keys only with key rotation.
-// gemini-3.5-flash is primary (fast transcription).
-// Rotates to the next key on 429 rate limit. Throws if all keys are exhausted.
+// gemini-3.1-pro is primary for higher quality transcription.
+// Falls back to gemini-3.5-flash on rate limits. Rotates to the next key on 429.
 const KEY_ROTATION_MODELS = [
+  "gemini-3.1-pro",
   "gemini-3.5-flash",
 ];
 
@@ -2300,7 +2301,7 @@ async function processAudio(
       job.message = `Translating subtitles to ${translateTo}...`;
 
       const translatedRaw = await generateWithReplitFirst(
-        "gemini-3.5-flash",
+        "gemini-3.1-pro",
         (model) => ({
           model,
           contents: [
