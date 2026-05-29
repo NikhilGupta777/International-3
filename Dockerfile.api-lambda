@@ -7,26 +7,16 @@ RUN dnf install -y python3.11 python3.11-pip \
     && LD_LIBRARY_PATH=/usr/lib64:/lib64 python3.11 -m pip install --no-cache-dir notebooklm-py==0.3.4 \
     && LD_LIBRARY_PATH=/usr/lib64:/lib64 python3.11 -c "from notebooklm import NotebookLMClient; print('notebooklm-py import ok', NotebookLMClient)"
 
-# Pin yt-dlp version for stable Docker layer caching.
-# To upgrade: bump YTDLP_VERSION here AND in deploy.yml env.YTDLP_VERSION
+# Install yt-dlp via pip (same approach as the Fargate worker) so that
+# yt-dlp-ejs is installed as a Python package alongside yt-dlp. This means
+# yt-dlp finds EJS locally without ever fetching from GitHub — solving the
+# cold-start hang caused by raw.githubusercontent.com being unreliable from Lambda.
 ARG YTDLP_VERSION=2026.03.17
-RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" -o /usr/local/bin/yt-dlp \
-    && chmod +x /usr/local/bin/yt-dlp \
+RUN LD_LIBRARY_PATH=/usr/lib64:/lib64 python3.11 -m pip install --no-cache-dir \
+    "yt-dlp[default]==${YTDLP_VERSION}" \
+    && python3.11 -m yt_dlp --version \
+    && ln -sf "$(python3.11 -c 'import shutil; print(shutil.which(\"yt-dlp\"))')" /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
-
-# Pre-cache the yt-dlp EJS extractor so Lambda cold starts never need to fetch
-# it from GitHub at runtime. Without this, the first clip-cut on a fresh container
-# would hang waiting for raw.githubusercontent.com (unreliable from Lambda's network).
-RUN mkdir -p /opt/yt-dlp-cache \
-    && /usr/local/bin/yt-dlp \
-    --no-warnings \
-    --skip-download \
-    --cache-dir /opt/yt-dlp-cache \
-    --extractor-args "youtube:player_client=web" \
-    --js-runtimes node \
-    --remote-components ejs:github \
-    "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>/dev/null || true \
-    && ls /opt/yt-dlp-cache/ && echo "EJS cache populated at /opt/yt-dlp-cache" || echo "EJS cache FAILED"
 
 # yt-dlp needs ffmpeg for merged video downloads and partial clip downloads.
 # Install Linux x86_64 static binaries inside the final Lambda image and verify
