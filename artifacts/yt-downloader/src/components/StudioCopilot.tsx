@@ -59,7 +59,7 @@ type SseEvent =
   | { type: "tool_progress"; runId?: string; toolId?: string; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
   | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
-  | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string }
+  | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; audioUrl?: string; content?: string }
   | { type: "canvas_start"; runId?: string; canvasId: string; label: string; language?: string }
   | { type: "canvas_delta"; runId?: string; canvasId: string; content: string }
   | { type: "canvas_done"; runId?: string; canvasId: string }
@@ -75,7 +75,7 @@ type MessagePart =
   | { kind: "attachment"; type: string; name: string; mimeType: string; data?: string; url?: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
   | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
-  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; content?: string; language?: string; canvasId?: string; live?: boolean };
+  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; audioUrl?: string; content?: string; language?: string; canvasId?: string; live?: boolean };
 
 type GroundingSource = { title: string; uri: string };
 type Message = { id: string; role: "user" | "assistant"; parts: MessagePart[]; timestamp: Date; groundingSources?: GroundingSource[]; searchEntryPoint?: string | null };
@@ -99,6 +99,7 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   extract_text_from_image: { icon: <Captions className="w-3.5 h-3.5" />, label: "Reading image text", color: "text-teal-400" },
   write_video_script: { icon: <SquarePen className="w-3.5 h-3.5" />, label: "Writing script", color: "text-amber-400" },
   generate_seo_pack: { icon: <Sparkles className="w-3.5 h-3.5" />, label: "SEO pack", color: "text-lime-400" },
+  generate_music: { icon: <Music2 className="w-3.5 h-3.5" />, label: "Composing music", color: "text-purple-400" },
   do_full_package: { icon: <Sparkles className="w-3.5 h-3.5" />, label: "Full package", color: "text-purple-300" },
   repeat_last_artifact: { icon: <Download className="w-3.5 h-3.5" />, label: "Restoring result", color: "text-green-400" },
   check_active_jobs: { icon: <Loader2 className="w-3.5 h-3.5" />, label: "Checking jobs", color: "text-blue-300" },
@@ -589,6 +590,32 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
           {part.tab && onNavigate && (
             <button onClick={() => onNavigate(part.tab!)} className="px-3 py-2.5 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-xs font-medium transition-colors">Open Tab</button>
           )}
+        </div>
+      </div>
+    );
+  }
+  if (part.artifactType === "audio" && part.audioUrl) {
+    return (
+      <div className="rounded-2xl border border-purple-500/25 bg-purple-500/8 overflow-hidden">
+        {part.imageUrl && (
+          <div className="p-3 pb-0">
+            <img src={part.imageUrl} alt={part.label}
+              className="w-full max-h-[220px] object-cover rounded-xl border border-white/10 bg-black/20" />
+          </div>
+        )}
+        <div className="px-3 pt-3 pb-1">
+          <audio controls src={part.audioUrl} className="w-full h-9 rounded-lg accent-purple-400" style={{ colorScheme: "dark" }} />
+        </div>
+        <div className="px-4 pb-3 flex items-center gap-2 mt-1">
+          <div className="p-1.5 rounded-lg bg-purple-500/15 shrink-0"><Music2 className="w-4 h-4 text-purple-300" /></div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-bold text-purple-200 truncate">{part.label}</p>
+            {part.content && <p className="text-xs text-white/45 truncate mt-0.5">{part.content}</p>}
+          </div>
+          <a href={part.downloadUrl ?? part.audioUrl} download
+            className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-xs text-white bg-purple-600 hover:bg-purple-500 transition-colors">
+            <Download className="w-4 h-4" /> Download
+          </a>
         </div>
       </div>
     );
@@ -1350,7 +1377,7 @@ export function StudioCopilot({
       }
       if (evt.type === "navigate") { if (onNavigate) onNavigate(evt.tab); return; }
       if (evt.type === "artifact") {
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, content: evt.content }] }));
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, audioUrl: evt.audioUrl, content: evt.content }] }));
         return;
       }
       if (evt.type === "canvas_start") {

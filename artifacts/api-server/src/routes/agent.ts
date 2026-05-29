@@ -632,6 +632,20 @@ const STUDIO_TOOLS: any[] = [
     },
   },
   {
+    name: "generate_music",
+    description: "Generate original music using Google Lyria AI. Use for any request to create, compose, or make music/songs/soundtracks/jingles. Craft the best possible Lyria prompt based on the user's intent — describe mood, genre, instruments, tempo, energy, structure, and duration. Ask for duration if not specified: 'clip' is a polished 30-second piece ($0.04), 'full' is a complete song up to ~3 minutes with intro/verse/chorus/bridge ($0.08). Also generates matching cover art automatically.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        prompt: { type: Type.STRING, description: "Detailed Lyria music generation prompt. Include: genre, mood, tempo/BPM, instruments, energy level, structure (e.g. [0:00-0:10] soft intro...), language if vocals, and any restrictions (e.g. 'no vocals, instrumental only'). Be specific and vivid." },
+        duration: { type: Type.STRING, description: "'clip' for a polished 30-second piece (default), or 'full' for a complete song up to ~3 minutes with full song structure (intro, verse, chorus, bridge, outro)." },
+        coverArtPrompt: { type: Type.STRING, description: "Optional: describe the cover art visual. If omitted, one is auto-crafted from the music prompt. Example: 'Ancient Indian temple at sunset, cinematic lighting, mystical atmosphere'" },
+        aspectRatio: { type: Type.STRING, description: "Cover art aspect ratio: '16:9' (landscape, YouTube/desktop), '9:16' (portrait, Reels/Shorts), '1:1' (square, default). Pick based on where the music will be used." },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
     name: "analyze_youtube_video",
     description: "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video. IMPORTANT: Craft a detailed, specific analytical question — not just 'summarize'. Include what aspects to focus on, what format the answer should be in, and any context from the conversation that would help produce the most useful analysis.",
     parameters: {
@@ -796,6 +810,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "edit this attached image" | edit_image — craft a precise editing prompt from user intent (what to change, what to preserve, style, constraints) |
 | "what is in this image" | describe_image only when user needs structured artifact/card; otherwise answer directly |
 | "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
+| "make music / generate a song / compose / create soundtrack / background music" | generate_music — craft a vivid Lyria prompt (genre, mood, instruments, tempo, structure); if duration not given, suggest clip (30s) vs full song and confirm before generating |
 | "write script / storyboard / shot list" | write_video_script — craft a detailed topic brief (audience, platform, tone, key points, emotional arc) before calling; only when user needs downloadable file, otherwise answer directly |
 | "SEO title/description/tags/thumbnail text" | generate_seo_pack — craft a detailed context brief (video content, niche, trends, goals) before calling; only when user needs structured artifact export, otherwise answer directly |
 | "full package / do everything / complete package" | do_full_package |
@@ -993,6 +1008,49 @@ async function generateImageArtifact(params: {
     }
   }
   throw new Error("Image model returned no image. Try a clearer prompt or attach an image.");
+}
+
+// ── Lyria music generation ────────────────────────────────────────────────────
+
+async function generateLyriaMusic(params: {
+  prompt: string;
+  durationMode: "clip" | "full";
+}): Promise<{ audioUrl: string; filename: string; mimeType: string }> {
+  const model = params.durationMode === "full"
+    ? (process.env.LYRIA_FULL_MODEL ?? "lyria-3-pro-preview")
+    : (process.env.LYRIA_CLIP_MODEL ?? "lyria-3-clip-preview");
+
+  const ai = createGeminiClient();
+  const resp = await ai.models.generateContent({
+    model,
+    contents: [{ role: "user", parts: [{ text: params.prompt }] }],
+  } as any);
+
+  for (const part of (resp as any).candidates?.[0]?.content?.parts ?? []) {
+    const audioData: string | undefined = part.inlineData?.data;
+    const mimeType: string = part.inlineData?.mimeType ?? "audio/mpeg";
+    if (audioData) {
+      const ext = mimeType.includes("wav") ? "wav" : "mp3";
+      const filename = `lyria-${Date.now()}.${ext}`;
+      if (!isS3StorageEnabled()) {
+        return { audioUrl: `data:${mimeType};base64,${audioData}`, filename, mimeType };
+      }
+      const upload = await createS3PresignedUpload({
+        jobId: randomUUID(), namespace: "agent-music", filename, contentType: mimeType,
+      });
+      const put = await fetch(upload.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": mimeType },
+        body: Buffer.from(audioData, "base64"),
+      });
+      if (!put.ok) throw new Error(`Audio upload failed: ${put.status}`);
+      const audioUrl = await getS3SignedDownloadUrl({
+        key: upload.key, filename: upload.filename, expiresInSec: 7 * 24 * 60 * 60,
+      });
+      return { audioUrl, filename: upload.filename, mimeType };
+    }
+  }
+  throw new Error("Lyria returned no audio. Try a different prompt or check that GEMINI_API_KEY has Lyria access.");
 }
 
 async function textModelArtifact(label: string, prompt: string): Promise<{ result: any; artifact: object }> {
@@ -1954,6 +2012,38 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
       logTool("Writing video script", { topic });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Writing script..." });
       return textModelArtifact("Video Script", prompt);
+    }
+
+    case "generate_music": {
+      const musicPrompt = String(args.prompt ?? "").trim();
+      if (!musicPrompt) throw new Error("Music prompt is required.");
+      const durationMode = String(args.duration ?? "clip") === "full" ? "full" : "clip";
+      const aspect = String(args.aspectRatio ?? "1:1");
+      const rawCoverPrompt = String(args.coverArtPrompt ?? "").trim();
+      const coverArtPrompt = rawCoverPrompt ||
+        `Music album cover art for: ${musicPrompt.slice(0, 100)}. Cinematic, professional, moody lighting, high quality digital art.`;
+
+      logTool("Generating music + cover art", { durationMode, model: durationMode === "full" ? "lyria-3-pro-preview" : "lyria-3-clip-preview" });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Composing ${durationMode === "full" ? "full song (~2-3 min)" : "30-second clip"} with Lyria AI…` });
+
+      // Generate music + cover art in parallel
+      const [audio, cover] = await Promise.all([
+        generateLyriaMusic({ prompt: musicPrompt, durationMode }),
+        generateImageArtifact({ prompt: coverArtPrompt, filenamePrefix: "music-cover", aspectRatio: aspect }),
+      ]);
+
+      const label = `${durationMode === "full" ? "Full Song" : "30s Clip"} — ${musicPrompt.slice(0, 60)}${musicPrompt.length > 60 ? "…" : ""}`;
+      return {
+        result: { audioUrl: audio.audioUrl, imageUrl: cover.imageUrl, filename: audio.filename, duration: durationMode },
+        artifact: {
+          artifactType: "audio",
+          label,
+          audioUrl: audio.audioUrl,
+          downloadUrl: audio.audioUrl,
+          imageUrl: cover.imageUrl,
+          content: cover.text || musicPrompt.slice(0, 120),
+        },
+      };
     }
 
     case "generate_seo_pack": {
