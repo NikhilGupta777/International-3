@@ -16,11 +16,11 @@ import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 const router = Router();
 
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
-const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.1-pro";
+const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.1-pro-preview";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
 const ALLOWED_MODELS = new Set([
   "gemini-3.5-flash",
-  "gemini-3.1-pro",
+  "gemini-3.1-pro-preview",
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -2290,7 +2290,7 @@ router.post("/agent/chat", async (req, res) => {
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
               thinkingConfig: {
-                thinkingLevel: (requestedModel === "ultra" ? "HIGHEST" : "MEDIUM") as any,
+                thinkingLevel: (requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
                 includeThoughts: true,
               },
             },
