@@ -690,16 +690,11 @@ const BASE_YTDLP_ARGS: string[] = [
   "--extractor-retries", "5",
   // Prevent infinite hangs on slow/broken connections
   "--socket-timeout", "30",
-  // Enable JavaScript challenge solving via Node.js (yt-dlp 2026.03.17+ requires EJS
-  // to decode YouTube signatures; default only enables Deno which is not installed here).
-  // bun is added as a lower-priority fallback since it is also installed in this env.
-  "--js-runtimes", "node",
-  "--js-runtimes", "bun",
-  // NOTE: --remote-components ejs:github was removed because it fetches the EJS
-  // challenge-solver from GitHub at runtime, which hangs indefinitely inside Lambda
-  // (network access to raw.githubusercontent.com is unreliable in Lambda). We rely on
-  // tv_embedded / web_embedded player clients (which don't require NSIG/EJS) instead.
-  // Re-enable once the EJS script is baked into the Docker image at build time.
+  // NOTE: --js-runtimes and --remote-components ejs:github are intentionally omitted.
+  // On cold Lambda containers, GitHub is unreliable so the EJS script fetch hangs.
+  // Instead we use player_skip=js (see getDefaultYouTubeExtractorArgs) which tells
+  // yt-dlp to use the innertube API URLs directly — authenticated users with valid
+  // cookies receive pre-signed URLs that do not require NSIG/JavaScript decoding.
   // Browser-like headers to avoid bot detection
   "--add-headers",
   [
@@ -809,15 +804,14 @@ function getDefaultYouTubeExtractorArgs(): string[] {
       `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
     ];
   }
-  // Browser cookies belong to the web client session — use web as primary.
-  // NSIG is solved by yt-dlp's bundled EJS via --js-runtimes node (no GitHub
-  // fetch needed; --remote-components ejs:github was removed because it hangs
-  // in Lambda).  web_embedded and tv_embedded are kept as fallbacks.
+  // Use web client with player_skip=js so yt-dlp skips running the player
+  // JavaScript entirely. Authenticated users (valid cookies) receive pre-signed
+  // innertube API URLs that do not need NSIG decoding — no EJS or GitHub fetch.
   const hasCookies = existsSync(YTDLP_COOKIES_FILE);
   if (hasCookies) {
     return [
       "--extractor-args",
-      "youtube:player_client=web,web_embedded,tv_embedded",
+      "youtube:player_client=web,web_embedded,tv_embedded;player_skip=js",
     ];
   }
   return [
@@ -838,13 +832,12 @@ function getYouTubeFallbacks(): string[][] {
   }
   const hasCookies = existsSync(YTDLP_COOKIES_FILE);
   if (hasCookies) {
-    // Fallback order with cookies — bundled EJS handles NSIG for web client
-    // (no GitHub fetch required since --remote-components ejs:github was removed).
+    // All fallbacks use player_skip=js — no EJS/JS execution needed.
     return [
-      ["--extractor-args", "youtube:player_client=web"],
-      ["--extractor-args", "youtube:player_client=web_embedded,tv_embedded"],
-      ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
-      ["--extractor-args", "youtube:player_client=tv_embedded"],
+      ["--extractor-args", "youtube:player_client=web;player_skip=js"],
+      ["--extractor-args", "youtube:player_client=web_embedded,tv_embedded;player_skip=js"],
+      ["--extractor-args", "youtube:player_client=tv_embedded,android_vr;player_skip=js"],
+      ["--extractor-args", "youtube:player_client=tv_embedded;player_skip=js"],
       ["--extractor-args", "youtube:player_client=android_vr"],
       ["--extractor-args", "youtube:player_client=mweb"],
       ["--extractor-args", "youtube:player_client=ios"],
