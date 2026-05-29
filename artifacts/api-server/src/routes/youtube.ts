@@ -690,10 +690,14 @@ const BASE_YTDLP_ARGS: string[] = [
   "--extractor-retries", "5",
   // Prevent infinite hangs on slow/broken connections
   "--socket-timeout", "30",
-  // NOTE: --js-runtimes and --remote-components ejs:github are intentionally omitted.
-  // Spawning a Node.js subprocess inside Lambda for NSIG solving hangs indefinitely.
-  // Instead the player_client selection below uses clients that don't require NSIG
-  // (web_embedded, tv_embedded, ios) while still benefiting from cookie auth.
+  // Enable JavaScript challenge solving via Node.js (yt-dlp 2026.03.17+ requires EJS
+  // to decode YouTube signatures; default only enables Deno which is not installed here).
+  // bun is added as a lower-priority fallback since it is also installed in this env.
+  "--js-runtimes", "node",
+  "--js-runtimes", "bun",
+  // Allow yt-dlp to fetch the latest EJS challenge solver script from GitHub.
+  // The script is cached on first download; subsequent runs use the cache.
+  "--remote-components", "ejs:github",
   // Browser-like headers to avoid bot detection
   "--add-headers",
   [
@@ -805,15 +809,11 @@ function getDefaultYouTubeExtractorArgs(): string[] {
   }
   // Browser cookies are tied to the web client session.
   // Use web as primary when cookies are present — this authenticates properly and bypasses bot checks.
-  // With cookies: use web_embedded first (no NSIG required, accepts browser
-  // cookies), then tv_embedded and ios as NSIG-free fallbacks. The web client
-  // is intentionally omitted — it needs NSIG which requires Node.js subprocess
-  // spawning that hangs inside Lambda.
   const hasCookies = existsSync(YTDLP_COOKIES_FILE);
   if (hasCookies) {
     return [
       "--extractor-args",
-      "youtube:player_client=web_embedded,tv_embedded,ios",
+      "youtube:player_client=web,web_embedded,tv_embedded",
     ];
   }
   return [
@@ -834,13 +834,15 @@ function getYouTubeFallbacks(): string[][] {
   }
   const hasCookies = existsSync(YTDLP_COOKIES_FILE);
   if (hasCookies) {
-    // All NSIG-free clients — web is excluded to prevent Node.js subprocess hang.
+    // Web-first fallback order when cookies are available (browser cookies authenticate with the web client).
     return [
-      ["--extractor-args", "youtube:player_client=web_embedded,tv_embedded"],
+      ["--extractor-args", "youtube:player_client=web"],
+      ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
       ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
-      ["--extractor-args", "youtube:player_client=ios"],
+      ["--extractor-args", "youtube:player_client=tv_embedded"],
       ["--extractor-args", "youtube:player_client=android_vr"],
       ["--extractor-args", "youtube:player_client=mweb"],
+      ["--extractor-args", "youtube:player_client=ios"],
     ];
   }
   return [
