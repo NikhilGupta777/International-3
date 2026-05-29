@@ -57,6 +57,7 @@ async function buildAll() {
       "knex",
       "typeorm",
       "protobufjs",
+      "google-auth-library",
       "onnxruntime-node",
       "@tensorflow/*",
       "@prisma/client",
