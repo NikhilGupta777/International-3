@@ -87,7 +87,7 @@ export function StudioHome({
     try { rec.start(); } catch { setListening(false); }
   };
 
-  const canSend = text.trim().length > 0;
+  const canSend = text.trim().length > 0 && !uploading;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
