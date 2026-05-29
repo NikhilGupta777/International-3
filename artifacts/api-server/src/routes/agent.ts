@@ -2032,27 +2032,36 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
         if (isConnected()) sseEvent(res, { type: "tool_progress", runId, toolId, name, message: durationMode === "full" ? "Composing full song… (this can take up to 90s)" : "Composing 30-second clip…" });
       }, 10_000);
 
+      // Run music + cover art in parallel. Cover art failure is non-fatal —
+      // the audio has already been uploaded to S3 so we deliver it regardless.
       let audio: Awaited<ReturnType<typeof generateLyriaMusic>>;
-      let cover: Awaited<ReturnType<typeof generateImageArtifact>>;
+      let cover: { imageUrl: string; filename: string; text: string } | null = null;
       try {
-        [audio, cover] = await Promise.all([
+        const results = await Promise.allSettled([
           generateLyriaMusic({ prompt: musicPrompt, durationMode }),
           generateImageArtifact({ prompt: coverArtPrompt, filenamePrefix: "music-cover", aspectRatio: aspect }),
         ]);
-      } finally {
         clearInterval(musicProgress);
+
+        if (results[0].status === "rejected") throw results[0].reason;
+        audio = results[0].value;
+        if (results[1].status === "fulfilled") cover = results[1].value;
+        else logger.warn({ err: results[1].reason }, "Cover art generation failed — delivering audio without cover");
+      } catch (err) {
+        clearInterval(musicProgress);
+        throw err;
       }
 
       const label = `${durationMode === "full" ? "Full Song" : "30s Clip"} — ${musicPrompt.slice(0, 60)}${musicPrompt.length > 60 ? "…" : ""}`;
       return {
-        result: { audioUrl: audio.audioUrl, imageUrl: cover.imageUrl, filename: audio.filename, duration: durationMode },
+        result: { audioUrl: audio.audioUrl, imageUrl: cover?.imageUrl ?? null, filename: audio.filename, duration: durationMode },
         artifact: {
           artifactType: "audio",
           label,
           audioUrl: audio.audioUrl,
           downloadUrl: audio.audioUrl,
-          imageUrl: cover.imageUrl,
-          content: cover.text || musicPrompt.slice(0, 120),
+          imageUrl: cover?.imageUrl,
+          content: cover?.text || musicPrompt.slice(0, 120),
         },
       };
     }

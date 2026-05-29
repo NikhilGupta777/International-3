@@ -153,8 +153,14 @@ export function StudioHome({
     const imageItem = items.find(i => i.type.startsWith("image/"));
     if (!imageItem) return; // let normal text paste through
     e.preventDefault();
-    const file = imageItem.getAsFile();
-    if (file) await uploadFile(file);
+    const rawFile = imageItem.getAsFile();
+    if (!rawFile) return;
+    // Clipboard images often have an empty or generic name — give them a timestamped one
+    const ext = imageItem.type.split("/")[1] ?? "png";
+    const named = rawFile.name && rawFile.name !== "image.png"
+      ? rawFile
+      : new File([rawFile], `pasted-image-${Date.now()}.${ext}`, { type: imageItem.type });
+    await uploadFile(named);
   };
 
   return (

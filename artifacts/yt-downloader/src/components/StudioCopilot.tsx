@@ -249,10 +249,21 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     }
 
     // Animated render — split all text into graphemes for a smoother typewriter feel.
-    // cite segments are rendered inline without animation (they're tiny superscripts).
-    const allChars: Array<{ char: string; type: "plain" | "bold" | "code" }> = [];
+    // cite segments are rendered as static superscripts inline with the animated chars.
+    const allChars: Array<{ char: string; type: "plain" | "bold" | "code" | "cite_node"; node?: React.ReactNode }> = [];
     for (const seg of segments) {
-      if (seg.type === "cite") continue; // rendered below via parts
+      if (seg.type === "cite") {
+        // Render citation as a single non-animated node entry
+        const idx = parseInt(seg.text.slice(1, -1), 10) - 1;
+        const src = sources?.[idx];
+        const node = src
+          ? <a key={`cite-${k++}`} href={src.uri} target="_blank" rel="noopener noreferrer"
+               className="inline-flex items-center justify-center w-4 h-4 text-[9px] font-semibold rounded bg-white/10 hover:bg-white/20 text-white/60 hover:text-white/90 transition-colors align-super leading-none mx-0.5 no-underline"
+               title={src.title}>{idx + 1}</a>
+          : <span key={`cite-${k++}`} className="text-white/40 text-[9px] align-super">{seg.text}</span>;
+        allChars.push({ char: "", type: "cite_node", node });
+        continue;
+      }
       const chars = splitGraphemes(seg.text);
       for (const ch of chars) {
         if (ch) allChars.push({ char: ch, type: seg.type as "plain" | "bold" | "code" });
@@ -266,7 +277,9 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
       const cls = shouldAnimate ? "stream-token" : undefined;
       const delay = shouldAnimate ? { animationDelay: `${Math.min((i - animStart) * 8, 420)}ms` } : undefined;
 
-      if (type === "bold") {
+      if (type === "cite_node") {
+        parts.push((allChars[i] as any).node as React.ReactNode);
+      } else if (type === "bold") {
         parts.push(<strong key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</strong>);
       } else if (type === "code") {
         parts.push(<code key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</code>);
@@ -724,7 +737,7 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
                 <a key={si} href={src.uri} target="_blank" rel="noopener noreferrer"
                   className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/[0.04] border border-white/[0.07] hover:bg-white/[0.08] hover:border-white/[0.12] transition-colors text-[10px] text-white/50 hover:text-white/80 no-underline max-w-[200px]">
                   <span className="shrink-0 text-white/30 font-medium">[{si + 1}]</span>
-                  <span className="truncate">{src.title || new URL(src.uri).hostname}</span>
+                  <span className="truncate">{src.title || (() => { try { return new URL(src.uri).hostname; } catch { return src.uri.slice(0, 40); } })()}</span>
                 </a>
               ))}
             </div>
