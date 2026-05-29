@@ -142,9 +142,9 @@ export function StudioHome({
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    await uploadFile(file);
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    for (const file of files) await uploadFile(file);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -203,6 +203,7 @@ export function StudioHome({
                 ref={fileInputRef}
                 className="hidden"
                 accept="image/*,video/*,audio/*,.pdf,.srt,.vtt,.txt,.csv,.json,.docx,.xlsx"
+                multiple
                 onChange={handleFileUpload}
               />
               <div className="relative" ref={plusMenuRef}>
