@@ -17,16 +17,14 @@ RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}
 # Pre-cache the yt-dlp EJS extractor so Lambda cold starts never need to fetch
 # it from GitHub at runtime. Without this, the first clip-cut on a fresh container
 # would hang waiting for raw.githubusercontent.com (unreliable from Lambda's network).
-RUN mkdir -p /opt/yt-dlp-cache \
-    && /usr/local/bin/yt-dlp \
+RUN /usr/local/bin/yt-dlp \
     --no-warnings \
     --skip-download \
-    --cache-dir /opt/yt-dlp-cache \
     --extractor-args "youtube:player_client=web" \
     --js-runtimes node \
     --remote-components ejs:github \
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>/dev/null || true \
-    && ls /opt/yt-dlp-cache/ && echo "EJS cache populated at /opt/yt-dlp-cache" || echo "EJS cache FAILED"
+    && ls ~/.cache/yt-dlp/ 2>/dev/null && echo "EJS cache populated" || echo "EJS cache dir not found (ok, will be created at runtime)"
 
 # yt-dlp needs ffmpeg for merged video downloads and partial clip downloads.
 # Install Linux x86_64 static binaries inside the final Lambda image and verify
