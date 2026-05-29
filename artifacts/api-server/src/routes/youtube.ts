@@ -695,11 +695,9 @@ const BASE_YTDLP_ARGS: string[] = [
   // bun is added as a lower-priority fallback since it is also installed in this env.
   "--js-runtimes", "node",
   "--js-runtimes", "bun",
-  // NOTE: --remote-components ejs:github was removed because it fetches the EJS
-  // challenge-solver from GitHub at runtime, which hangs indefinitely inside Lambda
-  // (network access to raw.githubusercontent.com is unreliable in Lambda). We rely on
-  // tv_embedded / web_embedded player clients (which don't require NSIG/EJS) instead.
-  // Re-enable once the EJS script is baked into the Docker image at build time.
+  // Allow yt-dlp to fetch the latest EJS challenge solver script from GitHub.
+  // The script is cached on first download; subsequent runs use the cache.
+  "--remote-components", "ejs:github",
   // Browser-like headers to avoid bot detection
   "--add-headers",
   [
@@ -809,15 +807,13 @@ function getDefaultYouTubeExtractorArgs(): string[] {
       `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
     ];
   }
-  // Use tv_embedded first when cookies are present — it doesn't require NSIG/EJS solving
-  // (which hangs in Lambda because GitHub fetch for EJS is unreliable). Cookies still help
-  // for age-restricted / member-only content. web_embedded is tried second as it also
-  // avoids NSIG. The web client (which needs EJS) is intentionally omitted here.
+  // Browser cookies are tied to the web client session.
+  // Use web as primary when cookies are present — this authenticates properly and bypasses bot checks.
   const hasCookies = existsSync(YTDLP_COOKIES_FILE);
   if (hasCookies) {
     return [
       "--extractor-args",
-      "youtube:player_client=tv_embedded,web_embedded,mweb",
+      "youtube:player_client=web,web_embedded,tv_embedded",
     ];
   }
   return [
@@ -838,10 +834,10 @@ function getYouTubeFallbacks(): string[][] {
   }
   const hasCookies = existsSync(YTDLP_COOKIES_FILE);
   if (hasCookies) {
-    // NSIG-free fallback order when cookies are available. web / web_embedded are
-    // intentionally omitted — they need EJS which hangs in Lambda (see BASE_YTDLP_ARGS).
+    // Web-first fallback order when cookies are available (browser cookies authenticate with the web client).
     return [
-      ["--extractor-args", "youtube:player_client=tv_embedded,web_embedded"],
+      ["--extractor-args", "youtube:player_client=web"],
+      ["--extractor-args", "youtube:player_client=web_embedded,mweb"],
       ["--extractor-args", "youtube:player_client=tv_embedded,android_vr"],
       ["--extractor-args", "youtube:player_client=tv_embedded"],
       ["--extractor-args", "youtube:player_client=android_vr"],
