@@ -87,10 +87,10 @@ export function StudioHome({
     try { rec.start(); } catch { setListening(false); }
   };
 
-  const canSend = text.trim().length > 0 && !uploading;
-
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+
+  const canSend = text.trim().length > 0 && !uploading;
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const plusMenuRef = useRef<HTMLDivElement>(null);
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
