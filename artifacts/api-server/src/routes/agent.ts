@@ -633,7 +633,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "generate_music",
-    description: "Generate original music using Google Lyria AI. Use for any request to create, compose, or make music/songs/soundtracks/jingles. Craft the best possible Lyria prompt based on the user's intent — describe mood, genre, instruments, tempo, energy, structure, and duration. Ask for duration if not specified: 'clip' is a polished 30-second piece ($0.04), 'full' is a complete song up to ~3 minutes with intro/verse/chorus/bridge ($0.08). Also generates matching cover art automatically.",
+    description: "Generate original music using Google Lyria AI. Use for any request to create, compose, or make music/songs/soundtracks/jingles. Craft the best possible Lyria prompt based on the user's intent — describe mood, genre, instruments, tempo, energy, structure, and duration. If duration not specified ask naturally: short (~30s) or full song (~2-3 min)? Also generates matching cover art automatically.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -810,7 +810,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "edit this attached image" | edit_image — craft a precise editing prompt from user intent (what to change, what to preserve, style, constraints) |
 | "what is in this image" | describe_image only when user needs structured artifact/card; otherwise answer directly |
 | "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
-| "make music / generate a song / compose / create soundtrack / background music" | generate_music — craft a vivid Lyria prompt (genre, mood, instruments, tempo, structure); if duration not given, suggest clip (30s) vs full song and confirm before generating |
+| "make music / generate a song / compose / create soundtrack / background music" | generate_music — first ask the user what they want (style, mood, language, theme) if not clear; ask duration naturally ("short ~30s or a full song ~2-3 min?") without mentioning model names or pricing; then craft a vivid Lyria prompt and generate |
 | "write script / storyboard / shot list" | write_video_script — craft a detailed topic brief (audience, platform, tone, key points, emotional arc) before calling; only when user needs downloadable file, otherwise answer directly |
 | "SEO title/description/tags/thumbnail text" | generate_seo_pack — craft a detailed context brief (video content, niche, trends, goals) before calling; only when user needs structured artifact export, otherwise answer directly |
 | "full package / do everything / complete package" | do_full_package |
@@ -2026,11 +2026,22 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
       logTool("Generating music + cover art", { durationMode, model: durationMode === "full" ? "lyria-3-pro-preview" : "lyria-3-clip-preview" });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Composing ${durationMode === "full" ? "full song (~2-3 min)" : "30-second clip"} with Lyria AI…` });
 
-      // Generate music + cover art in parallel
-      const [audio, cover] = await Promise.all([
-        generateLyriaMusic({ prompt: musicPrompt, durationMode }),
-        generateImageArtifact({ prompt: coverArtPrompt, filenamePrefix: "music-cover", aspectRatio: aspect }),
-      ]);
+      // Send progress ticks every 10s so the SSE connection stays active during
+      // the Lyria generation (which can take 30-90 seconds for full songs).
+      const musicProgress = setInterval(() => {
+        if (isConnected()) sseEvent(res, { type: "tool_progress", runId, toolId, name, message: durationMode === "full" ? "Composing full song… (this can take up to 90s)" : "Composing 30-second clip…" });
+      }, 10_000);
+
+      let audio: Awaited<ReturnType<typeof generateLyriaMusic>>;
+      let cover: Awaited<ReturnType<typeof generateImageArtifact>>;
+      try {
+        [audio, cover] = await Promise.all([
+          generateLyriaMusic({ prompt: musicPrompt, durationMode }),
+          generateImageArtifact({ prompt: coverArtPrompt, filenamePrefix: "music-cover", aspectRatio: aspect }),
+        ]);
+      } finally {
+        clearInterval(musicProgress);
+      }
 
       const label = `${durationMode === "full" ? "Full Song" : "30s Clip"} — ${musicPrompt.slice(0, 60)}${musicPrompt.length > 60 ? "…" : ""}`;
       return {
