@@ -12,8 +12,10 @@ RUN dnf install -y python3.11 python3.11-pip \
 # yt-dlp finds EJS locally without ever fetching from GitHub — solving the
 # cold-start hang caused by raw.githubusercontent.com being unreliable from Lambda.
 ARG YTDLP_VERSION=2026.03.17
-RUN python3.11 -m pip install --no-cache-dir \
+RUN LD_LIBRARY_PATH=/usr/lib64:/lib64 python3.11 -m pip install --no-cache-dir \
     "yt-dlp[default]==${YTDLP_VERSION}" \
+    && python3.11 -m yt_dlp --version \
+    && ln -sf "$(python3.11 -c 'import shutil; print(shutil.which(\"yt-dlp\"))')" /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 
 # yt-dlp needs ffmpeg for merged video downloads and partial clip downloads.
