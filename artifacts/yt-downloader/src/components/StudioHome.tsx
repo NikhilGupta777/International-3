@@ -106,10 +106,7 @@ export function StudioHome({
     return () => document.removeEventListener("mousedown", handler);
   }, [showPlusMenu]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const uploadFile = async (file: File) => {
     // Client-side guard: single-part upload limit is 50 MB
     const MAX_SINGLE_MB = 50;
     if (file.size > MAX_SINGLE_MB * 1024 * 1024) {
@@ -118,57 +115,46 @@ export function StudioHome({
         description: `Attachments must be under ${MAX_SINGLE_MB} MB. Use the Share tab for larger files.`,
         variant: "destructive",
       });
-      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
-
     try {
       setUploading(true);
       const res = await fetch(`${BASE}/api/uploads/presign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          size: file.size,
-          mimeType: file.type || "application/octet-stream",
-          visibility: "public"
-        })
+        body: JSON.stringify({ filename: file.name, size: file.size, mimeType: file.type || "application/octet-stream", visibility: "public" })
       });
-      if (!res.ok) {
-        const errBody = await res.json().catch(() => ({})) as any;
-        throw new Error(errBody?.error ?? `Server error ${res.status}`);
-      }
+      if (!res.ok) { const e = await res.json().catch(() => ({})) as any; throw new Error(e?.error ?? `Server error ${res.status}`); }
       const { fileId, uploadType, presignedUrl } = await res.json();
-
-      if (uploadType === "single") {
-        const putRes = await fetch(presignedUrl, {
-          method: "PUT",
-          body: file,
-          headers: { "Content-Type": file.type || "application/octet-stream" }
-        });
-        if (!putRes.ok) throw new Error(`S3 upload failed (${putRes.status})`);
-      } else {
-        // Should not reach here due to client-side guard above, but handle gracefully
-        throw new Error(`File too large for quick attach (max ${MAX_SINGLE_MB} MB).`);
-      }
-
-      const compRes = await fetch(`${BASE}/api/uploads/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileId, parts: [] })
-      });
+      if (uploadType !== "single") throw new Error(`File too large for quick attach (max ${MAX_SINGLE_MB} MB).`);
+      const putRes = await fetch(presignedUrl, { method: "PUT", body: file, headers: { "Content-Type": file.type || "application/octet-stream" } });
+      if (!putRes.ok) throw new Error(`S3 upload failed (${putRes.status})`);
+      const compRes = await fetch(`${BASE}/api/uploads/complete`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fileId, parts: [] }) });
       if (!compRes.ok) throw new Error("Could not finalize upload");
       const comp = await compRes.json();
-
-      const newText = text + (text ? "\n" : "") + comp.shareUrl;
-      setText(newText);
+      setText(prev => prev ? prev + "\n" + comp.shareUrl : comp.shareUrl);
       toast({ title: "File attached ✓", description: `${file.name} added to your message.` });
     } catch (err: any) {
       toast({ title: "Attachment failed", description: err.message, variant: "destructive" });
     } finally {
       setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    await uploadFile(file);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(e.clipboardData.items);
+    const imageItem = items.find(i => i.type.startsWith("image/"));
+    if (!imageItem) return; // let normal text paste through
+    e.preventDefault();
+    const file = imageItem.getAsFile();
+    if (file) await uploadFile(file);
   };
 
   return (
@@ -200,6 +186,7 @@ export function StudioHome({
                 submit();
               }
             }}
+            onPaste={handlePaste}
             rows={1}
           />
 
@@ -209,6 +196,7 @@ export function StudioHome({
                 type="file"
                 ref={fileInputRef}
                 className="hidden"
+                accept="image/*,video/*,audio/*,.pdf,.srt,.vtt,.txt,.csv,.json,.docx,.xlsx"
                 onChange={handleFileUpload}
               />
               <div className="relative" ref={plusMenuRef}>
@@ -231,12 +219,27 @@ export function StudioHome({
                       {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
                       <span>Upload Files</span>
                     </button>
-                    <button className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                    <button
+                      className="gs-plus-menu-item"
+                      onClick={() => {
+                        const prompt = "Create an image";
+                        setText(prev => prev ? prev + "\n" + prompt : prompt);
+                        setShowPlusMenu(false);
+                        setTimeout(() => textareaRef.current?.focus(), 50);
+                      }}
+                    >
                       <ImagePlus className="w-4 h-4" />
                       <span>Create Images</span>
-                      <span className="gs-plus-menu-badge">Soon</span>
                     </button>
-                    <button className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                    <button
+                      className="gs-plus-menu-item"
+                      onClick={() => {
+                        const prompt = "Make music";
+                        setText(prev => prev ? prev + "\n" + prompt : prompt);
+                        setShowPlusMenu(false);
+                        setTimeout(() => textareaRef.current?.focus(), 50);
+                      }}
+                    >
                       <Music2 className="w-4 h-4" />
                       <span>Create Music</span>
                       <span className="gs-plus-menu-badge gs-plus-menu-badge-new">New</span>
