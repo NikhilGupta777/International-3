@@ -151,6 +151,10 @@ function clientStripTags(text: string): string {
     // Strip leaked artifact markers [TextArtifact: ...] and [Artifact: ...]
     .replace(/\[TextArtifact:[^\]]*\][^\[]*/gi, "")
     .replace(/\[Artifact:[^\]]*\]/gi, "")
+    // Strip leaked tool result JSON — "| Result: {...}"
+    .replace(/\|\s*Result:\s*\{[^}]*\}/gi, "")
+    // Strip leaked URL-field JSON objects (covers empty and non-empty values)
+    .replace(/\{(?:\s*"\w+(?:Url|url)"\s*:\s*"[^"]*"\s*,?\s*)+\}/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

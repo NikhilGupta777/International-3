@@ -128,6 +128,10 @@ function stripReasoningTags(text: string, isDelta = false): string {
     .replace(/\[Artifact:[^\]]*\]/gi, "")
     // Strip raw S3 presigned URLs (long AWS URLs with signatures)
     .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
+    // Strip leaked tool result JSON — e.g. "| Result: {"audioUrl":"","imageUrl":""}"
+    .replace(/\|\s*Result:\s*\{[^}]*\}/gi, "")
+    // Strip leaked URL-field JSON objects (any value, including empty strings)
+    .replace(/\{(?:\s*"\w+(?:Url|url)"\s*:\s*"[^"]*"\s*,?\s*)+\}/g, "")
     // Collapse excess blank lines left by stripping
     .replace(/\n{3,}/g, "\n\n");
   // Only trim final/complete text — NOT streaming deltas, which may be
@@ -810,7 +814,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "edit this attached image" | edit_image — craft a precise editing prompt from user intent (what to change, what to preserve, style, constraints) |
 | "what is in this image" | describe_image only when user needs structured artifact/card; otherwise answer directly |
 | "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
-| "make music / generate a song / compose / create soundtrack / background music" | generate_music — first ask the user what they want (style, mood, language, theme) if not clear; ask duration naturally ("short ~30s or a full song ~2-3 min?") without mentioning model names or pricing; then craft a vivid Lyria prompt and generate |
+| "make music / generate a song / compose / create soundtrack / background music" | MANDATORY: call generate_music — you MUST call this tool, never describe or write about the music instead. Ask duration naturally if unclear ("short ~30s or a full song ~2-3 min?"). Craft a vivid Lyria prompt with genre, mood, instruments, tempo, structure. FORBIDDEN: saying "Done", "I have generated", "use the download button", or describing the result in ANY way before the tool has actually run and returned. If the tool fails, say it failed — never pretend success. |
 | "write script / storyboard / shot list" | write_video_script — craft a detailed topic brief (audience, platform, tone, key points, emotional arc) before calling; only when user needs downloadable file, otherwise answer directly |
 | "SEO title/description/tags/thumbnail text" | generate_seo_pack — craft a detailed context brief (video content, niche, trends, goals) before calling; only when user needs structured artifact export, otherwise answer directly |
 | "full package / do everything / complete package" | do_full_package |
@@ -2257,6 +2261,10 @@ router.post("/agent/chat", async (req, res) => {
     res.status(503).json({ error: "AI Copilot not configured - add Vertex Gemini env or GEMINI_API_KEY." });
     return;
   }
+  // Ensure Vertex AI credentials are loaded before any model call.
+  // fetchCredentialsFromS3 runs async at cold start — awaiting here guarantees
+  // credentials are ready even if the first request races with the cold-start fetch.
+  try { await ensureVertexCredentials(); } catch { /* non-fatal — key may be env-based */ }
   (req as any).agentRunJobIds = new Set<string>();
 
   const { messages = [], model: requestedModel, skills: activeSkills = [] } = req.body as {
