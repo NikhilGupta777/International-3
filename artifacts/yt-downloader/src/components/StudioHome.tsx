@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Plus, AudioLines, ArrowUp, Loader2,
@@ -15,6 +15,60 @@ type Mode =
   | "upload" | "translator" | "findvideo" | "help" | "activity";
 const ULTRA_KEY = "studio-ultra-mode";
 
+// ── Animated typing placeholder ───────────────────────────────────────────────
+const PLACEHOLDER_SUGGESTIONS = [
+  "Cut a clip from any YouTube video...",
+  "Make music for my documentary...",
+  "Generate timestamps for this video...",
+  "Translate this video to Hindi...",
+  "Write a YouTube script about...",
+  "Find the best clips from this video...",
+  "Generate subtitles and translate...",
+  "Download this video in 4K...",
+  "Create a thumbnail image for...",
+  "Analyze this video and summarize...",
+];
+
+type TypingPhase = "typing" | "paused" | "deleting";
+
+function useTypingPlaceholder(active: boolean) {
+  const [displayText, setDisplayText] = useState("");
+  const [cursorVisible, setCursorVisible] = useState(true);
+  const [phase, setPhase] = useState<TypingPhase>("typing");
+  const [suggIdx, setSuggIdx] = useState(0);
+  const [charIdx, setCharIdx] = useState(0);
+  const [blinkCount, setBlinkCount] = useState(0);
+
+  useEffect(() => {
+    if (!active) return;
+    const suggestion = PLACEHOLDER_SUGGESTIONS[suggIdx];
+    if (phase === "typing") {
+      if (charIdx < suggestion.length) {
+        const t = setTimeout(() => { setDisplayText(suggestion.slice(0, charIdx + 1)); setCharIdx(c => c + 1); }, 48);
+        return () => clearTimeout(t);
+      } else { setPhase("paused"); setBlinkCount(0); }
+    }
+    if (phase === "paused") {
+      if (blinkCount < 4) {
+        const t = setTimeout(() => { setCursorVisible(v => !v); setBlinkCount(b => b + 1); }, 420);
+        return () => clearTimeout(t);
+      } else { setCursorVisible(true); setPhase("deleting"); }
+    }
+    if (phase === "deleting") {
+      if (charIdx > 0) {
+        const t = setTimeout(() => { setCharIdx(c => c - 1); setDisplayText(suggestion.slice(0, charIdx - 1)); }, 28);
+        return () => clearTimeout(t);
+      } else {
+        const t = setTimeout(() => { setSuggIdx(i => (i + 1) % PLACEHOLDER_SUGGESTIONS.length); setPhase("typing"); setBlinkCount(0); setCursorVisible(true); }, 320);
+        return () => clearTimeout(t);
+      }
+    }
+    return undefined;
+  }, [active, phase, charIdx, suggIdx, blinkCount]);
+
+  return { displayText, cursorVisible };
+}
+
 function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
@@ -29,9 +83,12 @@ export function StudioHome({
 }) {
   const { toast } = useToast();
   const [text, setText] = useState("");
+  const [textareaFocused, setTextareaFocused] = useState(false);
   const [ultra, setUltra] = useState<boolean>(readUltraInitial);
   const [listening, setListening] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const placeholderActive = !text && !textareaFocused;
+  const { displayText: placeholderText, cursorVisible: placeholderCursor } = useTypingPlaceholder(placeholderActive);
   const recognitionRef = useRef<any>(null);
 
   // Speech recognition is available in Chrome/Edge/Safari on HTTPS or localhost.
@@ -176,25 +233,43 @@ export function StudioHome({
           className="gs-input-card"
           onSubmit={e => { e.preventDefault(); submit(); }}
         >
-          <textarea
-            ref={textareaRef}
-            className="gs-input-textarea"
-            placeholder="Ask anything, create anything"
-            value={text}
-            onChange={e => {
-              setText(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-            }}
-            onKeyDown={e => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                submit();
-              }
-            }}
-            onPaste={handlePaste}
-            rows={1}
-          />
+          <div style={{ position: "relative" }}>
+            {placeholderActive && (
+              <div
+                className="pointer-events-none select-none gs-input-textarea"
+                style={{
+                  position: "absolute", top: 0, left: 0, right: 0,
+                  color: "rgba(255,255,255,0.3)", pointerEvents: "none",
+                  whiteSpace: "pre-wrap", zIndex: 1, background: "transparent",
+                  border: "none", boxShadow: "none",
+                }}
+              >
+                {placeholderText}<span style={{ opacity: placeholderCursor ? 1 : 0, transition: "opacity 0.08s" }}>|</span>
+              </div>
+            )}
+            <textarea
+              ref={textareaRef}
+              className="gs-input-textarea"
+              placeholder=""
+              value={text}
+              onFocus={() => setTextareaFocused(true)}
+              onBlur={() => setTextareaFocused(false)}
+              onChange={e => {
+                setText(e.target.value);
+                e.target.style.height = "auto";
+                e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+              }}
+              onKeyDown={e => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              onPaste={handlePaste}
+              rows={1}
+              style={{ position: "relative", zIndex: 2, background: "transparent" }}
+            />
+          </div>
 
           <div className="gs-input-row">
             <div className="gs-input-row-left">
