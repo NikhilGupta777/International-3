@@ -689,10 +689,11 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
                         />
                       );
                     }
+                    if (entry.kind === "music") return null; // music shown in ActivityPanel
                     return (
                       <BestClipsRow
                         key={`best-${entry.data.id}`}
-                        entry={entry.data}
+                        entry={entry.data as any}
                         onDelete={handleDeleteBestClips}
                       />
                     );

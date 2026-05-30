@@ -38,6 +38,12 @@ import {
   type TranslatorHistoryEntry,
 } from "@/lib/translator-history";
 import { translatorAuthHeaders } from "@/lib/translator-client-id";
+import {
+  loadMusicHistory,
+  deleteFromMusicHistory,
+  clearMusicHistory,
+  type MusicHistoryEntry,
+} from "@/lib/music-history";
 
 export type ActivityTabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator";
 
@@ -46,7 +52,8 @@ export type ActivityCompletedEntry =
   | { kind: "clip"; data: ClipHistoryEntry }
   | { kind: "bestclips"; data: BestClipsHistoryEntry }
   | { kind: "download"; data: CompletedDownloadRecord }
-  | { kind: "translator"; data: TranslatorHistoryEntry };
+  | { kind: "translator"; data: TranslatorHistoryEntry }
+  | { kind: "music"; data: MusicHistoryEntry };
 
 export interface ActivityActiveEntry {
   kind: "subtitle" | "clipcutter" | "download" | "translator";
@@ -100,7 +107,10 @@ function loadAllCompleted(): ActivityCompletedEntry[] {
   const translations = loadTranslatorHistory().map(
     (data): ActivityCompletedEntry => ({ kind: "translator", data }),
   );
-  return [...subtitles, ...clips, ...bestClips, ...downloads, ...translations].sort(
+  const music = loadMusicHistory().map(
+    (data): ActivityCompletedEntry => ({ kind: "music", data }),
+  );
+  return [...subtitles, ...clips, ...bestClips, ...downloads, ...translations, ...music].sort(
     (a, b) => b.data.createdAt - a.data.createdAt,
   );
 }
@@ -431,6 +441,7 @@ export function useActivityFeed(pollMs = 4000) {
       deleteCompletedDownload(entry.data.jobId);
     else if (entry.kind === "translator")
       deleteTranslatorHistory(entry.data.jobId);
+    else if (entry.kind === "music") deleteFromMusicHistory(entry.data.id);
     else deleteFromBestClipsHistory(entry.data.id);
     await refreshShared();
   }, []);
@@ -443,6 +454,7 @@ export function useActivityFeed(pollMs = 4000) {
     );
     clearTranslatorHistory();
     clearCompletedDownloads();
+    clearMusicHistory();
     await refreshShared();
   }, []);
 

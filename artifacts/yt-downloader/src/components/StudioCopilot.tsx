@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { saveActiveDownload, loadActiveDownload, saveCompletedDownload } from "@/lib/download-history";
 import { saveActiveJob, loadActiveJob, saveToHistory } from "@/lib/subtitle-history";
 import { loadActiveClipJobs, saveActiveClipJobs, saveToClipHistory } from "@/lib/clip-history";
+import { saveToMusicHistory } from "@/lib/music-history";
 import { upsertActiveTranslatorJob } from "@/lib/translator-history";
 
 const ULTRA_KEY = "studio-ultra-mode";
@@ -1391,6 +1392,18 @@ export function StudioCopilot({
       if (evt.type === "navigate") { if (onNavigate) onNavigate(evt.tab); return; }
       if (evt.type === "artifact") {
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, audioUrl: evt.audioUrl, content: evt.content }] }));
+        // Auto-save generated music to activity feed
+        if (evt.artifactType === "audio" && evt.audioUrl) {
+          saveToMusicHistory({
+            id: `music-${Date.now()}`,
+            createdAt: Date.now(),
+            label: evt.label,
+            audioUrl: evt.audioUrl,
+            imageUrl: evt.imageUrl,
+            mimeType: "audio/mpeg",
+            filename: evt.label.replace(/[^a-zA-Z0-9\s-]/g, "").trim().slice(0, 60) + ".mp3",
+          });
+        }
         return;
       }
       if (evt.type === "canvas_start") {

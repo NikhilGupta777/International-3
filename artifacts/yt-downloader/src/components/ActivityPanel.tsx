@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Loader2, Captions, Scissors, Sparkles, Film,
   Clock, ArrowRight, Download, Copy, ChevronDown,
-  ChevronUp, ExternalLink, Trash2, Activity, Languages, X,
+  ChevronUp, ExternalLink, Trash2, Activity, Languages, X, Music2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -159,6 +159,7 @@ export function ActivityPanel({
                         entry.kind === "clip" ? `clip-${entry.data.jobId}` :
                         entry.kind === "download" ? `dl-${entry.data.jobId}` :
                         entry.kind === "translator" ? `tr-${entry.data.jobId}` :
+                        entry.kind === "music" ? `music-${entry.data.id}` :
                         `best-${entry.data.id}`;
                       const isExpanded = expandedId === key;
 
@@ -348,6 +349,33 @@ export function ActivityPanel({
                                 <button onClick={() => navigate("translator")} className="activity-icon-btn" title="Open translator">
                                   <ArrowRight className="w-3.5 h-3.5" />
                                 </button>
+                                <button onClick={() => handleDelete(entry)} className="activity-icon-btn activity-icon-btn-danger">
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (entry.kind === "music") {
+                        const d = entry.data;
+                        return (
+                          <div key={key} className="activity-row-card">
+                            <div className="activity-row">
+                              <Music2 className="w-4 h-4 text-purple-400 shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-white/85 truncate">{d.label}</p>
+                                <div className="activity-row-meta">
+                                  <span className="text-purple-400/70 font-medium">Music</span>
+                                  <span>·</span>
+                                  <span>{relativeTime(d.createdAt)}</span>
+                                </div>
+                              </div>
+                              <div className="activity-row-actions">
+                                <a href={d.audioUrl} download={d.filename} className="activity-icon-btn" title="Download audio">
+                                  <Download className="w-3.5 h-3.5" />
+                                </a>
                                 <button onClick={() => handleDelete(entry)} className="activity-icon-btn activity-icon-btn-danger">
                                   <X className="w-3.5 h-3.5" />
                                 </button>
