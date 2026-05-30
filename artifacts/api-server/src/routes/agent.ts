@@ -2897,10 +2897,10 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
     .cover { width: 100%; aspect-ratio: 1/1; object-fit: cover; display: block; background: #111; }
     .cover-ph { width: 100%; aspect-ratio: 1/1; background: linear-gradient(135deg,#1a1228,#0d0a18); display: flex; align-items: center; justify-content: center; font-size: 64px; }
     .body { padding: 1.5rem; }
-    .icon { width: 44px; height: 44px; background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.2); border-radius: 0.75rem; display: flex; align-items: center; justify-content: center; margin: 0 0 1rem 0; }
-    .icon svg { width: 22px; height: 22px; color: #a855f7; }
     h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.35rem 0; line-height: 1.4; word-break: break-word; color: rgba(255,255,255,0.9); }
     p.meta { color: rgba(255,255,255,0.4); font-size: 0.82rem; margin: 0 0 1.1rem 0; }
+    p.meta a { color: rgba(255,255,255,0.55); text-decoration: none; font-weight: 500; }
+    p.meta a:hover { color: rgba(255,255,255,0.8); }
     audio { width: 100%; height: 40px; border-radius: 8px; accent-color: #a855f7; margin-bottom: 1rem; display: block; }
     .actions { display: flex; gap: 8px; }
     .btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.75rem 1rem; border-radius: 0.65rem; font-weight: 600; font-size: 0.875rem; text-decoration: none; transition: all 0.2s; }
@@ -2918,9 +2918,8 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   <div class="card">
     ${imageUrl ? `<img class="cover" src="${escapeHtml(imageUrl)}" alt="Cover art" loading="lazy">` : `<div class="cover-ph">🎵</div>`}
     <div class="body">
-      <div class="icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
       <h1>${safeTitle}</h1>
-      <p class="meta">AI-generated music • Shared from VideoMaking Studio</p>
+      <p class="meta">AI-generated music • Shared from <a href="${escapeHtml(appUrl)}">VideoMaking</a> Studio</p>
       <audio controls src="${escapeHtml(audioUrl)}" preload="metadata"></audio>
       <div class="actions">
         <a href="${escapeHtml(audioUrl)}" download class="btn btn-dl">
