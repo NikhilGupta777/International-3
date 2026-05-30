@@ -159,6 +159,87 @@ function clientStripTags(text: string): string {
     .trim();
 }
 
+// ── Animated typing placeholder ───────────────────────────────────────────────
+const PLACEHOLDER_SUGGESTIONS = [
+  "Cut a clip from any YouTube video...",
+  "Make music for my documentary...",
+  "Generate timestamps for this video...",
+  "Translate this video to Hindi...",
+  "Write a YouTube script about...",
+  "Find the best clips from this video...",
+  "Generate subtitles and translate...",
+  "Download this video in 4K...",
+  "Create a thumbnail image for...",
+  "Analyze this video and summarize...",
+];
+
+type TypingPhase = "typing" | "paused" | "deleting";
+
+function useTypingPlaceholder(active: boolean) {
+  const [displayText, setDisplayText] = useState("");
+  const [cursorVisible, setCursorVisible] = useState(true);
+  const [phase, setPhase] = useState<TypingPhase>("typing");
+  const [suggIdx, setSuggIdx] = useState(0);
+  const [charIdx, setCharIdx] = useState(0);
+  const [blinkCount, setBlinkCount] = useState(0);
+
+  useEffect(() => {
+    if (!active) return;
+    const suggestion = PLACEHOLDER_SUGGESTIONS[suggIdx];
+
+    if (phase === "typing") {
+      if (charIdx < suggestion.length) {
+        const t = setTimeout(() => {
+          setDisplayText(suggestion.slice(0, charIdx + 1));
+          setCharIdx(c => c + 1);
+        }, 48);
+        return () => clearTimeout(t);
+      } else {
+        // Fully typed — start blinking cursor
+        setPhase("paused");
+        setBlinkCount(0);
+      }
+    }
+
+    if (phase === "paused") {
+      // Blink cursor 2 full times (4 toggles) then start deleting
+      if (blinkCount < 4) {
+        const t = setTimeout(() => {
+          setCursorVisible(v => !v);
+          setBlinkCount(b => b + 1);
+        }, 420);
+        return () => clearTimeout(t);
+      } else {
+        setCursorVisible(true);
+        setPhase("deleting");
+      }
+    }
+
+    if (phase === "deleting") {
+      if (charIdx > 0) {
+        const t = setTimeout(() => {
+          setCharIdx(c => c - 1);
+          setDisplayText(suggestion.slice(0, charIdx - 1));
+        }, 28);
+        return () => clearTimeout(t);
+      } else {
+        // Done deleting — brief pause then next suggestion
+        const t = setTimeout(() => {
+          setSuggIdx(i => (i + 1) % PLACEHOLDER_SUGGESTIONS.length);
+          setPhase("typing");
+          setBlinkCount(0);
+          setCursorVisible(true);
+        }, 320);
+        return () => clearTimeout(t);
+      }
+    }
+    // no-op return to satisfy all-paths-return-a-value
+    return undefined;
+  }, [active, phase, charIdx, suggIdx, blinkCount]);
+
+  return { displayText, cursorVisible };
+}
+
 // ── Markdown renderer ──────────────────────────────────────────────────────────
 function renderMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
   const lines = text.split("\n");
@@ -847,6 +928,7 @@ export function StudioCopilot({
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState("");
+  const [inputFocused, setInputFocused] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [listening, setListening] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -859,6 +941,7 @@ export function StudioCopilot({
   const [thoughtLabel, setThoughtLabel] = useState<string | null>(null);
   const [pasteUrl, setPasteUrl] = useState<string | null>(null);
   const [ultra, setUltra] = useState<boolean>(readUltraInitial);
+  // placeholderActive computed after activeSkills is declared below
   const [suggestions, setSuggestions] = useState<string[]>([]);
   // ── Skills ──
   type SkillMeta = { id: string; name: string; description: string; icon: string; category: string; starters?: string[]; tags?: string[] };
@@ -868,6 +951,9 @@ export function StudioCopilot({
   useEffect(() => {
     activeSkillsRef.current = activeSkills;
   }, [activeSkills]);
+  // Animated typing placeholder — active when input is empty, unfocused, not streaming
+  const placeholderActive = !input && !inputFocused && !streaming && activeSkills.length === 0;
+  const { displayText: placeholderText, cursorVisible: placeholderCursor } = useTypingPlaceholder(placeholderActive);
   // Slash command state
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
@@ -1946,7 +2032,7 @@ export function StudioCopilot({
               })}
             </div>
           )}
-          <div className="gs-input-textarea-wrap">
+          <div className="gs-input-textarea-wrap" style={{ position: "relative" }}>
             {activeSkills.length > 0 && (
               <span className="gs-inline-skill-prefix" onClick={() => removeActiveSkill(activeSkills[activeSkills.length - 1])}>
                 {activeSkills.map(sid => {
@@ -1954,6 +2040,28 @@ export function StudioCopilot({
                   return `/${skill?.id ?? sid}`;
                 }).join(" ")}
               </span>
+            )}
+            {/* Animated typing placeholder — only shown when input is empty and unfocused */}
+            {placeholderActive && (
+              <div
+                className="pointer-events-none select-none"
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  paddingTop: 2,
+                  fontSize: "inherit",
+                  lineHeight: "inherit",
+                  color: "rgba(255,255,255,0.28)",
+                  whiteSpace: "pre",
+                  overflow: "hidden",
+                  zIndex: 1,
+                }}
+              >
+                {placeholderText}
+                <span style={{ opacity: placeholderCursor ? 1 : 0, transition: "opacity 0.08s" }}>|</span>
+              </div>
             )}
           <textarea
             className="gs-input-textarea gs-input-textarea-inline"
@@ -2001,9 +2109,11 @@ export function StudioCopilot({
                 if (file) await handleFileUpload({ target: { files: [file] } } as any);
               }
             }}
-            placeholder={activeSkills.length > 0 ? "" : "Ask anything, create anything"}
+            placeholder=""
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => setInputFocused(false)}
             rows={1}
-            style={{ resize: "none", overflow: "hidden", minHeight: 28 }}
+            style={{ resize: "none", overflow: "hidden", minHeight: 28, position: "relative", zIndex: 2, background: "transparent" }}
           />
           </div>
 
