@@ -16,6 +16,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1028.0",
     "@distube/ytdl-core": "^4.16.12",
     "@google/genai": "^1.46.0",
+    "google-auth-library": "^10.6.2",
     "@google/generative-ai": "^0.24.1",
     "@types/ffmpeg-static": "^5.1.0",
     "@workspace/api-zod": "workspace:*",

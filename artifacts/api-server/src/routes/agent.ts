@@ -1020,21 +1020,34 @@ async function generateLyriaMusic(params: {
     ? (process.env.LYRIA_FULL_MODEL ?? "lyria-3-pro-preview")
     : (process.env.LYRIA_CLIP_MODEL ?? "lyria-3-clip-preview");
 
-  // Lyria 3 generateContent works with the Gemini Developer API key.
-  // Always use API key mode regardless of the global Vertex AI setting.
-  const { GoogleGenAI } = await import("@google/genai");
-  const apiKey = getPrimaryGeminiApiKey();
-  if (!apiKey) throw new Error("GEMINI_API_KEY is required for music generation.");
-  const lyriaAi = new GoogleGenAI({ apiKey });
+  // Lyria 3 requires the Vertex AI /interactions REST endpoint.
+  // The @google/genai SDK blocks interactions for Vertex AI, so call REST directly.
+  await ensureVertexCredentials();
+  const project = getVertexProject();
+  if (!project) throw new Error("GOOGLE_CLOUD_PROJECT is required for music generation.");
 
-  const resp = await (lyriaAi as any).models.generateContent({
-    model,
-    contents: params.prompt,
+  const { GoogleAuth } = await import("google-auth-library");
+  const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
+  const token = await auth.getAccessToken();
+  if (!token) throw new Error("Could not obtain Vertex AI access token for Lyria.");
+
+  const endpoint = `https://aiplatform.googleapis.com/v1beta1/projects/${project}/locations/global/interactions`;
+  const httpResp = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model, input: [{ type: "text", text: params.prompt }] }),
   });
+  if (!httpResp.ok) {
+    const err = await httpResp.text().catch(() => "");
+    throw new Error(`Lyria API error ${httpResp.status}: ${err.slice(0, 300)}`);
+  }
+  const resp = await httpResp.json() as any;
 
-  for (const part of (resp as any).candidates?.[0]?.content?.parts ?? []) {
-    const audioData: string | undefined = part.inlineData?.data;
-    const mimeType: string = part.inlineData?.mimeType ?? "audio/mpeg";
+  // Vertex AI interactions returns { outputs: [{type:"audio", data:..., mime_type:...}, ...] }
+  const outputs: any[] = resp.outputs ?? resp.candidates?.[0]?.content?.parts ?? [];
+  for (const part of outputs) {
+    const audioData: string | undefined = part.data ?? part.inlineData?.data;
+    const mimeType: string = part.mime_type ?? part.inlineData?.mimeType ?? "audio/mpeg";
     if (audioData) {
       const ext = mimeType.includes("wav") ? "wav" : "mp3";
       const filename = `lyria-${Date.now()}.${ext}`;
