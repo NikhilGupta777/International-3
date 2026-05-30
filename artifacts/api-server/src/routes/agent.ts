@@ -2870,9 +2870,17 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${safeTitle} — VideoMaking Studio</title>
   <meta property="og:title" content="${safeTitle}">
-  <meta property="og:description" content="AI-generated music. Create your own at VideoMaking Studio.">
-  ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}">` : ""}
+  <meta property="og:description" content="🎵 AI-generated music. Listen and create your own at VideoMaking Studio.">
+  <meta property="og:url" content="${appUrl}/api/agent/music-share/${token}">
+  <meta property="og:site_name" content="VideoMaking Studio">
   <meta property="og:type" content="music.song">
+  ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}">
+  <meta property="og:image:width" content="1024">
+  <meta property="og:image:height" content="1024">` : ""}
+  <meta name="twitter:card" content="${imageUrl ? "summary_large_image" : "summary"}">
+  <meta name="twitter:title" content="${safeTitle}">
+  <meta name="twitter:description" content="🎵 AI-generated music. Listen and create your own at VideoMaking Studio.">
+  ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}">` : ""}
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
     body{background:#0c0a14;color:#f0ece8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
