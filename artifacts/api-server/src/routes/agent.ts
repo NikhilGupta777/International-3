@@ -1055,7 +1055,7 @@ async function generateLyriaMusic(params: {
       return { audioUrl, filename: upload.filename, mimeType };
     }
   }
-  throw new Error("Lyria returned no audio. Try a different prompt or check that GEMINI_API_KEY has Lyria access.");
+  throw new Error("Lyria returned no audio. Try a different prompt or check that your Vertex AI project has Lyria 3 access.");
 }
 
 async function textModelArtifact(label: string, prompt: string): Promise<{ result: any; artifact: object }> {
