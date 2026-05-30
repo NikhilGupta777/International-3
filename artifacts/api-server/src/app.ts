@@ -484,7 +484,7 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   }
   if (
     req.method === "GET" &&
-    (req.path.startsWith("/uploads/file/") || req.path.startsWith("/translator/share/"))
+    (req.path.startsWith("/uploads/file/") || req.path.startsWith("/translator/share/") || req.path.startsWith("/agent/music-share/"))
   ) {
     next();
     return;

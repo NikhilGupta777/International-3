@@ -9,7 +9,7 @@ import { Router } from "express";
 import { Modality, Type } from "@google/genai";
 import { randomUUID } from "crypto";
 import { setupSse } from "../lib/sse";
-import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3 } from "../lib/s3-storage";
+import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3, readTextFromS3 } from "../lib/s3-storage";
 import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 
@@ -2815,6 +2815,112 @@ router.post("/agent/chat", async (req, res) => {
       void cancelAgentRunJobs(req, clientConnected ? "agent_error" : "client_abort");
     }
     if (!res.writableEnded) res.end();
+  }
+});
+
+// ── Music Share ───────────────────────────────────────────────────────────────
+// POST /api/agent/music-share  — saves share metadata to S3, returns shareId
+// GET  /api/agent/music-share/:shareId  — public HTML share page (no auth)
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+router.post("/agent/music-share", async (req: Request, res: Response) => {
+  try {
+    const { audioUrl, imageUrl, title } = req.body as { audioUrl?: string; imageUrl?: string; title?: string };
+    if (!audioUrl) return void res.status(400).json({ error: "audioUrl is required" });
+    const shareId = randomUUID().replace(/-/g, "").slice(0, 16);
+    const payload = JSON.stringify({ audioUrl, imageUrl: imageUrl ?? null, title: title ?? "Generated Music", createdAt: Date.now() });
+    const upload = await uploadTextToS3({ body: payload, jobId: shareId, namespace: "music-shares", filename: "share.json", contentType: "application/json" });
+    // Encode the S3 key (which includes date) as a URL-safe token
+    const token = Buffer.from(upload.key).toString("base64url");
+    const proto = (req.headers["x-forwarded-proto"] as string) ?? "https";
+    const host = (req.headers["x-forwarded-host"] as string) ?? req.headers.host ?? "videomaking.in";
+    const shareUrl = `${proto}://${host}/api/agent/music-share/${token}`;
+    res.json({ shareId: token, shareUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get("/agent/music-share/:shareId", async (req: Request, res: Response) => {
+  try {
+    const token = String(req.params.shareId).replace(/[^a-zA-Z0-9_\-]/g, "");
+    if (!token) return void res.status(400).json({ error: "Invalid share ID" });
+    // Decode the base64url token back to the S3 key
+    let key: string;
+    try { key = Buffer.from(token, "base64url").toString("utf8"); } catch { return void res.status(400).json({ error: "Invalid share ID" }); }
+    if (!key.includes("music-shares")) return void res.status(400).json({ error: "Invalid share ID" });
+    let payload: { audioUrl: string; imageUrl?: string | null; title: string; createdAt: number };
+    try {
+      payload = JSON.parse(await readTextFromS3(key));
+    } catch {
+      return void res.status(404).send("Music track not found or has expired.");
+    }
+    const { audioUrl, imageUrl, title } = payload;
+    const safeTitle = escapeHtml(title ?? "Generated Music");
+    const proto = (req.headers["x-forwarded-proto"] as string) ?? "https";
+    const host = (req.headers["x-forwarded-host"] as string) ?? req.headers.host ?? "videomaking.in";
+    const appUrl = `${proto}://${host}`;
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${safeTitle} — VideoMaking Studio</title>
+  <meta property="og:title" content="${safeTitle}">
+  <meta property="og:description" content="AI-generated music. Create your own at VideoMaking Studio.">
+  ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}">` : ""}
+  <meta property="og:type" content="music.song">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:#0c0a14;color:#f0ece8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
+    .card{width:min(480px,100%);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:24px;overflow:hidden;box-shadow:0 32px 80px rgba(0,0,0,.5)}
+    .cover{width:100%;aspect-ratio:1/1;object-fit:cover;background:#1a1228;display:block}
+    .cover-placeholder{width:100%;aspect-ratio:1/1;background:linear-gradient(135deg,#2d1f47,#1a1228);display:flex;align-items:center;justify-content:center;font-size:72px}
+    .body{padding:24px}
+    .title{font-size:18px;font-weight:700;color:#fff;margin-bottom:6px;line-height:1.3}
+    .meta{font-size:13px;color:rgba(255,255,255,.4);margin-bottom:20px}
+    audio{width:100%;height:44px;border-radius:10px;accent-color:#a855f7;margin-bottom:20px}
+    audio::-webkit-media-controls-panel{background:#1e1630}
+    .actions{display:flex;gap:10px}
+    .btn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 16px;border-radius:14px;font-weight:700;font-size:14px;text-decoration:none;border:none;cursor:pointer;transition:.15s}
+    .btn-dl{background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.35);color:#c084fc}
+    .btn-dl:hover{background:rgba(168,85,247,.25)}
+    .btn-cta{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;flex:1.4}
+    .btn-cta:hover{filter:brightness(1.1)}
+    .footer{margin-top:20px;font-size:11px;color:rgba(255,255,255,.2);text-align:center}
+    svg{width:16px;height:16px;fill:currentColor}
+  </style>
+</head>
+<body>
+  <div class="card">
+    ${imageUrl ? `<img class="cover" src="${escapeHtml(imageUrl)}" alt="Cover art" loading="lazy">` : `<div class="cover-placeholder">🎵</div>`}
+    <div class="body">
+      <div class="title">${safeTitle}</div>
+      <div class="meta">AI-generated music · VideoMaking Studio</div>
+      <audio controls src="${escapeHtml(audioUrl)}" preload="metadata"></audio>
+      <div class="actions">
+        <a href="${escapeHtml(audioUrl)}" download class="btn btn-dl">
+          <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 4v-2h14v2H5z"/></svg>
+          Download
+        </a>
+        <a href="${appUrl}" class="btn btn-cta">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+          Make Your Music
+        </a>
+      </div>
+    </div>
+  </div>
+  <p class="footer">Created with VideoMaking Studio AI · <a href="${appUrl}" style="color:rgba(168,85,247,.6);text-decoration:none">Try it free →</a></p>
+</body>
+</html>`;
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.send(html);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

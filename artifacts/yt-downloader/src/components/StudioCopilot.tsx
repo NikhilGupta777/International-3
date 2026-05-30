@@ -566,6 +566,71 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
   );
 }
 
+// ── Music share helper ────────────────────────────────────────────────────────
+const BASE_URL = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+
+function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } }) {
+  const [shareState, setShareState] = useState<"idle" | "loading" | "copied">("idle");
+  const { toast } = useToast();
+
+  const handleShare = async () => {
+    setShareState("loading");
+    try {
+      const res = await fetch(`${BASE_URL}/api/agent/music-share`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioUrl: part.audioUrl, imageUrl: part.imageUrl, title: part.label }),
+      });
+      if (!res.ok) throw new Error("Share failed");
+      const { shareUrl } = await res.json() as { shareUrl: string };
+      await navigator.clipboard.writeText(shareUrl);
+      setShareState("copied");
+      toast({ title: "Share link copied!", description: "Anyone with the link can listen." });
+      setTimeout(() => setShareState("idle"), 3000);
+    } catch {
+      setShareState("idle");
+      toast({ title: "Share failed", description: "Could not create share link.", variant: "destructive" });
+    }
+  };
+
+  return (
+    <div className="rounded-2xl border border-purple-500/25 bg-purple-500/8 overflow-hidden">
+      {part.imageUrl && (
+        <div className="p-3 pb-0">
+          <img src={part.imageUrl} alt={part.label}
+            className="w-full max-h-[220px] object-cover rounded-xl border border-white/10 bg-black/20" />
+        </div>
+      )}
+      <div className="px-3 pt-3 pb-1">
+        <audio controls src={part.audioUrl} className="w-full h-9 rounded-lg accent-purple-400" style={{ colorScheme: "dark" }} />
+      </div>
+      <div className="px-4 pb-3 flex items-center gap-2 mt-1">
+        <div className="p-1.5 rounded-lg bg-purple-500/15 shrink-0"><Music2 className="w-4 h-4 text-purple-300" /></div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-purple-200 truncate">{part.label}</p>
+          {part.content && <p className="text-xs text-white/45 truncate mt-0.5">{part.content}</p>}
+        </div>
+        <button
+          onClick={handleShare}
+          disabled={shareState === "loading"}
+          className="shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl font-bold text-xs text-white/70 bg-white/8 hover:bg-white/12 border border-white/10 transition-colors disabled:opacity-50"
+          title="Copy share link"
+        >
+          {shareState === "loading" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
+           shareState === "copied" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> :
+           <Share2 className="w-3.5 h-3.5" />}
+          {shareState === "copied" ? "Copied!" : "Share"}
+        </button>
+        <a href={part.downloadUrl ?? part.audioUrl} download
+          className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-xs text-white bg-purple-600 hover:bg-purple-500 transition-colors">
+          <Download className="w-4 h-4" /> Download
+        </a>
+      </div>
+    </div>
+  );
+}
+
 // ── ArtifactCard ──────────────────────────────────────────────────────────────
 function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artifact" }; onNavigate?: (tab: string) => void }) {
   if (part.artifactType === "image" && part.imageUrl) {
@@ -609,30 +674,7 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
     );
   }
   if (part.artifactType === "audio" && part.audioUrl) {
-    return (
-      <div className="rounded-2xl border border-purple-500/25 bg-purple-500/8 overflow-hidden">
-        {part.imageUrl && (
-          <div className="p-3 pb-0">
-            <img src={part.imageUrl} alt={part.label}
-              className="w-full max-h-[220px] object-cover rounded-xl border border-white/10 bg-black/20" />
-          </div>
-        )}
-        <div className="px-3 pt-3 pb-1">
-          <audio controls src={part.audioUrl} className="w-full h-9 rounded-lg accent-purple-400" style={{ colorScheme: "dark" }} />
-        </div>
-        <div className="px-4 pb-3 flex items-center gap-2 mt-1">
-          <div className="p-1.5 rounded-lg bg-purple-500/15 shrink-0"><Music2 className="w-4 h-4 text-purple-300" /></div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-purple-200 truncate">{part.label}</p>
-            {part.content && <p className="text-xs text-white/45 truncate mt-0.5">{part.content}</p>}
-          </div>
-          <a href={part.downloadUrl ?? part.audioUrl} download
-            className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-xs text-white bg-purple-600 hover:bg-purple-500 transition-colors">
-            <Download className="w-4 h-4" /> Download
-          </a>
-        </div>
-      </div>
-    );
+    return <MusicArtifactCard part={part} />;
   }
   if (part.artifactType === "text" && (part.content || part.live)) {
     return <TextArtifact label={part.label} content={part.content ?? ""} downloadUrl={part.downloadUrl} language={part.language} live={part.live} />;
