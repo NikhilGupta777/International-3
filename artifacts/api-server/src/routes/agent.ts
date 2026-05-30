@@ -1020,35 +1020,20 @@ async function generateLyriaMusic(params: {
     ? (process.env.LYRIA_FULL_MODEL ?? "lyria-3-pro-preview")
     : (process.env.LYRIA_CLIP_MODEL ?? "lyria-3-clip-preview");
 
-  // Lyria 3 requires the Vertex AI /interactions REST endpoint.
-  // The @google/genai SDK blocks interactions for Vertex AI, so call REST directly.
-  await ensureVertexCredentials();
-  const project = getVertexProject();
-  if (!project) throw new Error("GOOGLE_CLOUD_PROJECT is required for music generation.");
+  // Official Google notebook: use models.generateContent with responseModalities=["AUDIO","TEXT"]
+  // This works with the existing Vertex AI client — no REST workaround needed.
+  // Ref: https://github.com/GoogleCloudPlatform/generative-ai/blob/main/audio/music/getting-started/lyria3_music_generation.ipynb
+  const ai = createGeminiClient();
+  const resp = await ai.models.generateContent({
+    model,
+    contents: params.prompt,
+    config: { responseModalities: ["AUDIO", "TEXT"] } as any,
+  } as any);
 
-  const { GoogleAuth } = await import("google-auth-library");
-  const auth = new GoogleAuth({ scopes: ["https://www.googleapis.com/auth/cloud-platform"] });
-  const token = await auth.getAccessToken();
-  if (!token) throw new Error("Could not obtain Vertex AI access token for Lyria.");
-
-  const endpoint = `https://aiplatform.googleapis.com/v1beta1/projects/${project}/locations/global/interactions`;
-  const httpResp = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model, input: [{ type: "text", text: params.prompt }] }),
-  });
-  if (!httpResp.ok) {
-    const err = await httpResp.text().catch(() => "");
-    throw new Error(`Lyria API error ${httpResp.status}: ${err.slice(0, 300)}`);
-  }
-  const resp = await httpResp.json() as any;
-
-  // Vertex AI interactions returns { outputs: [{type:"text",...},{type:"audio",data:...,mime_type:...}] }
-  const outputs: any[] = resp.outputs ?? resp.candidates?.[0]?.content?.parts ?? [];
-  for (const part of outputs) {
-    if (part.type && part.type !== "audio") continue; // skip text/lyrics parts
-    const audioData: string | undefined = part.data ?? part.inlineData?.data;
-    const mimeType: string = part.mime_type ?? part.inlineData?.mimeType ?? "audio/mpeg";
+  // Response: candidates[0].content.parts — audio in part.inlineData.data
+  for (const part of (resp as any).candidates?.[0]?.content?.parts ?? []) {
+    const audioData: string | undefined = part.inlineData?.data;
+    const mimeType: string = part.inlineData?.mimeType ?? "audio/mpeg";
     if (audioData) {
       const ext = mimeType.includes("wav") ? "wav" : "mp3";
       const filename = `lyria-${Date.now()}.${ext}`;
