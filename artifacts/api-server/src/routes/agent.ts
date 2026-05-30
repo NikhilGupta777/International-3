@@ -2822,6 +2822,10 @@ router.post("/agent/chat", async (req, res) => {
 // POST /api/agent/music-share  — saves share metadata to S3, returns shareId
 // GET  /api/agent/music-share/:shareId  — public HTML share page (no auth)
 
+const MUSIC_SHARE_SITE_URL = (
+  process.env.PUBLIC_SITE_URL || "https://videomaking.in"
+).replace(/\/+$/, "");
+
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -2833,11 +2837,8 @@ router.post("/agent/music-share", async (req: Request, res: Response) => {
     const shareId = randomUUID().replace(/-/g, "").slice(0, 16);
     const payload = JSON.stringify({ audioUrl, imageUrl: imageUrl ?? null, title: title ?? "Generated Music", createdAt: Date.now() });
     const upload = await uploadTextToS3({ body: payload, jobId: shareId, namespace: "music-shares", filename: "share.json", contentType: "application/json" });
-    // Encode the S3 key (which includes date) as a URL-safe token
     const token = Buffer.from(upload.key).toString("base64url");
-    const proto = (req.headers["x-forwarded-proto"] as string) ?? "https";
-    const host = (req.headers["x-forwarded-host"] as string) ?? req.headers.host ?? "videomaking.in";
-    const shareUrl = `${proto}://${host}/api/agent/music-share/${token}`;
+    const shareUrl = `${MUSIC_SHARE_SITE_URL}/api/agent/music-share/${token}`;
     res.json({ shareId: token, shareUrl });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2860,9 +2861,8 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
     }
     const { audioUrl, imageUrl, title } = payload;
     const safeTitle = escapeHtml(title ?? "Generated Music");
-    const proto = (req.headers["x-forwarded-proto"] as string) ?? "https";
-    const host = (req.headers["x-forwarded-host"] as string) ?? req.headers.host ?? "videomaking.in";
-    const appUrl = `${proto}://${host}`;
+    const appUrl = MUSIC_SHARE_SITE_URL;
+    const sharePageUrl = escapeHtml(`${appUrl}/api/agent/music-share/${token}`);
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2871,7 +2871,7 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   <title>${safeTitle} — VideoMaking Studio</title>
   <meta property="og:title" content="${safeTitle}">
   <meta property="og:description" content="🎵 AI-generated music. Listen and create your own at VideoMaking Studio.">
-  <meta property="og:url" content="${appUrl}/api/agent/music-share/${token}">
+  <meta property="og:url" content="${sharePageUrl}">
   <meta property="og:site_name" content="VideoMaking Studio">
   <meta property="og:type" content="music.song">
   ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}">
@@ -2883,45 +2883,53 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}">` : ""}
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
-    body{background:#0c0a14;color:#f0ece8;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px}
-    .card{width:min(480px,100%);background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);border-radius:24px;overflow:hidden;box-shadow:0 32px 80px rgba(0,0,0,.5)}
-    .cover{width:100%;aspect-ratio:1/1;object-fit:cover;background:#1a1228;display:block}
-    .cover-placeholder{width:100%;aspect-ratio:1/1;background:linear-gradient(135deg,#2d1f47,#1a1228);display:flex;align-items:center;justify-content:center;font-size:72px}
-    .body{padding:24px}
-    .title{font-size:18px;font-weight:700;color:#fff;margin-bottom:6px;line-height:1.3}
-    .meta{font-size:13px;color:rgba(255,255,255,.4);margin-bottom:20px}
-    audio{width:100%;height:44px;border-radius:10px;accent-color:#a855f7;margin-bottom:20px}
-    audio::-webkit-media-controls-panel{background:#1e1630}
-    .actions{display:flex;gap:10px}
-    .btn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 16px;border-radius:14px;font-weight:700;font-size:14px;text-decoration:none;border:none;cursor:pointer;transition:.15s}
-    .btn-dl{background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.35);color:#c084fc}
-    .btn-dl:hover{background:rgba(168,85,247,.25)}
-    .btn-cta{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;flex:1.4}
-    .btn-cta:hover{filter:brightness(1.1)}
-    .footer{margin-top:20px;font-size:11px;color:rgba(255,255,255,.2);text-align:center}
-    svg{width:16px;height:16px;fill:currentColor}
+    body{margin:0;background:#0a0a0a;color:white;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden;padding:24px}
+    .bg-grid{position:fixed;inset:0;background-size:40px 40px;background-image:linear-gradient(to right,rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.03) 1px,transparent 1px);z-index:0}
+    .bg-glow{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:700px;height:700px;background:radial-gradient(circle,rgba(168,85,247,.06) 0%,transparent 70%);z-index:0}
+    .card{position:relative;z-index:1;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);box-shadow:0 25px 50px -12px rgba(0,0,0,.6);border-radius:20px;overflow:hidden;width:min(440px,100%);backdrop-filter:blur(10px)}
+    .cover{width:100%;aspect-ratio:1/1;object-fit:cover;display:block;background:#111}
+    .cover-ph{width:100%;aspect-ratio:1/1;background:linear-gradient(135deg,#1a1228,#0d0a18);display:flex;align-items:center;justify-content:center;font-size:64px}
+    .body{padding:20px 20px 24px}
+    .music-icon{width:36px;height:36px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.2);border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
+    .music-icon svg{width:18px;height:18px;color:#a855f7}
+    h1{font-size:16px;font-weight:600;color:rgba(255,255,255,.9);line-height:1.4;margin:0 0 4px;word-break:break-word}
+    .meta{font-size:12px;color:rgba(255,255,255,.35);margin:0 0 16px}
+    audio{width:100%;height:40px;border-radius:8px;accent-color:#a855f7;margin-bottom:16px;display:block}
+    .actions{display:flex;gap:8px}
+    .btn{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 14px;border-radius:10px;font-weight:600;font-size:13px;text-decoration:none;border:none;cursor:pointer;transition:.15s ease}
+    .btn-dl{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:rgba(255,255,255,.75)}
+    .btn-dl:hover{background:rgba(255,255,255,.1);color:#fff}
+    .btn-cta{background:white;color:#0a0a0a;box-shadow:0 4px 12px rgba(255,255,255,.1);flex:1.3}
+    .btn-cta:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(255,255,255,.15)}
+    .btn svg{width:15px;height:15px;flex-shrink:0}
+    .footer{position:relative;z-index:1;margin-top:16px;font-size:11px;color:rgba(255,255,255,.2);text-align:center}
+    .footer a{color:rgba(255,255,255,.3);text-decoration:none}
+    .footer a:hover{color:rgba(255,255,255,.5)}
   </style>
 </head>
 <body>
+  <div class="bg-grid"></div>
+  <div class="bg-glow"></div>
   <div class="card">
-    ${imageUrl ? `<img class="cover" src="${escapeHtml(imageUrl)}" alt="Cover art" loading="lazy">` : `<div class="cover-placeholder">🎵</div>`}
+    ${imageUrl ? `<img class="cover" src="${escapeHtml(imageUrl)}" alt="Cover art" loading="lazy">` : `<div class="cover-ph">🎵</div>`}
     <div class="body">
-      <div class="title">${safeTitle}</div>
-      <div class="meta">AI-generated music · VideoMaking Studio</div>
+      <div class="music-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+      <h1>${safeTitle}</h1>
+      <p class="meta">AI-generated music · VideoMaking Studio</p>
       <audio controls src="${escapeHtml(audioUrl)}" preload="metadata"></audio>
       <div class="actions">
         <a href="${escapeHtml(audioUrl)}" download class="btn btn-dl">
-          <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 4v-2h14v2H5z"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Download
         </a>
-        <a href="${appUrl}" class="btn btn-cta">
-          <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+        <a href="${escapeHtml(appUrl)}" class="btn btn-cta">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
           Make Your Music
         </a>
       </div>
     </div>
   </div>
-  <p class="footer">Created with VideoMaking Studio AI · <a href="${appUrl}" style="color:rgba(168,85,247,.6);text-decoration:none">Try it free →</a></p>
+  <p class="footer">Powered by VideoMaking · <a href="${escapeHtml(appUrl)}">Try it free →</a></p>
 </body>
 </html>`;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
