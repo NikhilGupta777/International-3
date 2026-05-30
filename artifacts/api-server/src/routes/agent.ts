@@ -1043,9 +1043,10 @@ async function generateLyriaMusic(params: {
   }
   const resp = await httpResp.json() as any;
 
-  // Vertex AI interactions returns { outputs: [{type:"audio", data:..., mime_type:...}, ...] }
+  // Vertex AI interactions returns { outputs: [{type:"text",...},{type:"audio",data:...,mime_type:...}] }
   const outputs: any[] = resp.outputs ?? resp.candidates?.[0]?.content?.parts ?? [];
   for (const part of outputs) {
+    if (part.type && part.type !== "audio") continue; // skip text/lyrics parts
     const audioData: string | undefined = part.data ?? part.inlineData?.data;
     const mimeType: string = part.mime_type ?? part.inlineData?.mimeType ?? "audio/mpeg";
     if (audioData) {
