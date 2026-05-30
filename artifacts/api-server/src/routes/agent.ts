@@ -2890,29 +2890,26 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   <meta name="twitter:description" content="🎵 AI-generated music. Listen and create your own at VideoMaking Studio.">
   ${imageUrl ? `<meta name="twitter:image" content="${escapeHtml(imageUrl)}">` : ""}
   <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{margin:0;background:#0a0a0a;color:white;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;overflow:hidden;padding:24px}
-    .bg-grid{position:fixed;inset:0;background-size:40px 40px;background-image:linear-gradient(to right,rgba(255,255,255,.03) 1px,transparent 1px),linear-gradient(to bottom,rgba(255,255,255,.03) 1px,transparent 1px);z-index:0}
-    .bg-glow{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:700px;height:700px;background:radial-gradient(circle,rgba(168,85,247,.06) 0%,transparent 70%);z-index:0}
-    .card{position:relative;z-index:1;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08);box-shadow:0 25px 50px -12px rgba(0,0,0,.6);border-radius:20px;overflow:hidden;width:min(440px,100%);backdrop-filter:blur(10px)}
-    .cover{width:100%;aspect-ratio:1/1;object-fit:cover;display:block;background:#111}
-    .cover-ph{width:100%;aspect-ratio:1/1;background:linear-gradient(135deg,#1a1228,#0d0a18);display:flex;align-items:center;justify-content:center;font-size:64px}
-    .body{padding:20px 20px 24px}
-    .music-icon{width:36px;height:36px;background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.2);border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:12px}
-    .music-icon svg{width:18px;height:18px;color:#a855f7}
-    h1{font-size:16px;font-weight:600;color:rgba(255,255,255,.9);line-height:1.4;margin:0 0 4px;word-break:break-word}
-    .meta{font-size:12px;color:rgba(255,255,255,.35);margin:0 0 16px}
-    audio{width:100%;height:40px;border-radius:8px;accent-color:#a855f7;margin-bottom:16px;display:block}
-    .actions{display:flex;gap:8px}
-    .btn{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;padding:11px 14px;border-radius:10px;font-weight:600;font-size:13px;text-decoration:none;border:none;cursor:pointer;transition:.15s ease}
-    .btn-dl{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);color:rgba(255,255,255,.75)}
-    .btn-dl:hover{background:rgba(255,255,255,.1);color:#fff}
-    .btn-cta{background:white;color:#0a0a0a;box-shadow:0 4px 12px rgba(255,255,255,.1);flex:1.3}
-    .btn-cta:hover{transform:translateY(-1px);box-shadow:0 6px 16px rgba(255,255,255,.15)}
-    .btn svg{width:15px;height:15px;flex-shrink:0}
-    .footer{position:relative;z-index:1;margin-top:16px;font-size:11px;color:rgba(255,255,255,.2);text-align:center}
-    .footer a{color:rgba(255,255,255,.3);text-decoration:none}
-    .footer a:hover{color:rgba(255,255,255,.5)}
+    body { margin: 0; background: #0a0a0a; color: white; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; overflow: hidden; }
+    .bg-grid { position: absolute; inset: 0; background-size: 40px 40px; background-image: linear-gradient(to right, rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.03) 1px, transparent 1px); z-index: -1; }
+    .bg-glow { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 600px; height: 600px; background: radial-gradient(circle, rgba(168,85,247,0.05) 0%, transparent 70%); z-index: -1; }
+    .card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); border-radius: 1.25rem; overflow: hidden; max-width: 420px; width: 90%; backdrop-filter: blur(10px); }
+    .cover { width: 100%; aspect-ratio: 1/1; object-fit: cover; display: block; background: #111; }
+    .cover-ph { width: 100%; aspect-ratio: 1/1; background: linear-gradient(135deg,#1a1228,#0d0a18); display: flex; align-items: center; justify-content: center; font-size: 64px; }
+    .body { padding: 1.5rem; }
+    .icon { width: 44px; height: 44px; background: rgba(168,85,247,0.1); border: 1px solid rgba(168,85,247,0.2); border-radius: 0.75rem; display: flex; align-items: center; justify-content: center; margin: 0 0 1rem 0; }
+    .icon svg { width: 22px; height: 22px; color: #a855f7; }
+    h1 { font-size: 1.05rem; font-weight: 600; margin: 0 0 0.35rem 0; line-height: 1.4; word-break: break-word; color: rgba(255,255,255,0.9); }
+    p.meta { color: rgba(255,255,255,0.4); font-size: 0.82rem; margin: 0 0 1.1rem 0; }
+    audio { width: 100%; height: 40px; border-radius: 8px; accent-color: #a855f7; margin-bottom: 1rem; display: block; }
+    .actions { display: flex; gap: 8px; }
+    .btn { flex: 1; display: flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.75rem 1rem; border-radius: 0.65rem; font-weight: 600; font-size: 0.875rem; text-decoration: none; transition: all 0.2s; }
+    .btn-dl { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.75); }
+    .btn-dl:hover { background: rgba(255,255,255,0.1); }
+    .btn-cta { background: white; color: #0a0a0a; box-shadow: 0 4px 12px rgba(255,255,255,0.1); flex: 1.3; }
+    .btn-cta:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(255,255,255,0.15); }
+    .btn svg { width: 16px; height: 16px; }
+    .footer { margin-top: 1rem; font-size: 0.75rem; color: rgba(255,255,255,0.25); text-align: center; }
   </style>
 </head>
 <body>
@@ -2921,9 +2918,9 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   <div class="card">
     ${imageUrl ? `<img class="cover" src="${escapeHtml(imageUrl)}" alt="Cover art" loading="lazy">` : `<div class="cover-ph">🎵</div>`}
     <div class="body">
-      <div class="music-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+      <div class="icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
       <h1>${safeTitle}</h1>
-      <p class="meta">AI-generated music · VideoMaking Studio</p>
+      <p class="meta">AI-generated music • Shared from VideoMaking Studio</p>
       <audio controls src="${escapeHtml(audioUrl)}" preload="metadata"></audio>
       <div class="actions">
         <a href="${escapeHtml(audioUrl)}" download class="btn btn-dl">
@@ -2935,9 +2932,9 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
           Make Your Music
         </a>
       </div>
+      <div class="footer">Powered by VideoMaking</div>
     </div>
   </div>
-  <p class="footer">Powered by VideoMaking · <a href="${escapeHtml(appUrl)}">Try it free →</a></p>
 </body>
 </html>`;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
