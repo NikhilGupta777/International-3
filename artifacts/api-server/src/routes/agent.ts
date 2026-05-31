@@ -1421,7 +1421,7 @@ async function executeTool(
       // Uploaded files: POST to /subtitles/generate-from-url (direct media URL → transcription).
       // YouTube URLs: POST to /subtitles/generate (yt-dlp download path).
       const inputUrl = (args.url ?? args.fileUrl ?? "") as string;
-      const isUploadedFile = !!inputUrl && !inputUrl.includes("youtube.com") && !inputUrl.includes("youtu.be");
+      const isUploadedFile = !!inputUrl && !inputUrl.includes("youtube.com") && !inputUrl.includes("youtu.be") && !inputUrl.includes("youtube-nocookie.com");
       logTool("Starting subtitle generation", { url: inputUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: isUploadedFile ? "Transcribing uploaded file..." : "Starting subtitle generation..." });
 
@@ -1542,7 +1542,7 @@ async function executeTool(
       // Uploaded files: POST to /translator/submit-from-url — no YouTube download needed.
       // YouTube URLs: download via youtube/stream → S3 → submit.
       const videoUrl = (args.url ?? args.fileUrl ?? "") as string;
-      const isUploadedFile = !!videoUrl && !videoUrl.includes("youtube.com") && !videoUrl.includes("youtu.be");
+      const isUploadedFile = !!videoUrl && !videoUrl.includes("youtube.com") && !videoUrl.includes("youtu.be") && !videoUrl.includes("youtube-nocookie.com");
       logTool("Starting video translation job", { url: videoUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: isUploadedFile ? "Registering uploaded file for GPU translation..." : "Downloading video for translation..." });
 
@@ -2841,7 +2841,11 @@ function escapeHtml(s: string): string {
 router.post("/agent/music-share", async (req: Request, res: Response) => {
   try {
     const { audioUrl, imageUrl, title } = req.body as { audioUrl?: string; imageUrl?: string; title?: string };
-    if (!audioUrl) return void res.status(400).json({ error: "audioUrl is required" });
+    if (typeof audioUrl !== "string" || !audioUrl) return void res.status(400).json({ error: "audioUrl is required" });
+    // Only allow HTTPS URLs — blocks javascript: / data: XSS vectors in the share HTML
+    if (!audioUrl.startsWith("https://")) return void res.status(400).json({ error: "audioUrl must be an HTTPS URL" });
+    if (imageUrl != null && typeof imageUrl !== "string") return void res.status(400).json({ error: "imageUrl must be an HTTPS URL" });
+    if (imageUrl && !imageUrl.startsWith("https://")) return void res.status(400).json({ error: "imageUrl must be an HTTPS URL" });
     const shareId = randomUUID().replace(/-/g, "").slice(0, 16);
     const payload = JSON.stringify({ audioUrl, imageUrl: imageUrl ?? null, title: title ?? "Generated Music", createdAt: Date.now() });
     const upload = await uploadTextToS3({ body: payload, jobId: shareId, namespace: "music-shares", filename: "share.json", contentType: "application/json" });
@@ -2860,7 +2864,7 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
     // Decode the base64url token back to the S3 key
     let key: string;
     try { key = Buffer.from(token, "base64url").toString("utf8"); } catch { return void res.status(400).json({ error: "Invalid share ID" }); }
-    if (!key.includes("music-shares")) return void res.status(400).json({ error: "Invalid share ID" });
+    if (!key.includes("/music-shares/")) return void res.status(400).json({ error: "Invalid share ID" });
     let payload: { audioUrl: string; imageUrl?: string | null; title: string; createdAt: number };
     try {
       payload = JSON.parse(await readTextFromS3(key));
@@ -2869,6 +2873,8 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
     }
     const { audioUrl, imageUrl, title } = payload;
     const safeTitle = escapeHtml(title ?? "Generated Music");
+    // Filesystem-safe filename for download: alphanum + hyphen/underscore only
+    const safeFilename = (title ?? "Generated Music").replace(/[^a-zA-Z0-9\s\-_]/g, "").replace(/\s+/g, "_").slice(0, 80) + ".mp3";
     const appUrl = MUSIC_SHARE_SITE_URL;
     const sharePageUrl = escapeHtml(`${appUrl}/api/agent/music-share/${token}`);
     const html = `<!DOCTYPE html>
@@ -2922,7 +2928,7 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
       <p class="meta">AI-generated music • Shared from <a href="${escapeHtml(appUrl)}">VideoMaking</a> Studio</p>
       <audio controls src="${escapeHtml(audioUrl)}" preload="metadata"></audio>
       <div class="actions">
-        <a href="${escapeHtml(audioUrl)}" download class="btn btn-dl">
+        <a href="${escapeHtml(audioUrl)}" onclick="event.preventDefault();dlTrack(this.href,'${safeFilename}')" class="btn btn-dl">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Download
         </a>
@@ -2934,6 +2940,9 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
       <div class="footer">Powered by VideoMaking</div>
     </div>
   </div>
+  <script>
+    function dlTrack(url,fname){fetch(url).then(function(r){if(!r.ok)throw new Error('download failed');return r.blob();}).then(function(b){var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=fname;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},5000);}).catch(function(){window.open(url,'_blank');});}
+  </script>
 </body>
 </html>`;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
