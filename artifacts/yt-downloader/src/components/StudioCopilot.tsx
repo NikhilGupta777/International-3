@@ -627,6 +627,7 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
     }
     try {
       const r = await fetch(url);
+      if (!r.ok) throw new Error(`Download failed: ${r.status}`);
       const blob = await r.blob();
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
