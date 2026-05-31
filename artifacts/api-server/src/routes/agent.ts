@@ -2841,9 +2841,10 @@ function escapeHtml(s: string): string {
 router.post("/agent/music-share", async (req: Request, res: Response) => {
   try {
     const { audioUrl, imageUrl, title } = req.body as { audioUrl?: string; imageUrl?: string; title?: string };
-    if (!audioUrl) return void res.status(400).json({ error: "audioUrl is required" });
+    if (typeof audioUrl !== "string" || !audioUrl) return void res.status(400).json({ error: "audioUrl is required" });
     // Only allow HTTPS URLs — blocks javascript: / data: XSS vectors in the share HTML
     if (!audioUrl.startsWith("https://")) return void res.status(400).json({ error: "audioUrl must be an HTTPS URL" });
+    if (imageUrl != null && typeof imageUrl !== "string") return void res.status(400).json({ error: "imageUrl must be an HTTPS URL" });
     if (imageUrl && !imageUrl.startsWith("https://")) return void res.status(400).json({ error: "imageUrl must be an HTTPS URL" });
     const shareId = randomUUID().replace(/-/g, "").slice(0, 16);
     const payload = JSON.stringify({ audioUrl, imageUrl: imageUrl ?? null, title: title ?? "Generated Music", createdAt: Date.now() });
