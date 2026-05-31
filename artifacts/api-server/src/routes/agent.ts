@@ -2207,8 +2207,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       const question = String(args.question ?? "Summarize this video comprehensively.").trim();
 
       // Validate it's a YouTube URL (watch, shorts, live, embed, youtu.be, mobile/music subdomains, nocookie)
-      const isYouTubeUrl = /(?:youtube\.com\/(?:watch|shorts\/|live\/|embed\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/)/i.test(videoUrl);
-      if (!isYouTubeUrl) throw new Error("URL must be a public YouTube video link.");
+      const isYouTubeUrl = /(?:^https?:\/\/)?(?:(?:www|m|music)\.)?(?:youtube\.com\/(?:watch(?:\?|\/)|shorts\/|live\/|embed\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/(?:embed\/|v\/))/i.test(videoUrl);
 
       logTool("Analyzing YouTube video with Gemini Vision+Audio", { videoUrl, question });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Loading video... Gemini is watching and listening" });
