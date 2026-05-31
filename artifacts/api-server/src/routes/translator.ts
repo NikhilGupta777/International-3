@@ -8,7 +8,7 @@
  *   GET  /api/translator/result/:id   → Get presigned GET URL for final video/SRT/transcript
  */
 
-import { Router, Request, Response } from "express";
+import { Router, Request, Response as ExpressResponse } from "express";
 import {
   S3Client,
   PutObjectCommand,
@@ -500,12 +500,12 @@ function boolValue(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
-function authEmailFromResponse(res: Response): string | undefined {
+function authEmailFromResponse(res: ExpressResponse): string | undefined {
   const session = res.locals.authSession as { email?: unknown } | undefined;
   return typeof session?.email === "string" ? session.email : undefined;
 }
 
-function resolveRequestedLipSync(req: Request, res: Response, value: unknown): {
+function resolveRequestedLipSync(req: Request, res: ExpressResponse, value: unknown): {
   enabled: boolean;
   warning?: string;
 } {
@@ -1314,7 +1314,7 @@ async function startTranslatorJob(jobId: string, s3Key: string, options: Transla
 
 // ── GET /presign ──────────────────────────────────────────────────────────────
 // Returns an S3 presigned PUT URL so the browser can upload directly to S3.
-router.get("/presign", async (req: Request, res: Response) => {
+router.get("/presign", async (req: Request, res: ExpressResponse) => {
   try {
     const { filename = "input.mp4", contentType = "video/mp4" } = req.query as Record<string, string>;
     const ext = safeVideoExtension(filename);
@@ -1339,7 +1339,7 @@ router.get("/presign", async (req: Request, res: Response) => {
 
 // ── POST /submit ──────────────────────────────────────────────────────────────
 // Creates a DynamoDB job record and submits an AWS Batch GPU job.
-router.post("/submit", async (req: Request, res: Response) => {
+router.post("/submit", async (req: Request, res: ExpressResponse) => {
   try {
     const ownerId = getRequesterId(req);
     const {
@@ -1397,7 +1397,7 @@ router.post("/submit", async (req: Request, res: Response) => {
 // Accepts a public file URL (e.g., S3 presigned URL from the uploads API).
 // Downloads the file, copies it to the translator-jobs S3 prefix, then submits.
 // This is the path used when a user uploads a video directly in the agent chat.
-router.post("/submit-from-url", async (req: Request, res: Response) => {
+router.post("/submit-from-url", async (req: Request, res: ExpressResponse) => {
   try {
     const ownerId = getRequesterId(req);
     const {
@@ -1471,7 +1471,7 @@ router.post("/submit-from-url", async (req: Request, res: Response) => {
 
 // ── GET /status/:jobId ────────────────────────────────────────────────────────
 // Reads real-time job status from DynamoDB (updated by the Python worker).
-router.get("/status/:jobId", async (req: Request, res: Response) => {
+router.get("/status/:jobId", async (req: Request, res: ExpressResponse) => {
   try {
     const jobId = String(req.params.jobId);
 
@@ -1521,7 +1521,7 @@ router.get("/status/:jobId", async (req: Request, res: Response) => {
 
 // ── GET /history ─────────────────────────────────────────────────────────────
 // Returns paginated list of translator jobs for the current user.
-router.get("/history", async (req: Request, res: Response) => {
+router.get("/history", async (req: Request, res: ExpressResponse) => {
   try {
     const ownerId = getRequesterId(req);
     const limitParam = Number(req.query.limit ?? 20);
@@ -1581,7 +1581,7 @@ router.get("/history", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/cancel/:jobId", async (req: Request, res: Response) => {
+router.post("/cancel/:jobId", async (req: Request, res: ExpressResponse) => {
   try {
     const jobId = String(req.params.jobId);
     const current = await ddb.send(new GetItemCommand({
@@ -1630,7 +1630,7 @@ router.post("/cancel/:jobId", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/share/:jobId", async (req: Request, res: Response) => {
+router.get("/share/:jobId", async (req: Request, res: ExpressResponse) => {
   try {
     const jobId = String(req.params.jobId);
 
@@ -1713,7 +1713,7 @@ router.get("/share/:jobId", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/result/:jobId", async (req: Request, res: Response) => {
+router.get("/result/:jobId", async (req: Request, res: ExpressResponse) => {
   try {
     const jobId = String(req.params.jobId);
 
