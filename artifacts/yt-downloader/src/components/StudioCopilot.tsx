@@ -43,8 +43,35 @@ function loadSessions(): ChatSession[] {
       .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   } catch { return []; }
 }
+// Strip heavy/ephemeral fields before persisting. Base64 image bytes (`data`)
+// blow the ~5MB localStorage quota with just a couple of images — a thrown
+// QuotaExceededError would silently drop ALL chat history. Blob `previewUrl`s
+// are also dead after a reload, so we drop them and render a filename chip instead.
+function slimSessionsForStorage(sessions: ChatSession[]): ChatSession[] {
+  return sessions.slice(0, 30).map(s => ({
+    ...s,
+    messages: s.messages.map(m => ({
+      ...m,
+      parts: m.parts.map(p => {
+        if (p.kind === "image") return { ...p, previewUrl: "" };
+        if (p.kind === "attachment" && p.type === "image") {
+          const { data: _data, ...rest } = p as any;
+          return rest;
+        }
+        return p;
+      }),
+    })),
+  }));
+}
+
 function saveSessions(sessions: ChatSession[]) {
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(sessions.slice(0, 30))); } catch { }
+  const slim = slimSessionsForStorage(sessions);
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(slim));
+  } catch {
+    // Quota still exceeded (e.g. large text artifacts) — retry with fewer sessions.
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(slim.slice(0, 10))); } catch { }
+  }
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -75,7 +102,7 @@ type MessagePart =
   | { kind: "image"; previewUrl: string; name: string }
   | { kind: "attachment"; type: string; name: string; mimeType: string; data?: string; url?: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
-  | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; result?: any; progress?: number | null; progressMsg?: string }
+  | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; cancelled?: boolean; result?: any; progress?: number | null; progressMsg?: string }
   | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; audioUrl?: string; content?: string; language?: string; canvasId?: string; live?: boolean };
 
 type GroundingSource = { title: string; uri: string };
@@ -415,7 +442,9 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
         {argStr && <><span className="agent-tool-divider" /><span className="agent-tool-args">{argStr}</span></>}
         <span className="agent-tool-status-wrap">
           {part.done
-            ? <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+            ? (part.cancelled
+                ? <X className="w-3.5 h-3.5 text-white/40" />
+                : <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />)
             : hasProgress
               ? <span className="agent-tool-pct">{pct}%</span>
               : <Loader2 className="w-3.5 h-3.5 text-white/30 animate-spin" />}
@@ -425,6 +454,11 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
         <div className="agent-tool-live-msg">
           <span className="agent-tool-live-dot" />
           <span className="agent-tool-live-text">{part.progressMsg}</span>
+        </div>
+      )}
+      {part.done && part.cancelled && (
+        <div className="agent-tool-live-msg">
+          <span className="agent-tool-live-text text-white/40">Stopped</span>
         </div>
       )}
       {!part.done && (
@@ -722,9 +756,20 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
         {message.parts.map((part, i) => {
           // Image thumbnail in user message
           if (part.kind === "image") {
+            const previewUrl = (part as any).previewUrl as string | undefined;
+            const name = (part as any).name as string | undefined;
+            // After a reload the blob: previewUrl is gone — show a filename chip instead of a broken image
+            if (!previewUrl) {
+              return (
+                <div key={i} className="flex items-center gap-1.5 bg-white/10 border border-white/15 rounded-lg px-2 py-1 text-xs text-white/70 max-w-[200px]">
+                  <ImagePlus className="w-3.5 h-3.5 text-white/40 shrink-0" />
+                  <span className="truncate">{name || "image"}</span>
+                </div>
+              );
+            }
             return (
               <div key={i} className="rounded-xl overflow-hidden border border-white/10 max-w-[200px]">
-                <img src={(part as any).previewUrl} alt={(part as any).name} className="w-full h-auto object-cover max-h-[180px]" />
+                <img src={previewUrl} alt={name} className="w-full h-auto object-cover max-h-[180px]" />
               </div>
             );
           }
@@ -1074,6 +1119,7 @@ export function StudioCopilot({
   const recognitionRef = useRef<any>(null);
   const sessionIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
+  const streamingAssistantIdRef = useRef<string | null>(null);
   const lastUserTextRef = useRef<string>("");
   const lastUserAttachmentsRef = useRef<Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>>([]);
 
@@ -1185,6 +1231,7 @@ export function StudioCopilot({
     setPasteUrl(null); // dismiss paste pill when message is sent
     lastUserTextRef.current = text; // track for retry
     lastUserAttachmentsRef.current = snapshotAttachments;
+    streamingAssistantIdRef.current = assistantMsgId; // track for Stop
     abortRef.current = new AbortController();
 
     // Build history — include completed tool results as text so the agent
@@ -1382,7 +1429,7 @@ export function StudioCopilot({
             upsertActiveTranslatorJob({
               jobId: evt.jobId!,
               filename: "input.mp4",
-              targetLang: "Hindi",
+              targetLang: (evt as any).targetLang || "Hindi",
               startedAt: Date.now(),
               progress: 0,
               step: "Starting",
@@ -1555,6 +1602,7 @@ export function StudioCopilot({
       setStreaming(false);
       setThinking(false);
       setAgentStage("idle");
+      streamingAssistantIdRef.current = null;
     }
   }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg]);
 
@@ -1572,6 +1620,19 @@ export function StudioCopilot({
 
   const handleStop = () => {
     abortRef.current?.abort();
+    // Mark any in-flight tool cards as cancelled so they don't spin forever (and persist a dead spinner)
+    const aId = streamingAssistantIdRef.current;
+    const sId = sessionIdRef.current;
+    if (aId && sId) {
+      upsertMsg(sId, aId, m => ({
+        ...m,
+        parts: m.parts.map(p =>
+          p.kind === "tool_start" && !(p as any).done
+            ? { ...p, done: true, cancelled: true, progress: null }
+            : p),
+      }));
+    }
+    streamingAssistantIdRef.current = null;
     setStreaming(false); setThinking(false); setAgentStage("idle"); setAgentIteration(0);
   };
 
@@ -1963,6 +2024,9 @@ export function StudioCopilot({
               const val = e.target.value;
               setInput(val);
               handleSlashInput(val);
+              // Surface the quick-action pill when the whole input is just a pasted/typed link
+              const trimmed = val.trim();
+              setPasteUrl(/^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null);
               e.target.style.height = "auto";
               e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
             }}
@@ -2043,7 +2107,8 @@ export function StudioCopilot({
                       <ImagePlus className="w-4 h-4" />
                       <span>Create Image</span>
                     </button>
-                    <button type="button" className="gs-plus-menu-item gs-plus-menu-item-soon" disabled>
+                    <button type="button" className="gs-plus-menu-item"
+                      onClick={() => { setInput("Make music: "); setShowPlusMenu(false); }}>
                       <Music2 className="w-4 h-4" />
                       <span>Create Music</span>
                       <span className="gs-plus-menu-badge gs-plus-menu-badge-new">New</span>

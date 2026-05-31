@@ -5,13 +5,14 @@
  * SSE events: text | tool_start | tool_progress | tool_done | artifact | navigate | error | done
  */
 
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { Modality, Type } from "@google/genai";
 import { randomUUID } from "crypto";
 import { setupSse } from "../lib/sse";
 import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3, readTextFromS3 } from "../lib/s3-storage";
-import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, ensureVertexCredentials } from "../lib/gemini-client";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
@@ -1580,7 +1581,7 @@ async function executeTool(
       rememberAgentJob(req, tvJobId);
       logTool("Translation job submitted", { jobId: tvJobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", runId, toolId, name: "translate_video", status: "processing", message: "Job submitted to GPU worker...", jobId: tvJobId, url: videoUrl } as any);
+      sseEvent(res, { type: "tool_progress", runId, toolId, name: "translate_video", status: "processing", message: "Job submitted to GPU worker...", jobId: tvJobId, url: videoUrl, targetLang: args.targetLang ?? "Hindi" } as any);
 
       sseEvent(res, { type: "navigate", runId, tab: "translator" });
       return {
@@ -2104,7 +2105,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
             role: "user",
             parts: [
               { text: `${task}\nReturn practical, concise results for a creator/editor.` },
-              { fileData: { fileUri: attachment.url, mimeType: "video/mp4" } } as any,
+              { fileData: { fileUri: attachment.url, mimeType: "application/pdf" } } as any,
             ],
           }],
           config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
@@ -2205,8 +2206,8 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       const videoUrl = String(args.url ?? "").trim();
       const question = String(args.question ?? "Summarize this video comprehensively.").trim();
 
-      // Validate it's a YouTube URL
-      const isYouTubeUrl = /(?:youtube\.com\/watch|youtu\.be\/)/i.test(videoUrl);
+      // Validate it's a YouTube URL (watch, shorts, live, embed, youtu.be, mobile/music subdomains, nocookie)
+      const isYouTubeUrl = /(?:youtube\.com\/(?:watch|shorts\/|live\/|embed\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/)/i.test(videoUrl);
       if (!isYouTubeUrl) throw new Error("URL must be a public YouTube video link.");
 
       logTool("Analyzing YouTube video with Gemini Vision+Audio", { videoUrl, question });
