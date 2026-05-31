@@ -612,6 +612,34 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
   const [shareState, setShareState] = useState<"idle" | "loading" | "copied">("idle");
   const { toast } = useToast();
 
+  const handleDownload = async () => {
+    const url = part.downloadUrl ?? part.audioUrl ?? "";
+    const filename = (part.label ?? "music").replace(/[^a-zA-Z0-9\s\-_]/g, "").replace(/\s+/g, "_").slice(0, 80) + ".mp3";
+    if (!url) return;
+    // data: URLs work with <a download> directly; HTTPS S3 URLs are cross-origin
+    // so the download attribute is silently ignored — use fetch→blob instead.
+    if (url.startsWith("data:")) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      return;
+    }
+    try {
+      const r = await fetch(url);
+      const blob = await r.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => { URL.revokeObjectURL(blobUrl); a.remove(); }, 5000);
+    } catch {
+      window.open(url, "_blank");
+    }
+  };
+
   const handleShare = async () => {
     setShareState("loading");
     try {
@@ -661,10 +689,11 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
            <Share2 className="w-3.5 h-3.5" />}
           {shareState === "copied" ? "Copied!" : "Share"}
         </button>
-        <a href={part.downloadUrl ?? part.audioUrl} download
+        <button
+          onClick={handleDownload}
           className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-xs text-white bg-purple-600 hover:bg-purple-500 transition-colors">
           <Download className="w-4 h-4" /> Download
-        </a>
+        </button>
       </div>
     </div>
   );
