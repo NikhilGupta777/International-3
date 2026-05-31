@@ -1631,7 +1631,6 @@ export function StudioCopilot({
             ? { ...p, done: true, cancelled: true, progress: null, progressMsg: "Stopped", result: { error: "Stopped by user" } }
             : p),
       }));
-      }));
     }
     streamingAssistantIdRef.current = null;
     setStreaming(false); setThinking(false); setAgentStage("idle"); setAgentIteration(0);
