@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Send, Bot, User, Loader2, CheckCircle, ChevronRight,
+  Bot, Loader2, CheckCircle, ChevronRight, ChevronDown,
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
   ArrowLeft, Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
@@ -18,6 +18,17 @@ import { upsertActiveTranslatorJob } from "@/lib/translator-history";
 const ULTRA_KEY = "studio-ultra-mode";
 function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
+}
+
+type ReasoningMode = "flash" | "pro" | "advanced";
+const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
+  { id: "flash", label: "3.5 Flash", description: "Fast everyday responses", ultra: false },
+  { id: "pro", label: "3.1 Pro", description: "Deeper video and creative work", ultra: true },
+  { id: "advanced", label: "Advanced reasoning tasks", description: "Use extended reasoning for complex requests", ultra: true },
+];
+
+function readReasoningInitial(): ReasoningMode {
+  return readUltraInitial() ? "pro" : "flash";
 }
 
 const HISTORY_KEY = "copilot-sessions-v2";
@@ -768,7 +779,7 @@ function CopyBubble({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   const copy = () => { void navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); };
   return (
-    <button onClick={copy} title="Copy" className="shrink-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity p-1 rounded-md hover:bg-white/10 text-white/30 hover:text-white/70">
+    <button onClick={copy} title="Copy" className="gs-message-action-btn">
       {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
     </button>
   );
@@ -778,11 +789,8 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
   const isUser = message.role === "user";
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
-      className={cn("flex gap-3 w-full", isUser ? "justify-end" : "justify-start")}>
-      {!isUser && (
-        <div className="agent-avatar shrink-0 mt-0.5"><img src="/agent-logo.png" className="w-4 h-4 object-contain" alt="" /></div>
-      )}
-      <div className={cn("flex flex-col gap-2 max-w-[88%] sm:max-w-[80%]", isUser && "items-end")}>
+      className={cn("gs-message-row", isUser ? "gs-message-row-user" : "gs-message-row-assistant")}>
+      <div className={cn("gs-message-stack", isUser ? "gs-message-stack-user" : "gs-message-stack-assistant")}>
         {message.parts.map((part, i) => {
           // Image thumbnail in user message
           if (part.kind === "image") {
@@ -798,8 +806,8 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
               );
             }
             return (
-              <div key={i} className="rounded-xl overflow-hidden border border-white/10 max-w-[200px]">
-                <img src={previewUrl} alt={name} className="w-full h-auto object-cover max-h-[180px]" />
+              <div key={i} className="gs-message-image">
+                <img src={previewUrl} alt={name} />
               </div>
             );
           }
@@ -816,16 +824,19 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
             return (
               <React.Fragment key={i}>
                 {visibleText.trim() && (
-                  <div className={cn("group/bubble relative rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                    isUser ? "bg-[#dc2626] text-white rounded-tr-sm" : "bg-white/[0.05] text-white/90 rounded-tl-sm border border-white/[0.07] copilot-md")}>
+                  <div className={cn(
+                    "gs-message-text",
+                    isUser ? "gs-message-text-user" : "gs-message-text-assistant copilot-md",
+                    isErrorMsg && "gs-message-text-error",
+                  )}>
                     {isUser ? cleanContent : (isLastTextPart ? renderStreamingMd(visibleText, message.groundingSources) : renderMd(visibleText, message.groundingSources))}
                     {/* Copy button — assistant messages only, hover-reveal */}
                     {!isUser && (
-                      <div className="absolute top-2 right-2 flex gap-1">
+                      <div className="gs-message-actions">
                         <CopyBubble text={part.content} />
                         {/* Retry button on error messages */}
                         {isErrorMsg && onRetry && (
-                          <button onClick={onRetry} title="Retry" className="opacity-0 group-hover/bubble:opacity-100 transition-opacity p-1 rounded-md hover:bg-white/10 text-white/30 hover:text-white/70">
+                          <button onClick={onRetry} title="Retry" className="gs-message-action-btn">
                             <RotateCcw className="w-3 h-3" />
                           </button>
                         )}
@@ -867,14 +878,9 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
           </div>
         )}
         {message.parts.some(p => p.kind === "text" ? (p as any).content?.trim() : true) && (
-          <span className="text-[10px] text-white/25 px-1">{message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+          <span className="sr-only">{message.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         )}
       </div>
-      {isUser && (
-        <div className="shrink-0 w-7 h-7 rounded-full bg-white/10 border border-white/15 flex items-center justify-center mt-0.5">
-          <User className="w-3.5 h-3.5 text-white/60" />
-        </div>
-      )}
     </motion.div>
   );
 }
@@ -934,7 +940,9 @@ export function StudioCopilot({
   const [activeToolLabel, setActiveToolLabel] = useState<string | null>(null);
   const [thoughtLabel, setThoughtLabel] = useState<string | null>(null);
   const [pasteUrl, setPasteUrl] = useState<string | null>(null);
-  const [ultra, setUltra] = useState<boolean>(readUltraInitial);
+  const [reasoningMode, setReasoningMode] = useState<ReasoningMode>(readReasoningInitial);
+  const activeReasoning = REASONING_OPTIONS.find(option => option.id === reasoningMode) ?? REASONING_OPTIONS[0];
+  const ultra = activeReasoning.ultra;
   const [suggestions, setSuggestions] = useState<string[]>([]);
   // ── Skills ──
   type SkillMeta = { id: string; name: string; description: string; icon: string; category: string; starters?: string[]; tags?: string[] };
@@ -949,6 +957,8 @@ export function StudioCopilot({
   const [slashQuery, setSlashQuery] = useState("");
   const [slashMenuIndex, setSlashMenuIndex] = useState(0);
   const slashMenuRef = useRef<HTMLDivElement>(null);
+  const [showReasoningMenu, setShowReasoningMenu] = useState(false);
+  const reasoningMenuRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
   useEffect(() => {
     try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch { }
@@ -972,6 +982,17 @@ export function StudioCopilot({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showPlusMenu]);
+
+  useEffect(() => {
+    if (!showReasoningMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (reasoningMenuRef.current && !reasoningMenuRef.current.contains(e.target as Node)) {
+        setShowReasoningMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showReasoningMenu]);
 
   // Fetch available skills on mount
   useEffect(() => {
@@ -1173,7 +1194,12 @@ export function StudioCopilot({
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [sessions]);
   useEffect(() => {
-    if (userIsNearBottom.current) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!userIsNearBottom.current) return;
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    });
   }, [currentMessages]);
   // Auto-scroll thought content to bottom as new thoughts stream in
   useEffect(() => {
@@ -1876,98 +1902,84 @@ export function StudioCopilot({
                 const handleRetry = isLastAssistant && lastUserTextRef.current
                   ? () => void sendMessage(lastUserTextRef.current, lastUserAttachmentsRef.current.length > 0 ? lastUserAttachmentsRef.current : undefined)
                   : undefined;
-                return <MessageBubble key={msg.id} message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} />;
+                const hasThoughts = thoughtText.trim().length > 0;
+                const showThinkingForMessage = isLastAssistant && (thinking || hasThoughts);
+                const stageLabel: Record<string, string> = {
+                  planning: "Thinking",
+                  executing: "Working",
+                  verifying: "Checking",
+                  idle: "Thinking",
+                };
+                const thinkingLabel = hasThoughts && !thinking
+                  ? "Thought for a second"
+                  : thoughtLabel ?? activeToolLabel ?? stageLabel[agentStage] ?? "Thinking";
+                return (
+                  <React.Fragment key={msg.id}>
+                    {showThinkingForMessage && (
+                      <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                        className="gs-thinking-block">
+                        <button
+                          type="button"
+                          className={cn("gs-thinking-header", hasThoughts && "gs-thinking-header-clickable")}
+                          onClick={() => hasThoughts && setShowThoughts(prev => !prev)}
+                          disabled={!hasThoughts}
+                        >
+                          <span className="gs-thinking-text">{thinkingLabel}</span>
+                          {thinking && !hasThoughts && (
+                            <span className="gs-thinking-dots" aria-hidden="true">
+                              <span>.</span><span>.</span><span>.</span>
+                            </span>
+                          )}
+                          {hasThoughts && (
+                            <ChevronRight className={cn("w-3.5 h-3.5 transition-transform", showThoughts && "rotate-90")} />
+                          )}
+                        </button>
+                        <AnimatePresence>
+                          {showThoughts && hasThoughts && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: "auto", opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              transition={{ duration: 0.2, ease: "easeInOut" }}
+                              className="gs-thinking-content"
+                            >
+                              <div ref={thoughtContentRef} className="gs-thinking-content-inner">
+                                {thoughtText}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                    )}
+                    <MessageBubble message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} />
+                  </React.Fragment>
+                );
               })}
             </AnimatePresence>
 
-            {/* Thinking indicator — shows live agent reasoning from Gemini thought summaries */}
-            {thinking && (() => {
-              // Dynamic label: active tool name > stage label
-              const stageLabel: Record<string, string> = {
-                planning: "Thinking",
-                executing: "Working",
-                verifying: "Checking",
-                idle: "Thinking",
-              };
-              // Priority: thought summary title > active tool name > stage label
-              const label = thoughtLabel ?? activeToolLabel ?? stageLabel[agentStage] ?? "Thinking";
-              const hasThoughts = thoughtText.trim().length > 0;
-              return (
-                <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                  className="gs-thinking-block">
-                  {/* Header row — always visible */}
-                  <div
-                    className="gs-thinking-header"
-                    onClick={() => hasThoughts && setShowThoughts(prev => !prev)}
-                    style={{ cursor: hasThoughts ? "pointer" : "default" }}
-                  >
-                    <span className="gs-thinking-text">{label}</span>
-                    <span className="gs-thinking-dots">
-                      <span>.</span><span>.</span><span>.</span>
-                    </span>
-                    {hasThoughts && (
-                      <button
-                        type="button"
-                        className="gs-thinking-toggle"
-                        onClick={(e) => { e.stopPropagation(); setShowThoughts(prev => !prev); }}
-                      >
-                        {showThoughts ? "Hide thinking" : "Show thinking"}
-                        <ChevronRight className={cn("w-3 h-3 transition-transform", showThoughts && "rotate-90")} />
-                      </button>
-                    )}
-                  </div>
-                  {/* Collapsible thought content */}
-                  <AnimatePresence>
-                    {showThoughts && hasThoughts && (
-                      <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        transition={{ duration: 0.2, ease: "easeInOut" }}
-                        className="gs-thinking-content"
-                      >
-                        <div ref={thoughtContentRef} className="gs-thinking-content-inner">
-                          {thoughtText}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </motion.div>
-              );
-            })()}
             <div ref={bottomRef} />
           </div>
         </div>
       )}
 
-      {/* ── Suggestions chips ── */}
-      {suggestions.length > 0 && !streaming && (
-        <div className="w-full max-w-[720px] mx-auto px-[14px] pb-2 flex flex-wrap gap-2">
-          {suggestions.map((s, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => { setSuggestions([]); void sendMessage(s); }}
-              className="gs-suggestion-chip"
-            >
-              <span className="text-[11px] text-white/50 mr-1">↗</span>
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-
       {/* ── Genspark input bar ── */}
       <div className="gs-input-wrap">
-        {/* Bottom tab: Super Agent only — removed 'AI works for you 75% off' */}
-        <div className="gs-mode-tabs">
-          <button type="button" className="gs-mode-tab gs-mode-tab-active">
-            <span className="gs-mode-tab-icon" aria-hidden="true">
-              <img src="/agent-logo.png" alt="" className="w-3.5 h-3.5 object-contain" />
-            </span>
-            Super Agent
-          </button>
-        </div>
+        {/* ── Suggestions chips ── */}
+        {suggestions.length > 0 && !streaming && (
+          <div className="gs-suggestions-row">
+            {suggestions.map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => { setSuggestions([]); void sendMessage(s); }}
+                className="gs-suggestion-chip"
+              >
+                <span className="text-[11px] text-white/50 mr-1">↗</span>
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* URL paste pill */}
         {pasteUrl && !streaming && (
@@ -2146,23 +2158,45 @@ export function StudioCopilot({
                   </div>
                 )}
               </div>
-              <button
-                type="button"
-                className={cn("gs-pill-ultra", ultra && "gs-pill-ultra-active")}
-                title={ultra ? "Ultra mode ON — uses Pro model" : "Ultra mode OFF — uses default model"}
-                aria-pressed={ultra}
-                onClick={() => setUltra(u => !u)}
-              >
-                <span className="gs-pill-ultra-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
-                    <path d="M12 2 L14 9 L21 12 L14 15 L12 22 L10 15 L3 12 L10 9 Z" />
-                  </svg>
-                </span>
-                Ultra
-              </button>
             </div>
 
             <div className="gs-input-row-right">
+              <div className="gs-reasoning-control" ref={reasoningMenuRef}>
+                <button
+                  type="button"
+                  className="gs-reasoning-button"
+                  aria-haspopup="menu"
+                  aria-expanded={showReasoningMenu}
+                  title={activeReasoning.description}
+                  onClick={() => setShowReasoningMenu(v => !v)}
+                >
+                  <span>{activeReasoning.label}</span>
+                  <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", showReasoningMenu && "rotate-180")} />
+                </button>
+                {showReasoningMenu && (
+                  <div className="gs-reasoning-menu" role="menu">
+                    {REASONING_OPTIONS.map(option => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={reasoningMode === option.id}
+                        className={cn("gs-reasoning-menu-item", reasoningMode === option.id && "gs-reasoning-menu-item-active")}
+                        onClick={() => {
+                          setReasoningMode(option.id);
+                          setShowReasoningMenu(false);
+                        }}
+                      >
+                        <span className="gs-reasoning-menu-copy">
+                          <span className="gs-reasoning-menu-label">{option.label}</span>
+                          <span className="gs-reasoning-menu-desc">{option.description}</span>
+                        </span>
+                        {reasoningMode === option.id && <Check className="w-4 h-4" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               {/* Speak button: always shown; dimmed with tooltip when browser doesn't support Web Speech API */}
               <button
                 type="button"
