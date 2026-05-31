@@ -1628,8 +1628,9 @@ export function StudioCopilot({
         ...m,
         parts: m.parts.map(p =>
           p.kind === "tool_start" && !(p as any).done
-            ? { ...p, done: true, cancelled: true, progress: null }
+            ? { ...p, done: true, cancelled: true, progress: null, progressMsg: "Stopped", result: { error: "Stopped by user" } }
             : p),
+      }));
       }));
     }
     streamingAssistantIdRef.current = null;
