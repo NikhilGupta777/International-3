@@ -2940,7 +2940,7 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
     </div>
   </div>
   <script>
-    function dlTrack(url,fname){fetch(url).then(function(r){return r.blob();}).then(function(b){var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=fname;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},5000);}).catch(function(){window.open(url,'_blank');});}
+    function dlTrack(url,fname){fetch(url).then(function(r){if(!r.ok)throw new Error('download failed');return r.blob();}).then(function(b){var a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=fname;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},5000);}).catch(function(){window.open(url,'_blank');});}
   </script>
 </body>
 </html>`;
