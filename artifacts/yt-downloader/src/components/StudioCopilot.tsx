@@ -149,6 +149,8 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   compare_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Comparing subtitles", color: "text-cyan-300" },
   export_text_file: { icon: <Download className="w-3.5 h-3.5" />, label: "Exporting file", color: "text-emerald-300" },
   run_code_analysis: { icon: <Terminal className="w-3.5 h-3.5" />, label: "Code analysis", color: "text-orange-300" },
+  run_sandbox_command: { icon: <Terminal className="w-3.5 h-3.5" />, label: "Sandbox", color: "text-emerald-300" },
+  reset_sandbox: { icon: <X className="w-3.5 h-3.5" />, label: "Resetting sandbox", color: "text-red-300" },
   get_youtube_captions: { icon: <Captions className="w-3.5 h-3.5" />, label: "Getting captions", color: "text-teal-400" },
   fix_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Fixing subtitles", color: "text-amber-400" },
   cancel_job: { icon: <X className="w-3.5 h-3.5" />, label: "Cancelling job", color: "text-red-400" },
@@ -1619,7 +1621,7 @@ export function StudioCopilot({
     try {
       const resp = await fetch(`${BASE}/api/agent/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history, model: ultra ? "ultra" : "default", skills: snapshotSkills }),
+        body: JSON.stringify({ sessionId, messages: history, model: ultra ? "ultra" : "default", skills: snapshotSkills }),
         signal: abortRef.current.signal,
       });
       if (!resp.ok || !resp.body) throw new Error(`Server error: ${resp.status}`);

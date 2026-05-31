@@ -8,6 +8,7 @@
 import { Router, type Request, type Response } from "express";
 import { Modality, Type } from "@google/genai";
 import { randomUUID } from "crypto";
+import Sandbox from "e2b";
 import { setupSse } from "../lib/sse";
 import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3, readTextFromS3 } from "../lib/s3-storage";
 import { createGeminiClient, isGeminiConfigured, ensureVertexCredentials } from "../lib/gemini-client";
@@ -28,6 +29,10 @@ const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
 const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "24", 10) || 24;
 const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
+const E2B_SANDBOX_TIMEOUT_MS = Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) || 3600000;
+const E2B_COMMAND_TIMEOUT_MS = Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
+const E2B_MAX_OUTPUT_CHARS = Number.parseInt(process.env.E2B_MAX_OUTPUT_CHARS ?? "24000", 10) || 24000;
+const E2B_MAX_FILE_CHARS = Number.parseInt(process.env.E2B_MAX_FILE_CHARS ?? "120000", 10) || 120000;
 const ENABLE_NATIVE_AGENT_SEARCH = !/^(0|false|no|off)$/i.test(
   String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "true").trim(),
 );
@@ -626,7 +631,7 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "run_code_analysis",
-    description: "Use Gemini code execution only for CSV/JSON/text calculations, tables, simple charts, statistics, and data analysis. Do not use this tool just to write or generate code; answer with a fenced code block or use export_text_file when the user asks for a downloadable file.",
+    description: "Run sandboxed code for CSV/JSON/text calculations, tables, simple charts, statistics, and data analysis. Prefer this over mental math when execution is useful. Do not use this tool just to write or generate code; answer directly or use export_text_file when the user asks for a downloadable file.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -634,6 +639,45 @@ const STUDIO_TOOLS: any[] = [
         data: { type: Type.STRING, description: "CSV/JSON/text data. If omitted, use latest uploaded text file or context." },
       },
       required: ["task"],
+    },
+  },
+  {
+    name: "run_sandbox_command",
+    description: "Run an unrestricted Linux shell command inside this chat's isolated E2B sandbox. Use for real code execution, package installs, filesystem work, public internet fetches, scripts, data processing, and inspecting files created in earlier sandbox calls. This cannot access the production server filesystem.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        command: { type: Type.STRING, description: "Shell command to execute inside the sandbox, e.g. python3 script.py, pip install pandas, ls -la, curl https://example.com." },
+        cwd: { type: Type.STRING, description: "Working directory inside the sandbox. Default: /home/user." },
+        timeoutMs: { type: Type.NUMBER, description: "Command timeout in milliseconds. Default is server configured; max 10 minutes." },
+        writeFiles: {
+          type: Type.ARRAY,
+          description: "Optional files to write before running the command.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              path: { type: Type.STRING, description: "Absolute sandbox path, e.g. /home/user/input.csv." },
+              content: { type: Type.STRING, description: "Text content to write." },
+            },
+            required: ["path", "content"],
+          },
+        },
+        readFiles: {
+          type: Type.ARRAY,
+          description: "Optional text files to read after the command finishes.",
+          items: { type: Type.STRING },
+        },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "reset_sandbox",
+    description: "Destroy this chat's current E2B sandbox and start fresh on the next sandbox command. Use only when the user asks to reset/clear/restart the sandbox.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+      required: [],
     },
   },
   {
@@ -743,8 +787,10 @@ When the user asks you to create code, HTML, CSS, JavaScript, Python, JSON, Mark
 - Put only the artifact content inside the canvas tags. Do not wrap it in markdown fences inside the canvas.
 - NEVER output code in markdown fences (triple backticks) in chat. ALWAYS use the <canvas> protocol above instead. This is critical — code in backticks breaks the UI.
 - Keep ordinary chat outside canvas short, for example: "I'll create this in canvas now." and a brief final note.
-- Do not call run_code_analysis just to generate code or text.
-- Use run_code_analysis only when you must execute calculations or analyze supplied data.
+- Do not call run_code_analysis or run_sandbox_command just to generate code or text.
+- Use run_code_analysis for supplied data calculations/statistics.
+- Use run_sandbox_command when the user wants a ChatGPT-like sandbox: execute code, install packages, create/read files, inspect outputs, fetch public internet resources, or run shell commands in an isolated Linux environment.
+- The sandbox is persistent per chat session and isolated from the production server. You may be broad inside the sandbox, but never claim it can access local app files unless the user uploaded/provided them.
 - If the user asks to export, download, save, or create a file, call export_text_file with the same complete artifact content.
 - For previewable web artifacts, prefer a single complete HTML file with inline CSS/JS unless the user explicitly asks for multiple files.
 
@@ -828,6 +874,8 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "compare two subtitle files" | compare_subtitles |
 | "export this as file / download this text" | export_text_file |
 | "calculate/analyze CSV/JSON/table/chart" | run_code_analysis |
+| "run code / use sandbox / install package / execute shell / create files in sandbox" | run_sandbox_command |
+| "reset/clear/restart sandbox" | reset_sandbox |
 | "stop the job / cancel" | cancel_job with the jobId from context |
 | "is my job done / progress" | check_job_status |
 | User explicitly says "open the X tab" | navigate_to_tab |
@@ -920,6 +968,129 @@ function buildInternalHeaders(req: any): Record<string, string> {
 }
 
 // ── Tool executor ─────────────────────────────────────────────────────────
+// E2B sandboxes are keyed by the browser-side chat session. This gives the
+// agent ChatGPT-like continuity without letting commands touch the app host.
+const e2bSandboxBySession = new Map<string, string>();
+
+function e2bConfigured(): boolean {
+  return Boolean(process.env.E2B_API_KEY?.trim());
+}
+
+function sandboxSessionKey(req: any): string {
+  const raw = String(req.body?.sessionId ?? "").trim();
+  return raw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 96) || `anon-${randomUUID()}`;
+}
+
+async function getChatSandbox(req: any): Promise<any> {
+  if (!e2bConfigured()) {
+    throw new Error("E2B sandbox is not configured. Set E2B_API_KEY on the API server.");
+  }
+
+  const sessionKey = sandboxSessionKey(req);
+  const existingId = e2bSandboxBySession.get(sessionKey);
+  if (existingId) {
+    try {
+      const connected = await Sandbox.connect(existingId, { timeoutMs: E2B_SANDBOX_TIMEOUT_MS });
+      await connected.setTimeout(E2B_SANDBOX_TIMEOUT_MS).catch(() => {});
+      return connected;
+    } catch (err) {
+      logger.warn({ err, sessionKey, existingId }, "Could not reconnect E2B sandbox; creating a new one");
+      e2bSandboxBySession.delete(sessionKey);
+    }
+  }
+
+  const sandbox = await Sandbox.create({
+    timeoutMs: E2B_SANDBOX_TIMEOUT_MS,
+    metadata: {
+      app: "videomaking-superagent",
+      sessionId: sessionKey,
+    },
+  });
+  e2bSandboxBySession.set(sessionKey, sandbox.sandboxId);
+  return sandbox;
+}
+
+async function resetChatSandbox(req: any): Promise<{ reset: boolean; sandboxId?: string }> {
+  const sessionKey = sandboxSessionKey(req);
+  const sandboxId = e2bSandboxBySession.get(sessionKey);
+  e2bSandboxBySession.delete(sessionKey);
+  if (sandboxId && e2bConfigured()) {
+    await Sandbox.kill(sandboxId).catch(err => logger.warn({ err, sandboxId }, "Could not kill E2B sandbox"));
+  }
+  return { reset: true, sandboxId };
+}
+
+function truncateToolText(value: string, limit = E2B_MAX_OUTPUT_CHARS): string {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}\n\n[truncated ${value.length - limit} chars]`;
+}
+
+function normalizeSandboxPath(value: unknown, fallback = "/home/user"): string {
+  const path = String(value ?? fallback).trim() || fallback;
+  if (!path.startsWith("/")) throw new Error(`Sandbox paths must be absolute: ${path}`);
+  return path.replace(/\0/g, "");
+}
+
+async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: any, runId?: string, toolId?: string, name = "run_sandbox_command") {
+  const command = String(args.command ?? "").trim();
+  if (!command) throw new Error("command is required.");
+
+  const sandbox = await getChatSandbox(req);
+  const cwd = normalizeSandboxPath(args.cwd, "/home/user");
+  const timeoutMsRaw = Number(args.timeoutMs ?? E2B_COMMAND_TIMEOUT_MS);
+  const timeoutMs = Math.max(1000, Math.min(Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : E2B_COMMAND_TIMEOUT_MS, 10 * 60 * 1000));
+
+  const writeFiles = Array.isArray(args.writeFiles) ? args.writeFiles : [];
+  for (const file of writeFiles.slice(0, 12)) {
+    const path = normalizeSandboxPath(file?.path);
+    const content = String(file?.content ?? "");
+    if (content.length > E2B_MAX_FILE_CHARS) throw new Error(`Sandbox file too large: ${path}`);
+    await sandbox.files.write(path, content);
+  }
+
+  let liveOut = "";
+  let liveErr = "";
+  sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Running in sandbox: ${command.slice(0, 120)}` });
+  const result = await sandbox.commands.run(command, {
+    cwd,
+    timeoutMs,
+    onStdout: (data: string) => { liveOut += data; },
+    onStderr: (data: string) => { liveErr += data; },
+  });
+
+  const readFiles = Array.isArray(args.readFiles) ? args.readFiles : [];
+  const files: Array<{ path: string; content: string }> = [];
+  for (const rawPath of readFiles.slice(0, 8)) {
+    const path = normalizeSandboxPath(rawPath);
+    const content = await sandbox.files.read(path, { format: "text" });
+    files.push({ path, content: truncateToolText(String(content), E2B_MAX_FILE_CHARS) });
+  }
+
+  const stdout = truncateToolText(String(result.stdout || liveOut || ""));
+  const stderr = truncateToolText(String(result.stderr || liveErr || ""));
+  const summary = [
+    `$ ${command}`,
+    `exitCode: ${result.exitCode}`,
+    stdout ? `\nstdout:\n${stdout}` : "",
+    stderr ? `\nstderr:\n${stderr}` : "",
+    files.length ? `\nfiles:\n${files.map(f => `--- ${f.path} ---\n${f.content}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n");
+
+  return {
+    result: {
+      sandbox: "e2b",
+      sandboxId: sandbox.sandboxId,
+      cwd,
+      exitCode: result.exitCode,
+      error: result.error,
+      stdout,
+      stderr,
+      files,
+    },
+    artifact: { artifactType: "text", label: "Sandbox Output", content: summary },
+  };
+}
+
 function latestImageAttachment(req: any): { data: string; mimeType: string; name: string } | null {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -2185,7 +2356,54 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       if (!data) throw new Error("Provide data or attach a CSV/JSON/text file first.");
       const task = String(args.task ?? "Analyze this data.").trim();
       logTool("Running code analysis", { task });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Running code analysis..." });
+      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: e2bConfigured() ? "Running analysis in sandbox..." : "Running code analysis..." });
+      if (e2bConfigured()) {
+        const script = `from pathlib import Path
+import json
+
+data = Path('/home/user/input.txt').read_text(errors='replace')
+task = Path('/home/user/task.txt').read_text(errors='replace').strip()
+print('Task:', task)
+print('\\nData preview:')
+print(data[:2000])
+print('\\nAnalysis:')
+lines = [line for line in data.splitlines() if line.strip()]
+print(f'Characters: {len(data)}')
+print(f'Non-empty lines: {len(lines)}')
+try:
+    import pandas as pd
+    from io import StringIO
+    df = pd.read_csv(StringIO(data))
+    print(f'CSV rows: {len(df)}, columns: {len(df.columns)}')
+    print('Columns:', ', '.join(map(str, df.columns)))
+    numeric = df.select_dtypes(include='number')
+    if not numeric.empty:
+        print('\\nNumeric summary:')
+        print(numeric.describe().to_string())
+    else:
+        print('No numeric columns detected by pandas.')
+except Exception as exc:
+    try:
+        obj = json.loads(data)
+        print('JSON parsed successfully.')
+        if isinstance(obj, list):
+            print(f'JSON list length: {len(obj)}')
+        elif isinstance(obj, dict):
+            print(f'JSON keys: {list(obj.keys())[:40]}')
+    except Exception:
+        print('Could not auto-parse as CSV/JSON:', exc)
+`;
+        return await runE2BSandboxCommand(req, {
+          command: "python3 /home/user/analysis.py",
+          cwd: "/home/user",
+          timeoutMs: Math.min(E2B_COMMAND_TIMEOUT_MS, 180000),
+          writeFiles: [
+            { path: "/home/user/input.txt", content: data.slice(0, E2B_MAX_FILE_CHARS) },
+            { path: "/home/user/task.txt", content: task },
+            { path: "/home/user/analysis.py", content: script },
+          ],
+        }, res, runId, toolId, name);
+      }
       const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
@@ -2200,6 +2418,18 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       } as any);
       const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
       return { result: { content }, artifact: { artifactType: "text", label: "Code Analysis", content } };
+    }
+
+    case "run_sandbox_command": {
+      return await runE2BSandboxCommand(req, args, res, runId, toolId, name);
+    }
+
+    case "reset_sandbox": {
+      const result = await resetChatSandbox(req);
+      return {
+        result,
+        artifact: { artifactType: "text", label: "Sandbox Reset", content: "Sandbox reset. The next sandbox command will start a fresh isolated environment." },
+      };
     }
 
     case "analyze_youtube_video": {
