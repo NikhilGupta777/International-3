@@ -525,7 +525,7 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
   const preview = content.length > 3200 ? `${content.slice(0, 3200)}\n\n...` : content;
   return (
     <>
-      <div className="rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/10 via-white/[0.045] to-emerald-400/8 overflow-hidden shadow-[0_16px_60px_rgba(8,145,178,0.10)]">
+      <div className="agent-artifact-card agent-artifact-text rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/10 via-white/[0.045] to-emerald-400/8 overflow-hidden shadow-[0_16px_60px_rgba(8,145,178,0.10)]">
         <div className="flex items-start gap-3 px-3 py-3 border-b border-white/8">
           <div className="mt-0.5 p-2 rounded-xl bg-cyan-400/12 border border-cyan-300/15">
             <SquarePen className="w-4 h-4 text-cyan-200" />
@@ -677,7 +677,7 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
   };
 
   return (
-    <div className="rounded-2xl border border-purple-500/25 bg-purple-500/8 overflow-hidden">
+    <div className="agent-artifact-card agent-artifact-music rounded-2xl border border-purple-500/25 bg-purple-500/8 overflow-hidden">
       {part.imageUrl && (
         <div className="p-3 pb-0">
           <img src={part.imageUrl} alt={part.label}
@@ -718,7 +718,7 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
 function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artifact" }; onNavigate?: (tab: string) => void }) {
   if (part.artifactType === "image" && part.imageUrl) {
     return (
-      <div className="rounded-2xl border border-pink-500/25 bg-pink-500/8 overflow-hidden">
+      <div className="agent-artifact-card agent-artifact-image rounded-2xl border border-pink-500/25 bg-pink-500/8 overflow-hidden">
         <div className="p-3">
           <img src={part.imageUrl} alt={part.label} className="w-full max-h-[360px] object-contain rounded-xl border border-white/10 bg-black/20" />
         </div>
@@ -736,7 +736,7 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
   }
   if (part.artifactType === "download" && part.downloadUrl) {
     return (
-      <div className="rounded-2xl border border-green-500/25 bg-green-500/8 overflow-hidden">
+      <div className="agent-artifact-card agent-artifact-download rounded-2xl border border-green-500/25 bg-green-500/8 overflow-hidden">
         <div className="flex items-center gap-3 px-4 py-3">
           <div className="p-2 rounded-xl bg-green-500/15 shrink-0"><CheckCircle className="w-5 h-5 text-green-400" /></div>
           <div className="flex-1 min-w-0">
@@ -763,7 +763,7 @@ function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artif
     return <TextArtifact label={part.label} content={part.content ?? ""} downloadUrl={part.downloadUrl} language={part.language} live={part.live} />;
   }
   return (
-    <div className="rounded-xl border border-primary/30 bg-primary/8 px-3 py-2.5 flex items-center gap-3">
+    <div className="agent-artifact-card rounded-xl border border-primary/30 bg-primary/8 px-3 py-2.5 flex items-center gap-3">
       <div className="p-1.5 rounded-lg bg-primary/15">{part.tab ? (TAB_ICONS[part.tab] ?? <Bot className="w-4 h-4" />) : <CheckCircle className="w-4 h-4" />}</div>
       <div className="flex-1 min-w-0">
         <p className="text-xs font-semibold text-white/90 truncate">{part.label}</p>
