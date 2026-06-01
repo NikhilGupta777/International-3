@@ -6,7 +6,7 @@ import {
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
   ArrowLeft, Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
   MoreVertical,
-  ImagePlus, Music2, Terminal, Eye, Volume2,
+  ImagePlus, Music2, Terminal, Eye, Volume2, Film,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -173,6 +173,11 @@ const STARTERS = [
   { icon: <Download className="w-4 h-4" />, text: "Download a YouTube video in 1080p" },
   { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
+
+function skillIconNode(icon: string) {
+  if (icon === "Film") return <Film className="w-4 h-4" />;
+  return <Sparkles className="w-4 h-4" />;
+}
 
 // ── Client-side tag stripper ──────────────────────────────────────────────────
 function clientStripTags(text: string): string {
@@ -1075,6 +1080,21 @@ export function StudioCopilot({
     setActiveSkills(next);
   }, []);
 
+  const consumeLeadingSkillCommand = useCallback((rawText: string) => {
+    const match = rawText.trimStart().match(/^\/([a-z0-9-]+)(?:\s+|$)/i);
+    if (!match) return { text: rawText, skills: activeSkillsRef.current, consumed: false };
+
+    const skillId = match[1].toLowerCase();
+    const skill = availableSkills.find(s => s.id.toLowerCase() === skillId);
+    if (!skill) return { text: rawText, skills: activeSkillsRef.current, consumed: false };
+
+    const nextSkills = activeSkillsRef.current.includes(skill.id)
+      ? activeSkillsRef.current
+      : [...activeSkillsRef.current, skill.id];
+    const text = rawText.trimStart().slice(match[0].length).trimStart();
+    return { text, skills: nextSkills, consumed: true };
+  }, [availableSkills]);
+
   const [pendingAttachments, setPendingAttachments] = useState<Array<{
     type: "image" | "video" | "audio" | "document";
     name: string;
@@ -1271,10 +1291,26 @@ export function StudioCopilot({
 
   const sendMessage = useCallback(async (text: string, attachmentsArg?: Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>) => {
     const snapshotAttachments = attachmentsArg ?? pendingAttachmentsRef.current;
-    const snapshotSkills = activeSkillsRef.current;
-    if ((!text.trim() && snapshotAttachments.length === 0) || streaming) return;
+    const parsedCommand = consumeLeadingSkillCommand(text);
+    const messageText = parsedCommand.text;
+    const snapshotSkills = parsedCommand.skills;
+    if (streaming) return;
+    if (!messageText.trim() && snapshotAttachments.length === 0) {
+      if (parsedCommand.consumed) {
+        activeSkillsRef.current = snapshotSkills;
+        setActiveSkills(snapshotSkills);
+        setInput("");
+        setShowSlashMenu(false);
+        setSlashQuery("");
+      }
+      return;
+    }
     const sessionId = ensureSession();
     setInput("");
+    activeSkillsRef.current = snapshotSkills;
+    setActiveSkills(snapshotSkills);
+    setShowSlashMenu(false);
+    setSlashQuery("");
     // Keep preview object URLs alive here because persisted message bubbles and retry flows
     // may still reference `previewUrl` after send. Revoke them only when those consumers are removed.
     setPendingAttachments([]);
@@ -1283,7 +1319,7 @@ export function StudioCopilot({
     const assistantMsgId = crypto.randomUUID();
 
     // Build user message parts — include image previews so they show in the bubble
-    const userParts: MessagePart[] = [{ kind: "text", content: text }];
+    const userParts: MessagePart[] = [{ kind: "text", content: messageText }];
     for (const att of snapshotAttachments) {
       if (att.type === "image" && att.previewUrl) {
         userParts.push({ kind: "image", previewUrl: att.previewUrl, name: att.name });
@@ -1312,7 +1348,7 @@ export function StudioCopilot({
     setActiveToolLabel(null);
     setThoughtLabel(null);
     setPasteUrl(null); // dismiss paste pill when message is sent
-    lastUserTextRef.current = text; // track for retry
+    lastUserTextRef.current = messageText; // track for retry
     lastUserAttachmentsRef.current = snapshotAttachments;
     streamingAssistantIdRef.current = assistantMsgId; // track for Stop
     abortRef.current = new AbortController();
@@ -1687,7 +1723,7 @@ export function StudioCopilot({
       setAgentStage("idle");
       streamingAssistantIdRef.current = null;
     }
-  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg]);
+  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg, consumeLeadingSkillCommand]);
 
   // Consume incoming pendingPrompt (sent from home screen)
   const consumedPromptRef = useRef<string | null>(null);
@@ -2095,7 +2131,7 @@ export function StudioCopilot({
                   >
                     <div className="gs-slash-menu-item-left">
                       <div className="gs-slash-menu-item-icon">
-                        <Sparkles className="w-4 h-4" />
+                        {skillIconNode(skill.icon)}
                       </div>
                       <div>
                         <div className="gs-slash-menu-item-name">
@@ -2168,7 +2204,7 @@ export function StudioCopilot({
                 if (file) await handleFileUpload({ target: { files: [file] } } as any);
               }
             }}
-            placeholder={activeSkills.length > 0 ? "" : "Ask anything, create anything"}
+            placeholder={activeSkills.length > 0 ? "" : "Wat u want?"}
             rows={1}
             style={{ resize: "none", overflow: "hidden", minHeight: 28 }}
           />

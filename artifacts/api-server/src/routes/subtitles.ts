@@ -15,7 +15,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
-import { createGeminiClient, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
+import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
@@ -153,6 +153,11 @@ const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
 // ── AssemblyAI — used for audio > 10 minutes ─────────────────────────────────
 const ASSEMBLYAI_API_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
 const ASSEMBLYAI_THRESHOLD_SECS = 600; // 10 minutes
+const SUBTITLES_GEMINI_VIDEO_ENABLED = envBool(process.env.SUBTITLES_GEMINI_VIDEO_ENABLED, true);
+const SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS = Math.max(
+  60,
+  Number.parseInt(process.env.SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS ?? "900", 10) || 900,
+);
 const SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(
@@ -1144,6 +1149,10 @@ function isAiConfigured(): boolean {
 
 // 5-minute per-key timeout — keeps key rotation fast; generous enough for large audio
 const GEMINI_TIMEOUT_MS = 5 * 60 * 1000;
+const SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS ?? "180000", 10) || 180_000,
+);
 
 function getGenAI(): GoogleGenAI | null {
   if (isVertexGeminiEnabled()) {
@@ -1179,6 +1188,22 @@ function getAllPersonalGenAIClients(): GoogleGenAI[] {
     .map((apiKey) => createGeminiClient({ apiKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } }));
 }
 
+function getSubtitleVideoGenAIClients(): Array<{ client: GoogleGenAI; keyLabel: string }> {
+  const clients: Array<{ client: GoogleGenAI; keyLabel: string }> = [];
+  const apiKeyClients = getAllPersonalGeminiKeys().map((apiKey, index) => ({
+    client: new GoogleGenAI({ apiKey, vertexai: false, httpOptions: { timeout: SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS } }),
+    keyLabel: `api-key ${index + 1}`,
+  }));
+
+  if (isVertexGeminiEnabled()) {
+    clients.push(...apiKeyClients);
+    clients.push({ client: createGeminiClient({ httpOptions: { timeout: SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS } }), keyLabel: "vertex" });
+    return clients;
+  }
+
+  return apiKeyClients;
+}
+
 function isGeminiRetryableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
   return /resource_exhausted|quota|429|rate.?limit|unavailable|503|deadline|timeout|internal|500|overloaded|try again later/i.test(msg);
@@ -1201,10 +1226,84 @@ const KEY_ROTATION_MODELS = [
   "gemini-3.5-flash",
 ];
 
+function csvModels(value: string | undefined, fallback: string[]): string[] {
+  const parsed = (value ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  return parsed.length ? parsed : fallback;
+}
+
+const VIDEO_TRANSCRIPTION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_TRANSCRIPTION_MODELS, [
+  "gemini-3.5-flash",
+  "gemini-2.5-flash",
+]);
+
+const VIDEO_VERIFICATION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_VERIFICATION_MODELS, [
+  "gemini-3.1-pro-preview",
+  "gemini-3-pro-preview",
+  "gemini-3.5-flash",
+  "gemini-2.5-flash",
+]);
+
+async function generateWithPreferredModels(
+  models: string[],
+  requestFactory: (model: string) => any,
+  label: string,
+): Promise<string> {
+  if (isVertexGeminiEnabled()) {
+    await ensureVertexCredentials();
+  }
+  const clients = getSubtitleVideoGenAIClients();
+  if (clients.length === 0) {
+    throw new Error("No Gemini API key or Vertex client configured - add Gemini credentials");
+  }
+
+  let lastErr: unknown;
+  for (const model of models) {
+    for (let i = 0; i < clients.length; i++) {
+      const { client, keyLabel } = clients[i];
+      try {
+        const generation = client.models.generateContent(requestFactory(model));
+        generation.catch(() => {});
+        const result = await withTimeout(
+          generation,
+          SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS,
+          `${label} timed out on ${keyLabel} ${model}`,
+        );
+        logger.info({ model, keyLabel, label }, `${label} completed`);
+        return result.text?.trim() ?? "";
+      } catch (err) {
+        lastErr = err;
+        if (isGeminiRetryableError(err)) {
+          logger.warn({ model, keyLabel, label }, `${label} retryable failure - trying next Gemini client/model`);
+        } else {
+          logger.warn({ err, model, keyLabel, label }, `${label} failed - trying next Gemini client/model`);
+        }
+      }
+    }
+  }
+
+  throw lastErr instanceof Error ? lastErr : new Error(`${label} failed on all configured Gemini models`);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<T>((_resolve, reject) => {
+    timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeout) clearTimeout(timeout);
+  });
+}
+
 async function generateWithKeyRotation(
   requestFactory: (model: string) => any,
   label: string,
 ): Promise<string> {
+  if (isVertexGeminiEnabled()) {
+    await ensureVertexCredentials();
+  }
   const clients = getAllPersonalGenAIClients();
   if (clients.length === 0) {
     throw new Error("No Gemini API key configured — add GEMINI_API_KEY");
@@ -1363,6 +1462,83 @@ Speech that starts at one
 minute four seconds exactly here.
 
 Now transcribe the ENTIRE audio from beginning to end:`;
+}
+
+function buildVideoSrtPrompt(language: string, durationSrt: string): string {
+  const langNote =
+    language === "auto"
+      ? "Detect the spoken language and transcribe it in the original language spoken. Do not translate."
+      : `The spoken language is ${language}. Transcribe it in ${language} exactly as spoken. Do not translate.`;
+  const durationNote =
+    durationSrt && durationSrt !== "99:59:59"
+      ? `The video is about ${durationSrt} long. All timestamps must be inside that duration.`
+      : "Watch and listen to the full video from start to finish before writing the subtitles.";
+  const scriptRules = buildNativeScriptRules(language);
+
+  return `You are a professional subtitle creator. Watch and listen to the entire YouTube video, then return one complete SRT subtitle file.
+
+${langNote}
+${scriptRules}
+
+${durationNote}
+
+TIMING RULES:
+- Use the actual video timeline. Start timestamps at 00:00:00,000.
+- Every timestamp must use HH:MM:SS,mmm --> HH:MM:SS,mmm.
+- Use comma milliseconds, not dot milliseconds.
+- Keep subtitle timing close to the spoken words.
+- Split long speech naturally. Most entries should be 1-4 seconds.
+
+TEXT RULES:
+- Transcribe all speech. Do not summarize.
+- Do not add non-speech labels like [music], [silence], [applause], or [inaudible].
+- Keep native scripts for Indian languages; do not romanize unless the speaker actually says Latin-script words.
+- HARD SEGMENT LIMIT: every subtitle entry must contain 1-8 words, with 3-6 words preferred.
+- If one spoken phrase has more than 8 words, split it into multiple SRT entries and distribute the timestamps proportionally.
+- Never put a full sentence or paragraph into one subtitle entry when it can be split.
+
+OUTPUT RULES:
+- Return only valid SRT.
+- No markdown fences.
+- No explanations before or after the SRT.`;
+}
+
+function buildVideoSrtVerifyPrompt(args: {
+  draftSrt: string;
+  language: string;
+  durationSrt: string;
+  translateTo?: string;
+  originalSrt?: string;
+}): string {
+  const target =
+    args.translateTo && args.translateTo !== "none"
+      ? `The final subtitle text must be accurate ${args.translateTo} translation of the video speech.`
+      : args.language === "auto"
+        ? "The final subtitle text must stay in the original spoken language."
+        : `The final subtitle text must stay in ${args.language}.`;
+  const originalBlock = args.originalSrt
+    ? `\nORIGINAL-LANGUAGE SRT, for translation alignment only:\n---\n${args.originalSrt}\n---\n`
+    : "";
+
+  return `You are a senior subtitle QA editor. Watch and listen to the same YouTube video and verify this SRT against it.
+
+${target}
+${args.durationSrt && args.durationSrt !== "99:59:59" ? `The video is about ${args.durationSrt} long.` : ""}
+
+Fix only real issues:
+- Incorrect or missing words.
+- Bad translation choices or phrases.
+- Timestamp format issues.
+- Timings that are clearly far from the speech.
+- Entries that are too long to read.
+- HARD SEGMENT LIMIT: every final subtitle entry must contain 1-8 words, with 3-6 words preferred.
+
+Keep good timestamps and good text unchanged. Do not invent content. Return only the final corrected SRT.
+${originalBlock}
+DRAFT SRT:
+---
+${args.draftSrt}
+---`;
 }
 
 function buildCorrectionPrompt(rawSrt: string, language: string, durationSrt: string): string {
@@ -1579,6 +1755,48 @@ function tsToMs(ts: string): number {
   return (parseInt(m[1]) * 3600 + parseInt(m[2]) * 60 + parseInt(m[3])) * 1000 + parseInt(m[4]);
 }
 
+function msToTs(ms: number): string {
+  const safeMs = Math.max(0, Math.round(ms));
+  const hh = Math.floor(safeMs / 3_600_000);
+  const mm = Math.floor((safeMs % 3_600_000) / 60_000);
+  const ss = Math.floor((safeMs % 60_000) / 1000);
+  const mmm = safeMs % 1000;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")},${String(mmm).padStart(3, "0")}`;
+}
+
+function splitLongSrtEntries(srt: string, maxWords = 8): string {
+  const output: string[] = [];
+  const entries = srt.trim().split(/\n\n+/).filter(Boolean);
+
+  for (const entry of entries) {
+    const lines = entry.trim().split("\n");
+    if (lines.length < 3) continue;
+    const tsMatch = lines[1].match(/^(.+?)\s*-->\s*(.+)$/);
+    if (!tsMatch) continue;
+    const startMs = tsToMs(tsMatch[1].trim());
+    const endMs = tsToMs(tsMatch[2].trim());
+    const text = lines.slice(2).join(" ").trim();
+    const words = text.split(/\s+/).filter(Boolean);
+
+    if (startMs < 0 || endMs <= startMs || words.length <= maxWords) {
+      output.push(`${output.length + 1}\n${lines[1].trim()}\n${text}`);
+      continue;
+    }
+
+    const chunkCount = Math.ceil(words.length / maxWords);
+    const chunkDuration = (endMs - startMs) / chunkCount;
+    for (let index = 0; index < chunkCount; index += 1) {
+      const chunkWords = words.slice(index * maxWords, (index + 1) * maxWords);
+      if (!chunkWords.length) continue;
+      const chunkStart = startMs + chunkDuration * index;
+      const chunkEnd = index === chunkCount - 1 ? endMs : startMs + chunkDuration * (index + 1);
+      output.push(`${output.length + 1}\n${msToTs(chunkStart)} --> ${msToTs(chunkEnd)}\n${chunkWords.join(" ")}`);
+    }
+  }
+
+  return output.join("\n\n") + "\n";
+}
+
 // ── Strip hallucinated / garbage entries ──────────────────────────────────────
 function cleanupHallucinatedEntries(srt: string): string {
   const entries = srt.trim().split(/\n\n+/);
@@ -1749,6 +1967,37 @@ function stripFences(text: string): string {
   // Remove closing fence
   s = s.replace(/\n```[ \t]*$/i, "");
   return s.trim();
+}
+
+function extractSrtContent(text: string): string {
+  const cleaned = stripFences(text);
+  const lines = cleaned.split("\n");
+  const firstIndex = lines.findIndex((line, index) =>
+    /^\d+$/.test(line.trim()) &&
+    index + 1 < lines.length &&
+    /\d{1,2}:\d{2}(?::\d{2})?[,\.]\d{1,3}\s*-->\s*\d{1,2}:\d{2}(?::\d{2})?[,\.]\d{1,3}/.test(lines[index + 1] ?? ""),
+  );
+  if (firstIndex < 0) return cleaned;
+
+  let lastIndex = lines.length - 1;
+  for (let index = lines.length - 1; index >= firstIndex; index -= 1) {
+    if (/\d{1,2}:\d{2}(?::\d{2})?[,\.]\d{1,3}\s*-->\s*\d{1,2}:\d{2}(?::\d{2})?[,\.]\d{1,3}/.test(lines[index])) {
+      lastIndex = Math.min(lines.length - 1, index + 4);
+      break;
+    }
+  }
+
+  return lines.slice(firstIndex, lastIndex + 1).join("\n").trim();
+}
+
+function cleanGeneratedSrt(raw: string, durationSecs?: number): string {
+  const normalized = normalizeSrtTimestamps(extractSrtContent(raw));
+  const deduped = cleanupHallucinatedEntries(normalized);
+  const strictFiltered = strictFilterMalformedTimestamps(deduped);
+  const bounded = durationSecs && durationSecs > 0
+    ? filterOutOfBoundsEntries(strictFiltered, durationSecs)
+    : strictFiltered;
+  return splitLongSrtEntries(bounded);
 }
 
 // ── Preprocess audio with ffmpeg (16kHz mono WAV) ────────────────────────────
@@ -1997,6 +2246,167 @@ Return the fully corrected SRT:`;
 }
 
 // ── Core processing function ─────────────────────────────────────────────────
+async function processYoutubeVideoSrt(
+  jobId: string,
+  videoUrl: string,
+  language: string,
+  filename: string,
+  translateTo?: string,
+  durationSecs?: number | null,
+): Promise<boolean> {
+  const job = jobs.get(jobId);
+  if (!job) return false;
+  if (!SUBTITLES_GEMINI_VIDEO_ENABLED) return false;
+  if (durationSecs != null && durationSecs > SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS) return false;
+
+  const durationSrt = durationSecs && durationSecs > 0 ? secondsToSrtTime(durationSecs) : "99:59:59";
+  try {
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+    job.status = "generating";
+    job.progressPct = 20;
+    job.message = "Gemini is watching the video and writing subtitles...";
+    job.durationSecs = durationSecs ?? undefined;
+
+    const videoPart = { fileData: { mimeType: "video/mp4", fileUri: videoUrl } };
+    const rawSrt = await generateWithPreferredModels(
+      VIDEO_TRANSCRIPTION_MODELS,
+      (model) => ({
+        model,
+        contents: [{ role: "user", parts: [videoPart, { text: buildVideoSrtPrompt(language, durationSrt) }] }],
+        config: {
+          maxOutputTokens: 65536,
+          thinkingConfig: { thinkingBudget: -1 },
+        },
+      }),
+      "YouTube video subtitle transcription",
+    );
+
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+    job.status = "correcting";
+    job.progressPct = 60;
+    job.message = "Cleaning subtitle timing...";
+
+    let correctedFinalSrt = cleanGeneratedSrt(rawSrt, durationSecs ?? undefined);
+    if (!validateSrt(correctedFinalSrt)) {
+      throw new Error("Gemini returned invalid video subtitles");
+    }
+
+    if (translateTo && translateTo !== "none") {
+      job.originalSrt = correctedFinalSrt;
+      job.originalFilename = filename.replace(/\.srt$/i, "-original.srt");
+      job.status = "translating";
+      job.progressPct = 78;
+      job.message = `Translating subtitles to ${translateTo}...`;
+
+      const translatedRaw = await generateWithPreferredModels(
+        VIDEO_TRANSCRIPTION_MODELS,
+        (model) => ({
+          model,
+          contents: [{ role: "user", parts: [{ text: buildTranslationPrompt(correctedFinalSrt, language, translateTo) }] }],
+          config: {
+            maxOutputTokens: 65536,
+            thinkingConfig: { thinkingBudget: -1 },
+          },
+        }),
+        "YouTube subtitle translation",
+      );
+      const translatedSrt = restoreTimestamps(
+        correctedFinalSrt,
+        extractSrtContent(translatedRaw.length > 10 ? translatedRaw : correctedFinalSrt),
+      );
+
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+      job.status = "verifying";
+      job.progressPct = 92;
+      job.message = `Rewatching video to verify ${translateTo} subtitles...`;
+
+      try {
+        const verifiedRaw = await generateWithPreferredModels(
+          VIDEO_VERIFICATION_MODELS,
+          (model) => ({
+            model,
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  videoPart,
+                  {
+                    text: buildVideoSrtVerifyPrompt({
+                      draftSrt: translatedSrt,
+                      originalSrt: correctedFinalSrt,
+                      language,
+                      translateTo,
+                      durationSrt,
+                    }),
+                  },
+                ],
+              },
+            ],
+            config: {
+              maxOutputTokens: 65536,
+              thinkingConfig: { thinkingBudget: 8192 },
+            },
+          }),
+          "YouTube translated subtitle verification",
+        );
+        const verifiedSrt = restoreTimestamps(
+          correctedFinalSrt,
+          extractSrtContent(verifiedRaw.length > 10 ? verifiedRaw : translatedSrt),
+        );
+        correctedFinalSrt = cleanGeneratedSrt(verifiedSrt, durationSecs ?? undefined);
+      } catch (err) {
+        logger.warn({ err, jobId }, "Video translation verification failed; using cleaned translated subtitles");
+        correctedFinalSrt = cleanGeneratedSrt(translatedSrt, durationSecs ?? undefined);
+      }
+    } else {
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+      job.status = "verifying";
+      job.progressPct = 88;
+      job.message = "Rewatching video to verify subtitles...";
+
+      try {
+        const verifiedRaw = await generateWithPreferredModels(
+          VIDEO_VERIFICATION_MODELS,
+          (model) => ({
+            model,
+            contents: [
+              {
+                role: "user",
+                parts: [
+                  videoPart,
+                  { text: buildVideoSrtVerifyPrompt({ draftSrt: correctedFinalSrt, language, durationSrt }) },
+                ],
+              },
+            ],
+            config: {
+              maxOutputTokens: 65536,
+              thinkingConfig: { thinkingBudget: 8192 },
+            },
+          }),
+          "YouTube subtitle verification",
+        );
+        correctedFinalSrt = cleanGeneratedSrt(verifiedRaw.length > 10 ? verifiedRaw : correctedFinalSrt, durationSecs ?? undefined);
+      } catch (err) {
+        logger.warn({ err, jobId }, "Video subtitle verification failed; using cleaned transcription subtitles");
+      }
+    }
+
+    if (!validateSrt(correctedFinalSrt)) {
+      throw new Error("Gemini returned an invalid verified subtitle file");
+    }
+
+    job.status = "done";
+    job.progressPct = 100;
+    job.message = "Subtitles ready!";
+    job.srt = correctedFinalSrt;
+    notifySubtitleReady(jobId, job);
+    return true;
+  } catch (err) {
+    logger.warn({ err, jobId, videoUrl }, "Gemini video subtitle path failed; falling back to audio path");
+    return false;
+  }
+}
+
 async function processAudio(
   jobId: string,
   audioPath: string,
@@ -2430,6 +2840,36 @@ async function runSubtitleUrlJob(params: {
   }
 
   try {
+  job.status = "pending";
+  job.progressPct = Math.max(job.progressPct ?? 0, 5);
+  job.message = "Checking video length...";
+
+  const durationSecs = await probeUrlDurationSecs(params.normalizedUrl).catch((err) => {
+    logger.warn({ err, jobId: params.jobId, url: params.normalizedUrl }, "Failed to probe subtitle source duration");
+    return null;
+  });
+
+  if (durationSecs != null) {
+    job.durationSecs = durationSecs;
+  }
+
+  if (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS) {
+    const completedViaVideo = await processYoutubeVideoSrt(
+      params.jobId,
+      params.normalizedUrl,
+      params.language,
+      job.filename,
+      params.translateLang,
+      durationSecs,
+    );
+    if (completedViaVideo) return;
+  } else {
+    logger.info(
+      { jobId: params.jobId, durationSecs, maxVideoSecs: SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS },
+      "Subtitle source is above Gemini video path threshold; using audio path",
+    );
+  }
+
   const cached = urlWavCache.get(params.normalizedUrl);
   if (cached && existsSync(cached.wavPath)) {
     logger.info({ normalizedUrl: params.normalizedUrl }, "WAV cache hit - skipping download and preprocessing");
@@ -2550,12 +2990,8 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
   const normalizedUrl = normalizeInputUrl(url);
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
   const notifyClientKey = getNotifyClientKey(req);
-  const durationSecs = await probeUrlDurationSecs(normalizedUrl).catch((err) => {
-    logger.warn({ err, jobId, url: normalizedUrl }, "Failed to probe subtitle source duration");
-    return null;
-  });
 
-  if (shouldQueueSubtitleUrlJob(durationSecs)) {
+  if (shouldQueueSubtitleUrlJob(null)) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,
@@ -2566,7 +3002,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
           translateTo: translateLang ?? null,
           notifyClientKey: notifyClientKey ?? null,
           inputMode: "url",
-          durationSecs: durationSecs ?? null,
+          durationSecs: null,
         },
       });
       res.json({ jobId, status: "queued", message: "Subtitle generation queued" });
@@ -2630,10 +3066,19 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
 
   // Process in background
   enqueueSubtitleJob(jobId, async () => {
+    await runSubtitleUrlJob({
+      jobId,
+      normalizedUrl,
+      language,
+      translateLang,
+      notifyClientKey,
+    });
+    return;
+
     const job = jobs.get(jobId)!;
 
     // ── Check WAV cache (retry path: skip download + preprocessing) ──────────
-    const cached = urlWavCache.get(normalizedUrl);
+    const cached = urlWavCache.get(normalizedUrl)!;
     if (cached && existsSync(cached.wavPath)) {
       logger.info({ normalizedUrl }, "WAV cache hit — skipping download and preprocessing");
       job.status = "uploading";
@@ -2671,7 +3116,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
       const audioFiles = existsSync(audioDir) ? readdirSync(audioDir) : [];
       const audioFile = audioFiles
         .map((f) => join(audioDir, f))
-        .find((f) => /\.(m4a|mp4|webm|ogg|opus|mp3|flac|wav|aac)$/i.test(f));
+        .find((f) => /\.(m4a|mp4|webm|ogg|opus|mp3|flac|wav|aac)$/i.test(f))!;
 
       if (!audioFile) {
         job.status = "error";

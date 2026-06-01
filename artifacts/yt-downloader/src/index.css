@@ -3478,88 +3478,95 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .gs-slash-menu {
   position: absolute;
   bottom: 100%;
-  left: 12px;
-  right: 12px;
-  max-height: 260px;
+  left: 10px;
+  right: 10px;
+  max-height: min(320px, 54vh);
   overflow-y: auto;
-  background: #1c1c1e;
-  border: 1px solid rgba(255,255,255,0.14);
-  border-radius: 12px;
-  box-shadow: 0 -8px 32px rgba(0,0,0,0.50);
+  overscroll-behavior: contain;
+  background: #212121;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 22px;
+  box-shadow: 0 -18px 54px rgba(0,0,0,0.52);
   z-index: 60;
-  padding: 6px;
-  animation: gs-slash-in 0.12s ease-out;
-  margin-bottom: 4px;
+  padding: 8px;
+  animation: gs-slash-in 0.14s ease-out;
+  margin-bottom: 10px;
 }
 .gs-slash-menu-header {
-  padding: 8px 10px 6px;
-  font-size: 0.7rem;
+  padding: 8px 12px 7px;
+  font-size: 0.68rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: rgba(255,255,255,0.30);
+  letter-spacing: 0.08em;
+  color: rgba(255,255,255,0.42);
 }
 .gs-slash-menu-item {
   display: flex;
   align-items: center;
   width: 100%;
-  padding: 10px 10px;
-  border-radius: 8px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-radius: 16px;
   background: transparent;
   border: none;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.12s ease, transform 0.12s ease;
   text-align: left;
 }
 .gs-slash-menu-item-focused {
-  background: rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.08);
 }
 .gs-slash-menu-item-active {
-  background: rgba(168,85,247,0.08);
+  background: rgba(255,255,255,0.06);
 }
 .gs-slash-menu-item-active.gs-slash-menu-item-focused {
-  background: rgba(168,85,247,0.15);
+  background: rgba(255,255,255,0.10);
 }
 .gs-slash-menu-item-left {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 12px;
+  min-width: 0;
 }
 .gs-slash-menu-item-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: rgba(168,85,247,0.12);
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.08);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  color: rgba(168,85,247,0.85);
+  color: rgba(255,255,255,0.78);
 }
 .gs-slash-menu-item-name {
-  font-size: 0.82rem;
+  font-size: 0.9rem;
   font-weight: 600;
-  color: rgba(255,255,255,0.88);
-  line-height: 1.3;
+  color: rgba(255,255,255,0.92);
+  line-height: 1.25;
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 .gs-slash-menu-item-badge {
   font-size: 0.62rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: rgba(168,85,247,0.25);
-  color: #d8b4fe;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.72);
 }
 .gs-slash-menu-item-desc {
-  font-size: 0.72rem;
-  color: rgba(255,255,255,0.38);
+  font-size: 0.76rem;
+  color: rgba(255,255,255,0.50);
   line-height: 1.4;
-  margin-top: 1px;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
 }
 @keyframes gs-slash-in {
   from { opacity: 0; transform: translateY(6px); }
@@ -3582,12 +3589,21 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .gs-inline-skill-prefix {
   display: inline-flex;
   align-items: center;
-  color: #38bdf8;
-  font-size: 0.92rem;
-  font-weight: 700;
+  color: rgba(255,255,255,0.88);
+  font-size: 0.84rem;
+  font-weight: 600;
   white-space: nowrap;
-  padding: 12px 0 12px 14px;
-  line-height: 1.4;
+  align-self: center;
+  max-width: min(38%, 210px);
+  margin-left: 10px;
+  margin-right: 8px;
+  padding: 5px 9px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.10);
   user-select: none;
   cursor: pointer;
 }
@@ -6781,5 +6797,45 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
   .copilot-wrap .gs-reasoning-button span {
     display: inline;
+  }
+
+  .copilot-wrap .gs-slash-menu {
+    left: 0;
+    right: 0;
+    max-height: min(300px, 46vh);
+    border-radius: 22px;
+    padding: 7px;
+    margin-bottom: 9px;
+  }
+
+  .copilot-wrap .gs-slash-menu-item {
+    padding: 10px;
+    border-radius: 15px;
+  }
+
+  .copilot-wrap .gs-slash-menu-item-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .copilot-wrap .gs-slash-menu-item-name {
+    font-size: 14px;
+  }
+
+  .copilot-wrap .gs-slash-menu-item-desc {
+    font-size: 12px;
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .copilot-wrap .gs-inline-skill-prefix {
+    max-width: 132px;
+    margin-left: 6px;
+    margin-right: 6px;
+    padding: 5px 8px;
+    font-size: 12px;
   }
 }

@@ -98,3 +98,9 @@ output/
 patch_worker.py
 
 storage-state.json
+
+# Local secrets and temporary work files
+*.local-secrets.bak
+transcript_*.txt
+transcript_*.json
+*.hi-orig.srv1

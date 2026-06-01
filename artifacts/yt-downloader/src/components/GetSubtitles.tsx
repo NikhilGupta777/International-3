@@ -35,12 +35,12 @@ function srtToText(srt: string): string {
 type InputMode = "url" | "file";
 
 const STEP_LABELS: Record<string, string> = {
-  audio:       "Downloading audio from YouTube...",
+  audio:       "Checking video and preparing subtitles...",
   uploading:   "Uploading to Gemini AI...",
-  generating:  "Transcribing audio to SRT...",
+  generating:  "Gemini is writing SRT subtitles...",
   correcting:  "Auto-correcting errors (2nd AI pass)...",
   translating: "Translating subtitles (3rd AI pass)...",
-  verifying:   "Verifying translation (4th AI pass)...",
+  verifying:   "Verifying subtitles against the video...",
   done:        "Subtitles ready!",
   error:       "Something went wrong",
   cancelled:   "Cancelled",
@@ -328,7 +328,7 @@ export function GetSubtitles() {
     setTick(0);
     const initialStatus = mode === "url" ? "audio" : "uploading";
     setJobStatus(initialStatus);
-    setJobMessage(mode === "url" ? "Downloading audio from YouTube..." : "Uploading to AI...");
+    setJobMessage(mode === "url" ? "Starting subtitle job..." : "Uploading to AI...");
     setJobError("");
     setJobId(null);
     setJobStartedAt(Date.now());
