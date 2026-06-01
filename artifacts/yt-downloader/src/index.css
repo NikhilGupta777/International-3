@@ -6574,8 +6574,8 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
     display: flex !important;
     left: 20px;
     top: calc(24px + env(safe-area-inset-top));
-    width: 64px;
-    height: 64px;
+    width: 52px;
+    height: 52px;
     border-radius: 999px;
     border: 1px solid rgba(255,255,255,0.18);
     background: #212121;
@@ -6584,8 +6584,8 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   body:has(.copilot-wrap) .studio-hamburger svg {
-    width: 30px;
-    height: 30px;
+    width: 25px;
+    height: 25px;
     stroke-width: 2.2;
   }
 
@@ -6610,8 +6610,8 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   .copilot-wrap .gs-mobile-chat-topbar {
     position: absolute;
     top: calc(24px + env(safe-area-inset-top));
-    right: 20px;
-    left: 98px;
+    right: 22px;
+    left: 88px;
     z-index: 55;
     display: flex;
     justify-content: flex-end;
@@ -6621,9 +6621,9 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   .copilot-wrap .gs-mobile-actions-pill {
     display: flex;
     align-items: center;
-    gap: 6px;
-    height: 64px;
-    padding: 6px 8px;
+    gap: 4px;
+    height: 52px;
+    padding: 5px 7px;
     border-radius: 999px;
     border: 1px solid rgba(255,255,255,0.18);
     background: #212121;
@@ -6633,8 +6633,8 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
   .copilot-wrap .gs-mobile-action-btn {
     display: inline-flex;
-    width: 50px;
-    height: 50px;
+    width: 40px;
+    height: 40px;
     align-items: center;
     justify-content: center;
     border: 0;

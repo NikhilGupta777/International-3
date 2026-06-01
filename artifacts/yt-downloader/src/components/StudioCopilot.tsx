@@ -1799,7 +1799,7 @@ export function StudioCopilot({
             title="New chat"
             aria-label="New chat"
           >
-            <SquarePen className="w-7 h-7" />
+            <SquarePen className="w-6 h-6" />
           </button>
           <button
             type="button"
@@ -1809,7 +1809,7 @@ export function StudioCopilot({
             title="More"
             aria-label="More chat actions"
           >
-            <MoreVertical className="w-7 h-7" />
+            <MoreVertical className="w-6 h-6" />
           </button>
         </div>
       </div>
