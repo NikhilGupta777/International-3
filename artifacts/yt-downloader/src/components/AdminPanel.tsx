@@ -294,21 +294,21 @@ function JobsTable({ jobs }: { jobs: AdminJob[] }) {
         <div key={`${job.type}-${job.jobId}`} className="admin-job-row">
           <div>
             <strong>{job.type}</strong>
-            <span>{job.jobId}</span>
+            <span title={job.jobId}>{job.jobId}</span>
           </div>
           <div>
             <strong>{job.status}</strong>
-            <span>{job.stage || "-"}</span>
+            <span title={job.stage || "-"}>{job.stage || "-"}</span>
           </div>
           <div>
             <strong>{job.progressPct ?? "-"}{job.progressPct != null ? "%" : ""}</strong>
             <span>{formatRelativeMs(job.elapsedMs)}</span>
           </div>
           <div>
-            <strong>{job.user || "unknown"}</strong>
+            <strong title={job.user || "unknown"}>{job.user || "unknown"}</strong>
             <span>{formatTime(job.startedAt ?? job.createdAt)}</span>
           </div>
-          {job.error ? <p className="admin-job-error">{job.error}</p> : null}
+          {job.error ? <p className="admin-job-error" title={job.error}>{job.error}</p> : null}
         </div>
       ))}
     </div>
@@ -327,9 +327,13 @@ function EmailPillList({
   return (
     <div className="admin-email-list">
       {items.map((item) => (
-        <span key={item.email} className={cn(removingSet.has(item.email) && "admin-email-pill--removing")}>
+        <span
+          key={item.email}
+          className={cn("admin-email-pill", removingSet.has(item.email) && "admin-email-pill--removing")}
+          title={`${item.badge}: ${item.email}`}
+        >
           <strong>{item.badge}</strong>
-          {item.email}
+          <span className="admin-email-pill-text">{item.email}</span>
           <button
             type="button"
             onClick={() => onRemove(item.email)}
@@ -697,6 +701,7 @@ export function AdminPanel() {
             key={key}
             type="button"
             className={tab === key ? "is-active" : ""}
+            aria-current={tab === key ? "page" : undefined}
             onClick={() => setTab(key)}
           >
             {{ overview: "Overview", jobs: "Live Jobs", access: "Access", messages: "User Messages", storage: "Storage", tools: "Tools" }[key]}
@@ -849,6 +854,7 @@ export function AdminPanel() {
               value={cancelJobId}
               onChange={(event) => setCancelJobId(event.target.value)}
               placeholder="YouTube queue job ID"
+              aria-label="YouTube queue job ID"
             />
             <button type="submit" disabled={cancelBusy || !cancelJobId.trim()}>
               Cancel job
@@ -882,9 +888,14 @@ export function AdminPanel() {
               onChange={(event) => setEmail(event.target.value)}
               placeholder="approved@gmail.com"
               type="email"
+              aria-label="Approved email address"
               required
             />
-            <select value={role} onChange={(event) => setRole(event.target.value === "admin" ? "admin" : "user")}>
+            <select
+              value={role}
+              aria-label="Approved email role"
+              onChange={(event) => setRole(event.target.value === "admin" ? "admin" : "user")}
+            >
               <option value="user">User</option>
               <option value="admin">Admin</option>
             </select>
@@ -954,7 +965,11 @@ export function AdminPanel() {
             <Stat icon={<Clock className="w-4 h-4" />} label="Signed URL TTL" value={`${overview?.storage.signedUrlTtlSec ?? 7200}s`} />
           </div>
           <form className="admin-action-row" onSubmit={runS3Cleanup}>
-            <select value={cleanupNamespace} onChange={(event) => setCleanupNamespace(event.target.value)}>
+            <select
+              value={cleanupNamespace}
+              aria-label="Cleanup namespace"
+              onChange={(event) => setCleanupNamespace(event.target.value)}
+            >
               {(overview?.storage.cleanupNamespaces ?? ["youtube/clips"]).map((namespace) => (
                 <option key={namespace} value={namespace}>{namespace}</option>
               ))}
@@ -965,6 +980,7 @@ export function AdminPanel() {
               type="number"
               min="1"
               placeholder="Age hours"
+              aria-label="Cleanup maximum age in hours"
             />
             <button type="submit" disabled={cleanupBusy || !overview?.storage.s3.enabled}>
               <Trash2 className="w-3.5 h-3.5" />
@@ -1024,6 +1040,7 @@ export function AdminPanel() {
                 onChange={(event) => setTranslationEmail(event.target.value)}
                 placeholder="user@gmail.com"
                 type="email"
+                aria-label="Translation allowed user email"
                 required
               />
               <button type="submit" disabled={savingPermission || !translationEmail.trim()}>
@@ -1046,6 +1063,7 @@ export function AdminPanel() {
                 onChange={(event) => setLipSyncEmail(event.target.value)}
                 placeholder="user@gmail.com"
                 type="email"
+                aria-label="Lip sync allowed user email"
                 required
               />
               <button type="submit" disabled={savingPermission || !lipSyncEmail.trim()}>
@@ -1068,6 +1086,7 @@ export function AdminPanel() {
                 onChange={(event) => setSuperAgentEmail(event.target.value)}
                 placeholder="user@gmail.com"
                 type="email"
+                aria-label="Super Agent allowed user email"
                 required
               />
               <button type="submit" disabled={savingPermission || !superAgentEmail.trim()}>

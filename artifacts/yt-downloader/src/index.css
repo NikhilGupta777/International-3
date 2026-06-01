@@ -57,10 +57,13 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 
 .admin-panel {
   width: min(1180px, calc(100vw - 72px));
+  max-width: 100%;
+  box-sizing: border-box;
   height: 100%;
   overflow: auto;
   padding: 40px 24px 64px;
   color: rgba(255, 255, 255, 0.92);
+  overscroll-behavior: contain;
 }
 
 .admin-header {
@@ -129,6 +132,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   border-radius: 8px;
   background: rgba(127, 29, 29, 0.22);
   color: #fecaca;
+  overflow-wrap: anywhere;
 }
 
 .admin-kpis {
@@ -148,19 +152,25 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   display: flex;
   gap: 8px;
   overflow-x: auto;
+  position: sticky;
+  top: 0;
+  z-index: 6;
   margin: 0 0 16px;
   padding: 6px;
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 12px;
-  background: rgba(255,255,255,0.035);
+  background: rgba(16,16,18,0.88);
+  backdrop-filter: blur(14px);
   scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
 }
 
 .admin-tabs::-webkit-scrollbar { display: none; }
 
 .admin-tabs button {
   flex: 0 0 auto;
-  min-height: 38px;
+  min-height: 44px;
   padding: 0 14px;
   border: 0;
   border-radius: 9px;
@@ -170,6 +180,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   font-weight: 800;
   cursor: pointer;
   transition: color 0.14s ease, background 0.14s ease;
+  scroll-snap-align: start;
 }
 
 .admin-tabs button:hover {
@@ -191,6 +202,8 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-section {
   grid-column: span 6;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   background: rgba(18, 18, 20, 0.78);
@@ -243,6 +256,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 
 .admin-window-card {
+  min-width: 0;
   padding: 12px;
   border: 1px solid rgba(255,255,255,0.09);
   border-radius: 10px;
@@ -266,6 +280,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   font-size: 12px;
   font-style: normal;
   margin-top: 4px;
+  overflow-wrap: anywhere;
 }
 
 .admin-job-table {
@@ -284,13 +299,18 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   background: rgba(255,255,255,0.035);
 }
 
+.admin-job-row > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .admin-job-row strong,
 .admin-job-row span {
   display: block;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .admin-job-row strong {
@@ -309,6 +329,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   margin: 0;
   color: #fca5a5;
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .admin-stats {
@@ -321,6 +342,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   display: grid;
   grid-template-columns: 28px 1fr;
   gap: 2px 8px;
+  min-width: 0;
   min-height: 66px;
   padding: 10px;
   border: 1px solid rgba(255, 255, 255, 0.09);
@@ -356,20 +378,21 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 
 .admin-stat-value {
-  overflow: hidden;
+  overflow: visible;
   color: rgba(255, 255, 255, 0.92);
   font-size: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .admin-stat-detail {
   grid-column: 2;
-  overflow: hidden;
+  min-width: 0;
+  overflow: visible;
   color: rgba(255, 255, 255, 0.42);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .admin-flag-grid {
@@ -388,6 +411,12 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   background: rgba(255, 255, 255, 0.035);
   color: rgba(255, 255, 255, 0.62);
   font-size: 12px;
+  min-width: 0;
+}
+
+.admin-flag span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .admin-flag strong {
@@ -419,6 +448,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-toggle-row div {
   display: grid;
   gap: 0.25rem;
+  min-width: 0;
 }
 
 .admin-toggle-row strong {
@@ -429,6 +459,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-toggle-row span {
   color: rgba(255, 255, 255, 0.5);
   font-size: 0.78rem;
+  overflow-wrap: anywhere;
 }
 
 .admin-toggle-row button {
@@ -454,6 +485,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease;
   flex-shrink: 0;
+  min-height: 44px;
 }
 
 .admin-toggle-btn:disabled {
@@ -490,7 +522,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-email-form input,
 .admin-email-form select {
   min-width: 0;
-  height: 38px;
+  min-height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.24);
@@ -500,7 +532,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 
 .admin-email-form button {
-  height: 38px;
+  min-height: 44px;
   border: 1px solid rgba(34, 197, 94, 0.34);
   border-radius: 8px;
   background: rgba(34, 197, 94, 0.14);
@@ -515,34 +547,43 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   background: rgba(34, 197, 94, 0.22);
 }
 
-.admin-email-list span {
+.admin-email-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 100%;
+  min-width: 0;
   overflow: hidden;
-  padding: 6px 8px;
+  padding: 6px 8px 6px 10px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
+  border-radius: 12px;
   color: rgba(255, 255, 255, 0.66);
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  white-space: normal;
 }
 
-.admin-email-list strong {
+.admin-email-pill strong {
+  flex: 0 0 auto;
   color: rgba(255, 255, 255, 0.42);
   font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.admin-email-list button {
+.admin-email-pill-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-email-list button,
+.admin-pill-remove {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
   border: 0;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.08);
@@ -560,22 +601,6 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-email-list button:disabled {
   cursor: not-allowed;
   opacity: 0.4;
-}
-
-.admin-pill-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border: 0;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.58);
-  cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
-  flex-shrink: 0;
-  padding: 0;
 }
 
 .admin-pill-remove:hover:not(:disabled) {
@@ -602,7 +627,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-action-row input,
 .admin-action-row select {
   min-width: 0;
-  height: 38px;
+  min-height: 44px;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.24);
@@ -617,7 +642,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   justify-content: center;
   gap: 6px;
   min-width: 112px;
-  height: 38px;
+  min-height: 44px;
   padding: 0 12px;
   border: 1px solid rgba(245, 158, 11, 0.34);
   border-radius: 8px;
@@ -656,6 +681,8 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   align-items: center;
   gap: 8px;
   color: rgba(187, 247, 208, 0.9);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .admin-alert-item strong {
@@ -666,6 +693,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-alert-item span {
   color: rgba(255, 255, 255, 0.5);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .admin-alert-item--critical {
@@ -705,6 +733,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.035);
+  min-width: 0;
 }
 
 .admin-tool strong {
@@ -719,6 +748,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   color: rgba(255, 255, 255, 0.48);
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .admin-tool em {
@@ -762,6 +792,8 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   background: rgba(255, 255, 255, 0.035);
   color: rgba(255, 255, 255, 0.66);
   font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .admin-action-result {
@@ -784,6 +816,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   border-radius: 8px;
   font-size: 12px;
   font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .admin-result-msg--ok {
@@ -868,6 +901,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 
 .admin-cleanup-history div {
+  min-width: 0;
   padding: 10px;
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 8px;
@@ -885,15 +919,32 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .admin-cleanup-history span { color: rgba(255,255,255,0.48); margin-top: 3px; }
 .admin-cleanup-history em { color: #fca5a5; font-style: normal; margin-top: 3px; }
 
+.admin-cleanup-history span,
+.admin-cleanup-history em {
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 900px) {
   .admin-panel {
     width: 100%;
-    padding: 84px 16px 56px;
+    padding: calc(76px + env(safe-area-inset-top)) 16px calc(56px + env(safe-area-inset-bottom));
   }
 
   .admin-header {
     align-items: flex-start;
     flex-direction: column;
+    gap: 14px;
+  }
+
+  .admin-header h1 {
+    font-size: 24px;
+    line-height: 1.12;
+  }
+
+  .admin-refresh {
+    width: 100%;
+    justify-content: center;
+    min-height: 44px;
   }
 
   .admin-kpis,
@@ -914,8 +965,70 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
     grid-column: 1;
   }
 
+  .admin-tabs {
+    flex-wrap: wrap;
+    overflow: visible;
+    margin-right: -16px;
+    margin-left: -16px;
+    padding-right: 16px;
+    padding-left: 16px;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+
   .admin-skeleton-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-skeleton-header,
+  .admin-skeleton-tabs,
+  .admin-skeleton-grid {
+    width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .admin-panel {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .admin-tabs {
+    margin-right: -12px;
+    margin-left: -12px;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .admin-section {
+    padding: 13px;
+  }
+
+  .admin-toggle-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-toggle-btn,
+  .admin-toggle-row button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .admin-email-pill {
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .admin-pill-remove {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+  }
+
+  .admin-email-pill-text {
+    flex: 1 1 auto;
   }
 }
 
