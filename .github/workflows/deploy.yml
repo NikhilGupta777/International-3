@@ -608,6 +608,7 @@ jobs:
           GOOGLE_CLIENT_ID_SECRET: ${{ secrets.GOOGLE_CLIENT_ID }}
           NOTEBOOKLM_AUTH_JSON_B64_SECRET: ${{ secrets.NOTEBOOKLM_AUTH_JSON_B64 }}
           GOOGLE_GENAI_USE_VERTEXAI_SECRET: ${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}
+          E2B_API_KEY_SECRET: ${{ secrets.E2B_API_KEY }}
         run: |
           printf '%s' "$ENV_GREEN_CONTENT_SECRET" > /tmp/.env.green
           sed -i 's/\r$//' /tmp/.env.green
@@ -633,6 +634,7 @@ jobs:
           upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
           upsert_env "GEMINI_API_KEY_2" "$GEMINI_API_KEY_2_SECRET"
           upsert_env "GEMINI_API_KEY_3" "$GEMINI_API_KEY_3_SECRET"
+          upsert_env "E2B_API_KEY" "$E2B_API_KEY_SECRET"
           upsert_env "GOOGLE_GENAI_USE_VERTEXAI" "$GOOGLE_GENAI_USE_VERTEXAI_SECRET"
           if [[ "$GOOGLE_GENAI_USE_VERTEXAI_SECRET" =~ ^(1|true|yes|on)$ ]]; then
             upsert_env "GOOGLE_CLOUD_PROJECT" "${{ secrets.GOOGLE_CLOUD_PROJECT }}"

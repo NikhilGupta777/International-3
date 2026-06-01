@@ -150,6 +150,7 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   export_text_file: { icon: <Download className="w-3.5 h-3.5" />, label: "Exporting file", color: "text-emerald-300" },
   run_code_analysis: { icon: <Terminal className="w-3.5 h-3.5" />, label: "Code analysis", color: "text-orange-300" },
   run_sandbox_command: { icon: <Terminal className="w-3.5 h-3.5" />, label: "Sandbox", color: "text-emerald-300" },
+  sandbox_status: { icon: <Terminal className="w-3.5 h-3.5" />, label: "Sandbox status", color: "text-sky-300" },
   reset_sandbox: { icon: <X className="w-3.5 h-3.5" />, label: "Resetting sandbox", color: "text-red-300" },
   get_youtube_captions: { icon: <Captions className="w-3.5 h-3.5" />, label: "Getting captions", color: "text-teal-400" },
   fix_subtitles: { icon: <Captions className="w-3.5 h-3.5" />, label: "Fixing subtitles", color: "text-amber-400" },
