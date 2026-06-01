@@ -5,7 +5,8 @@ import {
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
   ArrowLeft, Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
-  ImagePlus, Music2, Terminal, Eye,
+  MoreVertical, Mic,
+  ImagePlus, Music2, Terminal, Eye, ThumbsUp, ThumbsDown, Volume2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -837,6 +838,21 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
                     {!isUser && (
                       <div className="gs-message-actions">
                         <CopyBubble text={part.content} />
+                        <button type="button" title="Good response" className="gs-message-action-btn">
+                          <ThumbsUp className="w-3 h-3" />
+                        </button>
+                        <button type="button" title="Bad response" className="gs-message-action-btn">
+                          <ThumbsDown className="w-3 h-3" />
+                        </button>
+                        <button type="button" title="Read aloud" className="gs-message-action-btn">
+                          <Volume2 className="w-3 h-3" />
+                        </button>
+                        <button type="button" title="Share" className="gs-message-action-btn">
+                          <Share2 className="w-3 h-3" />
+                        </button>
+                        <button type="button" title="More" className="gs-message-action-btn">
+                          <MoreVertical className="w-3 h-3" />
+                        </button>
                         {/* Retry button on error messages */}
                         {isErrorMsg && onRetry && (
                           <button onClick={onRetry} title="Retry" className="gs-message-action-btn">
@@ -932,6 +948,7 @@ export function StudioCopilot({
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState("");
+  const [isMobileViewport, setIsMobileViewport] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [listening, setListening] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -974,6 +991,15 @@ export function StudioCopilot({
   const [uploading, setUploading] = useState(false);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const plusMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia("(max-width: 768px)");
+    const sync = () => setIsMobileViewport(query.matches);
+    sync();
+    query.addEventListener?.("change", sync);
+    return () => query.removeEventListener?.("change", sync);
+  }, []);
 
   useEffect(() => {
     if (!showPlusMenu) return;
@@ -1765,6 +1791,30 @@ export function StudioCopilot({
   return (
     <CopilotErrorBoundary onReset={handleNewChat}>
     <div className="copilot-wrap">
+      <div className="gs-mobile-chat-topbar" aria-label="Mobile chat actions">
+        <div className="gs-mobile-actions-pill">
+          <button
+            type="button"
+            onClick={handleNewChat}
+            disabled={streaming}
+            className="gs-mobile-action-btn"
+            title="New chat"
+            aria-label="New chat"
+          >
+            <SquarePen className="w-7 h-7" />
+          </button>
+          <button
+            type="button"
+            onClick={handleShare}
+            disabled={isEmpty}
+            className="gs-mobile-action-btn disabled:opacity-45"
+            title="More"
+            aria-label="More chat actions"
+          >
+            <MoreVertical className="w-7 h-7" />
+          </button>
+        </div>
+      </div>
       {/* ── Genspark Header ── */}
       <div className="gs-chat-header">
         <div className="gs-chat-header-left">
@@ -1840,6 +1890,14 @@ export function StudioCopilot({
       {/* ── History panel ── */}
       <AnimatePresence>
         {showHistory && (
+          <>
+          <motion.div
+            className="agent-history-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setShowHistory(false)}
+          />
           <motion.div initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }}
             className="absolute inset-y-[45px] left-0 right-0 z-20 flex flex-col agent-history-panel">
             <div className="agent-history-header">
@@ -1865,6 +1923,7 @@ export function StudioCopilot({
               ))}
             </div>
           </motion.div>
+          </>
         )}
       </AnimatePresence>
 
@@ -2001,7 +2060,11 @@ export function StudioCopilot({
 
         <form
           onSubmit={e => { e.preventDefault(); void sendMessage(input, pendingAttachments); }}
-          className="gs-input-card"
+          className={cn(
+            "gs-input-card",
+            isMobileViewport && "gs-input-card-mobile",
+            isMobileViewport && input.trim().length > 0 && "gs-input-card-mobile-typing",
+          )}
         >
           {/* Attachment preview chips */}
           {pendingAttachments.length > 0 && (
@@ -2111,7 +2174,7 @@ export function StudioCopilot({
                 if (file) await handleFileUpload({ target: { files: [file] } } as any);
               }
             }}
-            placeholder={activeSkills.length > 0 ? "" : "Ask anything, create anything"}
+            placeholder={activeSkills.length > 0 ? "" : isMobileViewport ? "Reply to ChatGPT" : "Ask anything, create anything"}
             rows={1}
             style={{ resize: "none", overflow: "hidden", minHeight: 28 }}
           />
@@ -2217,12 +2280,27 @@ export function StudioCopilot({
                 aria-pressed={listening}
                 aria-disabled={!speechSupported}
               >
-                <AudioLines className="w-3.5 h-3.5" />
+                <Mic className="w-4 h-4" />
                 <span>{listening ? "Listening…" : "Speak"}</span>
               </button>
               {streaming ? (
                 <button type="button" onClick={handleStop} className="gs-stop-btn" title="Stop">
                   <Square className="w-3.5 h-3.5 fill-current" />
+                </button>
+              ) : isMobileViewport && !canSend ? (
+                <button
+                  type="button"
+                  onClick={toggleVoice}
+                  disabled={!speechSupported}
+                  className={cn(
+                    "gs-mobile-voice-btn",
+                    listening && "gs-mobile-voice-btn-active",
+                    !speechSupported && "opacity-45 cursor-not-allowed",
+                  )}
+                  title={!speechSupported ? "Voice input requires Chrome, Edge, or Safari" : listening ? "Stop listening" : "Voice mode"}
+                  aria-label="Voice mode"
+                >
+                  <AudioLines className="w-5 h-5" />
                 </button>
               ) : (
                 <button
