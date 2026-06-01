@@ -113,6 +113,23 @@ function isAdmin(req: Request): boolean {
   return session.authenticated && session.role === "admin";
 }
 
+function requestHost(req: Request): string {
+  const forwardedHost = String(req.headers["x-forwarded-host"] ?? "").split(",")[0]?.trim();
+  return (forwardedHost || req.get("host") || "").toLowerCase();
+}
+
+function isSameOriginAdminMutation(req: Request): boolean {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method.toUpperCase())) return true;
+  const origin = String(req.headers.origin ?? "").trim();
+  if (!origin) return true;
+  try {
+    const originHost = new URL(origin).host.toLowerCase();
+    return originHost === requestHost(req);
+  } catch {
+    return false;
+  }
+}
+
 function setAuthCookie(res: Response, session: Omit<AuthSession, "authenticated">): void {
   res.cookie(AUTH_COOKIE_NAME, encodeSessionCookie(session), {
     httpOnly: true,
@@ -477,6 +494,10 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
     }
     if (!isAdmin(req)) {
       res.status(403).json({ error: "Admin access required" });
+      return;
+    }
+    if (!isSameOriginAdminMutation(req)) {
+      res.status(403).json({ error: "Admin mutation origin rejected" });
       return;
     }
     next();

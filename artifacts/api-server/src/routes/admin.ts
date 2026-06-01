@@ -44,6 +44,14 @@ const cleanupHistory: Array<{
   ok: boolean;
   error?: string;
 }> = [];
+const CLEANUP_NAMESPACES = [
+  "youtube/downloads",
+  "youtube/clips",
+  "subtitles",
+  "subtitles-original",
+  "translator",
+  "uploads",
+] as const;
 
 function splitCsv(value: string | undefined): string[] {
   return (value ?? "")
@@ -83,8 +91,21 @@ function terminalStatus(status: string): boolean {
 
 async function listRecentDdbJobs(): Promise<any[]> {
   if (!JOB_TABLE) return [];
-  const out = await ddb.send(new ScanCommand({ TableName: JOB_TABLE, Limit: 100 }));
-  return (out.Items ?? [])
+  const items: any[] = [];
+  let lastKey: Record<string, any> | undefined;
+  do {
+    const out = await ddb.send(
+      new ScanCommand({
+        TableName: JOB_TABLE,
+        Limit: 100,
+        ExclusiveStartKey: lastKey,
+      }),
+    );
+    items.push(...(out.Items ?? []));
+    lastKey = out.LastEvaluatedKey;
+  } while (lastKey && items.length < 500);
+
+  return items
     .map((item) => {
       const status = item.status?.S ?? "unknown";
       const createdAt = parseDdbNumber(item.createdAt);
@@ -292,14 +313,7 @@ router.get("/overview", async (_req, res) => {
     },
     storage: {
       s3,
-      cleanupNamespaces: [
-        "youtube/downloads",
-        "youtube/clips",
-        "subtitles",
-        "subtitles-original",
-        "translator",
-        "uploads",
-      ],
+      cleanupNamespaces: CLEANUP_NAMESPACES,
       signedUrlTtlSec: s3.signedUrlTtlSec,
       cleanupHistory,
     },
@@ -460,6 +474,10 @@ router.post("/maintenance/s3-cleanup", async (req, res) => {
     const maxAgeHours = Number(body.maxAgeHours);
     if (!namespace) {
       res.status(400).json({ error: "Missing namespace" });
+      return;
+    }
+    if (!CLEANUP_NAMESPACES.includes(namespace as (typeof CLEANUP_NAMESPACES)[number])) {
+      res.status(400).json({ error: "Unsupported cleanup namespace" });
       return;
     }
     if (!Number.isFinite(maxAgeHours) || maxAgeHours < 1) {
