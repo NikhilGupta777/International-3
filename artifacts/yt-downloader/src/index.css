@@ -6659,47 +6659,62 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
   .copilot-wrap .agent-msg-col {
     width: 100%;
-    gap: 28px;
+    gap: 24px;
   }
 
   .copilot-wrap .gs-message-stack-user {
-    max-width: min(74%, 330px);
+    max-width: min(72%, 310px);
   }
 
   .copilot-wrap .gs-message-text-user {
     border: 0;
-    border-radius: 28px;
+    border-radius: 23px;
     background: #004f9f;
     color: #fff;
-    padding: 12px 17px;
-    font-size: 19px;
+    padding: 10px 15px;
+    font-size: 16.5px;
     line-height: 1.35;
     box-shadow: none;
   }
 
   .copilot-wrap .gs-message-text-assistant {
-    font-size: 20px;
-    line-height: 1.55;
+    font-size: 17px;
+    line-height: 1.58;
+  }
+
+  .copilot-wrap .copilot-md :where(p, li, h1, h2, h3, h4, h5, h6) {
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  .copilot-wrap .copilot-md :where(h1, h2, h3, h4, h5, h6) {
+    margin: 0.8em 0 0.35em;
+    font-weight: 650;
+  }
+
+  .copilot-wrap .copilot-md :where(ul, ol) {
+    gap: 2px;
+    margin: 0.35em 0 0.65em;
   }
 
   .copilot-wrap .gs-message-actions {
-    gap: 16px;
-    margin-top: 18px;
+    gap: 14px;
+    margin-top: 14px;
   }
 
   .copilot-wrap .gs-message-action-btn {
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
     color: rgba(255,255,255,0.74);
   }
 
   .copilot-wrap .gs-thinking-block {
-    margin-bottom: 10px;
+    margin-bottom: 8px;
   }
 
   .copilot-wrap .gs-thinking-text {
     color: rgba(255,255,255,0.68);
-    font-size: 18px;
+    font-size: 15.5px;
   }
 
   .copilot-wrap .gs-reasoning-control {
@@ -6741,7 +6756,21 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
 @media (max-width: 520px) {
   .copilot-wrap .copilot-messages {
-    padding: calc(116px + env(safe-area-inset-top)) 26px 20px;
+    padding: calc(112px + env(safe-area-inset-top)) 24px 20px;
+  }
+
+  .copilot-wrap .gs-message-text-assistant {
+    font-size: 16.5px;
+    line-height: 1.56;
+  }
+
+  .copilot-wrap .gs-message-text-user {
+    font-size: 16px;
+    padding: 9px 14px;
+  }
+
+  .copilot-wrap .gs-thinking-text {
+    font-size: 15px;
   }
 
   .copilot-wrap .gs-reasoning-button {
