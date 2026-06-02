@@ -77,7 +77,9 @@ export function ThumbnailPresets({
   const { toast } = useToast();
   const [presets, setPresets] = useState<PresetSummary[]>([]);
   const [canEdit, setCanEdit] = useState(false);
+  const [storageEnabled, setStorageEnabled] = useState(true); // false = S3/DDB not configured
   const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [view, setView] = useState<"list" | "edit">("list");
   const [draft, setDraft] = useState<Draft>({ name: "", stylePrompt: "", images: [] });
   const [saving, setSaving] = useState(false);
@@ -86,15 +88,25 @@ export function ThumbnailPresets({
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const r = await fetch(`${BASE}/api/thumbnail/presets`, { credentials: "include" });
       const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        // 401/403 etc — show a message but don't block the modal.
+        setFetchError(data?.error ?? `Could not load presets (${r.status})`);
+        setPresets([]);
+        setCanEdit(false);
+        return;
+      }
       const rows: PresetSummary[] = Array.isArray(data?.presets) ? data.presets : [];
       setPresets(rows);
       setCanEdit(Boolean(data?.canEdit));
+      setStorageEnabled(data?.enabled !== false);
       onChanged?.();
-    } catch {
-      /* ignore */
+    } catch (err: any) {
+      setFetchError("Could not reach the server. Is it running?");
+      setPresets([]);
     } finally {
       setLoading(false);
     }
@@ -226,6 +238,16 @@ export function ThumbnailPresets({
 
             {view === "list" ? (
               <div className="tp-body">
+                {/* Storage-not-configured banner — admins can still open the form,
+                    they'll get a clear error when they try to save */}
+                {!storageEnabled && canEdit && (
+                  <div className="tp-banner tp-banner-warn">
+                    ⚠️ Preset storage (S3 + DynamoDB) is not configured on this server.
+                    You can create presets here, but saving will fail until the server has
+                    <code>S3_BUCKET</code> and <code>YOUTUBE_QUEUE_JOB_TABLE</code> set.
+                  </div>
+                )}
+
                 <p className="tp-intro">
                   {canEdit
                     ? `Save a channel's look once — name, a style brief, and ${PRESET_MIN_IMAGES}–${PRESET_MAX_IMAGES} reference thumbnails. Anyone can then pick it in the chat to generate on-brand thumbnails.`
@@ -241,9 +263,11 @@ export function ThumbnailPresets({
 
                 {loading ? (
                   <div className="tp-empty"><Loader2 className="w-5 h-5 animate-spin" /></div>
+                ) : fetchError ? (
+                  <div className="tp-banner tp-banner-error">{fetchError}</div>
                 ) : presets.length === 0 ? (
                   <div className="tp-empty">
-                    {canEdit ? "No presets yet. Create one to lock in a channel style." : "No brand presets have been set up yet."}
+                    {canEdit ? "No presets yet. Create one above to lock in a channel style." : "No brand presets have been set up yet."}
                   </div>
                 ) : (
                   <div className="tp-list">

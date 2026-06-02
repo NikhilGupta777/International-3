@@ -511,13 +511,17 @@ function isAdminReq(res: any): boolean {
 
 // GET /api/thumbnail/presets — list shared presets (any signed-in user)
 router.get("/thumbnail/presets", async (_req, res) => {
+  const isAdmin = isAdminReq(res);
   if (!isPresetStoreEnabled()) {
-    res.json({ presets: [], enabled: false, canEdit: false });
+    // Return empty list but still tell the frontend whether the user is an
+    // admin (so the create UI is accessible — they can attempt to save and
+    // get a clear "not configured" error then).
+    res.json({ presets: [], enabled: false, canEdit: isAdmin });
     return;
   }
   try {
     const presets = await listPresetsForOwner(SHARED_PRESET_OWNER);
-    res.json({ presets, enabled: true, canEdit: isAdminReq(res) });
+    res.json({ presets, enabled: true, canEdit: isAdmin });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? "Failed to list presets" });
   }

@@ -7738,6 +7738,16 @@ html.studio-light-mode .thumb-starter:hover { background: rgba(0,0,0,0.04); }
 .tp-del:hover { color: #ef4444; }
 .tp-body { padding: 16px 18px; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .tp-intro { font-size: 0.85rem; line-height: 1.55; color: rgba(255,255,255,0.55); margin: 0 0 14px; }
+.tp-banner {
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  margin: 0 0 14px;
+}
+.tp-banner code { background: rgba(255,255,255,0.1); padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+.tp-banner-warn { background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.35); color: #fde68a; }
+.tp-banner-error { background: rgba(239,68,68,0.10); border: 1px solid rgba(239,68,68,0.30); color: #fca5a5; }
 .tp-new-btn {
   display: inline-flex;
   align-items: center;
