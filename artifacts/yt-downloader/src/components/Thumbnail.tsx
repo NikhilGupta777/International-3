@@ -2,25 +2,30 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Loader2, Download, X, Plus,
-  ArrowUp, Square, Wand2, Maximize2, SquarePen,
+  ArrowUp, Square, Wand2, Maximize2, SquarePen, ChevronRight, History, Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
 const BASE = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const MAX_IMAGES = 10;
+const HISTORY_KEY = "thumbnail-studio-history-v1";
+const MAX_SAVED_CHATS = 10;
 
 // ── Types (fully independent from the Super Agent) ──────────────────────────
 type ThumbPart =
   | { kind: "text"; content: string }
+  | { kind: "thinking"; label: string; thoughts: string; live: boolean }
   | { kind: "images"; items: Array<{ previewUrl: string; name: string }> }
-  | { kind: "thumb"; status: "thinking" | "loading" | "done" | "error"; mode?: string; imageUrl?: string; filename?: string; message?: string };
+  | { kind: "thumb"; status: "loading" | "done" | "error"; mode?: string; imageUrl?: string; filename?: string; message?: string };
 
 type ThumbMessage = { id: string; role: "user" | "assistant"; parts: ThumbPart[] };
 
 type ThumbEvent =
   | { type: "ready"; runId: string; model?: string }
   | { type: "think"; runId?: string; stage?: string; beat?: boolean }
+  | { type: "thought"; runId?: string; content: string }
+  | { type: "plan"; runId?: string; steps?: Array<{ tool: string }> }
   | { type: "text"; runId?: string; content: string }
   | { type: "thumb_start"; runId?: string; toolId: string; mode?: string }
   | { type: "thumb_progress"; runId?: string; toolId: string; status?: string; message?: string }
@@ -30,11 +35,49 @@ type ThumbEvent =
 
 type PendingAttachment = { id: string; name: string; mimeType: string; data: string; previewUrl: string };
 
-// ── Quick-start chips (empty state) ─────────────────────────────────────────
-const STARTERS: string[] = [
-  "Make a bold thumbnail for a Bhavishya Malika prophecy video with a divine golden glow and the headline “2025 की भविष्यवाणी”",
-  "Create a high-energy YouTube thumbnail for a motivational talk — shocked face, dark background, huge text “DON’T QUIT”",
+// ── Saved chat (browser localStorage, last 10) ──────────────────────────────
+type SavedChat = { id: string; title: string; updatedAt: number; messages: ThumbMessage[] };
+
+// ── Quick-start suggestions — a big pool; we show a few and reshuffle ───────
+const STARTER_POOL: string[] = [
+  "Bhavishya Malika prophecy thumbnail with divine golden glow",
+  "Motivational talk thumbnail, shocked face, huge DON'T QUIT",
+  "Tech review thumbnail, dark bg, bold IS IT WORTH IT?",
+  "Podcast cover with two mics and a vibrant gradient",
+  "Gaming thumbnail with neon glow and an epic explosion",
+  "Cooking video thumbnail, close-up dish, mouth-watering",
+  "Finance thumbnail with money rain and a green chart",
+  "Fitness transformation thumbnail, before and after split",
+  "Travel vlog thumbnail with a stunning mountain sunset",
+  "True-crime thumbnail, moody, dramatic red spotlight",
+  "Devotional thumbnail with warm temple light and aarti glow",
+  "News-style breaking thumbnail with a bold red banner",
+  "Reaction thumbnail with a giant shocked emoji",
+  "Tutorial thumbnail with clean arrows and labels",
+  "Movie-trailer cinematic thumbnail with dramatic lighting",
+  "Kids cartoon thumbnail with bright playful colors",
+  "Luxury car thumbnail with cinematic studio lighting",
+  "Science explainer thumbnail with glowing space visuals",
+  "Comparison thumbnail, two products side by side, VS",
+  "Festival thumbnail with fireworks and celebration vibe",
 ];
+
+// Rotating composer placeholders (short, loop with a fade).
+const PLACEHOLDERS: string[] = [
+  "Describe your thumbnail…",
+  "Tell me what to edit…",
+  "Attach a face to add…",
+  "Pick a bold headline…",
+];
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 // ── Downscale a large image to keep request payloads under the body limit ───
 // 10 full-res phone photos as base64 can blow past the 10MB server limit.
@@ -136,7 +179,6 @@ function GeneratingThumb({ mode, thinking }: { mode?: string; thinking?: boolean
       className="thumb-gen"
       role="status"
       aria-label="Generating thumbnail"
-      layout
       initial={{ opacity: 0, scale: 0.97 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
@@ -176,6 +218,57 @@ function GeneratingThumb({ mode, thinking }: { mode?: string; thinking?: boolean
   );
 }
 
+// ── Live thinking block (Super Agent style) ─────────────────────────────────
+function ThinkingBlock({ part }: { part: ThumbPart & { kind: "thinking" } }) {
+  const hasThoughts = part.thoughts.trim().length > 0;
+  const [open, setOpen] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  // Keep the thoughts scrolled to the latest line while streaming.
+  useEffect(() => {
+    if (open && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [part.thoughts, open]);
+
+  const label = part.live
+    ? (part.label || "Thinking")
+    : (hasThoughts ? "Thought process" : "Thought for a moment");
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="thumb-thinking-block"
+    >
+      <button
+        type="button"
+        className={cn("thumb-thinking-head", hasThoughts && "thumb-thinking-head-clickable")}
+        onClick={() => hasThoughts && setOpen(o => !o)}
+        disabled={!hasThoughts}
+      >
+        {part.live && <span className="thumb-thinking-spinner" />}
+        <span className="thumb-thinking-label">{label}</span>
+        {part.live && (
+          <span className="thumb-thinking-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+        )}
+        {hasThoughts && <ChevronRight className={cn("w-3.5 h-3.5 thumb-thinking-chev", open && "thumb-thinking-chev-open")} />}
+      </button>
+      <AnimatePresence initial={false}>
+        {open && hasThoughts && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeInOut" }}
+            className="thumb-thinking-body-wrap"
+          >
+            <div ref={bodyRef} className="thumb-thinking-body">{part.thoughts}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
 // ── Finished thumbnail card with blur-to-sharp reveal ───────────────────────
 function ThumbCard({ part, thinking, onPreview }: { part: ThumbPart & { kind: "thumb" }; thinking?: boolean; onPreview: (url: string) => void }) {
   const { toast } = useToast();
@@ -206,15 +299,6 @@ function ThumbCard({ part, thinking, onPreview }: { part: ThumbPart & { kind: "t
     }
   };
 
-  if (part.status === "thinking") {
-    return (
-      <div className="thumb-thinking" role="status" aria-label="Thinking">
-        <span className="thumb-thinking-dot" />
-        <span className="thumb-thinking-dot" />
-        <span className="thumb-thinking-dot" />
-      </div>
-    );
-  }
   if (part.status === "loading") {
     return <GeneratingThumb mode={part.mode} thinking={thinking} />;
   }
@@ -229,7 +313,6 @@ function ThumbCard({ part, thinking, onPreview }: { part: ThumbPart & { kind: "t
   return (
     <motion.div
       className="thumb-card thumb-card-done"
-      layout
       initial={{ opacity: 0, scale: 0.96 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
@@ -274,6 +357,9 @@ function MessageRow({ message, thinking, onPreview }: { message: ThumbMessage; t
           if (p.kind === "text") {
             return <div key={i} className={cn("thumb-text", isUser && "thumb-text-user")}>{renderText(p.content)}</div>;
           }
+          if (p.kind === "thinking") {
+            return <ThinkingBlock key={i} part={p} />;
+          }
           if (p.kind === "images") {
             return (
               <div key={i} className={cn("thumb-user-images", p.items.length === 1 && "thumb-user-images-single")}>
@@ -303,6 +389,15 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
   const [thinking, setThinking] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
 
+  // Empty-state suggestions (reshuffle every few seconds) + rotating placeholder
+  const [starters, setStarters] = useState<string[]>(() => shuffle(STARTER_POOL).slice(0, 4));
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+
+  // Browser-local chat history (last 10)
+  const [history, setHistory] = useState<SavedChat[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -310,6 +405,31 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
   const assistantIdRef = useRef<string | null>(null);
 
   const isEmpty = messages.length === 0;
+
+  // ── Load saved history once on mount ──────────────────────────────────────
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setHistory(parsed.slice(0, MAX_SAVED_CHATS));
+      }
+    } catch { /* ignore */ }
+  }, []);
+
+  // ── Reshuffle starter suggestions every 4s while on the empty screen ──────
+  useEffect(() => {
+    if (!isEmpty) return;
+    const t = setInterval(() => setStarters(shuffle(STARTER_POOL).slice(0, 4)), 4000);
+    return () => clearInterval(t);
+  }, [isEmpty]);
+
+  // ── Rotate the composer placeholder every ~3.5s (only when input is empty) ─
+  useEffect(() => {
+    if (input.trim()) return;
+    const t = setInterval(() => setPlaceholderIdx(i => (i + 1) % PLACEHOLDERS.length), 3500);
+    return () => clearInterval(t);
+  }, [input]);
 
   // Autoscroll
   useEffect(() => {
@@ -384,6 +504,14 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
 
   const removePending = (id: string) => setPending(prev => prev.filter(p => p.id !== id));
 
+  const setThinkingPart = useCallback((updater: (p: ThumbPart & { kind: "thinking" }) => ThumbPart & { kind: "thinking" }) => {
+    patchAssistant(m => {
+      const has = m.parts.some(p => p.kind === "thinking");
+      if (!has) return m;
+      return { ...m, parts: m.parts.map(p => p.kind === "thinking" ? updater(p as any) : p) };
+    });
+  }, [patchAssistant]);
+
   const handleEvent = useCallback((evt: ThumbEvent) => {
     switch (evt.type) {
       case "ready":
@@ -391,30 +519,37 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       case "think":
         if (!evt.beat) setThinking(true);
         return;
+      case "thought":
+        // Stream the model's reasoning into the live thinking block. Derive a
+        // short dynamic label from the latest bold/sentence fragment.
+        setThinkingPart(p => {
+          const thoughts = p.thoughts + evt.content;
+          let label = p.label;
+          const bold = thoughts.match(/\*\*([^*]+)\*\*/g);
+          if (bold && bold.length) {
+            const last = bold[bold.length - 1].replace(/\*\*/g, "").trim();
+            if (last.length > 3 && last.length < 60) label = last;
+          }
+          return { ...p, thoughts, label, live: true };
+        });
+        return;
+      case "plan":
+        // Model decided to call a tool — flip the thinking block to "done" and
+        // open the generation animation.
+        setThinkingPart(p => ({ ...p, live: false }));
+        return;
       case "text":
         setThinking(false);
-        // The model is talking (a question or final note) rather than generating
-        // right now — drop the pre-seeded "thinking" placeholder so the text
-        // isn't shown beside a generation animation.
-        patchAssistant(m => ({
-          ...m,
-          parts: m.parts.filter(p => !(p.kind === "thumb" && p.status === "thinking")),
-        }));
+        // Finalize the thinking block, then append the visible reply.
+        setThinkingPart(p => ({ ...p, live: false }));
         appendText(evt.content);
         return;
       case "thumb_start":
         setThinking(false);
+        setThinkingPart(p => ({ ...p, live: false }));
         patchAssistant(m => {
-          // Promote the pre-seeded "thinking" card (or an existing loading card)
-          // to the full generation animation — seamless, no flicker.
-          if (m.parts.some(p => p.kind === "thumb" && (p.status === "thinking" || p.status === "loading"))) {
-            return {
-              ...m,
-              parts: m.parts.map(p =>
-                p.kind === "thumb" && (p.status === "thinking" || p.status === "loading")
-                  ? { ...p, status: "loading", mode: evt.mode }
-                  : p),
-            };
+          if (m.parts.some(p => p.kind === "thumb" && p.status === "loading")) {
+            return { ...m, parts: m.parts.map(p => p.kind === "thumb" && p.status === "loading" ? { ...p, mode: evt.mode } : p) };
           }
           return { ...m, parts: [...m.parts, { kind: "thumb", status: "loading", mode: evt.mode }] };
         });
@@ -444,13 +579,15 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         return;
       case "error":
         setThinking(false);
+        setThinkingPart(p => ({ ...p, live: false }));
         appendText(`⚠️ ${evt.message}`);
         return;
       case "done":
         setThinking(false);
+        setThinkingPart(p => ({ ...p, live: false }));
         return;
     }
-  }, [appendText, patchAssistant]);
+  }, [appendText, patchAssistant, setThinkingPart]);
 
   const sendMessage = useCallback(async (text: string, attachments: PendingAttachment[]) => {
     const trimmed = text.trim();
@@ -465,12 +602,13 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     const userMsg: ThumbMessage = { id: `u-${Date.now()}`, role: "user", parts: userParts };
     const assistantId = `a-${Date.now()}`;
     assistantIdRef.current = assistantId;
-    // Pre-seed the assistant message with a compact "thinking" card so the
-    // thinking → making → reveal flow happens inside ONE element (no gap).
+    // Pre-seed the assistant message with a live "thinking" block so the user
+    // sees reasoning the instant they send — it then flows into the generation
+    // animation and the final image (all inside ONE message, no gaps).
     const assistantMsg: ThumbMessage = {
       id: assistantId,
       role: "assistant",
-      parts: [{ kind: "thumb", status: "thinking" }],
+      parts: [{ kind: "thinking", label: "Thinking", thoughts: "", live: true }],
     };
 
     const priorWire = messages.map(m => ({
@@ -522,11 +660,11 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         for (const frame of frames) {
           const raw = frame.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n").trim();
           if (!raw) continue;
-          try { const e = JSON.parse(raw) as ThumbEvent; if (e.type === "text" || e.type === "thumb_done" || e.type === "error") markSeen(); handleEvent(e); } catch { /* ignore */ }
+          try { const e = JSON.parse(raw) as ThumbEvent; if (e.type === "text" || e.type === "thumb_done" || e.type === "error" || e.type === "thought" || e.type === "plan") markSeen(); handleEvent(e); } catch { /* ignore */ }
         }
       }
       const tail = buf.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n").trim();
-      if (tail) { try { const e = JSON.parse(tail) as ThumbEvent; if (e.type === "text" || e.type === "thumb_done" || e.type === "error") markSeen(); handleEvent(e); } catch { /* ignore */ } }
+      if (tail) { try { const e = JSON.parse(tail) as ThumbEvent; if (e.type === "text" || e.type === "thumb_done" || e.type === "error" || e.type === "thought" || e.type === "plan") markSeen(); handleEvent(e); } catch { /* ignore */ } }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         let msg = "Connection interrupted. Please try again.";
@@ -535,11 +673,16 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         markSeen();
       }
     } finally {
-      // Clean up any orphan thinking/loading card (e.g. model returned nothing).
-      patchAssistant(m => ({
-        ...m,
-        parts: m.parts.filter(p => !(p.kind === "thumb" && (p.status === "thinking" || p.status === "loading"))),
-      }));
+      // Remove the live thinking block if it never produced anything visible,
+      // and drop any orphan loading card.
+      patchAssistant(m => {
+        let parts = m.parts.filter(p => !(p.kind === "thumb" && p.status === "loading"));
+        // If the thinking block has no captured thoughts, remove it entirely.
+        parts = parts.filter(p => !(p.kind === "thinking" && !p.thoughts.trim()));
+        // Otherwise just mark it finished.
+        parts = parts.map(p => p.kind === "thinking" ? { ...p, live: false } : p);
+        return { ...m, parts };
+      });
       if (!sawAnything) {
         patchAssistant(m => m.parts.length === 0 ? { ...m, parts: [{ kind: "text", content: "Hmm, nothing came back. Try again?" }] } : m);
       }
@@ -554,11 +697,67 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     patchAssistant(m => ({
       ...m,
       parts: m.parts
-        .filter(p => !(p.kind === "thumb" && p.status === "thinking"))
-        .map(p => (p.kind === "thumb" && p.status === "loading" ? { kind: "thumb", status: "error", message: "Stopped." } : p)),
+        .filter(p => !(p.kind === "thinking" && !p.thoughts.trim()))
+        .map(p => {
+          if (p.kind === "thinking") return { ...p, live: false };
+          if (p.kind === "thumb" && p.status === "loading") return { kind: "thumb", status: "error", message: "Stopped." };
+          return p;
+        }),
     }));
     setStreaming(false);
     setThinking(false);
+  };
+
+  // ── Persist the current chat to localStorage (last 10) ────────────────────
+  const persistChat = useCallback((msgs: ThumbMessage[], chatId: string | null): string | null => {
+    // Only save chats that have at least one finished exchange.
+    const meaningful = msgs.filter(m =>
+      m.parts.some(p => p.kind === "text" || (p.kind === "thumb" && p.status === "done") || p.kind === "images"),
+    );
+    if (meaningful.length === 0) return chatId;
+
+    const firstUserText = msgs.find(m => m.role === "user")?.parts.find(p => p.kind === "text") as
+      | { kind: "text"; content: string } | undefined;
+    const title = (firstUserText?.content ?? "Untitled thumbnail").slice(0, 60);
+    const id = chatId ?? `c-${Date.now()}`;
+
+    setHistory(prev => {
+      const others = prev.filter(c => c.id !== id);
+      const updated: SavedChat = { id, title, updatedAt: Date.now(), messages: msgs };
+      const next = [updated, ...others]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, MAX_SAVED_CHATS);
+      try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch { /* quota */ }
+      return next;
+    });
+    return id;
+  }, []);
+
+  // Save whenever a turn completes (streaming flips false with messages present).
+  useEffect(() => {
+    if (streaming || messages.length === 0) return;
+    const id = persistChat(messages, currentChatId);
+    if (id && id !== currentChatId) setCurrentChatId(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming]);
+
+  const loadChat = (chat: SavedChat) => {
+    if (streaming) return;
+    setMessages(chat.messages);
+    setCurrentChatId(chat.id);
+    setShowHistory(false);
+    setInput("");
+    setPending([]);
+  };
+
+  const deleteChat = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setHistory(prev => {
+      const next = prev.filter(c => c.id !== id);
+      try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+    if (id === currentChatId) { setMessages([]); setCurrentChatId(null); }
   };
 
   const newChat = () => {
@@ -566,6 +765,8 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     setMessages([]);
     setInput("");
     setPending([]);
+    setCurrentChatId(null);
+    setShowHistory(false);
   };
 
   useEffect(() => () => { abortRef.current?.abort(); }, []);
@@ -574,14 +775,75 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
 
   return (
     <div className={cn("thumb-wrap", isEmpty && "thumb-wrap-empty")}>
-      {/* Top bar — only a New Chat button on the right (ChatGPT style) */}
-      {!isEmpty && (
-        <div className="thumb-topbar">
-          <button className="thumb-topbar-new" onClick={newChat} disabled={streaming} title="New chat" aria-label="New chat">
-            <SquarePen className="w-[18px] h-[18px]" />
-          </button>
-        </div>
-      )}
+      {/* Top bar — History + New chat (ChatGPT style), top-right */}
+      <div className="thumb-topbar">
+        <button
+          className="thumb-topbar-btn"
+          onClick={() => setShowHistory(s => !s)}
+          title="Chat history"
+          aria-label="Chat history"
+        >
+          <History className="w-[18px] h-[18px]" />
+        </button>
+        <button
+          className="thumb-topbar-btn"
+          onClick={newChat}
+          disabled={streaming}
+          title="New chat"
+          aria-label="New chat"
+        >
+          <SquarePen className="w-[18px] h-[18px]" />
+        </button>
+      </div>
+
+      {/* History panel */}
+      <AnimatePresence>
+        {showHistory && (
+          <>
+            <motion.div
+              className="thumb-history-backdrop"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setShowHistory(false)}
+            />
+            <motion.div
+              className="thumb-history-panel"
+              initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+            >
+              <div className="thumb-history-head">
+                <span>Recent chats</span>
+                <button onClick={() => setShowHistory(false)} title="Close" aria-label="Close history">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="thumb-history-list">
+                {history.length === 0 ? (
+                  <div className="thumb-history-empty">No saved chats yet</div>
+                ) : (
+                  history.map(c => (
+                    <div
+                      key={c.id}
+                      className={cn("thumb-history-item", c.id === currentChatId && "thumb-history-item-active")}
+                      onClick={() => loadChat(c)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={e => { if (e.key === "Enter") loadChat(c); }}
+                    >
+                      <span className="thumb-history-title">{c.title}</span>
+                      <button className="thumb-history-del" onClick={e => deleteChat(c.id, e)} title="Delete" aria-label="Delete chat">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+              {history.length > 0 && (
+                <p className="thumb-history-note">Last {MAX_SAVED_CHATS} chats are kept on this device.</p>
+              )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Messages / welcome */}
       <div className="thumb-scroll">
@@ -639,18 +901,36 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
               </button>
               <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={onFileChange} />
 
-              <textarea
-                ref={taRef}
-                value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pending); }
-                }}
-                onPaste={onPaste}
-                rows={1}
-                placeholder="Describe your thumbnail, or attach images to edit…"
-                className="thumb-textarea"
-              />
+              <div className="thumb-textarea-wrap">
+                <textarea
+                  ref={taRef}
+                  value={input}
+                  onChange={e => setInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pending); }
+                  }}
+                  onPaste={onPaste}
+                  rows={1}
+                  placeholder=""
+                  className="thumb-textarea"
+                  aria-label="Describe your thumbnail"
+                />
+                {!input && (
+                  <div className="thumb-placeholder" aria-hidden="true">
+                    <AnimatePresence mode="wait">
+                      <motion.span
+                        key={placeholderIdx}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: 0.3 }}
+                      >
+                        {PLACEHOLDERS[placeholderIdx]}
+                      </motion.span>
+                    </AnimatePresence>
+                  </div>
+                )}
+              </div>
 
               {streaming ? (
                 <button type="button" className="thumb-send thumb-send-stop" onClick={handleStop} title="Stop">
@@ -664,19 +944,28 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
             </div>
           </form>
 
-          {/* Starter suggestions — only on the empty state, ChatGPT-style */}
+          {/* Starter suggestions — only on the empty state; reshuffle every 4s */}
           {isEmpty && (
             <div className="thumb-starters">
-              {STARTERS.map((s, i) => (
-                <button key={i} className="thumb-starter" onClick={() => void sendMessage(s, [])}>
-                  <span className="thumb-starter-icon"><Sparkles className="w-4 h-4" /></span>
-                  <span className="thumb-starter-text">{s}</span>
-                </button>
-              ))}
+              <AnimatePresence mode="popLayout">
+                {starters.map((s) => (
+                  <motion.button
+                    key={s}
+                    layout
+                    initial={{ opacity: 0, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.96 }}
+                    transition={{ duration: 0.3 }}
+                    className="thumb-starter"
+                    onClick={() => void sendMessage(s, [])}
+                  >
+                    <span className="thumb-starter-icon"><Sparkles className="w-4 h-4" /></span>
+                    <span className="thumb-starter-text">{s}</span>
+                  </motion.button>
+                ))}
+              </AnimatePresence>
             </div>
           )}
-
-          {!isEmpty && <p className="thumb-disclaimer">Thumbnail Studio uses AI image generation — results may vary.</p>}
         </div>
       </div>
 

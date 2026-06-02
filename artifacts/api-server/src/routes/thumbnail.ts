@@ -9,7 +9,7 @@
  *   • Image model: gemini-3.1-flash-image-preview
  *
  * SSE events emitted by THIS route only:
- *   ready | think | text | thumb_start | thumb_progress | thumb_done | error | done
+ *   ready | think | thought | text | thumb_start | thumb_progress | thumb_done | error | done
  */
 
 import { Router } from "express";
@@ -190,11 +190,11 @@ HOW YOU WORK:
 - When the user attaches an image or asks to tweak a previous result, use edit_thumbnail (preserve identity/faces).
 - You may generate 1-2 strong options when it helps; don't spam many near-identical images.
 
-CRITICAL — STAY SILENT AROUND GENERATION:
-- Do NOT write any text BEFORE calling a tool. No "Sure!", no "Let me create...", no describing what you're about to do. Just call the tool. The UI shows its own animation.
-- When you are going to generate or edit, your turn should contain ONLY the tool call — zero text.
-- AFTER the image is delivered, reply with ONE short line only (max ~12 words), e.g. "Done — want it punchier or a different headline?" Keep it minimal.
-- Only write longer text when you are genuinely asking a clarifying question and NOT generating in the same turn.
+PACING & VISIBLE TEXT:
+- Your private reasoning (the "thinking" you do before acting) is shown to the user in a separate, collapsible thinking panel — so think freely and naturally there about the concept, composition, mood, and headline.
+- In your VISIBLE reply, do NOT narrate before a tool call ("Sure, let me create..."). Just think, then call the tool. The UI shows a live generation animation.
+- AFTER the image is delivered, reply with ONE short, friendly line only (max ~14 words), e.g. "Here's a bold, high-contrast take — want a different headline or punchier colors?"
+- Only write a longer visible message when you are genuinely asking a clarifying question and NOT generating in the same turn.
 - Never paste raw image URLs — the image appears as a card automatically.
 
 Always reply in the user's language.`;
@@ -344,7 +344,7 @@ router.post("/thumbnail/chat", async (req, res) => {
               tools: [{ functionDeclarations: THUMB_TOOLS as any }],
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: THUMB_MAX_OUTPUT_TOKENS,
-              thinkingConfig: { thinkingLevel: "MEDIUM" as any, includeThoughts: false },
+              thinkingConfig: { thinkingLevel: "MEDIUM" as any, includeThoughts: true },
             },
           });
           break;
@@ -363,6 +363,11 @@ router.post("/thumbnail/chat", async (req, res) => {
         if (!isConnected()) break;
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
+          // Thought summaries (includeThoughts) — stream to the live thinking panel.
+          if (p.thought && p.text) {
+            send(res, { type: "thought", runId, content: p.text });
+            continue;
+          }
           if (p.text) {
             fullText += p.text;
             const delta = cleanText(p.text);
@@ -388,6 +393,10 @@ router.post("/thumbnail/chat", async (req, res) => {
         }
         break;
       }
+
+      // Announce which tool is about to run so the UI can switch the live card
+      // from "thinking" to the generation animation immediately.
+      send(res, { type: "plan", runId, steps: functionCalls.map(fc => ({ tool: fc.name })) });
 
       // Execute tools (serially — image gen is heavy) and feed results back.
       const toolResponses: any[] = [];
