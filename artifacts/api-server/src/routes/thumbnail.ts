@@ -90,12 +90,12 @@ async function renderThumbnail(params: {
   prompt: string;
   aspectRatio?: string;
   imageSize?: string;
-  baseImage?: { data: string; mimeType: string } | null;
+  baseImages?: Array<{ data: string; mimeType: string }>;
 }): Promise<{ imageUrl: string; filename: string; note: string }> {
   const ai = createGeminiClient();
   const parts: any[] = [{ text: params.prompt }];
-  if (params.baseImage?.data) {
-    parts.push({ inlineData: { mimeType: params.baseImage.mimeType, data: params.baseImage.data } });
+  for (const img of params.baseImages ?? []) {
+    if (img?.data) parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
   }
   const aspectRatio = params.aspectRatio && VALID_RATIOS.has(params.aspectRatio) ? params.aspectRatio : "16:9";
   const imageSize = params.imageSize && VALID_SIZES.has(params.imageSize) ? params.imageSize : "2K";
@@ -154,9 +154,10 @@ const THUMB_TOOLS: any[] = [
   {
     name: "edit_thumbnail",
     description:
-      "Edit/refine the most recent reference image the user attached, OR iterate on a previously generated thumbnail. " +
+      "Edit/refine the most recent reference image(s) the user attached (they may attach up to 10 — use them all, e.g. combine a face + a logo + a background), " +
+      "OR iterate on a previously generated thumbnail. " +
       "Craft a precise editing instruction: what to change, what to preserve, the desired style/colors/mood. " +
-      "Use this when the user says things like 'make the text bigger', 'change background to red', 'add my face here'.",
+      "Use this when the user says things like 'make the text bigger', 'change background to red', 'add my face here', 'combine these'.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -189,24 +190,27 @@ HOW YOU WORK:
 - When the user attaches an image or asks to tweak a previous result, use edit_thumbnail (preserve identity/faces).
 - You may generate 1-2 strong options when it helps; don't spam many near-identical images.
 
-AFTER GENERATING:
-- Give a one-line description of what you made and offer a concrete next tweak (e.g. "Want it punchier? I can boost the contrast or swap the headline.").
-- Never paste raw image URLs in your text — the image appears as a card automatically.
+CRITICAL — STAY SILENT AROUND GENERATION:
+- Do NOT write any text BEFORE calling a tool. No "Sure!", no "Let me create...", no describing what you're about to do. Just call the tool. The UI shows its own animation.
+- When you are going to generate or edit, your turn should contain ONLY the tool call — zero text.
+- AFTER the image is delivered, reply with ONE short line only (max ~12 words), e.g. "Done — want it punchier or a different headline?" Keep it minimal.
+- Only write longer text when you are genuinely asking a clarifying question and NOT generating in the same turn.
+- Never paste raw image URLs — the image appears as a card automatically.
 
 Always reply in the user's language.`;
 
-// ── Extract latest attached image from history ──────────────────────────────
-function latestAttachedImage(messages: any[]): { data: string; mimeType: string } | null {
+// ── Collect all images attached in the most recent user message (up to 10) ──
+function latestAttachedImages(messages: any[]): Array<{ data: string; mimeType: string }> {
   for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== "user") continue;
     const atts = Array.isArray(messages[i]?.attachments) ? messages[i].attachments : [];
-    for (let j = atts.length - 1; j >= 0; j--) {
-      const a = atts[j];
-      if (a?.type === "image" && a?.data && a?.mimeType) {
-        return { data: String(a.data), mimeType: String(a.mimeType) };
-      }
-    }
+    const imgs = atts
+      .filter((a: any) => a?.type === "image" && a?.data && a?.mimeType)
+      .slice(0, 10)
+      .map((a: any) => ({ data: String(a.data), mimeType: String(a.mimeType) }));
+    if (imgs.length > 0) return imgs;
   }
-  return null;
+  return [];
 }
 
 // ── POST /api/thumbnail/chat ────────────────────────────────────────────────
@@ -274,8 +278,9 @@ router.post("/thumbnail/chat", async (req, res) => {
     if (name === "edit_thumbnail") {
       const instructions = String(args.instructions ?? "").trim();
       if (!instructions) return { error: "Empty instructions" };
-      const base = latestAttachedImage(history) ?? lastGenerated;
-      if (!base) {
+      const attached = latestAttachedImages(history);
+      const base = attached.length > 0 ? attached : (lastGenerated ? [lastGenerated] : []);
+      if (base.length === 0) {
         return { error: "No image to edit. Ask the user to attach one, or generate a new thumbnail first." };
       }
       const toolId = randomUUID().slice(0, 8);
@@ -284,10 +289,12 @@ router.post("/thumbnail/chat", async (req, res) => {
       try {
         const out = await renderThumbnail({
           prompt:
-            `Edit this image as a video thumbnail. ${instructions}. ` +
+            (base.length > 1
+              ? `Combine/use the ${base.length} provided images to create one video thumbnail. ${instructions}. `
+              : `Edit this image as a video thumbnail. ${instructions}. `) +
             `Preserve the important subjects and any faces. Keep it high-contrast and readable at small sizes.`,
           aspectRatio: args.aspectRatio,
-          baseImage: base,
+          baseImages: base,
         });
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
         return { ok: true, filename: out.filename, note: out.note || "Thumbnail edited." };
