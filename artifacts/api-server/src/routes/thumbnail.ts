@@ -33,7 +33,9 @@ import {
   deletePresetForOwner,
   loadPresetImages,
   PRESET_MAX_IMAGES,
+  PRESET_MIN_IMAGES,
   SHARED_PRESET_OWNER,
+  readPresetImageAt,
   type PresetImageInput,
 } from "../lib/thumbnail-preset-store";
 
@@ -527,6 +529,26 @@ router.get("/thumbnail/presets", async (_req, res) => {
   }
 });
 
+// GET /api/thumbnail/presets/:id/images/:index - render a preset reference image.
+router.get("/thumbnail/presets/:id/images/:index", async (req, res) => {
+  if (!isPresetStoreEnabled()) { res.status(404).end(); return; }
+  const index = Number.parseInt(String(req.params.index), 10);
+  if (!Number.isInteger(index) || index < 0 || index >= PRESET_MAX_IMAGES) {
+    res.status(400).json({ error: "Invalid image index." });
+    return;
+  }
+  try {
+    const image = await readPresetImageAt(String(req.params.id), SHARED_PRESET_OWNER, index);
+    if (!image) { res.status(404).end(); return; }
+    res.setHeader("Content-Type", image.mimeType);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(image.filename)}"`);
+    res.end(image.bytes);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? "Failed to load preset image" });
+  }
+});
+
 // POST /api/thumbnail/presets — create or update a preset (ADMIN ONLY)
 router.post("/thumbnail/presets", async (req, res) => {
   if (!isPresetStoreEnabled()) {
@@ -540,16 +562,21 @@ router.post("/thumbnail/presets", async (req, res) => {
     id?: string;
     name?: string;
     stylePrompt?: string;
-    images?: Array<{ mimeType?: string; data?: string; filename?: string }>;
+    images?: Array<{ mimeType?: string; data?: string; key?: string; filename?: string }>;
   };
 
   const cleanImages: PresetImageInput[] = (Array.isArray(images) ? images : [])
-    .filter((im) => im?.data && im?.mimeType)
+    .filter((im) => (im?.data || im?.key) && im?.mimeType)
     .slice(0, PRESET_MAX_IMAGES)
-    .map((im) => ({ data: String(im.data), mimeType: String(im.mimeType), filename: im.filename }));
+    .map((im) => ({
+      data: im.data ? String(im.data) : undefined,
+      key: im.key ? String(im.key) : undefined,
+      mimeType: String(im.mimeType),
+      filename: im.filename,
+    }));
 
   if (!name || !name.trim()) { res.status(400).json({ error: "Channel name is required." }); return; }
-  if (cleanImages.length < 1) { res.status(400).json({ error: "Add at least one reference image." }); return; }
+  if (cleanImages.length < PRESET_MIN_IMAGES) { res.status(400).json({ error: `Add at least ${PRESET_MIN_IMAGES} reference images.` }); return; }
 
   try {
     const rec = await upsertPreset({ id, owner: SHARED_PRESET_OWNER, name, stylePrompt, images: cleanImages });

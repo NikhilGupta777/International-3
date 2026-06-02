@@ -442,20 +442,21 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     try {
       const r = await fetch(`${BASE}/api/thumbnail/presets`, { credentials: "include" });
       const data = await r.json().catch(() => ({}));
+      if (!r.ok) return;
       const rows: PresetSummary[] = Array.isArray(data?.presets) ? data.presets : [];
       setPresets(rows);
       setCanEditPresets(Boolean(data?.canEdit));
       // Clear the active selection if that preset no longer exists (e.g. was deleted by admin).
-      setActivePresetId(prev => (prev && rows.some(p => p.id === prev) ? prev : null));
+      setActivePresetId(prev => (prev && !rows.some(p => p.id === prev) ? null : prev));
     } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
-    void loadPresets();
     try {
       const saved = localStorage.getItem(ACTIVE_PRESET_KEY);
       if (saved) setActivePresetId(saved);
     } catch { /* ignore */ }
+    void loadPresets();
   }, [loadPresets]);
 
   // Persist the active preset choice.

@@ -7588,7 +7588,14 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
     max-height: min(60dvh, 60vh);
   }
   /* Preset menu: full-width, anchored to the trigger */
-  .thumb-preset-menu { width: calc(100vw - 24px); left: -4px; }
+  .thumb-preset-wrap { width: 100%; }
+  .thumb-preset-trigger { max-width: 100%; }
+  .thumb-preset-menu {
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-height: min(44dvh, 320px);
+  }
   /* Generation card fills full width on mobile */
   .thumb-gen { max-width: 100%; }
 }
@@ -7925,5 +7932,4 @@ html.studio-light-mode .thumb-starter:hover { background: rgba(0,0,0,0.04); }
 @media (max-width: 640px) {
   .tp-modal { max-height: min(92dvh, 92svh, 92vh); border-radius: 16px; }
   .tp-img-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
-  .thumb-preset-menu { width: min(280px, calc(100vw - 32px)); }
 }

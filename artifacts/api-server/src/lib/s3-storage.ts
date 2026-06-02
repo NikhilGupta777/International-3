@@ -174,6 +174,32 @@ export async function uploadTextToS3(params: {
   return { bucket: S3_BUCKET, key, filename: resolvedFilename };
 }
 
+export async function uploadBufferToS3(params: {
+  body: Buffer;
+  jobId: string;
+  namespace: string;
+  filename: string;
+  contentType?: string;
+}): Promise<{ bucket: string; key: string; filename: string }> {
+  const client = getS3Client();
+  const resolvedFilename = safeFilename(params.filename);
+  const key = buildObjectKey(params.namespace, params.jobId, resolvedFilename);
+  await client.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      Body: params.body,
+      ContentType: params.contentType ?? inferContentType(resolvedFilename),
+      CacheControl: "private, max-age=7200",
+      Metadata: {
+        "created-at": String(Date.now()),
+        "source-app": "ytgrabber",
+      },
+    }),
+  );
+  return { bucket: S3_BUCKET, key, filename: resolvedFilename };
+}
+
 export async function createS3PresignedUpload(params: {
   jobId: string;
   namespace: string;

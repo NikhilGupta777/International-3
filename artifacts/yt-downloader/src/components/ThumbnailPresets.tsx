@@ -25,6 +25,7 @@ type DraftImage = {
   id: string;
   previewUrl: string;
   mimeType: string;
+  key?: string;
   data?: string; // base64 (no prefix) — present only for newly-added images
 };
 
@@ -103,14 +104,13 @@ export function ThumbnailPresets({
       setPresets(rows);
       setCanEdit(Boolean(data?.canEdit));
       setStorageEnabled(data?.enabled !== false);
-      onChanged?.();
     } catch (err: any) {
       setFetchError("Could not reach the server. Is it running?");
       setPresets([]);
     } finally {
       setLoading(false);
     }
-  }, [onChanged]);
+  }, []);
 
   useEffect(() => { if (open) { void refresh(); setView("list"); } }, [open, refresh]);
 
@@ -120,7 +120,7 @@ export function ThumbnailPresets({
       id: p.id,
       name: p.name,
       stylePrompt: p.stylePrompt,
-      images: p.images.map((im, i) => ({ id: `${p.id}-${i}`, previewUrl: im.url, mimeType: "image/jpeg" })),
+      images: p.images.map((im, i) => ({ id: `${p.id}-${i}`, previewUrl: im.url, mimeType: "image/jpeg", key: im.key })),
     });
     setView("edit");
   };
@@ -147,39 +147,32 @@ export function ThumbnailPresets({
 
   const removeImage = (id: string) => setDraft(d => ({ ...d, images: d.images.filter(i => i.id !== id) }));
 
-  // canSave: require the name plus enough fresh images.
-  // When editing, existing images show in the grid but have no `data` (can't
-  // be re-uploaded), so we check the new-images count separately.
+  // canSave: require the name plus the full desired reference set.
   const newImagesCount = draft.images.filter(im => im.data).length;
-  const canSave = draft.name.trim().length > 0 && (
-    draft.id
-      ? newImagesCount >= PRESET_MIN_IMAGES     // editing: need fresh uploads
-      : draft.images.length >= PRESET_MIN_IMAGES // new: all images have data
-  );
+  const canSave = draft.name.trim().length > 0 && draft.images.length >= PRESET_MIN_IMAGES;
 
   const save = async () => {
     if (!canSave) {
       toast({ title: "Almost there", description: `Add a channel name and at least ${PRESET_MIN_IMAGES} reference images.` });
       return;
     }
-    // When editing, images without `data` are existing ones. The API replaces
-    // the whole set, so an edit must include base64 for ALL images. The save()
-    // function below handles the minimum-image check with one clear message.
     setSaving(true);
     try {
       const payload = {
         id: draft.id,
         name: draft.name.trim(),
         stylePrompt: draft.stylePrompt.trim(),
-        images: draft.images.filter(im => im.data).map(im => ({ mimeType: im.mimeType, data: im.data })),
+        images: draft.images.map(im => (
+          im.data
+            ? { mimeType: im.mimeType, data: im.data }
+            : { mimeType: im.mimeType, key: im.key }
+        )),
       };
       if (payload.images.length < PRESET_MIN_IMAGES) {
         setSaving(false);
         toast({
-          title: "Re-add reference images",
-          description: draft.id
-            ? `Editing replaces the whole image set. Re-add the ${PRESET_MIN_IMAGES}+ images you want.`
-            : `Add at least ${PRESET_MIN_IMAGES} reference images.`,
+          title: "Add reference images",
+          description: `Add at least ${PRESET_MIN_IMAGES} reference images.`,
         });
         return;
       }
@@ -191,6 +184,7 @@ export function ThumbnailPresets({
       });
       if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e?.error || `Save failed (${r.status})`); }
       await refresh();
+      onChanged?.();
       setView("list");
       toast({ title: "Preset saved", description: payload.name });
     } catch (err: any) {
@@ -205,6 +199,7 @@ export function ThumbnailPresets({
     try {
       await fetch(`${BASE}/api/thumbnail/presets/${encodeURIComponent(p.id)}`, { method: "DELETE", credentials: "include" });
       await refresh();
+      onChanged?.();
     } catch {
       toast({ title: "Delete failed", variant: "destructive" });
     }
@@ -337,14 +332,14 @@ export function ThumbnailPresets({
                 <div className="tp-field">
                   <span className="tp-label">
                     Reference images
-                    <span className={cn("tp-count", (draft.id ? newImagesCount : draft.images.length) < PRESET_MIN_IMAGES && "tp-count-low")}>
+                    <span className={cn("tp-count", draft.images.length < PRESET_MIN_IMAGES && "tp-count-low")}>
                       {draft.id
-                        ? `${newImagesCount} new / ${draft.images.length} shown · min ${PRESET_MIN_IMAGES} new`
-                        : `${draft.images.length}/${PRESET_MAX_IMAGES} · min ${PRESET_MIN_IMAGES}`}
+                        ? `${draft.images.length}/${PRESET_MAX_IMAGES} kept - ${newImagesCount} new`
+                        : `${draft.images.length}/${PRESET_MAX_IMAGES} - min ${PRESET_MIN_IMAGES}`}
                     </span>
                   </span>
                   {draft.id && (
-                    <p className="tp-edit-note">Editing replaces the image set — re-add the references you want to keep.</p>
+                    <p className="tp-edit-note">Existing references are kept unless you remove them.</p>
                   )}
                   <div className="tp-img-grid">
                     {draft.images.map(img => (

@@ -21,10 +21,9 @@ import {
 import crypto from "crypto";
 import {
   isS3StorageEnabled,
-  uploadTextToS3,
-  readTextFromS3,
+  uploadBufferToS3,
+  readBufferFromS3,
   deleteS3Object,
-  getS3SignedDownloadUrl,
 } from "./s3-storage";
 
 function envTrim(name: string, fallback = ""): string {
@@ -46,6 +45,7 @@ const REGION =
 const KIND = "thumbnail-preset";
 const PRESET_NS = "thumbnail-presets";
 export const PRESET_MAX_IMAGES = 12;
+export const PRESET_MIN_IMAGES = 5;
 // Presets are shared across the whole app (channel brand assets), stored under
 // one fixed owner key. Admins write them; everyone reads/uses them.
 export const SHARED_PRESET_OWNER = "__thumbnail_shared__";
@@ -66,7 +66,7 @@ export function newPresetId(): string {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 export interface PresetImageRef {
-  key: string;       // S3 object key (stores base64 text of the image)
+  key: string;       // S3 object key for the reference image
   mimeType: string;
   filename?: string;
 }
@@ -85,7 +85,8 @@ export interface ThumbnailPresetRecord {
 // Image as sent to / from the client (base64, no data: prefix).
 export interface PresetImageInput {
   mimeType: string;
-  data: string;       // base64 (no data: prefix)
+  data?: string;       // base64 (no data: prefix), for newly-added images
+  key?: string;        // existing S3 object key, for edits that preserve refs
   filename?: string;
 }
 
@@ -119,23 +120,23 @@ function decode(item: Record<string, AttributeValue>): ThumbnailPresetRecord | n
   };
 }
 
-// ── S3 image helpers (store base64 text per image) ─────────────────────────
+// ── S3 image helpers ───────────────────────────────────────────────────────
 async function putPresetImage(presetId: string, idx: number, img: PresetImageInput): Promise<PresetImageRef> {
   const ext = img.mimeType.includes("png") ? "png" : img.mimeType.includes("webp") ? "webp" : "jpg";
-  const filename = `ref-${idx}-${Date.now()}.${ext}.b64`;
-  const { key } = await uploadTextToS3({
-    body: img.data,
+  const filename = `ref-${idx}-${Date.now()}.${ext}`;
+  const { key } = await uploadBufferToS3({
+    body: Buffer.from(img.data ?? "", "base64"),
     jobId: presetId,
     namespace: PRESET_NS,
     filename,
-    contentType: "text/plain",
+    contentType: img.mimeType,
   });
   return { key, mimeType: img.mimeType, filename };
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/** List a user's presets with short-lived signed preview URLs for each image. */
+/** List a user's presets with app-served preview URLs for each image. */
 export async function listPresetsForOwner(owner: string): Promise<Array<{
   id: string;
   name: string;
@@ -154,23 +155,17 @@ export async function listPresetsForOwner(owner: string): Promise<Array<{
   const recs = (out.Items ?? []).map(decode).filter(Boolean) as ThumbnailPresetRecord[];
   recs.sort((a, b) => b.updatedAt - a.updatedAt);
 
-  // Signed preview URLs. The stored objects are base64 text; for previews we
-  // return a signed URL to the raw object — the client only needs the data it
-  // already has at create time, so previews are best-effort here.
   const result = [];
   for (const r of recs) {
-    const images = await Promise.all(
-      r.images.map(async (im) => ({
-        key: im.key,
-        url: await getS3SignedDownloadUrl({ key: im.key, filename: "ref", expiresInSec: 6 * 60 * 60 }).catch(() => ""),
-      })),
-    );
     result.push({
       id: r.jobId,
       name: r.name,
       stylePrompt: r.stylePrompt,
       imageCount: r.images.length,
-      images,
+      images: r.images.map((im, idx) => ({
+        key: im.key,
+        url: `/api/thumbnail/presets/${encodeURIComponent(r.jobId)}/images/${idx}`,
+      })),
       updatedAt: r.updatedAt,
     });
   }
@@ -193,14 +188,14 @@ export async function upsertPreset(params: {
   owner: string;
   name: string;
   stylePrompt: string;
-  images: PresetImageInput[];   // full desired image set (base64)
+  images: PresetImageInput[];   // full desired image set
 }): Promise<ThumbnailPresetRecord> {
   if (!isPresetStoreEnabled()) throw new Error("Preset storage is not configured.");
   if (!params.owner) throw new Error("Not authenticated.");
   const name = params.name.trim();
   if (!name) throw new Error("Channel name is required.");
   const imgs = params.images.slice(0, PRESET_MAX_IMAGES);
-  if (imgs.length < 1) throw new Error("Add at least one reference image.");
+  if (imgs.length < PRESET_MIN_IMAGES) throw new Error(`Add at least ${PRESET_MIN_IMAGES} reference images.`);
 
   const id = params.id && params.id.startsWith("tp_") ? params.id : newPresetId();
 
@@ -208,18 +203,30 @@ export async function upsertPreset(params: {
   // AFTER the new DDB record is committed. This avoids a partial-failure
   // state where the old objects are deleted but the new record is not yet written.
   let oldImages: PresetImageRef[] = [];
+  let existing: ThumbnailPresetRecord | null = null;
   if (params.id) {
-    const existing = await getPresetRecord(id);
+    existing = await getPresetRecord(id);
     if (existing && existing.owner === params.owner) {
       oldImages = existing.images;
     }
   }
+  const oldByKey = new Map(oldImages.map((im) => [im.key, im]));
 
-  // 1. Upload new images first.
+  // 1. Preserve existing refs that still belong to this preset, upload new images.
   const refs: PresetImageRef[] = [];
   for (let i = 0; i < imgs.length; i++) {
-    refs.push(await putPresetImage(id, i, imgs[i]));
+    const img = imgs[i];
+    if (img.key) {
+      const old = oldByKey.get(img.key);
+      if (old) {
+        refs.push(old);
+        continue;
+      }
+    }
+    if (!img.data) continue;
+    refs.push(await putPresetImage(id, i, img));
   }
+  if (refs.length < PRESET_MIN_IMAGES) throw new Error(`Add at least ${PRESET_MIN_IMAGES} valid reference images.`);
 
   const now = Date.now();
   const rec: ThumbnailPresetRecord = {
@@ -230,7 +237,7 @@ export async function upsertPreset(params: {
     stylePrompt: params.stylePrompt.trim().slice(0, 2000),
     images: refs,
     // Preserve the original createdAt if this is an update.
-    createdAt: oldImages.length > 0 ? (await getPresetRecord(id))?.createdAt ?? now : now,
+    createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
 
@@ -240,7 +247,8 @@ export async function upsertPreset(params: {
   // 3. ONLY AFTER DDB is committed, delete old S3 objects (best-effort).
   //    If this fails, some unreferenced objects remain in S3 — acceptable.
   if (oldImages.length > 0) {
-    await Promise.allSettled(oldImages.map((im) => deleteS3Object(im.key)));
+    const kept = new Set(refs.map((im) => im.key));
+    await Promise.allSettled(oldImages.filter((im) => !kept.has(im.key)).map((im) => deleteS3Object(im.key)));
   }
 
   // Invalidate cache so next load picks up the new images.
@@ -288,8 +296,8 @@ export async function loadPresetImages(id: string, owner: string): Promise<{
   // Load all images in parallel for speed.
   const imageResults = await Promise.allSettled(
     rec.images.map(async (im) => {
-      const b64 = await readTextFromS3(im.key);
-      return b64 ? { data: b64, mimeType: im.mimeType } : null;
+      const data = await readPresetImageBytes(im.key, im.mimeType);
+      return data.bytes.length > 0 ? { data: data.bytes.toString("base64"), mimeType: data.mimeType } : null;
     }),
   );
   const images = imageResults
@@ -301,4 +309,32 @@ export async function loadPresetImages(id: string, owner: string): Promise<{
   presetCache.set(id, { name: rec.name, stylePrompt: rec.stylePrompt, images, expiresAt: Date.now() + CACHE_TTL_MS });
 
   return { name: rec.name, stylePrompt: rec.stylePrompt, images };
+}
+
+export async function readPresetImageAt(id: string, owner: string, index: number): Promise<{
+  bytes: Buffer;
+  mimeType: string;
+  filename: string;
+} | null> {
+  const rec = await getPresetRecord(id);
+  if (!rec || rec.owner !== owner) return null;
+  const ref = rec.images[index];
+  if (!ref) return null;
+  const data = await readPresetImageBytes(ref.key, ref.mimeType);
+  return { ...data, filename: ref.filename ?? `reference-${index + 1}` };
+}
+
+async function readPresetImageBytes(key: string, mimeType: string): Promise<{ bytes: Buffer; mimeType: string }> {
+  const raw = await readBufferFromS3(key);
+  if (looksLikeBase64Text(raw)) {
+    const decoded = Buffer.from(raw.toString("utf8").trim(), "base64");
+    if (decoded.length > 0) return { bytes: decoded, mimeType };
+  }
+  return { bytes: raw, mimeType };
+}
+
+function looksLikeBase64Text(buf: Buffer): boolean {
+  if (buf.length === 0) return false;
+  const sample = buf.subarray(0, Math.min(buf.length, 256)).toString("utf8");
+  return /^[A-Za-z0-9+/=\r\n]+$/.test(sample) && sample.trim().length % 4 === 0;
 }
