@@ -72,7 +72,7 @@ export function ThumbnailPresets({
 }: {
   open: boolean;
   onClose: () => void;
-  onChanged?: (presets: PresetSummary[]) => void;
+  onChanged?: () => void;
 }) {
   const { toast } = useToast();
   const [presets, setPresets] = useState<PresetSummary[]>([]);
@@ -92,7 +92,7 @@ export function ThumbnailPresets({
       const rows: PresetSummary[] = Array.isArray(data?.presets) ? data.presets : [];
       setPresets(rows);
       setCanEdit(Boolean(data?.canEdit));
-      onChanged?.(rows);
+      onChanged?.();
     } catch {
       /* ignore */
     } finally {
@@ -135,7 +135,15 @@ export function ThumbnailPresets({
 
   const removeImage = (id: string) => setDraft(d => ({ ...d, images: d.images.filter(i => i.id !== id) }));
 
-  const canSave = draft.name.trim().length > 0 && draft.images.length >= PRESET_MIN_IMAGES;
+  // canSave: require the name plus enough fresh images.
+  // When editing, existing images show in the grid but have no `data` (can't
+  // be re-uploaded), so we check the new-images count separately.
+  const newImagesCount = draft.images.filter(im => im.data).length;
+  const canSave = draft.name.trim().length > 0 && (
+    draft.id
+      ? newImagesCount >= PRESET_MIN_IMAGES     // editing: need fresh uploads
+      : draft.images.length >= PRESET_MIN_IMAGES // new: all images have data
+  );
 
   const save = async () => {
     if (!canSave) {
@@ -143,18 +151,8 @@ export function ThumbnailPresets({
       return;
     }
     // When editing, images without `data` are existing ones. The API replaces
-    // the whole set, so an edit must include base64 for ALL images. If the user
-    // didn't re-add existing ones, we keep them by requiring re-upload only when
-    // they changed. Simplest robust rule: require all images to have data on save.
-    const missing = draft.images.some(im => !im.data);
-    if (missing && draft.id) {
-      // Existing preset, user kept old images without re-uploading — we can't
-      // re-read their bytes from a signed URL reliably across origins, so ask.
-      toast({
-        title: "Re-add images to update",
-        description: "Editing replaces images. Please re-add the reference images you want to keep.",
-      });
-    }
+    // the whole set, so an edit must include base64 for ALL images. The save()
+    // function below handles the minimum-image check with one clear message.
     setSaving(true);
     try {
       const payload = {
@@ -165,7 +163,12 @@ export function ThumbnailPresets({
       };
       if (payload.images.length < PRESET_MIN_IMAGES) {
         setSaving(false);
-        toast({ title: "Add reference images", description: `Need at least ${PRESET_MIN_IMAGES} images with data.` });
+        toast({
+          title: "Re-add reference images",
+          description: draft.id
+            ? `Editing replaces the whole image set. Re-add the ${PRESET_MIN_IMAGES}+ images you want.`
+            : `Add at least ${PRESET_MIN_IMAGES} reference images.`,
+        });
         return;
       }
       const r = await fetch(`${BASE}/api/thumbnail/presets`, {
@@ -210,6 +213,7 @@ export function ThumbnailPresets({
             exit={{ opacity: 0, scale: 0.97, y: 10 }}
             transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
             onClick={e => e.stopPropagation()}
+            onKeyDown={e => { if (e.key === "Escape") onClose(); }}
           >
             <div className="tp-head">
               <div className="tp-head-title">
@@ -247,27 +251,31 @@ export function ThumbnailPresets({
                       <div
                         key={p.id}
                         className={cn("tp-card", !canEdit && "tp-card-readonly")}
-                        onClick={() => canEdit && startEdit(p)}
-                        role={canEdit ? "button" : undefined}
-                        tabIndex={canEdit ? 0 : undefined}
-                        onKeyDown={e => { if (canEdit && e.key === "Enter") startEdit(p); }}
                       >
-                        <div className="tp-card-thumbs">
-                          {p.images.slice(0, 4).map((img, i) => (
-                            <img key={i} src={img.url} alt="" />
-                          ))}
-                          {p.imageCount > 4 && <span className="tp-card-more">+{p.imageCount - 4}</span>}
-                        </div>
-                        <div className="tp-card-info">
-                          <span className="tp-card-name">{p.name}</span>
-                          <span className="tp-card-meta">{p.imageCount} reference images</span>
-                        </div>
+                        <button
+                          type="button"
+                          className="tp-card-content"
+                          onClick={() => canEdit ? startEdit(p) : undefined}
+                          aria-label={canEdit ? `Edit preset: ${p.name}` : p.name}
+                          disabled={!canEdit}
+                        >
+                          <div className="tp-card-thumbs">
+                            {p.images.slice(0, 4).map((img, i) => (
+                              <img key={i} src={img.url} alt="" />
+                            ))}
+                            {p.imageCount > 4 && <span className="tp-card-more">+{p.imageCount - 4}</span>}
+                          </div>
+                          <div className="tp-card-info">
+                            <span className="tp-card-name">{p.name}</span>
+                            <span className="tp-card-meta">{p.imageCount} reference images</span>
+                          </div>
+                        </button>
                         {canEdit && (
                           <div className="tp-card-actions">
-                            <button className="tp-icon-btn" onClick={(e) => { e.stopPropagation(); startEdit(p); }} title="Edit" aria-label="Edit preset">
+                            <button className="tp-icon-btn" onClick={() => startEdit(p)} title="Edit" aria-label={`Edit ${p.name}`}>
                               <Pencil className="w-3.5 h-3.5" />
                             </button>
-                            <button className="tp-icon-btn tp-del" onClick={(e) => remove(p, e)} title="Delete" aria-label="Delete preset">
+                            <button className="tp-icon-btn tp-del" onClick={(e) => remove(p, e)} title="Delete" aria-label={`Delete ${p.name}`}>
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
                           </div>
@@ -305,8 +313,10 @@ export function ThumbnailPresets({
                 <div className="tp-field">
                   <span className="tp-label">
                     Reference images
-                    <span className={cn("tp-count", draft.images.length < PRESET_MIN_IMAGES && "tp-count-low")}>
-                      {draft.images.length}/{PRESET_MAX_IMAGES} · min {PRESET_MIN_IMAGES}
+                    <span className={cn("tp-count", (draft.id ? newImagesCount : draft.images.length) < PRESET_MIN_IMAGES && "tp-count-low")}>
+                      {draft.id
+                        ? `${newImagesCount} new / ${draft.images.length} shown · min ${PRESET_MIN_IMAGES} new`
+                        : `${draft.images.length}/${PRESET_MAX_IMAGES} · min ${PRESET_MIN_IMAGES}`}
                     </span>
                   </span>
                   {draft.id && (

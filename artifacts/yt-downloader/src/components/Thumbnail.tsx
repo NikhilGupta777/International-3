@@ -361,7 +361,9 @@ function MessageRow({ message, thinking, onPreview }: { message: ThumbMessage; t
             return <div key={i} className={cn("thumb-text", isUser && "thumb-text-user")}>{renderText(p.content)}</div>;
           }
           if (p.kind === "thinking") {
-            return <ThinkingBlock key={i} part={p} />;
+            // Key on message.id + index so the component remounts on each new
+            // message, resetting the open/collapsed state.
+            return <ThinkingBlock key={`${message.id}-${i}`} part={p} />;
           }
           if (p.kind === "images") {
             return (
@@ -409,12 +411,20 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
   const [showPresetMenu, setShowPresetMenu] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const streamingRef = useRef(false);  // ref so stale-closure race on rapid-click is impossible
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const assistantIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<ThumbMessage[]>([]);        // ref mirror of messages for the history effect
+  const currentChatIdRef = useRef<string | null>(null);  // ref mirror of currentChatId
 
   const isEmpty = messages.length === 0;
+
+  // ── Keep ref mirrors in sync with state (avoid stale closures) ────────────
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { currentChatIdRef.current = currentChatId; }, [currentChatId]);
+  useEffect(() => { streamingRef.current = streaming; }, [streaming]);
 
   // ── Load saved history once on mount ──────────────────────────────────────
   useEffect(() => {
@@ -435,8 +445,8 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       const rows: PresetSummary[] = Array.isArray(data?.presets) ? data.presets : [];
       setPresets(rows);
       setCanEditPresets(Boolean(data?.canEdit));
-      // Drop the active selection if that preset no longer exists.
-      setActivePresetId(prev => (prev && rows.some(p => p.id === prev) ? prev : prev));
+      // Clear the active selection if that preset no longer exists (e.g. was deleted by admin).
+      setActivePresetId(prev => (prev && rows.some(p => p.id === prev) ? prev : null));
     } catch { /* ignore */ }
   }, []);
 
@@ -630,7 +640,9 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
 
   const sendMessage = useCallback(async (text: string, attachments: PendingAttachment[]) => {
     const trimmed = text.trim();
-    if ((!trimmed && attachments.length === 0) || streaming) return;
+    // Use ref to guard against stale closure on rapid clicks (streaming state may
+    // not have propagated to the closure that onClick captured yet).
+    if ((!trimmed && attachments.length === 0) || streamingRef.current) return;
 
     const userParts: ThumbPart[] = [];
     if (attachments.length > 0) {
@@ -666,6 +678,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     setMessages(prev => [...prev, userMsg, assistantMsg]);
     setInput("");
     setPending([]);
+    streamingRef.current = true;
     setStreaming(true);
     setThinking(true);
 
@@ -713,7 +726,8 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       }
     } finally {
       // Remove the live thinking block if it never produced anything visible,
-      // and drop any orphan loading card.
+      // and drop any orphan loading card. Error cards from previous tool calls
+      // within the same turn are kept intentionally (visible to the user).
       patchAssistant(m => {
         let parts = m.parts.filter(p => !(p.kind === "thumb" && p.status === "loading"));
         // If the thinking block has no captured thoughts, remove it entirely.
@@ -725,11 +739,12 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       if (!sawAnything) {
         patchAssistant(m => m.parts.length === 0 ? { ...m, parts: [{ kind: "text", content: "Hmm, nothing came back. Try again?" }] } : m);
       }
+      streamingRef.current = false;
       setStreaming(false);
       setThinking(false);
       assistantIdRef.current = null;
     }
-  }, [messages, streaming, handleEvent, appendText, patchAssistant, activePresetId]);
+  }, [messages, handleEvent, appendText, patchAssistant, activePresetId]);
 
   const handleStop = () => {
     abortRef.current?.abort();
@@ -748,8 +763,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
   };
 
   // ── Persist the current chat to localStorage (last 10) ────────────────────
-  const persistChat = useCallback((msgs: ThumbMessage[], chatId: string | null): string | null => {
-    // Only save chats that have at least one finished exchange.
+  const persistChat = useCallback((msgs: ThumbMessage[], chatId: string | null): string | null => {    // Only save chats that have at least one finished exchange.
     const meaningful = msgs.filter(m =>
       m.parts.some(p => p.kind === "text" || (p.kind === "thumb" && p.status === "done") || p.kind === "images"),
     );
@@ -772,13 +786,16 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     return id;
   }, []);
 
-  // Save whenever a turn completes (streaming flips false with messages present).
+  // Save whenever a turn completes. Use refs to read the latest messages/chatId
+  // without adding them as deps (which would re-run on every message update).
   useEffect(() => {
-    if (streaming || messages.length === 0) return;
-    const id = persistChat(messages, currentChatId);
-    if (id && id !== currentChatId) setCurrentChatId(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming]);
+    if (streaming || messagesRef.current.length === 0) return;
+    const id = persistChat(messagesRef.current, currentChatIdRef.current);
+    if (id && id !== currentChatIdRef.current) {
+      setCurrentChatId(id);
+      currentChatIdRef.current = id;
+    }
+  }, [streaming, persistChat]);
 
   const loadChat = (chat: SavedChat) => {
     if (streaming) return;
@@ -849,10 +866,10 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       <ThumbnailPresets
         open={showPresetsModal}
         onClose={() => setShowPresetsModal(false)}
-        onChanged={(rows) => {
-          setPresets(rows);
-          // If the active preset was deleted, clear it.
-          setActivePresetId(prev => (prev && rows.some(p => p.id === prev) ? prev : null));
+        onChanged={() => {
+          // Reload the full preset list + canEdit flag so the selector
+          // and the topbar ⚙ button reflect any admin changes immediately.
+          void loadPresets();
         }}
       />
 
@@ -931,7 +948,8 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
             className="thumb-composer"
             onSubmit={e => { e.preventDefault(); void sendMessage(input, pending); }}
           >
-            {/* Active brand preset selector */}
+            {/* Active brand preset selector — hide when no presets exist and user can't edit */}
+            {(presets.length > 0 || canEditPresets) && (
             <div className="thumb-preset-bar">
               <div className="thumb-preset-wrap">
                 <button
@@ -996,6 +1014,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
                 </AnimatePresence>
               </div>
             </div>
+            )}
 
             {pending.length > 0 && (
               <div className="thumb-attach-row">
@@ -1095,21 +1114,32 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         </div>
       </div>
 
-      {/* Lightbox */}
+      {/* Lightbox — focus the close button when it opens, restore on close */}
       <AnimatePresence>
         {preview && (
           <motion.div
             className="thumb-lightbox"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Thumbnail preview"
+            tabIndex={-1}
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             onClick={() => setPreview(null)}
+            onKeyDown={e => { if (e.key === "Escape") setPreview(null); }}
           >
             <motion.div
               className="thumb-lightbox-inner"
               initial={{ scale: 0.96, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.96, opacity: 0 }}
               onClick={e => e.stopPropagation()}
             >
-              <img src={preview} alt="Thumbnail preview" />
-              <button className="thumb-lightbox-close" onClick={() => setPreview(null)} title="Close">
+              <img src={preview} alt="Generated thumbnail — click outside or press Escape to close" />
+              <button
+                className="thumb-lightbox-close"
+                onClick={() => setPreview(null)}
+                title="Close"
+                autoFocus
+                aria-label="Close preview"
+              >
                 <X className="w-5 h-5" />
               </button>
             </motion.div>
