@@ -28,6 +28,7 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
 import { StudioHome } from "@/components/StudioHome";
 import { FindVideo } from "@/components/FindVideo";
+import { Thumbnail } from "@/components/Thumbnail";
 import VideoTranslator from "./VideoTranslator";
 import {
   saveActiveDownload,
@@ -62,7 +63,7 @@ import {
   shouldShowDailyEmailPrompt,
 } from "@/lib/email-submission";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "help" | "activity" | "admin" | "settings";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "thumbnail" | "help" | "activity" | "admin" | "settings";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -104,6 +105,7 @@ const MODE_LABELS: Record<Mode, string> = {
   copilot: "Super Agent",
   translator: "Translator",
   findvideo: "Find Video",
+  thumbnail: "Thumbnail",
   help: "Help",
   activity: "Activity",
   admin: "Admin",
@@ -405,6 +407,7 @@ export default function Home({
   const showUpload = mode === "upload";
   const showCopilot = mode === "copilot";
   const showFindVideo = mode === "findvideo";
+  const showThumbnail = mode === "thumbnail";
   const showAdmin = mode === "admin";
   const showSettings = mode === "settings";
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
@@ -735,8 +738,8 @@ export default function Home({
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "thumbnail" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "thumbnail" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
             {needsFutureEmail ? (
               <div className="future-email-top-notice">
                 <div>
@@ -1155,6 +1158,12 @@ export default function Home({
               {showFindVideo && (
                 <motion.div key="findvideo-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
                   <FindVideo />
+                </motion.div>
+              )}
+
+              {showThumbnail && (
+                <motion.div key="thumbnail-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
+                  <Thumbnail onBackToHome={() => switchMode("home")} />
                 </motion.div>
               )}
 

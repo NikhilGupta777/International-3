@@ -2,14 +2,14 @@ import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
   ListVideo, AlarmClock, UploadCloud, Languages, Search, Menu, X,
-  Home as HomeIcon, Activity, Settings,
+  Home as HomeIcon, Activity, Settings, Image as ImageIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "findvideo" | "help" | "activity" | "admin" | "settings";
+  | "upload" | "translator" | "findvideo" | "thumbnail" | "help" | "activity" | "admin" | "settings";
 
 interface NavItem {
   mode: Mode;
@@ -35,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { mode: "clips",       icon: <Sparkles className="gs-icon" />,        label: "Best Clips" },
   { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
   { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },
+  { mode: "thumbnail",   icon: <ImageIcon className="gs-icon" />,       label: "Thumbnail" },
   { mode: "translator",  icon: <Languages className="gs-icon" />,       label: "Translator" },
   { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video" },
   { mode: "timestamps",  icon: <AlarmClock className="gs-icon" />,      label: "Timestamps" },

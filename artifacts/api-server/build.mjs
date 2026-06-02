@@ -10,6 +10,16 @@ globalThis.require = createRequire(import.meta.url);
 
 const artifactDir = path.dirname(fileURLToPath(import.meta.url));
 
+// Source maps are dev/debugging aids. They roughly double the dist size
+// (~14 MB each). On low-disk machines set API_SOURCEMAP=none (or false/0) to
+// skip them so the build can complete. Default keeps the linked source maps.
+const SOURCEMAP_SETTING = (() => {
+  const v = String(process.env.API_SOURCEMAP ?? "linked").trim().toLowerCase();
+  if (["none", "false", "0", "off", "no"].includes(v)) return false;
+  if (["linked", "external", "inline", "both"].includes(v)) return v;
+  return "linked";
+})();
+
 async function buildAll() {
   const distDir = path.resolve(artifactDir, "dist");
   await rm(distDir, { recursive: true, force: true });
@@ -102,7 +112,7 @@ async function buildAll() {
       "puppeteer-core",
       "electron",
     ],
-    sourcemap: "linked",
+    sourcemap: SOURCEMAP_SETTING,
     plugins: [
       // pino relies on workers to handle logging, instead of externalizing it we use a plugin to handle it
       esbuildPluginPino({ transports: ["pino-pretty"] })
