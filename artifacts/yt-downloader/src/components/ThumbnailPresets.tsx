@@ -107,6 +107,8 @@ export function ThumbnailPresets({
     } catch (err: any) {
       setFetchError("Could not reach the server. Is it running?");
       setPresets([]);
+      setCanEdit(false);
+      setStorageEnabled(true);
     } finally {
       setLoading(false);
     }
@@ -197,11 +199,15 @@ export function ThumbnailPresets({
   const remove = async (p: PresetSummary, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await fetch(`${BASE}/api/thumbnail/presets/${encodeURIComponent(p.id)}`, { method: "DELETE", credentials: "include" });
+      const r = await fetch(`${BASE}/api/thumbnail/presets/${encodeURIComponent(p.id)}`, { method: "DELETE", credentials: "include" });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err?.error || `Delete failed (${r.status})`);
+      }
       await refresh();
       onChanged?.();
-    } catch {
-      toast({ title: "Delete failed", variant: "destructive" });
+    } catch (err: any) {
+      toast({ title: "Delete failed", description: err?.message ?? "Try again.", variant: "destructive" });
     }
   };
 

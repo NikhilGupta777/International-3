@@ -564,22 +564,24 @@ router.post("/thumbnail/presets", async (req, res) => {
     stylePrompt?: string;
     images?: Array<{ mimeType?: string; data?: string; key?: string; filename?: string }>;
   };
+  const cleanName = typeof name === "string" ? name : "";
+  const cleanStylePrompt = typeof stylePrompt === "string" ? stylePrompt : "";
 
   const cleanImages: PresetImageInput[] = (Array.isArray(images) ? images : [])
-    .filter((im) => (im?.data || im?.key) && im?.mimeType)
+    .filter((im) => (im?.data || im?.key) && typeof im?.mimeType === "string" && im.mimeType.startsWith("image/"))
     .slice(0, PRESET_MAX_IMAGES)
     .map((im) => ({
       data: im.data ? String(im.data) : undefined,
       key: im.key ? String(im.key) : undefined,
       mimeType: String(im.mimeType),
-      filename: im.filename,
+      filename: typeof im.filename === "string" ? im.filename : undefined,
     }));
 
-  if (!name || !name.trim()) { res.status(400).json({ error: "Channel name is required." }); return; }
+  if (!cleanName.trim()) { res.status(400).json({ error: "Channel name is required." }); return; }
   if (cleanImages.length < PRESET_MIN_IMAGES) { res.status(400).json({ error: `Add at least ${PRESET_MIN_IMAGES} reference images.` }); return; }
 
   try {
-    const rec = await upsertPreset({ id, owner: SHARED_PRESET_OWNER, name, stylePrompt, images: cleanImages });
+    const rec = await upsertPreset({ id, owner: SHARED_PRESET_OWNER, name: cleanName, stylePrompt: cleanStylePrompt, images: cleanImages });
     res.json({ ok: true, id: rec.jobId, name: rec.name, imageCount: rec.images.length });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? "Failed to save preset" });

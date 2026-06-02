@@ -442,7 +442,10 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     try {
       const r = await fetch(`${BASE}/api/thumbnail/presets`, { credentials: "include" });
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) return;
+      if (!r.ok) {
+        setCanEditPresets(false);
+        return;
+      }
       const rows: PresetSummary[] = Array.isArray(data?.presets) ? data.presets : [];
       setPresets(rows);
       setCanEditPresets(Boolean(data?.canEdit));
@@ -749,6 +752,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
 
   const handleStop = () => {
     abortRef.current?.abort();
+    streamingRef.current = false;
     patchAssistant(m => ({
       ...m,
       parts: m.parts
@@ -824,6 +828,8 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     setPending([]);
     setCurrentChatId(null);
     setShowHistory(false);
+    setShowPresetMenu(false);
+    setShowPresetsModal(false);
   };
 
   useEffect(() => () => { abortRef.current?.abort(); }, []);

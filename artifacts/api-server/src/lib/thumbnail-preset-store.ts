@@ -212,21 +212,40 @@ export async function upsertPreset(params: {
   }
   const oldByKey = new Map(oldImages.map((im) => [im.key, im]));
 
-  // 1. Preserve existing refs that still belong to this preset, upload new images.
-  const refs: PresetImageRef[] = [];
-  for (let i = 0; i < imgs.length; i++) {
-    const img = imgs[i];
+  // 1. Preserve existing refs that still belong to this preset, and validate
+  //    the full desired set before uploading any new image bytes.
+  const desired = imgs.map((img) => {
     if (img.key) {
       const old = oldByKey.get(img.key);
-      if (old) {
-        refs.push(old);
-        continue;
+      if (old) return { kind: "existing" as const, ref: old };
+    }
+    if (img.data) return { kind: "upload" as const, image: img };
+    return null;
+  }).filter((item): item is { kind: "existing"; ref: PresetImageRef } | { kind: "upload"; image: PresetImageInput } => item !== null);
+
+  if (desired.length < PRESET_MIN_IMAGES) {
+    throw new Error(`Add at least ${PRESET_MIN_IMAGES} valid reference images.`);
+  }
+
+  // 2. Upload new images. If a later upload fails, remove the already-uploaded
+  //    objects so a failed save does not leak orphan preset assets.
+  const refs: PresetImageRef[] = [];
+  const uploaded: PresetImageRef[] = [];
+  try {
+    for (let i = 0; i < desired.length; i++) {
+      const item = desired[i];
+      if (item.kind === "existing") {
+        refs.push(item.ref);
+      } else {
+        const ref = await putPresetImage(id, i, item.image);
+        uploaded.push(ref);
+        refs.push(ref);
       }
     }
-    if (!img.data) continue;
-    refs.push(await putPresetImage(id, i, img));
+  } catch (err) {
+    await Promise.allSettled(uploaded.map((im) => deleteS3Object(im.key)));
+    throw err;
   }
-  if (refs.length < PRESET_MIN_IMAGES) throw new Error(`Add at least ${PRESET_MIN_IMAGES} valid reference images.`);
 
   const now = Date.now();
   const rec: ThumbnailPresetRecord = {
@@ -241,10 +260,16 @@ export async function upsertPreset(params: {
     updatedAt: now,
   };
 
-  // 2. Write the DDB record (atomically replaces the old one).
-  await client().send(new PutItemCommand({ TableName: TABLE_NAME, Item: encode(rec) }));
+  // 3. Write the DDB record (atomically replaces the old one). If this write
+  //    fails, clean up newly uploaded images because no record references them.
+  try {
+    await client().send(new PutItemCommand({ TableName: TABLE_NAME, Item: encode(rec) }));
+  } catch (err) {
+    await Promise.allSettled(uploaded.map((im) => deleteS3Object(im.key)));
+    throw err;
+  }
 
-  // 3. ONLY AFTER DDB is committed, delete old S3 objects (best-effort).
+  // 4. ONLY AFTER DDB is committed, delete old S3 objects (best-effort).
   //    If this fails, some unreferenced objects remain in S3 — acceptable.
   if (oldImages.length > 0) {
     const kept = new Set(refs.map((im) => im.key));
@@ -270,8 +295,8 @@ export async function deletePresetForOwner(id: string, owner: string): Promise<b
   if (!isPresetStoreEnabled()) return false;
   const rec = await getPresetRecord(id);
   if (!rec || rec.owner !== owner) return false;
-  await Promise.allSettled(rec.images.map((im) => deleteS3Object(im.key)));
   await client().send(new DeleteItemCommand({ TableName: TABLE_NAME, Key: { jobId: { S: id } } }));
+  await Promise.allSettled(rec.images.map((im) => deleteS3Object(im.key)));
   presetCache.delete(id);
   return true;
 }
@@ -336,5 +361,7 @@ async function readPresetImageBytes(key: string, mimeType: string): Promise<{ by
 function looksLikeBase64Text(buf: Buffer): boolean {
   if (buf.length === 0) return false;
   const sample = buf.subarray(0, Math.min(buf.length, 256)).toString("utf8");
-  return /^[A-Za-z0-9+/=\r\n]+$/.test(sample) && sample.trim().length % 4 === 0;
+  if (!/^[A-Za-z0-9+/=\r\n]+$/.test(sample)) return false;
+  const text = buf.toString("utf8").trim();
+  return text.length > 0 && text.length % 4 === 0 && /^[A-Za-z0-9+/=\r\n]+$/.test(text);
 }
