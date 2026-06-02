@@ -34,6 +34,7 @@ import {
   loadPresetImages,
   PRESET_MAX_IMAGES,
   PRESET_MIN_IMAGES,
+  PRESET_STYLE_PROMPT_MAX_CHARS,
   SHARED_PRESET_OWNER,
   readPresetImageAt,
   type PresetImageInput,
@@ -502,28 +503,28 @@ router.post("/thumbnail/chat", async (req, res) => {
 
 // ── Brand preset CRUD ───────────────────────────────────────────────────────
 // Presets are shared brand assets: everyone (signed in) can list + use them,
-// but only admins can create / edit / delete.
+// signed-in users can create / edit / delete.
 function ownerEmail(res: any): string {
   return (res.locals?.authSession as { email?: string } | undefined)?.email ?? "";
 }
-function isAdminReq(res: any): boolean {
+function canEditPresetsReq(res: any): boolean {
   const s = res.locals?.authSession as { authenticated?: boolean; role?: string } | undefined;
-  return Boolean(s?.authenticated && s.role === "admin");
+  return Boolean(s?.authenticated && ownerEmail(res));
 }
 
 // GET /api/thumbnail/presets — list shared presets (any signed-in user)
 router.get("/thumbnail/presets", async (_req, res) => {
-  const isAdmin = isAdminReq(res);
+  const canEdit = canEditPresetsReq(res);
   if (!isPresetStoreEnabled()) {
     // Return empty list but still tell the frontend whether the user is an
     // admin (so the create UI is accessible — they can attempt to save and
     // get a clear "not configured" error then).
-    res.json({ presets: [], enabled: false, canEdit: isAdmin });
+    res.json({ presets: [], enabled: false, canEdit });
     return;
   }
   try {
     const presets = await listPresetsForOwner(SHARED_PRESET_OWNER);
-    res.json({ presets, enabled: true, canEdit: isAdmin });
+    res.json({ presets, enabled: true, canEdit });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? "Failed to list presets" });
   }
@@ -556,7 +557,6 @@ router.post("/thumbnail/presets", async (req, res) => {
     return;
   }
   if (!ownerEmail(res)) { res.status(401).json({ error: "Sign in required." }); return; }
-  if (!isAdminReq(res)) { res.status(403).json({ error: "Only admins can manage presets." }); return; }
 
   const { id, name, stylePrompt = "", images = [] } = req.body as {
     id?: string;
@@ -579,6 +579,10 @@ router.post("/thumbnail/presets", async (req, res) => {
 
   if (!cleanName.trim()) { res.status(400).json({ error: "Channel name is required." }); return; }
   if (cleanImages.length < PRESET_MIN_IMAGES) { res.status(400).json({ error: `Add at least ${PRESET_MIN_IMAGES} reference images.` }); return; }
+  if (cleanStylePrompt.trim().length > PRESET_STYLE_PROMPT_MAX_CHARS) {
+    res.status(400).json({ error: `Style brief must be ${PRESET_STYLE_PROMPT_MAX_CHARS} characters or less.` });
+    return;
+  }
 
   try {
     const rec = await upsertPreset({ id, owner: SHARED_PRESET_OWNER, name: cleanName, stylePrompt: cleanStylePrompt, images: cleanImages });
@@ -592,7 +596,6 @@ router.post("/thumbnail/presets", async (req, res) => {
 router.delete("/thumbnail/presets/:id", async (req, res) => {
   if (!isPresetStoreEnabled()) { res.status(503).json({ error: "Preset storage is not configured." }); return; }
   if (!ownerEmail(res)) { res.status(401).json({ error: "Sign in required." }); return; }
-  if (!isAdminReq(res)) { res.status(403).json({ error: "Only admins can manage presets." }); return; }
   try {
     const ok = await deletePresetForOwner(String(req.params.id), SHARED_PRESET_OWNER);
     res.json({ ok });

@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 const BASE = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const PRESET_MIN_IMAGES = 5;
 const PRESET_MAX_IMAGES = 12;
+const PRESET_STYLE_PROMPT_MAX_CHARS = 5000;
 
 // Shape returned by GET /api/thumbnail/presets
 export type PresetSummary = {
@@ -252,7 +253,7 @@ export function ThumbnailPresets({
                 <p className="tp-intro">
                   {canEdit
                     ? `Save a channel's look once — name, a style brief, and ${PRESET_MIN_IMAGES}–${PRESET_MAX_IMAGES} reference thumbnails. Anyone can then pick it in the chat to generate on-brand thumbnails.`
-                    : "These are the channel brand presets. Pick one in the chat to generate on-brand thumbnails. Only admins can add or edit presets."}
+                    : "These are the channel brand presets. Pick one in the chat to generate on-brand thumbnails. Sign in to add or edit presets."}
                 </p>
 
                 {canEdit && (
@@ -324,14 +325,17 @@ export function ThumbnailPresets({
                 </label>
 
                 <label className="tp-field">
-                  <span className="tp-label">Style brief <span className="tp-label-hint">(optional but recommended)</span></span>
+                  <span className="tp-label">
+                    Style brief
+                    <span className="tp-label-hint">{draft.stylePrompt.length}/{PRESET_STYLE_PROMPT_MAX_CHARS}</span>
+                  </span>
                   <textarea
                     className="tp-textarea"
                     value={draft.stylePrompt}
                     onChange={e => setDraft(d => ({ ...d, stylePrompt: e.target.value }))}
                     placeholder="Describe the channel's look: colors, fonts, mood, layout, recurring elements, how faces/text are placed…"
-                    rows={4}
-                    maxLength={1500}
+                    rows={8}
+                    maxLength={PRESET_STYLE_PROMPT_MAX_CHARS}
                   />
                 </label>
 

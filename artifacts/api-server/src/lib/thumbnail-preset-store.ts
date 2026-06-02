@@ -46,8 +46,9 @@ const KIND = "thumbnail-preset";
 const PRESET_NS = "thumbnail-presets";
 export const PRESET_MAX_IMAGES = 12;
 export const PRESET_MIN_IMAGES = 5;
+export const PRESET_STYLE_PROMPT_MAX_CHARS = 5000;
 // Presets are shared across the whole app (channel brand assets), stored under
-// one fixed owner key. Admins write them; everyone reads/uses them.
+// one fixed owner key. Signed-in users can write them; everyone reads/uses them.
 export const SHARED_PRESET_OWNER = "__thumbnail_shared__";
 
 let _client: DynamoDBClient | null = null;
@@ -253,7 +254,7 @@ export async function upsertPreset(params: {
     kind: KIND,
     owner: params.owner,
     name,
-    stylePrompt: params.stylePrompt.trim().slice(0, 2000),
+    stylePrompt: params.stylePrompt.trim().slice(0, PRESET_STYLE_PROMPT_MAX_CHARS),
     images: refs,
     // Preserve the original createdAt if this is an update.
     createdAt: existing?.createdAt ?? now,
