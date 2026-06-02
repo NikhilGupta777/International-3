@@ -3,13 +3,16 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Sparkles, Loader2, Download, X, Plus,
   ArrowUp, Square, Wand2, Maximize2, SquarePen, ChevronRight, History, Trash2,
+  Settings2, Check, ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { ThumbnailPresets, type PresetSummary } from "@/components/ThumbnailPresets";
 
 const BASE = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const MAX_IMAGES = 10;
 const HISTORY_KEY = "thumbnail-studio-history-v1";
+const ACTIVE_PRESET_KEY = "thumbnail-studio-active-preset";
 const MAX_SAVED_CHATS = 10;
 
 // ── Types (fully independent from the Super Agent) ──────────────────────────
@@ -398,6 +401,13 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
   const [showHistory, setShowHistory] = useState(false);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
 
+  // Brand presets (AWS-backed) + the currently selected one
+  const [presets, setPresets] = useState<PresetSummary[]>([]);
+  const [canEditPresets, setCanEditPresets] = useState(false);
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
+  const [showPresetsModal, setShowPresetsModal] = useState(false);
+  const [showPresetMenu, setShowPresetMenu] = useState(false);
+
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -416,6 +426,35 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       }
     } catch { /* ignore */ }
   }, []);
+
+  // ── Load brand presets + restore the last selected one ────────────────────
+  const loadPresets = useCallback(async () => {
+    try {
+      const r = await fetch(`${BASE}/api/thumbnail/presets`, { credentials: "include" });
+      const data = await r.json().catch(() => ({}));
+      const rows: PresetSummary[] = Array.isArray(data?.presets) ? data.presets : [];
+      setPresets(rows);
+      setCanEditPresets(Boolean(data?.canEdit));
+      // Drop the active selection if that preset no longer exists.
+      setActivePresetId(prev => (prev && rows.some(p => p.id === prev) ? prev : prev));
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    void loadPresets();
+    try {
+      const saved = localStorage.getItem(ACTIVE_PRESET_KEY);
+      if (saved) setActivePresetId(saved);
+    } catch { /* ignore */ }
+  }, [loadPresets]);
+
+  // Persist the active preset choice.
+  useEffect(() => {
+    try {
+      if (activePresetId) localStorage.setItem(ACTIVE_PRESET_KEY, activePresetId);
+      else localStorage.removeItem(ACTIVE_PRESET_KEY);
+    } catch { /* ignore */ }
+  }, [activePresetId]);
 
   // ── Reshuffle starter suggestions every 4s while on the empty screen ──────
   useEffect(() => {
@@ -641,7 +680,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [...priorWire, currentWire] }),
+        body: JSON.stringify({ messages: [...priorWire, currentWire], presetId: activePresetId ?? undefined }),
         signal: abortRef.current.signal,
       });
       if (!resp.ok || !resp.body) {
@@ -690,7 +729,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       setThinking(false);
       assistantIdRef.current = null;
     }
-  }, [messages, streaming, handleEvent, appendText, patchAssistant]);
+  }, [messages, streaming, handleEvent, appendText, patchAssistant, activePresetId]);
 
   const handleStop = () => {
     abortRef.current?.abort();
@@ -775,8 +814,18 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
 
   return (
     <div className={cn("thumb-wrap", isEmpty && "thumb-wrap-empty")}>
-      {/* Top bar — History + New chat (ChatGPT style), top-right */}
+      {/* Top bar — Settings (admin presets) + History + New chat (top-right) */}
       <div className="thumb-topbar">
+        {canEditPresets && (
+          <button
+            className="thumb-topbar-btn"
+            onClick={() => setShowPresetsModal(true)}
+            title="Manage brand presets"
+            aria-label="Manage brand presets"
+          >
+            <Settings2 className="w-[18px] h-[18px]" />
+          </button>
+        )}
         <button
           className="thumb-topbar-btn"
           onClick={() => setShowHistory(s => !s)}
@@ -795,6 +844,17 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
           <SquarePen className="w-[18px] h-[18px]" />
         </button>
       </div>
+
+      {/* Presets manager modal */}
+      <ThumbnailPresets
+        open={showPresetsModal}
+        onClose={() => setShowPresetsModal(false)}
+        onChanged={(rows) => {
+          setPresets(rows);
+          // If the active preset was deleted, clear it.
+          setActivePresetId(prev => (prev && rows.some(p => p.id === prev) ? prev : null));
+        }}
+      />
 
       {/* History panel */}
       <AnimatePresence>
@@ -871,6 +931,72 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
             className="thumb-composer"
             onSubmit={e => { e.preventDefault(); void sendMessage(input, pending); }}
           >
+            {/* Active brand preset selector */}
+            <div className="thumb-preset-bar">
+              <div className="thumb-preset-wrap">
+                <button
+                  type="button"
+                  className={cn("thumb-preset-trigger", activePresetId && "thumb-preset-trigger-active")}
+                  onClick={() => setShowPresetMenu(s => !s)}
+                  title="Brand preset"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span className="thumb-preset-trigger-label">
+                    {activePresetId
+                      ? (presets.find(p => p.id === activePresetId)?.name ?? "Preset")
+                      : "No preset"}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+                </button>
+
+                <AnimatePresence>
+                  {showPresetMenu && (
+                    <>
+                      <div className="thumb-preset-menu-backdrop" onClick={() => setShowPresetMenu(false)} />
+                      <motion.div
+                        className="thumb-preset-menu"
+                        initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                        transition={{ duration: 0.15 }}
+                      >
+                        <button
+                          type="button"
+                          className={cn("thumb-preset-opt", !activePresetId && "thumb-preset-opt-active")}
+                          onClick={() => { setActivePresetId(null); setShowPresetMenu(false); }}
+                        >
+                          <span>No preset</span>
+                          {!activePresetId && <Check className="w-3.5 h-3.5" />}
+                        </button>
+                        {presets.map(p => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            className={cn("thumb-preset-opt", activePresetId === p.id && "thumb-preset-opt-active")}
+                            onClick={() => { setActivePresetId(p.id); setShowPresetMenu(false); }}
+                          >
+                            <span className="thumb-preset-opt-thumbs">
+                              {p.images.slice(0, 3).map((im, i) => <img key={i} src={im.url} alt="" />)}
+                            </span>
+                            <span className="thumb-preset-opt-name">{p.name}</span>
+                            {activePresetId === p.id && <Check className="w-3.5 h-3.5 shrink-0" />}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          className="thumb-preset-opt thumb-preset-manage"
+                          onClick={() => { setShowPresetMenu(false); setShowPresetsModal(true); }}
+                        >
+                          <Settings2 className="w-3.5 h-3.5" />
+                          <span>Manage presets…</span>
+                        </button>
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>
+
             {pending.length > 0 && (
               <div className="thumb-attach-row">
                 {pending.map(a => (

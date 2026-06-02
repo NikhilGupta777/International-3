@@ -26,6 +26,16 @@ import {
   isGeminiConfigured,
   ensureVertexCredentials,
 } from "../lib/gemini-client";
+import {
+  isPresetStoreEnabled,
+  listPresetsForOwner,
+  upsertPreset,
+  deletePresetForOwner,
+  loadPresetImages,
+  PRESET_MAX_IMAGES,
+  SHARED_PRESET_OWNER,
+  type PresetImageInput,
+} from "../lib/thumbnail-preset-store";
 
 const router = Router();
 
@@ -221,17 +231,28 @@ router.post("/thumbnail/chat", async (req, res) => {
   }
   try { await ensureVertexCredentials(); } catch { /* env-key based — non-fatal */ }
 
-  const { messages = [] } = req.body as {
+  const { messages = [], presetId } = req.body as {
     messages: Array<{
       role: "user" | "model";
       content?: string;
       attachments?: Array<{ type: string; name?: string; mimeType?: string; data?: string }>;
     }>;
+    // Optional brand preset id — server loads the channel's style prompt and
+    // reference images from the preset store and applies them this turn.
+    presetId?: string;
   };
 
   if (!Array.isArray(messages) || messages.length === 0) {
     res.status(400).json({ error: "messages array is required" });
     return;
+  }
+
+  // Resolve the brand preset (if any) — presets are shared/global.
+  let activePreset: { name: string; stylePrompt: string; images: Array<{ data: string; mimeType: string }> } | null = null;
+  if (presetId) {
+    try {
+      activePreset = await loadPresetImages(String(presetId), SHARED_PRESET_OWNER);
+    } catch { activePreset = null; }
   }
 
   const history = messages.slice(-MAX_HISTORY);
@@ -261,10 +282,20 @@ router.post("/thumbnail/chat", async (req, res) => {
       send(res, { type: "thumb_start", runId, toolId, mode: "generate" });
       send(res, { type: "thumb_progress", runId, toolId, message: "Designing your thumbnail…" });
       try {
+        // Brand preset: prepend the channel style brief and feed reference
+        // images to the image model so output matches the channel's look.
+        const presetImgs = activePreset?.images ?? [];
+        const styledPrompt = activePreset
+          ? `${prompt}\n\nBRAND STYLE — match the channel "${activePreset.name}". ` +
+            `${activePreset.stylePrompt ? activePreset.stylePrompt + " " : ""}` +
+            `Use the ${presetImgs.length} attached reference thumbnails ONLY as a style guide ` +
+            `(layout, color grading, font feel, mood, framing) — do NOT copy their exact subjects unless asked.`
+          : prompt;
         const out = await renderThumbnail({
-          prompt,
+          prompt: styledPrompt,
           aspectRatio: args.aspectRatio,
           imageSize: args.imageSize,
+          baseImages: presetImgs.length > 0 ? presetImgs : undefined,
         });
         lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
@@ -287,14 +318,23 @@ router.post("/thumbnail/chat", async (req, res) => {
       send(res, { type: "thumb_start", runId, toolId, mode: "edit" });
       send(res, { type: "thumb_progress", runId, toolId, message: "Editing the image…" });
       try {
+        // Reference images = the image(s) being edited first, then any preset
+        // style references appended after them.
+        const presetImgs = activePreset?.images ?? [];
+        const styleNote = activePreset
+          ? ` Match the channel "${activePreset.name}" brand style.` +
+            `${activePreset.stylePrompt ? " " + activePreset.stylePrompt : ""}` +
+            (presetImgs.length ? ` The last ${presetImgs.length} attached images are brand style references, not edit targets.` : "")
+          : "";
         const out = await renderThumbnail({
           prompt:
             (base.length > 1
               ? `Combine/use the ${base.length} provided images to create one video thumbnail. ${instructions}. `
               : `Edit this image as a video thumbnail. ${instructions}. `) +
-            `Preserve the important subjects and any faces. Keep it high-contrast and readable at small sizes.`,
+            `Preserve the important subjects and any faces. Keep it high-contrast and readable at small sizes.` +
+            styleNote,
           aspectRatio: args.aspectRatio,
-          baseImages: base,
+          baseImages: [...base, ...presetImgs],
         });
         lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
@@ -310,6 +350,16 @@ router.post("/thumbnail/chat", async (req, res) => {
 
   try {
     const ai = createGeminiClient();
+
+    // When a brand preset is active, tell the chat model so it always routes
+    // through the image tools (which inject the reference images + style).
+    const presetSystemAddendum = activePreset
+      ? `\n\nACTIVE BRAND PRESET: "${activePreset.name}".\n` +
+        `The user has selected this channel preset. Every thumbnail you generate or edit this turn must follow its brand style. ` +
+        `${activePreset.stylePrompt ? `Channel style brief: ${activePreset.stylePrompt}\n` : ""}` +
+        `The image tool automatically receives this channel's reference thumbnails — you do NOT need to describe them. ` +
+        `Just craft the concept prompt; the brand look is applied for you.`
+      : "";
 
     // Build multimodal contents — images go in as inlineData so the model sees them.
     let contents: any[] = history
@@ -340,7 +390,7 @@ router.post("/thumbnail/chat", async (req, res) => {
             model: THUMB_CHAT_MODEL,
             contents,
             config: {
-              systemInstruction: THUMB_SYSTEM_PROMPT,
+              systemInstruction: THUMB_SYSTEM_PROMPT + presetSystemAddendum,
               tools: [{ functionDeclarations: THUMB_TOOLS as any }],
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: THUMB_MAX_OUTPUT_TOKENS,
@@ -445,6 +495,76 @@ router.post("/thumbnail/chat", async (req, res) => {
       try { send(res, { type: "done", runId }); } catch { /* ignore */ }
     }
     if (!res.writableEnded) res.end();
+  }
+});
+
+// ── Brand preset CRUD ───────────────────────────────────────────────────────
+// Presets are shared brand assets: everyone (signed in) can list + use them,
+// but only admins can create / edit / delete.
+function ownerEmail(res: any): string {
+  return (res.locals?.authSession as { email?: string } | undefined)?.email ?? "";
+}
+function isAdminReq(res: any): boolean {
+  const s = res.locals?.authSession as { authenticated?: boolean; role?: string } | undefined;
+  return Boolean(s?.authenticated && s.role === "admin");
+}
+
+// GET /api/thumbnail/presets — list shared presets (any signed-in user)
+router.get("/thumbnail/presets", async (_req, res) => {
+  if (!isPresetStoreEnabled()) {
+    res.json({ presets: [], enabled: false, canEdit: false });
+    return;
+  }
+  try {
+    const presets = await listPresetsForOwner(SHARED_PRESET_OWNER);
+    res.json({ presets, enabled: true, canEdit: isAdminReq(res) });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? "Failed to list presets" });
+  }
+});
+
+// POST /api/thumbnail/presets — create or update a preset (ADMIN ONLY)
+router.post("/thumbnail/presets", async (req, res) => {
+  if (!isPresetStoreEnabled()) {
+    res.status(503).json({ error: "Preset storage is not configured (needs S3 + jobs table)." });
+    return;
+  }
+  if (!ownerEmail(res)) { res.status(401).json({ error: "Sign in required." }); return; }
+  if (!isAdminReq(res)) { res.status(403).json({ error: "Only admins can manage presets." }); return; }
+
+  const { id, name, stylePrompt = "", images = [] } = req.body as {
+    id?: string;
+    name?: string;
+    stylePrompt?: string;
+    images?: Array<{ mimeType?: string; data?: string; filename?: string }>;
+  };
+
+  const cleanImages: PresetImageInput[] = (Array.isArray(images) ? images : [])
+    .filter((im) => im?.data && im?.mimeType)
+    .slice(0, PRESET_MAX_IMAGES)
+    .map((im) => ({ data: String(im.data), mimeType: String(im.mimeType), filename: im.filename }));
+
+  if (!name || !name.trim()) { res.status(400).json({ error: "Channel name is required." }); return; }
+  if (cleanImages.length < 1) { res.status(400).json({ error: "Add at least one reference image." }); return; }
+
+  try {
+    const rec = await upsertPreset({ id, owner: SHARED_PRESET_OWNER, name, stylePrompt, images: cleanImages });
+    res.json({ ok: true, id: rec.jobId, name: rec.name, imageCount: rec.images.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? "Failed to save preset" });
+  }
+});
+
+// DELETE /api/thumbnail/presets/:id — delete a preset (ADMIN ONLY)
+router.delete("/thumbnail/presets/:id", async (req, res) => {
+  if (!isPresetStoreEnabled()) { res.status(503).json({ error: "Preset storage is not configured." }); return; }
+  if (!ownerEmail(res)) { res.status(401).json({ error: "Sign in required." }); return; }
+  if (!isAdminReq(res)) { res.status(403).json({ error: "Only admins can manage presets." }); return; }
+  try {
+    const ok = await deletePresetForOwner(String(req.params.id), SHARED_PRESET_OWNER);
+    res.json({ ok });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? "Failed to delete preset" });
   }
 });
 
