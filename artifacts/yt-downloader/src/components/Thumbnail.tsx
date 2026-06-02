@@ -14,7 +14,7 @@ const MAX_IMAGES = 10;
 type ThumbPart =
   | { kind: "text"; content: string }
   | { kind: "images"; items: Array<{ previewUrl: string; name: string }> }
-  | { kind: "thumb"; status: "loading" | "done" | "error"; mode?: string; imageUrl?: string; filename?: string; message?: string };
+  | { kind: "thumb"; status: "thinking" | "loading" | "done" | "error"; mode?: string; imageUrl?: string; filename?: string; message?: string };
 
 type ThumbMessage = { id: string; role: "user" | "assistant"; parts: ThumbPart[] };
 
@@ -35,6 +35,52 @@ const STARTERS: string[] = [
   "Make a bold thumbnail for a Bhavishya Malika prophecy video with a divine golden glow and the headline “2025 की भविष्यवाणी”",
   "Create a high-energy YouTube thumbnail for a motivational talk — shocked face, dark background, huge text “DON’T QUIT”",
 ];
+
+// ── Downscale a large image to keep request payloads under the body limit ───
+// 10 full-res phone photos as base64 can blow past the 10MB server limit.
+// We cap the longest edge and re-encode as JPEG (or keep PNG if it has alpha
+// and is small). Returns { mimeType, base64, dataUrl }.
+async function downscaleImage(file: File, maxEdge = 1600, quality = 0.85): Promise<{ mimeType: string; data: string; previewUrl: string }> {
+  const dataUrl: string = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result ?? ""));
+    r.onerror = () => reject(new Error("read failed"));
+    r.readAsDataURL(file);
+  });
+
+  // Small files (< ~1.2MB) and non-raster types: keep as-is.
+  if (file.size < 1_200_000) {
+    const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+    return { mimeType: file.type || "image/png", data: base64, previewUrl: dataUrl };
+  }
+
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error("decode failed"));
+      im.src = dataUrl;
+    });
+    const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+    if (scale >= 1) {
+      const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+      return { mimeType: file.type || "image/png", data: base64, previewUrl: dataUrl };
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.width * scale);
+    canvas.height = Math.round(img.height * scale);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no 2d context");
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const outUrl = canvas.toDataURL("image/jpeg", quality);
+    const base64 = outUrl.split(",")[1] ?? "";
+    return { mimeType: "image/jpeg", data: base64, previewUrl: outUrl };
+  } catch {
+    // Fallback to original if canvas processing fails.
+    const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+    return { mimeType: file.type || "image/png", data: base64, previewUrl: dataUrl };
+  }
+}
 
 // ── Markdown-lite renderer for assistant text ───────────────────────────────
 function renderText(text: string): React.ReactNode {
@@ -160,6 +206,15 @@ function ThumbCard({ part, thinking, onPreview }: { part: ThumbPart & { kind: "t
     }
   };
 
+  if (part.status === "thinking") {
+    return (
+      <div className="thumb-thinking" role="status" aria-label="Thinking">
+        <span className="thumb-thinking-dot" />
+        <span className="thumb-thinking-dot" />
+        <span className="thumb-thinking-dot" />
+      </div>
+    );
+  }
   if (part.status === "loading") {
     return <GeneratingThumb mode={part.mode} thinking={thinking} />;
   }
@@ -184,7 +239,9 @@ function ThumbCard({ part, thinking, onPreview }: { part: ThumbPart & { kind: "t
         <img
           src={part.imageUrl}
           alt="Generated thumbnail"
+          ref={el => { if (el?.complete) setLoaded(true); }}
           onLoad={() => setLoaded(true)}
+          onError={() => setLoaded(true)}
           className={cn("thumb-card-img", loaded ? "thumb-card-img-revealed" : "thumb-card-img-hidden")}
         />
         {loaded && (
@@ -292,11 +349,9 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
       toast({ title: "Images only", description: "Attach image files to use as references.", variant: "destructive" });
       return;
     }
-    images.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = String(reader.result ?? "");
-        const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+    images.forEach(async file => {
+      try {
+        const processed = await downscaleImage(file);
         setPending(cur => {
           if (cur.length >= MAX_IMAGES) {
             toast({ title: "Limit reached", description: `Up to ${MAX_IMAGES} images per message.` });
@@ -304,11 +359,12 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
           }
           return [...cur, {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            name: file.name, mimeType: file.type, data: base64, previewUrl: dataUrl,
+            name: file.name, mimeType: processed.mimeType, data: processed.data, previewUrl: processed.previewUrl,
           }];
         });
-      };
-      reader.readAsDataURL(file);
+      } catch {
+        toast({ title: "Couldn't read image", description: file.name, variant: "destructive" });
+      }
     });
   }, [toast]);
 
@@ -337,15 +393,28 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         return;
       case "text":
         setThinking(false);
+        // The model is talking (a question or final note) rather than generating
+        // right now — drop the pre-seeded "thinking" placeholder so the text
+        // isn't shown beside a generation animation.
+        patchAssistant(m => ({
+          ...m,
+          parts: m.parts.filter(p => !(p.kind === "thumb" && p.status === "thinking")),
+        }));
         appendText(evt.content);
         return;
       case "thumb_start":
         setThinking(false);
         patchAssistant(m => {
-          // Reuse an existing loading card if one is already showing (seamless
-          // thinking → making with no flicker); otherwise add one.
-          if (m.parts.some(p => p.kind === "thumb" && p.status === "loading")) {
-            return { ...m, parts: m.parts.map(p => p.kind === "thumb" && p.status === "loading" ? { ...p, mode: evt.mode } : p) };
+          // Promote the pre-seeded "thinking" card (or an existing loading card)
+          // to the full generation animation — seamless, no flicker.
+          if (m.parts.some(p => p.kind === "thumb" && (p.status === "thinking" || p.status === "loading"))) {
+            return {
+              ...m,
+              parts: m.parts.map(p =>
+                p.kind === "thumb" && (p.status === "thinking" || p.status === "loading")
+                  ? { ...p, status: "loading", mode: evt.mode }
+                  : p),
+            };
           }
           return { ...m, parts: [...m.parts, { kind: "thumb", status: "loading", mode: evt.mode }] };
         });
@@ -396,12 +465,12 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     const userMsg: ThumbMessage = { id: `u-${Date.now()}`, role: "user", parts: userParts };
     const assistantId = `a-${Date.now()}`;
     assistantIdRef.current = assistantId;
-    // Pre-seed the assistant message with a loading card so thinking → making
-    // happens inside ONE element (no appearing/disappearing gap).
+    // Pre-seed the assistant message with a compact "thinking" card so the
+    // thinking → making → reveal flow happens inside ONE element (no gap).
     const assistantMsg: ThumbMessage = {
       id: assistantId,
       role: "assistant",
-      parts: [{ kind: "thumb", status: "loading" }],
+      parts: [{ kind: "thumb", status: "thinking" }],
     };
 
     const priorWire = messages.map(m => ({
@@ -466,10 +535,10 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         markSeen();
       }
     } finally {
-      // Clean up any orphan loading card (e.g. the model replied with text only).
+      // Clean up any orphan thinking/loading card (e.g. model returned nothing).
       patchAssistant(m => ({
         ...m,
-        parts: m.parts.filter(p => !(p.kind === "thumb" && p.status === "loading")),
+        parts: m.parts.filter(p => !(p.kind === "thumb" && (p.status === "thinking" || p.status === "loading"))),
       }));
       if (!sawAnything) {
         patchAssistant(m => m.parts.length === 0 ? { ...m, parts: [{ kind: "text", content: "Hmm, nothing came back. Try again?" }] } : m);
@@ -484,7 +553,9 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     abortRef.current?.abort();
     patchAssistant(m => ({
       ...m,
-      parts: m.parts.map(p => (p.kind === "thumb" && p.status === "loading" ? { kind: "thumb", status: "error", message: "Stopped." } : p)),
+      parts: m.parts
+        .filter(p => !(p.kind === "thumb" && p.status === "thinking"))
+        .map(p => (p.kind === "thumb" && p.status === "loading" ? { kind: "thumb", status: "error", message: "Stopped." } : p)),
     }));
     setStreaming(false);
     setThinking(false);

@@ -91,7 +91,7 @@ async function renderThumbnail(params: {
   aspectRatio?: string;
   imageSize?: string;
   baseImages?: Array<{ data: string; mimeType: string }>;
-}): Promise<{ imageUrl: string; filename: string; note: string }> {
+}): Promise<{ imageUrl: string; filename: string; note: string; data: string; mimeType: string }> {
   const ai = createGeminiClient();
   const parts: any[] = [{ text: params.prompt }];
   for (const img of params.baseImages ?? []) {
@@ -116,7 +116,7 @@ async function renderThumbnail(params: {
     const mimeType = part.inlineData?.mimeType ?? "image/png";
     if (imageData) {
       const published = await publishThumbnail(imageData, mimeType);
-      return { ...published, note: cleanText(note).trim() };
+      return { ...published, note: cleanText(note).trim(), data: imageData, mimeType };
     }
   }
   throw new Error("The image model returned no image. Try rephrasing the idea.");
@@ -266,7 +266,7 @@ router.post("/thumbnail/chat", async (req, res) => {
           aspectRatio: args.aspectRatio,
           imageSize: args.imageSize,
         });
-        // Remember a copy for future edits (fetch bytes back only when needed via data URL).
+        lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
         return { ok: true, filename: out.filename, note: out.note || "Thumbnail generated." };
       } catch (err: any) {
@@ -296,6 +296,7 @@ router.post("/thumbnail/chat", async (req, res) => {
           aspectRatio: args.aspectRatio,
           baseImages: base,
         });
+        lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
         return { ok: true, filename: out.filename, note: out.note || "Thumbnail edited." };
       } catch (err: any) {
