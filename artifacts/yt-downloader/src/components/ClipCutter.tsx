@@ -896,7 +896,7 @@ export function ClipCutter() {
           `}</style>
           {/* Glowing backdrop blur */}
           <div 
-            className="absolute -inset-[1.5px] rounded-[12px] opacity-40 blur-[8px] transition-all duration-500 group-hover:opacity-60 group-focus-within:opacity-85"
+            className="absolute -inset-[5.5px] rounded-[12px] opacity-50 blur-[10px] transition-all duration-500 group-hover:opacity-70 group-focus-within:opacity-90"
             style={{
               background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
               backgroundSize: '300% 300%',
@@ -904,7 +904,7 @@ export function ClipCutter() {
             }}
           />
           {/* Outer border wrapper */}
-          <div className="relative w-full rounded-[12px] p-[1px] overflow-hidden bg-zinc-800">
+          <div className="relative w-full rounded-[12px] p-[1.2px] overflow-hidden bg-zinc-800">
             {/* Border background gradient */}
             <div 
               className="absolute inset-0"
@@ -950,56 +950,56 @@ export function ClipCutter() {
                   {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                 </button>
               </div>
-
-              {/* Helper Preview Card (opens relative to input field) */}
-              <AnimatePresence>
-                {showHelper && (
-                  <>
-                    {/* Overlay backdrop to close */}
-                    <div className="fixed inset-0 z-40" onClick={() => setShowHelper(false)} />
-                    <motion.div
-                      initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                      animate={{ opacity: 1, scale: 1, y: 0 }}
-                      exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                      className="absolute right-0 top-14 z-50 w-80 rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <Info className="h-4 w-4 text-orange-400" />
-                          <span className="text-sm font-bold text-white">How Clip Cut Works</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setShowHelper(false)}
-                          className="p-1 rounded-lg hover:bg-white/10 text-zinc-500 hover:text-white transition"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                      <p className="text-xs text-zinc-400 leading-relaxed">
-                        Paste a YouTube URL and describe the range to cut. AI will automatically interpret it, or you can input start & end times manually in Advanced options.
-                      </p>
-                      
-                      {/* Tutorial image placeholder */}
-                      <div className="relative aspect-video rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center">
-                        <img
-                          src="/clip_cut_tutorial_placeholder.png"
-                          alt="Clip Cut Tutorial"
-                          className="h-full w-full object-cover"
-                        />
-                        <div className="absolute inset-0 bg-black/45 flex flex-col items-center justify-center gap-1.5 p-2 text-center pointer-events-none">
-                          <div className="rounded-full bg-white/10 p-2 backdrop-blur-sm border border-white/20">
-                            <Film className="h-4 w-4 text-white" />
-                          </div>
-                          <span className="text-[10px] font-semibold text-white/90">Tutorial Video (Placeholder)</span>
-                        </div>
-                      </div>
-                    </motion.div>
-                  </>
-                )}
-              </AnimatePresence>
             </div>
           </div>
+
+          {/* Helper Preview Card (opens relative to input field) */}
+          <AnimatePresence>
+            {showHelper && (
+              <>
+                {/* Overlay backdrop to close */}
+                <div className="fixed inset-0 z-40" onClick={() => setShowHelper(false)} />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                  className="absolute right-0 top-16 z-50 w-80 rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Info className="h-4 w-4 text-orange-400" />
+                      <span className="text-sm font-bold text-white">How Clip Cut Works</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowHelper(false)}
+                      className="p-1 rounded-lg hover:bg-white/10 text-zinc-500 hover:text-white transition"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    Paste a YouTube URL and describe the range to cut. AI will automatically interpret it, or you can input start & end times manually in Advanced options.
+                  </p>
+                  
+                  {/* Tutorial image placeholder */}
+                  <div className="relative aspect-video rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center">
+                    <img
+                      src="/clip_cut_tutorial_placeholder.png"
+                      alt="Clip Cut Tutorial"
+                      className="h-full w-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-black/45 flex flex-col items-center justify-center gap-1.5 p-2 text-center pointer-events-none">
+                      <div className="rounded-full bg-white/10 p-2 backdrop-blur-sm border border-white/20">
+                        <Film className="h-4 w-4 text-white" />
+                      </div>
+                      <span className="text-[10px] font-semibold text-white/90">Tutorial Video (Placeholder)</span>
+                    </div>
+                  </div>
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Advanced Options small tab inside the same form */}
