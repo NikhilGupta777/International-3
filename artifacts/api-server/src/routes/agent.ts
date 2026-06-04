@@ -2599,12 +2599,14 @@ router.post("/agent/chat", async (req, res) => {
     };
   });
 
-  // Resolve model: "ultra" → ULTRA_MODEL, "default"/undefined → AGENT_MODEL,
-  // explicit Gemini model id → use only if allow-listed.
+  // Resolve model:
+  //   "flash" / "default" / undefined → AGENT_MODEL (gemini-3.5-flash), MEDIUM thinking
+  //   "pro"                           → AGENT_MODEL (gemini-3.5-flash), HIGH thinking
+  //   "advanced" / "ultra"            → ULTRA_MODEL (gemini-3.1-pro-preview), HIGH thinking
   let activeModel = AGENT_MODEL;
-  if (requestedModel === "ultra") {
+  if (requestedModel === "advanced" || requestedModel === "ultra") {
     activeModel = ULTRA_MODEL;
-  } else if (requestedModel && requestedModel !== "default" && ALLOWED_MODELS.has(requestedModel)) {
+  } else if (requestedModel && requestedModel !== "default" && requestedModel !== "flash" && requestedModel !== "pro" && ALLOWED_MODELS.has(requestedModel)) {
     activeModel = requestedModel;
   }
 
@@ -2693,7 +2695,7 @@ router.post("/agent/chat", async (req, res) => {
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
               thinkingConfig: {
-                thinkingLevel: (requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
+                thinkingLevel: (requestedModel === "pro" || requestedModel === "advanced" || requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
                 includeThoughts: true,
               },
             },

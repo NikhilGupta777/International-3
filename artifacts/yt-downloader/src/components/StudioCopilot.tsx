@@ -23,9 +23,9 @@ function readUltraInitial(): boolean {
 
 type ReasoningMode = "flash" | "pro" | "advanced";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "flash", label: "3.5 Flash", description: "Fast everyday responses", ultra: false },
-  { id: "pro", label: "3.1 Pro", description: "Deeper video and creative work", ultra: true },
-  { id: "advanced", label: "Advanced reasoning tasks", description: "Use extended reasoning for complex requests", ultra: true },
+  { id: "flash",    label: "3.5 Flash",    description: "Fast everyday responses",              ultra: false },
+  { id: "pro",      label: "3.5 Flash Pro", description: "Deeper thinking, same fast model",    ultra: false },
+  { id: "advanced", label: "3.1 Pro",       description: "Most capable — complex creative work", ultra: true  },
 ];
 
 function readReasoningInitial(): ReasoningMode {
@@ -1682,7 +1682,7 @@ export function StudioCopilot({
     try {
       const resp = await fetch(`${BASE}/api/agent/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, messages: history, model: ultra ? "ultra" : "default", skills: snapshotSkills }),
+        body: JSON.stringify({ sessionId, messages: history, model: reasoningMode, skills: snapshotSkills }),
         signal: abortRef.current.signal,
       });
       if (!resp.ok || !resp.body) throw new Error(`Server error: ${resp.status}`);
