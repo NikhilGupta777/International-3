@@ -58,8 +58,6 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "check_job_status":
     case "check_active_jobs":
     case "repeat_last_artifact":
-    case "read_uploaded_file":
-    case "describe_image":
     case "extract_text_from_image":
     case "write_video_script":
     case "generate_seo_pack":
@@ -718,6 +716,21 @@ const STUDIO_TOOLS: any[] = [
   },
 ];
 
+// These legacy helper tools are intentionally kept implemented below, but are
+// no longer advertised to Gemini. The base model can handle these tasks from
+// visible chat/upload context, and exposing them caused avoidable tool spam.
+const GEMINI_DIRECT_TOOL_NAMES = new Set([
+  "fix_subtitles",
+  "compare_subtitles",
+  "convert_subtitles",
+  "describe_image",
+  "read_uploaded_file",
+]);
+
+const AGENT_VISIBLE_TOOLS = STUDIO_TOOLS.filter(
+  (tool) => !GEMINI_DIRECT_TOOL_NAMES.has(tool.name),
+);
+
 function buildAgentTools(includeNativeSearch: boolean): any[] {
   const tools: any[] = [];
   if (includeNativeSearch && ENABLE_NATIVE_AGENT_SEARCH) {
@@ -725,7 +738,7 @@ function buildAgentTools(includeNativeSearch: boolean): any[] {
     // extra web_search function-call round trip.
     tools.push({ googleSearch: {} });
   }
-  tools.push({ functionDeclarations: STUDIO_TOOLS as any });
+  tools.push({ functionDeclarations: AGENT_VISIBLE_TOOLS as any });
   return tools;
 }
 
@@ -778,7 +791,7 @@ Use your own intelligence first. Do NOT call tools for:
 Call tools only when the user needs a real app action or unavailable information:
 - YouTube metadata, captions, video analysis, download, clip, subtitles, timestamps, best clips, translation/dubbing
 - Image generation/edit/enhancement that must produce an output image file
-- File reading, export, format conversion
+- File export/download or app navigation actions
 - Web research or current information
 - Job status, cancel, repeat artifact, tab navigation
 - Code or data calculation
@@ -864,7 +877,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "summarize / explain / find the moment when / quote what they said" | analyze_youtube_video (AI watches + listens) |
 | "give me the captions / subtitles already on YouTube" | get_youtube_captions (instant, no transcription) |
 | "transcribe / generate subtitles / translate subtitles" | generate_subtitles |
-| "fix / clean my .srt" (user provided text) | fix_subtitles |
+| "fix / clean pasted SRT/VTT/TXT" | answer directly with cleaned text; use canvas for long subtitle output |
 | "cut from X to Y / make a clip" | cut_video_clip |
 | "download the whole video / get the audio" | download_video (use quality='audio_only' for audio) |
 | "find best moments / highlights / shorts" | find_best_clips |
@@ -875,7 +888,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "create/generate an image" | create_image — understand user intent deeply, craft a rich detailed prompt (composition, lighting, style, mood, colors), and pick the right aspect ratio for the use case (16:9 for thumbnails, 9:16 for stories/reels, 1:1 for social posts, etc.) |
 | "make this attached image clearer / enhance / restore" | enhance_image |
 | "edit this attached image" | edit_image — craft a precise editing prompt from user intent (what to change, what to preserve, style, constraints) |
-| "what is in this image" | describe_image only when user needs structured artifact/card; otherwise answer directly |
+| "what is in this image" | answer directly using Gemini vision |
 | "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
 | "make music / generate a song / compose / create soundtrack / background music" | MANDATORY: call generate_music — you MUST call this tool, never describe or write about the music instead. Ask duration naturally if unclear ("short ~30s or a full song ~2-3 min?"). Craft a vivid Lyria prompt with genre, mood, instruments, tempo, structure. FORBIDDEN: saying "Done", "I have generated", "use the download button", or describing the result in ANY way before the tool has actually run and returned. If the tool fails, say it failed — never pretend success. |
 | "write script / storyboard / shot list" | write_video_script — craft a detailed topic brief (audience, platform, tone, key points, emotional arc) before calling; only when user needs downloadable file, otherwise answer directly |
@@ -885,9 +898,9 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "continue/check running jobs / active jobs" | check_active_jobs |
 | "cancel all / stop all running jobs" | cancel_active_jobs |
 | "send/open result in tab" | send_result_to_tab |
-| "read this uploaded file / summarize PDF/CSV/JSON/SRT/TXT" | read_uploaded_file |
-| "convert srt/vtt/txt" | convert_subtitles |
-| "compare two subtitle files" | compare_subtitles |
+| "read/summarize uploaded text/PDF/CSV/JSON/SRT/TXT already in context" | answer directly from Gemini context |
+| "convert small SRT/VTT/TXT text" | answer directly with converted content; use canvas for long output |
+| "compare two subtitle blocks/files in context" | answer directly with comparison |
 | "export this as file / download this text" | export_text_file |
 | "calculate/analyze CSV/JSON/table/chart" | run_code_analysis |
 | "run code / use sandbox / install package / execute shell / create files in sandbox" | run_sandbox_command |
@@ -904,7 +917,7 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 
 - Existing YouTube captions → get_youtube_captions (instant, uses YouTube's own captions)
 - New transcription from audio / translated SRT / no captions available → generate_subtitles
-- Fix pasted SRT/VTT/text → fix_subtitles (only when subtitle content is provided or uploaded)
+- Fix pasted SRT/VTT/text → answer directly; use canvas for long subtitle output
 
 Do not run generate_subtitles if YouTube captions would suffice.
 
