@@ -6645,13 +6645,15 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   .copilot-wrap .gs-mobile-chat-topbar {
-    position: absolute;
-    top: calc(24px + env(safe-area-inset-top));
-    right: 22px;
-    left: 88px;
+    position: relative;
+    top: auto;
+    right: auto;
+    left: auto;
     z-index: 55;
     display: flex;
+    flex: 0 0 auto;
     justify-content: flex-end;
+    padding: calc(24px + env(safe-area-inset-top)) 22px 0 88px;
     pointer-events: none;
   }
 
@@ -6691,7 +6693,7 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   .copilot-wrap .copilot-messages {
-    padding: calc(120px + env(safe-area-inset-top)) 26px 22px;
+    padding: 22px 26px 22px;
   }
 
   .copilot-wrap .agent-msg-col {
@@ -6793,7 +6795,7 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
 @media (max-width: 520px) {
   .copilot-wrap .copilot-messages {
-    padding: calc(112px + env(safe-area-inset-top)) 24px 20px;
+    padding: 20px 24px 20px;
   }
 
   .copilot-wrap .gs-message-text-assistant {

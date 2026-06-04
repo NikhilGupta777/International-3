@@ -1323,6 +1323,7 @@ async function readAttachmentText(req: any): Promise<{ content: string; name: st
   const url = attachment.url ?? "";
   if (url.startsWith("data:")) {
     const comma = url.indexOf(",");
+    if (comma === -1) throw new Error(`Malformed uploaded file data URL: ${attachment.name}`);
     const meta = url.slice(0, comma);
     const body = url.slice(comma + 1);
     const content = meta.includes(";base64") ? Buffer.from(body, "base64").toString("utf8") : decodeURIComponent(body);

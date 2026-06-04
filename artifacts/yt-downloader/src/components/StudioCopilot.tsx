@@ -426,9 +426,34 @@ function canvasFilename(language: string): string {
   return `agent-canvas.${ext}`;
 }
 
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
 function isHtmlCanvas(language: string, content: string): boolean {
   const lang = normalizeCanvasLanguage(language, content);
   return lang === "html" || /<!doctype html|<html[\s>]/i.test(content);
+}
+
+function sanitizeSearchEntryPoint(html: string): string {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  template.content.querySelectorAll("script, iframe, object, embed, form, input, button").forEach(el => el.remove());
+  template.content.querySelectorAll("*").forEach(el => {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      const value = attr.value.trim().toLowerCase();
+      if ((name === "href" || name === "src") && (value.startsWith("javascript:") || value.startsWith("data:"))) {
+        el.remove();
+        return;
+      }
+      if (name.startsWith("on")) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+  return template.innerHTML;
 }
 
 function extractCanvasCandidate(text: string): CanvasCandidate | null {
@@ -465,8 +490,8 @@ function extractCanvasCandidate(text: string): CanvasCandidate | null {
 // ── ToolCard ──────────────────────────────────────────────────────────────────
 function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
   const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
-  const pct = part.progress;
-  const hasProgress = pct !== null && pct !== undefined;
+  const pct = part.progress !== null && part.progress !== undefined ? clampPercent(Number(part.progress)) : null;
+  const hasProgress = pct !== null;
   const argStr = Object.entries(part.args).filter(([, v]) => v !== undefined && v !== "")
     .map(([k, v]) => `${k}: ${String(v).length > 40 ? String(v).slice(0, 37) + "..." : v}`).join("  ·  ");
   return (
@@ -500,7 +525,7 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
       )}
       {!part.done && (
         <div className="agent-tool-progress-track">
-          <div className="agent-tool-progress-fill" style={{ width: hasProgress ? `${Math.max(3, pct!)}%` : "0%", transition: hasProgress ? "width 0.6s ease" : "none" }} />
+          <div className="agent-tool-progress-fill" style={{ width: hasProgress ? `${Math.max(3, pct)}%` : "0%", transition: hasProgress ? "width 0.6s ease" : "none" }} />
           {!hasProgress && <div className="agent-tool-progress-shimmer" />}
         </div>
       )}
@@ -588,7 +613,7 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
               className="w-full max-w-6xl h-[86vh] rounded-3xl border border-white/12 bg-[#080d10] shadow-2xl overflow-hidden flex flex-col"
               onClick={e => e.stopPropagation()}
             >
-              <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-white/[0.035]">
+              <div className="relative z-10 flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-white/[0.035] shrink-0">
                 <div className="p-2 rounded-xl bg-cyan-400/12 border border-cyan-300/15">
                   <SquarePen className="w-4 h-4 text-cyan-200" />
                 </div>
@@ -619,14 +644,25 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
               {canPreview && view === "preview" ? (
                 <iframe
                   title={downloadName}
-                  sandbox="allow-scripts allow-forms allow-popups allow-modals"
+                  sandbox="allow-scripts allow-forms"
+                  referrerPolicy="no-referrer"
                   srcDoc={content}
                   className="flex-1 w-full bg-white"
                 />
               ) : (
-                <pre className="flex-1 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{content}</pre>
+                <pre className="flex-1 min-h-0 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{content}</pre>
               )}
-              <div className="sm:hidden grid grid-cols-2 gap-2 p-3 border-t border-white/10 bg-white/[0.035]">
+              <div className="relative z-10 sm:hidden grid grid-cols-2 gap-2 p-3 border-t border-white/10 bg-white/[0.035] shrink-0">
+                {canPreview && (
+                  <>
+                    <button onClick={() => setView("code")} className={cn("flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold", view === "code" ? "bg-cyan-400/18 text-cyan-100" : "bg-white/8 text-white/75")}>
+                      <Terminal className="w-3.5 h-3.5" /> Code
+                    </button>
+                    <button onClick={() => setView("preview")} className={cn("flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold", view === "preview" ? "bg-emerald-500/20 text-emerald-100" : "bg-white/8 text-white/75")}>
+                      <Eye className="w-3.5 h-3.5" /> Preview
+                    </button>
+                  </>
+                )}
                 <button onClick={copyText} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white/8 text-xs font-semibold text-white/75">
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} {copied ? "Copied" : "Copy"}
                 </button>
@@ -648,6 +684,7 @@ const BASE_URL = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } }) {
   const [shareState, setShareState] = useState<"idle" | "loading" | "copied">("idle");
   const { toast } = useToast();
+  const canShare = typeof part.audioUrl === "string" && part.audioUrl.startsWith("https://");
 
   const handleDownload = async () => {
     const url = part.downloadUrl ?? part.audioUrl ?? "";
@@ -716,17 +753,19 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
           <p className="text-sm font-bold text-purple-200 truncate">{part.label}</p>
           {part.content && <p className="text-xs text-white/45 truncate mt-0.5">{part.content}</p>}
         </div>
-        <button
-          onClick={handleShare}
-          disabled={shareState === "loading"}
-          className="shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl font-bold text-xs text-white/70 bg-white/8 hover:bg-white/12 border border-white/10 transition-colors disabled:opacity-50"
-          title="Copy share link"
-        >
-          {shareState === "loading" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
-           shareState === "copied" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> :
-           <Share2 className="w-3.5 h-3.5" />}
-          {shareState === "copied" ? "Copied!" : "Share"}
-        </button>
+        {canShare && (
+          <button
+            onClick={handleShare}
+            disabled={shareState === "loading"}
+            className="shrink-0 flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl font-bold text-xs text-white/70 bg-white/8 hover:bg-white/12 border border-white/10 transition-colors disabled:opacity-50"
+            title="Copy share link"
+          >
+            {shareState === "loading" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> :
+             shareState === "copied" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> :
+             <Share2 className="w-3.5 h-3.5" />}
+            {shareState === "copied" ? "Copied!" : "Share"}
+          </button>
+        )}
         <button
           onClick={handleDownload}
           className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-xs text-white bg-purple-600 hover:bg-purple-500 transition-colors">
@@ -913,7 +952,7 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
         {!isUser && message.groundingSources && message.groundingSources.length > 0 && (
           <div className="flex flex-col gap-1.5 mt-1">
             {message.searchEntryPoint && (
-              <div className="text-[10px] text-white/30 px-1" dangerouslySetInnerHTML={{ __html: message.searchEntryPoint }} />
+              <div className="text-[10px] text-white/30 px-1" dangerouslySetInnerHTML={{ __html: sanitizeSearchEntryPoint(message.searchEntryPoint) }} />
             )}
             <div className="flex flex-wrap gap-1.5">
               {message.groundingSources.map((src, si) => (
