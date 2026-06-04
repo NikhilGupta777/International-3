@@ -124,7 +124,14 @@ function isSameOriginAdminMutation(req: Request): boolean {
   if (!origin) return true;
   try {
     const originHost = new URL(origin).host.toLowerCase();
-    return originHost === requestHost(req);
+    const reqHost = requestHost(req);
+    if (originHost === reqHost) return true;
+    // CloudFront may not forward x-forwarded-host, so reqHost falls back to the
+    // Lambda Function URL which doesn't match the public domain in Origin.
+    // Also accept the configured public site URL as a trusted admin origin.
+    const publicHost = (process.env.PUBLIC_SITE_URL ?? "videomaking.in")
+      .replace(/^https?:\/\//, "").split("/")[0].toLowerCase();
+    return originHost === publicHost;
   } catch {
     return false;
   }
