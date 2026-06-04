@@ -787,16 +787,20 @@ Always use the smallest, cheapest correct tool. Do not call a more expensive or 
 
 # CANVAS AND CODE OUTPUT
 
-When the user asks you to create code, HTML, CSS, JavaScript, Python, JSON, Markdown, a document, or any long editable artifact:
-- Write the main artifact directly into canvas, not as ordinary chat text.
-- To write canvas content, output exactly this hidden protocol:
+USE canvas for: a full HTML page, a complete script/program, a full document, any artifact the user will edit or download, or any code block longer than ~20 lines.
+DO NOT use canvas for: short inline snippets shown as examples, brief config lines, a single function quoted in an explanation, or any code that is part of a conversational answer rather than a deliverable.
+
+When canvas IS appropriate:
+- Write the artifact directly into canvas using this exact hidden protocol:
   <canvas title="Descriptive Filename.html" language="html">
-  ...complete artifact content only...
+  ...complete artifact content only, no markdown fences inside...
   </canvas>
 - Use the right language value: html, css, javascript, typescript, python, json, markdown, text, srt, or vtt.
-- Put only the artifact content inside the canvas tags. Do not wrap it in markdown fences inside the canvas.
-- NEVER output code in markdown fences (triple backticks) in chat. ALWAYS use the <canvas> protocol above instead. This is critical — code in backticks breaks the UI.
-- Keep ordinary chat outside canvas short, for example: "I'll create this in canvas now." and a brief final note.
+- NEVER use markdown triple-backtick fences in chat for code — always use the canvas protocol above. Triple backticks break the UI.
+- Keep the chat text outside canvas brief: one sentence before ("Creating this in canvas…") and one sentence after.
+
+When canvas is NOT appropriate (short explanatory snippet):
+- Use plain text or a single inline backtick — never triple-backtick fences.
 - Do not call run_code_analysis or run_sandbox_command just to generate code or text.
 - Use run_code_analysis for supplied data calculations/statistics. For exact calculations, include task-specific pythonCode instead of relying on generic inspection.
 - Use run_sandbox_command when the user wants a ChatGPT-like sandbox: execute code, install packages, create/read files, inspect outputs, fetch public internet resources, or run shell commands in an isolated Linux environment.
@@ -2743,6 +2747,22 @@ router.post("/agent/chat", async (req, res) => {
         // Strip markdown code fences that wrap a canvas tag (model sometimes does this)
         canvasRouteBuf = canvasRouteBuf.replace(/```[a-zA-Z]*\s*\n(\s*<canvas\b)/gi, "$1");
         canvasRouteBuf = canvasRouteBuf.replace(/<\/canvas>\s*\n```/gi, "</canvas>");
+        // Convert standalone ```lang blocks → canvas protocol so the model's
+        // markdown fallback is silently promoted into a canvas artifact instead
+        // of appearing as raw code text in the chat.
+        const FENCE_LANG_MAP: Record<string, string> = {
+          js: "javascript", ts: "typescript", py: "python", md: "markdown",
+        };
+        canvasRouteBuf = canvasRouteBuf.replace(
+          /```(html|css|javascript|js|typescript|ts|python|py|json|markdown|md|text|srt|vtt)\r?\n/gi,
+          (_m, lang) => {
+            const norm = FENCE_LANG_MAP[lang.toLowerCase()] ?? lang.toLowerCase();
+            const ext = norm === "javascript" ? "js" : norm === "typescript" ? "ts" : norm === "python" ? "py" : norm === "markdown" ? "md" : norm;
+            return `<canvas language="${norm}" title="code.${ext}">\n`;
+          },
+        );
+        // Convert bare closing fence that follows converted canvas content
+        canvasRouteBuf = canvasRouteBuf.replace(/\n```[ \t]*(\r?\n|$)/g, "\n</canvas>\n");
         const openRe = /<canvas\b([^>]*)>/i;
         const closeTag = "</canvas>";
         while (canvasRouteBuf) {
