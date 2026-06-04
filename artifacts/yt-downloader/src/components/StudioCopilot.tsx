@@ -32,6 +32,13 @@ function readReasoningInitial(): ReasoningMode {
   return readUltraInitial() ? "pro" : "flash";
 }
 
+function getInputMaxHeight(): number {
+  if (typeof window !== "undefined" && window.matchMedia("(max-width: 520px)").matches) {
+    return 76;
+  }
+  return 160;
+}
+
 const HISTORY_KEY = "copilot-sessions-v2";
 
 type ChatSession = { id: string; title: string; updatedAt: Date; messages: Message[] };
@@ -2166,7 +2173,7 @@ export function StudioCopilot({
               const trimmed = val.trim();
               setPasteUrl(/^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null);
               e.target.style.height = "auto";
-              e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+              e.target.style.height = Math.min(e.target.scrollHeight, getInputMaxHeight()) + "px";
             }}
             onKeyDown={e => {
               if (showSlashMenu && slashFilteredSkills.length > 0) {
@@ -2204,7 +2211,7 @@ export function StudioCopilot({
                 if (file) await handleFileUpload({ target: { files: [file] } } as any);
               }
             }}
-            placeholder={activeSkills.length > 0 ? "" : "Wat u want?"}
+            placeholder={activeSkills.length > 0 ? "" : "Ask anything"}
             rows={1}
             style={{ resize: "none", overflow: "hidden", minHeight: 28 }}
           />

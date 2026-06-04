@@ -6525,12 +6525,33 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   .copilot-wrap .gs-input-card {
     align-items: center;
     border-radius: 26px;
-    gap: 4px;
+    gap: 6px;
     padding: 8px;
+  }
+
+  .copilot-wrap .gs-input-textarea-wrap {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    align-items: flex-start;
+    width: 100%;
+    min-width: 0;
   }
 
   .copilot-wrap .gs-input-textarea {
     font-size: 15px;
+    max-height: 76px;
+    overflow-y: auto !important;
+  }
+
+  .copilot-wrap .gs-input-row-left {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .copilot-wrap .gs-input-row-right {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    justify-content: flex-end;
   }
 
   .copilot-wrap .gs-reasoning-button {
