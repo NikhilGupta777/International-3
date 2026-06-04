@@ -16,6 +16,9 @@ type GeminiClientOptions = {
 
 let credentialsHydrated = false;
 let s3CredentialsFetched = false;
+// In-flight deduplicator: if multiple callers race before credentials are
+// ready they all await the same promise instead of each returning early.
+let s3FetchInFlight: Promise<void> | null = null;
 
 function envFlag(value: string | undefined): boolean {
   return /^(1|true|yes|on)$/i.test(String(value ?? "").trim());
@@ -55,36 +58,49 @@ export function getVertexLocation(): string {
  * cold start and cached for the Lambda lifetime.
  */
 async function fetchCredentialsFromS3(): Promise<void> {
+  // Already done — fast path.
   if (s3CredentialsFetched) return;
-  s3CredentialsFetched = true;
 
-  const s3Key = (process.env.GOOGLE_APPLICATION_CREDENTIALS_S3_KEY ?? "").trim();
-  const bucket = (process.env.S3_BUCKET ?? "").trim();
-  const region = (process.env.S3_REGION ?? process.env.AWS_REGION ?? "us-east-1").trim();
-  if (!s3Key || !bucket) return;
+  // Another caller is already fetching — wait for that promise so we don't
+  // race past it with a stale flag check.
+  if (s3FetchInFlight) return s3FetchInFlight;
 
-  // Already have a valid local file — nothing to do
-  const existingPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
-  if (existingPath && existsSync(existingPath)) return;
+  s3FetchInFlight = (async () => {
+    const s3Key = (process.env.GOOGLE_APPLICATION_CREDENTIALS_S3_KEY ?? "").trim();
+    const bucket = (process.env.S3_BUCKET ?? "").trim();
+    const region = (process.env.S3_REGION ?? process.env.AWS_REGION ?? "us-east-1").trim();
+    if (!s3Key || !bucket) { s3CredentialsFetched = true; return; }
 
-  try {
-    const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
-    const s3 = new S3Client({ region });
-    const resp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: s3Key }));
-    const chunks: Buffer[] = [];
-    for await (const chunk of resp.Body as AsyncIterable<Uint8Array>) {
-      chunks.push(Buffer.from(chunk));
+    // Already have a valid local file — nothing to do.
+    const existingPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+    if (existingPath && existsSync(existingPath)) { s3CredentialsFetched = true; return; }
+
+    try {
+      const { S3Client, GetObjectCommand } = await import("@aws-sdk/client-s3");
+      const s3 = new S3Client({ region });
+      const resp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: s3Key }));
+      const chunks: Buffer[] = [];
+      for await (const chunk of resp.Body as AsyncIterable<Uint8Array>) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const payload = Buffer.concat(chunks).toString("utf8").trim();
+      if (payload) {
+        const credPath = join(tmpdir(), "google-vertex-credentials.json");
+        writeFileSync(credPath, payload, { encoding: "utf8", mode: 0o600 });
+        process.env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
+        console.log("[gemini-client] Vertex credentials loaded from S3");
+      }
+      // Only mark done AFTER credentials are successfully on disk.
+      s3CredentialsFetched = true;
+    } catch (err) {
+      console.error("[gemini-client] Failed to load Vertex credentials from S3:", (err as Error).message);
+      // Leave s3CredentialsFetched = false so the next request retries.
+    } finally {
+      s3FetchInFlight = null;
     }
-    const payload = Buffer.concat(chunks).toString("utf8").trim();
-    if (!payload) return;
+  })();
 
-    const credPath = join(tmpdir(), "google-vertex-credentials.json");
-    writeFileSync(credPath, payload, { encoding: "utf8", mode: 0o600 });
-    process.env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
-    console.log("[gemini-client] Vertex credentials loaded from S3");
-  } catch (err) {
-    console.error("[gemini-client] Failed to load Vertex credentials from S3:", (err as Error).message);
-  }
+  return s3FetchInFlight;
 }
 
 function hydrateGoogleCredentials(): void {
