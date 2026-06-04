@@ -290,20 +290,24 @@ router.post("/thumbnail/chat", async (req, res) => {
       send(res, { type: "thumb_start", runId, toolId, mode: "generate" });
       send(res, { type: "thumb_progress", runId, toolId, message: "Designing your thumbnail…" });
       try {
-        // Brand preset: prepend the channel style brief and feed reference
-        // images to the image model so output matches the channel's look.
-        const presetImgs = activePreset?.images ?? [];
+        // Brand preset: build a rich style directive and embed it in the text
+        // prompt. We intentionally do NOT pass the preset reference images to
+        // the image model here — gemini-3.1-flash-image-preview interprets
+        // images in the input as "images to edit/transform", so passing 5-12
+        // reference thumbnails would cause it to blend/composite those images
+        // instead of generating something fresh in their visual style.
+        // The style brief text is the reliable channel for style guidance.
         const styledPrompt = activePreset
-          ? `${prompt}\n\nBRAND STYLE — match the channel "${activePreset.name}". ` +
+          ? `${prompt}\n\nBRAND CHANNEL STYLE — "${activePreset.name}": ` +
             `${activePreset.stylePrompt ? activePreset.stylePrompt + " " : ""}` +
-            `Use the ${presetImgs.length} attached reference thumbnails ONLY as a style guide ` +
-            `(layout, color grading, font feel, mood, framing) — do NOT copy their exact subjects unless asked.`
+            `Match the channel's visual language: color grading, layout rhythm, text treatment, ` +
+            `overall mood, and framing. Generate a fresh, original thumbnail — do NOT copy existing subjects.`
           : prompt;
         const out = await renderThumbnail({
           prompt: styledPrompt,
           aspectRatio: args.aspectRatio,
           imageSize: args.imageSize,
-          baseImages: presetImgs.length > 0 ? presetImgs : undefined,
+          // No baseImages for fresh generation — style is fully described in the prompt text.
         });
         lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
@@ -332,13 +336,15 @@ router.post("/thumbnail/chat", async (req, res) => {
       send(res, { type: "thumb_start", runId, toolId, mode: "edit" });
       send(res, { type: "thumb_progress", runId, toolId, message: "Editing the image…" });
       try {
-        // Reference images = the image(s) being edited first, then any preset
-        // style references appended after them.
-        const presetImgs = activePreset?.images ?? [];
+        // Pass only the actual edit target image(s) — NOT the preset reference
+        // images. The image model interprets every image it receives as a
+        // candidate to edit, so mixing edit targets with style references
+        // (12+ thumbnails) causes blending artifacts and unpredictable results.
+        // The channel style is communicated reliably via text in styleNote.
         const styleNote = activePreset
-          ? ` Match the channel "${activePreset.name}" brand style.` +
-            `${activePreset.stylePrompt ? " " + activePreset.stylePrompt : ""}` +
-            (presetImgs.length ? ` The last ${presetImgs.length} attached images are brand style references, not edit targets.` : "")
+          ? ` BRAND CHANNEL STYLE — "${activePreset.name}": ` +
+            `${activePreset.stylePrompt ? activePreset.stylePrompt + " " : ""}` +
+            `Apply this channel's color grading, layout, text treatment, and mood to the edit output.`
           : "";
         const out = await renderThumbnail({
           prompt:
@@ -348,7 +354,7 @@ router.post("/thumbnail/chat", async (req, res) => {
             `Preserve the important subjects and any faces. Keep it high-contrast and readable at small sizes.` +
             styleNote,
           aspectRatio: args.aspectRatio,
-          baseImages: [...base, ...presetImgs],
+          baseImages: base,   // edit targets only; style via text prompt above
         });
         lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
@@ -369,10 +375,11 @@ router.post("/thumbnail/chat", async (req, res) => {
     // through the image tools (which inject the reference images + style).
     const presetSystemAddendum = activePreset
       ? `\n\nACTIVE BRAND PRESET: "${activePreset.name}".\n` +
-        `The user has selected this channel preset. Every thumbnail you generate or edit this turn must follow its brand style. ` +
+        `The user has selected this channel's brand preset. Every thumbnail you generate or edit this turn MUST follow its visual identity. ` +
         `${activePreset.stylePrompt ? `Channel style brief: ${activePreset.stylePrompt}\n` : ""}` +
-        `The image tool automatically receives this channel's reference thumbnails — you do NOT need to describe them. ` +
-        `Just craft the concept prompt; the brand look is applied for you.`
+        `When you call generate_thumbnail or edit_thumbnail, the brand style brief is automatically injected into the image prompt for you. ` +
+        `You still need to craft a strong concept/composition prompt — the brand layer is added on top. ` +
+        `Do not mention the preset or brand by name in your visible reply unless the user asks.`
       : "";
 
     // Build multimodal contents — images go in as inlineData so the model sees them.
