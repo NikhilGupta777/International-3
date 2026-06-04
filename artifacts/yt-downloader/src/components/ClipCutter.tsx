@@ -886,33 +886,36 @@ export function ClipCutter() {
           <style>{`
             @keyframes rgbGlow {
               0% { background-position: 0% 50%; }
-              20% { background-position: 15% 50%; }
-              45% { background-position: 65% 50%; }
-              70% { background-position: 80% 50%; }
-              85% { background-position: 95% 50%; }
-              100% { background-position: 100% 50%; }
+              15% { background-position: 20% 50%; }
+              35% { background-position: 80% 50%; }
+              50% { background-position: 100% 50%; }
+              65% { background-position: 80% 50%; }
+              85% { background-position: 20% 50%; }
+              100% { background-position: 0% 50%; }
             }
           `}</style>
           {/* Glowing backdrop blur */}
           <div 
-            className="absolute -inset-[1.5px] rounded-[20px] opacity-40 blur-[8px] transition-all duration-500 group-hover:opacity-60 group-focus-within:opacity-85 animate-[rgbGlow_10s_ease-in-out_infinite]"
+            className="absolute -inset-[1.5px] rounded-[12px] opacity-40 blur-[8px] transition-all duration-500 group-hover:opacity-60 group-focus-within:opacity-85"
             style={{
-              background: 'linear-gradient(to right, #ffffff 0%, #ffffff 25%, #ff3b30 32%, #ff9500 38%, #4cd964 45%, #007aff 52%, #ffffff 60%, #ffffff 80%, #af52de 87%, #ff2d55 93%, #ffffff 100%)',
+              background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
               backgroundSize: '300% 300%',
+              animation: 'rgbGlow 10s ease-in-out infinite',
             }}
           />
           {/* Outer border wrapper */}
-          <div className="relative w-full rounded-[20px] p-[1px] overflow-hidden bg-zinc-800">
+          <div className="relative w-full rounded-[12px] p-[1px] overflow-hidden bg-zinc-800">
             {/* Border background gradient */}
             <div 
-              className="absolute inset-0 animate-[rgbGlow_10s_ease-in-out_infinite]"
+              className="absolute inset-0"
               style={{
-                background: 'linear-gradient(to right, #ffffff 0%, #ffffff 25%, #ff3b30 32%, #ff9500 38%, #4cd964 45%, #007aff 52%, #ffffff 60%, #ffffff 80%, #af52de 87%, #ff2d55 93%, #ffffff 100%)',
+                background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
                 backgroundSize: '300% 300%',
+                animation: 'rgbGlow 10s ease-in-out infinite',
               }}
             />
             {/* Inner input container */}
-            <div className="relative rounded-[19px] bg-[#09090b] py-3.5 px-5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+            <div className="relative rounded-[11px] bg-[#09090b] py-3.5 px-5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
               <div className="flex items-center gap-3">
                 <Link2 className="h-4.5 w-4.5 text-zinc-500 shrink-0" />
                 <textarea
