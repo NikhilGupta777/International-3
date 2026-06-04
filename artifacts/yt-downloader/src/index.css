@@ -6961,14 +6961,23 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 }
 .thumb-history-item:hover { background: rgba(255,255,255,0.06); }
 .thumb-history-item-active { background: var(--thumb-accent-soft); }
-.thumb-history-title {
+.thumb-history-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.thumb-history-title {
   font-size: 0.84rem;
   color: var(--thumb-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.thumb-history-time {
+  font-size: 0.7rem;
+  color: rgba(255,255,255,0.32);
 }
 .thumb-history-del {
   display: inline-flex;
@@ -7316,6 +7325,7 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   white-space: pre-wrap;
   max-height: 240px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* ── Done card + reveal ──────────────────────────────────────── */
@@ -7549,8 +7559,9 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
 /* ── Lightbox ────────────────────────────────────────────────── */
 .thumb-lightbox { position: fixed; inset: 0; z-index: 70; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px 24px 16px; background: rgba(0,0,0,0.9); backdrop-filter: blur(6px); }
-.thumb-lightbox-inner { position: relative; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; max-width: min(1100px, 94vw); max-height: 90vh; }
-.thumb-lightbox-inner img { max-width: 100%; max-height: calc(90vh - 50px); object-fit: contain; border-radius: 14px; border: 1px solid rgba(255,255,255,0.12); display: block; }
+.thumb-lightbox-inner { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 10px; max-width: min(1100px, 94vw); max-height: 90vh; }
+.thumb-lightbox-inner img { max-width: 100%; max-height: calc(90vh - 60px); object-fit: contain; border-radius: 14px; border: 1px solid rgba(255,255,255,0.12); display: block; flex: 1; min-height: 0; }
+.thumb-lightbox-inner .thumb-lightbox-toolbar { justify-content: flex-end; }
 .thumb-lightbox-close {
   display: inline-flex;
   align-items: center;
@@ -7611,6 +7622,60 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   .thumb-card-img-hidden { opacity: 1; }
 }
 
+/* ── Keyboard focus rings ────────────────────────────────────── */
+.thumb-topbar-btn:focus-visible,
+.thumb-icon-btn:focus-visible,
+.thumb-send:focus-visible,
+.thumb-starter:focus-visible,
+.thumb-preset-trigger:focus-visible,
+.thumb-preset-opt:focus-visible,
+.thumb-history-item:focus-visible,
+.thumb-history-del:focus-visible,
+.thumb-card-download:focus-visible,
+.thumb-card-img-btn:focus-visible,
+.thumb-lightbox-close:focus-visible,
+.thumb-lightbox-download:focus-visible,
+.thumb-thinking-head-clickable:focus-visible {
+  outline: 2px solid rgba(59,130,246,0.75);
+  outline-offset: 2px;
+}
+.tp-icon-btn:focus-visible,
+.tp-new-btn:focus-visible,
+.tp-btn-ghost:focus-visible,
+.tp-btn-primary:focus-visible,
+.tp-card-content:focus-visible,
+.tp-img-add:focus-visible,
+.tp-img button:focus-visible {
+  outline: 2px solid rgba(59,130,246,0.75);
+  outline-offset: 2px;
+}
+
+/* ── Lightbox download button ────────────────────────────────── */
+.thumb-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.thumb-lightbox-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 14px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+.thumb-lightbox-download:hover { background: var(--thumb-accent); border-color: var(--thumb-accent); }
+.thumb-lightbox-download:disabled { opacity: 0.5; cursor: default; }
+
 /* ── Light mode parity ───────────────────────────────────────── */
 html.studio-light-mode .thumb-wrap {
   --thumb-bg: #ffffff;
@@ -7622,6 +7687,49 @@ html.studio-light-mode .thumb-wrap {
 }
 html.studio-light-mode .thumb-starter { border-color: rgba(0,0,0,0.14); color: rgba(20,16,12,0.78); }
 html.studio-light-mode .thumb-starter:hover { background: rgba(0,0,0,0.04); }
+
+/* ── Preset modal light mode ─────────────────────────────────── */
+html.studio-light-mode .tp-modal {
+  background: #ffffff;
+  border-color: rgba(0,0,0,0.12);
+  color: rgba(20,16,12,0.92);
+}
+html.studio-light-mode .tp-head { border-bottom-color: rgba(0,0,0,0.08); }
+html.studio-light-mode .tp-foot { border-top-color: rgba(0,0,0,0.08); }
+html.studio-light-mode .tp-intro { color: rgba(20,16,12,0.55); }
+html.studio-light-mode .tp-icon-btn { color: rgba(20,16,12,0.5); }
+html.studio-light-mode .tp-icon-btn:hover { background: rgba(0,0,0,0.06); color: rgba(20,16,12,0.9); }
+html.studio-light-mode .tp-card { background: #f5f5f5; border-color: rgba(0,0,0,0.08); }
+html.studio-light-mode .tp-card:hover { background: #efefef; border-color: rgba(37,99,235,0.4); }
+html.studio-light-mode .tp-card-meta { color: rgba(20,16,12,0.45); }
+html.studio-light-mode .tp-card-more { color: rgba(20,16,12,0.4); }
+html.studio-light-mode .tp-empty { color: rgba(20,16,12,0.45); }
+html.studio-light-mode .tp-input,
+html.studio-light-mode .tp-textarea {
+  background: #f7f7f7;
+  border-color: rgba(0,0,0,0.12);
+  color: rgba(20,16,12,0.9);
+}
+html.studio-light-mode .tp-input:focus,
+html.studio-light-mode .tp-textarea:focus { border-color: rgba(37,99,235,0.5); }
+html.studio-light-mode .tp-label { color: rgba(20,16,12,0.7); }
+html.studio-light-mode .tp-label-hint,
+html.studio-light-mode .tp-count { color: rgba(20,16,12,0.4); }
+html.studio-light-mode .tp-img { border-color: rgba(0,0,0,0.12); }
+html.studio-light-mode .tp-img-add {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.22);
+  color: rgba(20,16,12,0.55);
+}
+html.studio-light-mode .tp-img-add:hover:not(:disabled) { background: rgba(0,0,0,0.08); color: rgba(20,16,12,0.9); }
+html.studio-light-mode .tp-btn-ghost {
+  border-color: rgba(0,0,0,0.14);
+  color: rgba(20,16,12,0.75);
+}
+html.studio-light-mode .tp-btn-ghost:hover:not(:disabled) { background: rgba(0,0,0,0.06); }
+html.studio-light-mode .tp-banner-warn { background: rgba(245,158,11,0.1); color: #b45309; }
+html.studio-light-mode .tp-banner-error { background: rgba(239,68,68,0.08); color: #dc2626; }
+html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
 
 /* ── Thumbnail brand-preset selector (in composer) ───────────── */
 .thumb-preset-bar { display: flex; padding: 2px 4px 8px; }
@@ -7743,7 +7851,7 @@ html.studio-light-mode .thumb-starter:hover { background: rgba(0,0,0,0.04); }
 }
 .tp-icon-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
 .tp-del:hover { color: #ef4444; }
-.tp-body { padding: 16px 18px; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.tp-body { flex: 1 1 0%; min-height: 0; padding: 16px 18px; overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .tp-intro { font-size: 0.85rem; line-height: 1.55; color: rgba(255,255,255,0.55); margin: 0 0 14px; }
 .tp-banner {
   padding: 10px 14px;
@@ -7896,6 +8004,7 @@ html.studio-light-mode .thumb-starter:hover { background: rgba(0,0,0,0.04); }
 .tp-img-add:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: #fff; }
 .tp-img-add:disabled { opacity: 0.5; cursor: default; }
 .tp-foot {
+  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
   gap: 10px;

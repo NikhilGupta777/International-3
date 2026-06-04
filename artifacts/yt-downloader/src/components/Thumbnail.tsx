@@ -73,6 +73,18 @@ const PLACEHOLDERS: string[] = [
   "Pick a bold headline…",
 ];
 
+// ── Relative timestamp helper ────────────────────────────────────────────────
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const m = Math.floor(diff / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? "yesterday" : `${d}d ago`;
+}
+
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -383,6 +395,40 @@ function MessageRow({ message, thinking, onPreview }: { message: ThumbMessage; t
   );
 }
 
+// ── Lightbox download button ─────────────────────────────────────────────────
+function LightboxDownload({ url }: { url: string }) {
+  const { toast } = useToast();
+  const [downloading, setDownloading] = useState(false);
+  const download = async () => {
+    setDownloading(true);
+    const filename = `thumbnail-${Date.now()}.png`;
+    try {
+      if (url.startsWith("data:")) {
+        const a = document.createElement("a");
+        a.href = url; a.download = filename; a.click();
+      } else {
+        const r = await fetch(url);
+        const blob = await r.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl; a.download = filename; document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(blobUrl); a.remove(); }, 4000);
+      }
+    } catch {
+      window.open(url, "_blank");
+      toast({ title: "Opened in new tab", description: "Right-click to save." });
+    } finally {
+      setDownloading(false);
+    }
+  };
+  return (
+    <button className="thumb-lightbox-download" onClick={download} disabled={downloading} title="Download thumbnail">
+      {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+      <span>Download</span>
+    </button>
+  );
+}
+
 export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
   void onBackToHome; // header removed per design — kept for API compatibility
   const { toast } = useToast();
@@ -470,10 +516,10 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     } catch { /* ignore */ }
   }, [activePresetId]);
 
-  // ── Reshuffle starter suggestions every 4s while on the empty screen ──────
+  // ── Reshuffle starter suggestions every 8s while on the empty screen ──────
   useEffect(() => {
     if (!isEmpty) return;
-    const t = setInterval(() => setStarters(shuffle(STARTER_POOL).slice(0, 4)), 4000);
+    const t = setInterval(() => setStarters(shuffle(STARTER_POOL).slice(0, 4)), 8000);
     return () => clearInterval(t);
   }, [isEmpty]);
 
@@ -484,9 +530,12 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
     return () => clearInterval(t);
   }, [input]);
 
-  // Autoscroll
+  // Autoscroll — instant for history loads, smooth for live streaming
+  const scrollBehaviorRef = useRef<ScrollBehavior>("smooth");
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const behavior = scrollBehaviorRef.current;
+    scrollBehaviorRef.current = "smooth"; // reset to smooth after every scroll
+    bottomRef.current?.scrollIntoView({ behavior, block: "end" });
   }, [messages, thinking]);
 
   // Auto-grow textarea
@@ -759,7 +808,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
         .filter(p => !(p.kind === "thinking" && !p.thoughts.trim()))
         .map(p => {
           if (p.kind === "thinking") return { ...p, live: false };
-          if (p.kind === "thumb" && p.status === "loading") return { kind: "thumb", status: "error", message: "Stopped." };
+          if (p.kind === "thumb" && p.status === "loading") return { kind: "thumb", status: "error", message: "Generation cancelled." };
           return p;
         }),
     }));
@@ -804,6 +853,7 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
 
   const loadChat = (chat: SavedChat) => {
     if (streaming) return;
+    scrollBehaviorRef.current = "auto"; // jump to bottom instantly for history loads
     setMessages(chat.messages);
     setCurrentChatId(chat.id);
     setShowHistory(false);
@@ -913,7 +963,10 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
                       tabIndex={0}
                       onKeyDown={e => { if (e.key === "Enter") loadChat(c); }}
                     >
-                      <span className="thumb-history-title">{c.title}</span>
+                      <div className="thumb-history-info">
+                        <span className="thumb-history-title">{c.title}</span>
+                        <span className="thumb-history-time">{relativeTime(c.updatedAt)}</span>
+                      </div>
                       <button className="thumb-history-del" onClick={e => deleteChat(c.id, e)} title="Delete" aria-label="Delete chat">
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -1140,15 +1193,18 @@ export function Thumbnail({ onBackToHome }: { onBackToHome?: () => void }) {
               onClick={e => e.stopPropagation()}
             >
               <img src={preview} alt="Generated thumbnail — click outside or press Escape to close" />
-              <button
-                className="thumb-lightbox-close"
-                onClick={() => setPreview(null)}
-                title="Close"
-                autoFocus
-                aria-label="Close preview"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <div className="thumb-lightbox-toolbar">
+                <LightboxDownload url={preview} />
+                <button
+                  className="thumb-lightbox-close"
+                  onClick={() => setPreview(null)}
+                  title="Close"
+                  autoFocus
+                  aria-label="Close preview"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}
