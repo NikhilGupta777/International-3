@@ -2551,7 +2551,7 @@ router.post("/agent/chat", async (req, res) => {
   try { await ensureVertexCredentials(); } catch { /* non-fatal — key may be env-based */ }
   (req as any).agentRunJobIds = new Set<string>();
 
-  const { messages = [], model: requestedModel, skills: activeSkills = [] } = req.body as {
+  const { messages = [], model: requestedModel, skills: requestedSkills = [] } = req.body as {
     messages: Array<{
       role: "user" | "model";
       content?: string;
@@ -2572,8 +2572,17 @@ router.post("/agent/chat", async (req, res) => {
       }>;
     }>;
     model?: string;
-    skills?: string[];
+    skills?: unknown;
   };
+
+  if (!Array.isArray(messages)) {
+    res.status(400).json({ error: "messages must be an array" });
+    return;
+  }
+
+  const activeSkills = Array.isArray(requestedSkills)
+    ? requestedSkills.filter((skill): skill is string => typeof skill === "string")
+    : [];
 
   if (!messages.length) {
     res.status(400).json({ error: "messages array is required" });
@@ -2586,22 +2595,29 @@ router.post("/agent/chat", async (req, res) => {
     ? messages.slice(-MAX_HISTORY_MESSAGES)
     : messages;
 
-  const normalizedMessages = truncatedMessages.map((message) => {
-    const content =
-      typeof message.content === "string"
-        ? message.content
-        : Array.isArray(message.parts)
-          ? message.parts
-            .filter((part) => part?.kind === "text" || typeof part?.content === "string" || typeof part?.text === "string")
-            .map((part) => part?.content ?? part?.text ?? "")
-            .join("")
-          : "";
-    return {
-      ...message,
-      content,
-      attachments: message.attachments ?? [],
-    };
-  });
+  const normalizedMessages = truncatedMessages
+    .filter((message: any) => message && typeof message === "object" && (message.role === "user" || message.role === "model"))
+    .map((message) => {
+      const content =
+        typeof message.content === "string"
+          ? message.content
+          : Array.isArray(message.parts)
+            ? message.parts
+              .filter((part) => part?.kind === "text" || typeof part?.content === "string" || typeof part?.text === "string")
+              .map((part) => part?.content ?? part?.text ?? "")
+              .join("")
+            : "";
+      return {
+        ...message,
+        content,
+        attachments: Array.isArray(message.attachments) ? message.attachments : [],
+      };
+    });
+
+  if (!normalizedMessages.length) {
+    res.status(400).json({ error: "messages array has no valid messages" });
+    return;
+  }
 
   // Resolve model:
   //   "flash" / "default" / undefined → AGENT_MODEL (gemini-3.5-flash), MEDIUM thinking
@@ -2675,6 +2691,7 @@ router.post("/agent/chat", async (req, res) => {
     let iterations = 0;
     let emptyResponseRetries = 0;
     let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH;
+    let finalAnswerSent = false;
 
     while (iterations < MAX_ITERATIONS && isConnected()) {
       iterations++;
@@ -2939,6 +2956,7 @@ router.post("/agent/chat", async (req, res) => {
         }
         // Three empty responses — give graceful message and stop
         sseEvent(res, { type: "text", content: "Hmm, I'm having trouble responding right now. Please try again in a moment.", runId });
+        finalAnswerSent = true;
         break;
       }
 
@@ -2956,6 +2974,7 @@ router.post("/agent/chat", async (req, res) => {
         if (!streamedTextLive) {
           sseEvent(res, { type: "text", content: fullText, runId });
         }
+        finalAnswerSent = true;
         // Emit grounding sources if native Google Search grounding was used.
         // Sends source URLs (for [1][2] citations) + the required Google Search
         // suggestions widget HTML.
@@ -3089,7 +3108,7 @@ router.post("/agent/chat", async (req, res) => {
     }
 
     // ── Graceful MAX_ITERATIONS exit ──────────────────────────────────────
-    if (iterations >= MAX_ITERATIONS && isConnected()) {
+    if (iterations >= MAX_ITERATIONS && !finalAnswerSent && isConnected()) {
       sseEvent(res, { type: "text", content: `\n⚠️ **Note:** Reached the maximum of ${MAX_ITERATIONS} steps. The task may be partially complete — check the results above and ask me to continue if needed.\n`, runId });
     }
 
@@ -3104,6 +3123,7 @@ router.post("/agent/chat", async (req, res) => {
       if (/model output must contain|both be empty/i.test(errMsg)) {
         sseEvent(res, { type: "text", content: "I hit a brief connection issue — just send that again and I'll be right on it.", runId });
         sseEvent(res, { type: "done", runId, ts: Date.now() });
+        runCompleted = true;
         return;
       }
       try {

@@ -93,6 +93,16 @@ function saveSessions(sessions: ChatSession[]) {
   }
 }
 
+function revokeMessagePreviewUrls(messages: Message[]) {
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.kind === "image" && part.previewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(part.previewUrl);
+      }
+    }
+  }
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 type SseEvent =
   | { type: "run_start"; runId: string; ts?: number }
@@ -965,6 +975,7 @@ export function StudioCopilot({
   onBackToHome?: () => void;
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const sessionsRef = useRef<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState("");
@@ -1238,6 +1249,7 @@ export function StudioCopilot({
 
   const currentMessages = sessions.find(s => s.id === currentSessionId)?.messages ?? [];
 
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { sessionIdRef.current = currentSessionId; }, [currentSessionId]);
   useEffect(() => { messagesRef.current = currentMessages; }, [currentMessages]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1730,7 +1742,7 @@ export function StudioCopilot({
       setAgentStage("idle");
       streamingAssistantIdRef.current = null;
     }
-  }, [streaming, ultra, BASE, onNavigate, updateSession, ensureSession, upsertMsg, consumeLeadingSkillCommand]);
+  }, [streaming, reasoningMode, BASE, onNavigate, updateSession, ensureSession, upsertMsg, consumeLeadingSkillCommand]);
 
   // Consume incoming pendingPrompt (sent from home screen)
   const consumedPromptRef = useRef<string | null>(null);
@@ -1767,6 +1779,7 @@ export function StudioCopilot({
     return () => {
       abortRef.current?.abort();
       recognitionRef.current?.stop();
+      sessionsRef.current.forEach(session => revokeMessagePreviewUrls(session.messages));
     };
   }, []);
 
@@ -1825,7 +1838,11 @@ export function StudioCopilot({
   const handleNewChat = () => { if (streaming) return; setCurrentSessionId(null); sessionIdRef.current = null; setShowHistory(false); };
   const handleDeleteSession = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setSessions(prev => prev.filter(s => s.id !== id));
+    setSessions(prev => {
+      const removed = prev.find(s => s.id === id);
+      if (removed) revokeMessagePreviewUrls(removed.messages);
+      return prev.filter(s => s.id !== id);
+    });
     if (currentSessionId === id) { setCurrentSessionId(null); sessionIdRef.current = null; }
   };
 
