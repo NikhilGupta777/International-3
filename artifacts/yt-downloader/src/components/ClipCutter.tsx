@@ -12,6 +12,11 @@ import {
   History,
   Trash2,
   Film,
+  Link2,
+  Info,
+  ArrowUp,
+  SlidersHorizontal,
+  MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -142,27 +147,63 @@ interface ProgressPayload {
 
 type DownloadableClip = Pick<ActiveJob, "jobId" | "filename" | "status">;
 
+
+function extractYouTubeUrl(text: string): string | null {
+  const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+  const match = text.match(ytRegex);
+  return match ? `https://www.youtube.com/watch?v=${match[1]}` : null;
+}
+
+function extractTimes(text: string): { start: number | null; end: number | null } {
+  const timeRegex = /(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/g;
+  const matches = [...text.matchAll(timeRegex)];
+  
+  if (matches.length === 0) return { start: null, end: null };
+  
+  const parseTime = (match: RegExpMatchArray) => {
+    const hours = match[1] ? parseInt(match[1]) : 0;
+    const minutes = parseInt(match[2]);
+    const seconds = parseInt(match[3]);
+    return hours * 3600 + minutes * 60 + seconds;
+  };
+
+  const start = parseTime(matches[0]);
+  const end = matches.length > 1 ? parseTime(matches[1]) : null;
+
+  return { start, end };
+}
+
 export function ClipCutter() {
-  const [url, setUrl] = useState("");
-  const [startTime, setStartTime] = useState("");
-  const [endTime, setEndTime] = useState("");
+  const [command, setCommand] = useState("");
   const [quality, setQuality] = useState("best");
   const [submitting, setSubmitting] = useState(false);
   const [jobs, setJobs] = useState<ActiveJob[]>([]);
   const [history, setHistory] = useState<ClipHistoryEntry[]>(() => loadClipHistory());
   const { toast } = useToast();
+
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showHelper, setShowHelper] = useState(false);
+  const [manualStart, setManualStart] = useState("");
+  const [manualEnd, setManualEnd] = useState("");
+  const [notification, setNotification] = useState<{
+    type: "success" | "error" | "info";
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!notification) return;
+    const timer = setTimeout(() => {
+      setNotification(null);
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [notification]);
   const streamRefs = useRef<Map<string, EventSource>>(new Map());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollInFlightRef = useRef(false);
   const jobsRef = useRef<ActiveJob[]>([]);
   jobsRef.current = jobs;
 
-  const startSecs = parseTimeToSeconds(startTime);
-  const endSecs = parseTimeToSeconds(endTime);
-  const clipDuration =
-    startSecs !== null && endSecs !== null && endSecs > startSecs
-      ? endSecs - startSecs
-      : null;
+
 
   // Persist active jobs to localStorage whenever the jobs list changes
   const persistActiveJobs = useCallback((current: ActiveJob[]) => {
@@ -521,87 +562,157 @@ export function ClipCutter() {
     };
   }, []);
 
+  const startClipCutJob = async (url: string, startSecs: number, endSecs: number, customQuality: string) => {
+    const res = await fetch(`${BASE_URL}/api/youtube/clip-cut`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        startTime: startSecs,
+        endTime: endSecs,
+        quality: customQuality,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as { error?: string }).error || "Failed to start clip cut");
+    }
+
+    const data = (await res.json()) as { jobId: string; status?: string; message?: string };
+    const label = `${secsToLabel(startSecs)} → ${secsToLabel(endSecs)}`;
+
+    const newJob: ActiveJob = {
+      jobId: data.jobId,
+      label,
+      url,
+      quality: customQuality,
+      startSecs,
+      endSecs,
+      status: normalizeJobStatus(data.status, "pending"),
+      percent: 0,
+      speed: null,
+      eta: null,
+      filename: null,
+      filesize: null,
+      progressLine: null,
+      progressSource: null,
+      queueUpdatedAt: null,
+      completedAt: null,
+      elapsedMs: null,
+      message: data.message ?? "Clip cut queued...",
+      downloaded: false,
+      savedToHistory: false,
+      startedAt: Date.now(),
+    };
+
+    setJobs((prev) => {
+      const updated = [newJob, ...prev];
+      persistActiveJobs(updated);
+      return updated;
+    });
+  };
+
   const handleCut = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!url.trim()) {
-      toast({ title: "Enter a YouTube URL", variant: "destructive" });
-      return;
-    }
-    if (startSecs === null) {
-      toast({ title: "Invalid start time", description: "Use 1:30 or 0:45", variant: "destructive" });
-      return;
-    }
-    if (endSecs === null) {
-      toast({ title: "Invalid end time", description: "Use 2:00 or 1:30", variant: "destructive" });
-      return;
-    }
-    if (endSecs <= startSecs) {
-      toast({ title: "End time must be after start time", variant: "destructive" });
-      return;
-    }
-    if (endSecs - startSecs > 3600) {
-      toast({ title: "Clip cannot exceed 60 minutes", variant: "destructive" });
+    if (!command.trim()) {
+      setNotification({ type: "error", message: "Please enter a URL and describe the clip you want..." });
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch(`${BASE_URL}/api/youtube/clip-cut`, {
+      const intentRes = await fetch(`${BASE_URL}/api/youtube/clip-cut/intent`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: url.trim(),
-          startTime: startSecs,
-          endTime: endSecs,
-          quality,
-        }),
+        body: JSON.stringify({ prompt: command }),
       });
 
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error((err as { error?: string }).error || "Failed to start clip cut");
+      const intentData = await intentRes.json().catch(() => ({}));
+      if (!intentRes.ok) {
+        setNotification({
+          type: "error",
+          message: intentData.error || "AI could not interpret the clip request. Adjust prompt or use Advanced.",
+        });
+        return;
       }
 
-      const data = (await res.json()) as { jobId: string; status?: string; message?: string };
-      const label = `${secsToLabel(startSecs)} → ${secsToLabel(endSecs)}`;
-
-      const newJob: ActiveJob = {
-        jobId: data.jobId,
-        label,
-        url: url.trim(),
-        quality,
-        startSecs,
-        endSecs,
-        status: normalizeJobStatus(data.status, "pending"),
-        percent: 0,
-        speed: null,
-        eta: null,
-        filename: null,
-        filesize: null,
-        progressLine: null,
-        progressSource: null,
-        queueUpdatedAt: null,
-        completedAt: null,
-        elapsedMs: null,
-        message: data.message ?? "Clip cut queued...",
-        downloaded: false,
-        savedToHistory: false,
-        startedAt: Date.now(),
+      const { url, startTime, endTime, message } = intentData as {
+        url: string;
+        startTime: number;
+        endTime: number;
+        message: string;
       };
 
-      setJobs((prev) => {
-        const updated = [newJob, ...prev];
-        persistActiveJobs(updated);
-        return updated;
+      setNotification({
+        type: "success",
+        message: message || `Clip accepted: ${secsToLabel(startTime)} → ${secsToLabel(endTime)}. Starting cut...`,
       });
-      setStartTime("");
-      setEndTime("");
+
+      await startClipCutJob(url, startTime, endTime, quality);
+      setCommand("");
     } catch (err) {
-      toast({
-        title: "Failed to start clip",
-        description: err instanceof Error ? err.message : "Unknown error",
-        variant: "destructive",
+      setNotification({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to start clip cut job.",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleManualCut = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!command.trim()) {
+      setNotification({ type: "error", message: "Please enter a YouTube URL in the input area above." });
+      return;
+    }
+
+    const parsedUrl = extractYouTubeUrl(command);
+    if (!parsedUrl) {
+      setNotification({ type: "error", message: "No valid YouTube URL found in the input area above." });
+      return;
+    }
+
+    const startSecs = parseTimeToSeconds(manualStart);
+    const endSecs = parseTimeToSeconds(manualEnd);
+
+    if (startSecs === null) {
+      setNotification({ type: "error", message: "Invalid manual start time. Use format like 1:30 or 90." });
+      return;
+    }
+    if (endSecs === null) {
+      setNotification({ type: "error", message: "Invalid manual end time. Use format like 2:00 or 120." });
+      return;
+    }
+    if (endSecs <= startSecs) {
+      setNotification({ type: "error", message: "End time must be after start time." });
+      return;
+    }
+    if (endSecs - startSecs > 3600) {
+      setNotification({ type: "error", message: "Clip duration cannot exceed 60 minutes." });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      setNotification({
+        type: "success",
+        message: `Manual clip cut starting: ${secsToLabel(startSecs)} → ${secsToLabel(endSecs)}...`,
+      });
+
+      await startClipCutJob(parsedUrl, startSecs, endSecs, quality);
+
+      setCommand("");
+      setManualStart("");
+      setManualEnd("");
+      setShowAdvanced(false);
+    } catch (err) {
+      setNotification({
+        type: "error",
+        message: err instanceof Error ? err.message : "Failed to start manual clip cut.",
       });
     } finally {
       setSubmitting(false);
@@ -727,164 +838,229 @@ export function ClipCutter() {
   };
 
   return (
-    <div className="flex flex-col gap-5">
-      {/* Form — always visible */}
-      <motion.form
-        onSubmit={handleCut}
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3 }}
-        className="glass-panel rounded-3xl p-6 sm:p-8 flex flex-col gap-6 relative overflow-hidden"
-      >
-        <div className="absolute top-0 right-0 w-64 h-64 bg-orange-500/10 blur-[80px] rounded-full pointer-events-none" />
-
-        <div className="flex items-center gap-3">
-          <div className="bg-orange-500/20 p-2.5 rounded-xl border border-orange-500/30 shadow-[0_0_20px_rgba(249,115,22,0.2)]">
-            <Scissors className="w-5 h-5 text-orange-400" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-white">Clip Cutter</h2>
-            <p className="text-sm text-white/45">
-              Set start &amp; end time — only that section gets downloaded
-            </p>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <label
-            htmlFor="clipcutter-url"
-            className="text-[11px] font-bold uppercase tracking-widest text-white/35"
+    <div className="flex flex-col gap-5 relative">
+      {/* Up Notification Style Card */}
+      <AnimatePresence>
+        {notification && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: "auto" }}
+            exit={{ opacity: 0, y: -20, height: 0 }}
+            className="w-full z-30 overflow-hidden"
           >
-            YouTube URL
-          </label>
-          <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus-within:border-orange-500/40 transition-colors">
-            <Youtube className="w-4 h-4 text-white/30 shrink-0" />
-            <input
-              id="clipcutter-url"
-              name="clipcutter_url"
-              type="url"
-              inputMode="url"
-              autoComplete="off"
-              spellCheck={false}
-              aria-label="YouTube URL"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://youtube.com/watch?v=..."
-              className="bg-transparent flex-1 outline-none text-white placeholder:text-white/25 text-sm"
+            <div className={cn(
+              "w-full rounded-xl border p-3 flex items-center justify-between gap-3 shadow-[0_4px_20px_rgba(0,0,0,0.45)] backdrop-blur-md mb-4",
+              notification.type === "success" && "bg-green-500/10 border-green-500/20 text-green-200",
+              notification.type === "error" && "bg-red-500/10 border-red-500/20 text-red-200",
+              notification.type === "info" && "bg-blue-500/10 border-blue-500/20 text-blue-200"
+            )}>
+              <div className="flex items-center gap-2.5 min-w-0">
+                {notification.type === "success" && <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />}
+                {notification.type === "error" && <AlertCircle className="h-4 w-4 text-red-400 shrink-0" />}
+                {notification.type === "info" && <Info className="h-4 w-4 text-blue-400 shrink-0" />}
+                <span className="text-xs sm:text-sm font-semibold truncate leading-relaxed">
+                  {notification.message}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotification(null)}
+                className="p-1 rounded-lg hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors shrink-0"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="mb-8 max-w-xl sm:mb-10">
+        <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl lg:text-[34px]">Clip Cut</h1>
+        <p className="mt-3 text-sm leading-relaxed text-zinc-400 sm:text-base lg:text-[15px]">
+          Cut, trim, and extract the perfect clips from any YouTube video with AI precision.
+        </p>
+      </div>
+
+      <form onSubmit={handleCut} className="flex flex-col gap-6 relative">
+        <div className="relative rounded-full border border-zinc-800 bg-[#09090b] p-2 px-4.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+          <div className="flex items-center gap-3">
+            <Link2 className="h-4.5 w-4.5 text-zinc-500 shrink-0" />
+            <textarea
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              disabled={submitting}
+              rows={1}
+              placeholder="Paste YouTube URL and describe the clip you want..."
+              className="h-7 min-h-[28px] flex-1 resize-none bg-transparent py-1 text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleCut(e);
+                }
+              }}
             />
+            {/* Clickable i icon */}
+            <button
+              type="button"
+              onClick={() => setShowHelper(!showHelper)}
+              className="p-1.5 rounded-full hover:bg-white/5 text-zinc-400 hover:text-white transition shrink-0"
+              title="Help info"
+            >
+              <Info className="h-4.5 w-4.5" />
+            </button>
+            {/* Submit arrow button inside the input area */}
+            <button
+              disabled={submitting || !command.trim()}
+              type="submit"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white disabled:opacity-50 transition"
+            >
+              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+            </button>
           </div>
+
+          {/* Helper Preview Card (opens relative to input field) */}
+          <AnimatePresence>
+            {showHelper && (
+              <>
+                {/* Overlay backdrop to close */}
+                <div className="fixed inset-0 z-40" onClick={() => setShowHelper(false)} />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                  className="absolute right-0 top-14 z-50 w-80 rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Info className="h-4 w-4 text-orange-400" />
+                      <span className="text-sm font-bold text-white">How Clip Cut Works</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowHelper(false)}
+                      className="p-1 rounded-lg hover:bg-white/10 text-zinc-500 hover:text-white transition"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    Paste a YouTube URL and describe the range to cut. AI will automatically interpret it, or you can input start & end times manually in Advanced options.
+                  </p>
+                  
+                  {/* Tutorial image placeholder */}
+                  <div className="relative aspect-video rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 flex flex-col items-center justify-center">
+                    <img
+                      src="/clip_cut_tutorial_placeholder.png"
+                      alt="Clip Cut Tutorial"
+                      className="h-full w-full object-cover"
+                    />
+                    <div className="absolute inset-0 bg-black/45 flex flex-col items-center justify-center gap-1.5 p-2 text-center pointer-events-none">
+                      <div className="rounded-full bg-white/10 p-2 backdrop-blur-sm border border-white/20">
+                        <Film className="h-4 w-4 text-white" />
+                      </div>
+                      <span className="text-[10px] font-semibold text-white/90">Tutorial Video (Placeholder)</span>
+                    </div>
+                  </div>
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="flex flex-col gap-2">
-            <label
-              htmlFor="clipcutter-start-time"
-              className="text-[11px] font-bold uppercase tracking-widest text-white/35"
-            >
-              Start Time
-            </label>
-            <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus-within:border-orange-500/40 transition-colors">
-              <Clock className="w-4 h-4 text-white/30 shrink-0" />
-                <input
-                  id="clipcutter-start-time"
-                  name="clipcutter_start_time"
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-label="Clip start time"
-                  value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                placeholder="0:00"
-                className="bg-transparent flex-1 outline-none text-white placeholder:text-white/25 text-sm font-mono"
-              />
-            </div>
-            <span className="text-[11px] text-white/30">e.g. 1:30 or 1:02:45</span>
-          </div>
-
-          <div className="flex flex-col gap-2">
-            <label
-              htmlFor="clipcutter-end-time"
-              className="text-[11px] font-bold uppercase tracking-widest text-white/35"
-            >
-              End Time
-            </label>
-            <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-3 focus-within:border-orange-500/40 transition-colors">
-              <Clock className="w-4 h-4 text-white/30 shrink-0" />
-                <input
-                  id="clipcutter-end-time"
-                  name="clipcutter_end_time"
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-label="Clip end time"
-                  value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-                placeholder="0:30"
-                className="bg-transparent flex-1 outline-none text-white placeholder:text-white/25 text-sm font-mono"
-              />
-            </div>
-            <span className="text-[11px] text-white/30">e.g. 2:00 or 1:05:00</span>
-          </div>
-        </div>
-
+        {/* Advanced Options small tab inside the same form */}
         <AnimatePresence>
-          {clipDuration !== null && (
+          {showAdvanced && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              className="flex items-center gap-2 bg-orange-500/10 border border-orange-500/20 rounded-xl px-4 py-3"
+              className="overflow-hidden w-full"
             >
-              <Scissors className="w-4 h-4 text-orange-400 shrink-0" />
-              <span className="text-sm text-orange-300 font-medium">
-                Clip duration:{" "}
-                <span className="font-bold">{formatDuration(clipDuration)}</span>
-              </span>
+              <div className="rounded-2xl border border-zinc-800/80 bg-[#070709] p-4 flex flex-col gap-4 shadow-inner">
+                <div className="flex items-center justify-between border-b border-zinc-800/30 pb-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">Manual Trim Options</span>
+                  <span className="text-[10px] text-zinc-500">Skip AI intent parsing</span>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">Start Time</label>
+                    <input
+                      type="text"
+                      value={manualStart}
+                      onChange={(e) => setManualStart(e.target.value)}
+                      disabled={submitting}
+                      placeholder="e.g. 0:30 or 30"
+                      className="h-10 rounded-xl border border-zinc-850 bg-[#0f0f11] px-3.5 text-sm text-white placeholder:text-zinc-650 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">End Time</label>
+                    <input
+                      type="text"
+                      value={manualEnd}
+                      onChange={(e) => setManualEnd(e.target.value)}
+                      disabled={submitting}
+                      placeholder="e.g. 2:15 or 135"
+                      className="h-10 rounded-xl border border-zinc-850 bg-[#0f0f11] px-3.5 text-sm text-white placeholder:text-zinc-650 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">Video Quality</label>
+                    <select
+                      value={quality}
+                      onChange={(e) => setQuality(e.target.value)}
+                      disabled={submitting}
+                      className="h-10 rounded-xl border border-zinc-850 bg-[#0f0f11] px-3 text-sm text-white outline-none focus:border-zinc-700 disabled:opacity-50"
+                    >
+                      {QUALITY_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button
+                    type="button"
+                    onClick={handleManualCut}
+                    disabled={submitting || !command.trim() || !manualStart.trim() || !manualEnd.trim()}
+                    variant="outline"
+                    className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-zinc-200 text-xs font-semibold text-black hover:bg-zinc-100 disabled:opacity-50 shadow-none border-none active:scale-[0.98]"
+                  >
+                    <Scissors className="h-3.5 w-3.5" />
+                    Cut Manually
+                  </Button>
+                </div>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
-
-        <div className="flex flex-col gap-2">
-          <label className="text-[11px] font-bold uppercase tracking-widest text-white/35">
-            Quality
-          </label>
-          <div className="flex flex-wrap gap-2">
-            {QUALITY_OPTIONS.map((q) => (
-              <button
-                key={q.value}
-                type="button"
-                onClick={() => setQuality(q.value)}
-                className={cn(
-                  "px-4 py-2 rounded-lg text-sm font-medium border transition-all",
-                  quality === q.value
-                    ? "bg-orange-500/20 border-orange-500/40 text-orange-300 shadow-[0_0_12px_rgba(249,115,22,0.2)]"
-                    : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20",
-                )}
-              >
-                {q.label}
-              </button>
-            ))}
-          </div>
+        
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+          <Button
+            type="submit"
+            disabled={submitting || !command.trim()}
+            variant="outline"
+            className="flex h-11 w-full max-w-[200px] items-center justify-center gap-2 rounded-full bg-white text-[14px] font-semibold text-black hover:bg-white/90 sm:w-auto disabled:opacity-50 shadow-none border-none"
+          >
+            <Scissors className="h-4 w-4" />
+            Cut Clip
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className={cn(
+              "flex h-11 w-full max-w-[200px] items-center justify-center gap-2 rounded-full border border-zinc-800 text-[14px] font-semibold text-white hover:bg-zinc-800/80 sm:w-auto shadow-none transition-all",
+              showAdvanced ? "bg-zinc-800/80 border-zinc-700" : "bg-[#0d0d0d]"
+            )}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            Advanced
+          </Button>
         </div>
-
-        <Button
-          type="submit"
-          disabled={submitting || !url.trim() || !startTime.trim() || !endTime.trim()}
-          className="h-12 rounded-xl bg-orange-500 hover:bg-orange-400 text-white font-semibold text-base shadow-[0_0_25px_rgba(249,115,22,0.4)] disabled:opacity-50 disabled:shadow-none transition-all"
-        >
-          {submitting ? (
-            <span className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Starting…
-            </span>
-          ) : (
-            <span className="flex items-center gap-2">
-              <Scissors className="w-4 h-4" />
-              Cut &amp; Download
-            </span>
-          )}
-        </Button>
-      </motion.form>
+      </form>
 
       {/* Active / in-progress job cards */}
       <AnimatePresence initial={false}>
@@ -907,74 +1083,21 @@ export function ClipCutter() {
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="flex flex-col gap-3"
+            className="flex flex-col gap-4 mt-6"
           >
+            <div className="w-full h-px bg-white/5 mb-2" />
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-white/40">
-                <History className="w-4 h-4" />
-                <span className="text-xs font-semibold uppercase tracking-wider">
-                  Clip history · saved on this device
-                </span>
-              </div>
-              <button
-                onClick={() => {
-                  const confirmed = window.confirm(
-                    "Clear all clip history from this device?",
-                  );
-                  if (!confirmed) return;
-                  clearClipHistory();
-                  setHistory([]);
-                }}
-                className="flex items-center gap-1 text-xs text-white/25 hover:text-red-400 transition-colors"
-              >
-                <Trash2 className="w-3 h-3" /> Clear all
-              </button>
+              <span className="text-sm font-bold text-white">Recent cuts</span>
             </div>
 
             <div className="flex flex-col gap-2">
               {history.map((entry) => (
-                <motion.div
+                <RecentClipRow
                   key={entry.jobId}
-                  layout
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 8 }}
-                  className="glass-panel rounded-xl px-4 py-3 flex items-center gap-3"
-                >
-                  <Film className="w-4 h-4 text-orange-400/70 shrink-0" />
-
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white/70 text-sm font-medium font-mono truncate">
-                      {entry.label}
-                    </p>
-                    <p className="text-white/30 text-xs mt-0.5 truncate">
-                      {entry.quality === "best" ? "Best quality" : `${entry.quality}p`}
-                      {" · "}{formatDuration(entry.durationSecs)}
-                      {entry.filesize ? ` · ${formatFilesize(entry.filesize)}` : ""}
-                      {" · "}{formatClipRelativeTime(entry.createdAt)}
-                    </p>
-                    <p className="text-white/20 text-xs truncate" title={entry.url}>
-                      {entry.url}
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => downloadHistoryClip(entry)}
-                    title="Save clip again"
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/12 hover:bg-green-500/22 border border-green-500/25 text-green-300 text-xs font-semibold transition-colors shrink-0"
-                  >
-                    <Download className="w-3 h-3" />
-                    Save
-                  </button>
-
-                  <button
-                    onClick={() => setHistory(deleteFromClipHistory(entry.jobId))}
-                    title="Remove from history"
-                    className="p-1.5 rounded-lg hover:bg-red-500/15 text-white/20 hover:text-red-400 transition-colors shrink-0"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </motion.div>
+                  entry={entry}
+                  onDownload={() => downloadHistoryClip(entry)}
+                  onDelete={() => setHistory(deleteFromClipHistory(entry.jobId))}
+                />
               ))}
             </div>
           </motion.div>
@@ -1243,6 +1366,112 @@ function ClipJobCard({
           Clip is ready{doneTimeLabel ? ` in ${doneTimeLabel}` : ""}. Use Save to download.
         </p>
       )}
+    </motion.div>
+  );
+}
+
+
+function extractVideoId(url: string) {
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+}
+
+function useVideoTitle(url: string, defaultTitle: string) {
+  const [title, setTitle] = useState(defaultTitle);
+
+  useEffect(() => {
+    const videoId = extractVideoId(url);
+    if (!videoId) return;
+
+    fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.title) {
+          setTitle(data.title);
+        }
+      })
+      .catch(() => {});
+  }, [url]);
+
+  return title;
+}
+
+function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntry; onDownload: (entry: ClipHistoryEntry) => void; onDelete: () => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const videoId = extractVideoId(entry.url);
+  const title = useVideoTitle(entry.url, entry.label);
+
+  return (
+    <motion.div layout initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }} className="bg-[#0c0c0e] border border-zinc-900 rounded-2xl px-4.5 py-3.5 flex items-center gap-4 relative">
+      <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5">
+        {videoId ? (
+          <img src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`} className="h-full w-full object-cover" alt="Thumbnail" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-zinc-900">
+            <Youtube className="h-4 w-4 text-white/20" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className="text-white/95 text-sm font-semibold truncate leading-snug">{title}</p>
+        <p className="text-zinc-400 text-xs mt-1.5 truncate">
+          {entry.label} • {formatDuration(entry.durationSecs)} total
+        </p>
+      </div>
+
+      <div className="flex items-center shrink-0">
+        <span className="text-xs text-zinc-500 hidden sm:block mr-4">
+          {formatClipRelativeTime(entry.createdAt)}
+        </span>
+        <div className="relative">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen(!menuOpen);
+            }}
+            className="p-1.5 rounded-lg hover:bg-white/10 text-zinc-500 hover:text-white transition-colors"
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+          <AnimatePresence>
+            {menuOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setMenuOpen(false)} />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 5 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 5 }}
+                  transition={{ duration: 0.1 }}
+                  className="absolute right-0 top-9 z-30 w-32 rounded-xl border border-zinc-800 bg-[#0d0d0d] p-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDownload(entry);
+                      setMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:bg-white/5 hover:text-white transition"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onDelete();
+                      setMenuOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-red-400/80 hover:bg-red-500/10 hover:text-red-400 transition"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Remove
+                  </button>
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
     </motion.div>
   );
 }

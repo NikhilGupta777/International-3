@@ -2248,6 +2248,88 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   scheduleAutoDelete(jobId, jobRef);
 }
 
+router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
+  const { prompt } = req.body as { prompt?: string };
+  const cleanPrompt = typeof prompt === "string" ? prompt.trim() : "";
+
+  if (!cleanPrompt) {
+    res.status(400).json({ error: "Prompt is required" });
+    return;
+  }
+  if (!isGeminiConfigured()) {
+    res.status(503).json({ error: "AI is not configured. Add Vertex Gemini env or GEMINI_API_KEY." });
+    return;
+  }
+
+  try {
+    const client = createGeminiClient();
+    const result = await client.models.generateContent({
+      model: process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.5-flash",
+      contents: [{ role: "user", parts: [{ text: cleanPrompt }] }],
+      config: {
+        systemInstruction: [
+          "You interpret a user's Clip Cut request for a YouTube video.",
+          "Return ONLY one JSON object with these fields:",
+          "{\"url\":\"https://...\",\"startTime\":90,\"endTime\":165,\"message\":\"one short helpful sentence\"}",
+          "startTime and endTime must be seconds as numbers.",
+          "If a YouTube URL is missing or invalid, return {\"error\":\"...\"}.",
+          "If start or end time is missing or unclear, return {\"error\":\"...\"}.",
+          "If the end time is not after the start time, return {\"error\":\"...\"}.",
+          "Do not start any chat. Do not include markdown.",
+        ].join("\n"),
+        responseMimeType: "application/json",
+        thinkingConfig: {
+          thinkingLevel: "MEDIUM" as any,
+          includeThoughts: false,
+        } as any,
+      } as any,
+    });
+
+    const raw = ((result as any).text ?? "").trim();
+    const parsed = extractJsonObject(raw);
+    if (!parsed) {
+      res.status(422).json({ error: "AI could not understand the clip request. Please include the YouTube URL, start time, and end time." });
+      return;
+    }
+
+    const error = typeof parsed.error === "string" ? parsed.error.trim() : "";
+    if (error) {
+      res.status(422).json({ error });
+      return;
+    }
+
+    const url = typeof parsed.url === "string" ? parsed.url.trim() : "";
+    const startTime = Number(parsed.startTime);
+    const endTime = Number(parsed.endTime);
+    const message = typeof parsed.message === "string"
+      ? parsed.message.trim()
+      : "AI understood the clip request.";
+
+    if (!url || !Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+      res.status(422).json({ error: "AI needs a YouTube URL plus clear start and end times." });
+      return;
+    }
+    if (endTime <= startTime) {
+      res.status(422).json({ error: "AI found the end time before the start time. Please adjust the range." });
+      return;
+    }
+    if (endTime - startTime > 3600) {
+      res.status(422).json({ error: "Clip cannot exceed 60 minutes." });
+      return;
+    }
+
+    res.json({
+      url: normalizeInputUrl(url),
+      startTime: Math.max(0, Math.round(startTime)),
+      endTime: Math.max(0, Math.round(endTime)),
+      message,
+    });
+  } catch (err) {
+    req.log?.error({ err }, "Clip Cut intent interpretation failed");
+    res.status(502).json({ error: "AI could not interpret that clip request. Please try again or use Advanced." });
+  }
+});
+
 router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: Response) => {
   const { url, startTime, endTime, quality } = req.body as {
     url: string;
@@ -3990,6 +4072,30 @@ function extractJsonArray(raw: string): any[] | null {
   }
   if (objects.length > 0) return objects;
 
+  return null;
+}
+
+function extractJsonObject(raw: string): Record<string, unknown> | null {
+  const parsed = extractJsonArray(raw);
+  if (parsed?.[0] && typeof parsed[0] === "object" && !Array.isArray(parsed[0])) {
+    return parsed[0] as Record<string, unknown>;
+  }
+  let cleaned = raw
+    .replace(/^```(?:json)?\s*/im, "")
+    .replace(/\s*```\s*$/im, "")
+    .trim();
+  try {
+    const direct = JSON.parse(cleaned);
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct;
+  } catch {}
+  const objectStart = cleaned.indexOf("{");
+  const objectEnd = cleaned.lastIndexOf("}");
+  if (objectStart !== -1 && objectEnd > objectStart) {
+    try {
+      const direct = JSON.parse(cleaned.slice(objectStart, objectEnd + 1));
+      if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct;
+    } catch {}
+  }
   return null;
 }
 

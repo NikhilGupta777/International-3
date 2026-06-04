@@ -37,3 +37,8 @@ if (process.env.NODE_ENV !== "production") {
     }
   }
 }
+
+if (process.env.YTDLP_BIN && !existsSync(process.env.YTDLP_BIN)) {
+  delete process.env.YTDLP_BIN;
+}
+
