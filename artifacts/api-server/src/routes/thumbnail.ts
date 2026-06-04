@@ -139,63 +139,49 @@ async function renderThumbnail(params: {
 const THUMB_TOOLS: any[] = [
   {
     name: "generate_thumbnail",
-    description: `Generate a brand-new, scroll-stopping video thumbnail from scratch.
-
-BEFORE writing the prompt, think through these 5 questions in your reasoning:
-1. EMOTION: What single emotion should hit the viewer in 0.3 seconds? (shock, curiosity, desire, FOMO, awe, humor)
-2. SUBJECT: Who/what is the hero? What EXACT expression or pose? (be very specific — "jaw dropped, eyes wide, both hands on cheeks" not "surprised")
-3. HEADLINE TEXT: What 2–4 bold words go on the image? (skip text entirely if a clean visual is stronger)
-4. COMPOSITION: Where does the subject sit in the frame? What fills the negative space?
-5. COLORS: What 2–3 saturated dominant colors create instant contrast?
-
-PROMPT FORMAT — always structure like this:
-"Photorealistic YouTube thumbnail. [Subject with hyper-specific expression and pose]. [Composition: e.g. 'extreme close-up centered', 'subject on left third facing right', 'split-screen left vs right']. [Background description — specific, not generic]. [Lighting: e.g. 'dramatic cold rim light from behind', 'vibrant neon glow', 'cinematic god rays from above', 'deep studio black with spotlight']. [Color palette: 2–3 dominant saturated colors]. [If text: Bold [color] text reading '[EXACT WORDS]' [position: top/bottom/right], large, thick stroke, drop shadow]. Ultra-high contrast. Hyper-detailed. Scroll-stopping at thumbnail size."
-
-NEVER pass the user's raw sentence as the prompt — always rewrite into the format above.`,
+    description:
+      "Render a brand-new thumbnail image from a fully-crafted visual prompt. " +
+      "Before calling, deeply understand the user's video, audience, and the emotion the thumbnail must trigger. " +
+      "Then write a rich, production-quality prompt yourself: subject & expression, composition, focal point, " +
+      "background, lighting, color palette, depth, any large bold headline text (give exact words), and overall mood. " +
+      "Thumbnails must be high-contrast, readable at small sizes, and scroll-stopping. Never pass the user's raw text as the prompt.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         prompt: {
           type: Type.STRING,
           description:
-            "The full image prompt YOU write, following the format: photorealistic YouTube thumbnail → specific subject + expression → composition → background → lighting → color palette → optional bold text with exact words → quality closers (ultra-high contrast, hyper-detailed). " +
-            "Example: \"Photorealistic YouTube thumbnail. Indian man in his 30s, mouth wide open in shock, pointing directly at camera with both hands, wearing a white kurta. Extreme close-up, centered, filling 70% of frame. Deep black background with subtle red vignette at edges. Dramatic cold blue rim light from behind, warm key light on face. Dominant colors: deep black, electric blue, crimson red. Bold white text at top: 'यह सच है?' in large Devanagari, thick black stroke, drop shadow. Ultra-high contrast. Hyper-detailed. Cinematic quality.\"",
+            "A complete, detailed image-generation prompt YOU craft. Include subject/expression, composition, " +
+            "focal point, background, lighting, color palette, and any on-image headline text with exact wording.",
         },
         aspectRatio: {
           type: Type.STRING,
-          description: "Output ratio: '16:9' (YouTube standard, default), '9:16' (Shorts/Reels/TikTok), '1:1' (Instagram square), '4:5' (Instagram portrait). Default '16:9'.",
+          description:
+            "One of: '16:9' (YouTube), '9:16' (Shorts/Reels), '1:1' (square), '4:3', '4:5'. Default '16:9'.",
         },
-        imageSize: { type: Type.STRING, description: "'2K' (default, best quality) or '1K'." },
+        imageSize: { type: Type.STRING, description: "'1K' or '2K'. Default '2K'." },
       },
       required: ["prompt"],
     },
   },
   {
     name: "edit_thumbnail",
-    description: `Edit, refine, or combine the user's attached reference images into a finished thumbnail.
-The model receives ALL attached images (up to 10) and your instructions.
-
-CRITICAL — describe the DESIRED FINAL OUTPUT STATE, not just the delta change:
-❌ WEAK: "Make the background red and add text"
-✅ STRONG: "YouTube thumbnail: same subject in center with exact same face and outfit, now on a solid deep crimson red background. Bold white text at top reading 'BIG NEWS', large, thick black stroke. High-contrast studio lighting. Scroll-stopping quality."
-
-When combining multiple images (face photo + background + logo):
-- Be explicit: "Take the face from image 1, place it on the left third against the background from image 2, add the logo from image 3 at top-right corner"
-- Describe the final composition, lighting, colors, and any text
-
-Always preserve faces/identities unless the user explicitly asks to change them.
-Describe specific lighting for the final image — don't leave it implicit.`,
+    description:
+      "Edit/refine the most recent reference image(s) the user attached (they may attach up to 10 — use them all, e.g. combine a face + a logo + a background), " +
+      "OR iterate on a previously generated thumbnail. " +
+      "Craft a precise editing instruction: what to change, what to preserve, the desired style/colors/mood. " +
+      "Use this when the user says things like 'make the text bigger', 'change background to red', 'add my face here', 'combine these'.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         instructions: {
           type: Type.STRING,
           description:
-            "A full description of the desired final thumbnail state. Cover: what to preserve (faces, key elements), what to change, composition, background, lighting, colors, and any text with exact wording. Describe the output, not just the edit steps.",
+            "A precise editing prompt YOU craft from the user's intent: exactly what to change, what to keep, and the target look.",
         },
         aspectRatio: {
           type: Type.STRING,
-          description: "Output ratio override if needed: '16:9', '9:16', '1:1', '4:5'.",
+          description: "Optional output ratio override: '16:9', '9:16', '1:1', '4:3', '4:5'.",
         },
       },
       required: ["instructions"],
@@ -203,52 +189,31 @@ Describe specific lighting for the final image — don't leave it implicit.`,
   },
 ];
 
-const THUMB_SYSTEM_PROMPT = `You are Thumbnail Studio — a dedicated AI thumbnail designer built into a video-production app. You are world-class at this one job.
+const THUMB_SYSTEM_PROMPT = `You are Thumbnail Studio — a focused, expert AI thumbnail designer living in its own tab inside a video-production app.
 
-YOUR ONLY JOB: Help users create stunning, scroll-stopping video thumbnails for YouTube, Shorts, Reels, podcasts, and courses. You do not download videos, cut clips, transcribe, or translate — if asked, tell them that feature lives in another tab.
+Your ONLY job is to help the user design and generate stunning video thumbnails (YouTube, Shorts, Reels, podcasts, courses). You do not download videos, cut clips, transcribe, or translate — if asked, briefly say that lives in another tab and steer back to thumbnails.
 
-━━━ HOW TO THINK ABOUT THUMBNAILS ━━━
-The best thumbnails work because of psychology, not just looks:
-• PATTERN INTERRUPT: Something unexpected that stops the scroll in 0.3 seconds
-• EMOTION FIRST: A face with an extreme, readable expression beats any graphic
-• CURIOSITY GAP: The thumbnail raises a question the video answers
-• CONTRAST: One bold color against a contrasting background, not a busy mix
-• SIMPLICITY: One hero, one headline, one message — complexity kills at small size
+HOW YOU WORK:
+- Be warm, fast, and concise. Talk like a sharp creative director, not a form.
+- If the user's idea is already clear enough, generate immediately — do not interrogate them.
+- If something essential is genuinely missing (e.g. the topic is very vague), ask ONE short clarifying question, then proceed.
+- YOU are the prompt engineer. Never feed the user's raw words to the image tool. Translate intent into a rich, concrete visual prompt: subject & facial expression, composition, focal point, background, lighting, color palette, depth, and any large bold headline text (give the exact words — keep them short, 2–5 punchy words max).
+- Thumbnails must be high-contrast, emotionally charged, and instantly readable at small sizes.
+- Default to 16:9 unless the user mentions Shorts/Reels (9:16) or a square/post (1:1).
 
-━━━ WRITING THE IMAGE PROMPT ━━━
-YOU are the prompt engineer — the image model needs a precise visual spec, not a concept.
+TOOL SELECTION — CRITICAL:
+- If the user attaches one or more reference images (face, logo, background, etc.) → always use edit_thumbnail.
+- If the user asks to tweak/change/adjust a result from THIS conversation → use edit_thumbnail.
+- If the user is requesting a fresh thumbnail without attached images and no prior result to edit → use generate_thumbnail.
+- If the conversation has NO prior generated thumbnail and the user says "make it bigger / change the color / etc." → use generate_thumbnail and fully incorporate all requested changes into the new prompt — do NOT call edit_thumbnail without a reference.
+- You may generate 1–2 strong options when it genuinely helps (e.g. "I'll show you two color directions"); never spam near-identical images.
 
-Always structure your prompt in this order:
-1. "Photorealistic YouTube thumbnail." (sets the model's output mode)
-2. Subject: who/what, with hyper-specific expression ("jaw dropped, hands on cheeks, eyes wide" — NOT "shocked")
-3. Composition: camera angle + subject placement ("extreme close-up", "subject left third facing right", "split-screen")
-4. Background: specific, not generic ("deep charcoal with red vignette" not "dark background")
-5. Lighting: name it explicitly ("cold blue rim light", "neon glow from below", "cinematic god rays", "warm golden spotlight")
-6. Color palette: 2–3 dominant saturated colors
-7. Text (only if it adds punch): Bold [color] text reading '[EXACT WORDS IN QUOTES]' [position], large, thick stroke, drop shadow
-8. Close with: "Ultra-high contrast. Hyper-detailed. Scroll-stopping at thumbnail size."
-
-For EDITING: Describe the DESIRED FINAL STATE of the image, not just the change. "YouTube thumbnail with the same person, now against a deep red background, bold white text 'SHOCKING' at top" beats "change background to red and add text".
-
-━━━ TOOL SELECTION ━━━
-• User attached image(s) → edit_thumbnail (always, even for minor tweaks)
-• User wants to adjust a result from this conversation → edit_thumbnail
-• Fresh generation, no reference image → generate_thumbnail
-• Second turn, no prior result, user says "change X" → generate_thumbnail, incorporate the change into a new full prompt
-• Showing 2 strong options (different color directions, different text) → call generate_thumbnail twice; never generate near-identical variants
-
-━━━ RESPONSE STYLE ━━━
-• Think freely in the reasoning panel — explore the concept, composition, headline options, color ideas
-• In your VISIBLE reply: NO narration before tool calls ("Sure, creating it now..." = banned)
-• After the image is delivered: ONE short line max (~14 words) offering the most useful next direction, e.g. "Bold take — want darker colors or a Hindi headline instead?"
-• Only write more when asking a genuine clarifying question (and NOT generating in the same turn)
-• Never paste raw S3/image URLs — the image renders as a card automatically
-
-━━━ PLATFORM RATIOS ━━━
-• YouTube standard → 16:9 (default)
-• YouTube Shorts / Instagram Reels / TikTok → 9:16
-• Instagram square / podcast cover → 1:1
-• Instagram portrait → 4:5
+PACING & VISIBLE TEXT:
+- Your private reasoning (the "thinking" you do before acting) is shown to the user in a separate, collapsible thinking panel — so think freely and naturally there about the concept, composition, mood, and headline.
+- In your VISIBLE reply, do NOT narrate before a tool call ("Sure, let me create..."). Just think, then call the tool. The UI shows a live generation animation.
+- AFTER the image is delivered, reply with ONE short, friendly line only (max ~14 words), e.g. "Bold take — want a punchier headline or a different color scheme?"
+- Only write a longer visible message when you are genuinely asking a clarifying question and NOT generating in the same turn.
+- Never paste raw image URLs — the image appears as a card automatically.
 
 Always reply in the user's language.`;
 
@@ -332,20 +297,17 @@ router.post("/thumbnail/chat", async (req, res) => {
         // reference thumbnails would cause it to blend/composite those images
         // instead of generating something fresh in their visual style.
         // The style brief text is the reliable channel for style guidance.
-        // Append quality closers if the prompt doesn't already have them,
-        // and inject any active brand preset style as a text directive.
-        const qualityCloser = "Ultra-high contrast. Hyper-detailed, cinematic quality. Scroll-stopping at small thumbnail size. No watermarks, no borders.";
-        const presetDirective = activePreset
-          ? `\n\nBRAND CHANNEL STYLE — apply the visual identity of "${activePreset.name}": ` +
-            `${activePreset.stylePrompt ? activePreset.stylePrompt.trim() + " " : ""}` +
-            `Match the channel's color grading, layout rhythm, font feel, and overall mood. Generate a fresh, original image — do NOT reproduce existing subjects.`
-          : "";
-        const styledPrompt = `${prompt}\n\n${qualityCloser}${presetDirective}`;
+        const styledPrompt = activePreset
+          ? `${prompt}\n\nBRAND CHANNEL STYLE — "${activePreset.name}": ` +
+            `${activePreset.stylePrompt ? activePreset.stylePrompt + " " : ""}` +
+            `Match the channel's visual language: color grading, layout rhythm, text treatment, ` +
+            `overall mood, and framing. Generate a fresh, original thumbnail — do NOT copy existing subjects.`
+          : prompt;
         const out = await renderThumbnail({
           prompt: styledPrompt,
           aspectRatio: args.aspectRatio,
           imageSize: args.imageSize,
-          // No baseImages for fresh generation — style is in the text prompt.
+          // No baseImages for fresh generation — style is fully described in the prompt text.
         });
         lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
@@ -379,24 +341,20 @@ router.post("/thumbnail/chat", async (req, res) => {
         // candidate to edit, so mixing edit targets with style references
         // (12+ thumbnails) causes blending artifacts and unpredictable results.
         // The channel style is communicated reliably via text in styleNote.
-        const presetStyleNote = activePreset
-          ? ` Apply the brand identity of "${activePreset.name}": ` +
-            `${activePreset.stylePrompt ? activePreset.stylePrompt.trim() + " " : ""}` +
-            `Match that channel's color grading, layout feel, and mood in the output.`
+        const styleNote = activePreset
+          ? ` BRAND CHANNEL STYLE — "${activePreset.name}": ` +
+            `${activePreset.stylePrompt ? activePreset.stylePrompt + " " : ""}` +
+            `Apply this channel's color grading, layout, text treatment, and mood to the edit output.`
           : "";
-        const editPrefix = base.length > 1
-          ? `Create a YouTube thumbnail by combining the ${base.length} provided reference images. `
-          : `Create a YouTube thumbnail based on this image. `;
         const out = await renderThumbnail({
           prompt:
-            editPrefix +
-            instructions +
-            `. Preserve all faces and identities exactly — do not alter facial features or skin tone.` +
-            ` Output must be high-contrast and instantly readable at small thumbnail sizes.` +
-            presetStyleNote +
-            ` No watermarks, no borders, no image artifacts.`,
+            (base.length > 1
+              ? `Combine/use the ${base.length} provided images to create one video thumbnail. ${instructions}. `
+              : `Edit this image as a video thumbnail. ${instructions}. `) +
+            `Preserve the important subjects and any faces. Keep it high-contrast and readable at small sizes.` +
+            styleNote,
           aspectRatio: args.aspectRatio,
-          baseImages: base,   // edit targets only; style via text above
+          baseImages: base,   // edit targets only; style via text prompt above
         });
         lastGenerated = { data: out.data, mimeType: out.mimeType };
         send(res, { type: "thumb_done", runId, toolId, imageUrl: out.imageUrl, filename: out.filename, note: out.note });
