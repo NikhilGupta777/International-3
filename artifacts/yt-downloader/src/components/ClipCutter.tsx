@@ -838,7 +838,7 @@ export function ClipCutter() {
   };
 
   return (
-    <div className="flex flex-col gap-5 relative max-w-[720px] mx-auto w-full">
+    <div className="flex flex-col gap-5 relative max-w-[720px] mx-auto w-full pt-8 sm:pt-14">
       {/* Up Notification Style Card */}
       <AnimatePresence>
         {notification && (
@@ -874,10 +874,10 @@ export function ClipCutter() {
         )}
       </AnimatePresence>
 
-      <div className="mb-8 max-w-xl sm:mb-10">
-        <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl lg:text-[34px]">Clip Cut</h1>
+      <div className="mb-5 max-w-none sm:mb-6">
+        <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-[38px]">Clip Cut</h1>
         <p className="mt-3 text-sm leading-relaxed text-zinc-400 sm:text-base lg:text-[15px]">
-          Cut, trim, and extract the perfect clips from any YouTube video with AI precision.
+          Cut, trim, and extract the perfect clips from any YouTube video with <strong className="font-semibold text-white/90">AI precision</strong>.
         </p>
       </div>
 
