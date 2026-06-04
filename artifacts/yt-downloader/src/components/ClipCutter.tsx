@@ -1072,7 +1072,7 @@ export function ClipCutter() {
           )}
         </AnimatePresence>
         
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-2">
           <Button
             type="submit"
             disabled={submitting || !command.trim()}
