@@ -4,7 +4,7 @@ import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
   AlertCircle, Globe, X, FileAudio, FileVideo, ChevronDown,
   Copy, Check, RefreshCw, StopCircle, AlignLeft, History, Trash2,
-  Link2, Info, ArrowUp, Sparkles, Languages, MoreVertical,
+  Link2, Info, ArrowUp, MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -125,7 +125,9 @@ export function GetSubtitles() {
   const [copiedText, setCopiedText] = useState(false);
   const [copiedTextOriginal, setCopiedTextOriginal] = useState(false);
   const [tick, setTick] = useState(0);
-  const [showTips, setShowTips] = useState(true);
+  const [shaking, setShaking] = useState(false);
+  const [emptyError, setEmptyError] = useState(false);
+  const [showAllHistory, setShowAllHistory] = useState(false);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
   const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => {
     const loaded = loadHistory();
@@ -186,6 +188,7 @@ export function GetSubtitles() {
   // Refs for click-outside detection on dropdowns
   const langDropdownRef = useRef<HTMLDivElement>(null);
   const translateDropdownRef = useRef<HTMLDivElement>(null);
+  const historyTopRef = useRef<HTMLDivElement>(null);
 
   const { toast } = useToast();
 
@@ -616,9 +619,17 @@ export function GetSubtitles() {
   const currentStepIdx = jobStepOrder.indexOf(effectiveStatus ?? "");
 
   const handleGenerateSubtitles = () => {
+    if (!command.trim() && !file) {
+      setShaking(true);
+      setEmptyError(true);
+      setTimeout(() => setShaking(false), 550);
+      setTimeout(() => setEmptyError(false), 3000);
+      return;
+    }
+    setEmptyError(false);
     if (file) {
       startJob("file", "", file, language, translateTo);
-    } else if (command.trim()) {
+    } else {
       startJob("url", command, null, language, translateTo);
     }
   };
@@ -638,6 +649,16 @@ export function GetSubtitles() {
             filter: drop-shadow(0 0 3.5px #ffffff) drop-shadow(0 0 8px #af52de) drop-shadow(0 0 15px #ff2d55) brightness(1.2);
           }
         }
+        @keyframes shake {
+          0%, 100% { transform: translateX(0); }
+          15% { transform: translateX(-7px); }
+          30% { transform: translateX(7px); }
+          45% { transform: translateX(-5px); }
+          60% { transform: translateX(5px); }
+          75% { transform: translateX(-2px); }
+          90% { transform: translateX(2px); }
+        }
+        .shake-btn { animation: shake 0.5s ease-in-out; }
       `}</style>
 
       {/* Header */}
@@ -814,7 +835,7 @@ export function GetSubtitles() {
             disabled={loading}
             className="flex items-center gap-2.5 px-4 py-3 bg-[#09090b]/60 border border-zinc-800 rounded-xl text-sm text-white font-medium transition-all w-full hover:bg-white/[0.03] hover:border-zinc-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Globe className="w-4 h-4 text-zinc-500 shrink-0" />
+            <Globe className="w-4 h-4 text-teal-500 shrink-0" />
             <span className="flex-1 text-left truncate">{selectedLang?.label ?? "Auto-detect"}</span>
             <ChevronDown className={cn("w-4 h-4 text-zinc-500 transition-transform duration-200", langOpen && "rotate-180")} />
           </button>
@@ -857,7 +878,7 @@ export function GetSubtitles() {
             disabled={loading}
             className="flex items-center gap-2.5 px-4 py-3 bg-[#09090b]/60 border border-zinc-800 rounded-xl text-sm text-white font-medium transition-all w-full hover:bg-white/[0.03] hover:border-zinc-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Globe className="w-4 h-4 text-zinc-500 shrink-0" />
+            <Globe className="w-4 h-4 text-violet-500 shrink-0" />
             <span className="flex-1 text-left truncate">
               {TRANSLATE_LANGUAGES.find((l) => l.value === translateTo)?.label ?? "No translation"}
             </span>
@@ -901,9 +922,13 @@ export function GetSubtitles() {
       {/* Generate Subtitles Button */}
       <Button
         type="button"
-        onClick={handleGenerateSubtitles}
-        disabled={(!command.trim() && !file) || loading}
-        className="w-full py-4 rounded-2xl bg-white hover:bg-zinc-100 text-black font-bold text-sm transition-all duration-200 active:scale-[0.98] shadow-[0_6px_24px_rgba(255,255,255,0.15)] flex items-center justify-center gap-2 mt-2 disabled:cursor-not-allowed disabled:pointer-events-none"
+        onClick={loading ? undefined : handleGenerateSubtitles}
+        className={cn(
+          "w-full py-4 rounded-2xl bg-white text-black font-bold text-sm transition-all duration-200 active:scale-[0.98] shadow-[0_6px_24px_rgba(255,255,255,0.15)] flex items-center justify-center gap-2 mt-2",
+          !loading && "hover:bg-zinc-100",
+          loading && "opacity-60 cursor-not-allowed pointer-events-none",
+          shaking && "shake-btn"
+        )}
       >
         {loading ? (
           <Loader2 className="w-4 h-4 animate-spin text-black" />
@@ -927,6 +952,13 @@ export function GetSubtitles() {
         )}
         <span>Generate Subtitles</span>
       </Button>
+
+      {/* Empty-input shake error */}
+      {emptyError && (
+        <p className="text-center text-xs text-red-400/90 font-medium -mt-2">
+          Please paste a YouTube URL or upload a file first.
+        </p>
+      )}
 
       {/* Active Job Progress Card wrapped in glowing RGB border */}
       <AnimatePresence>
@@ -1133,7 +1165,7 @@ export function GetSubtitles() {
 
       {/* Recent subtitles feed */}
       {!loading && history.length > 0 && (
-        <div className="mt-4 w-full text-left">
+        <div ref={historyTopRef} className="mt-4 w-full text-left">
           <div className="flex items-center justify-between mb-4">
             <span className="text-sm font-semibold text-white select-none">Recent subtitles</span>
             <button
@@ -1148,6 +1180,7 @@ export function GetSubtitles() {
           <div className="flex flex-col gap-2.5 w-full">
             {[...history]
               .sort((a, b) => b.createdAt - a.createdAt)
+              .slice(0, showAllHistory ? undefined : 3)
               .map((entry) => (
                 <RecentSubtitleRow
                   key={entry.id}
@@ -1167,31 +1200,20 @@ export function GetSubtitles() {
           <div className="flex justify-center mt-4">
             <button
               type="button"
-              className="text-xs text-teal-400 hover:text-teal-350 font-semibold transition flex items-center gap-1.5 cursor-pointer"
+              onClick={() => {
+                if (!showAllHistory) setShowAllHistory(true);
+                else { setShowAllHistory(false); historyTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+              }}
+              className="text-xs text-teal-400 hover:text-teal-300 font-semibold transition flex items-center gap-1.5 cursor-pointer"
             >
-              <span>View all subtitles</span>
-              <span className="text-sm">→</span>
+              <span>{showAllHistory ? 'Show less' : `View all ${history.length} subtitles`}</span>
+              <span className="text-sm">{showAllHistory ? '↑' : '→'}</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* Tips panel at the bottom */}
-      {showTips && (
-        <div className="flex items-center justify-between p-3 rounded-xl border border-teal-500/10 bg-teal-500/5 text-teal-400 text-xs w-full text-left mt-6 select-none">
-          <div className="flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-teal-400 shrink-0" />
-            <span>For best results, use clear audio and high-quality videos.</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowTips(false)}
-            className="p-1 rounded-full hover:bg-teal-500/10 text-teal-400/60 hover:text-teal-400 transition"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
+
     </div>
   );
 }
@@ -1282,12 +1304,7 @@ function RecentSubtitleRow({
           >
             <Copy className="w-4 h-4" />
           </button>
-          <button
-            title="Translate"
-            className="p-2 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition"
-          >
-            <Languages className="w-4 h-4" />
-          </button>
+
           <div className="relative">
             <button
               onClick={(e) => {
