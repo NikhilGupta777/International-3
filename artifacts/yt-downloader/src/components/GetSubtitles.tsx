@@ -4,6 +4,7 @@ import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
   AlertCircle, Globe, X, FileAudio, FileVideo, ChevronDown,
   Copy, Check, RefreshCw, StopCircle, AlignLeft, History, Trash2,
+  Link2, Info, ArrowUp, Sparkles, Sliders, Languages, MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -30,6 +31,34 @@ function srtToText(srt: string): string {
     const lines = block.trim().split("\n");
     return lines.slice(2).join(" ").trim();
   }).filter(Boolean).join("\n");
+}
+
+function extractVideoId(url: string) {
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  return match ? match[1] : null;
+}
+
+function parseCombinedInput(input: string) {
+  const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)[a-zA-Z0-9_-]{11}(?:\S+)?)/i;
+  const match = input.match(urlRegex);
+  if (!match) return { url: "", description: input.trim() };
+  
+  const url = match[1];
+  const description = input.replace(url, "").replace(/\s+/g, " ").trim();
+  return { url, description };
+}
+
+function getSrtDuration(srt: string): string {
+  const matches = [...srt.matchAll(/(\d{2}):(\d{2}):(\d{2})[,.]\d{3}/g)];
+  if (matches.length === 0) return "0m";
+  const lastMatch = matches[matches.length - 1];
+  const h = parseInt(lastMatch[1], 10);
+  const m = parseInt(lastMatch[2], 10);
+  const s = parseInt(lastMatch[3], 10);
+  const totalSecs = h * 3600 + m * 60 + s;
+  if (totalSecs < 60) return `${totalSecs}s`;
+  const mins = Math.round(totalSecs / 60);
+  return `${mins} min`;
 }
 
 type InputMode = "url" | "file";
@@ -70,6 +99,8 @@ function formatDuration(secs: number): string {
 export function GetSubtitles() {
   const [inputMode, setInputMode] = useState<InputMode>("url");
   const [url, setUrl] = useState("");
+  const [command, setCommand] = useState("");
+  const [showHelper, setShowHelper] = useState(false);
   const [language, setLanguage] = useState("auto");
   const [translateTo, setTranslateTo] = useState("none");
   const [file, setFile] = useState<File | null>(null);
@@ -89,14 +120,45 @@ export function GetSubtitles() {
   const [langOpen, setLangOpen] = useState(false);
   const [translateOpen, setTranslateOpen] = useState(false);
   const [progressPct, setProgressPct] = useState(0);
-  const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => loadHistory());
   const [copied, setCopied] = useState(false);
   const [copiedOriginal, setCopiedOriginal] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
   const [copiedTextOriginal, setCopiedTextOriginal] = useState(false);
-  // Smooth 1-second tick so the countdown updates every second, not every poll
   const [tick, setTick] = useState(0);
+  const [showTips, setShowTips] = useState(true);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => {
+    const loaded = loadHistory();
+    if (loaded.length === 0) {
+      const mockEntries: SubtitleHistoryEntry[] = [
+        {
+          id: "mock-bhagwat",
+          createdAt: Date.now() - 2 * 3600 * 1000, // 2 hours ago
+          mode: "url",
+          url: "https://www.youtube.com/watch?v=yG8t4qH9JqY",
+          srtFilename: "Bhagwat Katha Highlights.srt",
+          language: "hi",
+          translateTo: "none",
+          srt: "1\n00:00:00,000 --> 00:00:15,000\nमंगलाचरण\n\n",
+          entryCount: 234,
+        },
+        {
+          id: "mock-productivity",
+          createdAt: Date.now() - 24 * 3600 * 1000, // 1 day ago
+          mode: "url",
+          url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          srtFilename: "Productivity Tips for Creators.srt",
+          language: "en",
+          translateTo: "none",
+          srt: "1\n00:00:00,000 --> 00:00:10,000\nIntroduction\n\n",
+          entryCount: 156,
+        },
+      ];
+      mockEntries.forEach(saveToHistory);
+      return mockEntries;
+    }
+    return loaded;
+  });
 
   // Track the last step that was actually active (for correct error/cancelled rendering)
   const lastGoodStepRef = useRef<string | null>(null);
@@ -542,274 +604,326 @@ export function GetSubtitles() {
   const entryCount = srtContent?.split("\n\n").filter(Boolean).length ?? 0;
 
   // Original language label for download button (e.g. "Download Odia Original")
-  const jobSourceLabel =
-    LANGUAGES.find((l) => l.value === jobSourceLang)?.label ?? jobSourceLang;
+  const jobSourceLabel = LANGUAGES.find((l) => l.value === jobSourceLang)?.label ?? jobSourceLang;
   const sourceLangLabel = jobSourceLang === "auto"
     ? "Original"
-    : `${jobSourceLabel} Original`;
+    : jobSourceLabel;
 
-  // ── Step tracker rendering ────────────────────────────────────────────────
-  // Always use the job's frozen stepOrder (not live translateTo/inputMode)
-  // When status is error/cancelled, use lastGoodStep to show which steps completed
   const effectiveStatus = ["error", "cancelled"].includes(jobStatus ?? "")
     ? lastGoodStepRef.current ?? jobStepOrder[0]
     : jobStatus;
 
   const currentStepIdx = jobStepOrder.indexOf(effectiveStatus ?? "");
 
+  const handleGenerateSubtitles = () => {
+    if (file) {
+      startJob("file", "", file, language, translateTo);
+    } else if (command.trim()) {
+      startJob("url", command, null, language, translateTo);
+    }
+  };
+
   return (
-    <div className="w-full max-w-2xl mx-auto flex flex-col gap-6">
+    <div className="w-full max-w-2xl mx-auto flex flex-col gap-5 px-4 py-6 md:py-10 text-left">
+      <style>{`
+        @keyframes rgbGlow {
+          0%, 100% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+        }
+        @keyframes rocketFire {
+          0%, 100% { 
+            filter: drop-shadow(0 0 2px #ffffff) drop-shadow(0 0 5px #af52de) drop-shadow(0 0 9px #ff2d55) brightness(0.95);
+          }
+          50% { 
+            filter: drop-shadow(0 0 3.5px #ffffff) drop-shadow(0 0 8px #af52de) drop-shadow(0 0 15px #ff2d55) brightness(1.2);
+          }
+        }
+      `}</style>
 
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="bg-teal-500/20 p-2.5 rounded-xl border border-teal-500/30">
-          <FileText className="w-5 h-5 text-teal-400" />
-        </div>
-        <div>
-          <h2 className="text-xl font-display font-bold text-white">Get Subtitles</h2>
-          <p className="text-white/50 text-sm">Generate accurate SRT subtitles using Gemini AI — supports Odia, Hindi, and 8 other languages</p>
-        </div>
+      <div className="flex flex-col items-start text-left mb-2">
+        <h1 className="text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
+          Get Subtitles
+        </h1>
+        <p className="mt-3 text-base text-zinc-400 leading-relaxed">
+          Generate accurate SRT subtitles from YouTube links, videos, or audio.
+        </p>
       </div>
 
-      {/* Input mode toggle — locked while a job is running to prevent clearing live state */}
-      <div className={cn("flex items-center gap-1 bg-white/5 border border-white/10 rounded-xl p-1 w-fit", isRunning && "opacity-50")}>
-        <button
-          onClick={() => { if (!isRunning) { setInputMode("url"); reset(); } }}
-          disabled={!!isRunning}
-          className={cn(
-            "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all",
-            inputMode === "url"
-              ? "bg-teal-600 text-white shadow-[0_0_16px_rgba(20,184,166,0.3)]"
-              : "text-white/50 hover:text-white/80",
-            isRunning && "cursor-not-allowed"
-          )}
-        >
-          <Youtube className="w-4 h-4" /> YouTube URL
-        </button>
-        <button
-          onClick={() => { if (!isRunning) { setInputMode("file"); reset(); } }}
-          disabled={!!isRunning}
-          className={cn(
-            "flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold transition-all",
-            inputMode === "file"
-              ? "bg-teal-600 text-white shadow-[0_0_16px_rgba(20,184,166,0.3)]"
-              : "text-white/50 hover:text-white/80",
-            isRunning && "cursor-not-allowed"
-          )}
-        >
-          <Upload className="w-4 h-4" /> Upload File
-        </button>
-      </div>
-
-      {/* Language + Translation pickers row */}
-      <div className="flex flex-col sm:flex-row gap-3">
-
-        {/* Audio language picker — locked while job runs */}
-        <div className="relative flex-1" ref={langDropdownRef}>
-          <button
-            onClick={() => { if (!isRunning) { setLangOpen((o) => !o); setTranslateOpen(false); } }}
-            disabled={!!isRunning}
-            className={cn(
-              "flex items-center gap-2 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white/80 transition-all w-full",
-              isRunning ? "opacity-50 cursor-not-allowed" : "hover:bg-white/8 hover:border-white/20 cursor-pointer"
-            )}
-          >
-            <Globe className="w-4 h-4 text-teal-400 shrink-0" />
-            <span className="flex-1 text-left">{selectedLang?.label ?? "Auto-detect"}</span>
-            <ChevronDown className={cn("w-4 h-4 text-white/40 transition-transform", langOpen && "rotate-180")} />
-          </button>
-          <AnimatePresence>
-            {langOpen && !isRunning && (
-              <motion.div
-                initial={{ opacity: 0, y: -8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.15 }}
-                className="absolute top-full left-0 mt-1 z-30 bg-zinc-900 border border-white/10 rounded-xl overflow-hidden shadow-2xl w-56"
-              >
-                {LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.value}
-                    onClick={() => { setLanguage(lang.value); setLangOpen(false); }}
-                    className={cn(
-                      "w-full text-left px-4 py-2.5 text-sm transition-colors hover:bg-white/8",
-                      language === lang.value ? "text-teal-400 font-semibold" : "text-white/70"
-                    )}
-                  >
-                    {lang.label}
-                  </button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Translation target picker — locked while job runs */}
-        <div className="relative flex-1" ref={translateDropdownRef}>
-          <button
-            onClick={() => { if (!isRunning) { setTranslateOpen((o) => !o); setLangOpen(false); } }}
-            disabled={!!isRunning}
-            className={cn(
-              "flex items-center gap-2 px-4 py-2.5 border rounded-xl text-sm transition-all w-full",
-              isRunning
-                ? "opacity-50 cursor-not-allowed bg-white/5 border-white/10 text-white/80"
-                : translateTo !== "none"
-                  ? "bg-violet-500/15 border-violet-500/40 text-violet-300 hover:bg-violet-500/20 cursor-pointer"
-                  : "bg-white/5 border-white/10 text-white/80 hover:bg-white/8 hover:border-white/20 cursor-pointer"
-            )}
-          >
-            <Globe className={cn("w-4 h-4 shrink-0", translateTo !== "none" && !isRunning ? "text-violet-400" : "text-white/30")} />
-            <span className="flex-1 text-left">
-              {TRANSLATE_LANGUAGES.find((l) => l.value === translateTo)?.label ?? "No translation"}
-            </span>
-            <ChevronDown className={cn("w-4 h-4 text-white/40 transition-transform", translateOpen && "rotate-180")} />
-          </button>
-          <AnimatePresence>
-            {translateOpen && !isRunning && (
-              <motion.div
-                initial={{ opacity: 0, y: -8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.15 }}
-                className="absolute top-full left-0 mt-1 z-30 bg-zinc-900 border border-white/10 rounded-xl overflow-hidden shadow-2xl w-60"
-              >
-                <div className="px-4 py-2 border-b border-white/8">
-                  <p className="text-white/40 text-xs">Translate subtitles after correction</p>
-                </div>
-                {TRANSLATE_LANGUAGES.map((lang) => (
-                  <button
-                    key={lang.value}
-                    onClick={() => { setTranslateTo(lang.value); setTranslateOpen(false); }}
-                    className={cn(
-                      "w-full text-left px-4 py-2.5 text-sm transition-colors hover:bg-white/8",
-                      translateTo === lang.value ? "text-violet-400 font-semibold" : "text-white/70"
-                    )}
-                  >
-                    {lang.label}
-                  </button>
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-      </div>
-
-      {/* Input area */}
-      <AnimatePresence mode="wait">
-        {inputMode === "url" ? (
-          <motion.form
-            key="url-form"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            onSubmit={handleUrlSubmit}
-            className="flex flex-col sm:flex-row gap-3"
-          >
-            <div className="relative flex-1">
-              <Youtube className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30 pointer-events-none" />
-              <input
-                type="url"
-                name="subtitle_youtube_url"
-                inputMode="url"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="YouTube URL for subtitles"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="Paste YouTube URL..."
-                disabled={!!isRunning}
-                className="w-full bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 py-3 text-white placeholder:text-white/30 text-sm focus:outline-none focus:border-teal-500/50 transition-colors disabled:opacity-50"
-              />
-            </div>
-            <Button
-              type="submit"
-              disabled={!url.trim() || !!isRunning}
-              className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl px-6 shrink-0 shadow-[0_0_16px_rgba(20,184,166,0.25)]"
-            >
-              {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : "Generate SRT"}
-            </Button>
-          </motion.form>
-        ) : (
-          <motion.div
-            key="file-form"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="flex flex-col gap-3"
-          >
-            {/* Drop zone */}
-            <div
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleFileDrop}
-              onClick={() => !isRunning && fileInputRef.current?.click()}
-              className={cn(
-                "relative border-2 border-dashed rounded-2xl p-8 text-center transition-all",
-                isRunning ? "cursor-default opacity-60"
-                  : "cursor-pointer",
-                isDragging
-                  ? "border-teal-500/70 bg-teal-500/10"
-                  : file
-                    ? "border-teal-500/40 bg-teal-500/5"
-                    : "border-white/15 bg-white/3 hover:border-white/30 hover:bg-white/5"
-              )}
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                name="subtitle_upload_file"
-                aria-label="Upload audio or video file"
-                accept="audio/*,video/*,.mp4,.mkv,.avi,.mov,.webm,.mp3,.m4a,.wav,.flac,.ogg,.opus"
-                className="hidden"
-                onChange={(e) => { if (e.target.files?.[0]) setFile(e.target.files[0]); }}
-              />
-              {file ? (
-                <div className="flex items-center justify-center gap-3">
-                  {file.type.startsWith("video") ? (
-                    <FileVideo className="w-8 h-8 text-teal-400 shrink-0" />
+      {/* Unified Input Card with RGB Glow */}
+      <div 
+        onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+        onDragLeave={() => setIsDragging(false)}
+        onDrop={handleFileDrop}
+        className="relative group w-full"
+      >
+        {/* Glowing backdrop blur */}
+        <div 
+          className="absolute -inset-[5.5px] rounded-[12px] opacity-40 blur-[12px] transition-all duration-500 group-hover:opacity-60 group-focus-within:opacity-85"
+          style={{
+            background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+            backgroundSize: '300% 300%',
+            animation: 'rgbGlow 10s ease-in-out infinite',
+          }}
+        />
+        {/* Outer border wrapper */}
+        <div className="relative w-full rounded-[12px] p-[1.2px] overflow-hidden bg-zinc-800">
+          {/* Border background gradient */}
+          <div 
+            className="absolute inset-0"
+            style={{
+              background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+              backgroundSize: '300% 300%',
+              animation: 'rgbGlow 10s ease-in-out infinite',
+            }}
+          />
+          {/* Inner input container */}
+          <div className="relative rounded-[11px] bg-[#09090b] py-2.5 px-4 shadow-[0_10px_35px_rgba(0,0,0,0.5)]">
+            <div className="flex items-start gap-3.5">
+              {/* Left icon: file indicator or link icon */}
+              <div className="pt-1.5 shrink-0 select-none">
+                {file ? (
+                  file.type.startsWith("video") ? (
+                    <FileVideo className="h-5 w-5 text-teal-400" />
                   ) : (
-                    <FileAudio className="w-8 h-8 text-teal-400 shrink-0" />
-                  )}
-                  <div className="text-left min-w-0">
-                    <p className="text-white font-semibold text-sm truncate">{file.name}</p>
-                    <p className="text-white/40 text-xs mt-0.5">{(file.size / 1024 / 1024).toFixed(1)} MB</p>
-                  </div>
-                  {!isRunning && (
+                    <FileAudio className="h-5 w-5 text-teal-400" />
+                  )
+                ) : (
+                  <Link2 className="h-5 w-5 text-zinc-500" />
+                )}
+              </div>
+              
+              {/* Middle content: Textarea + Floating file details */}
+              <div className="flex-1 flex flex-col items-start min-w-0">
+                {/* File Chip floating inside if file is uploaded */}
+                {file && (
+                  <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-teal-500/10 border border-teal-500/20 text-teal-300 text-xs font-semibold mb-2">
+                    <span className="truncate max-w-[180px] select-all">{file.name}</span>
+                    <span className="opacity-60 font-mono">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
                     <button
                       type="button"
-                      onClick={(e) => { e.stopPropagation(); setFile(null); reset(); }}
-                      className="ml-auto p-1 rounded-lg hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFile(null);
+                        reset();
+                      }}
+                      className="p-0.5 rounded hover:bg-teal-500/25 text-teal-400 hover:text-white transition"
                     >
-                      <X className="w-4 h-4" />
+                      <X className="w-3.5 h-3.5" />
                     </button>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <Upload className="w-10 h-10 text-white/20 mx-auto mb-3" />
-                  <p className="text-white/60 font-medium text-sm">Drop a video or audio file here</p>
-                  <p className="text-white/30 text-xs mt-1">MP4, MKV, MOV, AVI, WebM, MP3, M4A, WAV, FLAC — up to 500MB</p>
-                </>
-              )}
+                  </div>
+                )}
+                <textarea
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  disabled={loading}
+                  placeholder="Paste YouTube URL or upload a file..."
+                  className="min-h-[24px] h-12 w-full resize-none bg-transparent py-1 text-sm text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleGenerateSubtitles();
+                    }
+                  }}
+                />
+                <span className="text-zinc-500 text-[11px] select-none leading-normal">
+                  You can also describe what you want the subtitles to focus on.
+                </span>
+              </div>
+
+              {/* Right options: Help (i) and Upload circle button */}
+              <div className="flex items-center gap-2 pt-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setShowHelper(!showHelper)}
+                  className="p-1.5 rounded-full hover:bg-white/5 text-zinc-400 hover:text-white transition"
+                  title="Help info"
+                >
+                  <Info className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="grid h-8 w-8 place-items-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-white transition shadow-sm border border-zinc-700/30 disabled:opacity-50"
+                  title="Upload audio/video file"
+                >
+                  <Upload className="h-4 w-4" />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="audio/*,video/*,.mp4,.mkv,.avi,.mov,.webm,.mp3,.m4a,.wav,.flac"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) {
+                      setFile(e.target.files[0]);
+                    }
+                  }}
+                />
+              </div>
             </div>
+          </div>
+        </div>
 
-            <Button
-              onClick={handleFileUpload}
-              disabled={!file || !!isRunning}
-              className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl shadow-[0_0_16px_rgba(20,184,166,0.25)] w-full sm:w-auto sm:self-end"
-            >
-              {isRunning ? (
-                <span className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Processing...</span>
-              ) : (
-                "Generate SRT"
-              )}
-            </Button>
-          </motion.div>
+        {/* Drag and drop overlay */}
+        {isDragging && (
+          <div className="absolute inset-0 z-20 rounded-[12px] bg-teal-500/10 border-2 border-dashed border-teal-500/50 backdrop-blur-[2px] flex items-center justify-center pointer-events-none">
+            <p className="text-teal-400 font-semibold text-sm">Drop file here to upload</p>
+          </div>
         )}
-      </AnimatePresence>
 
-      {/* Progress panel */}
+        {/* Helper preview popover */}
+        <AnimatePresence>
+          {showHelper && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowHelper(false)} />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                className="absolute right-0 top-20 z-50 w-80 rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-zinc-400 uppercase tracking-wider">How to use</span>
+                  <button onClick={() => setShowHelper(false)} className="text-zinc-500 hover:text-zinc-300 text-xs">Close</button>
+                </div>
+                <div className="text-xs text-zinc-400 space-y-2 leading-relaxed text-left">
+                  <p>Paste a YouTube URL or click the upload arrow button to upload a file (MP4, MP3, WAV, etc.).</p>
+                  <p>You can also describe what you want the subtitles to focus on in the input box.</p>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Supports format info */}
+      <div className="text-[11px] text-zinc-500 text-left -mt-2.5 pl-1 leading-normal select-none">
+        Supports: YouTube links, MP4, MOV, MKV, AVI, MP3, M4A, WAV, FLAC (Max 500MB)
+      </div>
+
+      {/* Languages Columns */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 w-full mt-1">
+        {/* From dropdown */}
+        <div className="flex flex-col gap-1.5 text-left relative" ref={langDropdownRef}>
+          <span className="text-xs font-semibold text-zinc-400 select-none pl-0.5">From</span>
+          <button
+            type="button"
+            onClick={() => { if (!loading) { setLangOpen((o) => !o); setTranslateOpen(false); } }}
+            disabled={loading}
+            className={cn(
+              "flex items-center gap-2.5 px-3.5 py-2.5 bg-[#09090b]/60 border border-zinc-900 rounded-xl text-sm text-white/90 transition-all w-full",
+              loading ? "opacity-50 cursor-not-allowed" : "hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer"
+            )}
+          >
+            <Globe className="w-4 h-4 text-zinc-500 shrink-0" />
+            <span className="flex-1 text-left truncate">{selectedLang?.label ?? "Auto-detect"}</span>
+            <ChevronDown className={cn("w-4 h-4 text-zinc-500 transition-transform duration-200", langOpen && "rotate-180")} />
+          </button>
+          <AnimatePresence>
+            {langOpen && !loading && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setLangOpen(false)} />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.96, y: 4 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.96, y: 4 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute left-0 top-full mt-1.5 z-40 bg-[#0d0d0d] border border-zinc-800 rounded-xl overflow-hidden shadow-[0_12px_30px_rgba(0,0,0,0.65)] w-56 p-1 max-h-60 overflow-y-auto scrollbar-thin"
+                >
+                  {LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.value}
+                      type="button"
+                      onClick={() => { setLanguage(lang.value); setLangOpen(false); }}
+                      className={cn(
+                        "w-full text-left px-3 py-2 text-xs font-semibold rounded-lg transition-colors hover:bg-white/5",
+                        language === lang.value ? "text-teal-400 bg-teal-500/5 font-bold" : "text-zinc-400 hover:text-white"
+                      )}
+                    >
+                      {lang.label}
+                    </button>
+                  ))}
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Translate to dropdown */}
+        <div className="flex flex-col gap-1.5 text-left relative" ref={translateDropdownRef}>
+          <span className="text-xs font-semibold text-zinc-400 select-none pl-0.5">Translate to</span>
+          <button
+            type="button"
+            onClick={() => { if (!loading) { setTranslateOpen((o) => !o); setLangOpen(false); } }}
+            disabled={loading}
+            className={cn(
+              "flex items-center gap-2.5 px-3.5 py-2.5 border rounded-xl text-sm transition-all w-full",
+              loading
+                ? "opacity-50 cursor-not-allowed bg-[#09090b]/60 border-zinc-900 text-white/80"
+                : translateTo !== "none"
+                  ? "bg-violet-500/10 border-violet-500/30 text-violet-300 hover:bg-violet-500/15 cursor-pointer font-medium"
+                  : "bg-[#09090b]/60 border-zinc-900 text-white/80 hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer"
+            )}
+          >
+            <Globe className={cn("w-4 h-4 shrink-0", translateTo !== "none" && !loading ? "text-violet-400" : "text-zinc-500")} />
+            <span className="flex-1 text-left truncate">
+              {TRANSLATE_LANGUAGES.find((l) => l.value === translateTo)?.label ?? "No translation"}
+            </span>
+            <ChevronDown className={cn("w-4 h-4 text-zinc-500 transition-transform duration-200", translateOpen && "rotate-180")} />
+          </button>
+          <AnimatePresence>
+            {translateOpen && !loading && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setTranslateOpen(false)} />
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.96, y: 4 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.96, y: 4 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute right-0 top-full mt-1.5 z-40 bg-[#0d0d0d] border border-zinc-800 rounded-xl overflow-hidden shadow-[0_12px_30px_rgba(0,0,0,0.65)] w-60 p-1 max-h-60 overflow-y-auto scrollbar-thin"
+                >
+                  <div className="px-3 py-1.5 border-b border-zinc-900 mb-1 select-none">
+                    <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider">Translate subtitles after correction</p>
+                  </div>
+                  {TRANSLATE_LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.value}
+                      type="button"
+                      onClick={() => { setTranslateTo(lang.value); setTranslateOpen(false); }}
+                      className={cn(
+                        "w-full text-left px-3 py-2 text-xs font-semibold rounded-lg transition-colors hover:bg-white/5",
+                        translateTo === lang.value ? "text-violet-400 bg-violet-500/5 font-bold" : "text-zinc-400 hover:text-white"
+                      )}
+                    >
+                      {lang.label}
+                    </button>
+                  ))}
+                </motion.div>
+              </>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+
+
+      {/* Generate Subtitles Button */}
+      <Button
+        type="button"
+        onClick={handleGenerateSubtitles}
+        disabled={(!command.trim() && !file) || loading}
+        className="w-full py-3 rounded-xl bg-white hover:bg-zinc-100 text-black font-semibold text-sm transition-all duration-200 active:scale-[0.98] shadow-[0_4px_16px_rgba(255,255,255,0.08)] flex items-center justify-center gap-2 mt-2 disabled:bg-zinc-800 disabled:text-zinc-500"
+      >
+        {loading ? (
+          <Loader2 className="w-4 h-4 animate-spin text-black" />
+        ) : (
+          <FileText className="w-4 h-4 text-black" />
+        )}
+        <span>Generate Subtitles</span>
+      </Button>
+
+      {/* Active Job Progress Card wrapped in glowing RGB border */}
       <AnimatePresence>
         {jobStatus && (
           <motion.div
@@ -817,355 +931,397 @@ export function GetSubtitles() {
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
-            className="glass-panel rounded-2xl p-5 flex flex-col gap-4"
+            className="w-full mt-4"
           >
-            {/* Progress bar */}
-            {isRunning && (
-              <div className="w-full h-1.5 bg-white/8 rounded-full overflow-hidden">
-                <motion.div
-                  className="h-full bg-gradient-to-r from-teal-500 to-teal-400 rounded-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progressPct}%` }}
-                  transition={{ duration: 0.6, ease: "easeOut" }}
+            {/* If the job is active, wrap it in a glowing RGB border */}
+            {isRunning ? (
+              <div className="relative group w-full">
+                <div 
+                  className="absolute -inset-[5.5px] rounded-[12px] opacity-30 blur-[12px] transition-all duration-500 group-hover:opacity-40"
+                  style={{
+                    background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                    backgroundSize: '300% 300%',
+                    animation: 'rgbGlow 10s ease-in-out infinite',
+                  }}
                 />
-              </div>
-            )}
-
-            {/* Step indicators — uses job's frozen stepOrder + last known good step */}
-            <div className="flex items-center gap-2">
-              {jobStepOrder.map((step, i) => {
-                const isErrorOrCancelled = ["error", "cancelled"].includes(jobStatus ?? "");
-                const isDone = jobStatus === "done" || i < currentStepIdx;
-                const isActive = !isErrorOrCancelled && i === currentStepIdx && jobStatus !== "done";
-                const isFailed = isErrorOrCancelled && i === currentStepIdx;
-                const isStoppedAt = jobStatus === "cancelled" && i === currentStepIdx;
-
-                return (
-                  <React.Fragment key={step}>
-                    <div className={cn(
-                      "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border transition-all",
-                      isDone
-                        ? "bg-teal-500/30 border-teal-500/50 text-teal-300"
-                        : isActive
-                          ? "bg-teal-600/20 border-teal-500/40 text-teal-400 animate-pulse"
-                          : isFailed && !isStoppedAt
-                            ? "bg-red-500/20 border-red-500/40 text-red-400"
-                            : isStoppedAt
-                              ? "bg-yellow-500/20 border-yellow-500/40 text-yellow-400"
-                              : "bg-white/5 border-white/10 text-white/20"
-                    )}>
-                      {isDone
-                        ? <CheckCircle2 className="w-3.5 h-3.5" />
-                        : isFailed && !isStoppedAt
-                          ? <AlertCircle className="w-3.5 h-3.5" />
-                          : isStoppedAt
-                            ? <StopCircle className="w-3.5 h-3.5" />
-                            : i + 1
-                      }
-                    </div>
-                    {i < jobStepOrder.length - 1 && (
-                      <div className={cn(
-                        "flex-1 h-[2px] rounded transition-all",
-                        isDone ? "bg-teal-500/40" : "bg-white/8"
-                      )} />
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </div>
-
-            {/* Status message */}
-            {jobStatus === "cancelled" ? (
-              <div className="flex items-start gap-3 text-yellow-300">
-                <StopCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-semibold text-sm">Cancelled</p>
-                  <p className="text-yellow-300/60 text-sm mt-0.5">Job was stopped.</p>
-                </div>
-              </div>
-            ) : jobStatus === "error" ? (
-              <div className="flex items-start gap-3 text-red-300">
-                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-semibold text-sm">Failed</p>
-                  <p className="text-red-300/70 text-sm mt-0.5">{jobError}</p>
-                </div>
-              </div>
-            ) : jobStatus === "done" ? (
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-3">
-                  <CheckCircle2 className="w-5 h-5 text-teal-400 shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-teal-300 font-semibold text-sm">Subtitles generated successfully!</p>
-                    <p className="text-white/40 text-xs mt-0.5">{entryCount} subtitle entries</p>
-                  </div>
-                </div>
-
-                {/* Download + copy buttons */}
-                {/* Primary SRT (translated when translation on, otherwise the corrected original) */}
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    onClick={() => downloadFile(srtContent!, srtFilename)}
-                    className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl px-5 shadow-[0_0_14px_rgba(20,184,166,0.3)]"
-                  >
-                    <Download className="w-4 h-4 mr-2" />
-                    {originalSrt ? `Download ${jobTranslateToRef.current}` : "Download SRT"}
-                  </Button>
-                  <Button
-                    onClick={copyToClipboard}
-                    variant="outline"
-                    className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
-                    title="Copy full SRT with timestamps"
-                  >
-                    {copied ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
-                    {copied ? "Copied!" : "Copy SRT"}
-                  </Button>
-                  <Button
-                    onClick={async () => {
-                      if (!srtContent) return;
-                      try {
-                        await navigator.clipboard.writeText(srtToText(srtContent));
-                        setCopiedText(true);
-                        setTimeout(() => setCopiedText(false), 2000);
-                      } catch {
-                        toast({ title: "Copy failed", description: "Could not access clipboard", variant: "destructive" });
-                      }
+                <div className="relative w-full rounded-[12px] p-[1.2px] overflow-hidden bg-zinc-800">
+                  <div 
+                    className="absolute inset-0"
+                    style={{
+                      background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                      backgroundSize: '300% 300%',
+                      animation: 'rgbGlow 10s ease-in-out infinite',
                     }}
-                    variant="outline"
-                    className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
-                    title="Copy plain text only (no timestamps)"
-                  >
-                    {copiedText ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <AlignLeft className="w-4 h-4 mr-1.5" />}
-                    {copiedText ? "Copied!" : "Copy text"}
-                  </Button>
-                </div>
+                  />
+                  <div className="relative rounded-[11px] bg-[#09090b] py-3.5 px-4 shadow-[0_12px_40px_rgba(0,0,0,0.5)] flex flex-col gap-3 text-left">
+                    {/* Active job layout */}
+                    <div className="flex items-center gap-3">
+                      <Loader2 className="w-5 h-5 text-teal-400 animate-spin shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white/95 font-semibold text-sm truncate">{jobMessage || "Processing subtitles..."}</p>
+                        <p className="text-zinc-500 text-xs mt-0.5">
+                          {durationLabel && remainingLabel
+                            ? `${durationLabel} · ${remainingLabel}`
+                            : durationLabel
+                              ? `${durationLabel} · Estimating time...`
+                              : "Transcribing audio..."}
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleCancel}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700/80 border border-zinc-700/50 text-zinc-300 text-xs font-semibold transition-all active:scale-[0.98]"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        Cancel
+                      </button>
+                    </div>
 
-                {/* Original-language SRT when translation was on */}
-                {originalSrt && (
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      onClick={() => downloadFile(originalSrt, originalFilename ?? "original.srt")}
-                      variant="outline"
-                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-5"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      Download {sourceLangLabel}
-                    </Button>
-                    <Button
-                      onClick={copyOriginalToClipboard}
-                      variant="outline"
-                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
-                      title="Copy full original SRT with timestamps"
-                    >
-                      {copiedOriginal ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
-                      {copiedOriginal ? "Copied!" : "Copy SRT"}
-                    </Button>
-                    <Button
-                      onClick={async () => {
-                        if (!originalSrt) return;
-                        try {
-                          await navigator.clipboard.writeText(srtToText(originalSrt));
-                          setCopiedTextOriginal(true);
-                          setTimeout(() => setCopiedTextOriginal(false), 2000);
-                        } catch {
-                          toast({ title: "Copy failed", description: "Could not access clipboard", variant: "destructive" });
-                        }
-                      }}
-                      variant="outline"
-                      className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4"
-                      title="Copy plain text only (no timestamps)"
-                    >
-                      {copiedTextOriginal ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <AlignLeft className="w-4 h-4 mr-1.5" />}
-                      {copiedTextOriginal ? "Copied!" : "Copy text"}
-                    </Button>
+                    {/* Progress Plume Indicator */}
+                    <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1">
+                      <div className="h-[4px] w-full bg-zinc-950 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+                        <div
+                          className="h-full rounded-full transition-[width] duration-700 ease-out relative filter"
+                          style={{
+                            width: `${progressPct}%`,
+                            background: 'linear-gradient(to right, rgba(0, 0, 0, 0) 0%, rgba(0, 122, 255, 0.05) 15%, rgba(0, 122, 255, 0.2) 35%, rgba(175, 82, 222, 0.5) 60%, rgba(255, 45, 85, 0.8) 85%, rgba(255, 149, 0, 0.95) 95%, #ffffff 100%)',
+                            animation: 'rocketFire 0.4s ease-in-out infinite',
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[10px] text-zinc-500 mt-0.5 font-mono">
+                        <span>Step {currentStepIdx + 1} of {jobStepOrder.length}</span>
+                        <span>{progressPct > 0 ? `${progressPct.toFixed(0)}%` : ""}</span>
+                      </div>
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
             ) : (
-              <div className="flex items-center gap-3">
-                <Loader2 className="w-5 h-5 text-teal-400 animate-spin shrink-0" />
-                <div className="flex-1">
-                  <p className="text-white/80 font-medium text-sm">{jobMessage || STEP_LABELS[jobStatus ?? "uploading"] || "Processing..."}</p>
-                  <p className="text-white/30 text-xs mt-0.5">
-                    {durationLabel && remainingLabel
-                      ? `${durationLabel} · ${remainingLabel}`
-                      : durationLabel
-                        ? `${durationLabel} · Estimating time...`
-                        : "Processing audio..."}
-                  </p>
-                </div>
-                {/* Cancel button */}
-                <button
-                  onClick={handleCancel}
-                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs text-white/40 hover:text-red-400 hover:bg-red-500/10 border border-white/10 hover:border-red-500/30 transition-all shrink-0"
-                >
-                  <X className="w-3.5 h-3.5" /> Cancel
-                </button>
-              </div>
-            )}
-
-            {/* SRT preview — 25 entries, scrollable */}
-            {srtContent && (
-              <div className="rounded-xl bg-black/30 border border-white/8 overflow-hidden">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-white/8">
-                  <p className="text-white/30 text-xs font-medium">
-                    Preview · {Math.min(25, entryCount)} of {entryCount} entries
-                  </p>
-                  {entryCount > 25 && <p className="text-white/20 text-xs">scroll to see more</p>}
-                </div>
-                <div className="p-4 max-h-64 overflow-y-auto">
-                  <pre className="text-xs text-white/50 whitespace-pre-wrap font-mono leading-relaxed">
-                    {srtContent.split("\n\n").filter(Boolean).slice(0, 25).join("\n\n")}
-                    {entryCount > 25 && `\n\n... and ${entryCount - 25} more entries`}
-                  </pre>
-                </div>
-              </div>
-            )}
-
-            {/* Footer actions */}
-            {(jobStatus === "done" || jobStatus === "error" || jobStatus === "cancelled") && (
-              <div className="flex items-center gap-3 pt-1">
-                {(jobStatus === "error" || jobStatus === "cancelled") && (
-                  <button
-                    onClick={handleRetry}
-                    className="flex items-center gap-1.5 text-xs text-teal-400/80 hover:text-teal-300 transition-colors"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    Retry
-                  </button>
+              // Non-running terminal active state card (done, error, cancelled)
+              <div className="relative w-full rounded-[12px] p-[1px] bg-zinc-900 border border-zinc-850 p-4 flex flex-col gap-3">
+                {jobStatus === "cancelled" && (
+                  <div className="flex items-start gap-3 text-yellow-300">
+                    <StopCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="font-semibold text-sm">Cancelled</p>
+                      <p className="text-yellow-300/60 text-xs mt-0.5">Job was stopped by user.</p>
+                    </div>
+                  </div>
                 )}
-                <button
-                  onClick={reset}
-                  className="text-xs text-white/30 hover:text-white/60 transition-colors ml-auto"
-                >
-                  Start over
-                </button>
-              </div>
-            )}
-          </motion.div>
-        )}
-      </AnimatePresence>
 
-      {/* ── History panel ─────────────────────────────────────────────────── */}
-      <AnimatePresence>
-        {history.length > 0 && (
-          <motion.div
-            key="history-panel"
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="flex flex-col gap-3"
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-white/40">
-                <History className="w-4 h-4" />
-                <span className="text-xs font-semibold uppercase tracking-wider">History · saved on this device</span>
-              </div>
-              <button
-                onClick={() => { clearHistory(); setHistory([]); }}
-                className="flex items-center gap-1 text-xs text-white/25 hover:text-red-400 transition-colors"
-              >
-                <Trash2 className="w-3 h-3" /> Clear all
-              </button>
-            </div>
+                {jobStatus === "error" && (
+                  <div className="flex items-start gap-3 text-red-300">
+                    <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="font-semibold text-sm">Failed</p>
+                      <p className="text-red-300/70 text-xs mt-0.5">{jobError}</p>
+                    </div>
+                  </div>
+                )}
 
-            {/* Entry list */}
-            <div className="flex flex-col gap-2">
-              {history.map((entry) => {
-                const sourceLang = LANGUAGES.find((l) => l.value === entry.language)?.label ?? entry.language;
-                const targetLang = entry.translateTo !== "none"
-                  ? TRANSLATE_LANGUAGES.find((l) => l.value === entry.translateTo)?.label?.replace("Translate → ", "") ?? entry.translateTo
-                  : null;
-                return (
-                  <motion.div
-                    key={entry.id}
-                    layout
-                    initial={{ opacity: 0, x: -8 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: 8 }}
-                    className="glass-panel rounded-xl px-4 py-3 flex items-start gap-3"
-                  >
-                    {/* Icon */}
-                    <div className="mt-0.5 shrink-0">
-                      {entry.mode === "url"
-                        ? <Youtube className="w-4 h-4 text-red-400/70" />
-                        : <FileAudio className="w-4 h-4 text-teal-400/70" />}
+                {jobStatus === "done" && (
+                  <div className="flex flex-col gap-3.5">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="w-5 h-5 text-teal-400 shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-teal-300 font-semibold text-sm">Subtitles generated successfully!</p>
+                        <p className="text-white/40 text-xs mt-0.5">{entryCount} subtitle entries</p>
+                      </div>
                     </div>
 
-                    {/* Info */}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white/70 text-sm font-medium truncate" title={entry.url ?? entry.inputFilename}>
-                        {entry.srtFilename}
-                      </p>
-                      <p className="text-white/30 text-xs mt-0.5 truncate">
-                        {sourceLang}{targetLang ? ` → ${targetLang}` : ""} · {entry.entryCount} entries · {formatRelativeTime(entry.createdAt)}
-                      </p>
-                    </div>
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() => {
-                          const blob = new Blob([entry.srt], { type: "text/plain;charset=utf-8" });
-                          const a = document.createElement("a");
-                          a.href = URL.createObjectURL(blob);
-                          a.download = entry.srtFilename;
-                          document.body.appendChild(a); a.click();
-                          document.body.removeChild(a);
-                          URL.revokeObjectURL(a.href);
-                        }}
-                        title="Download SRT"
-                        className="p-1.5 rounded-lg hover:bg-teal-500/15 text-white/30 hover:text-teal-400 transition-colors"
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        onClick={() => downloadFile(srtContent!, srtFilename)}
+                        className="bg-teal-600 hover:bg-teal-500 text-white rounded-xl px-5 shadow-[0_0_14px_rgba(20,184,166,0.3)] text-xs h-9"
                       >
-                        <Download className="w-3.5 h-3.5" />
-                      </button>
-                      <button
+                        <Download className="w-4 h-4 mr-2" />
+                        {originalSrt ? `Download ${jobTranslateToRef.current}` : "Download SRT"}
+                      </Button>
+                      <Button
+                        onClick={copyToClipboard}
+                        variant="outline"
+                        className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4 text-xs h-9"
+                      >
+                        {copied ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
+                        {copied ? "Copied!" : "Copy SRT"}
+                      </Button>
+                      <Button
                         onClick={async () => {
+                          if (!srtContent) return;
                           try {
-                            await navigator.clipboard.writeText(srtToText(entry.srt));
-                            toast({ title: "Copied!", description: "Plain text copied to clipboard" });
+                            await navigator.clipboard.writeText(srtToText(srtContent));
+                            setCopiedText(true);
+                            setTimeout(() => setCopiedText(false), 2000);
                           } catch {
                             toast({ title: "Copy failed", variant: "destructive" });
                           }
                         }}
-                        title="Copy plain text"
-                        className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors"
+                        variant="outline"
+                        className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4 text-xs h-9"
                       >
-                        <AlignLeft className="w-3.5 h-3.5" />
-                      </button>
-                      {entry.originalSrt && (
-                        <button
-                          onClick={() => {
-                            const blob = new Blob([entry.originalSrt!], { type: "text/plain;charset=utf-8" });
-                            const a = document.createElement("a");
-                            a.href = URL.createObjectURL(blob);
-                            a.download = entry.originalFilename ?? "original.srt";
-                            document.body.appendChild(a); a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(a.href);
-                          }}
-                          title="Download original language SRT"
-                          className="p-1.5 rounded-lg hover:bg-violet-500/15 text-white/30 hover:text-violet-400 transition-colors"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setHistory(deleteFromHistory(entry.id))}
-                        title="Remove from history"
-                        className="p-1.5 rounded-lg hover:bg-red-500/15 text-white/20 hover:text-red-400 transition-colors"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
+                        {copiedText ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <AlignLeft className="w-4 h-4 mr-1.5" />}
+                        {copiedText ? "Copied!" : "Copy Text Only"}
+                      </Button>
                     </div>
-                  </motion.div>
-                );
-              })}
-            </div>
+
+                    {originalSrt && (
+                      <div className="flex flex-wrap gap-2 border-t border-white/5 pt-3">
+                        <Button
+                          onClick={() => downloadFile(originalSrt, originalFilename ?? "original.srt")}
+                          variant="outline"
+                          className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-5 text-xs h-9"
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          Download {sourceLangLabel}
+                        </Button>
+                        <Button
+                          onClick={copyOriginalToClipboard}
+                          variant="outline"
+                          className="border-white/20 text-white/70 hover:text-white hover:bg-white/8 rounded-xl px-4 text-xs h-9"
+                        >
+                          {copiedOriginal ? <Check className="w-4 h-4 mr-1.5 text-teal-400" /> : <Copy className="w-4 h-4 mr-1.5" />}
+                          {copiedOriginal ? "Copied!" : "Copy SRT"}
+                        </Button>
+                      </div>
+                    )}
+
+                    {srtContent && (
+                      <div className="rounded-xl bg-black/30 border border-white/8 overflow-hidden mt-1">
+                        <div className="flex items-center justify-between px-4 py-2 border-b border-white/8">
+                          <p className="text-white/30 text-[10px] font-bold uppercase tracking-wider">
+                            Preview · {Math.min(25, entryCount)} of {entryCount} entries
+                          </p>
+                        </div>
+                        <div className="p-4 max-h-52 overflow-y-auto">
+                          <pre className="text-xs text-white/50 whitespace-pre-wrap font-mono leading-relaxed select-all">
+                            {srtContent.split("\n\n").filter(Boolean).slice(0, 25).join("\n\n")}
+                            {entryCount > 25 && `\n\n... and ${entryCount - 25} more entries`}
+                          </pre>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3 pt-2 border-t border-white/5 mt-1">
+                  {(jobStatus === "error" || jobStatus === "cancelled") && (
+                    <button
+                      onClick={handleRetry}
+                      className="flex items-center gap-1.5 text-xs font-semibold text-teal-400 hover:text-teal-300 transition-colors"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Retry
+                    </button>
+                  )}
+                  <button
+                    onClick={reset}
+                    className="text-xs font-semibold text-zinc-500 hover:text-zinc-300 transition-colors ml-auto"
+                  >
+                    Start over
+                  </button>
+                </div>
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Recent subtitles feed */}
+      {!loading && history.length > 0 && (
+        <div className="mt-4 w-full text-left">
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-sm font-semibold text-white select-none">Recent subtitles</span>
+            <button
+              type="button"
+              onClick={() => { clearHistory(); setHistory([]); }}
+              className="text-xs font-semibold text-zinc-500 hover:text-red-400 transition-colors"
+            >
+              Clear all
+            </button>
+          </div>
+
+          <div className="flex flex-col gap-2.5 w-full">
+            {[...history]
+              .sort((a, b) => b.createdAt - a.createdAt)
+              .map((entry) => (
+                <RecentSubtitleRow
+                  key={entry.id}
+                  entry={entry}
+                  onDelete={() => setHistory(deleteFromHistory(entry.id))}
+                  onDownload={() => downloadFile(entry.srt, entry.srtFilename)}
+                  onCopy={() => {
+                    navigator.clipboard.writeText(srtToText(entry.srt)).then(() => {
+                      toast({ title: "Copied!", description: "Plain text subtitles copied to clipboard." });
+                    }).catch(() => {});
+                  }}
+                />
+              ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tips panel at the bottom */}
+      {showTips && (
+        <div className="flex items-center justify-between p-3 rounded-xl border border-teal-500/10 bg-teal-500/5 text-teal-400 text-xs w-full text-left mt-6 select-none">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-teal-400 shrink-0" />
+            <span>For best results, use clear audio and high-quality videos.</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowTips(false)}
+            className="p-1 rounded-full hover:bg-teal-500/10 text-teal-400/60 hover:text-teal-400 transition"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </div>
+  );
+}
+
+function RecentSubtitleRow({
+  entry,
+  onDelete,
+  onDownload,
+  onCopy,
+}: {
+  entry: SubtitleHistoryEntry;
+  onDelete: () => void;
+  onDownload: () => void;
+  onCopy: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const videoId = entry.url ? extractVideoId(entry.url) : null;
+
+  const getThumbnailUrl = () => {
+    if (entry.id === "mock-bhagwat") {
+      return "https://images.unsplash.com/photo-1579033461380-adb47c3eb938?auto=format&fit=crop&w=400&q=80"; // golden temple
+    }
+    if (entry.id === "mock-productivity") {
+      return "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=400&q=80"; // mountain lake
+    }
+    if (videoId) {
+      return `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+    }
+    // Default premium abstract wave image for file uploads
+    return "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=400&q=80"; 
+  };
+  const thumbnailUrl = getThumbnailUrl();
+
+  const sourceLang = LANGUAGES.find((l) => l.value === entry.language)?.label ?? entry.language;
+  const targetLang = entry.translateTo !== "none"
+    ? TRANSLATE_LANGUAGES.find((l) => l.value === entry.translateTo)?.label?.replace("Translate → ", "") ?? entry.translateTo
+    : null;
+  const displayLang = targetLang ? `${sourceLang} → ${targetLang}` : sourceLang;
+  const cleanTitle = entry.srtFilename.replace(/\.srt$/i, "");
+  const durationLabel = getSrtDuration(entry.srt);
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 8 }}
+      className="bg-[#09090b]/30 border border-zinc-900/80 rounded-xl px-3.5 py-2.5 flex items-center gap-3.5 relative hover:bg-white/[0.02] transition-colors w-full text-left cursor-pointer"
+      onClick={onDownload}
+    >
+      {/* Thumbnail Container */}
+      <div className="relative h-[56px] w-[98px] shrink-0 overflow-hidden rounded-md bg-zinc-800 border border-white/5 shadow-sm">
+        {thumbnailUrl ? (
+          <img src={thumbnailUrl} className="h-full w-full object-cover" alt="Cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center bg-zinc-900">
+            <FileText className="h-4.5 w-4.5 text-white/20" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+      </div>
+
+      {/* Info details */}
+      <div className="flex-1 min-w-0">
+        <p className="text-white/95 text-sm font-semibold truncate leading-snug">{cleanTitle}</p>
+        <p className="text-zinc-400 text-xs mt-1 truncate">
+          {displayLang} • SRT • {durationLabel} • {entry.entryCount} lines
+        </p>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center shrink-0" onClick={(e) => e.stopPropagation()}>
+        <span className="text-[11px] text-zinc-500 mr-2 sm:mr-3 select-none">
+          {formatRelativeTime(entry.createdAt)}
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onDownload}
+            title="Download SRT"
+            className="p-1.5 rounded-lg hover:bg-teal-500/10 text-zinc-500 hover:text-teal-400 transition"
+          >
+            <Download className="w-4 h-4" />
+          </button>
+          <button
+            onClick={onCopy}
+            title="Copy text"
+            className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-white transition"
+          >
+            <Copy className="w-4 h-4" />
+          </button>
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(!menuOpen);
+              }}
+              className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-white transition"
+            >
+              <MoreVertical className="w-4 h-4" />
+            </button>
+            <AnimatePresence>
+              {menuOpen && (
+                <>
+                  <div className="fixed inset-0 z-25" onClick={() => setMenuOpen(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 5 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 5 }}
+                    transition={{ duration: 0.1 }}
+                    className="absolute right-0 top-9 z-30 w-36 rounded-xl border border-zinc-800 bg-[#0d0d0d] p-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+                  >
+                    {entry.originalSrt && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const blob = new Blob([entry.originalSrt!], { type: "text/plain;charset=utf-8" });
+                          const a = document.createElement("a");
+                          a.href = URL.createObjectURL(blob);
+                          a.download = entry.originalFilename ?? "original.srt";
+                          document.body.appendChild(a); a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(a.href);
+                          setMenuOpen(false);
+                        }}
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:bg-white/5 hover:text-white transition"
+                      >
+                        <FileText className="w-3.5 h-3.5" /> Original SRT
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onDelete();
+                        setMenuOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-red-400/80 hover:bg-red-500/10 hover:text-red-400 transition"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Remove
+                    </button>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 }
