@@ -4,7 +4,7 @@ import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
   AlertCircle, Globe, X, FileAudio, FileVideo, ChevronDown,
   Copy, Check, RefreshCw, StopCircle, AlignLeft, History, Trash2,
-  Link2, Info, ArrowUp, MoreVertical,
+  Link2, Info, ArrowUp, MoreVertical, Captions,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -878,7 +878,7 @@ export function GetSubtitles() {
             disabled={loading}
             className="flex items-center gap-2.5 px-4 py-3 bg-[#09090b]/60 border border-zinc-800 rounded-xl text-sm text-white font-medium transition-all w-full hover:bg-white/[0.03] hover:border-zinc-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Globe className="w-4 h-4 text-violet-500 shrink-0" />
+            <Globe className="w-4 h-4 text-zinc-400 shrink-0" />
             <span className="flex-1 text-left truncate">
               {TRANSLATE_LANGUAGES.find((l) => l.value === translateTo)?.label ?? "No translation"}
             </span>
@@ -931,24 +931,9 @@ export function GetSubtitles() {
         )}
       >
         {loading ? (
-          <Loader2 className="w-4 h-4 animate-spin text-black" />
+          <Loader2 className="w-5 h-5 animate-spin text-black" />
         ) : (
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="text-black shrink-0"
-          >
-            <rect width="20" height="16" x="2" y="4" rx="2" ry="2" />
-            <path d="M7 10h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2H7" />
-            <path d="M13 10h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2" />
-          </svg>
+          <Captions className="w-5 h-5 text-black shrink-0" />
         )}
         <span>Generate Subtitles</span>
       </Button>
