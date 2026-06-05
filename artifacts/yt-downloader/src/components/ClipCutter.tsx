@@ -1472,10 +1472,52 @@ function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntr
   const videoId = extractVideoId(entry.url);
   const title = useVideoTitle(entry.url, entry.label);
 
+  const [isNewlyCompleted, setIsNewlyCompleted] = useState(() => {
+    const ageMs = Date.now() - entry.createdAt;
+    return ageMs >= 0 && ageMs < 30000;
+  });
+
+  useEffect(() => {
+    if (!isNewlyCompleted) return;
+
+    const ageMs = Date.now() - entry.createdAt;
+    const remainingMs = 30000 - ageMs;
+
+    if (remainingMs <= 0) {
+      setIsNewlyCompleted(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setIsNewlyCompleted(false);
+    }, remainingMs);
+
+    return () => clearTimeout(timer);
+  }, [entry.createdAt, isNewlyCompleted]);
+
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, x: -8 }}
+    <div className="relative w-full">
+      {/* Background glow shadow behind card for 30 seconds */}
+      <AnimatePresence>
+        {isNewlyCompleted && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 0.45 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1.5 }}
+            className="absolute -inset-2.5 rounded-2xl blur-[18px] pointer-events-none z-0"
+            style={{
+              background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+              backgroundSize: '300% 300%',
+              animation: 'rgbGlow 10s ease-in-out infinite',
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      <motion.div
+        layout
+        initial={{ opacity: 0, x: -8 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 8 }}
       className="bg-[#0c0c0e] hover:bg-[#121215] border border-zinc-900 hover:border-zinc-800/80 rounded-2xl px-4.5 py-3.5 flex items-center gap-4 relative group transition-all duration-300"
@@ -1563,5 +1605,6 @@ function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntr
         </div>
       </div>
     </motion.div>
+  </div>
   );
 }
