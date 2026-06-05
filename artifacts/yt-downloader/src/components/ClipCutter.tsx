@@ -197,6 +197,17 @@ export function ClipCutter() {
     }, 10000);
     return () => clearTimeout(timer);
   }, [notification]);
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const newHeight = Math.min(60, textarea.scrollHeight);
+    textarea.style.height = `${newHeight}px`;
+  }, [command]);
+
   const streamRefs = useRef<Map<string, EventSource>>(new Map());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollInFlightRef = useRef(false);
@@ -638,19 +649,34 @@ export function ClipCutter() {
         return;
       }
 
-      const { url, startTime, endTime, message } = intentData as {
+      const { url, startTime, endTime, clips, message } = intentData as {
         url: string;
-        startTime: number;
-        endTime: number;
+        startTime?: number;
+        endTime?: number;
+        clips?: Array<{ startTime: number; endTime: number }>;
         message: string;
       };
 
-      setNotification({
-        type: "success",
-        message: `🚀 Clip Cut started! Processing ${secsToLabel(startTime)} → ${secsToLabel(endTime)}...`,
-      });
-
-      await startClipCutJob(url, startTime, endTime, quality);
+      if (clips && clips.length > 0) {
+        setNotification({
+          type: "success",
+          message: `🚀 Starting ${clips.length} clip cuts: ${message}`,
+        });
+        for (const c of clips) {
+          await startClipCutJob(url, c.startTime, c.endTime, quality);
+        }
+      } else if (typeof startTime === "number" && typeof endTime === "number") {
+        setNotification({
+          type: "success",
+          message: `🚀 Clip Cut started! Processing ${secsToLabel(startTime)} → ${secsToLabel(endTime)}...`,
+        });
+        await startClipCutJob(url, startTime, endTime, quality);
+      } else {
+        setNotification({
+          type: "error",
+          message: "AI returned no valid time range or clips to cut.",
+        });
+      }
       setCommand("");
     } catch (err) {
       setNotification({
@@ -937,12 +963,12 @@ export function ClipCutter() {
               <div className="flex items-center gap-3">
                 <Link2 className="h-4.5 w-4.5 text-zinc-500 shrink-0" />
                 <textarea
+                  ref={textareaRef}
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
                   disabled={submitting}
-                  rows={1}
                   placeholder="Paste YouTube URL and describe the clip you want..."
-                  className="h-7 min-h-[28px] flex-1 resize-none bg-transparent py-1 text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+                  className="min-h-[20px] flex-1 resize-none bg-transparent pt-[2px] pb-0 text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -1415,7 +1441,7 @@ function ClipJobCard({
               </div>
             )}
             <div className="flex justify-between text-[10px] text-zinc-500 mt-0.5">
-              <span>{job.status === "downloading" ? "Downloading video..." : "Cutting and merging clip..."}</span>
+              <span>{job.message || (job.status === "downloading" ? "Downloading video..." : "Cutting and merging clip...")}</span>
               <span className="font-mono">
                 {progressView.determinate ? `${progressView.percent.toFixed(0)}%` : ""}
               </span>

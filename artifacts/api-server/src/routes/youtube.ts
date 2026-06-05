@@ -2269,9 +2269,12 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
       config: {
         systemInstruction: [
           "You interpret a user's Clip Cut request for a YouTube video.",
+          "Analyze the time ranges requested. Convert all HH:MM:SS or MM:SS format ranges into total seconds.",
           "Return ONLY one JSON object with these fields:",
-          "{\"url\":\"https://...\",\"startTime\":90,\"endTime\":165,\"message\":\"one short helpful sentence\"}",
+          "For a single clip: {\"url\":\"https://...\",\"startTime\":90,\"endTime\":165,\"message\":\"one short helpful sentence\"}",
+          "For multiple clips: {\"url\":\"https://...\",\"clips\":[{\"startTime\":90,\"endTime\":165},{\"startTime\":180,\"endTime\":220}],\"message\":\"one short helpful sentence\"}",
           "startTime and endTime must be seconds as numbers.",
+          "Even if the request is extremely brief (e.g. 'cut 1:30 to 2:00' or '1:30-2:00'), interpret it correctly. Do not refuse to cut.",
           "If a YouTube URL is missing or invalid, return {\"error\":\"...\"}.",
           "If start or end time is missing or unclear, return {\"error\":\"...\"}.",
           "If the end time is not after the start time, return {\"error\":\"...\"}.",
@@ -2299,11 +2302,38 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
     }
 
     const url = typeof parsed.url === "string" ? parsed.url.trim() : "";
-    const startTime = Number(parsed.startTime);
-    const endTime = Number(parsed.endTime);
     const message = typeof parsed.message === "string"
       ? parsed.message.trim()
       : "AI understood the clip request.";
+
+    const clips = Array.isArray(parsed.clips) ? parsed.clips : null;
+
+    if (clips && clips.length > 0) {
+      const validatedClips: Array<{ startTime: number; endTime: number }> = [];
+      for (const c of clips) {
+        const cStart = Number(c.startTime);
+        const cEnd = Number(c.endTime);
+        if (Number.isFinite(cStart) && Number.isFinite(cEnd) && cEnd > cStart && cEnd - cStart <= 3600) {
+          validatedClips.push({
+            startTime: Math.max(0, Math.round(cStart)),
+            endTime: Math.max(0, Math.round(cEnd)),
+          });
+        }
+      }
+      if (validatedClips.length === 0) {
+        res.status(422).json({ error: "AI found invalid time ranges for the clips." });
+        return;
+      }
+      res.json({
+        url: normalizeInputUrl(url),
+        clips: validatedClips,
+        message,
+      });
+      return;
+    }
+
+    const startTime = Number(parsed.startTime);
+    const endTime = Number(parsed.endTime);
 
     if (!url || !Number.isFinite(startTime) || !Number.isFinite(endTime)) {
       res.status(422).json({ error: "AI needs a YouTube URL plus clear start and end times." });
