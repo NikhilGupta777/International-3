@@ -905,16 +905,16 @@ export function ClipCutter() {
             }
             @keyframes rocketFire {
               0%, 100% { 
-                filter: drop-shadow(0 0 3px #af52de) drop-shadow(0 0 7px #ff2d55) brightness(0.95);
+                filter: drop-shadow(0 0 2px #ffffff) drop-shadow(0 0 5px #af52de) drop-shadow(0 0 9px #ff2d55) brightness(0.95);
               }
               50% { 
-                filter: drop-shadow(0 0 5px #af52de) drop-shadow(0 0 12px #ff2d55) brightness(1.15);
+                filter: drop-shadow(0 0 3.5px #ffffff) drop-shadow(0 0 8px #af52de) drop-shadow(0 0 15px #ff2d55) brightness(1.2);
               }
             }
           `}</style>
           {/* Glowing backdrop blur */}
           <div 
-            className="absolute -inset-[5.5px] rounded-[12px] opacity-50 blur-[10px] transition-all duration-500 group-hover:opacity-70 group-focus-within:opacity-90"
+            className="absolute -inset-[5.5px] rounded-[12px] opacity-50 blur-[12px] transition-all duration-500 group-hover:opacity-70 group-focus-within:opacity-90"
             style={{
               background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
               backgroundSize: '300% 300%',
@@ -1292,8 +1292,9 @@ function ClipJobCard({
       {/* Background glow shadow behind card */}
       {isProcessing && (
         <div 
-          className="absolute -inset-2.5 rounded-2xl opacity-45 blur-[18px] pointer-events-none z-0"
+          className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
           style={{
+            opacity: 0.52,
             background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
             backgroundSize: '300% 300%',
             animation: 'rgbGlow 10s ease-in-out infinite',
@@ -1402,12 +1403,12 @@ function ClipJobCard({
         {isProcessing && (
           <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1.5">
             {progressView.determinate && (
-              <div className="h-[2.5px] w-full bg-zinc-950/80 border border-white/5 rounded-full relative overflow-visible shadow-inner">
+              <div className="h-[3px] w-full bg-zinc-950/90 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
                 <div
                   className="h-full rounded-full transition-[width] duration-700 ease-out relative filter"
                   style={{
                     width: `${progressView.percent}%`,
-                    background: 'linear-gradient(to right, transparent 0%, rgba(0, 122, 255, 0.1) 20%, rgba(175, 82, 222, 0.45) 55%, #ff2d55 85%, #ffffff 100%)',
+                    background: 'linear-gradient(to right, rgba(0, 0, 0, 0) 0%, rgba(0, 122, 255, 0.05) 15%, rgba(0, 122, 255, 0.2) 35%, rgba(175, 82, 222, 0.5) 60%, rgba(255, 45, 85, 0.8) 85%, rgba(255, 149, 0, 0.95) 95%, #ffffff 100%)',
                     animation: 'rocketFire 0.4s ease-in-out infinite',
                   }}
                 />
@@ -1501,10 +1502,10 @@ function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntr
         {isNewlyCompleted && (
           <motion.div 
             initial={{ opacity: 0 }}
-            animate={{ opacity: 0.35 }}
+            animate={{ opacity: 0.40 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 1.5 }}
-            className="absolute -inset-2.5 rounded-2xl blur-[18px] pointer-events-none z-0"
+            transition={{ duration: 1.8, ease: "easeInOut" }}
+            className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
             style={{
               background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
               backgroundSize: '300% 300%',
