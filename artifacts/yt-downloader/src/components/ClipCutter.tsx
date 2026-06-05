@@ -903,6 +903,14 @@ export function ClipCutter() {
               85% { background-position: 20% 50%; }
               100% { background-position: 0% 50%; }
             }
+            @keyframes rocketFire {
+              0%, 100% { 
+                filter: drop-shadow(0 0 3px #af52de) drop-shadow(0 0 7px #ff2d55) brightness(0.95);
+              }
+              50% { 
+                filter: drop-shadow(0 0 5px #af52de) drop-shadow(0 0 12px #ff2d55) brightness(1.15);
+              }
+            }
           `}</style>
           {/* Glowing backdrop blur */}
           <div 
@@ -1392,29 +1400,20 @@ function ClipJobCard({
 
         {/* Progress bar and details */}
         {isProcessing && (
-          <div className="relative z-10 flex flex-col gap-1 px-0.5 mt-1.5">
-            <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-              {!progressView.determinate ? (
-                <motion.div
-                  className="h-full rounded-full bg-gradient-to-r from-transparent via-orange-400/70 to-transparent"
-                  animate={{ x: ["-100%", "200%"] }}
-                  transition={{
-                    repeat: Infinity,
-                    duration: 1.8,
-                    ease: "easeInOut",
+          <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1.5">
+            {progressView.determinate && (
+              <div className="h-[2.5px] w-full bg-zinc-950/80 border border-white/5 rounded-full relative overflow-visible shadow-inner">
+                <div
+                  className="h-full rounded-full transition-[width] duration-700 ease-out relative filter"
+                  style={{
+                    width: `${progressView.percent}%`,
+                    background: 'linear-gradient(to right, transparent 0%, rgba(0, 122, 255, 0.1) 20%, rgba(175, 82, 222, 0.45) 55%, #ff2d55 85%, #ffffff 100%)',
+                    animation: 'rocketFire 0.4s ease-in-out infinite',
                   }}
-                  style={{ width: "45%" }}
                 />
-              ) : (
-                <motion.div
-                  className="h-full bg-gradient-to-r from-orange-500 to-amber-400 rounded-full"
-                  animate={{ width: `${progressView.percent}%` }}
-                  transition={{ ease: "linear", duration: 0.5 }}
-                  style={{ width: `${progressView.percent}%` }}
-                />
-              )}
-            </div>
-            <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
+              </div>
+            )}
+            <div className="flex justify-between text-[10px] text-zinc-500 mt-0.5">
               <span>{job.status === "downloading" ? "Downloading video..." : "Cutting and merging clip..."}</span>
               <span className="font-mono">
                 {progressView.determinate ? `${progressView.percent.toFixed(0)}%` : ""}
@@ -1474,14 +1473,14 @@ function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntr
 
   const [isNewlyCompleted, setIsNewlyCompleted] = useState(() => {
     const ageMs = Date.now() - entry.createdAt;
-    return ageMs >= 0 && ageMs < 30000;
+    return ageMs >= 0 && ageMs < 50000;
   });
 
   useEffect(() => {
     if (!isNewlyCompleted) return;
 
     const ageMs = Date.now() - entry.createdAt;
-    const remainingMs = 30000 - ageMs;
+    const remainingMs = 50000 - ageMs;
 
     if (remainingMs <= 0) {
       setIsNewlyCompleted(false);
@@ -1497,12 +1496,12 @@ function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntr
 
   return (
     <div className="relative w-full">
-      {/* Background glow shadow behind card for 30 seconds */}
+      {/* Background glow shadow behind card for 50 seconds */}
       <AnimatePresence>
         {isNewlyCompleted && (
           <motion.div 
             initial={{ opacity: 0 }}
-            animate={{ opacity: 0.45 }}
+            animate={{ opacity: 0.35 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 1.5 }}
             className="absolute -inset-2.5 rounded-2xl blur-[18px] pointer-events-none z-0"
