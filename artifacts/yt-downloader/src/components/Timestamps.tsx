@@ -220,10 +220,12 @@ export function Timestamps() {
 
           // Determine next status
           let nextStatus = j.status;
-          if (data.type === "done" || data.status === "done") {
+          if (data.type === "done" || (data.type !== "step" && data.status === "done")) {
             nextStatus = "done";
-          } else if (data.type === "error" || data.status === "error" || data.status === "cancelled") {
+          } else if (data.type === "error" || (data.type !== "step" && data.status === "error")) {
             nextStatus = "error";
+          } else if (data.status === "cancelled" || data.type === "cancelled") {
+            nextStatus = "cancelled";
           } else if (data.status === "running" || data.type === "step") {
             nextStatus = "running";
           }
@@ -263,24 +265,26 @@ export function Timestamps() {
             videoTitle: data.videoTitle ?? j.videoTitle,
           };
 
-          if (nextStatus === "done" && !j.result) {
-            // Save to history once
+          // Save to history once we receive actual timestamps
+          if (nextStatus === "done" && data.timestamps && data.timestamps.length > 0) {
             historyEntry = {
               id: j.jobId,
               createdAt: Date.now(),
               videoTitle: data.videoTitle ?? j.videoTitle ?? "YouTube Video",
               videoUrl: j.url,
-              chapterCount: (data.timestamps ?? []).length,
+              chapterCount: data.timestamps.length,
               videoDurationSecs: data.videoDuration ?? 0,
-              timestamps: data.timestamps ?? [],
+              timestamps: data.timestamps,
             };
           }
 
           return nextJob;
         });
 
-        persistActiveJobs(updated);
-        return updated;
+        // Filter out completed ("done") jobs so they instantly move to recent history
+        const filtered = updated.filter((j) => j.status !== "done");
+        persistActiveJobs(filtered);
+        return filtered;
       });
 
       if (historyEntry) {
