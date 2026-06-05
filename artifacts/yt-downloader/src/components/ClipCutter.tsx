@@ -647,7 +647,7 @@ export function ClipCutter() {
 
       setNotification({
         type: "success",
-        message: message || `Clip accepted: ${secsToLabel(startTime)} → ${secsToLabel(endTime)}. Starting cut...`,
+        message: `🚀 Clip Cut started! Processing ${secsToLabel(startTime)} → ${secsToLabel(endTime)}...`,
       });
 
       await startClipCutJob(url, startTime, endTime, quality);
@@ -662,8 +662,8 @@ export function ClipCutter() {
     }
   };
 
-  const handleManualCut = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleManualCut = async (e?: React.FormEvent | React.MouseEvent) => {
+    e?.preventDefault();
 
     if (!command.trim()) {
       setNotification({ type: "error", message: "Please enter a YouTube URL in the input area above." });
@@ -700,7 +700,7 @@ export function ClipCutter() {
     try {
       setNotification({
         type: "success",
-        message: `Manual clip cut starting: ${secsToLabel(startSecs)} → ${secsToLabel(endSecs)}...`,
+        message: `✂️ Manual Clip Cut started! Extracting ${secsToLabel(startSecs)} → ${secsToLabel(endSecs)}...`,
       });
 
       await startClipCutJob(parsedUrl, startSecs, endSecs, quality);
@@ -839,40 +839,50 @@ export function ClipCutter() {
 
   return (
     <div className="flex flex-col gap-5 relative max-w-[720px] mx-auto w-full pt-8 sm:pt-14">
-      {/* Up Notification Style Card */}
-      <AnimatePresence>
-        {notification && (
-          <motion.div
-            initial={{ opacity: 0, y: -20, height: 0 }}
-            animate={{ opacity: 1, y: 0, height: "auto" }}
-            exit={{ opacity: 0, y: -20, height: 0 }}
-            className="w-full z-30 overflow-hidden"
-          >
-            <div className={cn(
-              "w-full rounded-xl border p-3 flex items-center justify-between gap-3 shadow-[0_4px_20px_rgba(0,0,0,0.45)] backdrop-blur-md mb-4",
-              notification.type === "success" && "bg-green-500/10 border-green-500/20 text-green-200",
-              notification.type === "error" && "bg-red-500/10 border-red-500/20 text-red-200",
-              notification.type === "info" && "bg-blue-500/10 border-blue-500/20 text-blue-200"
-            )}>
-              <div className="flex items-center gap-2.5 min-w-0">
-                {notification.type === "success" && <CheckCircle2 className="h-4 w-4 text-green-400 shrink-0" />}
-                {notification.type === "error" && <AlertCircle className="h-4 w-4 text-red-400 shrink-0" />}
-                {notification.type === "info" && <Info className="h-4 w-4 text-blue-400 shrink-0" />}
-                <span className="text-xs sm:text-sm font-semibold truncate leading-relaxed">
-                  {notification.message}
-                </span>
+      {/* Up Notification Style Card (Absolute Floating) */}
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[540px] z-50 pointer-events-none">
+        <AnimatePresence>
+          {notification && (
+            <motion.div
+              initial={{ opacity: 0, y: -16, scale: 0.96 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -16, scale: 0.96 }}
+              transition={{ type: "spring", stiffness: 380, damping: 30 }}
+              className="w-full pointer-events-auto"
+            >
+              <div className="w-full rounded-2xl border border-white/40 bg-white/80 backdrop-blur-xl p-3.5 flex items-center justify-between gap-3 shadow-[0_20px_40px_rgba(0,0,0,0.35),_0_0_24px_rgba(255,255,255,0.08)] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.85)]">
+                <div className="flex items-center gap-3 min-w-0">
+                  {notification.type === "success" && (
+                    <div className="p-1 rounded-full bg-green-500/10 text-green-600 shrink-0">
+                      <CheckCircle2 className="h-4 w-4 stroke-[2.5]" />
+                    </div>
+                  )}
+                  {notification.type === "error" && (
+                    <div className="p-1 rounded-full bg-red-500/10 text-red-600 shrink-0">
+                      <AlertCircle className="h-4 w-4 stroke-[2.5]" />
+                    </div>
+                  )}
+                  {notification.type === "info" && (
+                    <div className="p-1 rounded-full bg-blue-500/10 text-blue-600 shrink-0">
+                      <Info className="h-4 w-4 stroke-[2.5]" />
+                    </div>
+                  )}
+                  <span className="text-xs sm:text-sm font-semibold text-zinc-900 leading-normal">
+                    {notification.message}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setNotification(null)}
+                  className="p-1 rounded-full hover:bg-black/5 text-zinc-400 hover:text-zinc-700 transition-colors shrink-0"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setNotification(null)}
-                className="p-1 rounded-lg hover:bg-white/10 text-white/40 hover:text-white/80 transition-colors shrink-0"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
 
       <div className="mb-5 max-w-none sm:mb-6">
         <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-[38px]">Clip Cut</h1>
@@ -1002,75 +1012,7 @@ export function ClipCutter() {
           </AnimatePresence>
         </div>
 
-        {/* Advanced Options small tab inside the same form */}
-        <AnimatePresence>
-          {showAdvanced && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              className="overflow-hidden w-full"
-            >
-              <div className="rounded-2xl border border-zinc-800/80 bg-[#070709] p-4 flex flex-col gap-4 shadow-inner">
-                <div className="flex items-center justify-between border-b border-zinc-800/30 pb-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-zinc-400">Manual Trim Options</span>
-                  <span className="text-[10px] text-zinc-500">Skip AI intent parsing</span>
-                </div>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-zinc-400">Start Time</label>
-                    <input
-                      type="text"
-                      value={manualStart}
-                      onChange={(e) => setManualStart(e.target.value)}
-                      disabled={submitting}
-                      placeholder="e.g. 0:30 or 30"
-                      className="h-10 rounded-xl border border-zinc-850 bg-[#0f0f11] px-3.5 text-sm text-white placeholder:text-zinc-650 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-zinc-400">End Time</label>
-                    <input
-                      type="text"
-                      value={manualEnd}
-                      onChange={(e) => setManualEnd(e.target.value)}
-                      disabled={submitting}
-                      placeholder="e.g. 2:15 or 135"
-                      className="h-10 rounded-xl border border-zinc-850 bg-[#0f0f11] px-3.5 text-sm text-white placeholder:text-zinc-650 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-xs font-semibold text-zinc-400">Video Quality</label>
-                    <select
-                      value={quality}
-                      onChange={(e) => setQuality(e.target.value)}
-                      disabled={submitting}
-                      className="h-10 rounded-xl border border-zinc-850 bg-[#0f0f11] px-3 text-sm text-white outline-none focus:border-zinc-700 disabled:opacity-50"
-                    >
-                      {QUALITY_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-                <div className="flex justify-end gap-2 pt-1">
-                  <Button
-                    type="button"
-                    onClick={handleManualCut}
-                    disabled={submitting || !command.trim() || !manualStart.trim() || !manualEnd.trim()}
-                    variant="outline"
-                    className="flex h-9 items-center justify-center gap-1.5 rounded-lg bg-zinc-200 text-xs font-semibold text-black hover:bg-zinc-100 disabled:opacity-50 shadow-none border-none active:scale-[0.98]"
-                  >
-                    <Scissors className="h-3.5 w-3.5" />
-                    Cut Manually
-                  </Button>
-                </div>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+
         
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-2">
           <Button
@@ -1082,62 +1024,143 @@ export function ClipCutter() {
             <Scissors className="h-4 w-4" />
             Cut Clip
           </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setShowAdvanced(!showAdvanced)}
-            className={cn(
-              "flex h-11 w-full max-w-[200px] items-center justify-center gap-2 rounded-full border border-zinc-800 text-[14px] font-semibold text-white hover:bg-zinc-800/80 sm:w-auto shadow-none transition-all",
-              showAdvanced ? "bg-zinc-800/80 border-zinc-700" : "bg-[#0d0d0d]"
-            )}
-          >
-            <SlidersHorizontal className="h-4 w-4" />
-            Advanced
-          </Button>
+
+          <div className="relative w-full max-w-[200px] sm:w-auto">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className={cn(
+                "flex h-11 w-full max-w-[200px] items-center justify-center gap-2 rounded-full border border-zinc-800 text-[14px] font-semibold text-white hover:bg-zinc-800/85 sm:w-auto shadow-none transition-all",
+                showAdvanced ? "bg-zinc-800/85 border-zinc-700" : "bg-[#0d0d0d]"
+              )}
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              Advanced
+            </Button>
+
+            {/* Advanced Popover Card */}
+            <AnimatePresence>
+              {showAdvanced && (
+                <>
+                  {/* Backdrop overlay */}
+                  <div className="fixed inset-0 z-40" onClick={() => setShowAdvanced(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
+                    transition={{ duration: 0.2 }}
+                    className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 z-50 w-80 rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3.5"
+                  >
+                    <div className="flex items-center justify-between border-b border-zinc-800/40 pb-2">
+                      <div className="flex items-center gap-2">
+                        <SlidersHorizontal className="h-4 w-4 text-orange-400" />
+                        <span className="text-sm font-bold text-white">Manual Trim Options</span>
+                      </div>
+                      <span className="text-[10px] text-zinc-500 font-medium">Skip AI parsing</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1.5 text-left">
+                        <label className="text-[11px] font-semibold text-zinc-400">Start Time</label>
+                        <input
+                          type="text"
+                          value={manualStart}
+                          onChange={(e) => setManualStart(e.target.value)}
+                          disabled={submitting}
+                          placeholder="e.g. 0:30 or 30"
+                          className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50 transition-colors"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5 text-left">
+                        <label className="text-[11px] font-semibold text-zinc-400">End Time</label>
+                        <input
+                          type="text"
+                          value={manualEnd}
+                          onChange={(e) => setManualEnd(e.target.value)}
+                          disabled={submitting}
+                          placeholder="e.g. 2:15 or 135"
+                          className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50 transition-colors"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5 text-left">
+                      <label className="text-[11px] font-semibold text-zinc-400">Video Quality</label>
+                      <select
+                        value={quality}
+                        onChange={(e) => setQuality(e.target.value)}
+                        disabled={submitting}
+                        className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white outline-none focus:border-zinc-700 disabled:opacity-50 transition-colors"
+                      >
+                        {QUALITY_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-1 border-t border-zinc-800/40">
+                      <Button
+                        type="button"
+                        onClick={handleManualCut}
+                        disabled={submitting || !command.trim() || !manualStart.trim() || !manualEnd.trim()}
+                        variant="outline"
+                        className="flex h-8.5 w-full items-center justify-center gap-1.5 rounded-xl bg-white text-xs font-semibold text-black hover:bg-zinc-100 disabled:opacity-50 shadow-none border-none active:scale-[0.98] transition-transform"
+                      >
+                        <Scissors className="h-3.5 w-3.5" />
+                        Cut Manually
+                      </Button>
+                    </div>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </form>
 
-      {/* Active / in-progress job cards */}
-      <AnimatePresence initial={false}>
-        {jobs.map((job) => (
-          <ClipJobCard
-            key={job.jobId}
-            job={job}
-            onRemove={removeJob}
-            onCancel={cancelJob}
-            onDownload={downloadClip}
-          />
-        ))}
-      </AnimatePresence>
+      {/* ── Unified cuts panel ──────────────────────────────────────────────── */}
+      <div className="flex flex-col gap-4 mt-6">
+        <div className="w-full h-px bg-white/5 mb-2" />
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-bold text-white">Recent cuts</span>
+        </div>
 
-      {/* ── History panel ──────────────────────────────────────────────────── */}
-      <AnimatePresence>
-        {history.length > 0 && (
-          <motion.div
-            key="clip-history"
-            initial={{ opacity: 0, y: 16 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="flex flex-col gap-4 mt-6"
-          >
-            <div className="w-full h-px bg-white/5 mb-2" />
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-bold text-white">Recent cuts</span>
-            </div>
+        <div className="flex flex-col gap-2.5">
+          {/* Active / in-progress job cards */}
+          <AnimatePresence initial={false}>
+            {jobs.map((job) => (
+              <ClipJobCard
+                key={job.jobId}
+                job={job}
+                onRemove={removeJob}
+                onCancel={cancelJob}
+                onDownload={downloadClip}
+              />
+            ))}
+          </AnimatePresence>
 
-            <div className="flex flex-col gap-2">
-              {history.map((entry) => (
-                <RecentClipRow
-                  key={entry.jobId}
-                  entry={entry}
-                  onDownload={() => downloadHistoryClip(entry)}
-                  onDelete={() => setHistory(deleteFromClipHistory(entry.jobId))}
-                />
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          {/* Completed History cuts */}
+          <AnimatePresence initial={false}>
+            {history.map((entry) => (
+              <RecentClipRow
+                key={entry.jobId}
+                entry={entry}
+                onDownload={() => downloadHistoryClip(entry)}
+                onDelete={() => setHistory(deleteFromClipHistory(entry.jobId))}
+              />
+            ))}
+          </AnimatePresence>
+
+          {jobs.length === 0 && history.length === 0 && (
+            <p className="text-xs text-zinc-500 text-center py-6 font-medium">
+              No recent cuts yet.
+            </p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1248,141 +1271,163 @@ function ClipJobCard({
     job.status === "merging";
 
   const isCancelling = isProcessing && (job.message ?? "").toLowerCase().includes("cancel");
-  const queuePositionMatch = job.message?.match(/queued\s*\(#(\d+)\)/i);
-  const queuePosition = queuePositionMatch ? Number.parseInt(queuePositionMatch[1], 10) : null;
-  const isQueued = job.status === "pending" && (job.message ?? "").toLowerCase().includes("queued");
-
   const elapsed = useElapsed(job.startedAt, isProcessing);
   const progressView = getClipProgressView(job, elapsed);
-  const doneTimeLabel = fmtMs(job.elapsedMs ?? (job.completedAt ? job.completedAt - job.startedAt : null));
+
+  const videoId = extractVideoId(job.url);
+  const title = useVideoTitle(job.url, job.label);
 
   return (
     <motion.div
-      key={job.jobId}
+      layout
       initial={{ opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -10, height: 0 }}
       transition={{ duration: 0.25 }}
-      className={cn(
-        "glass-panel rounded-2xl px-5 py-4 flex flex-col gap-3 relative overflow-hidden border",
-        isDone && "border-green-500/20",
-        isError && "border-red-500/20",
-        isCancelled && "border-amber-500/20",
-        isProcessing && "border-orange-500/15",
-      )}
+      className="relative w-full rounded-2xl p-[1.2px] overflow-hidden group"
+      style={{
+        background: isProcessing
+          ? 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)'
+          : '',
+        backgroundSize: isProcessing ? '300% 300%' : '',
+        animation: isProcessing ? 'rgbGlow 10s ease-in-out infinite' : '',
+        border: !isProcessing ? '1px solid' : '',
+        borderColor: isDone ? '#064e3b' : isError ? '#7f1d1d' : '#18181b',
+      }}
     >
-      {/* Glow */}
-      <div
-        className={cn(
-          "absolute top-0 right-0 w-40 h-40 blur-[60px] rounded-full pointer-events-none opacity-20",
-          isDone && "bg-green-500",
-          isError && "bg-red-500",
-          isCancelled && "bg-amber-500",
-          isProcessing && "bg-orange-500",
-        )}
-      />
-
-      <div className="flex items-center justify-between gap-3 relative z-10">
-        <div className="flex items-center gap-2.5 min-w-0">
-          {isDone ? (
-            <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
-          ) : isError ? (
-            <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-          ) : isCancelled ? (
-            <X className="w-4 h-4 text-amber-400 shrink-0" />
-          ) : (
-            <Loader2 className="w-4 h-4 text-orange-400 animate-spin shrink-0" />
-          )}
-          <span className="text-sm font-semibold text-white font-mono truncate">
-            {job.label}
-          </span>
-          {isQueued && (
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-amber-500/20 border border-amber-500/40 text-amber-300 shrink-0">
-              {queuePosition ? `Queued #${queuePosition}` : "Queued"}
-            </span>
-          )}
-          {job.filename && (
-            <span className="text-xs text-white/35 truncate hidden sm:block">
-              {job.filename}
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {isProcessing && (
-            <button
-              onClick={() => onCancel(job.jobId)}
-              disabled={isCancelling}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all",
-                "border-amber-500/40 text-amber-300",
-                isCancelling
-                  ? "bg-amber-500/10 opacity-70 cursor-not-allowed"
-                  : "bg-amber-500/15 hover:bg-amber-500/25",
-              )}
-            >
-              <X className="w-3 h-3" />
-              {isCancelling ? "Cancelling..." : "Cancel"}
-            </button>
-          )}
-          {isDone && (
-            <button
-              onClick={() => onDownload(job)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 border border-green-500/30 text-green-300 text-xs font-semibold transition-all"
-            >
-              <Download className="w-3 h-3" />
-              Save
-            </button>
-          )}
-          {(isDone || isError || isCancelled) && (
-            <button
-              onClick={() => onRemove(job.jobId)}
-              className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Progress bar */}
+      {/* Background glow shadow behind card */}
       {isProcessing && (
-        <div className="relative z-10 flex flex-col gap-1.5">
-          <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
-            {!progressView.determinate ? (
-              <motion.div
-                className="h-full rounded-full bg-gradient-to-r from-transparent via-orange-400/70 to-transparent"
-                animate={{ x: ["-100%", "200%"] }}
-                transition={{
-                  repeat: Infinity,
-                  duration: 1.8,
-                  ease: "easeInOut",
-                }}
-                style={{ width: "45%" }}
+        <div 
+          className="absolute -inset-2 rounded-2xl opacity-35 blur-[8px] pointer-events-none"
+          style={{
+            background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+            backgroundSize: '300% 300%',
+            animation: 'rgbGlow 10s ease-in-out infinite',
+          }}
+        />
+      )}
+
+      {/* Inner Content Card */}
+      <div className="relative rounded-[15px] bg-[#0c0c0e] px-4.5 py-3.5 flex flex-col gap-3 w-full h-full">
+        <div className="flex items-center gap-4 w-full">
+          {/* Thumbnail Preview */}
+          <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+            {videoId ? (
+              <img
+                src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
+                className={cn(
+                  "h-full w-full object-cover transition-transform duration-350 group-hover:scale-105",
+                  isProcessing && "animate-pulse opacity-70"
+                )}
+                alt="Thumbnail"
               />
             ) : (
-              <motion.div
-                className="h-full bg-gradient-to-r from-orange-500 to-amber-400 rounded-full"
-                animate={{ width: `${progressView.percent}%` }}
-                transition={{ ease: "linear", duration: 0.5 }}
-                style={{ width: `${progressView.percent}%` }}
-              />
+              <div className="flex h-full w-full items-center justify-center bg-zinc-900">
+                <Youtube className="h-4.5 w-4.5 text-white/20" />
+              </div>
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
+            
+            {/* Duration text badge overlay */}
+            <span className="absolute bottom-1 right-1 bg-black/80 px-1 py-0.5 rounded text-[9px] font-bold text-white/95 font-mono leading-none tracking-wide">
+              {formatDuration(job.endSecs - job.startSecs)}
+            </span>
+          </div>
+
+          {/* Info details */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              {isProcessing && <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin shrink-0" />}
+              {isDone && <CheckCircle2 className="w-3.5 h-3.5 text-green-400 shrink-0" />}
+              {isError && <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+              {isCancelled && <X className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+              
+              <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">
+                {title}
+              </p>
+            </div>
+
+            <p className="text-zinc-400 text-xs mt-1.5 truncate">
+              {job.label} • {isProcessing ? (
+                <span>
+                  Elapsed: {fmtElapsed(elapsed)}
+                  {job.eta ? ` • ETA: ${job.eta}` : " • Calculating..."}
+                </span>
+              ) : isDone ? (
+                <span className="text-green-400/80 font-medium">Clip is ready!</span>
+              ) : isError ? (
+                <span className="text-red-400/80 font-medium">Clip cut failed</span>
+              ) : (
+                <span className="text-zinc-500 font-medium">Cancelled by user</span>
+              )}
+            </p>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 shrink-0">
+            {isProcessing && (
+              <button
+                onClick={() => onCancel(job.jobId)}
+                disabled={isCancelling}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-300 text-xs font-semibold transition-all active:scale-[0.98]"
+              >
+                <X className="w-3.5 h-3.5" />
+                {isCancelling ? "Cancelling..." : "Cancel"}
+              </button>
+            )}
+            {isDone && (
+              <button
+                onClick={() => onDownload(job)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 border border-green-500/30 text-green-300 text-xs font-semibold transition-all active:scale-[0.98]"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Save
+              </button>
+            )}
+            {(isDone || isError || isCancelled) && (
+              <button
+                onClick={() => onRemove(job.jobId)}
+                className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
             )}
           </div>
-          <div className="flex justify-between gap-3 text-[11px] text-white/40">
-            <span
-              className="min-w-0 truncate"
-              title={progressView.details || progressView.primary}
-            >
-              {progressView.primary}
-              {progressView.details ? ` | ${progressView.details}` : ""}
-            </span>
-            <span className="font-mono shrink-0 pl-3">
-              {progressView.right}
-            </span>
-          </div>
         </div>
-      )}
+
+        {/* Progress bar and details */}
+        {isProcessing && (
+          <div className="relative z-10 flex flex-col gap-1 px-0.5 mt-1.5">
+            <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+              {!progressView.determinate ? (
+                <motion.div
+                  className="h-full rounded-full bg-gradient-to-r from-transparent via-orange-400/70 to-transparent"
+                  animate={{ x: ["-100%", "200%"] }}
+                  transition={{
+                    repeat: Infinity,
+                    duration: 1.8,
+                    ease: "easeInOut",
+                  }}
+                  style={{ width: "45%" }}
+                />
+              ) : (
+                <motion.div
+                  className="h-full bg-gradient-to-r from-orange-500 to-amber-400 rounded-full"
+                  animate={{ width: `${progressView.percent}%` }}
+                  transition={{ ease: "linear", duration: 0.5 }}
+                  style={{ width: `${progressView.percent}%` }}
+                />
+              )}
+            </div>
+            <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
+              <span>{progressView.primary}</span>
+              <span className="font-mono">
+                {progressView.determinate ? `${progressView.percent.toFixed(0)}%` : ""}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
 
       {isError && (
         <p className="text-xs text-red-400/80 relative z-10">
@@ -1398,7 +1443,7 @@ function ClipJobCard({
 
       {isDone && (
         <p className="text-xs text-green-400/70 relative z-10">
-          Clip is ready{doneTimeLabel ? ` in ${doneTimeLabel}` : ""}. Use Save to download.
+          Clip is ready. Use Save to download.
         </p>
       )}
     </motion.div>
@@ -1437,20 +1482,39 @@ function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntr
   const title = useVideoTitle(entry.url, entry.label);
 
   return (
-    <motion.div layout initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }} className="bg-[#0c0c0e] border border-zinc-900 rounded-2xl px-4.5 py-3.5 flex items-center gap-4 relative">
-      <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5">
+    <motion.div
+      layout
+      initial={{ opacity: 0, x: -8 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 8 }}
+      className="bg-[#0c0c0e] hover:bg-[#121215] border border-zinc-900 hover:border-zinc-800/80 rounded-2xl px-4.5 py-3.5 flex items-center gap-4 relative group transition-all duration-300"
+    >
+      <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
         {videoId ? (
-          <img src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`} className="h-full w-full object-cover" alt="Thumbnail" />
+          <img
+            src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+            alt="Thumbnail"
+          />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-zinc-900">
-            <Youtube className="h-4 w-4 text-white/20" />
+            <Youtube className="h-4.5 w-4.5 text-white/20" />
           </div>
         )}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-80 group-hover:opacity-60 transition-opacity" />
+        
+
+
+        {/* Duration badge overlay in bottom-right */}
+        {entry.durationSecs > 0 && (
+          <span className="absolute bottom-1 right-1 bg-black/80 px-1 py-0.5 rounded text-[9px] font-bold text-white/95 font-mono leading-none tracking-wide">
+            {formatDuration(entry.durationSecs)}
+          </span>
+        )}
       </div>
 
       <div className="flex-1 min-w-0">
-        <p className="text-white/95 text-sm font-semibold truncate leading-snug">{title}</p>
+        <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">{title}</p>
         <p className="text-zinc-400 text-xs mt-1.5 truncate">
           {entry.label} • {formatDuration(entry.durationSecs)} total
         </p>
