@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlarmClock, CheckCircle2, AlertCircle, Loader2, Copy, Check,
-  ChevronDown, ChevronUp, Sparkles, Clock, Link2, Info, ArrowUp, MoreVertical, Trash2, Youtube
+  ChevronDown, ChevronUp, Sparkles, Clock, Link2, Info, ArrowUp, MoreVertical, Trash2, Youtube, X, Download, RefreshCw
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -71,37 +71,7 @@ function useClipboard(timeout = 1800) {
   return { copied, copy };
 }
 
-function StepRow({ step }: { step: Step }) {
-  const icon =
-    step.status === "running" ? <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" /> :
-    step.status === "done"    ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> :
-    step.status === "warn"    ? <AlertCircle className="w-4 h-4 text-amber-400" /> :
-                                <Clock className="w-4 h-4 text-white/20" />;
-
-  const stepLabel: Record<string, string> = {
-    metadata: "Video Info",
-    transcript: "Transcript",
-    ai: "AI Generation",
-  };
-
-  return (
-    <div className={cn(
-      "flex items-start gap-3 px-4 py-3 rounded-xl border transition-all duration-300 w-full text-left",
-      step.status === "running" ? "border-indigo-500/40 bg-indigo-500/8" :
-      step.status === "done"    ? "border-emerald-500/20 bg-emerald-500/5" :
-      step.status === "warn"    ? "border-amber-500/20 bg-amber-500/5" :
-                                  "border-white/5 bg-white/2",
-    )}>
-      <div className="mt-0.5 shrink-0">{icon}</div>
-      <div className="min-w-0 flex-1">
-        <div className="text-xs font-semibold text-white/50 uppercase tracking-widest mb-0.5">
-          {stepLabel[step.name] ?? step.name}
-        </div>
-        <div className="text-sm text-white/80 leading-relaxed">{step.message}</div>
-      </div>
-    </div>
-  );
-}
+// StepRow has been removed since the unified TimestampJobCard is used instead
 
 function extractVideoId(url: string) {
   const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
@@ -143,6 +113,7 @@ export function Timestamps() {
   const [steps, setSteps] = useState<Step[]>([]);
   const [result, setResult] = useState<JobResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progressPct, setProgressPct] = useState(0);
   
   // Load local timestamps history and seed mock data if empty
   const [history, setHistory] = useState<TimestampHistoryEntry[]>(() => {
@@ -210,6 +181,12 @@ export function Timestamps() {
       next[existing] = updated;
       return next;
     });
+
+    if (stepStatus === "running") {
+      if (name === "metadata") setProgressPct(15);
+      else if (name === "transcript") setProgressPct(45);
+      else if (name === "ai") setProgressPct(75);
+    }
   };
 
   const closeSSE = () => {
@@ -226,6 +203,7 @@ export function Timestamps() {
     closePolling();
     statusRef.current = "done";
     setStatus("done");
+    setProgressPct(100);
     
     const timestamps = data.timestamps ?? [];
     const videoTitle = data.videoTitle ?? "";
@@ -265,6 +243,7 @@ export function Timestamps() {
     statusRef.current = "error";
     setStatus("error");
     setError(message);
+    setProgressPct(0);
     toast({ title: "Error", description: message, variant: "destructive" });
   };
 
@@ -289,6 +268,7 @@ export function Timestamps() {
           return;
         }
         const pct = data.progressPct ?? 0;
+        setProgressPct(pct);
         const stepName = pct >= 55 ? "ai" : pct >= 20 ? "transcript" : "metadata";
         updateStep(stepName, "running", data.message ?? "Processing...");
       } catch (err) {
@@ -334,6 +314,7 @@ export function Timestamps() {
       { name: "transcript", status: "idle",    message: "Waiting..." },
       { name: "ai",         status: "idle",    message: "Waiting..." },
     ]);
+    setProgressPct(5);
 
     const finalInstructions = [description, instructions].filter(Boolean).join("\n");
     urlRef.current = parsedUrl;
@@ -422,6 +403,7 @@ export function Timestamps() {
       { name: "transcript", status: "idle",    message: "Waiting..." },
       { name: "ai",         status: "idle",    message: "Waiting..." },
     ]);
+    setProgressPct(5);
     
     urlRef.current = entry.videoUrl;
     jobIdRef.current = entry.id;
@@ -470,11 +452,13 @@ export function Timestamps() {
   const handleReset = () => {
     closeSSE();
     closePolling();
+    statusRef.current = "idle";
     setStatus("idle");
     setSteps([]);
     setResult(null);
     setError(null);
     setCommand("");
+    setProgressPct(0);
   };
 
   const ytBlock = result ? buildYtDescriptionBlock(result.timestamps) : "";
@@ -491,6 +475,20 @@ export function Timestamps() {
 
   return (
     <div className="max-w-3xl mx-auto w-full text-left flex flex-col gap-6 px-4 py-8 md:py-12">
+      <style>{`
+        @keyframes rgbGlow {
+          0%, 100% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+        }
+        @keyframes rocketFire {
+          0%, 100% { 
+            filter: drop-shadow(0 0 2px #ffffff) drop-shadow(0 0 5px #af52de) drop-shadow(0 0 9px #ff2d55) brightness(0.95);
+          }
+          50% { 
+            filter: drop-shadow(0 0 3.5px #ffffff) drop-shadow(0 0 8px #af52de) drop-shadow(0 0 15px #ff2d55) brightness(1.2);
+          }
+        }
+      `}</style>
       {/* Header */}
       <div className="flex flex-col items-start text-left mb-2">
         <h1 className="text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
@@ -504,40 +502,65 @@ export function Timestamps() {
 
       {/* Input form */}
       <form onSubmit={handleSubmit} className="space-y-4 w-full">
-        <div className="relative w-full rounded-2xl border border-zinc-800/80 bg-[#09090b]/80 backdrop-blur-md py-3 px-4 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
-          <div className="flex items-center gap-3">
-            <Link2 className="h-5 w-5 text-zinc-500 shrink-0" />
-            <textarea
-              ref={textareaRef}
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              disabled={isRunning}
-              placeholder="Paste YouTube URL and describe the timestamps you want..."
-              className="min-h-[24px] h-6 flex-1 resize-none bg-transparent py-1 text-sm text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSubmit(e);
-                }
+        {/* Glow and outer border wrapper */}
+        <div className="relative group w-full">
+          {/* Glowing backdrop blur */}
+          <div 
+            className="absolute -inset-[5.5px] rounded-[12px] opacity-50 blur-[12px] transition-all duration-500 group-hover:opacity-70 group-focus-within:opacity-90"
+            style={{
+              background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+              backgroundSize: '300% 300%',
+              animation: 'rgbGlow 10s ease-in-out infinite',
+            }}
+          />
+          {/* Outer border wrapper */}
+          <div className="relative w-full rounded-[12px] p-[1.2px] overflow-hidden bg-zinc-800">
+            {/* Border background gradient */}
+            <div 
+              className="absolute inset-0"
+              style={{
+                background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                backgroundSize: '300% 300%',
+                animation: 'rgbGlow 10s ease-in-out infinite',
               }}
             />
-            {/* Clickable i icon */}
-            <button
-              type="button"
-              onClick={() => setShowHelper(!showHelper)}
-              className="p-1.5 rounded-full hover:bg-white/5 text-zinc-400 hover:text-white transition shrink-0"
-              title="Help info"
-            >
-              <Info className="h-5 w-5" />
-            </button>
-            {/* Submit arrow button inside the input area */}
-            <button
-              disabled={isRunning || !command.trim()}
-              type="submit"
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-white disabled:bg-zinc-900/50 disabled:text-zinc-600 disabled:border-zinc-800/40 border border-zinc-700/30 transition shadow-sm"
-            >
-              {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
-            </button>
+            {/* Inner input container */}
+            <div className="relative rounded-[11px] bg-[#09090b] py-3.5 px-5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+              <div className="flex items-center gap-3">
+                <Link2 className="h-5 w-5 text-zinc-500 shrink-0" />
+                <textarea
+                  ref={textareaRef}
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  disabled={isRunning}
+                  placeholder="Paste YouTube URL and describe the timestamps you want..."
+                  className="min-h-[24px] h-6 flex-1 resize-none bg-transparent py-1 text-sm text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSubmit(e);
+                    }
+                  }}
+                />
+                {/* Clickable i icon */}
+                <button
+                  type="button"
+                  onClick={() => setShowHelper(!showHelper)}
+                  className="p-1.5 rounded-full hover:bg-white/5 text-zinc-400 hover:text-white transition shrink-0"
+                  title="Help info"
+                >
+                  <Info className="h-5 w-5" />
+                </button>
+                {/* Submit arrow button inside the input area */}
+                <button
+                  disabled={isRunning || !command.trim()}
+                  type="submit"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-white disabled:bg-zinc-900/50 disabled:text-zinc-600 disabled:border-zinc-800/40 border border-zinc-700/30 transition shadow-sm"
+                >
+                  {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -602,19 +625,19 @@ export function Timestamps() {
         </div>
       </form>
 
-      {/* Progress steps */}
+      {/* Progress job card */}
       <AnimatePresence>
-        {steps.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="space-y-2 w-full"
-          >
-            {steps.map((step) => (
-              <StepRow key={step.name} step={step} />
-            ))}
-          </motion.div>
+        {isRunning && urlRef.current && (
+          <TimestampJobCard
+            url={urlRef.current}
+            message={
+              steps.find((s) => s.status === "running")?.message ??
+              [...steps].reverse().find((s) => s.status === "done")?.message ??
+              "Initializing analysis..."
+            }
+            percent={progressPct}
+            onCancel={handleReset}
+          />
         )}
       </AnimatePresence>
 
@@ -686,7 +709,7 @@ export function Timestamps() {
                     "h-7 px-3 text-xs font-medium rounded-lg transition-all duration-200",
                     copied === "all"
                       ? "bg-emerald-600 text-white"
-                      : "bg-indigo-600/60 hover:bg-indigo-600 text-white",
+                      : "bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white shadow-md shadow-indigo-500/10 active:scale-[0.98]",
                   )}
                 >
                   {copied === "all" ? (
@@ -757,7 +780,7 @@ export function Timestamps() {
                     "h-7 px-3 text-xs font-medium rounded-lg transition-all duration-200",
                     copied === "telegram"
                       ? "bg-emerald-600 text-white"
-                      : "bg-violet-600/40 hover:bg-violet-600/70 text-white/70",
+                      : "bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-500 hover:to-fuchsia-500 text-white shadow-md shadow-violet-500/10 active:scale-[0.98]",
                   )}
                 >
                   {copied === "telegram" ? <><Check className="w-3.5 h-3.5 mr-1.5" />Copied!</> : <><Copy className="w-3.5 h-3.5 mr-1.5" />Copy</>}
@@ -782,7 +805,7 @@ export function Timestamps() {
                     "h-7 px-3 text-xs font-medium rounded-lg transition-all duration-200",
                     copied === "text"
                       ? "bg-emerald-600 text-white"
-                      : "bg-white/8 hover:bg-white/15 text-white/60",
+                      : "bg-white/10 hover:bg-white/15 text-white/80 border border-white/5 shadow-sm active:scale-[0.98]",
                   )}
                 >
                   {copied === "text" ? <><Check className="w-3.5 h-3.5 mr-1.5" />Copied!</> : <><Copy className="w-3.5 h-3.5 mr-1.5" />Copy</>}
@@ -795,12 +818,14 @@ export function Timestamps() {
 
             {/* Generate again */}
             <div className="flex justify-center w-full">
-              <button
+              <Button
+                variant="ghost"
                 onClick={handleReset}
-                className="text-xs text-white/30 hover:text-white/60 transition-colors underline"
+                className="text-xs text-zinc-400 hover:text-white hover:bg-white/5 gap-1.5 px-4 py-2 rounded-xl transition"
               >
+                <RefreshCw className="w-3.5 h-3.5" />
                 Analyze another video
-              </button>
+              </Button>
             </div>
           </motion.div>
         )}
@@ -938,4 +963,138 @@ function RecentTimestampRow({
       </div>
     </motion.div>
   );
+}
+
+function TimestampJobCard({
+  url,
+  message,
+  percent,
+  onCancel,
+}: {
+  url: string;
+  message: string;
+  percent: number;
+  onCancel: () => void;
+}) {
+  const videoId = extractVideoId(url);
+  const title = useVideoTitle(url, "Analyzing Video");
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const start = Date.now();
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="relative w-full">
+      {/* Background glow shadow behind card */}
+      <div 
+        className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
+        style={{
+          opacity: 0.52,
+          background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+          backgroundSize: '300% 300%',
+          animation: 'rgbGlow 10s ease-in-out infinite',
+        }}
+      />
+
+      <motion.div
+        layout
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10, height: 0 }}
+        transition={{ duration: 0.25 }}
+        className="relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border border-zinc-900 hover:border-zinc-800/80 px-4.5 py-3.5 flex flex-col gap-3 group transition-all duration-300"
+      >
+        <div className="flex items-center gap-4 w-full">
+          {/* Thumbnail Preview */}
+          <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+            {videoId ? (
+              <img
+                src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 animate-pulse opacity-70"
+                alt="Thumbnail"
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center bg-zinc-900">
+                <Youtube className="h-4.5 w-4.5 text-white/20" />
+              </div>
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
+          </div>
+
+          {/* Info details */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin shrink-0" />
+              <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">
+                {title}
+              </p>
+            </div>
+
+            <p className="text-zinc-400 text-xs mt-1.5 truncate">
+              Generating Timestamps • Elapsed: {formatElapsed(elapsed)}
+            </p>
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={onCancel}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-300 text-xs font-semibold transition-all active:scale-[0.98]"
+            >
+              <X className="w-3.5 h-3.5" />
+              Cancel
+            </button>
+          </div>
+        </div>
+
+        {/* Progress bar and details */}
+        <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1.5">
+          <div className="h-[3px] w-full bg-zinc-950/90 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+            <div
+              className="h-full rounded-full transition-[width] duration-700 ease-out relative filter"
+              style={{
+                width: `${percent}%`,
+                background: 'linear-gradient(to right, rgba(0, 0, 0, 0) 0%, rgba(0, 122, 255, 0.05) 15%, rgba(0, 122, 255, 0.2) 35%, rgba(175, 82, 222, 0.5) 60%, rgba(255, 45, 85, 0.8) 85%, rgba(255, 149, 0, 0.95) 95%, #ffffff 100%)',
+                animation: 'rocketFire 0.4s ease-in-out infinite',
+              }}
+            />
+          </div>
+          <div className="flex justify-between text-[10px] text-zinc-500 mt-0.5">
+            <span>{message}</span>
+            <span className="font-mono">{percent > 0 ? `${percent.toFixed(0)}%` : ""}</span>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+function formatElapsed(s: number): string {
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+function useVideoTitle(url: string, defaultTitle: string) {
+  const [title, setTitle] = useState(defaultTitle);
+
+  useEffect(() => {
+    const videoId = extractVideoId(url);
+    if (!videoId) return;
+
+    fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.title) {
+          setTitle(data.title);
+        }
+      })
+      .catch(() => {});
+  }, [url]);
+
+  return title;
 }
