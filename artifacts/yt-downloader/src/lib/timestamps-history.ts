@@ -26,7 +26,9 @@ export function loadTimestampHistory(): TimestampHistoryEntry[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return purgExpired(parsed as TimestampHistoryEntry[]);
+    return purgExpired(parsed as TimestampHistoryEntry[]).filter(
+      (e) => e.chapterCount > 0 && e.timestamps && e.timestamps.length > 0
+    );
   } catch {
     return [];
   }

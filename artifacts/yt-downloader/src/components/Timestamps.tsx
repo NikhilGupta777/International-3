@@ -54,7 +54,8 @@ function loadActiveTimestampJobs(): ActiveTimestampJob[] {
     const raw = localStorage.getItem(ACTIVE_JOBS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as ActiveTimestampJob[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as ActiveTimestampJob[]).filter((j) => j.status !== "done");
   } catch {
     return [];
   }
@@ -770,19 +771,21 @@ export function Timestamps() {
       </form>
 
       {/* Active / Recent Job Cards */}
-      {!viewingJob && jobs.length > 0 && (
+      {!viewingJob && jobs.filter((job) => job.status !== "done").length > 0 && (
         <div className="space-y-4 w-full">
           <div className="text-sm font-semibold text-zinc-400">Current Jobs</div>
           <div className="flex flex-col gap-4 w-full">
-            {jobs.map((job) => (
-              <TimestampJobCard
-                key={job.jobId}
-                job={job}
-                onView={() => setViewingJob(job)}
-                onCancel={() => handleCancelJob(job.jobId)}
-                onDismiss={() => handleDismissJob(job.jobId)}
-              />
-            ))}
+            {jobs
+              .filter((job) => job.status !== "done")
+              .map((job) => (
+                <TimestampJobCard
+                  key={job.jobId}
+                  job={job}
+                  onView={() => setViewingJob(job)}
+                  onCancel={() => handleCancelJob(job.jobId)}
+                  onDismiss={() => handleDismissJob(job.jobId)}
+                />
+              ))}
           </div>
         </div>
       )}
