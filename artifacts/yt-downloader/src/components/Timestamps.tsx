@@ -863,7 +863,7 @@ function RecentTimestampRow({
       onClick={onSelect}
       className="bg-[#09090b]/30 border border-zinc-900/80 rounded-2xl px-4 py-3.5 flex items-center gap-4 relative cursor-pointer hover:bg-white/[0.02] transition-colors w-full text-left"
     >
-      <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5">
+      <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5">
         {thumbnailUrl ? (
           <img
             src={thumbnailUrl}

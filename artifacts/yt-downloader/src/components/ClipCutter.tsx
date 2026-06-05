@@ -1341,7 +1341,7 @@ function ClipJobCard({
       >
         <div className="flex items-center gap-4 w-full">
           {/* Thumbnail Preview */}
-          <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+          <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
             {videoId ? (
               <img
                 src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
@@ -1548,7 +1548,7 @@ function RecentClipRow({ entry, onDownload, onDelete }: { entry: ClipHistoryEntr
       exit={{ opacity: 0, x: 8 }}
       className="bg-[#0c0c0e] hover:bg-[#121215] border border-zinc-900 hover:border-zinc-800/80 rounded-2xl px-4.5 py-3.5 flex items-center gap-4 relative group transition-all duration-300"
     >
-      <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+      <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
         {videoId ? (
           <img
             src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
