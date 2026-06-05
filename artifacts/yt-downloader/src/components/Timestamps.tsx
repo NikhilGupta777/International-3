@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   AlarmClock, CheckCircle2, AlertCircle, Loader2, Copy, Check,
@@ -33,6 +33,38 @@ type JobResult = {
   hasTranscript: boolean;
   transcriptSource?: "youtube" | "assemblyai" | "chapters";
 };
+
+interface ActiveTimestampJob {
+  jobId: string;
+  url: string;
+  instructions?: string;
+  status: "pending" | "running" | "done" | "error" | "cancelled";
+  percent: number;
+  message: string;
+  error?: string | null;
+  result?: JobResult | null;
+  startedAt: number;
+  videoTitle?: string;
+}
+
+const ACTIVE_JOBS_KEY = "ytgrabber_active_timestamps_jobs";
+
+function loadActiveTimestampJobs(): ActiveTimestampJob[] {
+  try {
+    const raw = localStorage.getItem(ACTIVE_JOBS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as ActiveTimestampJob[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveActiveTimestampJobs(jobs: ActiveTimestampJob[]): void {
+  try {
+    localStorage.setItem(ACTIVE_JOBS_KEY, JSON.stringify(jobs));
+  } catch {}
+}
 
 function formatTime(sec: number): string {
   const h = Math.floor(sec / 3600);
@@ -101,20 +133,25 @@ export function Timestamps() {
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
   const { toast } = useToast();
   const { copied, copy } = useClipboard();
-  const sseRef = useRef<EventSource | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   const [command, setCommand] = useState("");
   const [instructions, setInstructions] = useState("");
   const [showInstructions, setShowInstructions] = useState(true); // Expanded by default to match mockup
   const [showHelper, setShowHelper] = useState(false);
-  const [status, setStatus] = useState<"idle" | "running" | "done" | "error">("idle");
-  const statusRef = useRef<"idle" | "running" | "done" | "error">("idle");
-  const [steps, setSteps] = useState<Step[]>([]);
-  const [result, setResult] = useState<JobResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [progressPct, setProgressPct] = useState(0);
-  
+
+  const [submitting, setSubmitting] = useState(false);
+  const [jobs, setJobs] = useState<ActiveTimestampJob[]>(() => loadActiveTimestampJobs());
+  const [viewingJob, setViewingJob] = useState<ActiveTimestampJob | null>(null);
+
+  const streamRefs = useRef<Map<string, EventSource>>(new Map());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollInFlightRef = useRef(false);
+  const jobsRef = useRef<ActiveTimestampJob[]>([]);
+  jobsRef.current = jobs;
+
+  const persistActiveJobs = useCallback((current: ActiveTimestampJob[]) => {
+    saveActiveTimestampJobs(current);
+  }, []);
+
   // Load local timestamps history and seed mock data if empty
   const [history, setHistory] = useState<TimestampHistoryEntry[]>(() => {
     const loaded = loadTimestampHistory();
@@ -153,13 +190,6 @@ export function Timestamps() {
     return loaded;
   });
 
-  const jobIdRef = useRef<string | null>(null);
-  const urlRef = useRef<string>("");
-
-  const isRunning = status === "running";
-  const isDone = status === "done";
-  const isError = status === "error";
-
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -172,126 +202,298 @@ export function Timestamps() {
     }
   }, [command]);
 
-  const updateStep = (name: string, stepStatus: StepStatus, message: string) => {
-    setSteps((prev) => {
-      const existing = prev.findIndex((s) => s.name === name);
-      const updated = { name, status: stepStatus, message };
-      if (existing === -1) return [...prev, updated];
-      const next = [...prev];
-      next[existing] = updated;
-      return next;
-    });
-
-    if (stepStatus === "running") {
-      if (name === "metadata") setProgressPct(15);
-      else if (name === "transcript") setProgressPct(45);
-      else if (name === "ai") setProgressPct(75);
+  const closeJobStream = useCallback((jobId: string) => {
+    const stream = streamRefs.current.get(jobId);
+    if (stream) {
+      stream.close();
+      streamRefs.current.delete(jobId);
     }
-  };
+  }, []);
 
-  const closeSSE = () => {
-    if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
-  };
+  const applyProgressUpdate = useCallback(
+    (jobId: string, data: any) => {
+      let historyEntry: TimestampHistoryEntry | null = null;
 
-  const closePolling = () => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-  };
+      setJobs((prev) => {
+        const updated = prev.map((j) => {
+          if (j.jobId !== jobId) return j;
 
-  const finishWithResult = (data: Partial<JobResult>) => {
-    if (statusRef.current !== "running") return; // guard against double-finish
-    closeSSE();
-    closePolling();
-    statusRef.current = "done";
-    setStatus("done");
-    setProgressPct(100);
-    
-    const timestamps = data.timestamps ?? [];
-    const videoTitle = data.videoTitle ?? "";
-    const videoDuration = data.videoDuration ?? 0;
-    
-    setResult({
-      timestamps,
-      videoTitle,
-      videoDuration,
-      hasTranscript: data.hasTranscript ?? false,
-      transcriptSource: data.transcriptSource,
-    });
+          // Determine next status
+          let nextStatus = j.status;
+          if (data.type === "done" || data.status === "done") {
+            nextStatus = "done";
+          } else if (data.type === "error" || data.status === "error" || data.status === "cancelled") {
+            nextStatus = "error";
+          } else if (data.status === "running" || data.type === "step") {
+            nextStatus = "running";
+          }
 
-    // Save to history
-    const historyEntry: TimestampHistoryEntry = {
-      id: jobIdRef.current ?? String(Date.now()),
-      createdAt: Date.now(),
-      videoTitle,
-      videoUrl: urlRef.current || "",
-      chapterCount: timestamps.length,
-      videoDurationSecs: videoDuration,
-      timestamps,
-    };
-    saveToTimestampHistory(historyEntry);
-    setHistory(loadTimestampHistory());
+          // Calculate percent
+          let percent = typeof data.progressPct === "number" ? data.progressPct : j.percent;
+          if (data.type === "step" && data.step) {
+            if (data.step === "metadata") percent = 15;
+            else if (data.step === "transcript") percent = 45;
+            else if (data.step === "ai") percent = 75;
+          }
+          if (nextStatus === "done") {
+            percent = 100;
+          }
 
-    toast({
-      title: "Timestamps ready!",
-      description: `${timestamps.length} chapters generated`,
-    });
-  };
+          const message = data.message ?? j.message;
+          const errorMsg = data.error ?? (nextStatus === "error" ? (data.message ?? "Analysis failed") : null);
 
-  const failWithMessage = (message: string) => {
-    if (statusRef.current !== "running") return; // guard against double-finish
-    closeSSE();
-    closePolling();
-    statusRef.current = "error";
-    setStatus("error");
-    setError(message);
-    setProgressPct(0);
-    toast({ title: "Error", description: message, variant: "destructive" });
-  };
+          let resultData = j.result;
+          if (nextStatus === "done") {
+            resultData = {
+              timestamps: data.timestamps ?? j.result?.timestamps ?? [],
+              videoTitle: data.videoTitle ?? j.result?.videoTitle ?? j.videoTitle ?? "",
+              videoDuration: data.videoDuration ?? j.result?.videoDuration ?? 0,
+              hasTranscript: data.hasTranscript ?? j.result?.hasTranscript ?? false,
+              transcriptSource: data.transcriptSource ?? j.result?.transcriptSource,
+            };
+          }
 
-  const startPolling = (jobId: string) => {
-    if (pollRef.current) return;
-    const poll = async () => {
+          const nextJob: ActiveTimestampJob = {
+            ...j,
+            status: nextStatus,
+            percent,
+            message,
+            error: errorMsg,
+            result: resultData,
+            videoTitle: data.videoTitle ?? j.videoTitle,
+          };
+
+          if (nextStatus === "done" && !j.result) {
+            // Save to history once
+            historyEntry = {
+              id: j.jobId,
+              createdAt: Date.now(),
+              videoTitle: data.videoTitle ?? j.videoTitle ?? "YouTube Video",
+              videoUrl: j.url,
+              chapterCount: (data.timestamps ?? []).length,
+              videoDurationSecs: data.videoDuration ?? 0,
+              timestamps: data.timestamps ?? [],
+            };
+          }
+
+          return nextJob;
+        });
+
+        persistActiveJobs(updated);
+        return updated;
+      });
+
+      if (historyEntry) {
+        saveToTimestampHistory(historyEntry);
+        setHistory(loadTimestampHistory());
+        toast({
+          title: "Timestamps ready!",
+          description: `${(data.timestamps ?? []).length} chapters generated`,
+        });
+      }
+    },
+    [persistActiveJobs, toast]
+  );
+
+  const markJobLost = useCallback(
+    (jobId: string, message: string) => {
+      setJobs((prev) => {
+        const updated = prev.map((j) =>
+          j.jobId !== jobId
+            ? j
+            : {
+                ...j,
+                status: "error" as const,
+                message,
+                error: message,
+              }
+        );
+        persistActiveJobs(updated);
+        return updated;
+      });
+    },
+    [persistActiveJobs]
+  );
+
+  const refreshJobStatusOnce = useCallback(
+    async (jobId: string) => {
       try {
         const res = await fetch(`${BASE}/api/youtube/timestamps/status/${encodeURIComponent(jobId)}`);
-        const data = await res.json().catch(() => ({})) as Partial<JobResult> & {
-          status?: string;
-          message?: string;
-          progressPct?: number;
-          error?: string;
-        };
-        if (!res.ok) throw new Error(data.error ?? "Failed to fetch status");
-        if (data.status === "done") {
-          finishWithResult(data);
+        if (res.status === 404) {
+          const current = jobsRef.current.find((j) => j.jobId === jobId);
+          if (current && Date.now() - current.startedAt < 15 * 60 * 1000) {
+            return;
+          }
+          markJobLost(jobId, "Server restarted — job was lost. Please retry.");
           return;
         }
-        if (data.status === "error" || data.status === "cancelled") {
-          failWithMessage(data.error ?? data.message ?? "Analysis failed");
-          return;
+        if (!res.ok) {
+          throw new Error(`Status check failed (${res.status})`);
         }
-        const pct = data.progressPct ?? 0;
-        setProgressPct(pct);
-        const stepName = pct >= 55 ? "ai" : pct >= 20 ? "transcript" : "metadata";
-        updateStep(stepName, "running", data.message ?? "Processing...");
+        const data = await res.json();
+        applyProgressUpdate(jobId, data);
       } catch (err) {
-        if (statusRef.current === "running") {
-          updateStep("metadata", "warn", err instanceof Error ? err.message : "Waiting for server status...");
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.jobId !== jobId || j.status === "done" || j.status === "error" || j.status === "cancelled"
+              ? j
+              : {
+                  ...j,
+                  message: "Connection issue — retrying...",
+                }
+          )
+        );
+      }
+    },
+    [BASE, applyProgressUpdate, markJobLost]
+  );
+
+  const handleCancelJob = useCallback(
+    (jobId: string) => {
+      closeJobStream(jobId);
+      setJobs((prev) => {
+        const updated = prev.map((j) =>
+          j.jobId !== jobId
+            ? j
+            : {
+                ...j,
+                status: "cancelled" as const,
+                message: "Cancelled by user",
+              }
+        );
+        persistActiveJobs(updated);
+        return updated;
+      });
+    },
+    [closeJobStream, persistActiveJobs]
+  );
+
+  const handleDismissJob = useCallback(
+    (jobId: string) => {
+      closeJobStream(jobId);
+      setJobs((prev) => {
+        const updated = prev.filter((j) => j.jobId !== jobId);
+        persistActiveJobs(updated);
+        return updated;
+      });
+      if (viewingJob?.jobId === jobId) {
+        setViewingJob(null);
+      }
+    },
+    [closeJobStream, persistActiveJobs, viewingJob]
+  );
+
+  // Polling loop for active jobs (backup in case EventSource is missing or drops)
+  useEffect(() => {
+    if (typeof EventSource !== "undefined") return;
+    if (pollRef.current) return;
+
+    pollRef.current = setInterval(async () => {
+      if (pollInFlightRef.current) return;
+      pollInFlightRef.current = true;
+      try {
+        const active = jobsRef.current.filter(
+          (j) => j.status === "pending" || j.status === "running"
+        );
+        if (active.length === 0) return;
+
+        for (const job of active) {
+          await refreshJobStatusOnce(job.jobId);
         }
+      } finally {
+        pollInFlightRef.current = false;
+      }
+    }, 4000);
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
     };
-    void poll();
-    pollRef.current = setInterval(() => { void poll(); }, 3000);
-  };
+  }, [refreshJobStatusOnce]);
 
-  // Close any open SSE connection when the component unmounts (e.g. tab change)
+  // SSE connection effect
+  const activeJobIds = jobs
+    .filter((j) => j.status === "pending" || j.status === "running")
+    .map((j) => j.jobId)
+    .sort()
+    .join(",");
+
+  useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+
+    const activeJobs = jobs.filter(
+      (j) => j.status === "pending" || j.status === "running"
+    );
+    const activeIds = new Set(activeJobs.map((j) => j.jobId));
+
+    // Close dropped streams
+    for (const jobId of Array.from(streamRefs.current.keys())) {
+      if (!activeIds.has(jobId)) {
+        closeJobStream(jobId);
+      }
+    }
+
+    // Connect to new streams
+    for (const job of activeJobs) {
+      if (streamRefs.current.has(job.jobId)) continue;
+
+      const stream = new EventSource(
+        `${BASE}/api/youtube/timestamps/stream/${encodeURIComponent(job.jobId)}`
+      );
+      streamRefs.current.set(job.jobId, stream);
+
+      stream.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          applyProgressUpdate(job.jobId, data);
+
+          if (data.type === "done" || data.type === "error") {
+            closeJobStream(job.jobId);
+          }
+        } catch {}
+      };
+
+      stream.onerror = () => {
+        if (stream.readyState === EventSource.CLOSED) {
+          closeJobStream(job.jobId);
+          void refreshJobStatusOnce(job.jobId);
+          return;
+        }
+
+        setJobs((prev) =>
+          prev.map((j) =>
+            j.jobId !== job.jobId || j.status === "done" || j.status === "error" || j.status === "cancelled"
+              ? j
+              : {
+                  ...j,
+                  message: "Connection issue — reconnecting...",
+                }
+          )
+        );
+      };
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobIds, applyProgressUpdate, closeJobStream, refreshJobStatusOnce]);
+
+  // Clean up on unmount
   useEffect(() => {
     return () => {
-      if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
-      closePolling();
+      for (const stream of streamRefs.current.values()) {
+        stream.close();
+      }
+      streamRefs.current.clear();
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!command.trim() || isRunning) return;
+    if (!command.trim() || submitting) return;
 
     const { url: parsedUrl, description } = parseCombinedInput(command);
     if (!parsedUrl) {
@@ -303,23 +505,10 @@ export function Timestamps() {
       return;
     }
 
-    closeSSE();
-    closePolling();
-    statusRef.current = "running";
-    setStatus("running");
-    setResult(null);
-    setError(null);
-    setSteps([
-      { name: "metadata",   status: "running", message: "Fetching video info..." },
-      { name: "transcript", status: "idle",    message: "Waiting..." },
-      { name: "ai",         status: "idle",    message: "Waiting..." },
-    ]);
-    setProgressPct(5);
-
+    setSubmitting(true);
     const finalInstructions = [description, instructions].filter(Boolean).join("\n");
-    urlRef.current = parsedUrl;
+    const videoTitle = "Analyzing Video...";
 
-    let jobId: string;
     try {
       const res = await fetch(`${BASE}/api/youtube/timestamps`, {
         method: "POST",
@@ -334,147 +523,98 @@ export function Timestamps() {
         throw new Error(data.error ?? "Failed to start analysis");
       }
       const data = await res.json() as { jobId: string };
-      jobId = data.jobId;
-      jobIdRef.current = jobId;
+
+      const newJob: ActiveTimestampJob = {
+        jobId: data.jobId,
+        url: parsedUrl,
+        instructions: finalInstructions.trim() || undefined,
+        status: "pending",
+        percent: 5,
+        message: "Queued for analysis...",
+        startedAt: Date.now(),
+        videoTitle,
+      };
+
+      setJobs((prev) => {
+        const updated = [newJob, ...prev];
+        persistActiveJobs(updated);
+        return updated;
+      });
+
+      setCommand("");
+      setInstructions("");
+
+      toast({
+        title: "Job submitted",
+        description: "Video is now queuing in the background.",
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start";
-      statusRef.current = "error";
-      setStatus("error");
-      setError(msg);
       toast({ title: "Error", description: msg, variant: "destructive" });
-      return;
+    } finally {
+      setSubmitting(false);
     }
-
-    const sse = new EventSource(`${BASE}/api/youtube/timestamps/stream/${encodeURIComponent(jobId)}`);
-    sseRef.current = sse;
-
-    sse.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          type: string;
-          step?: string;
-          status?: string;
-          message?: string;
-          timestamps?: TimestampEntry[];
-          videoTitle?: string;
-          videoDuration?: number;
-          hasTranscript?: boolean;
-          transcriptSource?: "youtube" | "assemblyai" | "chapters";
-        };
-
-        if (data.type === "step" && data.step) {
-          updateStep(data.step, (data.status as StepStatus) ?? "running", data.message ?? "");
-        } else if (data.type === "done") {
-          finishWithResult(data);
-        } else if (data.type === "error") {
-          failWithMessage(data.message ?? "Analysis failed");
-        }
-      } catch {}
-    };
-
-    sse.onerror = () => {
-      closeSSE();
-      if (statusRef.current !== "done" && statusRef.current !== "error") {
-        updateStep("metadata", "warn", "Live connection dropped; checking status...");
-        startPolling(jobId);
-      }
-    };
   };
 
   const handleSelectHistoryEntry = (entry: TimestampHistoryEntry) => {
     if (entry.timestamps && entry.timestamps.length > 0) {
-      setResult({
-        timestamps: entry.timestamps,
+      setViewingJob({
+        jobId: entry.id,
+        url: entry.videoUrl,
+        status: "done",
+        percent: 100,
+        message: "Completed",
+        startedAt: entry.createdAt,
         videoTitle: entry.videoTitle,
-        videoDuration: entry.videoDurationSecs,
-        hasTranscript: true,
+        result: {
+          timestamps: entry.timestamps,
+          videoTitle: entry.videoTitle,
+          videoDuration: entry.videoDurationSecs,
+          hasTranscript: true,
+        },
       });
-      setStatus("done");
-      setCommand(entry.videoUrl);
-      return;
+    } else {
+      // Fallback: poll server status
+      const newJob: ActiveTimestampJob = {
+        jobId: entry.id,
+        url: entry.videoUrl,
+        status: "pending",
+        percent: 5,
+        message: "Restoring status...",
+        startedAt: entry.createdAt,
+        videoTitle: entry.videoTitle,
+      };
+
+      setJobs((prev) => {
+        if (prev.some((j) => j.jobId === entry.id)) return prev;
+        const updated = [newJob, ...prev];
+        persistActiveJobs(updated);
+        return updated;
+      });
+
+      toast({
+        title: "Restoring job",
+        description: "Checking job status on server...",
+      });
     }
-
-    // Fallback: poll server status
-    setStatus("running");
-    setResult(null);
-    setError(null);
-    setSteps([
-      { name: "metadata",   status: "running", message: "Fetching video info..." },
-      { name: "transcript", status: "idle",    message: "Waiting..." },
-      { name: "ai",         status: "idle",    message: "Waiting..." },
-    ]);
-    setProgressPct(5);
-    
-    urlRef.current = entry.videoUrl;
-    jobIdRef.current = entry.id;
-
-    const sse = new EventSource(`${BASE}/api/youtube/timestamps/stream/${encodeURIComponent(entry.id)}`);
-    sseRef.current = sse;
-
-    sse.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          type: string;
-          step?: string;
-          status?: string;
-          message?: string;
-          timestamps?: TimestampEntry[];
-          videoTitle?: string;
-          videoDuration?: number;
-          hasTranscript?: boolean;
-          transcriptSource?: "youtube" | "assemblyai" | "chapters";
-        };
-
-        if (data.type === "step" && data.step) {
-          updateStep(data.step, (data.status as StepStatus) ?? "running", data.message ?? "");
-        } else if (data.type === "done") {
-          finishWithResult(data);
-        } else if (data.type === "error") {
-          // If SSE fails with job not found, fall back to setting input URL
-          setCommand(entry.videoUrl);
-          setStatus("idle");
-          toast({
-            title: "Job data expired on server",
-            description: "Populated URL so you can generate it again.",
-          });
-        }
-      } catch {}
-    };
-
-    sse.onerror = () => {
-      closeSSE();
-      if (statusRef.current !== "done" && statusRef.current !== "error") {
-        startPolling(entry.id);
-      }
-    };
   };
 
-  const handleReset = () => {
-    closeSSE();
-    closePolling();
-    statusRef.current = "idle";
-    setStatus("idle");
-    setSteps([]);
-    setResult(null);
-    setError(null);
-    setCommand("");
-    setProgressPct(0);
-  };
 
-  const ytBlock = result ? buildYtDescriptionBlock(result.timestamps) : "";
-  const telegramBlock = result ? buildTelegramBlock(result.timestamps, result.videoDuration) : "";
+
+  const ytBlock = viewingJob && viewingJob.result ? buildYtDescriptionBlock(viewingJob.result.timestamps) : "";
+  const telegramBlock = viewingJob && viewingJob.result ? buildTelegramBlock(viewingJob.result.timestamps, viewingJob.result.videoDuration) : "";
 
   const transcriptSourceLabel =
-    result?.transcriptSource === "assemblyai"
+    viewingJob && viewingJob.result?.transcriptSource === "assemblyai"
       ? "AssemblyAI transcription"
-      : result?.transcriptSource === "chapters"
+      : viewingJob && viewingJob.result?.transcriptSource === "chapters"
         ? "existing chapter markers"
-        : result?.transcriptSource === "youtube"
+        : viewingJob && viewingJob.result?.transcriptSource === "youtube"
           ? "YouTube subtitles"
           : null;
 
   return (
-    <div className="max-w-3xl mx-auto w-full text-left flex flex-col gap-6 px-4 py-8 md:py-12">
+    <div className="max-w-3xl mx-auto w-full text-left flex flex-col gap-5 px-4 py-6 md:py-10">
       <style>{`
         @keyframes rgbGlow {
           0%, 100% { background-position: 0% 50%; }
@@ -525,14 +665,14 @@ export function Timestamps() {
               }}
             />
             {/* Inner input container */}
-            <div className="relative rounded-[11px] bg-[#09090b] py-3.5 px-5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+            <div className="relative rounded-[11px] bg-[#09090b] py-2.5 px-4 shadow-[0_10px_35px_rgba(0,0,0,0.5)]">
               <div className="flex items-center gap-3">
                 <Link2 className="h-5 w-5 text-zinc-500 shrink-0" />
                 <textarea
                   ref={textareaRef}
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
-                  disabled={isRunning}
+                  disabled={submitting}
                   placeholder="Paste YouTube URL and describe the timestamps you want..."
                   className="min-h-[24px] h-6 flex-1 resize-none bg-transparent py-1 text-sm text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
                   onKeyDown={(e) => {
@@ -553,11 +693,11 @@ export function Timestamps() {
                 </button>
                 {/* Submit arrow button inside the input area */}
                 <button
-                  disabled={isRunning || !command.trim()}
+                  disabled={submitting || !command.trim()}
                   type="submit"
                   className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-white disabled:bg-zinc-900/50 disabled:text-zinc-600 disabled:border-zinc-800/40 border border-zinc-700/30 transition shadow-sm"
                 >
-                  {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
                 </button>
               </div>
             </div>
@@ -592,7 +732,7 @@ export function Timestamps() {
         </AnimatePresence>
 
         {/* Custom instructions toggle card */}
-        <div className="border border-zinc-900/80 bg-[#09090b]/40 backdrop-blur-md rounded-2xl p-4.5 w-full text-left">
+        <div className="border border-zinc-900/80 bg-[#09090b]/40 backdrop-blur-md rounded-xl p-3.5 w-full text-left">
           <button
             type="button"
             onClick={() => setShowInstructions((v) => !v)}
@@ -616,7 +756,7 @@ export function Timestamps() {
                   onChange={(e) => setInstructions(e.target.value)}
                   placeholder="e.g. Focus on bhajans and main discourse topics. Skip short transitions."
                   rows={3}
-                  disabled={isRunning}
+                  disabled={submitting}
                   className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder:text-zinc-600 bg-black/30 border border-zinc-900 focus:border-zinc-800 focus:outline-none focus:ring-1 focus:ring-zinc-800 transition-all duration-200 disabled:opacity-50 resize-none mt-3"
                 />
               </motion.div>
@@ -625,45 +765,27 @@ export function Timestamps() {
         </div>
       </form>
 
-      {/* Progress job card */}
-      <AnimatePresence>
-        {isRunning && urlRef.current && (
-          <TimestampJobCard
-            url={urlRef.current}
-            message={
-              steps.find((s) => s.status === "running")?.message ??
-              [...steps].reverse().find((s) => s.status === "done")?.message ??
-              "Initializing analysis..."
-            }
-            percent={progressPct}
-            onCancel={handleReset}
-          />
-        )}
-      </AnimatePresence>
-
-      {/* Error state */}
-      <AnimatePresence>
-        {isError && error && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="w-full p-4 rounded-xl border border-red-500/30 bg-red-500/10 flex gap-3 text-left"
-          >
-            <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm text-red-200 leading-relaxed">{error}</p>
-              <button onClick={handleReset} className="mt-2 text-xs text-red-400 hover:text-red-300 underline">
-                Try again
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Active / Recent Job Cards */}
+      {!viewingJob && jobs.length > 0 && (
+        <div className="space-y-4 w-full">
+          <div className="text-sm font-semibold text-zinc-400">Current Jobs</div>
+          <div className="flex flex-col gap-4 w-full">
+            {jobs.map((job) => (
+              <TimestampJobCard
+                key={job.jobId}
+                job={job}
+                onView={() => setViewingJob(job)}
+                onCancel={() => handleCancelJob(job.jobId)}
+                onDismiss={() => handleDismissJob(job.jobId)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Results */}
       <AnimatePresence>
-        {isDone && result && result.timestamps.length > 0 && (
+        {viewingJob && viewingJob.status === "done" && viewingJob.result && viewingJob.result.timestamps.length > 0 && (
           <motion.div
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -672,18 +794,18 @@ export function Timestamps() {
             className="space-y-4 w-full text-left"
           >
             {/* Video info bar */}
-            {result.videoTitle && (
+            {viewingJob.result.videoTitle && (
               <div className="px-4 py-3 rounded-xl border border-indigo-500/20 bg-indigo-500/8 w-full">
-                <p className="text-sm font-semibold text-white/90 leading-snug">{result.videoTitle}</p>
+                <p className="text-sm font-semibold text-white/90 leading-snug">{viewingJob.result.videoTitle}</p>
                 <div className="flex items-center gap-3 mt-1">
-                  {result.videoDuration > 0 && (
+                  {viewingJob.result.videoDuration > 0 && (
                     <span className="text-xs text-white/40">
                       <Clock className="w-3 h-3 inline mr-1 -mt-0.5" />
-                      {formatTime(result.videoDuration)}
+                      {formatTime(viewingJob.result.videoDuration)}
                     </span>
                   )}
                   <span className="text-xs text-white/40">
-                    {result.timestamps.length} chapters
+                    {viewingJob.result.timestamps.length} chapters
                   </span>
                   {transcriptSourceLabel && (
                     <span className="text-xs text-indigo-300/60">
@@ -722,8 +844,8 @@ export function Timestamps() {
 
               {/* Timestamp list */}
               <div className="divide-y divide-white/5">
-                {result.timestamps.map((ts, i) => {
-                  const range = formatRange(ts, result.timestamps[i + 1], result.videoDuration);
+                {viewingJob.result.timestamps.map((ts, i) => {
+                  const range = formatRange(ts, viewingJob.result!.timestamps[i + 1], viewingJob.result!.videoDuration);
                   return (
                     <motion.div
                       key={i}
@@ -747,7 +869,7 @@ export function Timestamps() {
                       <span className="flex-1 text-sm text-white/85 min-w-0 leading-snug">
                         {ts.label}
                       </span>
-                      {/* Copy single row (Telegram format) */}
+                      {/* Copy single row */}
                       <button
                         onClick={() => copy(`${i + 1}. ${ts.label}\nTIME STAMP ${range}`, `row-${i}`)}
                         className={cn(
@@ -816,15 +938,15 @@ export function Timestamps() {
               </pre>
             </div>
 
-            {/* Generate again */}
+            {/* Close viewer */}
             <div className="flex justify-center w-full">
               <Button
                 variant="ghost"
-                onClick={handleReset}
+                onClick={() => setViewingJob(null)}
                 className="text-xs text-zinc-400 hover:text-white hover:bg-white/5 gap-1.5 px-4 py-2 rounded-xl transition"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Analyze another video
+                <X className="w-3.5 h-3.5" />
+                Close Viewer
               </Button>
             </div>
           </motion.div>
@@ -832,7 +954,7 @@ export function Timestamps() {
       </AnimatePresence>
 
       {/* Recent timestamp sets */}
-      {status === "idle" && history.length > 0 && (
+      {!viewingJob && history.length > 0 && (
         <div className="mt-6 w-full text-left">
           <div className="flex items-center justify-between mb-4">
             <span className="text-sm font-semibold text-white">Recent timestamp sets</span>
@@ -886,9 +1008,9 @@ function RecentTimestampRow({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 8 }}
       onClick={onSelect}
-      className="bg-[#09090b]/30 border border-zinc-900/80 rounded-2xl px-4 py-3.5 flex items-center gap-4 relative cursor-pointer hover:bg-white/[0.02] transition-colors w-full text-left"
+      className="bg-[#09090b]/30 border border-zinc-900/80 rounded-xl px-3.5 py-2.5 flex items-center gap-3.5 relative cursor-pointer hover:bg-white/[0.02] transition-colors w-full text-left"
     >
-      <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5">
+      <div className="relative h-[56px] w-[98px] shrink-0 overflow-hidden rounded-md bg-zinc-800 border border-white/5">
         {thumbnailUrl ? (
           <img
             src={thumbnailUrl}
@@ -966,110 +1088,207 @@ function RecentTimestampRow({
 }
 
 function TimestampJobCard({
-  url,
-  message,
-  percent,
+  job,
+  onView,
   onCancel,
+  onDismiss,
 }: {
-  url: string;
-  message: string;
-  percent: number;
+  job: ActiveTimestampJob;
+  onView: () => void;
   onCancel: () => void;
+  onDismiss: () => void;
 }) {
-  const videoId = extractVideoId(url);
-  const title = useVideoTitle(url, "Analyzing Video");
+  const videoId = extractVideoId(job.url);
+  const title = useVideoTitle(job.url, job.videoTitle ?? "Analyzing Video...");
   const [elapsed, setElapsed] = useState(0);
 
+  const isTerminal = job.status === "done" || job.status === "error" || job.status === "cancelled";
+  const isRunning = job.status === "running" || job.status === "pending";
+
   useEffect(() => {
-    const start = Date.now();
+    if (!isRunning) return;
+    const start = job.startedAt || Date.now();
     const timer = setInterval(() => {
       setElapsed(Math.floor((Date.now() - start) / 1000));
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [isRunning, job.startedAt]);
 
-  return (
-    <div className="relative w-full">
-      {/* Background glow shadow behind card */}
-      <div 
-        className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
-        style={{
-          opacity: 0.52,
-          background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
-          backgroundSize: '300% 300%',
-          animation: 'rgbGlow 10s ease-in-out infinite',
-        }}
-      />
+  const getThumbnailUrl = () => {
+    if (job.jobId === "mock-productivity") {
+      return "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=400&q=80";
+    }
+    if (job.jobId === "mock-ramcharitmanas") {
+      return "https://images.unsplash.com/photo-1579033461380-adb47c3eb938?auto=format&fit=crop&w=400&q=80";
+    }
+    return videoId ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` : null;
+  };
+  const thumbnailUrl = getThumbnailUrl();
 
-      <motion.div
-        layout
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -10, height: 0 }}
-        transition={{ duration: 0.25 }}
-        className="relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border border-zinc-900 hover:border-zinc-800/80 px-4.5 py-3.5 flex flex-col gap-3 group transition-all duration-300"
-      >
-        <div className="flex items-center gap-4 w-full">
-          {/* Thumbnail Preview */}
-          <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
-            {videoId ? (
-              <img
-                src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
-                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 animate-pulse opacity-70"
-                alt="Thumbnail"
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center bg-zinc-900">
-                <Youtube className="h-4.5 w-4.5 text-white/20" />
-              </div>
-            )}
-            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
-          </div>
-
-          {/* Info details */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin shrink-0" />
-              <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">
-                {title}
-              </p>
+  const cardContent = (
+    <div className="relative rounded-[11px] bg-[#09090b] py-3 px-4 shadow-[0_10px_35px_rgba(0,0,0,0.5)] flex flex-col gap-2.5">
+      <div className="flex items-center gap-3.5 w-full">
+        {/* Thumbnail Preview */}
+        <div className="relative h-[56px] w-[98px] shrink-0 overflow-hidden rounded-md bg-zinc-900 border border-white/5 shadow-md">
+          {thumbnailUrl ? (
+            <img
+              src={thumbnailUrl}
+              className={cn(
+                "h-full w-full object-cover transition-transform duration-300",
+                isRunning && "animate-pulse opacity-70"
+              )}
+              alt="Thumbnail"
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center bg-zinc-950">
+              <Youtube className="h-4.5 w-4.5 text-white/20" />
             </div>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
+        </div>
 
-            <p className="text-zinc-400 text-xs mt-1.5 truncate">
-              Generating Timestamps • Elapsed: {formatElapsed(elapsed)}
+        {/* Info details */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            {job.status === "pending" && (
+              <Loader2 className="w-3.5 h-3.5 text-zinc-400 animate-spin shrink-0" />
+            )}
+            {job.status === "running" && (
+              <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin shrink-0" />
+            )}
+            {job.status === "done" && (
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            )}
+            {job.status === "error" && (
+              <AlertCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+            )}
+            {job.status === "cancelled" && (
+              <AlertCircle className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+            )}
+            <p className="text-white/95 text-sm font-semibold truncate leading-snug">
+              {title}
             </p>
           </div>
 
-          {/* Action buttons */}
-          <div className="flex items-center gap-2 shrink-0">
+          <p className="text-zinc-400 text-xs mt-1.5 truncate">
+            {job.status === "pending" && "Queued..."}
+            {job.status === "running" && `Generating Timestamps · Elapsed: ${formatElapsed(elapsed)}`}
+            {job.status === "done" && `Completed · ${(job.result?.timestamps ?? []).length} chapters`}
+            {job.status === "error" && "Generation failed"}
+            {job.status === "cancelled" && "Cancelled"}
+          </p>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center gap-2 shrink-0">
+          {isRunning && (
             <button
-              onClick={onCancel}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-300 text-xs font-semibold transition-all active:scale-[0.98]"
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onCancel();
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700/80 border border-zinc-700/50 text-zinc-300 text-xs font-semibold transition-all active:scale-[0.98]"
             >
               <X className="w-3.5 h-3.5" />
               Cancel
             </button>
-          </div>
-        </div>
+          )}
 
-        {/* Progress bar and details */}
-        <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1.5">
-          <div className="h-[3px] w-full bg-zinc-950/90 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+          {job.status === "done" && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onView();
+              }}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white text-xs font-bold transition-all active:scale-[0.98] shadow-md shadow-indigo-500/10"
+            >
+              <Check className="w-3.5 h-3.5" />
+              View Chapters
+            </button>
+          )}
+
+          {isTerminal && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDismiss();
+              }}
+              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white transition-colors"
+              title="Dismiss card"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar and details */}
+      {(isRunning || job.status === "done") && (
+        <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-0.5">
+          <div className="h-[4px] w-full bg-zinc-950 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
             <div
               className="h-full rounded-full transition-[width] duration-700 ease-out relative filter"
               style={{
-                width: `${percent}%`,
-                background: 'linear-gradient(to right, rgba(0, 0, 0, 0) 0%, rgba(0, 122, 255, 0.05) 15%, rgba(0, 122, 255, 0.2) 35%, rgba(175, 82, 222, 0.5) 60%, rgba(255, 45, 85, 0.8) 85%, rgba(255, 149, 0, 0.95) 95%, #ffffff 100%)',
-                animation: 'rocketFire 0.4s ease-in-out infinite',
+                width: `${job.percent}%`,
+                background: job.status === "done"
+                  ? 'linear-gradient(to right, #10b981, #059669)'
+                  : 'linear-gradient(to right, rgba(0, 0, 0, 0) 0%, rgba(0, 122, 255, 0.05) 15%, rgba(0, 122, 255, 0.2) 35%, rgba(175, 82, 222, 0.5) 60%, rgba(255, 45, 85, 0.8) 85%, rgba(255, 149, 0, 0.95) 95%, #ffffff 100%)',
+                animation: job.status === "done" ? 'none' : 'rocketFire 0.4s ease-in-out infinite',
               }}
             />
           </div>
           <div className="flex justify-between text-[10px] text-zinc-500 mt-0.5">
-            <span>{message}</span>
-            <span className="font-mono">{percent > 0 ? `${percent.toFixed(0)}%` : ""}</span>
+            <span className="truncate max-w-[80%]">{job.message}</span>
+            <span className="font-mono">{job.percent > 0 ? `${job.percent.toFixed(0)}%` : ""}</span>
           </div>
         </div>
-      </motion.div>
+      )}
+
+      {job.status === "error" && job.error && (
+        <div className="text-xs text-red-400/90 bg-red-950/20 border border-red-900/30 rounded-lg p-2.5 mt-0.5">
+          {job.error}
+        </div>
+      )}
+    </div>
+  );
+
+  // If the job is active (running/pending), wrap it in the flowing RGB border glow!
+  if (isRunning) {
+    return (
+      <div className="relative group w-full">
+        {/* Glowing backdrop blur */}
+        <div 
+          className="absolute -inset-[5.5px] rounded-[12px] opacity-40 blur-[12px] transition-all duration-500 group-hover:opacity-60"
+          style={{
+            background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+            backgroundSize: '300% 300%',
+            animation: 'rgbGlow 10s ease-in-out infinite',
+          }}
+        />
+        {/* Outer border wrapper */}
+        <div className="relative w-full rounded-[12px] p-[1.2px] overflow-hidden bg-zinc-800">
+          {/* Border background gradient */}
+          <div 
+            className="absolute inset-0"
+            style={{
+              background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+              backgroundSize: '300% 300%',
+              animation: 'rgbGlow 10s ease-in-out infinite',
+            }}
+          />
+          {cardContent}
+        </div>
+      </div>
+    );
+  }
+
+  // Non-running terminal card
+  return (
+    <div className="relative w-full rounded-[12px] p-[1px] bg-zinc-900 hover:bg-zinc-850 border border-zinc-800/80 transition-all duration-300">
+      {cardContent}
     </div>
   );
 }
@@ -1079,10 +1298,15 @@ function formatElapsed(s: number): string {
   return `${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
-function useVideoTitle(url: string, defaultTitle: string) {
-  const [title, setTitle] = useState(defaultTitle);
+function useVideoTitle(url: string, currentTitle: string) {
+  const [title, setTitle] = useState(currentTitle);
 
   useEffect(() => {
+    if (currentTitle && currentTitle !== "Analyzing Video...") {
+      setTitle(currentTitle);
+      return;
+    }
+
     const videoId = extractVideoId(url);
     if (!videoId) return;
 
@@ -1094,7 +1318,7 @@ function useVideoTitle(url: string, defaultTitle: string) {
         }
       })
       .catch(() => {});
-  }, [url]);
+  }, [url, currentTitle]);
 
   return title;
 }
