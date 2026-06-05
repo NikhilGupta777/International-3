@@ -4,7 +4,7 @@ import {
   FileText, Youtube, Upload, Download, Loader2, CheckCircle2,
   AlertCircle, Globe, X, FileAudio, FileVideo, ChevronDown,
   Copy, Check, RefreshCw, StopCircle, AlignLeft, History, Trash2,
-  Link2, Info, ArrowUp, Sparkles, Sliders, Languages, MoreVertical,
+  Link2, Info, ArrowUp, Sparkles, Languages, MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -812,10 +812,7 @@ export function GetSubtitles() {
             type="button"
             onClick={() => { if (!loading) { setLangOpen((o) => !o); setTranslateOpen(false); } }}
             disabled={loading}
-            className={cn(
-              "flex items-center gap-2.5 px-3.5 py-2.5 bg-[#09090b]/60 border border-zinc-900 rounded-xl text-sm text-white/90 transition-all w-full",
-              loading ? "opacity-50 cursor-not-allowed" : "hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer"
-            )}
+            className="flex items-center gap-2.5 px-3.5 py-2.5 bg-[#09090b]/60 border border-zinc-900 rounded-xl text-sm text-white/90 transition-all w-full hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Globe className="w-4 h-4 text-zinc-500 shrink-0" />
             <span className="flex-1 text-left truncate">{selectedLang?.label ?? "Auto-detect"}</span>
@@ -858,16 +855,9 @@ export function GetSubtitles() {
             type="button"
             onClick={() => { if (!loading) { setTranslateOpen((o) => !o); setLangOpen(false); } }}
             disabled={loading}
-            className={cn(
-              "flex items-center gap-2.5 px-3.5 py-2.5 border rounded-xl text-sm transition-all w-full",
-              loading
-                ? "opacity-50 cursor-not-allowed bg-[#09090b]/60 border-zinc-900 text-white/80"
-                : translateTo !== "none"
-                  ? "bg-violet-500/10 border-violet-500/30 text-violet-300 hover:bg-violet-500/15 cursor-pointer font-medium"
-                  : "bg-[#09090b]/60 border-zinc-900 text-white/80 hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer"
-            )}
+            className="flex items-center gap-2.5 px-3.5 py-2.5 bg-[#09090b]/60 border border-zinc-900 rounded-xl text-sm text-white/90 transition-all w-full hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Globe className={cn("w-4 h-4 shrink-0", translateTo !== "none" && !loading ? "text-violet-400" : "text-zinc-500")} />
+            <Globe className="w-4 h-4 text-zinc-500 shrink-0" />
             <span className="flex-1 text-left truncate">
               {TRANSLATE_LANGUAGES.find((l) => l.value === translateTo)?.label ?? "No translation"}
             </span>
@@ -913,12 +903,27 @@ export function GetSubtitles() {
         type="button"
         onClick={handleGenerateSubtitles}
         disabled={(!command.trim() && !file) || loading}
-        className="w-full py-3 rounded-xl bg-white hover:bg-zinc-100 text-black font-semibold text-sm transition-all duration-200 active:scale-[0.98] shadow-[0_4px_16px_rgba(255,255,255,0.08)] flex items-center justify-center gap-2 mt-2 disabled:bg-zinc-800 disabled:text-zinc-500"
+        className="w-full py-3.5 rounded-xl bg-white hover:bg-zinc-100 text-black font-semibold text-sm transition-all duration-200 active:scale-[0.98] shadow-[0_4px_16px_rgba(255,255,255,0.08)] flex items-center justify-center gap-2 mt-2 disabled:bg-white disabled:text-black disabled:opacity-40"
       >
         {loading ? (
           <Loader2 className="w-4 h-4 animate-spin text-black" />
         ) : (
-          <FileText className="w-4 h-4 text-black" />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="text-black shrink-0"
+          >
+            <rect width="20" height="16" x="2" y="4" rx="2" ry="2" />
+            <path d="M7 10h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2H7" />
+            <path d="M13 10h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2" />
+          </svg>
         )}
         <span>Generate Subtitles</span>
       </Button>
@@ -1157,6 +1162,17 @@ export function GetSubtitles() {
                 />
               ))}
           </div>
+
+          {/* View all subtitles link */}
+          <div className="flex justify-center mt-4">
+            <button
+              type="button"
+              className="text-xs text-teal-400 hover:text-teal-350 font-semibold transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <span>View all subtitles</span>
+              <span className="text-sm">→</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -1241,16 +1257,16 @@ function RecentSubtitleRow({
       {/* Info details */}
       <div className="flex-1 min-w-0">
         <p className="text-white/95 text-sm font-semibold truncate leading-snug">{cleanTitle}</p>
-        <p className="text-zinc-400 text-xs mt-1 truncate">
+        <p className="text-zinc-400 text-xs mt-0.5 truncate">
           {displayLang} • SRT • {durationLabel} • {entry.entryCount} lines
+        </p>
+        <p className="text-zinc-500 text-[10px] mt-0.5 select-none">
+          {formatRelativeTime(entry.createdAt)}
         </p>
       </div>
 
       {/* Actions */}
       <div className="flex items-center shrink-0" onClick={(e) => e.stopPropagation()}>
-        <span className="text-[11px] text-zinc-500 mr-2 sm:mr-3 select-none">
-          {formatRelativeTime(entry.createdAt)}
-        </span>
         <div className="flex items-center gap-1">
           <button
             onClick={onDownload}
@@ -1265,6 +1281,12 @@ function RecentSubtitleRow({
             className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-white transition"
           >
             <Copy className="w-4 h-4" />
+          </button>
+          <button
+            title="Translate"
+            className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-white transition"
+          >
+            <Languages className="w-4 h-4" />
           </button>
           <div className="relative">
             <button
