@@ -490,29 +490,30 @@ export function Timestamps() {
           : null;
 
   return (
-    <div className="w-full text-left flex flex-col gap-6">
+    <div className="max-w-3xl mx-auto w-full text-left flex flex-col gap-6 px-4 py-8 md:py-12">
       {/* Header */}
       <div className="flex flex-col items-start text-left mb-2">
         <h1 className="text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
           YouTube Timestamps
         </h1>
-        <p className="mt-2.5 text-base text-zinc-400">
-          Generate clean chapter markers from any YouTube video <br className="hidden sm:inline" /> with <span className="font-semibold text-white/90">AI precision</span>.
+        <p className="mt-3 text-base text-zinc-400 leading-relaxed">
+          Generate clean chapter markers from any YouTube video <br className="hidden sm:inline" />
+          with AI precision.
         </p>
       </div>
 
       {/* Input form */}
       <form onSubmit={handleSubmit} className="space-y-4 w-full">
-        <div className="relative w-full rounded-2xl border border-zinc-900 bg-[#0c0c0e]/50 backdrop-blur-md py-3.5 px-5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+        <div className="relative w-full rounded-2xl border border-zinc-800/80 bg-[#09090b]/80 backdrop-blur-md py-3 px-4 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
           <div className="flex items-center gap-3">
-            <Link2 className="h-4.5 w-4.5 text-zinc-500 shrink-0" />
+            <Link2 className="h-5 w-5 text-zinc-500 shrink-0" />
             <textarea
               ref={textareaRef}
               value={command}
               onChange={(e) => setCommand(e.target.value)}
               disabled={isRunning}
               placeholder="Paste YouTube URL and describe the timestamps you want..."
-              className="h-8 min-h-[32px] flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+              className="min-h-[24px] h-6 flex-1 resize-none bg-transparent py-1 text-sm text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -527,13 +528,13 @@ export function Timestamps() {
               className="p-1.5 rounded-full hover:bg-white/5 text-zinc-400 hover:text-white transition shrink-0"
               title="Help info"
             >
-              <Info className="h-4.5 w-4.5" />
+              <Info className="h-5 w-5" />
             </button>
             {/* Submit arrow button inside the input area */}
             <button
               disabled={isRunning || !command.trim()}
               type="submit"
-              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white disabled:opacity-50 transition"
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-white disabled:bg-zinc-900/50 disabled:text-zinc-600 disabled:border-zinc-800/40 border border-zinc-700/30 transition shadow-sm"
             >
               {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
             </button>
@@ -568,14 +569,14 @@ export function Timestamps() {
         </AnimatePresence>
 
         {/* Custom instructions toggle card */}
-        <div className="border border-zinc-900 bg-[#0c0c0e]/50 backdrop-blur-md rounded-2xl p-4.5 w-full text-left">
+        <div className="border border-zinc-900/80 bg-[#09090b]/40 backdrop-blur-md rounded-2xl p-4.5 w-full text-left">
           <button
             type="button"
             onClick={() => setShowInstructions((v) => !v)}
             className="flex items-center justify-between w-full text-sm font-semibold text-zinc-400 hover:text-zinc-300 transition-colors"
           >
             <span>Custom instructions (optional)</span>
-            {showInstructions ? <ChevronUp className="w-4 h-4 text-zinc-500" /> : <ChevronDown className="w-4 h-4 text-zinc-500" />}
+            <ChevronDown className={cn("w-4 h-4 text-zinc-500 transition-transform duration-200", showInstructions && "rotate-180")} />
           </button>
 
           <AnimatePresence>
@@ -593,7 +594,7 @@ export function Timestamps() {
                   placeholder="e.g. Focus on bhajans and main discourse topics. Skip short transitions."
                   rows={3}
                   disabled={isRunning}
-                  className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-zinc-600 bg-black/40 border border-zinc-900 focus:border-zinc-800 focus:outline-none focus:ring-1 focus:ring-zinc-800 transition-all duration-200 disabled:opacity-50 resize-none"
+                  className="w-full px-4 py-3 rounded-xl text-sm text-white placeholder:text-zinc-600 bg-black/30 border border-zinc-900 focus:border-zinc-800 focus:outline-none focus:ring-1 focus:ring-zinc-800 transition-all duration-200 disabled:opacity-50 resize-none mt-3"
                 />
               </motion.div>
             )}
@@ -807,31 +808,22 @@ export function Timestamps() {
 
       {/* Recent timestamp sets */}
       {status === "idle" && history.length > 0 && (
-        <div className="mt-4 w-full text-left">
+        <div className="mt-6 w-full text-left">
           <div className="flex items-center justify-between mb-4">
-            <span className="text-sm font-bold text-white">Recent timestamp sets</span>
-            <button
-              onClick={() => {
-                const confirmed = window.confirm("Clear all timestamp history from this device?");
-                if (!confirmed) return;
-                clearTimestampHistory();
-                setHistory([]);
-              }}
-              className="flex items-center gap-1 text-xs text-white/25 hover:text-red-400 transition-colors"
-            >
-              <Trash2 className="w-3.5 h-3.5" /> Clear all
-            </button>
+            <span className="text-sm font-semibold text-white">Recent timestamp sets</span>
           </div>
 
           <div className="flex flex-col gap-2.5 w-full">
-            {history.map((entry) => (
-              <RecentTimestampRow
-                key={entry.id}
-                entry={entry}
-                onSelect={() => handleSelectHistoryEntry(entry)}
-                onDelete={() => setHistory(deleteFromTimestampHistory(entry.id))}
-              />
-            ))}
+            {[...history]
+              .sort((a, b) => b.createdAt - a.createdAt)
+              .map((entry) => (
+                <RecentTimestampRow
+                  key={entry.id}
+                  entry={entry}
+                  onSelect={() => handleSelectHistoryEntry(entry)}
+                  onDelete={() => setHistory(deleteFromTimestampHistory(entry.id))}
+                />
+              ))}
           </div>
         </div>
       )}
@@ -851,6 +843,17 @@ function RecentTimestampRow({
   const [menuOpen, setMenuOpen] = useState(false);
   const videoId = extractVideoId(entry.videoUrl);
 
+  const getThumbnailUrl = () => {
+    if (entry.id === "mock-productivity") {
+      return "https://images.unsplash.com/photo-1501785888041-af3ef285b470?auto=format&fit=crop&w=400&q=80";
+    }
+    if (entry.id === "mock-ramcharitmanas") {
+      return "https://images.unsplash.com/photo-1579033461380-adb47c3eb938?auto=format&fit=crop&w=400&q=80";
+    }
+    return videoId ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` : null;
+  };
+  const thumbnailUrl = getThumbnailUrl();
+
   return (
     <motion.div
       layout
@@ -858,12 +861,12 @@ function RecentTimestampRow({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 8 }}
       onClick={onSelect}
-      className="bg-[#0c0c0e] border border-zinc-900 rounded-2xl px-4.5 py-3.5 flex items-center gap-4 relative cursor-pointer hover:bg-white/[0.02] transition-colors w-full text-left"
+      className="bg-[#09090b]/30 border border-zinc-900/80 rounded-2xl px-4 py-3.5 flex items-center gap-4 relative cursor-pointer hover:bg-white/[0.02] transition-colors w-full text-left"
     >
       <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5">
-        {videoId ? (
+        {thumbnailUrl ? (
           <img
-            src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
+            src={thumbnailUrl}
             className="h-full w-full object-cover"
             alt="Thumbnail"
           />
@@ -877,13 +880,13 @@ function RecentTimestampRow({
 
       <div className="flex-1 min-w-0">
         <p className="text-white/95 text-sm font-semibold truncate leading-snug">{entry.videoTitle}</p>
-        <p className="text-zinc-400 text-xs mt-1.5 truncate">
+        <p className="text-zinc-400 text-xs mt-1 truncate">
           {entry.chapterCount} chapters • {formatDurationLabel(entry.videoDurationSecs)} total
         </p>
       </div>
 
       <div className="flex items-center shrink-0" onClick={(e) => e.stopPropagation()}>
-        <span className="text-xs text-zinc-500 hidden sm:block mr-4">
+        <span className="text-xs text-zinc-500 mr-2 sm:mr-4">
           {formatTimestampRelativeTime(entry.createdAt)}
         </span>
         <div className="relative">
