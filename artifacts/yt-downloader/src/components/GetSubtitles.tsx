@@ -624,7 +624,7 @@ export function GetSubtitles() {
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto flex flex-col gap-5 px-4 py-6 md:py-10 text-left">
+    <div className="w-full flex flex-col gap-5 px-2 py-6 md:py-10 text-left">
       <style>{`
         @keyframes rgbGlow {
           0%, 100% { background-position: 0% 50%; }
@@ -678,18 +678,18 @@ export function GetSubtitles() {
             }}
           />
           {/* Inner input container */}
-          <div className="relative rounded-[11px] bg-[#09090b] py-2.5 px-4 shadow-[0_10px_35px_rgba(0,0,0,0.5)]">
-            <div className="flex items-start gap-3.5">
+          <div className="relative rounded-[11px] bg-[#09090b] py-4 px-5 shadow-[0_10px_35px_rgba(0,0,0,0.5)]">
+            <div className="flex items-center gap-4">
               {/* Left icon: file indicator or link icon */}
-              <div className="pt-1.5 shrink-0 select-none">
+              <div className="shrink-0 select-none">
                 {file ? (
                   file.type.startsWith("video") ? (
-                    <FileVideo className="h-5 w-5 text-teal-400" />
+                    <FileVideo className="h-6 w-6 text-teal-400" />
                   ) : (
-                    <FileAudio className="h-5 w-5 text-teal-400" />
+                    <FileAudio className="h-6 w-6 text-teal-400" />
                   )
                 ) : (
-                  <Link2 className="h-5 w-5 text-zinc-500" />
+                  <Link2 className="h-6 w-6 text-zinc-500" />
                 )}
               </div>
               
@@ -698,7 +698,7 @@ export function GetSubtitles() {
                 {/* File Chip floating inside if file is uploaded */}
                 {file && (
                   <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-teal-500/10 border border-teal-500/20 text-teal-300 text-xs font-semibold mb-2">
-                    <span className="truncate max-w-[180px] select-all">{file.name}</span>
+                    <span className="truncate max-w-[220px] select-all">{file.name}</span>
                     <span className="opacity-60 font-mono">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
                     <button
                       type="button"
@@ -718,7 +718,7 @@ export function GetSubtitles() {
                   onChange={(e) => setCommand(e.target.value)}
                   disabled={loading}
                   placeholder="Paste YouTube URL or upload a file..."
-                  className="min-h-[24px] h-12 w-full resize-none bg-transparent py-1 text-sm text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+                  className="min-h-[24px] h-14 w-full resize-none bg-transparent py-0.5 text-sm text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -732,23 +732,23 @@ export function GetSubtitles() {
               </div>
 
               {/* Right options: Help (i) and Upload circle button */}
-              <div className="flex items-center gap-2 pt-1 shrink-0">
+              <div className="flex items-center gap-3 shrink-0">
                 <button
                   type="button"
                   onClick={() => setShowHelper(!showHelper)}
                   className="p-1.5 rounded-full hover:bg-white/5 text-zinc-400 hover:text-white transition"
                   title="Help info"
                 >
-                  <Info className="h-5 w-5" />
+                  <Info className="h-6 w-6" />
                 </button>
                 <button
                   type="button"
                   disabled={loading}
                   onClick={() => fileInputRef.current?.click()}
-                  className="grid h-8 w-8 place-items-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-white transition shadow-sm border border-zinc-700/30 disabled:opacity-50"
+                  className="grid h-10 w-10 place-items-center rounded-full bg-zinc-800 hover:bg-zinc-700 text-white transition shadow-sm border border-zinc-700/40 disabled:opacity-50"
                   title="Upload audio/video file"
                 >
-                  <Upload className="h-4 w-4" />
+                  <ArrowUp className="h-5 w-5" />
                 </button>
                 <input
                   ref={fileInputRef}
@@ -812,7 +812,7 @@ export function GetSubtitles() {
             type="button"
             onClick={() => { if (!loading) { setLangOpen((o) => !o); setTranslateOpen(false); } }}
             disabled={loading}
-            className="flex items-center gap-2.5 px-3.5 py-2.5 bg-[#09090b]/60 border border-zinc-900 rounded-xl text-sm text-white/90 transition-all w-full hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2.5 px-4 py-3 bg-[#09090b]/60 border border-zinc-800 rounded-xl text-sm text-white font-medium transition-all w-full hover:bg-white/[0.03] hover:border-zinc-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Globe className="w-4 h-4 text-zinc-500 shrink-0" />
             <span className="flex-1 text-left truncate">{selectedLang?.label ?? "Auto-detect"}</span>
@@ -855,7 +855,7 @@ export function GetSubtitles() {
             type="button"
             onClick={() => { if (!loading) { setTranslateOpen((o) => !o); setLangOpen(false); } }}
             disabled={loading}
-            className="flex items-center gap-2.5 px-3.5 py-2.5 bg-[#09090b]/60 border border-zinc-900 rounded-xl text-sm text-white/90 transition-all w-full hover:bg-white/[0.02] hover:border-zinc-800 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex items-center gap-2.5 px-4 py-3 bg-[#09090b]/60 border border-zinc-800 rounded-xl text-sm text-white font-medium transition-all w-full hover:bg-white/[0.03] hover:border-zinc-700 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Globe className="w-4 h-4 text-zinc-500 shrink-0" />
             <span className="flex-1 text-left truncate">
@@ -903,7 +903,7 @@ export function GetSubtitles() {
         type="button"
         onClick={handleGenerateSubtitles}
         disabled={(!command.trim() && !file) || loading}
-        className="w-full py-3.5 rounded-xl bg-white hover:bg-zinc-100 text-black font-semibold text-sm transition-all duration-200 active:scale-[0.98] shadow-[0_4px_16px_rgba(255,255,255,0.08)] flex items-center justify-center gap-2 mt-2 disabled:bg-white disabled:text-black disabled:opacity-40"
+        className="w-full py-4 rounded-2xl bg-white hover:bg-zinc-100 text-black font-bold text-sm transition-all duration-200 active:scale-[0.98] shadow-[0_6px_24px_rgba(255,255,255,0.15)] flex items-center justify-center gap-2 mt-2 disabled:cursor-not-allowed disabled:pointer-events-none"
       >
         {loading ? (
           <Loader2 className="w-4 h-4 animate-spin text-black" />
@@ -1239,11 +1239,11 @@ function RecentSubtitleRow({
       initial={{ opacity: 0, x: -8 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 8 }}
-      className="bg-[#09090b]/30 border border-zinc-900/80 rounded-xl px-3.5 py-2.5 flex items-center gap-3.5 relative hover:bg-white/[0.02] transition-colors w-full text-left cursor-pointer"
+      className="bg-[#09090b]/40 border border-zinc-900/80 rounded-xl px-4 py-3 flex items-center gap-4 relative hover:bg-white/[0.025] hover:border-zinc-800/80 transition-colors w-full text-left cursor-pointer"
       onClick={onDownload}
     >
       {/* Thumbnail Container */}
-      <div className="relative h-[56px] w-[98px] shrink-0 overflow-hidden rounded-md bg-zinc-800 border border-white/5 shadow-sm">
+      <div className="relative h-[66px] w-[116px] shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-sm">
         {thumbnailUrl ? (
           <img src={thumbnailUrl} className="h-full w-full object-cover" alt="Cover" />
         ) : (
@@ -1267,24 +1267,24 @@ function RecentSubtitleRow({
 
       {/* Actions */}
       <div className="flex items-center shrink-0" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={onDownload}
             title="Download SRT"
-            className="p-1.5 rounded-lg hover:bg-teal-500/10 text-zinc-500 hover:text-teal-400 transition"
+            className="p-2 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-teal-400 transition"
           >
             <Download className="w-4 h-4" />
           </button>
           <button
             onClick={onCopy}
             title="Copy text"
-            className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-white transition"
+            className="p-2 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition"
           >
             <Copy className="w-4 h-4" />
           </button>
           <button
             title="Translate"
-            className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-white transition"
+            className="p-2 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition"
           >
             <Languages className="w-4 h-4" />
           </button>
@@ -1294,7 +1294,7 @@ function RecentSubtitleRow({
                 e.stopPropagation();
                 setMenuOpen(!menuOpen);
               }}
-              className="p-1.5 rounded-lg hover:bg-white/5 text-zinc-500 hover:text-white transition"
+              className="p-2 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-white transition"
             >
               <MoreVertical className="w-4 h-4" />
             </button>
