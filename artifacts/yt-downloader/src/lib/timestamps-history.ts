@@ -12,6 +12,7 @@ export interface TimestampHistoryEntry {
   videoUrl: string;        // the YouTube URL the user submitted
   chapterCount: number;    // how many timestamps were generated
   videoDurationSecs: number;
+  timestamps?: Array<{ startSec: number; endSec?: number; label: string }>;
 }
 
 function purgExpired(entries: TimestampHistoryEntry[]): TimestampHistoryEntry[] {
