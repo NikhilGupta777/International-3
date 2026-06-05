@@ -1131,15 +1131,17 @@ export function ClipCutter() {
         <div className="flex flex-col gap-2.5">
           {/* Active / in-progress job cards */}
           <AnimatePresence initial={false}>
-            {jobs.map((job) => (
-              <ClipJobCard
-                key={job.jobId}
-                job={job}
-                onRemove={removeJob}
-                onCancel={cancelJob}
-                onDownload={downloadClip}
-              />
-            ))}
+            {jobs
+              .filter((job) => job.status !== "done")
+              .map((job) => (
+                <ClipJobCard
+                  key={job.jobId}
+                  job={job}
+                  onRemove={removeJob}
+                  onCancel={cancelJob}
+                  onDownload={downloadClip}
+                />
+              ))}
           </AnimatePresence>
 
           {/* Completed History cuts */}
@@ -1154,7 +1156,7 @@ export function ClipCutter() {
             ))}
           </AnimatePresence>
 
-          {jobs.length === 0 && history.length === 0 && (
+          {jobs.filter((j) => j.status !== "done").length === 0 && history.length === 0 && (
             <p className="text-xs text-zinc-500 text-center py-6 font-medium">
               No recent cuts yet.
             </p>
@@ -1278,27 +1280,11 @@ function ClipJobCard({
   const title = useVideoTitle(job.url, job.label);
 
   return (
-    <motion.div
-      layout
-      initial={{ opacity: 0, y: -10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -10, height: 0 }}
-      transition={{ duration: 0.25 }}
-      className="relative w-full rounded-2xl p-[1.2px] overflow-hidden group"
-      style={{
-        background: isProcessing
-          ? 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)'
-          : '',
-        backgroundSize: isProcessing ? '300% 300%' : '',
-        animation: isProcessing ? 'rgbGlow 10s ease-in-out infinite' : '',
-        border: !isProcessing ? '1px solid' : '',
-        borderColor: isDone ? '#064e3b' : isError ? '#7f1d1d' : '#18181b',
-      }}
-    >
+    <div className="relative w-full">
       {/* Background glow shadow behind card */}
       {isProcessing && (
         <div 
-          className="absolute -inset-2 rounded-2xl opacity-35 blur-[8px] pointer-events-none"
+          className="absolute -inset-2.5 rounded-2xl opacity-45 blur-[18px] pointer-events-none z-0"
           style={{
             background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
             backgroundSize: '300% 300%',
@@ -1307,8 +1293,17 @@ function ClipJobCard({
         />
       )}
 
-      {/* Inner Content Card */}
-      <div className="relative rounded-[15px] bg-[#0c0c0e] px-4.5 py-3.5 flex flex-col gap-3 w-full h-full">
+      <motion.div
+        layout
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -10, height: 0 }}
+        transition={{ duration: 0.25 }}
+        className={cn(
+          "relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border px-4.5 py-3.5 flex flex-col gap-3 group transition-all duration-300",
+          isError ? "border-red-900/40" : isCancelled ? "border-zinc-800/40" : "border-zinc-900 hover:border-zinc-800/80"
+        )}
+      >
         <div className="flex items-center gap-4 w-full">
           {/* Thumbnail Preview */}
           <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
@@ -1420,33 +1415,29 @@ function ClipJobCard({
               )}
             </div>
             <div className="flex justify-between text-[10px] text-zinc-500 mt-1">
-              <span>{progressView.primary}</span>
+              <span>{job.status === "downloading" ? "Downloading video..." : "Cutting and merging clip..."}</span>
               <span className="font-mono">
                 {progressView.determinate ? `${progressView.percent.toFixed(0)}%` : ""}
               </span>
             </div>
           </div>
         )}
-      </div>
 
-      {isError && (
-        <p className="text-xs text-red-400/80 relative z-10">
-          {job.message ?? "Clip cut failed. Please try again."}
-        </p>
-      )}
+        {/* Error message */}
+        {isError && (
+          <p className="text-xs text-red-400/80 mt-1">
+            {job.message ?? "Clip cut failed. Please try again."}
+          </p>
+        )}
 
-      {isCancelled && (
-        <p className="text-xs text-amber-400/80 relative z-10">
-          {job.message ?? "Clip cut was cancelled."}
-        </p>
-      )}
-
-      {isDone && (
-        <p className="text-xs text-green-400/70 relative z-10">
-          Clip is ready. Use Save to download.
-        </p>
-      )}
-    </motion.div>
+        {/* Cancelled message */}
+        {isCancelled && (
+          <p className="text-xs text-amber-400/80 mt-1">
+            {job.message ?? "Clip cut was cancelled."}
+          </p>
+        )}
+      </motion.div>
+    </div>
   );
 }
 
