@@ -1084,10 +1084,16 @@ export const BestClips = forwardRef(function BestClips(
         {/* (Recent Searches removed to merge with unified history) */}
       </div>
 
-      {/* Live step-by-step status */}
+      {/* Live step-by-step status (Native ClipCut Job Card style) */}
       <AnimatePresence>
         {isLoading && (
-          <div className="relative w-full mt-4">
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10, height: 0 }}
+            transition={{ duration: 0.25 }}
+            className="relative w-full mt-8 sm:mt-12 mb-4"
+          >
             <div 
               className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
               style={{
@@ -1097,118 +1103,65 @@ export const BestClips = forwardRef(function BestClips(
                 animation: 'rgbGlow 10s ease-in-out infinite',
               }}
             />
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              className="relative z-10 w-full rounded-2xl bg-[#0c0c0e] border border-zinc-900 p-5 space-y-3"
-            >
-            {(() => {
-              const totalEst = estimateTotalSec(videoDurationSec);
-              const remaining = Math.max(0, totalEst - analysisElapsed);
-              const allDone = STEPS.every(
-                (s) => steps[s].status === "done" || steps[s].status === "warn",
-              );
-              return (
-                <div className="flex items-center justify-between mb-1">
-                  <p className="text-white/50 text-xs font-semibold uppercase tracking-widest">
-                    What's happening
+
+            <div className="relative z-10 w-full rounded-2xl bg-[#0c0c0e] border border-zinc-900 px-4.5 py-3.5 flex flex-col gap-3 group transition-all duration-300 shadow-xl">
+              <div className="flex items-center gap-4 w-full">
+                {/* Thumbnail Preview */}
+                <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+                  {extractVideoId(command) ? (
+                    <img
+                      src={`https://img.youtube.com/vi/${extractVideoId(command)}/mqdefault.jpg`}
+                      className="h-full w-full object-cover animate-pulse opacity-70"
+                      alt="Thumbnail"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center bg-zinc-900 animate-pulse">
+                      <Film className="h-4.5 w-4.5 text-white/20" />
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
+                </div>
+
+                {/* Info details */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin shrink-0" />
+                    <p className="text-white/95 text-sm font-semibold truncate leading-snug">
+                      {command ? command : "Video Analysis"}
+                    </p>
+                  </div>
+
+                  <p className="text-zinc-400 text-xs mt-1.5 truncate">
+                    AI is deciding the best clip durations and scanning the entire video...
                   </p>
-                  <span className="flex items-center gap-1.5 text-white/50 text-xs font-mono">
-                    <Timer className="w-3 h-3 shrink-0" />
-                    {allDone ? "finishing…" : formatRemaining(remaining)}
+                </div>
+              </div>
+
+              {/* Progress bar and details */}
+              <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1.5">
+                <div className="h-[3px] w-full bg-zinc-950/90 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+                  <div
+                    className="h-full rounded-full transition-[width] duration-700 ease-out relative filter"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, (analysisElapsed / (videoDurationSec ? estimateTotalSec(videoDurationSec) : 120)) * 100))}%`,
+                      background: 'linear-gradient(to right, rgba(0, 0, 0, 0) 0%, rgba(0, 122, 255, 0.05) 15%, rgba(0, 122, 255, 0.2) 35%, rgba(175, 82, 222, 0.5) 60%, rgba(255, 45, 85, 0.8) 85%, rgba(255, 149, 0, 0.95) 95%, #ffffff 100%)',
+                      animation: 'rocketFire 0.4s ease-in-out infinite',
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] text-zinc-500 mt-0.5">
+                  <span>
+                    {steps.metadata.status === "running" ? "Fetching video metadata..." :
+                     steps.transcript.status === "running" ? "Downloading transcript..." :
+                     steps.ai.status === "running" ? "AI Analysis in progress..." : "Initializing..."}
+                  </span>
+                  <span className="font-mono">
+                    Elapsed: {formatRemaining(analysisElapsed)}
                   </span>
                 </div>
-              );
-            })()}
-            {STEPS.map((name, idx) => {
-              const s = steps[name];
-              const meta = STEP_META[name];
-              const Icon = meta.icon;
-              const isIdle = s.status === "idle";
-              const isRunning = s.status === "running";
-              const isDone = s.status === "done";
-              const isWarn = s.status === "warn";
-
-              return (
-                <motion.div
-                  key={name}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: idx * 0.05 }}
-                  className={cn(
-                    "flex items-start gap-3 p-3 rounded-xl border transition-all duration-300",
-                    isRunning && "border-red-900/40 bg-red-950/20",
-                    isDone && "border-emerald-900/40 bg-emerald-950/20",
-                    isWarn && "border-amber-900/40 bg-amber-950/20",
-                    isIdle && "border-white/5 opacity-40"
-                  )}
-                >
-                  {/* Step icon */}
-                  <div
-                    className={cn(
-                      "shrink-0 w-7 h-7 rounded-lg flex items-center justify-center mt-0.5",
-                      isRunning && "bg-red-950/40 border border-red-900/40",
-                      isDone && "bg-emerald-950/40 border border-emerald-900/40",
-                      isWarn && "bg-amber-950/40 border border-amber-900/40",
-                      isIdle && "bg-white/5 border border-white/10"
-                    )}
-                  >
-                    {isRunning ? (
-                      <Loader2 className="w-3.5 h-3.5 text-red-500 animate-spin" />
-                    ) : isDone ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                    ) : isWarn ? (
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                    ) : (
-                      <Icon className="w-3.5 h-3.5 text-white/30" />
-                    )}
-                  </div>
-
-                  {/* Step info */}
-                  <div className="flex-1 min-w-0">
-                    <p
-                      className={cn(
-                        "text-xs font-semibold uppercase tracking-wide",
-                        isRunning && "text-red-500",
-                        isDone && "text-emerald-500",
-                        isWarn && "text-amber-500",
-                        isIdle && "text-white/25",
-                      )}
-                    >
-                      {meta.label}
-                    </p>
-                    {s.message && (
-                      <p
-                        className={cn(
-                          "text-sm mt-0.5 leading-snug",
-                          isRunning && "text-zinc-300",
-                          isDone && "text-zinc-300",
-                          isWarn && "text-amber-300/70",
-                          isIdle && "text-white/25",
-                        )}
-                      >
-                        {s.message}
-                      </p>
-                    )}
-                    {/* Pulsing dots for running step */}
-                    {isRunning && (
-                      <div className="flex gap-1 mt-1.5">
-                        {[0, 1, 2].map((i) => (
-                          <div
-                            key={i}
-                            className="w-1.5 h-1.5 rounded-full bg-red-500/60 animate-bounce"
-                            style={{ animationDelay: `${i * 0.12}s` }}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              );
-            })}
-            </motion.div>
-          </div>
+              </div>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
 
