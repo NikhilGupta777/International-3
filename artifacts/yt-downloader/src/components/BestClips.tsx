@@ -1311,158 +1311,143 @@ export const BestClips = forwardRef(function BestClips(
                                   initial={{ opacity: 0, x: -12 }}
                                   animate={{ opacity: 1, x: 0 }}
                                   transition={{ delay: clipIdx * 0.05 }}
-                                  className="relative w-full rounded-xl bg-zinc-900/50 hover:bg-zinc-900 border px-4 py-3 flex flex-col group transition-all duration-300 border-zinc-800/50 text-left"
+                                  className={cn(
+                                    "relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border px-4.5 py-3.5 flex flex-col gap-3 group transition-all duration-300",
+                                    dl.status === "error" ? "border-red-900/40" : dl.status === "cancelled" ? "border-zinc-800/40" : "border-zinc-900 hover:border-zinc-800/80"
+                                  )}
                                 >
-                                  {/* Downloading Background Progress */}
+                                  {/* Downloading Background Progress Glow */}
                                   {dl.status === "downloading" && (
-                                    <div className="absolute inset-0 rounded-xl overflow-hidden pointer-events-none">
-                                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
-                                        {dl.percent === 0 ? (
-                                          <motion.div
-                                            className="h-full bg-gradient-to-r from-transparent via-primary/70 to-transparent"
-                                            animate={{ x: ["-100%", "200%"] }}
-                                            transition={{ repeat: Infinity, duration: 1.8, ease: "easeInOut" }}
-                                            style={{ width: "45%" }}
-                                          />
-                                        ) : (
-                                          <motion.div
-                                            className="h-full bg-primary"
-                                            initial={{ width: 0 }}
-                                            animate={{ width: `${dl.percent}%` }}
-                                            transition={{ duration: 0.4 }}
-                                          />
-                                        )}
-                                      </div>
-                                    </div>
+                                    <div 
+                                      className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
+                                      style={{
+                                        opacity: 0.52,
+                                        background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                                        backgroundSize: '300% 300%',
+                                        animation: 'rgbGlow 10s ease-in-out infinite',
+                                      }}
+                                    />
                                   )}
 
-                                  <div className="flex items-center gap-3 w-full">
-                                    {/* Thumbnail Preview for sub-clip (smaller) */}
-                                    <div className="relative h-12 w-20 shrink-0 overflow-hidden rounded-md bg-zinc-800 border border-white/5 shadow-sm">
+                                  <div className="flex items-center gap-4 w-full relative z-10">
+                                    {/* Thumbnail Preview for sub-clip */}
+                                    <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
                                       {thumbUrl ? (
                                         <img
                                           src={thumbUrl}
-                                          className="h-full w-full object-cover transition-transform duration-350 group-hover:scale-105"
+                                          className={cn("h-full w-full object-cover transition-transform duration-350 group-hover:scale-105", dl.status === "downloading" && "animate-pulse opacity-70")}
                                           alt="Thumbnail"
                                         />
                                       ) : (
                                         <div className="flex h-full w-full items-center justify-center bg-zinc-900">
-                                          <Film className="h-4 w-4 text-white/20" />
+                                          <Film className="h-4.5 w-4.5 text-white/20" />
                                         </div>
                                       )}
                                       <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
-                                      <div className="absolute bottom-1 right-1 px-1 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 text-[9px] font-medium text-white shadow-sm">
+                                      <span className="absolute bottom-1 right-1 bg-black/80 px-1 py-0.5 rounded text-[9px] font-bold text-white/95 font-mono leading-none tracking-wide">
                                         {formatDuration(clip.endSec - clip.startSec)}
-                                      </div>
+                                      </span>
                                     </div>
 
                                     {/* Info details */}
-                                    <div className="flex-1 min-w-0 py-0.5">
-                                      <p className="text-white/95 text-xs font-semibold truncate leading-snug group-hover:text-white transition-colors">
-                                        {clip.title}
-                                      </p>
-                                      <div className="flex items-center gap-2 mt-1 text-zinc-400 text-[10px]">
-                                        <span className="flex items-center gap-1">
-                                          <Play className="w-2.5 h-2.5" />
-                                          {clip.startFormatted}
-                                        </span>
-                                        <span>→</span>
-                                        <span className="flex items-center gap-1">
-                                          <Clock className="w-2.5 h-2.5" />
-                                          {clip.endFormatted}
-                                        </span>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        {dl.status === "downloading" && <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin shrink-0" />}
+                                        {dl.status === "done" && <CheckCircle2 className="w-3.5 h-3.5 text-green-400 shrink-0" />}
+                                        {dl.status === "error" && <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />}
+                                        {dl.status === "cancelled" && <X className="w-3.5 h-3.5 text-zinc-400 shrink-0" />}
+                                        
+                                        <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">
+                                          {clip.title}
+                                        </p>
                                       </div>
 
-                                      {dl.status === "downloading" && (
-                                        <div className="flex items-center justify-between gap-2 mt-2">
-                                          <p className="text-primary/70 text-[10px] font-medium">
-                                            {dl.percent === 0
-                                              ? (dl.elapsed ?? 0) < 15
-                                                ? "Solving challenge…"
-                                                : (dl.elapsed ?? 0) < 40
-                                                  ? "Fetching video…"
-                                                  : "Downloading…"
-                                              : dl.speed
-                                                ? dl.speed
-                                                : "Downloading…"}
-                                          </p>
-                                          <span className="text-white/35 text-[10px] font-mono shrink-0">
-                                            {dl.percent > 0
-                                              ? `${dl.percent.toFixed(0)}%`
-                                              : dl.eta
-                                                ? `ETA ${dl.eta}`
-                                                : dl.elapsed != null
-                                                  ? dl.elapsed < 60
-                                                    ? `${dl.elapsed}s`
-                                                    : `${Math.floor(dl.elapsed / 60)}m ${dl.elapsed % 60}s`
-                                                  : ""}
+                                      <p className="text-zinc-400 text-xs mt-1.5 truncate">
+                                        <span className="inline-flex items-center gap-1 font-mono tracking-tight text-[11px] text-zinc-400">
+                                          <Play className="w-3 h-3 text-zinc-500" />
+                                          {clip.startFormatted}
+                                          <span className="text-zinc-600 mx-0.5">→</span>
+                                          <Clock className="w-3 h-3 text-zinc-500" />
+                                          {clip.endFormatted}
+                                        </span>
+                                        {dl.status === "downloading" ? (
+                                          <span className="ml-2">
+                                            • ETA: {dl.eta || "Calculating..."}
                                           </span>
-                                        </div>
-                                      )}
-                                      {(dl.status === "error" || dl.status === "cancelled") && dl.message && (
-                                        <p className={cn("text-[10px] mt-1.5", dl.status === "cancelled" ? "text-amber-400" : "text-red-400")}>
-                                          {dl.message}
-                                        </p>
-                                      )}
+                                        ) : dl.status === "done" ? (
+                                          <span className="ml-2 text-green-400/80 font-medium">• Clip is ready!</span>
+                                        ) : dl.status === "error" ? (
+                                          <span className="ml-2 text-red-400/80 font-medium">• Clip cut failed</span>
+                                        ) : dl.status === "cancelled" ? (
+                                          <span className="ml-2 text-zinc-500 font-medium">• Cancelled by user</span>
+                                        ) : null}
+                                      </p>
                                     </div>
 
                                     {/* Action buttons */}
-                                    <div className="flex items-center gap-1.5 shrink-0 pl-1">
+                                    <div className="flex items-center gap-2 shrink-0">
                                       <button
                                         onClick={() => setExpandedClip(isExpanded ? null : key)}
-                                        className="p-1 rounded bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-colors"
+                                        className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors"
                                       >
                                         {isExpanded ? (
-                                          <ChevronUp className="w-3.5 h-3.5" />
+                                          <ChevronUp className="w-4 h-4" />
                                         ) : (
-                                          <ChevronDown className="w-3.5 h-3.5" />
+                                          <ChevronDown className="w-4 h-4" />
                                         )}
                                       </button>
 
-                                      {onEditClip && (
-                                        <Button
-                                          size="sm"
-                                          variant="glass"
-                                          onClick={() => onEditClip(clip)}
-                                          className="rounded-md h-7 px-2 text-[10px] font-semibold bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
+                                      {dl.status === "downloading" ? (
+                                        <button
+                                          onClick={() => handleCancelDownload(clip)}
+                                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-300 text-xs font-semibold transition-all active:scale-[0.98]"
                                         >
-                                          <span className="flex items-center gap-1">
-                                            <Pencil className="w-2.5 h-2.5" />
-                                            Edit
-                                          </span>
-                                        </Button>
+                                          <X className="w-3.5 h-3.5" />
+                                          Cancel
+                                        </button>
+                                      ) : dl.status === "done" && dl.jobId ? (
+                                        <button
+                                          onClick={() => triggerClipDownload(dl.jobId!, clip.title)}
+                                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-500/15 hover:bg-green-500/25 border border-green-500/30 text-green-300 text-xs font-semibold transition-all active:scale-[0.98]"
+                                        >
+                                          <Download className="w-3.5 h-3.5" />
+                                          Save
+                                        </button>
+                                      ) : (
+                                        <button
+                                          onClick={() => startClipDownload(clip)}
+                                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 hover:text-white text-xs font-semibold transition-all active:scale-[0.98]"
+                                        >
+                                          <Scissors className="w-3.5 h-3.5" />
+                                          Cut Clip
+                                        </button>
                                       )}
-
-                                      <Button
-                                        size="sm"
-                                        variant={dl.status === "done" ? "glass" : "default"}
-                                        onClick={() =>
-                                          dl.status === "downloading"
-                                            ? handleCancelDownload(clip)
-                                            : dl.status === "done" && dl.jobId
-                                              ? triggerClipDownload(dl.jobId, clip.title)
-                                              : startClipDownload(clip)
-                                        }
-                                        className={cn(
-                                          "rounded-md h-7 px-2.5 text-[10px] font-semibold min-w-[70px]",
-                                          dl.status === "done" && "bg-emerald-500/20 border-emerald-500/30 text-emerald-300",
-                                          dl.status === "error" && "bg-red-500/10 border-red-500/30 text-red-300",
-                                          dl.status === "cancelled" && "bg-amber-500/10 border-amber-500/30 text-amber-300",
-                                          dl.status === "downloading" && "bg-amber-500/15 border-amber-500/40 text-amber-200"
-                                        )}
-                                      >
-                                        {dl.status === "downloading" ? (
-                                          <span className="flex items-center gap-1"><X className="w-2.5 h-2.5" />Cancel</span>
-                                        ) : dl.status === "done" ? (
-                                          <span className="flex items-center gap-1"><Download className="w-2.5 h-2.5" />Save</span>
-                                        ) : dl.status === "error" || dl.status === "cancelled" ? (
-                                          <span className="flex items-center gap-1"><Download className="w-2.5 h-2.5" />Retry</span>
-                                        ) : (
-                                          <span className="flex items-center gap-1"><Download className="w-2.5 h-2.5" />Download</span>
-                                        )}
-                                      </Button>
                                     </div>
                                   </div>
+
+                                  {/* Progress bar and details */}
+                                  {dl.status === "downloading" && (
+                                    <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1.5">
+                                      {dl.percent > 0 && (
+                                        <div className="h-[3px] w-full bg-zinc-950/90 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
+                                          <div
+                                            className="h-full rounded-full transition-[width] duration-700 ease-out relative filter"
+                                            style={{
+                                              width: `${dl.percent}%`,
+                                              background: 'linear-gradient(to right, rgba(0, 0, 0, 0) 0%, rgba(0, 122, 255, 0.05) 15%, rgba(0, 122, 255, 0.2) 35%, rgba(175, 82, 222, 0.5) 60%, rgba(255, 45, 85, 0.8) 85%, rgba(255, 149, 0, 0.95) 95%, #ffffff 100%)',
+                                              animation: 'rocketFire 0.4s ease-in-out infinite',
+                                            }}
+                                          />
+                                        </div>
+                                      )}
+                                      <div className="flex justify-between text-[10px] text-zinc-500 mt-0.5">
+                                        <span>{dl.percent === 0 ? "Initializing cut..." : dl.speed || "Downloading..."}</span>
+                                        <span className="font-mono">
+                                          {dl.percent > 0 ? `${dl.percent.toFixed(0)}%` : ""}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  )}
 
                                   {/* Expanded Description / Reason */}
                                   <AnimatePresence>
