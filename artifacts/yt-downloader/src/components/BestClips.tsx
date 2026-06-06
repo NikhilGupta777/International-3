@@ -32,12 +32,38 @@ import {
   Wind,
   Landmark,
   X,
+  Link2,
+  ArrowUp,
+  SlidersHorizontal,
+  Lightbulb,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
-import { saveToBestClipsHistory } from "@/lib/best-clips-history";
+import { saveToBestClipsHistory, loadBestClipsHistory, type BestClipsHistoryEntry } from "@/lib/best-clips-history";
+
+function parseCombinedInput(input: string) {
+  const match = input.match(/(https?:\/\/[^\s]+)/);
+  if (!match) return { url: "", description: input };
+  const extractedUrl = match[1];
+  const description = input.replace(extractedUrl, "").trim();
+  return { url: extractedUrl, description };
+}
+
+function extractVideoId(url: string) {
+  const match = url.match(/[?&]v=([^&]+)/) || url.match(/youtu\.be\/([^?]+)/);
+  return match ? match[1] : null;
+}
+
+function formatTimeAgo(ts: number) {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${Math.max(1, mins)}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 export interface BestClip {
   durationLabel: string;
@@ -223,8 +249,11 @@ export const BestClips = forwardRef(function BestClips(
   { url, onEditClip, defaultInstructions }: Props,
   ref: React.ForwardedRef<BestClipsHandle>,
 ) {
+  const [command, setCommand] = useState(url);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [history, setHistory] = useState<BestClipsHistoryEntry[]>([]);
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
-  const [isAutoMode, setIsAutoMode] = useState(false);
+  const [isAutoMode, setIsAutoMode] = useState(true);
   const [is8MinMode, setIs8MinMode] = useState(false);
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [customInstructions, setCustomInstructions] = useState(
@@ -256,9 +285,19 @@ export const BestClips = forwardRef(function BestClips(
 
   const PERSIST_KEY = "ytgrabber_bestclips_results";
 
-  // Restore saved analysis results when URL matches
+  // Load history on mount and when analysis finishes
+  const refreshHistory = useCallback(() => {
+    setHistory(loadBestClipsHistory());
+  }, []);
+
+  useEffect(() => {
+    refreshHistory();
+  }, [refreshHistory]);
+
+  // Restore saved analysis results when prop url changes
   useEffect(() => {
     if (!url.trim()) return;
+    setCommand(url);
     try {
       const raw = sessionStorage.getItem(PERSIST_KEY);
       if (!raw) return;
@@ -435,8 +474,9 @@ export const BestClips = forwardRef(function BestClips(
       analysisJobIdRef.current = null;
       analysisStartRef.current = null;
       setIsLoading(false);
+      refreshHistory();
     },
-    [clearAnalysisStatusPolling, url],
+    [clearAnalysisStatusPolling, command, refreshHistory],
   );
 
   const pollBestClipsStatus = useCallback(
@@ -494,9 +534,14 @@ export const BestClips = forwardRef(function BestClips(
   const activeTopic = TOPIC_PRESETS.find((p) => p.id === selectedTopic) ?? null;
 
   async function handleAnalyze() {
-    if (!url.trim()) return;
+    const { url: parsedUrl, description } = parseCombinedInput(command);
+    const finalUrl = parsedUrl || command;
+    if (!finalUrl.trim()) return;
     if (!isAutoMode && !is8MinMode && selectedDurations.length === 0) return;
     if (is8MinMode && !selectedTopic) return;
+
+    // Use description from input if provided, otherwise customInstructions
+    const finalInstructions = description.trim() || customInstructions.trim();
 
     // Close any previous SSE
     clearAnalysisStatusPolling();
@@ -526,20 +571,20 @@ export const BestClips = forwardRef(function BestClips(
         body: JSON.stringify(
           isAutoMode
             ? {
-                url: url.trim(),
+                url: finalUrl.trim(),
                 auto: true,
-                instructions: customInstructions.trim() || undefined,
+                instructions: finalInstructions || undefined,
               }
             : is8MinMode && activeTopic
               ? {
-                  url: url.trim(),
+                  url: finalUrl.trim(),
                   auto: true,
                   instructions: `${activeTopic.instructions}\n\nCLIP LENGTH: The clip should be approximately 8-10 minutes long (480-600 seconds). Find the single best segment matching the topic above that is closest to this length. If the best matching segment is slightly shorter or longer (6-12 min), that is fine — content quality and topic match matter more than exact length.`,
                 }
               : {
-                  url: url.trim(),
+                  url: finalUrl.trim(),
                   durations: selectedDurations,
-                  instructions: customInstructions.trim() || undefined,
+                  instructions: finalInstructions || undefined,
                 },
         ),
       });
@@ -619,7 +664,7 @@ export const BestClips = forwardRef(function BestClips(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          url: url.trim(),
+          url: command.trim(),
           startTime: clip.startSec,
           endTime: clip.endSec,
           quality: "best",
@@ -784,45 +829,65 @@ export const BestClips = forwardRef(function BestClips(
   return (
     <div className="w-full space-y-6">
       {/* Controls */}
-      <div className="glass-panel rounded-2xl p-5 space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="bg-primary/20 p-2 rounded-xl border border-primary/30">
-            <Scissors className="w-4 h-4 text-primary" />
+      <div className="space-y-6">
+        <div className="space-y-1 mb-6">
+          <h2 className="text-3xl font-bold font-display text-white">Find Best Clips</h2>
+          <p className="text-white/50 text-base">
+            AI scans your video and finds the best moments automatically.
+          </p>
+        </div>
+
+        {/* Input Bar */}
+        <div className="relative group">
+          <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none">
+            <Link2 className="w-5 h-5 text-white/40" />
           </div>
-          <div>
-            <h3 className="font-display font-semibold text-white text-lg">
-              Find Best Clips
-            </h3>
-            <p className="text-white/50 text-sm">
-              AI scans the entire video to find every great segment
-            </p>
+          <input
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleAnalyze();
+            }}
+            placeholder="Paste YouTube URL and describe the clips you want..."
+            className="w-full h-[68px] pl-14 pr-[100px] rounded-2xl bg-[#111111] border border-white/10 text-white placeholder-white/30 focus:outline-none focus:border-white/20 focus:bg-white/[0.04] transition-all text-base"
+            disabled={isLoading}
+          />
+          <div className="absolute inset-y-0 right-3 flex items-center gap-2">
+            <button className="text-white/30 hover:text-white/60 transition-colors p-2" title="Help">
+              <Info className="w-5 h-5" />
+            </button>
+            <button 
+              onClick={handleAnalyze}
+              disabled={isLoading || !command.trim()}
+              className="bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white w-10 h-10 rounded-full transition-colors flex items-center justify-center"
+            >
+              {isLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <ArrowUp className="w-5 h-5" />
+              )}
+            </button>
           </div>
         </div>
 
-        <div className="space-y-3">
-          <p className="text-white/60 text-sm font-medium">
-            Select clip durations to find:
-          </p>
+        {/* Duration / Topic Toggles */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap gap-2">
-            {/* Auto mode button */}
             <button
               onClick={() => {
-                setIsAutoMode((prev) => !prev);
+                setIsAutoMode(true);
                 setIs8MinMode(false);
               }}
               className={cn(
-                "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200 flex items-center gap-1.5",
+                "px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
                 isAutoMode
-                  ? "bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.25)]"
-                  : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20",
-                is8MinMode && !isAutoMode && "opacity-30",
+                  ? "bg-red-500/10 border border-red-500/40 text-red-500 shadow-sm"
+                  : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10 border border-transparent"
               )}
             >
-              <Wand2 className="w-3.5 h-3.5" />
               Auto
             </button>
 
-            {/* Manual duration buttons */}
             {DURATION_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
@@ -832,210 +897,194 @@ export const BestClips = forwardRef(function BestClips(
                   selectDuration(opt.value);
                 }}
                 className={cn(
-                  "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200",
-                  (isAutoMode || is8MinMode) && "opacity-30 cursor-default",
-                  !isAutoMode &&
-                    !is8MinMode &&
-                    selectedDurations.includes(opt.value)
-                    ? "bg-primary/20 border-primary/50 text-white shadow-[0_0_12px_rgba(229,9,20,0.2)]"
-                    : !isAutoMode && !is8MinMode
-                      ? "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20"
-                      : "bg-white/5 border-white/10 text-white/30",
+                  "px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
+                  !isAutoMode && !is8MinMode && selectedDurations.includes(opt.value)
+                    ? "bg-white/10 border border-white/20 text-white shadow-sm"
+                    : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10 border border-transparent"
                 )}
               >
-                {opt.label}
+                {opt.label.replace("≥ ", "")}
               </button>
             ))}
 
-            {/* 8-10 min topic button */}
             <button
               onClick={() => {
                 setIsAutoMode(false);
-                setIs8MinMode((prev) => !prev);
+                setIs8MinMode(true);
               }}
               className={cn(
-                "px-4 py-2 rounded-xl border text-sm font-semibold transition-all duration-200 flex items-center gap-1.5",
+                "px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
                 is8MinMode
-                  ? "bg-amber-500/20 border-amber-400/50 text-amber-200 shadow-[0_0_14px_rgba(245,158,11,0.3)]"
-                  : "bg-white/5 border-white/10 text-white/50 hover:text-white/80 hover:border-white/20",
-                isAutoMode && "opacity-30",
+                  ? "bg-white/10 border border-white/20 text-white shadow-sm"
+                  : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10 border border-transparent"
               )}
             >
-              <Sparkles className="w-3.5 h-3.5" />
               8-10 min
             </button>
           </div>
 
-          {isAutoMode && (
-            <p className="text-amber-300/70 text-xs flex items-center gap-1.5">
-              <Wand2 className="w-3 h-3" />
-              AI will decide the best duration for each clip — no presets, full
-              creative control
-            </p>
-          )}
-
-          {/* 8-min topic dropdown */}
-          <AnimatePresence>
-            {is8MinMode && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.2 }}
-                className="overflow-hidden"
-              >
-                <div className="pt-2 space-y-2">
-                  <p className="text-white/50 text-xs font-medium flex items-center gap-1.5">
-                    <Sparkles className="w-3 h-3 text-amber-300" />
-                    Select a Bhavishya Malika prophecy topic:
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {TOPIC_PRESETS.map((p) => {
-                      const { Icon } = p;
-                      const isActive = selectedTopic === p.id;
-                      return (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() =>
-                            setSelectedTopic(isActive ? null : p.id)
-                          }
-                          disabled={isLoading}
-                          className={cn(
-                            "relative flex flex-col items-start gap-1 p-3 rounded-xl border text-left transition-all duration-150 group",
-                            isActive
-                              ? cn(p.bgColor, p.borderColor, p.glowColor)
-                              : "bg-white/4 border-white/8 hover:border-white/20 hover:bg-white/7",
-                          )}
-                        >
-                          {isActive && (
-                            <span className="absolute top-2 right-2">
-                              <CheckCircle2
-                                className={cn("w-3 h-3", p.accentColor)}
-                              />
-                            </span>
-                          )}
-                          <div className="flex items-center gap-2">
-                            <Icon
-                              className={cn(
-                                "w-3.5 h-3.5 shrink-0",
-                                isActive
-                                  ? p.accentColor
-                                  : "text-white/40 group-hover:text-white/60",
-                              )}
-                            />
-                            <span
-                              className={cn(
-                                "font-semibold text-xs leading-tight",
-                                isActive ? p.accentColor : "text-white/70",
-                              )}
-                            >
-                              {p.label}
-                            </span>
-                          </div>
-                          <p
-                            className={cn(
-                              "text-[10px] leading-snug pl-0.5",
-                              isActive ? "text-white/50" : "text-white/30",
-                            )}
-                          >
-                            {p.description}
-                          </p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {selectedTopic && activeTopic && (
-                    <p
-                      className={cn(
-                        "text-xs flex items-center gap-1.5",
-                        activeTopic.accentColor,
-                      )}
-                    >
-                      <CheckCircle2 className="w-3 h-3 shrink-0" />
-                      AI will find best ~8 min {activeTopic.label} prophecy clip
-                    </p>
-                  )}
-                </div>
-              </motion.div>
+          <button
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className={cn(
+              "px-5 py-2.5 rounded-xl transition-all text-sm font-semibold flex items-center gap-2",
+              showAdvanced || is8MinMode
+                ? "bg-white/10 border border-white/20 text-white shadow-sm"
+                : "bg-white/5 text-white/70 hover:text-white hover:bg-white/10 border border-transparent"
             )}
-          </AnimatePresence>
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+            Advanced
+          </button>
         </div>
 
-        {/* Custom Instructions Panel — hidden in 8-min mode */}
-        {!is8MinMode && (
-          <div className="space-y-2 pt-2">
-            <label className="text-white/60 text-sm font-medium flex items-center gap-2">
-              <FileText className="w-4 h-4" />
-              AI Instructions (Optional)
-            </label>
-            <textarea
-              value={customInstructions}
-              onChange={(e) => setCustomInstructions(e.target.value)}
-              placeholder="Tell AI what to focus on... e.g. 'Get all clips about war discussions', 'Find all Bhagwat Katha or Krishna Leela stories', 'Extract any devotional or bhakti content', 'Find every discussion about spiritual topics'"
-              className="w-full p-3 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:border-primary/50 focus:bg-white/8 transition-colors resize-none"
-              rows={3}
-              disabled={isLoading}
-            />
-            {customInstructions && (
-              <p className="text-white/40 text-xs">
-                Instructions will be used to guide AI analysis
+        {/* 8-min topic dropdown */}
+        <AnimatePresence>
+          {is8MinMode && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="pt-2 space-y-2">
+                <p className="text-white/50 text-xs font-medium flex items-center gap-1.5">
+                  <Sparkles className="w-3 h-3 text-amber-300" />
+                  Select a Bhavishya Malika prophecy topic:
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {TOPIC_PRESETS.map((p) => {
+                    const { Icon } = p;
+                    const isActive = selectedTopic === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() =>
+                          setSelectedTopic(isActive ? null : p.id)
+                        }
+                        disabled={isLoading}
+                        className={cn(
+                          "relative flex flex-col items-start gap-1 p-3 rounded-xl border text-left transition-all duration-150 group",
+                          isActive
+                            ? cn(p.bgColor, p.borderColor, p.glowColor)
+                            : "bg-white/5 border-white/10 hover:border-white/20 hover:bg-white/10",
+                        )}
+                      >
+                        {isActive && (
+                          <span className="absolute top-2 right-2">
+                            <CheckCircle2
+                              className={cn("w-3 h-3", p.accentColor)}
+                            />
+                          </span>
+                        )}
+                        <div className="flex items-center gap-2">
+                          <Icon
+                            className={cn(
+                              "w-3.5 h-3.5 shrink-0",
+                              isActive
+                                ? p.accentColor
+                                : "text-white/40 group-hover:text-white/60",
+                            )}
+                          />
+                          <span
+                            className={cn(
+                              "font-semibold text-xs leading-tight",
+                              isActive ? p.accentColor : "text-white/70",
+                            )}
+                          >
+                            {p.label}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Custom Instructions Panel */}
+        <AnimatePresence>
+          {showAdvanced && !is8MinMode && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="space-y-2 pt-2 pb-2">
+                <label className="text-white/60 text-sm font-medium flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  Detailed AI Instructions (Optional)
+                </label>
+                <textarea
+                  value={customInstructions}
+                  onChange={(e) => setCustomInstructions(e.target.value)}
+                  placeholder="You can also describe the clips you want directly in the main input bar above!"
+                  className="w-full p-4 rounded-xl bg-white/5 border border-white/10 text-white text-sm placeholder-white/30 focus:outline-none focus:border-white/30 focus:bg-white/10 transition-colors resize-none"
+                  rows={3}
+                  disabled={isLoading}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Recent Searches */}
+        {!isLoading && clips.length === 0 && history.length > 0 && (
+          <div className="mt-12 space-y-4">
+            <h3 className="text-white font-bold text-lg">Recent clip searches</h3>
+            <div className="space-y-3">
+              {history.slice(0, 3).map((entry) => {
+                const videoId = extractVideoId(entry.url);
+                const thumbUrl = videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : null;
+                const title = entry.clips?.[0]?.title || "Video Analysis";
+                
+                return (
+                  <button 
+                    key={entry.id} 
+                    onClick={() => setCommand(entry.url)}
+                    className="w-full flex items-center justify-between p-3 rounded-2xl bg-[#111111] border border-white/5 hover:border-white/10 transition-colors text-left"
+                  >
+                    <div className="flex items-center gap-4 overflow-hidden">
+                      {thumbUrl ? (
+                        <img src={thumbUrl} alt="thumbnail" className="w-24 h-14 object-cover rounded-xl shrink-0" />
+                      ) : (
+                        <div className="w-24 h-14 bg-white/5 rounded-xl shrink-0 flex items-center justify-center">
+                            <Film className="w-5 h-5 text-white/20" />
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <h4 className="text-white font-semibold text-sm truncate pr-4">{title}</h4>
+                        <p className="text-white/40 text-xs mt-1">
+                          {entry.clipCount} clips • {entry.hasTranscript ? "Analyzed" : "Fast scan"}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-4 shrink-0 pl-4">
+                      <span className="text-white/30 text-xs">{formatTimeAgo(entry.createdAt)}</span>
+                      <div className="text-white/30 hover:text-white p-2">
+                        {/* vertical ellipsis */}
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            
+            <div className="pt-8 flex justify-center">
+              <p className="text-white/30 text-sm flex items-center gap-2">
+                <Lightbulb className="w-4 h-4" />
+                Examples: Find emotional moments under 60 seconds, best funny parts, key takeaways, etc.
               </p>
-            )}
+            </div>
           </div>
         )}
-
-        <Button
-          onClick={handleAnalyze}
-          disabled={
-            isLoading ||
-            !url.trim() ||
-            (!isAutoMode && !is8MinMode && selectedDurations.length === 0) ||
-            (is8MinMode && !selectedTopic)
-          }
-          className={cn(
-            "w-full h-12 rounded-xl transition-all duration-300 text-white",
-            isAutoMode &&
-              !isLoading &&
-              "bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30",
-            is8MinMode &&
-              selectedTopic &&
-              !isLoading &&
-              activeTopic &&
-              activeTopic.activeBtnClass,
-          )}
-          size="lg"
-        >
-          {isLoading ? (
-            <span className="flex items-center gap-2">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Analyzing video...
-            </span>
-          ) : isAutoMode ? (
-            <span className="flex items-center gap-2">
-              <Wand2 className="w-4 h-4" />
-              Auto Find Best Clips
-            </span>
-          ) : is8MinMode && selectedTopic && activeTopic ? (
-            <span className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4" />
-              <span className="sm:hidden">Find Best Clips</span>
-              <span className="hidden sm:inline">
-                Find Best {activeTopic.label} Clip (8-10 min)
-              </span>
-            </span>
-          ) : is8MinMode ? (
-            <span className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4" />
-              Select a topic above
-            </span>
-          ) : (
-            <span className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4" />
-              Find Best Clips
-            </span>
-          )}
-        </Button>
       </div>
 
       {/* Live step-by-step status */}

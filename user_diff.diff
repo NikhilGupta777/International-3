@@ -1,0 +1,93 @@
+<USER_REQUEST>
+tell me what is this and what it does?
+
+git diff "artifacts/yt-downloader/src/components/ClipCutter.tsx"
+
+<truncated 1 lines>
+-                  if (!confirmed) return;
+-                  clearClipHistory();
+-                  setHistory([]);
+-                }}
+-                className="flex items-center gap-1 text-xs text-white/25 hover:text-red-400 transition-colors"
++            <MoreVertical className="h-4 w-4" />
++          </button>
++          <AnimatePresence>
++            {menuOpen && (
++              <motion.div
++                initial={{ opacity: 0, scale: 0.95, y: 5 }}
++                animate={{ opacity: 1, scale: 1, y: 0 }}
++                exit={{ opacity: 0, scale: 0.95, y: 5 }}
++                transition={{ duration: 0.1 }}
++                className="absolute right-0 top-9 z-30 w-32 rounded-xl border border-zinc-800 bg-[#0d0d0d] p-1 shadow-[0_8px_24px_rgba(0,0,0,0.5)]"
+               >
+-                <Trash2 className="w-3 h-3" /> Clear all
+-              </button>
+-            </div>
+-
+-            <div className="flex flex-col gap-2">
+-              {history.map((entry) => (
+-                <motion.div
+-                  key={entry.jobId}
+-                  layout
+-                  initial={{ opacity: 0, x: -8 }}
+-                  animate={{ opacity: 1, x: 0 }}
+-                  exit={{ opacity: 0, x: 8 }}
+-                  className="glass-panel rounded-xl px-4 py-3 flex items-center gap-3"
++                <button
++                  type="button"
++                  onClick={() => {
++                    onDownload(entry);
++                    setMenuOpen(false);
++                  }}
++                  className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-semibold text-zinc-300 hover:bg-white/5 hover:text-white transition"
+                 >
+-                  <Film className="w-4 h-4 text-orange-400/70 shrink-0" />
+-
+-                  <div className="flex-1 min-w-0">
+-                    <p className="text-white/70 text-sm font-med
+<truncated 4640 bytes>
+   isProcessing && "bg-orange-500",
+-        )}
+-      />
+-
+-      <div className="flex items-center justify-between gap-3 relative z-10">
+-        <div className="flex items-center gap-2.5 min-w-0">
+-          {isDone ? (
+-            <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
+-          ) : isError ? (
+-            <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+-          ) : isCancelled ? (
+-            <X className="w-4 h-4 text-amber-400 shrink-0" />
+-          ) : (
+-            <Loader2 className="w-4 h-4 text-orange-400 animate-spin shrink-0" />
+-          )}
+-          <span className="text-sm font-semibold text-white font-mono truncate">
+-            {job.label}
+-          </span>
+-          {isQueued && (
+-            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wide bg-amber-500/20 border border-amber-500/40 text-amber-300 shrink-0">
+-              {queuePosition ? `Queued #${queuePosition}` : "Queued"}
+-            </span>
+-          )}
+-          {job.filename && (
+-            <span className="text-xs text-white/35 truncate hidden sm:block">
+-              {job.filename}
+-            </span>
+-          )}
+-        </div>
+-
+-        <div className="flex items-center gap-2 shrink-0">
+-          {isProcessing && (
+-            <button
+-              onClick={() => onCancel(job.jobId)}
+-              disabled={isCancelling}
+               className={cn(
+                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold transition-all",
+                 "border-amber-500/40 text-amber-300",
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-06-05T03:31:18+05:30.
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from Gemini 3.5 Flash (High) to Gemini 3.1 Pro (High). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>

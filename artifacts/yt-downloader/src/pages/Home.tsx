@@ -416,9 +416,9 @@ export default function Home({
   const needsFutureEmail = !storedEmail && !authUser?.email;
 
 
-  const buttonPlaceholder = mode === "clips" ? "Analyze" : "Start";
+  const buttonPlaceholder = "Start";
   const isSearchPending = getInfo.isPending;
-  const showSearch = mode === "download" || mode === "clips";
+  const showSearch = mode === "download";
   const isDownloadInputBlocked = false;
 
   useEffect(() => {

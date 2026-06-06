@@ -1,0 +1,12 @@
+﻿diff --git a/artifacts/yt-downloader/src/components/ClipCutter.tsx b/artifacts/yt-downloader/src/components/ClipCutter.tsx
+index 20314805..eaabea6f 100644
+--- a/artifacts/yt-downloader/src/components/ClipCutter.tsx
++++ b/artifacts/yt-downloader/src/components/ClipCutter.tsx
+@@ -12,6 +12,7 @@ import {
+   History,
+   Trash2,
+   Film,
++  MoreVertical,
+ } from "lucide-react";
+ import { Button } from "@/components/ui/button";
+ import { cn } from "@/lib/utils";
