@@ -53,8 +53,33 @@ function parseCombinedInput(input: string) {
 }
 
 function extractVideoId(url: string) {
-  const match = url.match(/[?&]v=([^&]+)/) || url.match(/youtu\.be\/([^?]+)/);
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
   return match ? match[1] : null;
+}
+
+function useVideoTitle(url: string, defaultTitle: string) {
+  const [title, setTitle] = useState(defaultTitle);
+
+  useEffect(() => {
+    const videoId = extractVideoId(url);
+    if (!videoId) return;
+
+    fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.title) {
+          setTitle(data.title);
+        }
+      })
+      .catch(() => {});
+  }, [url]);
+
+  return title;
+}
+
+function VideoTitle({ url, fallback, className }: { url: string; fallback: string; className?: string }) {
+  const title = useVideoTitle(url, fallback);
+  return <span className={className}>{title}</span>;
 }
 
 function formatTimeAgo(ts: number) {
@@ -1127,7 +1152,7 @@ export const BestClips = forwardRef(function BestClips(
                   <div className="flex items-center gap-2">
                     <Loader2 className="w-3.5 h-3.5 text-orange-400 animate-spin shrink-0" />
                     <p className="text-white/95 text-sm font-semibold truncate leading-snug">
-                      {command ? command : "Video Analysis"}
+                      <VideoTitle url={command} fallback={command ? command : "Video Analysis"} />
                     </p>
                   </div>
 
@@ -1203,8 +1228,7 @@ export const BestClips = forwardRef(function BestClips(
               {history.map((entry, entryIdx) => {
                 const isVideoExpanded = expandedVideoId === entry.id;
                 const videoId = extractVideoId(entry.url);
-                const thumbUrl = videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : null;
-                const title = entry.clips?.[0]?.title || "Video Analysis";
+                const thumbUrl = videoId ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` : null;
 
                 return (
                   <motion.div
@@ -1244,7 +1268,7 @@ export const BestClips = forwardRef(function BestClips(
                            </span>
                         </div>
                         <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">
-                          {title}
+                          <VideoTitle url={entry.url} fallback={entry.clips?.[0]?.title || "Video Analysis"} />
                         </p>
                         <p className="text-zinc-400 text-xs mt-1 truncate">
                           {formatTimeAgo(entry.createdAt)} • {entry.hasTranscript ? "Analyzed" : "Fast scan"}
