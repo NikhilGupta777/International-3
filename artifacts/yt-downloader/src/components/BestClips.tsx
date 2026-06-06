@@ -36,6 +36,7 @@ import {
   ArrowUp,
   SlidersHorizontal,
   Lightbulb,
+  MoreVertical,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -837,12 +838,12 @@ export const BestClips = forwardRef(function BestClips(
   const anyStepRunning = STEPS.some((s) => steps[s].status === "running");
 
   return (
-    <div className="w-full space-y-6">
+    <div className="flex flex-col gap-5 relative max-w-[720px] mx-auto w-full pt-8 sm:pt-14">
       {/* Controls */}
-      <div className="space-y-6">
-        <div className="space-y-1 mb-6">
-          <h2 className="text-3xl font-bold font-display text-white">Find Best Clips</h2>
-          <p className="text-white/50 text-base">
+      <div className="flex flex-col gap-6 relative">
+        <div className="mb-5 max-w-none sm:mb-6">
+          <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-[38px]">Find Best Clips</h1>
+          <p className="mt-3 text-sm leading-relaxed text-zinc-400 sm:text-base lg:text-[15px]">
             AI scans your video and finds the best moments automatically.
           </p>
         </div>
@@ -1090,29 +1091,41 @@ export const BestClips = forwardRef(function BestClips(
                   <button 
                     key={entry.id} 
                     onClick={() => setCommand(entry.url)}
-                    className="w-full flex items-center justify-between p-3 rounded-2xl bg-[#111111] border border-white/5 hover:border-white/10 transition-colors text-left"
+                    className="relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border px-4.5 py-3.5 flex flex-col gap-3 group transition-all duration-300 border-zinc-900 hover:border-zinc-800/80 text-left"
                   >
-                    <div className="flex items-center gap-4 overflow-hidden">
-                      {thumbUrl ? (
-                        <img src={thumbUrl} alt="thumbnail" className="w-24 h-14 object-cover rounded-xl shrink-0" />
-                      ) : (
-                        <div className="w-24 h-14 bg-white/5 rounded-xl shrink-0 flex items-center justify-center">
-                            <Film className="w-5 h-5 text-white/20" />
-                        </div>
-                      )}
-                      <div className="min-w-0">
-                        <h4 className="text-white font-semibold text-sm truncate pr-4">{title}</h4>
-                        <p className="text-white/40 text-xs mt-1">
+                    <div className="flex items-center gap-4 w-full">
+                      {/* Thumbnail Preview */}
+                      <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+                        {thumbUrl ? (
+                          <img
+                            src={thumbUrl}
+                            className="h-full w-full object-cover transition-transform duration-350 group-hover:scale-105"
+                            alt="Thumbnail"
+                          />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center bg-zinc-900">
+                            <Film className="h-4.5 w-4.5 text-white/20" />
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
+                      </div>
+
+                      {/* Info details */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">
+                          {title}
+                        </p>
+                        <p className="text-zinc-400 text-xs mt-1.5 truncate">
                           {entry.clipCount} clips • {entry.hasTranscript ? "Analyzed" : "Fast scan"}
                         </p>
                       </div>
-                    </div>
-                    
-                    <div className="flex items-center gap-4 shrink-0 pl-4">
-                      <span className="text-white/30 text-xs">{formatTimeAgo(entry.createdAt)}</span>
-                      <div className="text-white/30 hover:text-white p-2">
-                        {/* vertical ellipsis */}
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+
+                      {/* Action buttons / metadata */}
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="text-zinc-500 text-xs font-medium">{formatTimeAgo(entry.createdAt)}</span>
+                        <div className="p-1.5 rounded-lg hover:bg-white/10 text-white/30 hover:text-white/70 transition-colors">
+                          <MoreVertical className="w-4 h-4" />
+                        </div>
                       </div>
                     </div>
                   </button>
@@ -1133,12 +1146,22 @@ export const BestClips = forwardRef(function BestClips(
       {/* Live step-by-step status */}
       <AnimatePresence>
         {isLoading && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            className="glass-panel rounded-2xl p-5 space-y-3"
-          >
+          <div className="relative w-full mt-4">
+            <div 
+              className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
+              style={{
+                opacity: 0.52,
+                background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                backgroundSize: '300% 300%',
+                animation: 'rgbGlow 10s ease-in-out infinite',
+              }}
+            />
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="relative z-10 w-full rounded-2xl bg-[#0c0c0e] border border-zinc-900 p-5 space-y-3"
+            >
             {(() => {
               const totalEst = estimateTotalSec(videoDurationSec);
               const remaining = Math.max(0, totalEst - analysisElapsed);
@@ -1244,7 +1267,8 @@ export const BestClips = forwardRef(function BestClips(
                 </motion.div>
               );
             })}
-          </motion.div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
