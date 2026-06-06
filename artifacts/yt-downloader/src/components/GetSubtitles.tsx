@@ -360,6 +360,20 @@ export function GetSubtitles() {
           stopPolling();
           setLoading(false);
           clearActiveJob();
+        } else if (data.status === "not_found") {
+          // Backend returns { status: "not_found" } with HTTP 200 for unknown jobs.
+          // Treat it like a 404 — retry during grace period, then error.
+          if (Date.now() - startedAt < SUBTITLE_JOB_MISSING_GRACE_MS) {
+            setJobStatus("pending");
+            setJobMessage("Reconnecting to subtitle job...");
+            scheduleNext(tick);
+          } else {
+            stopPolling();
+            setLoading(false);
+            setJobStatus("error");
+            setJobError("Job not found on server — please try again.");
+            clearActiveJob();
+          }
         } else {
           // Still running — schedule next poll with backoff
           scheduleNext(tick);
@@ -423,42 +437,56 @@ export function GetSubtitles() {
         if (!res.ok) throw new Error(body.error || "Failed to start job");
         data = body;
       } else {
-        const initRes = await fetch(`${BASE()}/api/subtitles/upload/init`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            filename: fileVal!.name,
-            contentType: fileVal!.type || "application/octet-stream",
-            size: fileVal!.size,
-          }),
-        });
-        const initBody = await initRes.json();
-        if (!initRes.ok) throw new Error(initBody.error || "Failed to initialize upload");
+        // ── File upload: try presigned S3 path, fall back to direct multipart ──
+        let fileJobId: string | undefined;
+        try {
+          const initRes = await fetch(`${BASE()}/api/subtitles/upload/init`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              filename: fileVal!.name,
+              contentType: fileVal!.type || "application/octet-stream",
+              size: fileVal!.size,
+            }),
+          });
+          const initBody = await initRes.json();
+          if (!initRes.ok) throw new Error(initBody.error || "upload_init_failed");
 
-        const uploadRes = await fetch(initBody.uploadUrl, {
-          method: "PUT",
-          headers: {
-            "Content-Type": fileVal!.type || "application/octet-stream",
-          },
-          body: fileVal!,
-        });
-        if (!uploadRes.ok) {
-          throw new Error("Failed to upload media file");
+          const putRes = await fetch(initBody.uploadUrl, {
+            method: "PUT",
+            headers: { "Content-Type": fileVal!.type || "application/octet-stream" },
+            body: fileVal!,
+          });
+          if (!putRes.ok) throw new Error("upload_put_failed");
+
+          const startRes = await fetch(`${BASE()}/api/subtitles/upload/start`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              uploadKey: initBody.uploadKey,
+              originalFilename: fileVal!.name,
+              language: lang,
+              translateTo: trans,
+            }),
+          });
+          const startBody = await startRes.json();
+          if (!startRes.ok) throw new Error(startBody.error || "upload_start_failed");
+          fileJobId = startBody.jobId;
+        } catch {
+          // S3 presigned path unavailable — fall back to direct multipart upload
+          const formData = new FormData();
+          formData.append("file", fileVal!);
+          formData.append("language", lang);
+          if (trans !== "none") formData.append("translateTo", trans);
+          const res = await fetch(`${BASE()}/api/subtitles/upload`, {
+            method: "POST",
+            body: formData,
+          });
+          const body = await res.json();
+          if (!res.ok) throw new Error(body.error || "Failed to upload file");
+          fileJobId = body.jobId;
         }
-
-        const startRes = await fetch(`${BASE()}/api/subtitles/upload/start`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            uploadKey: initBody.uploadKey,
-            originalFilename: fileVal!.name,
-            language: lang,
-            translateTo: trans,
-          }),
-        });
-        const startBody = await startRes.json();
-        if (!startRes.ok) throw new Error(startBody.error || "Failed to start uploaded subtitle job");
-        data = startBody;
+        data = { jobId: fileJobId! };
       }
 
       setJobId(data.jobId);
@@ -630,7 +658,9 @@ export function GetSubtitles() {
     if (file) {
       startJob("file", "", file, language, translateTo);
     } else {
-      startJob("url", command, null, language, translateTo);
+      // Extract the YouTube URL from any surrounding description text
+      const { url: extractedUrl } = parseCombinedInput(command);
+      startJob("url", (extractedUrl || command).trim(), null, language, translateTo);
     }
   };
 
