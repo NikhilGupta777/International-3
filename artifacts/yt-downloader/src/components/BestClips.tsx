@@ -250,6 +250,7 @@ export const BestClips = forwardRef(function BestClips(
   ref: React.ForwardedRef<BestClipsHandle>,
 ) {
   const [command, setCommand] = useState(url);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [history, setHistory] = useState<BestClipsHistoryEntry[]>([]);
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
@@ -293,6 +294,15 @@ export const BestClips = forwardRef(function BestClips(
   useEffect(() => {
     refreshHistory();
   }, [refreshHistory]);
+
+  // Adjust textarea height automatically
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const newHeight = Math.min(60, textarea.scrollHeight);
+    textarea.style.height = `${newHeight}px`;
+  }, [command]);
 
   // Restore saved analysis results when prop url changes
   useEffect(() => {
@@ -838,35 +848,68 @@ export const BestClips = forwardRef(function BestClips(
         </div>
 
         {/* Input Bar */}
-        <div className="relative group">
-          <div className="absolute inset-y-0 left-5 flex items-center pointer-events-none">
-            <Link2 className="w-5 h-5 text-white/40" />
-          </div>
-          <input
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleAnalyze();
+        <style>{`
+          @keyframes rgbGlow {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+          }
+        `}</style>
+        <div className="relative group w-full mb-2">
+          {/* Glowing backdrop blur */}
+          <div 
+            className="absolute -inset-[5.5px] rounded-[12px] opacity-50 blur-[12px] transition-all duration-500 group-hover:opacity-70 group-focus-within:opacity-90"
+            style={{
+              background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+              backgroundSize: '300% 300%',
+              animation: 'rgbGlow 10s ease-in-out infinite',
             }}
-            placeholder="Paste YouTube URL and describe the clips you want..."
-            className="w-full h-[68px] pl-14 pr-[100px] rounded-2xl bg-[#111111] border border-white/10 text-white placeholder-white/30 focus:outline-none focus:border-white/20 focus:bg-white/[0.04] transition-all text-base"
-            disabled={isLoading}
           />
-          <div className="absolute inset-y-0 right-3 flex items-center gap-2">
-            <button className="text-white/30 hover:text-white/60 transition-colors p-2" title="Help">
-              <Info className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={handleAnalyze}
-              disabled={isLoading || !command.trim()}
-              className="bg-white/10 hover:bg-white/20 disabled:opacity-50 text-white w-10 h-10 rounded-full transition-colors flex items-center justify-center"
-            >
-              {isLoading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <ArrowUp className="w-5 h-5" />
-              )}
-            </button>
+          {/* Outer border wrapper */}
+          <div className="relative w-full rounded-[12px] p-[1.2px] overflow-hidden bg-zinc-800">
+            {/* Border background gradient */}
+            <div 
+              className="absolute inset-0"
+              style={{
+                background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                backgroundSize: '300% 300%',
+                animation: 'rgbGlow 10s ease-in-out infinite',
+              }}
+            />
+            {/* Inner input container */}
+            <div className="relative rounded-[11px] bg-[#09090b] py-3.5 px-5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+              <div className="flex items-center gap-3">
+                <Link2 className="h-4.5 w-4.5 text-zinc-500 shrink-0" />
+                <textarea
+                  ref={textareaRef}
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  disabled={isLoading}
+                  placeholder="Paste YouTube URL and describe the clips you want..."
+                  className="min-h-[20px] flex-1 resize-none bg-transparent pt-[2px] pb-0 text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleAnalyze();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="p-1.5 rounded-full hover:bg-white/5 text-zinc-400 hover:text-white transition shrink-0"
+                  title="Help info"
+                >
+                  <Info className="h-4.5 w-4.5" />
+                </button>
+                <button
+                  onClick={handleAnalyze}
+                  disabled={isLoading || !command.trim()}
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white disabled:opacity-50 transition"
+                >
+                  {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
