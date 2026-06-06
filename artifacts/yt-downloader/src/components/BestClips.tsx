@@ -1197,29 +1197,28 @@ export const BestClips = forwardRef(function BestClips(
                   transition={{ delay: idx * 0.05 }}
                   className={cn(
                     "flex items-start gap-3 p-3 rounded-xl border transition-all duration-300",
-                    isRunning && "border-primary/30 bg-primary/5",
-                    isDone && "border-emerald-500/20 bg-emerald-500/5",
-                    isWarn && "border-amber-500/20 bg-amber-500/5",
-                    isIdle && "border-white/5 opacity-40",
+                    isRunning && "border-red-900/40 bg-red-950/20",
+                    isDone && "border-emerald-900/40 bg-emerald-950/20",
+                    isWarn && "border-amber-900/40 bg-amber-950/20",
+                    isIdle && "border-white/5 opacity-40"
                   )}
                 >
                   {/* Step icon */}
                   <div
                     className={cn(
                       "shrink-0 w-7 h-7 rounded-lg flex items-center justify-center mt-0.5",
-                      isRunning && "bg-primary/20 border border-primary/30",
-                      isDone &&
-                        "bg-emerald-500/20 border border-emerald-500/30",
-                      isWarn && "bg-amber-500/20 border border-amber-500/30",
-                      isIdle && "bg-white/5 border border-white/10",
+                      isRunning && "bg-red-950/40 border border-red-900/40",
+                      isDone && "bg-emerald-950/40 border border-emerald-900/40",
+                      isWarn && "bg-amber-950/40 border border-amber-900/40",
+                      isIdle && "bg-white/5 border border-white/10"
                     )}
                   >
                     {isRunning ? (
-                      <Loader2 className="w-3.5 h-3.5 text-primary animate-spin" />
+                      <Loader2 className="w-3.5 h-3.5 text-red-500 animate-spin" />
                     ) : isDone ? (
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                     ) : isWarn ? (
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
                     ) : (
                       <Icon className="w-3.5 h-3.5 text-white/30" />
                     )}
@@ -1230,9 +1229,9 @@ export const BestClips = forwardRef(function BestClips(
                     <p
                       className={cn(
                         "text-xs font-semibold uppercase tracking-wide",
-                        isRunning && "text-primary/80",
-                        isDone && "text-emerald-400/80",
-                        isWarn && "text-amber-400/80",
+                        isRunning && "text-red-500",
+                        isDone && "text-emerald-500",
+                        isWarn && "text-amber-500",
                         isIdle && "text-white/25",
                       )}
                     >
@@ -1242,8 +1241,8 @@ export const BestClips = forwardRef(function BestClips(
                       <p
                         className={cn(
                           "text-sm mt-0.5 leading-snug",
-                          isRunning && "text-white/80",
-                          isDone && "text-white/65",
+                          isRunning && "text-zinc-300",
+                          isDone && "text-zinc-300",
                           isWarn && "text-amber-300/70",
                           isIdle && "text-white/25",
                         )}
@@ -1257,7 +1256,7 @@ export const BestClips = forwardRef(function BestClips(
                         {[0, 1, 2].map((i) => (
                           <div
                             key={i}
-                            className="w-1.5 h-1.5 rounded-full bg-primary/50 animate-bounce"
+                            className="w-1.5 h-1.5 rounded-full bg-red-500/60 animate-bounce"
                             style={{ animationDelay: `${i * 0.12}s` }}
                           />
                         ))}
@@ -1292,20 +1291,18 @@ export const BestClips = forwardRef(function BestClips(
 
       {/* Results */}
       <AnimatePresence>
-        {groupedClips.length > 0 && !isLoading && (
+        {clips.length > 0 && !isLoading && (
           <motion.div
             key={`results-${resultsKeyRef.current}`}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
-            className="space-y-6"
+            className="space-y-3 mt-6"
           >
-            <div className="flex items-center gap-3 px-1 flex-wrap">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+            <div className="flex items-center gap-3 px-1 flex-wrap mb-4">
+              <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
               <h3 className="text-lg font-display font-semibold text-white">
-                {clips.length} clip{clips.length !== 1 ? "s" : ""} found across{" "}
-                {groupedClips.length} duration
-                {groupedClips.length !== 1 ? "s" : ""}
+                {clips.length} clip{clips.length !== 1 ? "s" : ""} generated
               </h3>
               {!hasTranscript && (
                 <div className="flex items-center gap-1.5 text-amber-300 text-xs bg-amber-500/10 border border-amber-500/20 px-3 py-1 rounded-full ml-auto">
@@ -1315,257 +1312,200 @@ export const BestClips = forwardRef(function BestClips(
               )}
             </div>
 
-            {groupedClips.map((group, groupIdx) => {
-              const style = getDurationStyle(group.durationSec);
+            {clips.map((clip, clipIdx) => {
+              const key = clipKey(clip);
+              const dl = downloadStates[key] ?? {
+                status: "idle",
+                percent: 0,
+              };
+              const isExpanded = expandedClip === key;
+              const videoId = extractVideoId(url);
+              const thumbUrl = videoId ? `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg` : null;
+
               return (
                 <motion.div
-                  key={group.durationSec}
-                  initial={{ opacity: 0, y: 16 }}
+                  key={key}
+                  initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: groupIdx * 0.07 }}
-                  className="space-y-2"
+                  transition={{ delay: clipIdx * 0.05 }}
+                  className="relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border px-4.5 py-3.5 flex flex-col group transition-all duration-300 border-zinc-900 hover:border-zinc-800/80 text-left"
                 >
-                  <div
-                    className={cn(
-                      "flex items-center gap-3 px-4 py-2.5 rounded-xl border",
-                      style.accent,
-                    )}
-                  >
-                    <Film className="w-4 h-4 text-white/40" />
-                    <Badge
-                      className={cn(
-                        "text-xs font-bold px-3 py-1 rounded-lg border",
-                        style.badge,
+                  {/* Downloading Background Progress */}
+                  {dl.status === "downloading" && (
+                    <div className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none">
+                      <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5">
+                        {dl.percent === 0 ? (
+                          <motion.div
+                            className="h-full bg-gradient-to-r from-transparent via-primary/70 to-transparent"
+                            animate={{ x: ["-100%", "200%"] }}
+                            transition={{ repeat: Infinity, duration: 1.8, ease: "easeInOut" }}
+                            style={{ width: "45%" }}
+                          />
+                        ) : (
+                          <motion.div
+                            className="h-full bg-primary"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${dl.percent}%` }}
+                            transition={{ duration: 0.4 }}
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-4 w-full">
+                    {/* Thumbnail Preview */}
+                    <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+                      {thumbUrl ? (
+                        <img
+                          src={thumbUrl}
+                          className="h-full w-full object-cover transition-transform duration-350 group-hover:scale-105"
+                          alt="Thumbnail"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-zinc-900">
+                          <Film className="h-4.5 w-4.5 text-white/20" />
+                        </div>
                       )}
-                    >
-                      {group.durationLabel}
-                    </Badge>
-                    <span className="text-white/50 text-sm">
-                      {group.clips.length} segment
-                      {group.clips.length !== 1 ? "s" : ""} found
-                    </span>
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent opacity-85" />
+                      <div className="absolute bottom-1 right-1.5 px-1.5 py-0.5 rounded bg-black/70 backdrop-blur-md border border-white/10 text-[10px] font-medium text-white shadow-sm">
+                        {formatDuration(clip.endSec - clip.startSec)}
+                      </div>
+                    </div>
+
+                    {/* Info details */}
+                    <div className="flex-1 min-w-0 py-1">
+                      <p className="text-white/95 text-sm font-semibold truncate leading-snug group-hover:text-white transition-colors">
+                        {clip.title}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1.5 text-zinc-400 text-xs">
+                        <span className="flex items-center gap-1">
+                          <Play className="w-3 h-3" />
+                          {clip.startFormatted}
+                        </span>
+                        <span>→</span>
+                        <span className="flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          {clip.endFormatted}
+                        </span>
+                      </div>
+
+                      {dl.status === "downloading" && (
+                        <div className="flex items-center justify-between gap-2 mt-2">
+                          <p className="text-primary/70 text-[10px] font-medium">
+                            {dl.percent === 0
+                              ? (dl.elapsed ?? 0) < 15
+                                ? "Solving challenge…"
+                                : (dl.elapsed ?? 0) < 40
+                                  ? "Fetching video…"
+                                  : "Downloading…"
+                              : dl.speed
+                                ? dl.speed
+                                : "Downloading…"}
+                          </p>
+                          <span className="text-white/35 text-[10px] font-mono shrink-0">
+                            {dl.percent > 0
+                              ? `${dl.percent.toFixed(0)}%`
+                              : dl.eta
+                                ? `ETA ${dl.eta}`
+                                : dl.elapsed != null
+                                  ? dl.elapsed < 60
+                                    ? `${dl.elapsed}s`
+                                    : `${Math.floor(dl.elapsed / 60)}m ${dl.elapsed % 60}s`
+                                  : ""}
+                          </span>
+                        </div>
+                      )}
+                      {(dl.status === "error" || dl.status === "cancelled") && dl.message && (
+                        <p className={cn("text-[10px] mt-1.5", dl.status === "cancelled" ? "text-amber-400" : "text-red-400")}>
+                          {dl.message}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Action buttons */}
+                    <div className="flex items-center gap-1.5 shrink-0 pl-2">
+                      <button
+                        onClick={() => setExpandedClip(isExpanded ? null : key)}
+                        className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-colors"
+                      >
+                        {isExpanded ? (
+                          <ChevronUp className="w-4 h-4" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4" />
+                        )}
+                      </button>
+
+                      {onEditClip && (
+                        <Button
+                          size="sm"
+                          variant="glass"
+                          onClick={() => onEditClip(clip)}
+                          className="rounded-lg h-8 px-2.5 text-[11px] font-semibold bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Pencil className="w-3 h-3" />
+                            Edit
+                          </span>
+                        </Button>
+                      )}
+
+                      <Button
+                        size="sm"
+                        variant={dl.status === "done" ? "glass" : "default"}
+                        onClick={() =>
+                          dl.status === "downloading"
+                            ? handleCancelDownload(clip)
+                            : dl.status === "done" && dl.jobId
+                              ? triggerClipDownload(dl.jobId, clip.title)
+                              : startClipDownload(clip)
+                        }
+                        className={cn(
+                          "rounded-lg h-8 px-3 text-[11px] font-semibold min-w-[85px]",
+                          dl.status === "done" && "bg-emerald-500/20 border-emerald-500/30 text-emerald-300",
+                          dl.status === "error" && "bg-red-500/10 border-red-500/30 text-red-300",
+                          dl.status === "cancelled" && "bg-amber-500/10 border-amber-500/30 text-amber-300",
+                          dl.status === "downloading" && "bg-amber-500/15 border-amber-500/40 text-amber-200"
+                        )}
+                      >
+                        {dl.status === "downloading" ? (
+                          <span className="flex items-center gap-1.5"><X className="w-3 h-3" />Cancel</span>
+                        ) : dl.status === "done" ? (
+                          <span className="flex items-center gap-1.5"><Download className="w-3 h-3" />Save</span>
+                        ) : dl.status === "error" || dl.status === "cancelled" ? (
+                          <span className="flex items-center gap-1.5"><Download className="w-3 h-3" />Retry</span>
+                        ) : (
+                          <span className="flex items-center gap-1.5"><Download className="w-3 h-3" />Download</span>
+                        )}
+                      </Button>
+                    </div>
                   </div>
 
-                  <div className="space-y-2 pl-2">
-                    {group.clips.map((clip, clipIdx) => {
-                      const key = clipKey(clip);
-                      const dl = downloadStates[key] ?? {
-                        status: "idle",
-                        percent: 0,
-                      };
-                      const isExpanded = expandedClip === key;
-
-                      return (
-                        <motion.div
-                          key={key}
-                          initial={{ opacity: 0, x: -12 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{
-                            delay: groupIdx * 0.07 + clipIdx * 0.04,
-                          }}
-                          className="group relative glass-panel rounded-xl overflow-hidden border-white/5 hover:border-white/10 transition-all duration-300"
-                        >
-                          <div
-                            className={cn(
-                              "absolute inset-0 bg-gradient-to-br opacity-10 pointer-events-none",
-                              style.color,
-                            )}
-                          />
-                          {dl.status === "downloading" && (
-                            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-white/5 overflow-hidden">
-                              {dl.percent === 0 ? (
-                                <motion.div
-                                  className="h-full bg-gradient-to-r from-transparent via-primary/70 to-transparent"
-                                  animate={{ x: ["-100%", "200%"] }}
-                                  transition={{ repeat: Infinity, duration: 1.8, ease: "easeInOut" }}
-                                  style={{ width: "45%" }}
-                                />
-                              ) : (
-                                <motion.div
-                                  className="h-full bg-primary"
-                                  initial={{ width: 0 }}
-                                  animate={{ width: `${dl.percent}%` }}
-                                  transition={{ duration: 0.4 }}
-                                />
-                              )}
+                  {/* Expanded Description / Reason */}
+                  <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="pt-3 mt-3 border-t border-white/5 space-y-2.5">
+                          <p className="text-zinc-300 text-sm leading-relaxed">
+                            {clip.description}
+                          </p>
+                          {clip.reason && (
+                            <div className="flex items-start gap-2 bg-white/5 rounded-lg px-3 py-2">
+                              <Sparkles className="w-3.5 h-3.5 text-primary shrink-0 mt-0.5" />
+                              <p className="text-zinc-400 text-xs italic leading-relaxed">
+                                {clip.reason}
+                              </p>
                             </div>
                           )}
-
-                          <div className="relative p-4">
-                            <div className="flex items-start gap-3">
-                              <div className="shrink-0 mt-0.5 w-6 h-6 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/30 text-xs font-bold">
-                                {clipIdx + 1}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <h4 className="font-display font-bold text-white text-sm leading-snug mb-1 line-clamp-2">
-                                  {clip.title}
-                                </h4>
-                                <div className="flex items-center gap-2 sm:gap-3 text-white/50 text-xs flex-wrap">
-                                  <span className="flex items-center gap-1">
-                                    <Play className="w-3 h-3" />
-                                    {clip.startFormatted}
-                                  </span>
-                                  <span>→</span>
-                                  <span className="flex items-center gap-1">
-                                    <Clock className="w-3 h-3" />
-                                    {clip.endFormatted}
-                                  </span>
-                                  <span className="text-white/30">·</span>
-                                  <span className="text-white/40">
-                                    {formatDuration(
-                                      clip.endSec - clip.startSec,
-                                    )}
-                                  </span>
-                                </div>
-                                {dl.status === "downloading" && (
-                                  <div className="flex items-center justify-between gap-2 mt-1">
-                                    <p className="text-primary/70 text-xs font-medium">
-                                      {dl.percent === 0
-                                        ? (dl.elapsed ?? 0) < 15
-                                          ? "Solving challenge…"
-                                          : (dl.elapsed ?? 0) < 40
-                                            ? "Fetching video…"
-                                            : "Downloading…"
-                                        : dl.speed
-                                          ? dl.speed
-                                          : "Downloading…"}
-                                    </p>
-                                    <span className="text-white/35 text-xs font-mono shrink-0">
-                                      {dl.percent > 0
-                                        ? `${dl.percent.toFixed(0)}%`
-                                        : dl.eta
-                                          ? `ETA ${dl.eta}`
-                                          : dl.elapsed != null
-                                            ? dl.elapsed < 60
-                                              ? `${dl.elapsed}s`
-                                              : `${Math.floor(dl.elapsed / 60)}m ${dl.elapsed % 60}s`
-                                            : ""}
-                                    </span>
-                                  </div>
-                                )}
-                                {(dl.status === "error" ||
-                                  dl.status === "cancelled") &&
-                                  dl.message && (
-                                    <p
-                                      className={cn(
-                                        "text-xs mt-1",
-                                        dl.status === "cancelled"
-                                          ? "text-amber-400"
-                                          : "text-red-400",
-                                      )}
-                                    >
-                                      {dl.message}
-                                    </p>
-                                  )}
-                              </div>
-
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <button
-                                  onClick={() =>
-                                    setExpandedClip(isExpanded ? null : key)
-                                  }
-                                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-white transition-colors"
-                                >
-                                  {isExpanded ? (
-                                    <ChevronUp className="w-3.5 h-3.5" />
-                                  ) : (
-                                    <ChevronDown className="w-3.5 h-3.5" />
-                                  )}
-                                </button>
-
-                                {onEditClip && (
-                                  <Button
-                                    size="sm"
-                                    variant="glass"
-                                    onClick={() => onEditClip(clip)}
-                                    className="rounded-xl h-8 px-3 text-xs font-semibold bg-amber-500/10 border-amber-500/30 text-amber-300 hover:bg-amber-500/20"
-                                  >
-                                    <span className="flex items-center gap-1.5">
-                                      <Pencil className="w-3 h-3" />
-                                      Edit with AI
-                                    </span>
-                                  </Button>
-                                )}
-
-                                <Button
-                                  size="sm"
-                                  variant={
-                                    dl.status === "done" ? "glass" : "default"
-                                  }
-                                  onClick={() =>
-                                    dl.status === "downloading"
-                                      ? handleCancelDownload(clip)
-                                      : dl.status === "done" && dl.jobId
-                                        ? triggerClipDownload(dl.jobId, clip.title)
-                                        : startClipDownload(clip)
-                                  }
-                                  className={cn(
-                                    "rounded-xl h-8 px-3 text-xs font-semibold min-w-[90px]",
-                                    dl.status === "done" &&
-                                      "bg-emerald-500/20 border-emerald-500/30 text-emerald-300",
-                                    dl.status === "error" &&
-                                      "bg-red-500/10 border-red-500/30 text-red-300",
-                                    dl.status === "cancelled" &&
-                                      "bg-amber-500/10 border-amber-500/30 text-amber-300",
-                                    dl.status === "downloading" &&
-                                      "bg-amber-500/15 border-amber-500/40 text-amber-200",
-                                  )}
-                                >
-                                  {dl.status === "downloading" ? (
-                                    <span className="flex items-center gap-1.5">
-                                      <X className="w-3 h-3" />
-                                      Cancel
-                                    </span>
-                                  ) : dl.status === "done" ? (
-                                    <span className="flex items-center gap-1.5">
-                                      <Download className="w-3 h-3" />
-                                      Save
-                                    </span>
-                                  ) : dl.status === "error" ||
-                                    dl.status === "cancelled" ? (
-                                    <span className="flex items-center gap-1.5">
-                                      <Download className="w-3 h-3" />
-                                      Retry
-                                    </span>
-                                  ) : (
-                                    <span className="flex items-center gap-1.5">
-                                      <Download className="w-3 h-3" />
-                                      Download
-                                    </span>
-                                  )}
-                                </Button>
-                              </div>
-                            </div>
-
-                            <AnimatePresence>
-                              {isExpanded && (
-                                <motion.div
-                                  initial={{ opacity: 0, height: 0 }}
-                                  animate={{ opacity: 1, height: "auto" }}
-                                  exit={{ opacity: 0, height: 0 }}
-                                  className="overflow-hidden"
-                                >
-                                  <div className="pt-3 mt-3 border-t border-white/5 space-y-2 ml-0 sm:ml-9">
-                                    <p className="text-white/65 text-sm leading-relaxed">
-                                      {clip.description}
-                                    </p>
-                                    {clip.reason && (
-                                      <div className="flex items-start gap-2 bg-white/5 rounded-lg px-3 py-2">
-                                        <Sparkles className="w-3 h-3 text-primary shrink-0 mt-0.5" />
-                                        <p className="text-white/55 text-xs italic">
-                                          {clip.reason}
-                                        </p>
-                                      </div>
-                                    )}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-                        </motion.div>
-                      );
-                    })}
-                  </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </motion.div>
               );
             })}
