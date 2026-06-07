@@ -147,6 +147,7 @@ export function GetSubtitles() {
   const [srtFilename, setSrtFilename] = useState("subtitles.srt");
   const [originalSrt, setOriginalSrt] = useState<string | null>(null);
   const [originalFilename, setOriginalFilename] = useState<string | null>(null);
+  const [qualityWarnings, setQualityWarnings] = useState<string[]>([]);
   // The source language that was actually used (for labelling "Download Original")
   const [jobSourceLang, setJobSourceLang] = useState<string>("auto");
   const [durationSecs, setDurationSecs] = useState<number | null>(null);
@@ -365,6 +366,10 @@ export function GetSubtitles() {
           setSrtFilename(data.filename ?? "subtitles.srt");
           setOriginalSrt(data.originalSrt ?? null);
           setOriginalFilename(data.originalFilename ?? null);
+          const warnings = Array.isArray(data.qualityWarnings)
+            ? data.qualityWarnings.filter((value: unknown): value is string => typeof value === "string")
+            : [];
+          setQualityWarnings(warnings);
 
           // Persist result to device history (localStorage)
           const entry: SubtitleHistoryEntry = {
@@ -380,6 +385,7 @@ export function GetSubtitles() {
             originalSrt: data.originalSrt ?? undefined,
             originalFilename: data.originalFilename ?? undefined,
             entryCount: (data.srt ?? "").trim().split(/\n\n+/).filter(Boolean).length,
+            qualityWarnings: warnings,
           };
           saveToHistory(entry);
           setHistory(loadHistory());
@@ -436,6 +442,7 @@ export function GetSubtitles() {
     setSrtContent(null);
     setOriginalSrt(null);
     setOriginalFilename(null);
+    setQualityWarnings([]);
     setDurationSecs(null);
     setProgressPct(5);
     setTick(0);
@@ -666,6 +673,7 @@ export function GetSubtitles() {
     if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
     setJobId(null); setJobStatus(null); setJobMessage(""); setJobError("");
     setSrtContent(null); setOriginalSrt(null); setOriginalFilename(null);
+    setQualityWarnings([]);
     setDurationSecs(null); setLoading(false); setJobStartedAt(null); setTick(0);
     setProgressPct(0);
     lastGoodStepRef.current = null;
@@ -1137,6 +1145,20 @@ export function GetSubtitles() {
                         <p className="text-white/40 text-xs mt-0.5">{entryCount} subtitle entries</p>
                       </div>
                     </div>
+
+                    {qualityWarnings.length > 0 && (
+                      <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-3.5 py-3 text-left">
+                        <div className="flex items-start gap-2.5">
+                          <AlertCircle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+                          <div className="min-w-0">
+                            <p className="text-amber-200 text-xs font-semibold">Review timing before publishing</p>
+                            <p className="text-amber-100/70 text-[11px] leading-relaxed mt-1">
+                              {qualityWarnings.slice(0, 2).join(" ")}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="flex flex-wrap gap-2">
                       <Button

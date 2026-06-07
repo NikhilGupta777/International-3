@@ -14,6 +14,7 @@ export interface SubtitleHistoryEntry {
   originalSrt?: string;
   originalFilename?: string;
   entryCount: number;
+  qualityWarnings?: string[];
 }
 
 export function loadHistory(): SubtitleHistoryEntry[] {

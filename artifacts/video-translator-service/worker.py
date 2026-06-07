@@ -521,6 +521,7 @@ def transcribe(audio_path: Path) -> list[dict]:
     Groups words into sentences/segments by pauses.
     Returns list of: { id, start, end, text, words: [{word, start, end}] }
     """
+    global SOURCE_LANG_CODE
     import assemblyai as aai
 
     if not ASSEMBLYAI_API_KEY:
@@ -546,7 +547,6 @@ def transcribe(audio_path: Path) -> list[dict]:
     if transcript.error:
         raise RuntimeError(f"AssemblyAI error: {transcript.error}")
 
-    global SOURCE_LANG_CODE
     detected_code = transcript.json_response.get('language_code')
     if detected_code:
         SOURCE_LANG_CODE = detected_code
@@ -4043,10 +4043,12 @@ def _fmt_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def generate_srt(segments: list[dict], out_path: Path):
+def generate_srt(segments: list[dict], out_path: Path, video_duration: Optional[float] = None):
     lines = []
     idx = 1
     skipped = 0
+    out_of_bounds = 0
+    clamped = 0
     for seg in segments:
         # Use only the translated text -- never fall back to source-language
         # text. For a dubbed video the SRT must match the dubbed audio; a
@@ -4056,14 +4058,31 @@ def generate_srt(segments: list[dict], out_path: Path):
         if not text:
             skipped += 1
             continue
+        start = float(seg.get("start", 0.0) or 0.0)
+        end = float(seg.get("end", 0.0) or 0.0)
+        if start < 0 or end <= start:
+            skipped += 1
+            continue
+        if video_duration and video_duration > 0:
+            if start >= video_duration + 0.25:
+                out_of_bounds += 1
+                continue
+            if end > video_duration:
+                if video_duration - start < 0.25:
+                    out_of_bounds += 1
+                    continue
+                end = video_duration
+                clamped += 1
         lines.append(str(idx))
-        lines.append(f"{_fmt_timestamp(seg['start'])} --> {_fmt_timestamp(seg['end'])}")
+        lines.append(f"{_fmt_timestamp(start)} --> {_fmt_timestamp(end)}")
         lines.append(text)
         lines.append("")
         idx += 1
     out_path.write_text("\n".join(lines), encoding="utf-8")
     if skipped:
         log.warning(f"[SRT] Skipped {skipped} segment(s) with no translated_text.")
+    if out_of_bounds or clamped:
+        log.warning(f"[SRT] Repaired bounds: skipped {out_of_bounds} out-of-range, clamped {clamped} to video duration.")
     log.info(f"[SRT] Written {idx - 1} subtitle entries -> {out_path}")
 
 
@@ -4480,7 +4499,7 @@ def main():
         update_progress("MERGING", 88, "Generating subtitles...")
         srt_path = work_dir / "subtitles.srt"
         transcript_path = work_dir / "transcript.json"
-        generate_srt(segments, srt_path)
+        generate_srt(segments, srt_path, video_duration=video_duration)
         generate_transcript_json(segments, transcript_path)
 
         # â”€â”€ 11. Upload to S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

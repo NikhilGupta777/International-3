@@ -625,6 +625,7 @@ export interface SrtJob {
   cancelled?: boolean;
   durationSecs?: number;
   progressPct?: number;
+  qualityWarnings?: string[];
   notifyClientKey?: string | null;
   errorNotified?: boolean;
 }
@@ -687,6 +688,7 @@ async function persistSubtitleJob(jobId: string, job: SrtJob): Promise<void> {
   };
   if (job.completedAt) item.completedAt = { N: String(job.completedAt) };
   if (job.durationSecs != null) item.durationSecs = { N: String(job.durationSecs) };
+  if (job.qualityWarnings?.length) item.qualityWarnings = { S: JSON.stringify(job.qualityWarnings.slice(0, 5)) };
   if (s3Key) item.s3Key = { S: s3Key };
   if (originalS3Key) item.originalS3Key = { S: originalS3Key };
   if (job.originalFilename) item.originalFilename = { S: job.originalFilename };
@@ -726,6 +728,7 @@ async function readPersistedSubtitleJob(jobId: string): Promise<{
   originalFilename: string | null;
   durationSecs: number | null;
   progressPct: number | null;
+  qualityWarnings: string[];
   updatedAt: number | null;
   jobType: string | null;
   batchJobId: string | null;
@@ -738,6 +741,16 @@ async function readPersistedSubtitleJob(jobId: string): Promise<{
   }));
   const item = out.Item;
   if (!item) return null;
+  let qualityWarnings: string[] = [];
+  if (item.qualityWarnings?.S) {
+    try {
+      const parsed = JSON.parse(item.qualityWarnings.S);
+      if (Array.isArray(parsed)) {
+        qualityWarnings = parsed.filter((value): value is string => typeof value === "string").slice(0, 5);
+      }
+    } catch {}
+  }
+
   return {
     status: item.status?.S ?? "pending",
     message: item.message?.S ?? null,
@@ -747,6 +760,7 @@ async function readPersistedSubtitleJob(jobId: string): Promise<{
     originalFilename: item.originalFilename?.S ?? null,
     durationSecs: item.durationSecs?.N ? Number(item.durationSecs.N) : null,
     progressPct: item.progressPct?.N ? Number(item.progressPct.N) : null,
+    qualityWarnings,
     updatedAt: item.updatedAt?.N ? Number(item.updatedAt.N) : null,
     jobType: item.jobType?.S ?? null,
     batchJobId: item.batchJobId?.S ?? null,
@@ -1643,10 +1657,19 @@ Now listen to the full audio from 00:00:00 to ${durationSrt} and return the full
 function buildTranslationPrompt(correctedSrt: string, fromLanguage: string, toLanguage: string): string {
   const fromNote = fromLanguage === "auto" ? "its original language" : fromLanguage;
   const targetScriptRules = buildNativeScriptRules(toLanguage);
-  return `You are a simultaneous interpreter — not a translator. A translator converts words; an interpreter understands what a human being is saying and renders that meaning naturally in another language. That is your job here.
+  return `You are translating subtitles, not dubbing voice-over. Keep every subtitle anchored to its existing timestamp.
 
-I will give you an SRT subtitle file of spoken speech in ${fromNote}. Your task is to render it in ${toLanguage} the way a skilled live interpreter would.
+I will give you an SRT subtitle file of spoken speech in ${fromNote}. Your task is to translate only the subtitle text into ${toLanguage}.
 ${targetScriptRules}
+
+STRICT SUBTITLE TRANSLATION RULES:
+- Do not create, change, shift, merge, split, or remove timestamps.
+- Keep every entry number exactly as-is.
+- Return exactly one translated subtitle for each input entry.
+- If the source is a fragment, translate it as a subtitle fragment. Do not rewrite it into full narration.
+- Keep each line concise and close to the source length.
+- Preserve names, dates, religious terms, Hindi/Odia/Sanskrit terms, and proper nouns carefully.
+- Return only valid SRT. No markdown fences, no JSON, no explanation.
 
 ━━━ STEP 1: READ THE ENTIRE SRT FIRST ━━━
 Before you write a single translated word, silently read the ENTIRE SRT from the first entry to the last. Understand:
@@ -1928,18 +1951,114 @@ function restoreTimestamps(originalSrt: string, translatedSrt: string): string {
   return restored.join("\n\n") + "\n";
 }
 
+type ParsedSrtEntry = {
+  index: number;
+  startMs: number;
+  endMs: number;
+  text: string;
+  raw: string;
+};
+
+function parseSrtEntries(srt: string): ParsedSrtEntry[] {
+  return srt.trim().split(/\n\n+/).map((entry) => {
+    const lines = entry.trim().split("\n");
+    if (lines.length < 3) return null;
+    const index = Number.parseInt(lines[0].trim(), 10);
+    const parts = lines[1].trim().match(/^(.+?)\s*-->\s*(.+)$/);
+    if (!Number.isFinite(index) || !parts) return null;
+    return {
+      index,
+      startMs: tsToMs(parts[1].trim()),
+      endMs: tsToMs(parts[2].trim()),
+      text: lines.slice(2).join(" ").trim(),
+      raw: entry.trim(),
+    };
+  }).filter((entry): entry is ParsedSrtEntry => entry !== null);
+}
+
+function endsLikeIncompleteSubtitle(text: string): boolean {
+  const cleaned = text.trim().replace(/[)"'\]]+$/g, "").trim();
+  if (!cleaned) return true;
+  if (/[,:;—–-]$/.test(cleaned)) return true;
+  return /\b(?:and|or|but|for|to|of|the|a|an|in|on|with|from|that|which|who|when|while|because|about|into|by)$/i.test(cleaned);
+}
+
+function validateSrtQuality(srt: string, durationSecs?: number | null): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const entries = parseSrtEntries(srt);
+
+  if (entries.length === 0) {
+    errors.push("No subtitle segments generated.");
+    return { errors, warnings };
+  }
+
+  const badTimestamp = entries.find((entry) => entry.startMs < 0 || entry.endMs < 0 || entry.startMs >= entry.endMs);
+  if (badTimestamp) errors.push(`Invalid timestamp at subtitle ${badTimestamp.index}.`);
+
+  for (let i = 1; i < entries.length; i += 1) {
+    if (entries[i].startMs < entries[i - 1].endMs) {
+      errors.push(`Subtitle timing overlaps around entry ${entries[i].index}.`);
+      break;
+    }
+  }
+
+  const lastEndMs = Math.max(...entries.map((entry) => entry.endMs));
+  if (durationSecs && durationSecs > 0) {
+    const durationMs = durationSecs * 1000;
+    if (lastEndMs > durationMs + 250) {
+      errors.push(`Subtitle timing exceeds media length by ${((lastEndMs - durationMs) / 1000).toFixed(2)}s.`);
+    }
+  }
+
+  if (entries.length > 8) {
+    const zeroGaps = entries.slice(1).filter((entry, i) => Math.abs(entry.startMs - entries[i].endMs) < 10).length;
+    const zeroGapRatio = zeroGaps / Math.max(1, entries.length - 1);
+    if (zeroGapRatio > 0.9) {
+      errors.push("Subtitle timing has almost no speech gaps; regenerate from audio-aligned timestamps.");
+    } else if (zeroGapRatio > 0.65) {
+      warnings.push("Many subtitle entries have no gap between them; review timing before publishing.");
+    }
+  }
+
+  const uniqueDurations = new Set(entries.map((entry) => Math.round((entry.endMs - entry.startMs) / 10) * 10));
+  if (entries.length >= 40 && uniqueDurations.size <= 6) {
+    warnings.push("Subtitle durations look highly repetitive; timing may be estimated.");
+  }
+
+  if (endsLikeIncompleteSubtitle(entries[entries.length - 1]?.text ?? "")) {
+    errors.push("Final subtitle appears to end mid-sentence.");
+  }
+
+  return { errors, warnings };
+}
+
+function assertSubtitleQuality(srt: string, durationSecs: number | null | undefined, context: string): string[] {
+  if (!validateSrt(srt)) {
+    throw new Error(`AI returned an invalid ${context} subtitle file.`);
+  }
+  const quality = validateSrtQuality(srt, durationSecs);
+  if (quality.errors.length > 0) {
+    throw new Error(`Subtitle quality check failed: ${quality.errors.join(" ")}`);
+  }
+  return quality.warnings;
+}
+
 // ── Filter entries beyond audio duration ─────────────────────────────────────
 function filterOutOfBoundsEntries(srt: string, durationSecs: number): string {
   if (durationSecs <= 0) return srt;
-  const entries = srt.trim().split(/\n\n+/);
+  const durationMs = durationSecs * 1000;
+  const entries = parseSrtEntries(srt);
   const valid: string[] = [];
   for (const entry of entries) {
-    const lines = entry.trim().split("\n");
-    if (lines.length < 3) continue;
-    const tsMatch = lines[1].match(/^(\d{2}):(\d{2}):(\d{2}),\d{3}\s*-->/);
-    if (!tsMatch) { valid.push(entry.trim()); continue; }
-    const entrySecs = parseInt(tsMatch[1], 10) * 3600 + parseInt(tsMatch[2], 10) * 60 + parseInt(tsMatch[3], 10);
-    if (entrySecs <= durationSecs + 5) valid.push(entry.trim()); // 5s tolerance
+    if (entry.startMs < 0 || entry.endMs < 0) continue;
+    if (entry.startMs >= durationMs + 250) continue;
+    const lines = entry.raw.split("\n");
+    if (entry.endMs > durationMs) {
+      if (durationMs - entry.startMs < 250) continue;
+      lines[1] = `${msToTs(entry.startMs)} --> ${msToTs(durationMs)}`;
+    }
+    valid.push(lines.join("\n"));
   }
   return valid.map((entry, i) => {
     const lines = entry.split("\n");
@@ -2435,9 +2554,7 @@ async function processYoutubeVideoSrt(
       }
     }
 
-    if (!validateSrt(correctedFinalSrt)) {
-      throw new Error("Gemini returned an invalid verified subtitle file");
-    }
+    job.qualityWarnings = assertSubtitleQuality(correctedFinalSrt, durationSecs, "verified");
 
     job.status = "done";
     job.progressPct = 100;
@@ -2805,9 +2922,11 @@ async function processAudio(
       const verifiedSrt = restoreTimestamps(correctedFinalSrt, verifiedClean);
 
       const finalSrt = strictFilterMalformedTimestamps(cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt)));
-      if (!validateSrt(finalSrt)) {
+      try {
+        job.qualityWarnings = assertSubtitleQuality(finalSrt, durationSecs, "translated");
+      } catch (err) {
         job.status = "error";
-        job.error = "AI returned an invalid translated subtitle file — please try again";
+        job.error = err instanceof Error ? err.message : "AI returned an unsafe translated subtitle file - please try again";
         return;
       }
       job.status = "done";
@@ -2816,6 +2935,13 @@ async function processAudio(
       job.srt = finalSrt;
       notifySubtitleReady(jobId, job);
     } else {
+      try {
+        job.qualityWarnings = assertSubtitleQuality(correctedFinalSrt, durationSecs, "generated");
+      } catch (err) {
+        job.status = "error";
+        job.error = err instanceof Error ? err.message : "AI returned an unsafe subtitle file - please try again";
+        return;
+      }
       job.status = "done";
       job.progressPct = 100;
       job.message = "Subtitles ready!";
@@ -3865,6 +3991,7 @@ router.get("/subtitles/status/:jobId", async (req: Request, res: Response) => {
               originalFilename: queueStatus.originalFilename ?? null,
               durationSecs: queueStatus.durationSecs ?? null,
               progressPct: 100,
+              qualityWarnings: [],
               queue: {
                 updatedAt: queueStatus.updatedAt,
                 batchJobId: queueStatus.batchJobId,
@@ -3928,6 +4055,7 @@ router.get("/subtitles/status/:jobId", async (req: Request, res: Response) => {
           originalFilename: persisted.originalFilename,
           durationSecs: persisted.durationSecs,
           progressPct: 100,
+          qualityWarnings: persisted.qualityWarnings,
         });
         return;
       }
@@ -3973,6 +4101,7 @@ router.get("/subtitles/status/:jobId", async (req: Request, res: Response) => {
             originalFilename: queueStatus.originalFilename ?? null,
             durationSecs: queueStatus.durationSecs ?? null,
             progressPct: 100,
+            qualityWarnings: [],
             queue: {
               updatedAt: queueStatus.updatedAt,
               batchJobId: queueStatus.batchJobId,
@@ -4023,6 +4152,7 @@ router.get("/subtitles/status/:jobId", async (req: Request, res: Response) => {
       originalFilename: job.originalFilename ?? null,
       durationSecs: job.durationSecs ?? null,
       progressPct: 100,
+      qualityWarnings: job.qualityWarnings ?? [],
     });
   } else if (job.status === "error") {
     res.json({ status: job.status, error: job.error, durationSecs: job.durationSecs ?? null, progressPct: job.progressPct ?? 0 });
