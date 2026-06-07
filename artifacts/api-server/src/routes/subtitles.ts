@@ -23,6 +23,7 @@ import {
   readBufferFromS3,
   readTextFromS3,
   uploadTextToS3,
+  uploadFileToS3,
   cleanupOldS3Objects,
   isS3StorageEnabled,
 } from "../lib/s3-storage";
@@ -2845,7 +2846,10 @@ async function processAudio(
 export type SubtitleWorkerEvent = {
   source: "videomaking.subtitles";
   jobId: string;
-  url: string;
+  inputMode?: "url" | "upload";
+  url?: string;
+  uploadS3Key?: string;
+  originalFilename?: string;
   language?: string;
   translateTo?: string;
   notifyClientKey?: string | null;
@@ -2994,10 +2998,80 @@ async function runSubtitleUrlJob(params: {
   }
 }
 
+async function runSubtitleUploadJob(params: {
+  jobId: string;
+  uploadS3Key: string;
+  originalFilename: string;
+  language: string;
+  translateLang?: string;
+  notifyClientKey?: string | null;
+}): Promise<void> {
+  const baseName = params.originalFilename.replace(/\.[^.]+$/, "");
+  const srtFilename = `${baseName}.srt`;
+
+  let job = jobs.get(params.jobId);
+  if (!job) {
+    job = trackSubtitleJob(params.jobId, {
+      status: "pending",
+      message: "Starting subtitle job...",
+      filename: srtFilename,
+      createdAt: Date.now(),
+      translateTo: params.translateLang,
+      progressPct: 0,
+      notifyClientKey: params.notifyClientKey ?? null,
+    });
+  }
+
+  const tempPath = join(DOWNLOAD_DIR, `subtitles-upload-${params.jobId}-${basename(params.originalFilename)}`);
+  try {
+    job.status = "uploading";
+    job.progressPct = Math.max(job.progressPct ?? 0, 5);
+    job.message = "Downloading uploaded file...";
+
+    mkdirSync(dirname(tempPath), { recursive: true });
+    const body = await readBufferFromS3(params.uploadS3Key);
+    writeFileSync(tempPath, body);
+
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+
+    await processAudio(params.jobId, tempPath, params.language, srtFilename, params.translateLang, () => {
+      try { rmSync(tempPath); } catch {}
+    });
+  } catch (err: any) {
+    try { rmSync(tempPath); } catch {}
+    const message = err instanceof Error ? err.message : "Subtitle upload processing failed";
+    if (message === CANCELLED_BY_USER || job.cancelled) {
+      job.status = "cancelled";
+      job.completedAt = Date.now();
+      job.message = CANCELLED_BY_USER;
+    } else {
+      job.status = "error";
+      job.completedAt = Date.now();
+      job.error = message;
+    }
+  } finally {
+    await flushSubtitleJobPersistence(params.jobId, job).catch((err) =>
+      logger.warn({ err, jobId: params.jobId }, "Failed final subtitle job persistence flush"),
+    );
+  }
+}
+
 export async function runSubtitleWorker(event: SubtitleWorkerEvent): Promise<void> {
+  if (event.inputMode === "upload" && event.uploadS3Key && event.originalFilename) {
+    await runSubtitleUploadJob({
+      jobId: event.jobId,
+      uploadS3Key: event.uploadS3Key,
+      originalFilename: event.originalFilename,
+      language: event.language ?? "auto",
+      translateLang: event.translateTo,
+      notifyClientKey: event.notifyClientKey ?? null,
+    });
+    return;
+  }
+
   await runSubtitleUrlJob({
     jobId: event.jobId,
-    normalizedUrl: normalizeInputUrl(event.url),
+    normalizedUrl: normalizeInputUrl(event.url!),
     language: event.language ?? "auto",
     translateLang: event.translateTo,
     notifyClientKey: event.notifyClientKey ?? null,
@@ -3446,6 +3520,8 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
   const jobId = randomUUID();
   const notifyClientKey = getNotifyClientKey(req);
+  const baseName = originalFilename.replace(/\.[^.]+$/, "");
+  const srtFilename = `${baseName}.srt`;
 
   if (SUBTITLES_QUEUE_UPLOADS && isSubtitlesQueuePrimaryEnabled()) {
     try {
@@ -3470,8 +3546,55 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
     return;
   }
 
-  const baseName = originalFilename.replace(/\.[^.]+$/, "");
-  const srtFilename = `${baseName}.srt`;
+  // ── Lambda self-invoke worker path ──────────────────────────────────────
+  // Uploaded-file jobs must NOT process in-process here: AWS Lambda freezes
+  // the execution environment as soon as res.json() resolves the response
+  // stream, which kills the background download/transcode/transcribe work
+  // mid-flight and leaves the job stuck at "pending" forever (see the
+  // "Lambda async context" gotcha in CLAUDE.md). Self-invoking a separate
+  // worker Lambda (InvocationType: Event) — exactly like /subtitles/generate
+  // does for URL jobs — runs the heavy work in its own 15-minute container.
+  const useLambdaWorker = !!(lambdaClient && WORKER_FUNCTION_NAME && ddb && JOB_TABLE);
+  if (useLambdaWorker) {
+    trackSubtitleJob(jobId, {
+      status: "pending",
+      message: "Starting fast subtitle worker...",
+      filename: srtFilename,
+      createdAt: Date.now(),
+      translateTo: translateLang,
+      progressPct: 5,
+      notifyClientKey,
+    });
+    markSubtitleLambdaStillStarting(jobId);
+    try {
+      await lambdaClient.send(new InvokeCommand({
+        FunctionName: WORKER_FUNCTION_NAME,
+        InvocationType: "Event",
+        Payload: Buffer.from(JSON.stringify({
+          source: "videomaking.subtitles",
+          jobId,
+          inputMode: "upload",
+          uploadS3Key: uploadKey,
+          originalFilename,
+          language,
+          translateTo: translateLang,
+          notifyClientKey: notifyClientKey ?? null,
+        } satisfies SubtitleWorkerEvent)),
+      }));
+      res.json({ jobId, mode: "lambda" });
+    } catch (err) {
+      logger.error({ err, jobId }, "Failed to start subtitles upload Lambda worker");
+      const job = jobs.get(jobId);
+      if (job) {
+        job.status = "error";
+        job.completedAt = Date.now();
+        job.error = "Failed to start subtitle job";
+      }
+      res.status(502).json({ error: "Failed to start subtitle job" });
+    }
+    return;
+  }
+
   trackSubtitleJob(jobId, {
     status: "pending",
     message: "Queued - starting soon...",
@@ -3540,6 +3663,60 @@ router.post(
     const srtFilename = `${baseName}.srt`;
     const jobId = randomUUID();
     const notifyClientKey = getNotifyClientKey(req);
+
+    // ── Lambda self-invoke worker path ────────────────────────────────────
+    // Same "do not process in-process" reasoning as /subtitles/upload/start:
+    // the Lambda execution environment freezes once res.json() resolves, so
+    // we hand the heavy work to a separate worker invocation. The file is
+    // already on local disk (multer), so stage it to S3 first and pass the
+    // S3 key to the worker.
+    const useLambdaWorker = !!(lambdaClient && WORKER_FUNCTION_NAME && ddb && JOB_TABLE && isS3StorageEnabled());
+    if (useLambdaWorker) {
+      try {
+        const staged = await uploadFileToS3({
+          localPath: req.file.path,
+          jobId,
+          namespace: "subtitles/uploads",
+          filename: req.file.originalname,
+          contentType: req.file.mimetype || "application/octet-stream",
+        });
+        try { rmSync(req.file.path); } catch {}
+
+        trackSubtitleJob(jobId, {
+          status: "pending",
+          message: "Starting fast subtitle worker...",
+          filename: srtFilename,
+          createdAt: Date.now(),
+          translateTo: translateLang,
+          progressPct: 5,
+          notifyClientKey,
+        });
+        markSubtitleLambdaStillStarting(jobId);
+        await lambdaClient!.send(new InvokeCommand({
+          FunctionName: WORKER_FUNCTION_NAME,
+          InvocationType: "Event",
+          Payload: Buffer.from(JSON.stringify({
+            source: "videomaking.subtitles",
+            jobId,
+            inputMode: "upload",
+            uploadS3Key: staged.key,
+            originalFilename: req.file.originalname,
+            language,
+            translateTo: translateLang,
+            notifyClientKey: notifyClientKey ?? null,
+          } satisfies SubtitleWorkerEvent)),
+        }));
+        res.json({ jobId, mode: "lambda" });
+      } catch (err) {
+        try { rmSync(req.file.path); } catch {}
+        logger.error({ err, jobId }, "Failed to start subtitles upload Lambda worker");
+        // No response has been sent to the client yet at this point (res.json
+        // only fires on success above), so the client never received this
+        // jobId — just report the failure directly.
+        res.status(502).json({ error: "Failed to start subtitle job" });
+      }
+      return;
+    }
 
     trackSubtitleJob(jobId, {
       status: "pending",
