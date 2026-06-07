@@ -37,6 +37,7 @@ import {
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
 const JOB_NOT_FOUND_GRACE_MS = 15 * 60 * 1000;
 const HISTORY_PAGE_SIZE = 7;
+const PROGRESS_POLL_INTERVAL_MS = 4000;
 
 const QUALITY_OPTIONS = [
   { label: "Best", value: "best" },
@@ -216,7 +217,21 @@ export function ClipCutter() {
   const jobsRef = useRef<ActiveJob[]>([]);
   jobsRef.current = jobs;
 
+  const isTerminalJobStatus = (status: JobStatus) =>
+    status === "done" || status === "error" || status === "cancelled";
 
+  const isActiveJob = (job: ActiveJob) => !isTerminalJobStatus(job.status);
+
+  const createHistoryEntry = (job: ActiveJob, data: ProgressPayload): ClipHistoryEntry => ({
+    jobId: job.jobId,
+    createdAt: Date.now(),
+    label: job.label,
+    url: job.url,
+    quality: job.quality,
+    filename: data.filename ?? job.filename ?? "clip.mp4",
+    filesize: data.filesize ?? job.filesize,
+    durationSecs: job.endSecs - job.startSecs,
+  });
 
   // Persist active jobs to localStorage whenever the jobs list changes
   const persistActiveJobs = useCallback((current: ActiveJob[]) => {
@@ -274,20 +289,14 @@ export function ClipCutter() {
 
   // Polling loop — runs continuously, picks up all active jobs
   useEffect(() => {
-    if (typeof EventSource !== "undefined") return;
     if (pollRef.current) return;
 
     pollRef.current = setInterval(async () => {
       if (pollInFlightRef.current) return;
       pollInFlightRef.current = true;
       try {
-      const current = jobsRef.current;
-        const active = current.filter(
-        (j) =>
-          j.status !== "done" &&
-          j.status !== "error" &&
-          j.status !== "cancelled",
-      );
+        const current = jobsRef.current;
+        const active = current.filter(isActiveJob);
       if (active.length === 0) return;
 
       for (const job of active) {
@@ -315,14 +324,32 @@ export function ClipCutter() {
 
             if (!res.ok) continue;
             const data = await res.json();
+            if (data.status === "not_found") {
+              if (Date.now() - job.startedAt < JOB_NOT_FOUND_GRACE_MS) {
+                continue;
+              }
+              setJobs((prev) => {
+                const updated = prev.map((j) =>
+                  j.jobId !== job.jobId ? j : {
+                    ...j,
+                    status: "error" as JobStatus,
+                    message: "Server restarted - job was lost. Please retry.",
+                  },
+                );
+                persistActiveJobs(updated);
+                return updated;
+              });
+              continue;
+            }
 
             setJobs((prev) => {
               const updated = prev.map((j) => {
                 if (j.jobId !== job.jobId) return j;
+                const nextStatus = normalizeJobStatus(data.status, j.status);
 
                 const updatedJob: ActiveJob = {
                   ...j,
-                  status: normalizeJobStatus(data.status, j.status),
+                  status: nextStatus,
                   percent: data.percent ?? j.percent,
                   speed: data.speed ?? null,
                   eta: data.eta ?? null,
@@ -332,22 +359,13 @@ export function ClipCutter() {
                   progressLine: data.progressLine ?? j.progressLine,
                   progressSource: data.progressSource ?? j.progressSource,
                   queueUpdatedAt: data.queue?.updatedAt ?? j.queueUpdatedAt,
-                  completedAt: data.completedAt ?? (data.status === "done" ? Date.now() : j.completedAt),
+                  completedAt: data.completedAt ?? (nextStatus === "done" ? Date.now() : j.completedAt),
                   elapsedMs: data.elapsedMs ?? j.elapsedMs,
                 };
 
                 // Save to history when done
-                if (data.status === "done" && !j.savedToHistory) {
-                  const entry: ClipHistoryEntry = {
-                    jobId: j.jobId,
-                    createdAt: Date.now(),
-                    label: j.label,
-                    url: j.url,
-                    quality: j.quality,
-                    filename: data.filename ?? j.filename ?? "clip.mp4",
-                    filesize: data.filesize ?? j.filesize,
-                    durationSecs: j.endSecs - j.startSecs,
-                  };
+                if (nextStatus === "done" && !j.savedToHistory) {
+                  const entry = createHistoryEntry(j, data);
                   saveToClipHistory(entry);
                   setHistory(loadClipHistory());
                   updatedJob.savedToHistory = true;
@@ -364,7 +382,7 @@ export function ClipCutter() {
       } finally {
         pollInFlightRef.current = false;
       }
-    }, 1500);
+    }, PROGRESS_POLL_INTERVAL_MS);
 
     return () => {
       if (pollRef.current) {
@@ -477,6 +495,14 @@ export function ClipCutter() {
           throw new Error(`Progress request failed (${res.status})`);
         }
         const data = (await res.json()) as ProgressPayload;
+        if (data.status === "not_found") {
+          const current = jobsRef.current.find((j) => j.jobId === jobId);
+          if (current && Date.now() - current.startedAt < JOB_NOT_FOUND_GRACE_MS) {
+            return;
+          }
+          markJobLost(jobId, "Server restarted - job was lost. Please retry.");
+          return;
+        }
         applyProgressUpdate(jobId, data);
       } catch {
         setJobs((prev) =>

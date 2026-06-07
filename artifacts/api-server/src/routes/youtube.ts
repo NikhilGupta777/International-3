@@ -2146,6 +2146,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
       try {
         await spawnDownloadOnce(extra, cmdArgs, jobRef, {
           timeoutMs: attemptTimeoutMs,
+          stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
           onProgress: persistProgress,
         });
         lastErr = null;
@@ -2186,6 +2187,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
           try {
             await spawnDownloadOnce(extra, cmdArgs, jobRef, {
               timeoutMs: attemptTimeoutMs,
+              stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
               onProgress: persistProgress,
             });
             lastErr = null;
