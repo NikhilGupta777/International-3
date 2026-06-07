@@ -48,6 +48,7 @@ interface ActiveTimestampJob {
 }
 
 const ACTIVE_JOBS_KEY = "ytgrabber_active_timestamps_jobs";
+const HISTORY_PAGE_SIZE = 7;
 
 function loadActiveTimestampJobs(): ActiveTimestampJob[] {
   try {
@@ -107,17 +108,23 @@ function useClipboard(timeout = 1800) {
 // StepRow has been removed since the unified TimestampJobCard is used instead
 
 function extractVideoId(url: string) {
-  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:live\/|shorts\/|[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
   return match ? match[1] : null;
 }
 
+function normalizeYouTubeInputUrl(url: string): string {
+  const videoId = extractVideoId(url);
+  return videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
+}
+
 function parseCombinedInput(input: string) {
-  const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)[a-zA-Z0-9_-]{11}(?:\S+)?)/i;
+  const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/(?:live\/|shorts\/|[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)[a-zA-Z0-9_-]{11}(?:\S+)?)/i;
   const match = input.match(urlRegex);
   if (!match) return { url: "", description: input.trim() };
   
-  const url = match[1];
-  const description = input.replace(url, "").replace(/\s+/g, " ").trim();
+  const rawUrl = match[1];
+  const url = normalizeYouTubeInputUrl(rawUrl);
+  const description = input.replace(rawUrl, "").replace(/\s+/g, " ").trim();
   return { url, description };
 }
 
@@ -190,6 +197,7 @@ export function Timestamps() {
     }
     return loaded;
   });
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -970,6 +978,7 @@ export function Timestamps() {
           <div className="flex flex-col gap-2.5 w-full">
             {[...history]
               .sort((a, b) => b.createdAt - a.createdAt)
+              .slice(0, visibleHistoryCount)
               .map((entry) => (
                 <RecentTimestampRow
                   key={entry.id}
@@ -978,6 +987,15 @@ export function Timestamps() {
                   onDelete={() => setHistory(deleteFromTimestampHistory(entry.id))}
                 />
               ))}
+            {history.length > visibleHistoryCount && (
+              <button
+                type="button"
+                onClick={() => setVisibleHistoryCount((count) => count + HISTORY_PAGE_SIZE)}
+                className="mt-1 h-10 rounded-xl border border-white/10 bg-white/[0.04] text-xs font-semibold text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+              >
+                Show more
+              </button>
+            )}
           </div>
         </div>
       )}

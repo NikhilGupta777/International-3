@@ -44,6 +44,8 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { saveToBestClipsHistory, loadBestClipsHistory, type BestClipsHistoryEntry } from "@/lib/best-clips-history";
 
+const HISTORY_PAGE_SIZE = 7;
+
 function parseCombinedInput(input: string) {
   const match = input.match(/(https?:\/\/[^\s]+)/);
   if (!match) return { url: "", description: input };
@@ -279,6 +281,7 @@ export const BestClips = forwardRef(function BestClips(
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [history, setHistory] = useState<BestClipsHistoryEntry[]>([]);
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const [selectedDurations, setSelectedDurations] = useState<number[]>([60]);
   const [isAutoMode, setIsAutoMode] = useState(true);
   const [is8MinMode, setIs8MinMode] = useState(false);
@@ -1225,7 +1228,7 @@ export const BestClips = forwardRef(function BestClips(
             </div>
 
             <div className="space-y-4">
-              {history.map((entry, entryIdx) => {
+              {history.slice(0, visibleHistoryCount).map((entry, entryIdx) => {
                 const isVideoExpanded = expandedVideoId === entry.id;
                 const videoId = extractVideoId(entry.url);
                 const thumbUrl = videoId ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` : null;
@@ -1484,6 +1487,15 @@ export const BestClips = forwardRef(function BestClips(
                   </motion.div>
                 );
               })}
+              {history.length > visibleHistoryCount && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleHistoryCount((count) => count + HISTORY_PAGE_SIZE)}
+                  className="h-10 rounded-xl border border-white/10 bg-white/[0.04] text-xs font-semibold text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  Show more
+                </button>
+              )}
             </div>
           </motion.div>
         )}

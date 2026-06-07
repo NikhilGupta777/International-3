@@ -36,6 +36,7 @@ import {
 
 const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
 const JOB_NOT_FOUND_GRACE_MS = 15 * 60 * 1000;
+const HISTORY_PAGE_SIZE = 7;
 
 const QUALITY_OPTIONS = [
   { label: "Best", value: "best" },
@@ -179,6 +180,7 @@ export function ClipCutter() {
   const [submitting, setSubmitting] = useState(false);
   const [jobs, setJobs] = useState<ActiveJob[]>([]);
   const [history, setHistory] = useState<ClipHistoryEntry[]>(() => loadClipHistory());
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const { toast } = useToast();
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -1180,7 +1182,7 @@ export function ClipCutter() {
 
           {/* Completed History cuts */}
           <AnimatePresence initial={false}>
-            {history.map((entry) => (
+            {history.slice(0, visibleHistoryCount).map((entry) => (
               <RecentClipRow
                 key={entry.jobId}
                 entry={entry}
@@ -1189,6 +1191,16 @@ export function ClipCutter() {
               />
             ))}
           </AnimatePresence>
+
+          {history.length > visibleHistoryCount && (
+            <button
+              type="button"
+              onClick={() => setVisibleHistoryCount((count) => count + HISTORY_PAGE_SIZE)}
+              className="mt-2 h-10 rounded-xl border border-white/10 bg-white/[0.04] text-xs font-semibold text-white/70 transition hover:bg-white/[0.08] hover:text-white"
+            >
+              Show more
+            </button>
+          )}
 
           {jobs.filter((j) => j.status !== "done").length === 0 && history.length === 0 && (
             <p className="text-xs text-zinc-500 text-center py-6 font-medium">

@@ -24,6 +24,7 @@ import {
 } from "@/lib/subtitle-history";
 
 const BASE = () => (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const HISTORY_PAGE_SIZE = 7;
 
 /** Strip SRT index numbers and timestamps — returns plain readable text */
 function srtToText(srt: string): string {
@@ -127,7 +128,7 @@ export function GetSubtitles() {
   const [tick, setTick] = useState(0);
   const [shaking, setShaking] = useState(false);
   const [emptyError, setEmptyError] = useState(false);
-  const [showAllHistory, setShowAllHistory] = useState(false);
+  const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
   const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => {
     const loaded = loadHistory();
@@ -1195,7 +1196,7 @@ export function GetSubtitles() {
           <div className="flex flex-col gap-2.5 w-full">
             {[...history]
               .sort((a, b) => b.createdAt - a.createdAt)
-              .slice(0, showAllHistory ? undefined : 3)
+              .slice(0, visibleHistoryCount)
               .map((entry) => (
                 <RecentSubtitleRow
                   key={entry.id}
@@ -1211,20 +1212,18 @@ export function GetSubtitles() {
               ))}
           </div>
 
-          {/* View all subtitles link */}
-          <div className="flex justify-center mt-4">
-            <button
-              type="button"
-              onClick={() => {
-                if (!showAllHistory) setShowAllHistory(true);
-                else { setShowAllHistory(false); historyTopRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
-              }}
-              className="text-xs text-teal-400 hover:text-teal-300 font-semibold transition flex items-center gap-1.5 cursor-pointer"
-            >
-              <span>{showAllHistory ? 'Show less' : `View all ${history.length} subtitles`}</span>
-              <span className="text-sm">{showAllHistory ? '↑' : '→'}</span>
-            </button>
-          </div>
+          {history.length > visibleHistoryCount && (
+            <div className="flex justify-center mt-4">
+              <button
+                type="button"
+                onClick={() => setVisibleHistoryCount((count) => count + HISTORY_PAGE_SIZE)}
+                className="text-xs text-teal-400 hover:text-teal-300 font-semibold transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <span>Show more</span>
+                <span className="text-sm">-&gt;</span>
+              </button>
+            </div>
+          )}
         </div>
       )}
 

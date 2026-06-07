@@ -194,6 +194,34 @@ function isYouTubeUrl(url: string): boolean {
   }
 }
 
+function extractYouTubeVideoId(url: string): string | null {
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`);
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes("youtube.com")) {
+      const watchId = parsed.searchParams.get("v");
+      if (watchId) return watchId;
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (parts[0] === "live" || parts[0] === "shorts" || parts[0] === "embed") {
+        return parts[1] ?? null;
+      }
+    }
+    if (host.includes("youtu.be")) {
+      return parsed.pathname.split("/").filter(Boolean)[0] ?? null;
+    }
+  } catch {}
+  return null;
+}
+
+function normalizeTimestampInputUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return trimmed;
+  const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+  if (!isYouTubeUrl(candidate)) return candidate;
+  const videoId = extractYouTubeVideoId(candidate);
+  return videoId ? `https://www.youtube.com/watch?v=${videoId}` : candidate;
+}
+
 function isYouTubeBlockedError(message: string): boolean {
   return /confirm.*not a bot|sign in to confirm|sign.*in.*required|http error 429|too many requests|rate.?limit|forbidden|http error 403|access.*denied|bot.*detect|unable to extract|nsig.*extraction|player.*response|no video formats|precondition.*failed|http error 401|requested format is not available|format.*not available/i.test(message);
 }
@@ -1007,6 +1035,7 @@ router.post("/youtube/timestamps", async (req: Request, res: Response) => {
     res.status(400).json({ error: "url is required" });
     return;
   }
+  const normalizedUrl = normalizeTimestampInputUrl(url);
 
   const jobId = randomUUID();
   const useLambda = !!(lambdaClient && WORKER_FUNCTION_NAME && ddb && JOB_TABLE);
@@ -1026,7 +1055,7 @@ router.post("/youtube/timestamps", async (req: Request, res: Response) => {
       const workerPayload: TimestampWorkerEvent = {
         source: "videomaking.timestamps",
         jobId,
-        url: url.trim(),
+        url: normalizedUrl,
         instructions: instructions?.trim() || undefined,
       };
 
@@ -1063,7 +1092,7 @@ router.post("/youtube/timestamps", async (req: Request, res: Response) => {
   job.emitter.setMaxListeners(20);
   tsJobs.set(jobId, job);
 
-  runTimestampAnalysis(jobId, job, url.trim(), instructions?.trim() || undefined).catch((err) => {
+  runTimestampAnalysis(jobId, job, normalizedUrl, instructions?.trim() || undefined).catch((err) => {
     logger.error({ err, jobId }, "[timestamps] Unhandled analysis error");
     job.status = "error";
     job.error = "Unexpected server error";
