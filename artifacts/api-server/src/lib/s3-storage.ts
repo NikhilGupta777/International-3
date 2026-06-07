@@ -1,5 +1,6 @@
-import { createReadStream } from "fs";
+import { createReadStream, createWriteStream } from "fs";
 import { basename, extname } from "path";
+import { pipeline } from "stream/promises";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -282,6 +283,21 @@ export async function readTextFromS3(key: string): Promise<string> {
     }),
   );
   return bodyToString(out.Body);
+}
+
+export async function downloadS3ObjectToFile(key: string, destPath: string): Promise<void> {
+  const client = getS3Client();
+  const out = await client.send(
+    new GetObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+    }),
+  );
+  const body = out.Body;
+  if (!body) {
+    throw new Error(`S3 object ${key} has no body`);
+  }
+  await pipeline(body as NodeJS.ReadableStream, createWriteStream(destPath));
 }
 
 export async function readBufferFromS3(key: string): Promise<Buffer> {

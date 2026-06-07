@@ -33,6 +33,9 @@ type WorkerEvent = {
   source?: string;
   jobId?: string;
   url?: string;
+  inputMode?: "url" | "upload";
+  uploadS3Key?: string;
+  originalFilename?: string;
   transcript?: string;
   videoTitle?: string;
   videoDuration?: number;
@@ -97,15 +100,20 @@ export const handler = awslambda.streamifyResponse(
     // ── Subtitles Lambda worker (async invocation) ──────────────────────
     if (event?.source === "videomaking.subtitles") {
       const e = event as WorkerEvent;
-      if (!e.jobId || !e.url) {
+      const hasUploadKey = typeof e.uploadS3Key === "string" && e.uploadS3Key.trim().length > 0;
+      const hasUrl = typeof e.url === "string" && e.url.trim().length > 0;
+      if (!e.jobId || (!hasUrl && !hasUploadKey)) {
         safeEnd(responseStream);
-        throw new Error("Invalid Subtitles worker payload: missing jobId or url");
+        throw new Error("Invalid Subtitles worker payload: missing jobId or url/uploadS3Key");
       }
       try {
         await runSubtitleWorker({
           source: "videomaking.subtitles",
           jobId: e.jobId,
+          inputMode: e.inputMode ?? (hasUploadKey ? "upload" : "url"),
           url: e.url,
+          uploadS3Key: e.uploadS3Key,
+          originalFilename: e.originalFilename,
           language: e.language,
           translateTo: e.translateTo,
           notifyClientKey: e.notifyClientKey ?? null,
