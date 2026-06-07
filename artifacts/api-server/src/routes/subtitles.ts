@@ -20,12 +20,13 @@ import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
   createS3PresignedUpload,
-  readBufferFromS3,
   readTextFromS3,
   uploadTextToS3,
   uploadFileToS3,
   cleanupOldS3Objects,
   isS3StorageEnabled,
+  downloadS3ObjectToFile,
+  deleteS3Object,
 } from "../lib/s3-storage";
 import {
   cancelYoutubeQueueJob,
@@ -55,6 +56,10 @@ if (isS3StorageEnabled()) {
       .catch((err: unknown) => logger.warn({ err }, "S3 subtitles cleanup failed"));
     void cleanupOldS3Objects({ namespace: "subtitles-original", maxAgeMs: SUBTITLE_S3_MAX_AGE_MS })
       .catch((err: unknown) => logger.warn({ err }, "S3 subtitles-original cleanup failed"));
+    // Safety net for orphaned/abandoned uploads staged for the worker Lambda
+    // (normally deleted right after the worker downloads them).
+    void cleanupOldS3Objects({ namespace: "subtitles/uploads", maxAgeMs: SUBTITLE_S3_MAX_AGE_MS })
+      .catch((err: unknown) => logger.warn({ err }, "S3 subtitles/uploads cleanup failed"));
   };
   runSubtitleS3Cleanup(); // clear old files on startup
   setInterval(runSubtitleS3Cleanup, 30 * 60 * 1000);
@@ -1160,6 +1165,12 @@ function isSupportedSubtitleUpload(filename: string, contentType: string): boole
     normalizedContentType.startsWith("video/") ||
     ALLOWED_SUBTITLE_UPLOAD_EXTENSIONS.has(extension)
   );
+}
+
+function sanitizeUploadBaseName(originalFilename: string): string {
+  const withoutExtension = originalFilename.replace(/\.[^.]+$/, "");
+  const cleaned = withoutExtension.replace(/[<>:"/\\|?*\x00-\x1f]/g, "-").trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 160) : "subtitles";
 }
 
 function audioMimeType(ext: string): string {
@@ -3006,8 +3017,7 @@ async function runSubtitleUploadJob(params: {
   translateLang?: string;
   notifyClientKey?: string | null;
 }): Promise<void> {
-  const baseName = params.originalFilename.replace(/\.[^.]+$/, "");
-  const srtFilename = `${baseName}.srt`;
+  const srtFilename = `${sanitizeUploadBaseName(params.originalFilename)}.srt`;
 
   let job = jobs.get(params.jobId);
   if (!job) {
@@ -3029,8 +3039,8 @@ async function runSubtitleUploadJob(params: {
     job.message = "Downloading uploaded file...";
 
     mkdirSync(dirname(tempPath), { recursive: true });
-    const body = await readBufferFromS3(params.uploadS3Key);
-    writeFileSync(tempPath, body);
+    await downloadS3ObjectToFile(params.uploadS3Key, tempPath);
+    void deleteS3Object(params.uploadS3Key);
 
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
 
@@ -3057,11 +3067,19 @@ async function runSubtitleUploadJob(params: {
 }
 
 export async function runSubtitleWorker(event: SubtitleWorkerEvent): Promise<void> {
-  if (event.inputMode === "upload" && event.uploadS3Key && event.originalFilename) {
+  const hasUploadKey = typeof event.uploadS3Key === "string" && event.uploadS3Key.trim().length > 0;
+  const hasOriginalFilename = typeof event.originalFilename === "string" && event.originalFilename.trim().length > 0;
+  const hasUrl = typeof event.url === "string" && event.url.trim().length > 0;
+  const effectiveMode: "upload" | "url" = event.inputMode ?? (hasUploadKey ? "upload" : "url");
+
+  if (effectiveMode === "upload") {
+    if (!hasUploadKey || !hasOriginalFilename) {
+      throw new Error("Invalid Subtitles worker payload: upload mode requires uploadS3Key and originalFilename");
+    }
     await runSubtitleUploadJob({
       jobId: event.jobId,
-      uploadS3Key: event.uploadS3Key,
-      originalFilename: event.originalFilename,
+      uploadS3Key: event.uploadS3Key!,
+      originalFilename: event.originalFilename!,
       language: event.language ?? "auto",
       translateLang: event.translateTo,
       notifyClientKey: event.notifyClientKey ?? null,
@@ -3069,6 +3087,9 @@ export async function runSubtitleWorker(event: SubtitleWorkerEvent): Promise<voi
     return;
   }
 
+  if (!hasUrl) {
+    throw new Error("Invalid Subtitles worker payload: url mode requires url");
+  }
   await runSubtitleUrlJob({
     jobId: event.jobId,
     normalizedUrl: normalizeInputUrl(event.url!),
@@ -3520,8 +3541,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
   const jobId = randomUUID();
   const notifyClientKey = getNotifyClientKey(req);
-  const baseName = originalFilename.replace(/\.[^.]+$/, "");
-  const srtFilename = `${baseName}.srt`;
+  const srtFilename = `${sanitizeUploadBaseName(originalFilename)}.srt`;
 
   if (SUBTITLES_QUEUE_UPLOADS && isSubtitlesQueuePrimaryEnabled()) {
     try {
@@ -3611,8 +3631,8 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
     const tempPath = join(DOWNLOAD_DIR, `subtitles-upload-${jobId}-${basename(originalFilename)}`);
     try {
       mkdirSync(dirname(tempPath), { recursive: true });
-      const body = await readBufferFromS3(uploadKey);
-      writeFileSync(tempPath, body);
+      await downloadS3ObjectToFile(uploadKey, tempPath);
+      void deleteS3Object(uploadKey);
       await processAudio(jobId, tempPath, language, srtFilename, translateLang, () => {
         try { rmSync(tempPath); } catch {}
       });
@@ -3659,8 +3679,7 @@ router.post(
     const language: string = (req.body as any).language ?? "auto";
     const translateTo: string | undefined = (req.body as any).translateTo;
     const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
-    const baseName = req.file.originalname.replace(/\.[^.]+$/, "");
-    const srtFilename = `${baseName}.srt`;
+    const srtFilename = `${sanitizeUploadBaseName(req.file.originalname)}.srt`;
     const jobId = randomUUID();
     const notifyClientKey = getNotifyClientKey(req);
 
