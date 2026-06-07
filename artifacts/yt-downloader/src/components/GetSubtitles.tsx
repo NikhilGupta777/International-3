@@ -25,6 +25,21 @@ import {
 
 const BASE = () => (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const HISTORY_PAGE_SIZE = 7;
+const MAX_SUBTITLE_UPLOAD_BYTES = 500 * 1024 * 1024;
+const ALLOWED_SUBTITLE_FILE_EXTENSIONS = new Set([
+  "mp4",
+  "mkv",
+  "avi",
+  "mov",
+  "webm",
+  "mp3",
+  "m4a",
+  "wav",
+  "flac",
+  "aac",
+  "ogg",
+  "opus",
+]);
 
 /** Strip SRT index numbers and timestamps — returns plain readable text */
 function srtToText(srt: string): string {
@@ -35,18 +50,37 @@ function srtToText(srt: string): string {
 }
 
 function extractVideoId(url: string) {
-  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:live\/|shorts\/|[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
   return match ? match[1] : null;
 }
 
+function normalizeYouTubeInputUrl(url: string): string {
+  const videoId = extractVideoId(url);
+  return videoId ? `https://www.youtube.com/watch?v=${videoId}` : url;
+}
+
 function parseCombinedInput(input: string) {
-  const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)[a-zA-Z0-9_-]{11}(?:\S+)?)/i;
+  const urlRegex = /((?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:live\/|shorts\/|[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)[a-zA-Z0-9_-]{11}(?:\S+)?)/i;
   const match = input.match(urlRegex);
   if (!match) return { url: "", description: input.trim() };
   
-  const url = match[1];
-  const description = input.replace(url, "").replace(/\s+/g, " ").trim();
+  const rawUrl = match[1];
+  const url = normalizeYouTubeInputUrl(rawUrl);
+  const description = input.replace(rawUrl, "").replace(/\s+/g, " ").trim();
   return { url, description };
+}
+
+function isSupportedSubtitleFile(file: File): boolean {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return (
+    file.type.startsWith("audio/") ||
+    file.type.startsWith("video/") ||
+    ALLOWED_SUBTITLE_FILE_EXTENSIONS.has(extension)
+  );
+}
+
+function uploadError(message: string, allowDirectFallback: boolean): Error & { allowDirectFallback?: boolean } {
+  return Object.assign(new Error(message), { allowDirectFallback });
 }
 
 function getSrtDuration(srt: string): string {
@@ -99,7 +133,6 @@ function formatDuration(secs: number): string {
 
 export function GetSubtitles() {
   const [inputMode, setInputMode] = useState<InputMode>("url");
-  const [url, setUrl] = useState("");
   const [command, setCommand] = useState("");
   const [showHelper, setShowHelper] = useState(false);
   const [language, setLanguage] = useState("auto");
@@ -219,7 +252,7 @@ export function GetSubtitles() {
     setLoading(true);
     setJobStatus("generating");
     setJobMessage("Reconnecting to background job…");
-    if (active.url) setUrl(active.url);
+    if (active.url) setCommand(active.url);
 
     pollStatus(active.jobId, active.startedAt);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -451,14 +484,18 @@ export function GetSubtitles() {
             }),
           });
           const initBody = await initRes.json();
-          if (!initRes.ok) throw new Error(initBody.error || "upload_init_failed");
+          if (!initRes.ok) {
+            throw uploadError(initBody.error || "Failed to initialize upload", initRes.status >= 500);
+          }
 
           const putRes = await fetch(initBody.uploadUrl, {
             method: "PUT",
             headers: { "Content-Type": fileVal!.type || "application/octet-stream" },
             body: fileVal!,
           });
-          if (!putRes.ok) throw new Error("upload_put_failed");
+          if (!putRes.ok) {
+            throw uploadError("Could not upload to cloud storage", putRes.status >= 500);
+          }
 
           const startRes = await fetch(`${BASE()}/api/subtitles/upload/start`, {
             method: "POST",
@@ -471,9 +508,17 @@ export function GetSubtitles() {
             }),
           });
           const startBody = await startRes.json();
-          if (!startRes.ok) throw new Error(startBody.error || "upload_start_failed");
+          if (!startRes.ok) {
+            throw uploadError(
+              startBody.error || "Failed to start upload job",
+              startRes.status === 500 || startRes.status === 502 || startRes.status === 504,
+            );
+          }
           fileJobId = startBody.jobId;
-        } catch {
+        } catch (err) {
+          if ((err as { allowDirectFallback?: boolean }).allowDirectFallback === false) {
+            throw err;
+          }
           // S3 presigned path unavailable — fall back to direct multipart upload
           const formData = new FormData();
           formData.append("file", fileVal!);
@@ -522,17 +567,6 @@ export function GetSubtitles() {
     }
   };
 
-  const handleUrlSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!url.trim()) return;
-    startJob("url", url, null, language, translateTo);
-  };
-
-  const handleFileUpload = () => {
-    if (!file) return;
-    startJob("file", "", file, language, translateTo);
-  };
-
   const handleRetry = () => {
     if (lastModeRef.current === "file" && !lastFileRef.current) {
       setInputMode("file");
@@ -569,7 +603,28 @@ export function GetSubtitles() {
     e.preventDefault();
     setIsDragging(false);
     const dropped = e.dataTransfer.files[0];
-    if (dropped) setFile(dropped);
+    if (dropped) selectSubtitleFile(dropped);
+  };
+
+  const selectSubtitleFile = (nextFile: File) => {
+    if (nextFile.size > MAX_SUBTITLE_UPLOAD_BYTES) {
+      toast({
+        title: "File too large",
+        description: "Maximum upload size is 500 MB.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!isSupportedSubtitleFile(nextFile)) {
+      toast({
+        title: "Unsupported file",
+        description: "Upload an audio or video file for subtitle generation.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setFile(nextFile);
+    setInputMode("file");
   };
 
   const downloadFile = (content: string, filename: string) => {
@@ -809,7 +864,8 @@ export function GetSubtitles() {
                   className="hidden"
                   onChange={(e) => {
                     if (e.target.files?.[0]) {
-                      setFile(e.target.files[0]);
+                      selectSubtitleFile(e.target.files[0]);
+                      e.currentTarget.value = "";
                     }
                   }}
                 />

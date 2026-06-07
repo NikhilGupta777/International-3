@@ -175,6 +175,21 @@ const SUBTITLES_MAX_YTDLP_ATTEMPTS = Math.max(
   2,
   Number.parseInt(process.env.SUBTITLES_MAX_YTDLP_ATTEMPTS ?? "5", 10) || 5,
 );
+const MAX_SUBTITLE_UPLOAD_BYTES = 500 * 1024 * 1024;
+const ALLOWED_SUBTITLE_UPLOAD_EXTENSIONS = new Set([
+  "mp4",
+  "mkv",
+  "avi",
+  "mov",
+  "webm",
+  "mp3",
+  "m4a",
+  "wav",
+  "flac",
+  "aac",
+  "ogg",
+  "opus",
+]);
 
 // Base args applied to every yt-dlp call (matches youtube.ts for consistency).
 const YTDLP_BASE_ARGS: string[] = [
@@ -1045,7 +1060,14 @@ const uploadStorage = multer.diskStorage({
 
 const upload = multer({
   storage: uploadStorage,
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB
+  limits: { fileSize: MAX_SUBTITLE_UPLOAD_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (!isSupportedSubtitleUpload(file.originalname, file.mimetype || "")) {
+      cb(new Error("Unsupported file type - upload an audio or video file"));
+      return;
+    }
+    cb(null, true);
+  },
 });
 
 function resolveSystemBinary(bin: string): string | null {
@@ -1129,6 +1151,16 @@ function normalizeInputUrl(raw: string): string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+function isSupportedSubtitleUpload(filename: string, contentType: string): boolean {
+  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+  const normalizedContentType = contentType.toLowerCase();
+  return (
+    normalizedContentType.startsWith("audio/") ||
+    normalizedContentType.startsWith("video/") ||
+    ALLOWED_SUBTITLE_UPLOAD_EXTENSIONS.has(extension)
+  );
+}
+
 function audioMimeType(ext: string): string {
   const map: Record<string, string> = {
     m4a: "audio/mp4", mp4: "audio/mp4", webm: "audio/webm",
@@ -3355,6 +3387,10 @@ router.post("/subtitles/upload/init", subtitlesUploadRateLimiter, async (req: Re
     res.status(400).json({ error: "contentType is required" });
     return;
   }
+  if (!isSupportedSubtitleUpload(filename, contentType)) {
+    res.status(400).json({ error: "Unsupported file type - upload an audio or video file" });
+    return;
+  }
 
   const numericSize =
     typeof size === "number" ? size : typeof size === "string" ? Number(size) : Number.NaN;
@@ -3362,7 +3398,7 @@ router.post("/subtitles/upload/init", subtitlesUploadRateLimiter, async (req: Re
     res.status(400).json({ error: "size is required" });
     return;
   }
-  if (numericSize > 500 * 1024 * 1024) {
+  if (numericSize > MAX_SUBTITLE_UPLOAD_BYTES) {
     res.status(413).json({ error: "File is too large - maximum upload size is 500 MB" });
     return;
   }
@@ -3544,6 +3580,10 @@ router.post(
 router.use((err: any, _req: Request, res: Response, next: NextFunction) => {
   if (err?.code === "LIMIT_FILE_SIZE") {
     res.status(413).json({ error: "File is too large — maximum upload size is 500 MB" });
+    return;
+  }
+  if (err?.message === "Unsupported file type - upload an audio or video file") {
+    res.status(400).json({ error: err.message });
     return;
   }
   next(err);
