@@ -1624,6 +1624,52 @@ def _verify_onnxruntime_cuda_stack() -> None:
     except Exception as exc:
         log.warning("[ONNXRuntime] CUDA ABI check skipped: %s", exc)
 
+
+def _patch_torch_load_for_fast_checkpoint_loading() -> None:
+    """Speed up + log CosyVoice checkpoint loading on cold-start GPU jobs.
+
+    CosyVoice's AutoModel constructor torch.load()s several multi-hundred-MB
+    to multi-GB checkpoints (LLM, flow, HiFiGAN). On a cold Batch GPU
+    instance the constructor has been observed taking 15+ minutes with zero
+    log output, making it impossible to tell which file is slow. This patch:
+      1. Opportunistically passes mmap=True so PyTorch memory-maps the
+         checkpoint instead of fully deserializing it into RAM up front
+         (falls back to a normal load if the torch/file doesn't support it).
+      2. Logs the path/size/duration of every torch.load call so the
+         breakdown is visible in CloudWatch.
+    Idempotent — safe to call multiple times.
+    """
+    import torch
+
+    if getattr(torch.load, "_vm_instrumented", False):
+        return
+
+    _original_load = torch.load
+
+    def _instrumented_load(*args, **kwargs):
+        path = args[0] if args else kwargs.get("f")
+        try:
+            size_mb = os.path.getsize(path) / (1024 * 1024) if isinstance(path, (str, Path)) else -1
+        except OSError:
+            size_mb = -1
+
+        t0 = time.monotonic()
+        if "mmap" not in kwargs:
+            try:
+                result = _original_load(*args, mmap=True, **kwargs)
+                log.info("[torch.load] %s (%.1f MB) loaded in %.1fs (mmap)", path, size_mb, time.monotonic() - t0)
+                return result
+            except Exception as exc:
+                log.info("[torch.load] mmap load failed for %s (%s); retrying without mmap", path, exc)
+                t0 = time.monotonic()
+        result = _original_load(*args, **kwargs)
+        log.info("[torch.load] %s (%.1f MB) loaded in %.1fs", path, size_mb, time.monotonic() - t0)
+        return result
+
+    _instrumented_load._vm_instrumented = True
+    torch.load = _instrumented_load
+    log.info("[CosyVoice] Patched torch.load for mmap + per-file timing.")
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 3: Translation (Gemini dubbing-aware)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -2463,6 +2509,7 @@ def synthesize_segments_cosyvoice(
 
     update_progress("CLONING", 52, "Loading CosyVoice model (CUDA init)...")
     _model_load_t0 = time.monotonic()
+    _patch_torch_load_for_fast_checkpoint_loading()
 
     cv_dir = _ensure_cosyvoice()
     if str(cv_dir) not in sys.path:
@@ -2470,10 +2517,16 @@ def synthesize_segments_cosyvoice(
     matcha_root = cv_dir / "third_party" / "Matcha-TTS"
     if str(matcha_root) not in sys.path:
         sys.path.insert(0, str(matcha_root))
+    log.info("[CosyVoice] Repo/path setup: %.1fs", time.monotonic() - _model_load_t0)
 
+    _t = time.monotonic()
     _verify_onnxruntime_cuda_stack()
     _ensure_cosyvoice_yaml_compatibility()
+    log.info("[CosyVoice] ONNXRuntime + dep verification: %.1fs", time.monotonic() - _t)
+
+    _t = time.monotonic()
     _CosyVoice = _import_cosyvoice_class()
+    log.info("[CosyVoice] Class import: %.1fs", time.monotonic() - _t)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = None
@@ -2546,7 +2599,9 @@ def synthesize_segments_cosyvoice(
                         "Skipping vLLM. Rebuild Docker image with vLLM weights.",
                         _vllm_dir,
                     )
+            _t_construct = time.monotonic()
             model = _CosyVoice(model_dir=str(model_path), **_init_kw)
+            log.info("[CosyVoice] AutoModel(model_dir=...) constructor: %.1fs", time.monotonic() - _t_construct)
             break
         except Exception as e:
             last_err = e
