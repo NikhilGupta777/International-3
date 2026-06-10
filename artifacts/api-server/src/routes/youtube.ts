@@ -2250,6 +2250,99 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   scheduleAutoDelete(jobId, jobRef);
 }
 
+async function startClipCutJobInternal(params: {
+  url: string;
+  startTime: number;
+  endTime: number;
+  quality?: string;
+  notifyClientKey?: string | null;
+  log?: Pick<Request["log"], "error" | "warn">;
+}): Promise<{ jobId: string; status: string; message: string }> {
+  const jobId = randomUUID();
+  const normalizedUrl = normalizeInputUrl(params.url);
+  const quality = params.quality ?? "best";
+
+  if (isYoutubeQueuePrimaryEnabledFor("clip-cut") && !shouldRunClipInLambda(params.startTime, params.endTime)) {
+    await submitYoutubeQueuePrimaryJob({
+      jobId,
+      jobType: "clip-cut",
+      sourceUrl: normalizedUrl,
+      meta: {
+        startTime: params.startTime,
+        endTime: params.endTime,
+        quality,
+        notifyClientKey: params.notifyClientKey ?? null,
+      },
+    });
+    return { jobId, status: "queued", message: "Clip cut queued" };
+  }
+
+  const job: DownloadJob = {
+    status: "pending",
+    percent: 0,
+    speed: null,
+    eta: null,
+    filename: null,
+    filesize: null,
+    message: "Starting clip cut...",
+    progressLine: null,
+    progressSource: null,
+    startedAt: Date.now(),
+    completedAt: null,
+    filePath: null,
+    url: normalizedUrl,
+    formatId: "clip",
+    audioOnly: false,
+    ext: "mp4",
+    clipStart: params.startTime,
+    clipEnd: params.endTime,
+    clipQuality: quality,
+    notifyClientKey: params.notifyClientKey ?? undefined,
+  };
+
+  jobs.set(jobId, job);
+  try {
+    await putYoutubeQueueLocalJob({
+      jobId,
+      jobType: "clip-cut",
+      sourceUrl: normalizedUrl,
+      status: "pending",
+      message: job.message ?? "Starting clip cut...",
+      progressPct: 0,
+      filename: job.filename,
+      durationSecs: params.endTime - params.startTime,
+      startedAt: job.startedAt ?? Date.now(),
+    });
+  } catch (err) {
+    params.log?.warn({ err, jobId }, "Failed to persist Lambda clip-cut start state");
+  }
+
+  enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
+    const j = jobs.get(jobId);
+    if (!j) return;
+    const message = err instanceof Error ? err.message : "Clip cut failed";
+    if (message === CANCELLED_BY_USER || j.cancelled) {
+      j.status = "cancelled";
+      j.message = CANCELLED_BY_USER;
+      persistClipJobState(jobId, j);
+      return;
+    }
+    params.log?.error({ err, jobId }, "Clip cut job failed");
+    j.status = "error";
+    j.message = message;
+    j.percent = 0;
+    persistClipJobState(jobId, j);
+    pushFailureNotification(
+      j,
+      "Clip cut failed",
+      message.slice(0, 200),
+      `clip-error:${jobId}`,
+    );
+  });
+
+  return { jobId, status: "pending", message: "Clip cut started" };
+}
+
 router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
   const { prompt } = req.body as { prompt?: string };
   const cleanPrompt = typeof prompt === "string" ? prompt.trim() : "";
@@ -2384,95 +2477,81 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
     return;
   }
 
-  const jobId = randomUUID();
-  const normalizedUrl = normalizeInputUrl(url);
   const notifyClientKey = getNotifyClientKey(req);
 
-  if (isYoutubeQueuePrimaryEnabledFor("clip-cut") && !shouldRunClipInLambda(startTime, endTime)) {
-    try {
-      await submitYoutubeQueuePrimaryJob({
-        jobId,
-        jobType: "clip-cut",
-        sourceUrl: normalizedUrl,
-        meta: {
-          startTime,
-          endTime,
-          quality: quality ?? "best",
-          notifyClientKey: notifyClientKey ?? null,
-        },
-      });
-      res.json({ jobId, status: "queued", message: "Clip cut queued" });
-    } catch (err) {
-      req.log.error({ err, jobId }, "Failed to submit primary queue clip-cut job");
-      res.status(502).json({ error: "Failed to queue clip cut job" });
-    }
+  try {
+    const started = await startClipCutJobInternal({
+      url,
+      startTime,
+      endTime,
+      quality,
+      notifyClientKey,
+      log: req.log,
+    });
+    res.json(started);
+  } catch (err) {
+    req.log.error({ err }, "Failed to start clip-cut job");
+    res.status(502).json({ error: "Failed to start clip cut job" });
+  }
+});
+
+router.post("/youtube/clip-cut/batch", clipCutRateLimiter, async (req: Request, res: Response) => {
+  const { url, clips, quality } = req.body as {
+    url?: string;
+    clips?: Array<{ startTime?: number; endTime?: number }>;
+    quality?: string;
+  };
+
+  if (!url) { res.status(400).json({ error: "url is required" }); return; }
+  if (!Array.isArray(clips) || clips.length === 0) {
+    res.status(400).json({ error: "clips are required" });
+    return;
+  }
+  if (clips.length > 20) {
+    res.status(400).json({ error: "Maximum 20 clips per batch" });
     return;
   }
 
-  const job: DownloadJob = {
-    status: "pending",
-    percent: 0,
-    speed: null,
-    eta: null,
-    filename: null,
-    filesize: null,
-    message: "Starting clip cut...",
-    progressLine: null,
-    progressSource: null,
-    startedAt: Date.now(),
-    completedAt: null,
-    filePath: null,
-    url: normalizedUrl,
-    formatId: "clip",
-    audioOnly: false,
-    ext: "mp4",
-    clipStart: startTime,
-    clipEnd: endTime,
-    clipQuality: quality ?? "best",
-    notifyClientKey,
-  };
-
-  jobs.set(jobId, job);
-  try {
-    await putYoutubeQueueLocalJob({
-      jobId,
-      jobType: "clip-cut",
-      sourceUrl: normalizedUrl,
-      status: "pending",
-      message: job.message ?? "Starting clip cut...",
-      progressPct: 0,
-      filename: job.filename,
-      durationSecs: endTime - startTime,
-      startedAt: job.startedAt ?? Date.now(),
-    });
-  } catch (err) {
-    req.log.warn({ err, jobId }, "Failed to persist Lambda clip-cut start state");
-  }
-  res.json({ jobId, status: "pending", message: "Clip cut started" });
-
-  enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
-    req.log.error({ err, jobId }, "Clip cut job failed");
-    const j = jobs.get(jobId);
-    if (j) {
-      const message = err instanceof Error ? err.message : "Clip cut failed";
-      if (message === CANCELLED_BY_USER || j.cancelled) {
-        j.status = "cancelled";
-        j.message = CANCELLED_BY_USER;
-        persistClipJobState(jobId, j);
-      } else {
-        j.status = "error";
-        j.message = message;
-        j.percent = 0;
-        persistClipJobState(jobId, j);
-        pushFailureNotification(
-          j,
-          "Clip cut failed",
-          message.slice(0, 200),
-          `clip-error:${jobId}`,
-        );
-      }
+  const normalizedClips: Array<{ startTime: number; endTime: number }> = [];
+  for (const clip of clips) {
+    const startTime = Number(clip.startTime);
+    const endTime = Number(clip.endTime);
+    if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+      res.status(400).json({ error: "Each clip needs startTime and endTime in seconds" });
+      return;
     }
-  });
+    if (endTime <= startTime) {
+      res.status(400).json({ error: "Each clip endTime must be greater than startTime" });
+      return;
+    }
+    if (endTime - startTime > 3600) {
+      res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
+      return;
+    }
+    normalizedClips.push({
+      startTime: Math.max(0, Math.round(startTime)),
+      endTime: Math.max(0, Math.round(endTime)),
+    });
+  }
+
+  const notifyClientKey = getNotifyClientKey(req);
+  try {
+    const jobs = [];
+    for (const clip of normalizedClips) {
+      jobs.push(await startClipCutJobInternal({
+        url,
+        startTime: clip.startTime,
+        endTime: clip.endTime,
+        quality,
+        notifyClientKey,
+        log: req.log,
+      }));
+    }
+    res.json({ jobs, message: `Started ${jobs.length} clip cuts` });
+  } catch (err) {
+    req.log.error({ err }, "Failed to start batch clip-cut jobs");
+    res.status(502).json({ error: "Failed to start all clip cut jobs" });
+  }
 });
 
 // Run one download attempt with given extra args (cookies / client override).

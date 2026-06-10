@@ -601,6 +601,39 @@ export function ClipCutter() {
     };
   }, []);
 
+  const buildActiveJob = (
+    data: { jobId: string; status?: string; message?: string },
+    url: string,
+    startSecs: number,
+    endSecs: number,
+    customQuality: string,
+  ): ActiveJob => {
+    const label = `${secsToLabel(startSecs)} -> ${secsToLabel(endSecs)}`;
+    return {
+      jobId: data.jobId,
+      label,
+      url,
+      quality: customQuality,
+      startSecs,
+      endSecs,
+      status: normalizeJobStatus(data.status, "pending"),
+      percent: 0,
+      speed: null,
+      eta: null,
+      filename: null,
+      filesize: null,
+      progressLine: null,
+      progressSource: null,
+      queueUpdatedAt: null,
+      completedAt: null,
+      elapsedMs: null,
+      message: data.message ?? "Clip cut queued...",
+      downloaded: false,
+      savedToHistory: false,
+      startedAt: Date.now(),
+    };
+  };
+
   const startClipCutJob = async (url: string, startSecs: number, endSecs: number, customQuality: string) => {
     const res = await fetch(`${BASE_URL}/api/youtube/clip-cut`, {
       method: "POST",
@@ -652,6 +685,41 @@ export function ClipCutter() {
     });
   };
 
+  const startClipCutBatch = async (
+    url: string,
+    clips: Array<{ startTime: number; endTime: number }>,
+    customQuality: string,
+  ) => {
+    const res = await fetch(`${BASE_URL}/api/youtube/clip-cut/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, clips, quality: customQuality }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as { error?: string }).error || "Failed to start clip cuts");
+    }
+
+    const data = (await res.json()) as {
+      jobs?: Array<{ jobId: string; status?: string; message?: string }>;
+    };
+    const returnedJobs = Array.isArray(data.jobs) ? data.jobs : [];
+    if (returnedJobs.length !== clips.length) {
+      throw new Error("Some clip cuts did not register. Please retry.");
+    }
+
+    const newJobs = returnedJobs.map((job, index) =>
+      buildActiveJob(job, url, clips[index].startTime, clips[index].endTime, customQuality),
+    );
+    setJobs((prev) => {
+      const updated = [...newJobs, ...prev];
+      persistActiveJobs(updated);
+      return updated;
+    });
+    return newJobs;
+  };
+
   const handleCut = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -690,9 +758,7 @@ export function ClipCutter() {
           type: "success",
           message: `🚀 Starting ${clips.length} clip cuts: ${message}`,
         });
-        for (const c of clips) {
-          await startClipCutJob(url, c.startTime, c.endTime, quality);
-        }
+        await startClipCutBatch(url, clips, quality);
       } else if (typeof startTime === "number" && typeof endTime === "number") {
         setNotification({
           type: "success",
@@ -1087,7 +1153,7 @@ export function ClipCutter() {
             Cut Clip
           </Button>
 
-          <div className="relative w-full max-w-[200px] sm:w-auto">
+          <div className="w-full max-w-[520px]">
             <Button
               type="button"
               variant="outline"
@@ -1105,14 +1171,12 @@ export function ClipCutter() {
             <AnimatePresence>
               {showAdvanced && (
                 <>
-                  {/* Backdrop overlay */}
-                  <div className="fixed inset-0 z-40" onClick={() => setShowAdvanced(false)} />
                   <motion.div
                     initial={{ opacity: 0, scale: 0.95, y: 10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, y: 10 }}
                     transition={{ duration: 0.2 }}
-                    className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 z-50 w-80 rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.65)] flex flex-col gap-3.5"
+                    className="mt-3 w-full rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.45)] flex flex-col gap-3.5"
                   >
                     <div className="flex items-center justify-between border-b border-zinc-800/40 pb-2">
                       <div className="flex items-center gap-2">
