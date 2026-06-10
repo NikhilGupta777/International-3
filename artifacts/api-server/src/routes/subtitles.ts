@@ -203,6 +203,7 @@ const YTDLP_BASE_ARGS: string[] = [
   "--fragment-retries",   "5",
   "--extractor-retries",  "5",
   "--socket-timeout",     "30",
+  "--cache-dir", "/opt/yt-dlp-cache",
   "--js-runtimes", "node",
   "--js-runtimes", "bun",
   "--remote-components", "ejs:github",

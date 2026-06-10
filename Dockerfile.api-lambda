@@ -14,6 +14,24 @@ RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}
     && chmod +x /usr/local/bin/yt-dlp \
     && /usr/local/bin/yt-dlp --version
 
+# Pre-cache the yt-dlp EJS extractor so Lambda cold starts never need to fetch
+# it from GitHub at runtime. Without this, the first clip-cut on a fresh container
+# can hang waiting for raw.githubusercontent.com (unreliable from Lambda's network).
+# Lambda runs as a restricted user, not root — so ~/.cache (=/root/.cache) from the
+# Docker build is not readable at runtime. Store the pre-baked EJS at
+# /opt/yt-dlp-cache (world-readable) and pass --cache-dir /opt/yt-dlp-cache at runtime.
+RUN mkdir -p /opt/yt-dlp-cache \
+    && /usr/local/bin/yt-dlp \
+    --no-warnings \
+    --skip-download \
+    --cache-dir /opt/yt-dlp-cache \
+    --extractor-args "youtube:player_client=web" \
+    --js-runtimes node \
+    --remote-components ejs:github \
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>/dev/null || true \
+    && chmod -R a+rX /opt/yt-dlp-cache \
+    && ls /opt/yt-dlp-cache/ && echo "EJS cache populated at /opt/yt-dlp-cache" || echo "EJS cache FAILED"
+
 # yt-dlp needs ffmpeg for merged video downloads and partial clip downloads.
 # Install Linux x86_64 static binaries inside the final Lambda image and verify
 # the exact runtime lookup path during Docker build.

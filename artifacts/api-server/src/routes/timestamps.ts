@@ -176,6 +176,7 @@ function getCookieArgs(): string[] {
 // ── Base yt-dlp args ──────────────────────────────────────────────────────────
 const BASE_YTDLP_ARGS = [
   "--retries", "3", "--extractor-retries", "3", "--socket-timeout", "30",
+  "--cache-dir", "/opt/yt-dlp-cache",
   "--js-runtimes", "node", "--js-runtimes", "bun",
   "--remote-components", "ejs:github",
   "--add-headers",

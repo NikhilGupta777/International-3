@@ -690,6 +690,10 @@ const BASE_YTDLP_ARGS: string[] = [
   "--extractor-retries", "5",
   // Prevent infinite hangs on slow/broken connections
   "--socket-timeout", "30",
+  // Use the pre-baked EJS cache from the Docker image — populated at build time
+  // via --remote-components ejs:github into /opt/yt-dlp-cache so cold starts
+  // never need to fetch it from GitHub (unreliable from Lambda's network).
+  "--cache-dir", "/opt/yt-dlp-cache",
   // Enable JavaScript challenge solving via Node.js (yt-dlp 2026.03.17+ requires EJS
   // to decode YouTube signatures; default only enables Deno which is not installed here).
   // bun is added as a lower-priority fallback since it is also installed in this env.
@@ -1275,6 +1279,8 @@ const SUBS_YTDLP_ARGS = [
   "--retries", "3",
   "--extractor-retries", "3",
   "--socket-timeout", "30",
+  // Use the pre-baked EJS cache from the Docker image (see BASE_YTDLP_ARGS for details).
+  "--cache-dir", "/opt/yt-dlp-cache",
   // JavaScript challenge solving — required since yt-dlp 2026.03.17
   "--js-runtimes", "node",
   "--js-runtimes", "bun",
