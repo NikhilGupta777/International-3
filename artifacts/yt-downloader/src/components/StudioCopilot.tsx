@@ -268,7 +268,7 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
     };
     if (olMatch) result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/40 shrink-0">{olMatch[1]}.</span><span>{inline(olMatch[2], `ol${li}`)}</span></div>);
     else if (ulMatch) result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">•</span><span>{inline(ulMatch[1], `ul${li}`)}</span></div>);
-    else if (line.trim() === "") { if (li < lines.length - 1) result.push(<div key={li} className="h-6" />); }
+    else if (line.trim() === "") { if (li < lines.length - 1) result.push(<div key={li} className="h-5" />); }
     else result.push(<div key={li}>{inline(line, `ln${li}`)}</div>);
   });
   return result;
@@ -381,7 +381,7 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     } else if (ulMatch) {
       result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">•</span><span>{inlineAnimated(ulMatch[1], `ul${li}`, isLastLine)}</span></div>);
     } else if (line.trim() === "") {
-      if (li < lines.length - 1) result.push(<div key={li} className="h-6" />);
+      if (li < lines.length - 1) result.push(<div key={li} className="h-5" />);
     } else {
       result.push(<div key={li}>{inlineAnimated(line, `ln${li}`, isLastLine)}</div>);
     }
