@@ -4,7 +4,7 @@ import {
   Plus, AudioLines, ArrowUp, Loader2,
   Download, Sparkles, Captions, Scissors,
   ListVideo, AlarmClock, UploadCloud, Languages,
-  Film, Paperclip, ImagePlus, Music2, Search,
+  Film, Paperclip, ImagePlus, Music2, Search, Clapperboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "findvideo" | "help" | "activity";
+  | "upload" | "translator" | "findvideo" | "videostudio" | "help" | "activity";
 const ULTRA_KEY = "studio-ultra-mode";
 
 // ── Animated typing placeholder ───────────────────────────────────────────────
@@ -382,6 +382,7 @@ export function StudioHome({
         <div className="studio-home-grid mt-4">
           {([
             { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },
+            { icon: <Clapperboard className="w-5 h-5" />, label: "AI Studio", desc: "Finish videos", mode: "videostudio", color: "text-emerald-400" },
             { icon: <Scissors className="w-5 h-5" />, label: "Clip Cutter", desc: "Trim any range", mode: "clipcutter", color: "text-orange-400" },
             { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
             { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
