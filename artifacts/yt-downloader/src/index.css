@@ -8732,3 +8732,21 @@ body.workspace-open .gs-mobile-actions-pill {
   transform: translateX(20px) !important;
   pointer-events: none !important;
 }
+
+.gs-chat-history-toggle {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body.history-open .gs-chat-history-toggle,
+body.workspace-open .gs-chat-history-toggle {
+  opacity: 0 !important;
+  transform: translateX(-20px) scale(0.5) !important;
+  pointer-events: none !important;
+}
+
+body.history-open .gs-mobile-actions-pill,
+body.history-open .gs-chat-header-right {
+  opacity: 0 !important;
+  transform: translateX(20px) !important;
+  pointer-events: none !important;
+}

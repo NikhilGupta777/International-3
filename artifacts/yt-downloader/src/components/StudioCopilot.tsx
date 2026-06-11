@@ -1813,6 +1813,15 @@ export function StudioCopilot({
   const [showWorkspace, setShowWorkspace] = useState(false);
 
   useEffect(() => {
+    if (showWorkspace) setShowHistory(false);
+  }, [showWorkspace]);
+
+  useEffect(() => {
+    if (showHistory) setShowWorkspace(false);
+  }, [showHistory]);
+
+
+  useEffect(() => {
     if (showWorkspace) {
       document.body.classList.add("workspace-open");
     } else {
@@ -2807,10 +2816,7 @@ export function StudioCopilot({
           </button>
           <button
             onClick={() => setShowHistory(h => !h)}
-            className={cn(
-              "gs-chat-icon-btn gs-chat-history-toggle transition-all duration-300 ease-in-out",
-              showHistory ? "opacity-0 scale-50 pointer-events-none -translate-x-2" : "opacity-100 scale-100 translate-x-0",
-            )}
+            className="gs-chat-icon-btn gs-chat-history-toggle"
             title="Chat history"
             aria-label="Toggle history"
           >
