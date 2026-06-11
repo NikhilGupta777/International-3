@@ -6580,16 +6580,27 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
 }
 
 .copilot-wrap .agent-tool-card,
+.copilot-wrap .agent-tool-v2,
 .copilot-wrap .agent-artifact-card {
   width: min(100%, 760px);
   max-width: 100%;
   min-width: 0;
+  box-sizing: border-box;
+  align-self: stretch;
 }
 
 .copilot-wrap .agent-tool-card {
   border-radius: 14px;
   background: rgba(255,255,255,0.035);
   border-color: rgba(255,255,255,0.10);
+}
+
+.copilot-wrap .agent-tool-v2 {
+  max-inline-size: 760px;
+}
+
+.copilot-wrap .agent-tool-v2 > button {
+  min-width: 0;
 }
 
 .copilot-wrap .agent-tool-card-done {
@@ -6743,8 +6754,10 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   .copilot-wrap .agent-tool-card,
+  .copilot-wrap .agent-tool-v2,
   .copilot-wrap .agent-artifact-card {
     width: 100%;
+    max-inline-size: 100%;
   }
 
   .copilot-wrap .agent-tool-card-top {

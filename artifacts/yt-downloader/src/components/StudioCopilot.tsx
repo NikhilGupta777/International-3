@@ -644,17 +644,17 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
         </span>
 
         {/* Label + arg pill */}
-        <div className="flex-1 min-w-0 flex items-baseline gap-2">
-          <span className={cn("text-[12.5px] font-semibold tracking-tight", meta.color)}>{meta.label}</span>
+        <div className="flex-1 min-w-0 flex items-baseline gap-2 overflow-hidden">
+          <span className={cn("text-[12.5px] font-semibold tracking-tight truncate min-w-0", meta.color)}>{meta.label}</span>
           {argSummary && (
-            <span className="hidden sm:inline-block text-[11px] font-mono text-white/45 truncate">
+            <span className="hidden sm:inline-block text-[11px] font-mono text-white/45 truncate min-w-0">
               {argSummary}
             </span>
           )}
         </div>
 
         {/* Status badge */}
-        <span className="flex items-center gap-1.5 shrink-0">
+        <span className="flex items-center gap-1.5 shrink-0 justify-end">
           {part.done ? (
             part.cancelled ? (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/8 text-[10px] font-medium text-white/55">
