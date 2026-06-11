@@ -6187,31 +6187,39 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
 
 .gs-message-actions {
   display: flex;
-  gap: 6px;
-  margin-top: 10px;
-  opacity: 1;
-  transition: opacity 0.14s ease;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
 }
 
 .gs-message-action-btn {
   display: inline-flex;
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   background: transparent;
-  color: rgba(255,255,255,0.56);
+  color: #d7d7d7;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;
 }
 
 .gs-message-action-btn:hover,
 .gs-message-action-btn:focus-visible {
-  background: rgba(255,255,255,0.10);
-  color: rgba(255,255,255,0.90);
+  background: #2f2f2f;
+  color: #fff;
   outline: none;
+}
+
+.gs-message-action-btn svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.85;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .copilot-wrap .gs-thinking-block {
