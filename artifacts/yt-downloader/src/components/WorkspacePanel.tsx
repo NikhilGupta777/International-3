@@ -20,6 +20,7 @@ import {
   type WorkspaceInfo,
   type DriveFile,
 } from "@/lib/workspace-api";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type Tab = "files" | "drive";
 
@@ -56,6 +57,9 @@ export function WorkspacePanel({ open, onClose }: Props) {
   const [driveStack, setDriveStack] = useState<{ id?: string; name: string }[]>([{ name: "Drive Root" }]);
   const [loadingDrive, setLoadingDrive] = useState(false);
   const [importingId, setImportingId] = useState<string | null>(null);
+
+  // Preview state
+  const [previewFile, setPreviewFile] = useState<{ path: string; url: string; type: string } | null>(null);
 
   // ── Initial load ────────────────────────────────────────────────────────
   const refreshFiles = useCallback(async () => {
@@ -145,19 +149,38 @@ export function WorkspacePanel({ open, onClose }: Props) {
 
   const handleCopyLink = async (path: string) => {
     try {
-      const { url } = await workspaceApi.getFile(path);
-      await navigator.clipboard.writeText(url);
+      try {
+        const { content } = await workspaceApi.readText(path);
+        await navigator.clipboard.writeText(content);
+        toast({ title: "Copied", description: "File contents copied to clipboard" });
+      } catch {
+        // Fallback for binary files
+        const { url } = await workspaceApi.getFile(path);
+        await navigator.clipboard.writeText(url);
+        toast({ title: "Copied Link", description: "Copied URL for binary file" });
+      }
       setCopiedPath(path);
       setTimeout(() => setCopiedPath(null), 1500);
     } catch (err) {
-      toast({ title: "Could not copy link", description: (err as Error).message, variant: "destructive" });
+      toast({ title: "Could not copy", description: (err as Error).message, variant: "destructive" });
     }
   };
 
   const handleDownload = async (path: string) => {
     try {
+      toast({ title: "Downloading...", description: path });
       const { url } = await workspaceApi.getFile(path);
-      window.open(url, "_blank", "noopener,noreferrer");
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Download failed: ${res.statusText}`);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = path.split("/").pop() || "download";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
     } catch (err) {
       toast({ title: "Download failed", description: (err as Error).message, variant: "destructive" });
     }
@@ -165,8 +188,11 @@ export function WorkspacePanel({ open, onClose }: Props) {
 
   const handlePreview = async (path: string) => {
     try {
-      const { url } = await workspaceApi.getFile(path, { inline: true });
-      window.open(url, "_blank", "noopener,noreferrer");
+      const { url, stat } = await workspaceApi.getFile(path, { inline: true });
+      const fileExt = path.split('.').pop()?.toLowerCase() || '';
+      const type = stat.contentType || (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(fileExt) ? 'image' : 
+                                        ['mp4', 'webm', 'mov'].includes(fileExt) ? 'video' : 'text');
+      setPreviewFile({ path, url, type });
     } catch (err) {
       toast({ title: "Preview failed", description: (err as Error).message, variant: "destructive" });
     }
@@ -419,6 +445,24 @@ export function WorkspacePanel({ open, onClose }: Props) {
               Files persist across chats · isolated per user
             </div>
           </motion.aside>
+
+          {/* Preview Dialog */}
+          <Dialog open={!!previewFile} onOpenChange={(open) => !open && setPreviewFile(null)}>
+            <DialogContent className="max-w-4xl w-[90vw] h-[85vh] flex flex-col bg-[#111] border-white/10 text-white">
+              <DialogHeader>
+                <DialogTitle className="truncate">{previewFile?.path.split('/').pop()}</DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 min-h-0 relative bg-white/5 rounded-md overflow-hidden flex items-center justify-center">
+                {previewFile?.type.startsWith('image') || ['png','jpg','jpeg','gif','webp'].some(ext => previewFile?.path.toLowerCase().endsWith(ext)) ? (
+                  <img src={previewFile.url} className="w-full h-full object-contain" alt="preview" />
+                ) : previewFile?.type.startsWith('video') || ['mp4','webm','mov'].some(ext => previewFile?.path.toLowerCase().endsWith(ext)) ? (
+                  <video src={previewFile.url} controls className="w-full h-full object-contain" autoPlay />
+                ) : (
+                  <iframe src={previewFile?.url} className="w-full h-full border-0 bg-white" title="preview" sandbox="allow-scripts allow-same-origin" />
+                )}
+              </div>
+            </DialogContent>
+          </Dialog>
         </>
       )}
     </AnimatePresence>
