@@ -28,6 +28,13 @@ import {
 const logger = pino({ name: "workspace" });
 const router = Router();
 
+router.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+
 // ── Per-user write rate limit ────────────────────────────────────────────
 // Hourly token bucket keyed by workspaceId. Applies only to mutating routes
 // (write / delete / copy / presign-put / import-drive). Reads are unbounded.

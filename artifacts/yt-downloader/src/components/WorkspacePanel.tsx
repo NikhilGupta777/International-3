@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Upload, RefreshCw, Trash2, Copy, Check, FolderOpen, FileText,
   Image as ImageIcon, Film, Music, FileArchive, Loader2, ChevronRight,
-  CloudDownload, AlertTriangle, ArrowLeft,
+  CloudDownload, AlertTriangle, ArrowLeft, Eye,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -163,6 +163,15 @@ export function WorkspacePanel({ open, onClose }: Props) {
     }
   };
 
+  const handlePreview = async (path: string) => {
+    try {
+      const { url } = await workspaceApi.getFile(path, { inline: true });
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      toast({ title: "Preview failed", description: (err as Error).message, variant: "destructive" });
+    }
+  };
+
   const handleDriveImport = async (f: DriveFile) => {
     if (f.isFolder) {
       setDriveStack((prev) => [...prev, { id: f.id, name: f.name }]);
@@ -288,7 +297,7 @@ export function WorkspacePanel({ open, onClose }: Props) {
                   {files.map((f) => (
                     <div
                       key={f.path}
-                      className="flex items-center gap-2 px-2 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-lg border border-white/5 group"
+                      className="flex items-center gap-2 px-2 py-2 bg-white/[0.03] hover:bg-white/[0.06] rounded-lg border border-white/5"
                     >
                       {pickFileIcon(f.path, f.contentType)}
                       <div className="min-w-0 flex-1">
@@ -297,25 +306,36 @@ export function WorkspacePanel({ open, onClose }: Props) {
                           {formatBytes(f.size)} · {new Date(f.modifiedAt).toLocaleString()}
                         </div>
                       </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handlePreview(f.path)}
+                          className="p-2 text-white/60 hover:text-white rounded-md hover:bg-white/10"
+                          title="Preview"
+                          aria-label={`Preview ${f.path}`}
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
                         <button
                           onClick={() => handleCopyLink(f.path)}
-                          className="p-1.5 text-white/60 hover:text-white"
+                          className="p-2 text-white/60 hover:text-white rounded-md hover:bg-white/10"
                           title="Copy share link"
+                          aria-label={`Copy link for ${f.path}`}
                         >
                           {copiedPath === f.path ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
                         </button>
                         <button
                           onClick={() => handleDownload(f.path)}
-                          className="p-1.5 text-white/60 hover:text-white"
+                          className="p-2 text-white/60 hover:text-white rounded-md hover:bg-white/10"
                           title="Download"
+                          aria-label={`Download ${f.path}`}
                         >
                           <CloudDownload className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => handleDelete(f.path)}
-                          className="p-1.5 text-white/60 hover:text-red-400"
+                          className="p-2 text-white/60 hover:text-red-400 rounded-md hover:bg-red-500/10"
                           title="Delete"
+                          aria-label={`Delete ${f.path}`}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>

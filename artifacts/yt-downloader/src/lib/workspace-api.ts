@@ -34,21 +34,47 @@ export type DriveFile = {
 
 export type DriveListing = { files: DriveFile[]; nextPageToken?: string };
 
-async function req<T>(input: string, init?: RequestInit): Promise<T> {
+async function req<T>(input: string, init?: RequestInit, attempt = 0): Promise<T> {
   const res = await fetch(input, {
     credentials: "include",
+    cache: "no-store",
     ...init,
-    headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), ...init?.headers },
+    headers: {
+      Accept: "application/json",
+      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...init?.headers,
+    },
   });
+  const contentType = res.headers.get("content-type") ?? "";
+  const bodyText = await res.text();
+  const parseJson = () => {
+    if (!bodyText.trim()) return null;
+    if (!contentType.includes("application/json")) return null;
+    try {
+      return JSON.parse(bodyText);
+    } catch {
+      if ((init?.method ?? "GET").toUpperCase() === "GET" && attempt === 0) {
+        return null;
+      }
+      throw new Error(`Invalid JSON response from workspace API (${res.status})`);
+    }
+  };
+  const body = parseJson();
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
-    try {
-      const j = await res.json();
-      if (j?.error) msg = j.error;
-    } catch { /* keep status text */ }
+    if (body?.error) msg = body.error;
+    else if (bodyText.trim()) msg = bodyText.slice(0, 240);
     throw new Error(msg);
   }
-  return res.json() as Promise<T>;
+  if (res.status === 204) return undefined as T;
+  if (body === null) {
+    if ((init?.method ?? "GET").toUpperCase() === "GET" && attempt === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      return req<T>(input, init, attempt + 1);
+    }
+    throw new Error("Workspace API returned an empty response. Please refresh and try again.");
+  }
+  return body as T;
 }
 
 export const workspaceApi = {
