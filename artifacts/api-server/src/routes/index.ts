@@ -13,6 +13,7 @@ import translatorRouter from "./translator";
 import adminRouter from "./admin";
 import notebookRouter from "./notebook";
 import pitajiRouter from "./pitaji";
+import workspaceRouter from "./workspace";
 
 const router: IRouter = Router();
 
@@ -30,5 +31,6 @@ router.use("/translator", translatorRouter);
 router.use("/admin", adminRouter);
 router.use(notebookRouter);
 router.use(pitajiRouter);
+router.use("/workspace", workspaceRouter);
 
 export default router;

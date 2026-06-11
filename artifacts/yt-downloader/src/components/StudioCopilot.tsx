@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bot, Loader2, CheckCircle, ChevronRight, ChevronDown,
@@ -7,8 +7,10 @@ import {
   ArrowLeft, Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
   MoreVertical,
   ImagePlus, Music2, Terminal, Eye, Volume2, Film,
+  FolderOpen,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { WorkspacePanel } from "./WorkspacePanel";
 import { useToast } from "@/hooks/use-toast";
 import { saveActiveDownload, loadActiveDownload, saveCompletedDownload } from "@/lib/download-history";
 import { saveActiveJob, loadActiveJob, saveToHistory } from "@/lib/subtitle-history";
@@ -116,7 +118,7 @@ type SseEvent =
   | { type: "tool_progress"; runId?: string; toolId?: string; name: string; status?: string; percent?: number | null; message?: string; jobId?: string }
   | { type: "tool_done"; runId?: string; toolId?: string; name: string; result: any; ts?: number }
   | { type: "navigate"; tab: string }
-  | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; audioUrl?: string; content?: string }
+  | { type: "artifact"; runId?: string; toolId?: string; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; audioUrl?: string; content?: string; files?: Array<{ path: string; size: number; modifiedAt: number; contentType?: string }>; dir?: string; contentType?: string; size?: number }
   | { type: "canvas_start"; runId?: string; canvasId: string; label: string; language?: string }
   | { type: "canvas_delta"; runId?: string; canvasId: string; content: string }
   | { type: "canvas_done"; runId?: string; canvasId: string }
@@ -131,8 +133,8 @@ type MessagePart =
   | { kind: "image"; previewUrl: string; name: string }
   | { kind: "attachment"; type: string; name: string; mimeType: string; data?: string; url?: string }
   | { kind: "plan"; steps: Array<{ tool: string; args: Record<string, any> }>; iteration?: number }
-  | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; cancelled?: boolean; result?: any; progress?: number | null; progressMsg?: string }
-  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; audioUrl?: string; content?: string; language?: string; canvasId?: string; live?: boolean };
+  | { kind: "tool_start"; toolId?: string; name: string; args: Record<string, any>; done?: boolean; cancelled?: boolean; result?: any; progress?: number | null; progressMsg?: string; logs?: Array<{ ts: number; msg: string; level?: "info" | "warn" | "error" }>; error?: string; inlineArtifact?: { artifactType: string; label: string; content?: string; files?: Array<{ path: string; size: number; modifiedAt: number; contentType?: string }>; dir?: string; contentType?: string; size?: number; downloadUrl?: string } }
+  | { kind: "artifact"; artifactType: string; label: string; tab?: string; jobId?: string; downloadUrl?: string; imageUrl?: string; audioUrl?: string; content?: string; language?: string; canvasId?: string; live?: boolean; files?: Array<{ path: string; size: number; modifiedAt: number; contentType?: string }>; dir?: string; contentType?: string; size?: number };
 
 type GroundingSource = { title: string; uri: string };
 type Message = { id: string; role: "user" | "assistant"; parts: MessagePart[]; timestamp: Date; groundingSources?: GroundingSource[]; searchEntryPoint?: string | null };
@@ -175,6 +177,13 @@ const TOOL_META: Record<string, { icon: React.ReactNode; label: string; color: s
   cancel_job: { icon: <X className="w-3.5 h-3.5" />, label: "Cancelling job", color: "text-red-400" },
   check_job_status: { icon: <Loader2 className="w-3.5 h-3.5" />, label: "Checking status", color: "text-white/60" },
   analyze_youtube_video: { icon: <span className="text-[13px]">👁️</span>, label: "Watching video", color: "text-fuchsia-400" },
+  list_workspace_files: { icon: <FolderOpen className="w-3.5 h-3.5" />, label: "Listing your files", color: "text-amber-300" },
+  read_workspace_file: { icon: <FolderOpen className="w-3.5 h-3.5" />, label: "Reading from workspace", color: "text-amber-300" },
+  write_workspace_file: { icon: <FolderOpen className="w-3.5 h-3.5" />, label: "Saving to workspace", color: "text-amber-300" },
+  delete_workspace_file: { icon: <Trash2 className="w-3.5 h-3.5" />, label: "Removing from workspace", color: "text-red-300" },
+  save_artifact_to_workspace: { icon: <FolderOpen className="w-3.5 h-3.5" />, label: "Saving artifact", color: "text-amber-300" },
+  list_drive_files: { icon: <span className="text-[13px]">📁</span>, label: "Browsing Drive folder", color: "text-blue-300" },
+  import_from_drive: { icon: <span className="text-[13px]">📥</span>, label: "Importing from Drive", color: "text-blue-300" },
 };
 const TAB_ICONS: Record<string, React.ReactNode> = {
   download: <Download className="w-3.5 h-3.5" />, clips: <Sparkles className="w-3.5 h-3.5" />,
@@ -184,10 +193,10 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 };
 const STARTERS = [
   { icon: <Scissors className="w-4 h-4" />, text: "Cut a clip from a YouTube video" },
-  { icon: <Sparkles className="w-4 h-4" />, text: "Find the best clips from a YouTube video" },
-  { icon: <Captions className="w-4 h-4" />, text: "Generate subtitles for a YouTube video" },
-  { icon: <AlarmClock className="w-4 h-4" />, text: "Create chapter timestamps for a video" },
-  { icon: <Download className="w-4 h-4" />, text: "Download a YouTube video in 1080p" },
+  { icon: <Sparkles className="w-4 h-4" />, text: "Find the best moments in a long video" },
+  { icon: <Captions className="w-4 h-4" />, text: "Transcribe and translate a video to English" },
+  { icon: <FolderOpen className="w-4 h-4" />, text: "Show me my saved files" },
+  { icon: <ImagePlus className="w-4 h-4" />, text: "Generate a thumbnail image for my video" },
   { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
 
@@ -487,48 +496,289 @@ function extractCanvasCandidate(text: string): CanvasCandidate | null {
     live,
   };
 }
+// Convert snake_case tool name to a friendlier label as a fallback when TOOL_META is missing.
+function prettifyToolName(name: string): string {
+  return name.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Surface the one argument that best describes what this tool is doing in the header.
+// Priority order matches what reads naturally to a human glancing at the card.
+const PRIMARY_ARG_KEYS = ["path", "url", "driveFileId", "fileId", "jobId", "tab", "query", "topic", "question", "prompt", "command", "instructions", "filename", "dir", "folderId"];
+function pickPrimaryArg(args: Record<string, any>): string {
+  for (const key of PRIMARY_ARG_KEYS) {
+    const v = args?.[key];
+    if (typeof v === "string" && v.length > 0) {
+      return v.length > 60 ? v.slice(0, 57) + "…" : v;
+    }
+  }
+  // Fall back to the first non-empty string-ish arg.
+  for (const [k, v] of Object.entries(args ?? {})) {
+    if (v === undefined || v === null || v === "") continue;
+    const s = String(v);
+    if (!s) continue;
+    return `${k}: ${s.length > 50 ? s.slice(0, 47) + "…" : s}`;
+  }
+  return "";
+}
+
+// Renders the informational artifact produced by a tool, inline inside the
+// tool card's expanded panel. No nested chevron / no card chrome — just the data.
+function InlineToolArtifact({ artifact }: { artifact: NonNullable<(MessagePart & { kind: "tool_start" })["inlineArtifact"]> }) {
+  const { toast } = useToast();
+  if (artifact.artifactType === "workspace_listing") {
+    const files = artifact.files ?? [];
+    return (
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-white/35 mb-1.5 font-medium">{artifact.label}</div>
+        {files.length === 0 ? (
+          <div className="text-[12px] text-white/45 py-3">No files saved here yet.</div>
+        ) : (
+          <div className="rounded-lg border border-white/5 bg-black/20 divide-y divide-white/5">
+            {files.slice(0, 12).map((f) => (
+              <div key={f.path} className="flex items-center gap-2.5 px-3 py-1.5">
+                <FolderOpen className="w-3 h-3 text-amber-200/70 shrink-0" />
+                <span className="flex-1 min-w-0 text-[11.5px] text-white/80 font-mono truncate">{f.path}</span>
+                <span className="text-[10px] text-white/35 shrink-0">{formatBytesShort(f.size)}</span>
+              </div>
+            ))}
+            {files.length > 12 && (
+              <div className="px-3 py-1.5 text-[10px] text-white/40 text-center">+ {files.length - 12} more</div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (artifact.artifactType === "workspace_file") {
+    const content = artifact.content ?? "";
+    const copyContent = async () => {
+      try { await navigator.clipboard.writeText(content); toast({ title: "Copied" }); } catch { /* ignore */ }
+    };
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <div className="text-[10px] uppercase tracking-wider text-white/35 font-medium font-mono">{artifact.label}</div>
+          <div className="flex items-center gap-1">
+            <button onClick={copyContent} className="p-1 rounded text-white/45 hover:text-white" title="Copy"><Copy className="w-3 h-3" /></button>
+            {artifact.downloadUrl && <a href={artifact.downloadUrl} target="_blank" rel="noopener noreferrer" className="p-1 rounded text-white/45 hover:text-white" title="Download"><Download className="w-3 h-3" /></a>}
+          </div>
+        </div>
+        <pre className="text-[11px] text-white/72 font-mono p-2 rounded-lg overflow-x-auto max-h-56 whitespace-pre-wrap bg-black/30 border border-white/5">{content}</pre>
+      </div>
+    );
+  }
+  // text — render the result content inline as a clean preformatted block
+  const content = artifact.content ?? "";
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-white/35 mb-1.5 font-medium">{artifact.label}</div>
+      <pre className="text-[11.5px] text-white/80 font-mono p-2 rounded-lg overflow-x-auto max-h-56 whitespace-pre-wrap bg-black/30 border border-white/5">{content}</pre>
+    </div>
+  );
+}
+
 // ── ToolCard ──────────────────────────────────────────────────────────────────
 function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
-  const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: part.name, color: "text-white/60" };
+  const meta = TOOL_META[part.name] ?? { icon: <Bot className="w-3.5 h-3.5" />, label: prettifyToolName(part.name), color: "text-white/60" };
   const pct = part.progress !== null && part.progress !== undefined ? clampPercent(Number(part.progress)) : null;
   const hasProgress = pct !== null;
-  const argStr = Object.entries(part.args).filter(([, v]) => v !== undefined && v !== "")
-    .map(([k, v]) => `${k}: ${String(v).length > 40 ? String(v).slice(0, 37) + "..." : v}`).join("  ·  ");
+  const argSummary = pickPrimaryArg(part.args);
+  const argEntries = Object.entries(part.args ?? {}).filter(([, v]) => v !== undefined && v !== null && v !== "");
+  const logs = part.logs ?? [];
+  const hasResult = part.done && part.result !== undefined && part.result !== null;
+  const inline = part.inlineArtifact;
+  const hasInline = !!inline;
+  const hasExpandable = argEntries.length > 0 || logs.length > 0 || hasResult || hasInline;
+  const [expanded, setExpanded] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+
+  // Status accent — drives the orb / pill / progress bar color. Tailwind only
+  // sees literal class names, so the colors must be enumerated, not interpolated.
+  type Accent = "running" | "progress" | "done" | "cancelled" | "error";
+  const accent: Accent = part.done
+    ? (part.cancelled ? "cancelled" : part.error ? "error" : "done")
+    : (hasProgress ? "progress" : "running");
+  const ACCENT: Record<Accent, { orbBg: string; orbBorder: string; pingBg: string; pillBg: string; pillText: string; bar: string; dot: string }> = {
+    running:   { orbBg: "bg-amber-300/12", orbBorder: "border-amber-300/30", pingBg: "bg-amber-300/30", pillBg: "bg-amber-300/14", pillText: "text-amber-300", bar: "bg-amber-300/60", dot: "bg-amber-300" },
+    progress:  { orbBg: "bg-sky-400/12",   orbBorder: "border-sky-400/30",   pingBg: "bg-sky-400/30",   pillBg: "bg-sky-400/14",   pillText: "text-sky-300",   bar: "bg-sky-400",     dot: "bg-sky-400" },
+    done:      { orbBg: "bg-emerald-400/12", orbBorder: "border-emerald-400/30", pingBg: "bg-emerald-400/30", pillBg: "bg-emerald-400/14", pillText: "text-emerald-200", bar: "bg-emerald-400", dot: "bg-emerald-400" },
+    cancelled: { orbBg: "bg-white/8", orbBorder: "border-white/15", pingBg: "bg-white/15", pillBg: "bg-white/8", pillText: "text-white/55", bar: "bg-white/30", dot: "bg-white/40" },
+    error:     { orbBg: "bg-rose-400/12", orbBorder: "border-rose-400/30", pingBg: "bg-rose-400/30", pillBg: "bg-rose-400/14", pillText: "text-rose-200", bar: "bg-rose-400", dot: "bg-rose-400" },
+  };
+  const A = ACCENT[accent];
+
+  // Pretty-print the result for the raw view (avoid showing internal URLs in the summary preview).
+  const resultJson = React.useMemo(() => {
+    if (!hasResult) return "";
+    try { return JSON.stringify(part.result, null, 2); } catch { return String(part.result); }
+  }, [hasResult, part.result]);
+
   return (
-    <div className={cn("agent-tool-card", part.done && "agent-tool-card-done")}>
-      <div className="agent-tool-card-top">
-        <span className="agent-tool-using">Using</span>
-        <span className="agent-tool-divider" />
-        <span className={cn("agent-tool-icon shrink-0", meta.color)}>{meta.icon}</span>
-        <span className={cn("agent-tool-name", meta.color)}>{meta.label}</span>
-        {argStr && <><span className="agent-tool-divider" /><span className="agent-tool-args">{argStr}</span></>}
-        <span className="agent-tool-status-wrap">
-          {part.done
-            ? (part.cancelled
-                ? <X className="w-3.5 h-3.5 text-white/40" />
-                : <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />)
-            : hasProgress
-              ? <span className="agent-tool-pct">{pct}%</span>
-              : <Loader2 className="w-3.5 h-3.5 text-white/30 animate-spin" />}
+    <div className={cn(
+      "group agent-tool-v2 rounded-2xl border bg-gradient-to-br overflow-hidden transition-all",
+      part.done
+        ? (part.cancelled
+            ? "border-white/8 from-white/[0.02] to-white/[0.01]"
+            : part.error
+              ? "border-rose-400/25 from-rose-500/6 to-white/[0.02]"
+              : "border-emerald-400/15 from-emerald-400/4 to-white/[0.02]")
+        : "border-white/10 from-white/[0.045] to-white/[0.015] shadow-[0_8px_28px_rgba(0,0,0,0.18)]",
+    )}>
+      {/* Header — always visible */}
+      <button
+        type="button"
+        onClick={() => hasExpandable && setExpanded(v => !v)}
+        className={cn(
+          "w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left",
+          hasExpandable ? "cursor-pointer hover:bg-white/[0.025]" : "cursor-default",
+        )}
+      >
+        {/* Status orb */}
+        <span className="relative flex items-center justify-center w-6 h-6 shrink-0">
+          {!part.done && (
+            <span className={cn("absolute inset-0 rounded-full animate-ping opacity-50", A.pingBg)} style={{ animationDuration: "1.8s" }} />
+          )}
+          <span className={cn("relative w-6 h-6 rounded-full flex items-center justify-center border", A.orbBg, A.orbBorder, meta.color)}>
+            {meta.icon}
+          </span>
         </span>
-      </div>
-      {!part.done && part.progressMsg && (
-        <div className="agent-tool-live-msg">
-          <span className="agent-tool-live-dot" />
-          <span className="agent-tool-live-text">{part.progressMsg}</span>
+
+        {/* Label + arg pill */}
+        <div className="flex-1 min-w-0 flex items-baseline gap-2">
+          <span className={cn("text-[12.5px] font-semibold tracking-tight", meta.color)}>{meta.label}</span>
+          {argSummary && (
+            <span className="hidden sm:inline-block text-[11px] font-mono text-white/45 truncate">
+              {argSummary}
+            </span>
+          )}
+        </div>
+
+        {/* Status badge */}
+        <span className="flex items-center gap-1.5 shrink-0">
+          {part.done ? (
+            part.cancelled ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/8 text-[10px] font-medium text-white/55">
+                <X className="w-3 h-3" /> Stopped
+              </span>
+            ) : part.error ? (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-400/14 text-[10px] font-medium text-rose-200">
+                Failed
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-400/14 text-[10px] font-medium text-emerald-200">
+                <CheckCircle className="w-3 h-3" /> Done
+              </span>
+            )
+          ) : (
+            <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium", A.pillBg, A.pillText)}>
+              {hasProgress
+                ? <span className="tabular-nums">{pct}%</span>
+                : <><Loader2 className="w-3 h-3 animate-spin" /> Running</>}
+            </span>
+          )}
+          {hasExpandable && (
+            <ChevronDown className={cn("w-3.5 h-3.5 text-white/35 transition-transform shrink-0", expanded && "rotate-180")} />
+          )}
+        </span>
+      </button>
+
+      {/* Mobile-only arg line so the header stays compact on narrow viewports */}
+      {argSummary && (
+        <div className="sm:hidden px-3.5 -mt-1.5 pb-2 text-[11px] font-mono text-white/45 truncate">
+          {argSummary}
         </div>
       )}
-      {part.done && part.cancelled && (
-        <div className="agent-tool-live-msg">
-          <span className="agent-tool-live-text text-white/40">Stopped</span>
-        </div>
-      )}
+
+      {/* Live progress strip — only while running */}
       {!part.done && (
-        <div className="agent-tool-progress-track">
-          <div className="agent-tool-progress-fill" style={{ width: hasProgress ? `${Math.max(3, pct)}%` : "0%", transition: hasProgress ? "width 0.6s ease" : "none" }} />
-          {!hasProgress && <div className="agent-tool-progress-shimmer" />}
+        <div className="relative h-[2px] bg-white/4 overflow-hidden">
+          {hasProgress ? (
+            <div
+              className={cn("h-full transition-[width] duration-700 ease-out", A.bar)}
+              style={{ width: `${Math.max(3, pct ?? 0)}%` }}
+            />
+          ) : (
+            <div className={cn("absolute inset-y-0 w-1/3 animate-[shimmer_1.6s_ease-in-out_infinite]", A.bar, "opacity-60")} />
+          )}
         </div>
       )}
+
+      {/* Live message — single line when running */}
+      {!part.done && part.progressMsg && !expanded && (
+        <div className="flex items-center gap-2 px-3.5 py-2 border-t border-white/5 text-[11px] text-white/55">
+          <span className={cn("w-1.5 h-1.5 rounded-full animate-pulse", A.dot)} />
+          <span className="truncate">{part.progressMsg}</span>
+        </div>
+      )}
+
+      {/* Expanded detail panel */}
+      <AnimatePresence initial={false}>
+        {expanded && hasExpandable && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="overflow-hidden border-t border-white/5"
+          >
+            <div className="p-3 space-y-3 bg-black/15">
+              {hasInline && inline && (
+                <InlineToolArtifact artifact={inline} />
+              )}
+              {argEntries.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-white/35 mb-1.5 font-medium">Arguments</div>
+                  <div className="space-y-1">
+                    {argEntries.map(([k, v]) => {
+                      const display = typeof v === "string" ? v : (() => { try { return JSON.stringify(v); } catch { return String(v); } })();
+                      return (
+                        <div key={k} className="flex items-start gap-2 text-[11.5px] leading-relaxed">
+                          <span className="font-mono text-amber-200/70 shrink-0 min-w-[90px]">{k}</span>
+                          <span className="font-mono text-white/75 break-all">{display}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {logs.length > 0 && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-white/35 mb-1.5 font-medium">Activity</div>
+                  <div className="space-y-0.5 max-h-40 overflow-y-auto pr-1">
+                    {logs.map((l, i) => (
+                      <div key={i} className="flex items-start gap-2 text-[11px] leading-relaxed">
+                        <span className={cn(
+                          "shrink-0 w-1 h-1 rounded-full mt-1.5",
+                          l.level === "error" ? "bg-rose-400" : l.level === "warn" ? "bg-amber-300" : "bg-emerald-400/70",
+                        )} />
+                        <span className="font-mono text-white/55">{l.msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {hasResult && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-[10px] uppercase tracking-wider text-white/35 font-medium">Result</div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setShowRaw(v => !v); }}
+                      className="text-[10px] text-white/40 hover:text-white/80 underline-offset-2 hover:underline"
+                    >
+                      {showRaw ? "Hide raw" : "Show raw"}
+                    </button>
+                  </div>
+                  {showRaw && (
+                    <pre className="text-[10.5px] font-mono text-white/55 bg-black/30 rounded-lg p-2 overflow-x-auto max-h-48 whitespace-pre-wrap break-all">{resultJson}</pre>
+                  )}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -558,12 +808,43 @@ function PlanCard({ part }: { part: MessagePart & { kind: "plan" } }) {
 }
 
 // ── TextArtifact (own component so useState is always at top level) ───────────
+// Tight collapsible card used when the artifact is too small to deserve a canvas modal.
+function CompactTextArtifact({ label, content, downloadUrl }: { label: string; content: string; downloadUrl?: string }) {
+  const { toast } = useToast();
+  const [copied, setCopied] = useState(false);
+  const copyText = async () => {
+    try { await navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
+  };
+  return (
+    <ArtifactShell
+      accent="cyan"
+      icon={<SquarePen className="w-3.5 h-3.5 text-cyan-200" />}
+      title={label}
+      subtitle={`${content.length.toLocaleString()} chars`}
+      actions={
+        <>
+          <ShellIconButton icon={copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} onClick={copyText} title="Copy" />
+          {downloadUrl && <ShellIconButton icon={<Download className="w-3.5 h-3.5" />} href={downloadUrl} title="Download" />}
+          <SaveTextToWorkspaceBtn content={content} suggestedName={label} className="!p-1.5" />
+        </>
+      }
+    >
+      <pre className="text-[12px] text-white/75 font-mono px-4 py-3 whitespace-pre-wrap break-words">{content}</pre>
+    </ArtifactShell>
+  );
+}
+
 function TextArtifact({ label, content, downloadUrl, language, live }: { label: string; content: string; downloadUrl?: string; language?: string; live?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
   const [view, setView] = useState<"code" | "preview">("code");
   const normalizedLanguage = normalizeCanvasLanguage(language, content);
   const canPreview = isHtmlCanvas(normalizedLanguage, content);
+  // For short non-live, non-previewable content, drop the heavy "canvas" UI and
+  // show a tight inline card. Canvas is for real artifacts the user will edit/download.
+  if (!live && !canPreview && content.length <= 500) {
+    return <CompactTextArtifact label={label} content={content} downloadUrl={downloadUrl} />;
+  }
   const copyText = () => { void navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); };
   const downloadName = label || canvasFilename(normalizedLanguage);
   const artifactUrl = React.useMemo(
@@ -573,7 +854,28 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
   const preview = content.length > 3200 ? `${content.slice(0, 3200)}\n\n...` : content;
   return (
     <>
-      <div className="agent-artifact-card agent-artifact-text rounded-2xl border border-cyan-400/20 bg-gradient-to-br from-cyan-400/10 via-white/[0.045] to-emerald-400/8 overflow-hidden shadow-[0_16px_60px_rgba(8,145,178,0.10)]">
+      <ArtifactShell
+        accent="cyan"
+        defaultOpen={!!live}
+        icon={<SquarePen className="w-4 h-4 text-cyan-200" />}
+        title={label}
+        subtitle={`${content.length.toLocaleString()} chars${live ? " · writing live" : ""}${canPreview ? " · HTML preview" : ""}`}
+        actions={
+          <>
+            {canPreview && (
+              <button onClick={() => { setView("preview"); setOpen(true); }} className="hidden sm:inline-flex items-center text-[11px] text-emerald-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-emerald-500/14 hover:bg-emerald-500/22 border border-emerald-300/15 font-semibold">Preview</button>
+            )}
+            <button onClick={() => setOpen(true)} className="inline-flex items-center text-[11px] text-cyan-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-cyan-400/14 hover:bg-cyan-400/22 border border-cyan-300/15 font-semibold">Canvas</button>
+            <ShellIconButton icon={copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} onClick={copyText} title="Copy" />
+            <ShellIconButton icon={<Download className="w-3.5 h-3.5" />} href={artifactUrl} download={downloadName} title="Download" />
+            <SaveTextToWorkspaceBtn content={content} suggestedName={downloadName} className="!p-1.5" />
+          </>
+        }
+      >
+        <pre className="text-[12px] text-white/72 font-mono p-3 overflow-x-auto max-h-72 whitespace-pre-wrap bg-black/20">{preview}</pre>
+      </ArtifactShell>
+      {/* HIDDEN — old card body retained below replaced by ArtifactShell above */}
+      <div className="hidden">
         <div className="flex items-start gap-3 px-3 py-3 border-b border-white/8">
           <div className="mt-0.5 p-2 rounded-xl bg-cyan-400/12 border border-cyan-300/15">
             <SquarePen className="w-4 h-4 text-cyan-200" />
@@ -583,16 +885,10 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
             <p className="text-[11px] text-white/40 mt-0.5">{content.length.toLocaleString()} chars - {live ? "writing live" : "canvas ready"}{canPreview ? " - preview supported" : ""}</p>
           </div>
           <div className="flex items-center gap-1.5">
-            {canPreview && (
-              <button onClick={() => { setView("preview"); setOpen(true); }} className="hidden sm:inline-flex text-[11px] text-emerald-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-emerald-500/14 hover:bg-emerald-500/22 border border-emerald-300/15 font-semibold">Preview</button>
-            )}
-            <button onClick={() => setOpen(true)} className="text-[11px] text-cyan-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-cyan-400/14 hover:bg-cyan-400/22 border border-cyan-300/15 font-semibold">Open canvas</button>
-            <button onClick={copyText} title="Copy" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />}
-            </button>
             <a href={artifactUrl} download={downloadName} title="Download" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
               <Download className="w-3.5 h-3.5" />
             </a>
+            <SaveTextToWorkspaceBtn content={content} suggestedName={downloadName} />
           </div>
         </div>
         <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-56 whitespace-pre-wrap bg-black/20">{preview}</pre>
@@ -776,46 +1072,337 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
   );
 }
 
+// ── SaveTextToWorkspaceBtn ────────────────────────────────────────────────────
+// Save inline text content (scripts, SEO packs, subtitles) directly via writeText.
+function SaveTextToWorkspaceBtn({ content, suggestedName, contentType, className }: { content: string; suggestedName?: string; contentType?: string; className?: string }) {
+  const { toast } = useToast();
+  const [state, setState] = useState<"idle" | "saving" | "done">("idle");
+  const onSave = async () => {
+    setState("saving");
+    try {
+      const fallback = (suggestedName || "note.txt").replace(/[^\w.\-() ]/g, "_").slice(0, 160) || "note.txt";
+      const path = `notes/${fallback}`;
+      const { workspaceApi } = await import("@/lib/workspace-api");
+      await workspaceApi.writeText(path, content, contentType);
+      setState("done");
+      toast({ title: "Saved to workspace", description: path });
+      setTimeout(() => setState("idle"), 2500);
+    } catch (err) {
+      setState("idle");
+      toast({ title: "Save failed", description: (err as Error).message, variant: "destructive" });
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onSave}
+      disabled={state !== "idle"}
+      className={cn("p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white disabled:opacity-60", className)}
+      title="Save to my workspace"
+    >
+      {state === "saving" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : state === "done" ? <CheckCircle className="w-3.5 h-3.5 text-green-400" /> : <FolderOpen className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
+
+// ── SaveToWorkspaceBtn ────────────────────────────────────────────────────────
+// Imports an artifact's downloadUrl/imageUrl into the user's workspace under
+// uploads/ via the workspace API. Falls back gracefully when the URL is empty.
+function SaveToWorkspaceBtn({ sourceUrl, suggestedName, className }: { sourceUrl?: string; suggestedName?: string; className?: string }) {
+  const { toast } = useToast();
+  const [state, setState] = useState<"idle" | "saving" | "done">("idle");
+  if (!sourceUrl) return null;
+  const onSave = async () => {
+    setState("saving");
+    try {
+      const r = await fetch(sourceUrl, { credentials: "include" });
+      if (!r.ok) throw new Error(`source fetch failed: ${r.status}`);
+      const blob = await r.blob();
+      const inferredFromUrl = sourceUrl.split("?")[0].split("/").pop() ?? "file";
+      const fallback = suggestedName || inferredFromUrl;
+      const safe = fallback.replace(/[^\w.\-() ]/g, "_").slice(0, 160) || "file";
+      const path = `uploads/${safe}`;
+      const { workspaceApi } = await import("@/lib/workspace-api");
+      const { uploadUrl } = await workspaceApi.presignPut(path, blob.size, blob.type || undefined);
+      const put = await fetch(uploadUrl, { method: "PUT", body: blob, headers: blob.type ? { "Content-Type": blob.type } : undefined });
+      if (!put.ok) throw new Error(`workspace upload failed: ${put.status}`);
+      setState("done");
+      toast({ title: "Saved to workspace", description: path });
+      setTimeout(() => setState("idle"), 2500);
+    } catch (err) {
+      setState("idle");
+      toast({ title: "Save failed", description: (err as Error).message, variant: "destructive" });
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={onSave}
+      disabled={state !== "idle"}
+      className={cn("shrink-0 inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/70 text-[11px] font-medium transition-colors disabled:opacity-60", className)}
+      title="Save to my workspace"
+    >
+      {state === "saving" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : state === "done" ? <CheckCircle className="w-3.5 h-3.5 text-green-400" /> : <FolderOpen className="w-3.5 h-3.5" />}
+      <span>{state === "saving" ? "Saving…" : state === "done" ? "Saved" : "Save"}</span>
+    </button>
+  );
+}
+
+// ── ArtifactShell ────────────────────────────────────────────────────────────
+// Unified collapsible card used by every artifact type. Header stays compact
+// with primary actions always visible; chevron expands to reveal the body.
+type ShellAccent = "emerald" | "amber" | "cyan" | "pink" | "violet" | "sky";
+const SHELL_ACCENT: Record<ShellAccent, { border: string; from: string; to: string; iconBg: string; iconBorder: string; title: string }> = {
+  emerald: { border: "border-emerald-400/20", from: "from-emerald-400/8",  to: "to-white/[0.02]",   iconBg: "bg-emerald-400/12", iconBorder: "border-emerald-300/15", title: "text-emerald-100" },
+  amber:   { border: "border-amber-400/20",   from: "from-amber-400/8",    to: "to-orange-300/5",   iconBg: "bg-amber-400/12",   iconBorder: "border-amber-300/15",   title: "text-amber-100" },
+  cyan:    { border: "border-cyan-400/20",    from: "from-cyan-400/8",     to: "to-emerald-400/4",  iconBg: "bg-cyan-400/12",    iconBorder: "border-cyan-300/15",    title: "text-cyan-100" },
+  pink:    { border: "border-pink-500/25",    from: "from-pink-500/8",     to: "to-white/[0.02]",   iconBg: "bg-pink-500/15",    iconBorder: "border-pink-300/15",    title: "text-pink-100" },
+  violet:  { border: "border-violet-400/20",  from: "from-violet-500/8",   to: "to-white/[0.02]",   iconBg: "bg-violet-500/15",  iconBorder: "border-violet-300/15",  title: "text-violet-100" },
+  sky:     { border: "border-sky-400/20",     from: "from-sky-400/8",      to: "to-white/[0.02]",   iconBg: "bg-sky-400/12",     iconBorder: "border-sky-300/15",     title: "text-sky-100" },
+};
+
+function ArtifactShell({
+  accent = "cyan",
+  icon,
+  title,
+  subtitle,
+  actions,
+  defaultOpen = false,
+  hideToggle = false,
+  children,
+}: {
+  accent?: ShellAccent;
+  icon: React.ReactNode;
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  actions?: React.ReactNode;
+  defaultOpen?: boolean;
+  hideToggle?: boolean;
+  children?: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const A = SHELL_ACCENT[accent];
+  return (
+    <div className={cn("agent-artifact-card rounded-2xl border bg-gradient-to-br overflow-hidden", A.border, A.from, A.to)}>
+      <div className="flex items-center gap-2.5 px-3.5 py-2.5">
+        <button
+          type="button"
+          onClick={() => !hideToggle && setOpen(v => !v)}
+          className={cn("flex items-center gap-2.5 flex-1 min-w-0 text-left", !hideToggle && "cursor-pointer")}
+        >
+          <span className={cn("p-1.5 rounded-lg border shrink-0", A.iconBg, A.iconBorder)}>{icon}</span>
+          <span className="flex-1 min-w-0">
+            <span className={cn("block text-[12.5px] font-semibold truncate", A.title)}>{title}</span>
+            {subtitle && <span className="block text-[10.5px] text-white/40 truncate mt-0.5">{subtitle}</span>}
+          </span>
+        </button>
+        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+          {actions}
+          {!hideToggle && children !== undefined && children !== null && (
+            <button
+              type="button"
+              onClick={() => setOpen(v => !v)}
+              className="p-1.5 rounded-lg text-white/45 hover:text-white hover:bg-white/8 transition-colors"
+              title={open ? "Collapse" : "Expand"}
+              aria-label={open ? "Collapse" : "Expand"}
+            >
+              <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", open && "rotate-180")} />
+            </button>
+          )}
+        </div>
+      </div>
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="overflow-hidden border-t border-white/5"
+          >
+            {children}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// Small icon-only action button used in artifact shell headers.
+function ShellIconButton({ icon, onClick, href, download, title, accent = "white" }: { icon: React.ReactNode; onClick?: () => void; href?: string; download?: boolean | string; title: string; accent?: "white" | "emerald" }) {
+  const cls = cn(
+    "p-1.5 rounded-lg transition-colors",
+    accent === "emerald"
+      ? "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-100"
+      : "text-white/55 hover:text-white hover:bg-white/8",
+  );
+  if (href) {
+    return <a href={href} download={download as any} target={href.startsWith("blob:") || href.startsWith("data:") ? undefined : "_blank"} rel="noopener noreferrer" className={cls} title={title}>{icon}</a>;
+  }
+  return <button type="button" onClick={onClick} className={cls} title={title}>{icon}</button>;
+}
+
+// ── WorkspaceListingCard ─────────────────────────────────────────────────────
+// Renders the result of list_workspace_files as a real interactive file list
+// instead of dumping the paths as a text canvas.
+function formatBytesShort(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+function pickWorkspaceIcon(path: string) {
+  const lower = path.toLowerCase();
+  const cls = "w-3.5 h-3.5 text-amber-200/70 shrink-0";
+  if (/\.(png|jpe?g|gif|webp|svg)$/.test(lower)) return <ImagePlus className={cls} />;
+  if (/\.(mp4|mov|webm|mkv)$/.test(lower)) return <Film className={cls} />;
+  if (/\.(mp3|wav|m4a|flac|ogg)$/.test(lower)) return <Music2 className={cls} />;
+  if (/\.(srt|vtt)$/.test(lower)) return <Captions className={cls} />;
+  return <FolderOpen className={cls} />;
+}
+
+function WorkspaceListingCard({ part, onOpenWorkspace }: { part: MessagePart & { kind: "artifact" }; onOpenWorkspace?: () => void }) {
+  const files = part.files ?? [];
+  const { toast } = useToast();
+  const dirLabel = part.dir ? part.dir : "/";
+  const copyPath = async (path: string) => {
+    try { await navigator.clipboard.writeText(path); toast({ title: "Path copied", description: path }); } catch { /* ignore */ }
+  };
+  const downloadOne = async (path: string) => {
+    try {
+      const { workspaceApi } = await import("@/lib/workspace-api");
+      const { url } = await workspaceApi.getFile(path);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      toast({ title: "Download failed", description: (err as Error).message, variant: "destructive" });
+    }
+  };
+  return (
+    <ArtifactShell
+      accent="amber"
+      icon={<FolderOpen className="w-4 h-4 text-amber-200" />}
+      title={part.label}
+      subtitle={`${files.length} file${files.length === 1 ? "" : "s"} in ${dirLabel}`}
+      actions={onOpenWorkspace ? (
+        <button onClick={onOpenWorkspace} className="px-2.5 py-1.5 rounded-lg bg-amber-400/12 hover:bg-amber-400/20 border border-amber-300/15 text-[11px] font-medium text-amber-100">
+          Open
+        </button>
+      ) : undefined}
+    >
+      {files.length === 0 ? (
+        <div className="px-4 py-8 text-center text-[12px] text-white/40">No files saved here yet.</div>
+      ) : (
+        <div className="divide-y divide-white/5">
+          {files.slice(0, 12).map((f) => (
+            <div key={f.path} className="group flex items-center gap-2.5 px-4 py-2 hover:bg-white/[0.025] transition-colors">
+              {pickWorkspaceIcon(f.path)}
+              <div className="flex-1 min-w-0">
+                <div className="text-[12px] text-white/85 font-mono truncate">{f.path}</div>
+                <div className="text-[10px] text-white/35">{formatBytesShort(f.size)} · {new Date(f.modifiedAt).toLocaleDateString()}</div>
+              </div>
+              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button onClick={() => copyPath(f.path)} className="p-1.5 rounded text-white/50 hover:text-white" title="Copy path">
+                  <Copy className="w-3 h-3" />
+                </button>
+                <button onClick={() => downloadOne(f.path)} className="p-1.5 rounded text-white/50 hover:text-white" title="Download">
+                  <Download className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+          {files.length > 12 && (
+            <div className="px-4 py-2 text-[11px] text-white/40 text-center">+ {files.length - 12} more · open workspace to see all</div>
+          )}
+        </div>
+      )}
+    </ArtifactShell>
+  );
+}
+
+// ── WorkspaceFileCard ────────────────────────────────────────────────────────
+// Renders the result of read_workspace_file as a clean file preview with
+// proper metadata, content preview, and download — not a "canvas" modal.
+function WorkspaceFileCard({ part }: { part: MessagePart & { kind: "artifact" } }) {
+  const { toast } = useToast();
+  const content = part.content ?? "";
+  const copyContent = async () => {
+    try { await navigator.clipboard.writeText(content); toast({ title: "Copied to clipboard" }); } catch { /* ignore */ }
+  };
+  return (
+    <ArtifactShell
+      accent="amber"
+      icon={pickWorkspaceIcon(part.label)}
+      title={<span className="font-mono">{part.label}</span>}
+      subtitle={[
+        part.size != null ? formatBytesShort(part.size) : null,
+        part.contentType ? part.contentType.split(";")[0] : null,
+        `${content.length.toLocaleString()} chars`,
+      ].filter(Boolean).join(" · ")}
+      actions={
+        <>
+          <ShellIconButton icon={<Copy className="w-3.5 h-3.5" />} onClick={copyContent} title="Copy content" />
+          {part.downloadUrl && <ShellIconButton icon={<Download className="w-3.5 h-3.5" />} href={part.downloadUrl} title="Download" />}
+        </>
+      }
+    >
+      <pre className="text-[11.5px] text-white/75 font-mono p-3 overflow-x-auto max-h-72 whitespace-pre-wrap bg-black/20">{content}</pre>
+    </ArtifactShell>
+  );
+}
+
 // ── ArtifactCard ──────────────────────────────────────────────────────────────
-function ArtifactCard({ part, onNavigate }: { part: MessagePart & { kind: "artifact" }; onNavigate?: (tab: string) => void }) {
+function ArtifactCard({ part, onNavigate, onOpenWorkspace }: { part: MessagePart & { kind: "artifact" }; onNavigate?: (tab: string) => void; onOpenWorkspace?: () => void }) {
+  if (part.artifactType === "workspace_listing") {
+    return <WorkspaceListingCard part={part} onOpenWorkspace={onOpenWorkspace} />;
+  }
+  if (part.artifactType === "workspace_file") {
+    return <WorkspaceFileCard part={part} />;
+  }
   if (part.artifactType === "image" && part.imageUrl) {
+    const dlUrl = part.downloadUrl ?? part.imageUrl;
     return (
-      <div className="agent-artifact-card agent-artifact-image rounded-2xl border border-pink-500/25 bg-pink-500/8 overflow-hidden">
+      <ArtifactShell
+        accent="pink"
+        defaultOpen
+        icon={<ImagePlus className="w-3.5 h-3.5 text-pink-200" />}
+        title={part.label}
+        subtitle={part.content || "Generated image"}
+        actions={
+          <>
+            <ShellIconButton icon={<Download className="w-3.5 h-3.5" />} href={dlUrl} download title="Download" accent="emerald" />
+            <SaveToWorkspaceBtn sourceUrl={dlUrl} suggestedName={part.label} className="!gap-1 !px-2 !py-1.5 !text-[10px]" />
+          </>
+        }
+      >
         <div className="p-3">
           <img src={part.imageUrl} alt={part.label} className="w-full max-h-[360px] object-contain rounded-xl border border-white/10 bg-black/20" />
         </div>
-        <div className="px-4 pb-3 flex items-center gap-2">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-pink-200 truncate">{part.label}</p>
-            {part.content && <p className="text-xs text-white/45 truncate mt-0.5">{part.content}</p>}
-          </div>
-          <a href={part.downloadUrl ?? part.imageUrl} download className="shrink-0 flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-xs text-white bg-pink-600 hover:bg-pink-500 transition-colors">
-            <Download className="w-4 h-4" /> Download
-          </a>
-        </div>
-      </div>
+      </ArtifactShell>
     );
   }
   if (part.artifactType === "download" && part.downloadUrl) {
     return (
-      <div className="agent-artifact-card agent-artifact-download rounded-2xl border border-green-500/25 bg-green-500/8 overflow-hidden">
-        <div className="flex items-center gap-3 px-4 py-3">
-          <div className="p-2 rounded-xl bg-green-500/15 shrink-0"><CheckCircle className="w-5 h-5 text-green-400" /></div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-green-300">✅ Ready to download</p>
-            <p className="text-xs text-white/50 truncate mt-0.5">{part.label}</p>
-          </div>
+      <ArtifactShell
+        accent="emerald"
+        icon={<CheckCircle className="w-3.5 h-3.5 text-emerald-300" />}
+        title="Ready to download"
+        subtitle={part.label}
+        actions={
+          <>
+            <a href={part.downloadUrl} download className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-white" style={{ background: "linear-gradient(135deg,#16a34a,#15803d)", boxShadow: "0 4px 16px rgba(22,163,74,0.35)" }}>
+              <Download className="w-3.5 h-3.5" /> Download
+            </a>
+            <SaveToWorkspaceBtn sourceUrl={part.downloadUrl} suggestedName={part.label} className="!gap-1 !px-2 !py-1.5 !text-[10px]" />
+            {part.tab && onNavigate && (
+              <button onClick={() => onNavigate(part.tab!)} className="px-2.5 py-1.5 rounded-lg bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-[11px] font-medium transition-colors">Open Tab</button>
+            )}
+          </>
+        }
+      >
+        <div className="px-4 py-3 text-[12px] text-white/55">
+          File ready in your downloads. Click the green button above, or save a permanent copy to your workspace.
         </div>
-        <div className="px-4 pb-3 flex gap-2">
-          <a href={part.downloadUrl} download className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl font-bold text-sm text-white"
-            style={{ background: "linear-gradient(135deg,#16a34a,#15803d)", boxShadow: "0 4px 16px rgba(22,163,74,0.35)" }}>
-            <Download className="w-4 h-4" /> Download File
-          </a>
-          {part.tab && onNavigate && (
-            <button onClick={() => onNavigate(part.tab!)} className="px-3 py-2.5 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/60 text-xs font-medium transition-colors">Open Tab</button>
-          )}
-        </div>
-      </div>
+      </ArtifactShell>
     );
   }
   if (part.artifactType === "audio" && part.audioUrl) {
@@ -873,7 +1460,199 @@ function ReadAloudButton({ text }: { text: string }) {
   );
 }
 
-function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void; isStreaming?: boolean }) {
+// ── HistoryDrawer ────────────────────────────────────────────────────────────
+// Slim left-side slide-in drawer for chat history. Replaces the old full-width
+// panel: groups by date, has search, modern hover states, ~340px wide so it
+// previews the conversation behind it instead of covering everything.
+type HistorySession = { id: string; title: string; updatedAt: Date; messages: any[] };
+function groupSessionsByDate(sessions: HistorySession[]): Array<{ label: string; items: HistorySession[] }> {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startOfYesterday = startOfToday - 86400_000;
+  const startOf7d = startOfToday - 6 * 86400_000;
+  const startOf30d = startOfToday - 29 * 86400_000;
+  const groups: Record<string, HistorySession[]> = { Today: [], Yesterday: [], "Previous 7 days": [], "Previous 30 days": [], Older: [] };
+  for (const s of sessions) {
+    const t = s.updatedAt.getTime();
+    if (t >= startOfToday) groups.Today.push(s);
+    else if (t >= startOfYesterday) groups.Yesterday.push(s);
+    else if (t >= startOf7d) groups["Previous 7 days"].push(s);
+    else if (t >= startOf30d) groups["Previous 30 days"].push(s);
+    else groups.Older.push(s);
+  }
+  return Object.entries(groups)
+    .filter(([, items]) => items.length > 0)
+    .map(([label, items]) => ({ label, items }));
+}
+
+function HistoryDrawer({
+  open,
+  sessions,
+  currentSessionId,
+  onClose,
+  onPickSession,
+  onDeleteSession,
+  onNewChat,
+}: {
+  open: boolean;
+  sessions: HistorySession[];
+  currentSessionId: string | null;
+  onClose: () => void;
+  onPickSession: (id: string) => void;
+  onDeleteSession: (id: string, e: React.MouseEvent) => void;
+  onNewChat: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter(s => s.title.toLowerCase().includes(q));
+  }, [sessions, query]);
+  const groups = useMemo(() => groupSessionsByDate(filtered), [filtered]);
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <>
+          <motion.div
+            className="agent-history-backdrop-v2"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            onClick={onClose}
+          />
+          <motion.aside
+            className="agent-history-drawer"
+            initial={{ x: "-100%" }}
+            animate={{ x: 0 }}
+            exit={{ x: "-100%" }}
+            transition={{ type: "spring", damping: 32, stiffness: 320 }}
+            role="dialog"
+            aria-label="Chat history"
+          >
+            <div className="agent-history-drawer-header">
+              <div className="agent-history-drawer-title">
+                <History className="w-3.5 h-3.5 text-white/55" />
+                <span>History</span>
+                <span className="agent-history-drawer-count">{sessions.length}</span>
+              </div>
+              <button onClick={onClose} className="agent-history-drawer-close" aria-label="Close history">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="agent-history-drawer-search">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-white/35">
+                <circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" />
+              </svg>
+              <input
+                type="text"
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Search chats"
+                className="agent-history-drawer-search-input"
+              />
+              {query && (
+                <button onClick={() => setQuery("")} className="text-white/35 hover:text-white" aria-label="Clear search">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={onNewChat}
+              className="agent-history-drawer-newchat"
+            >
+              <SquarePen className="w-3.5 h-3.5" />
+              <span>New chat</span>
+            </button>
+            <div className="agent-history-drawer-list">
+              {sessions.length === 0 ? (
+                <div className="agent-history-drawer-empty">
+                  <History className="w-6 h-6 text-white/20 mb-2" />
+                  <p>No previous chats yet.</p>
+                  <p className="text-[10px] text-white/30 mt-1">Your conversations will appear here.</p>
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="agent-history-drawer-empty">
+                  <p>No chats match "{query}".</p>
+                </div>
+              ) : (
+                groups.map(group => (
+                  <div key={group.label} className="agent-history-drawer-group">
+                    <div className="agent-history-drawer-group-label">{group.label}</div>
+                    {group.items.map(s => {
+                      const active = currentSessionId === s.id;
+                      const messageCount = Array.isArray(s.messages) ? s.messages.length : 0;
+                      return (
+                        <div
+                          key={s.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => onPickSession(s.id)}
+                          onKeyDown={e => { if (e.key === "Enter") onPickSession(s.id); }}
+                          className={cn("agent-history-drawer-item group", active && "agent-history-drawer-item-active")}
+                        >
+                          <div className="agent-history-drawer-item-dot" />
+                          <div className="flex-1 min-w-0">
+                            <p className="agent-history-drawer-item-title">{s.title || "Untitled"}</p>
+                            <p className="agent-history-drawer-item-meta">
+                              {s.updatedAt.toLocaleString([], { hour: "2-digit", minute: "2-digit" })}
+                              {messageCount > 0 && <> · {messageCount} msg{messageCount === 1 ? "" : "s"}</>}
+                            </p>
+                          </div>
+                          <button
+                            onClick={e => onDeleteSession(s.id, e)}
+                            className="agent-history-drawer-item-delete"
+                            aria-label="Delete chat"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))
+              )}
+            </div>
+          </motion.aside>
+        </>
+      )}
+    </AnimatePresence>
+  );
+}
+
+// ── ChatMoreMenu ─────────────────────────────────────────────────────────────
+// Compact dropdown menu attached to the header "⋮" button. Houses workspace
+// access + chat-level actions (share) so we don't sprout standalone icons.
+function ChatMoreMenu({ isEmpty, onOpenWorkspace, onShare, onOpenHistory }: { isEmpty: boolean; onOpenWorkspace: () => void; onShare: () => void; onOpenHistory?: () => void }) {
+  return (
+    <div className="gs-chat-more-menu" role="menu">
+      {onOpenHistory && (
+        <button type="button" role="menuitem" className="gs-chat-more-menu-item" onClick={onOpenHistory}>
+          <History className="w-3.5 h-3.5 text-white/70" />
+          <span className="flex-1 text-left">Chat history</span>
+        </button>
+      )}
+      <button type="button" role="menuitem" className="gs-chat-more-menu-item" onClick={onOpenWorkspace}>
+        <FolderOpen className="w-3.5 h-3.5 text-amber-200" />
+        <span className="flex-1 text-left">Workspace</span>
+        <span className="gs-chat-more-menu-hint">Files</span>
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        className="gs-chat-more-menu-item disabled:opacity-40"
+        onClick={onShare}
+        disabled={isEmpty}
+      >
+        <Share2 className="w-3.5 h-3.5 text-white/70" />
+        <span className="flex-1 text-left">Share chat</span>
+      </button>
+    </div>
+  );
+}
+
+function MessageBubble({ message, onNavigate, onRetry, isStreaming, onOpenWorkspace }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void; isStreaming?: boolean; onOpenWorkspace?: () => void }) {
   const isUser = message.role === "user";
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
@@ -918,18 +1697,6 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
                     isErrorMsg && "gs-message-text-error",
                   )}>
                     {isUser ? cleanContent : (isLastTextPart ? renderStreamingMd(visibleText, message.groundingSources) : renderMd(visibleText, message.groundingSources))}
-                    {/* Copy button — assistant messages only, hover-reveal */}
-                    {!isUser && (
-                      <div className="gs-message-actions">
-                        <CopyBubble text={part.content} />
-                        <ReadAloudButton text={part.content} />
-                        {onRetry && (
-                          <button onClick={onRetry} title="Retry response" className="gs-message-action-btn">
-                            <RotateCcw className="w-3 h-3" />
-                          </button>
-                        )}
-                      </div>
-                    )}
                   </div>
                 )}
                 {canvas && (
@@ -945,9 +1712,25 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming }: { message:
           }
           if (part.kind === "tool_start") return <ToolCard key={i} part={part} />;
           if (part.kind === "plan") return null; // Plan is internal — tool cards already show what's executing
-          if (part.kind === "artifact") return <ArtifactCard key={i} part={part} onNavigate={onNavigate} />;
+          if (part.kind === "artifact") return <ArtifactCard key={i} part={part} onNavigate={onNavigate} onOpenWorkspace={onOpenWorkspace} />;
           return null;
         })}
+        {/* Message-level actions — render once after all parts when the assistant message is finished. */}
+        {!isUser && !isStreaming && (() => {
+          const allText = message.parts.filter(p => p.kind === "text").map(p => (p as any).content as string).join("\n").trim();
+          if (!allText) return null;
+          return (
+            <div className="gs-message-actions">
+              <CopyBubble text={allText} />
+              <ReadAloudButton text={allText} />
+              {onRetry && (
+                <button onClick={onRetry} title="Retry response" className="gs-message-action-btn">
+                  <RotateCcw className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          );
+        })()}
         {/* Grounding sources — shown when Gemini native Google Search grounding was used */}
         {!isUser && message.groundingSources && message.groundingSources.length > 0 && (
           <div className="flex flex-col gap-1.5 mt-1">
@@ -1017,6 +1800,20 @@ export function StudioCopilot({
   const sessionsRef = useRef<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showWorkspace, setShowWorkspace] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  // ChatMoreMenu is mounted twice (mobile pill + desktop header). A single
+  // moreMenuRef pointed at only one wrapper, so clicking inside the OTHER
+  // tripped click-outside and unmounted the menu before the menu item's
+  // onClick could fire (mousedown happens before click). Track both wrappers
+  // and check membership.
+  const moreMenuRefs = useRef<Set<HTMLDivElement>>(new Set());
+  const registerMoreMenuRef = useCallback((el: HTMLDivElement | null) => {
+    const set = moreMenuRefs.current;
+    if (el) set.add(el);
+    // Note: we deliberately don't remove on unmount — React calls this with
+    // null on unmount and the set is cleaned up by the next mount cycle.
+  }, []);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [listening, setListening] = useState(false);
@@ -1082,6 +1879,21 @@ export function StudioCopilot({
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showReasoningMenu]);
+
+  useEffect(() => {
+    if (!showMoreMenu) return;
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node;
+      // Only close when the click is outside ALL wrappers currently mounted.
+      let inside = false;
+      for (const el of moreMenuRefs.current) {
+        if (el.isConnected && el.contains(target)) { inside = true; break; }
+      }
+      if (!inside) setShowMoreMenu(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showMoreMenu]);
 
   // Fetch available skills on mount
   useEffect(() => {
@@ -1545,24 +2357,33 @@ export function StudioCopilot({
         patchAssistant(m => {
           const exists = m.parts.some(p => p.kind === "tool_start" && (p as any).toolId === evt.toolId);
           if (exists) return m;
-          return { ...m, parts: [...m.parts, { kind: "tool_start", toolId: evt.toolId, name: evt.name, args: evt.args, done: false, progress: null }] };
+          return { ...m, parts: [...m.parts, { kind: "tool_start", toolId: evt.toolId, name: evt.name, args: evt.args, done: false, progress: null, logs: [] }] };
         });
         return;
       }
       if (evt.type === "tool_log") {
         if (!evt.toolId) return;
         patchAssistant(m => ({
-          ...m, parts: m.parts.map(p =>
-            p.kind === "tool_start" && (p as any).toolId === evt.toolId && !(p as any).done
-              ? { ...p, progressMsg: evt.message } : p),
+          ...m, parts: m.parts.map(p => {
+            if (!(p.kind === "tool_start" && (p as any).toolId === evt.toolId && !(p as any).done)) return p;
+            const prev = (p as any).logs ?? [];
+            const next = [...prev, { ts: Date.now(), msg: evt.message, level: evt.level }].slice(-30);
+            return { ...p, progressMsg: evt.message, logs: next };
+          }),
         }));
         return;
       }
       if (evt.type === "tool_progress") {
         patchAssistant(m => ({
-          ...m, parts: m.parts.map(p =>
-            p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done))
-              ? { ...p, progress: evt.percent ?? (p as any).progress ?? null, progressMsg: evt.message ?? evt.status } : p),
+          ...m, parts: m.parts.map(p => {
+            if (!(p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done)))) return p;
+            const msg = evt.message ?? evt.status;
+            const prev = (p as any).logs ?? [];
+            const next = msg && prev[prev.length - 1]?.msg !== msg
+              ? [...prev, { ts: Date.now(), msg, level: "info" as const }].slice(-30)
+              : prev;
+            return { ...p, progress: evt.percent ?? (p as any).progress ?? null, progressMsg: msg, logs: next };
+          }),
         }));
 
         // Register active job in global history tracking
@@ -1662,7 +2483,37 @@ export function StudioCopilot({
       }
       if (evt.type === "navigate") { if (onNavigate) onNavigate(evt.tab); return; }
       if (evt.type === "artifact") {
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, audioUrl: evt.audioUrl, content: evt.content }] }));
+        {
+          // Informational artifacts (text result, workspace listing, file preview, etc.) belong
+          // INSIDE the tool card that produced them. Only "deliverable" artifacts
+          // (download, image, audio, tab_link) render as their own prominent card.
+          const informationalTypes = new Set(["text", "workspace_listing", "workspace_file"]);
+          const isInformational = informationalTypes.has(evt.artifactType);
+          const evtToolId = (evt as any).toolId as string | undefined;
+          if (isInformational && evtToolId) {
+            patchAssistant(m => ({
+              ...m,
+              parts: m.parts.map(p => {
+                if (!(p.kind === "tool_start" && (p as any).toolId === evtToolId)) return p;
+                return {
+                  ...p,
+                  inlineArtifact: {
+                    artifactType: evt.artifactType,
+                    label: evt.label,
+                    content: evt.content,
+                    files: evt.files,
+                    dir: evt.dir,
+                    contentType: evt.contentType,
+                    size: evt.size,
+                    downloadUrl: evt.downloadUrl,
+                  },
+                } as MessagePart;
+              }),
+            }));
+          } else {
+            patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, audioUrl: evt.audioUrl, content: evt.content, files: evt.files, dir: evt.dir, contentType: evt.contentType, size: evt.size }] }));
+          }
+        }
         // Auto-save generated music to activity feed
         if (evt.artifactType === "audio" && evt.audioUrl) {
           saveToMusicHistory({
@@ -1898,18 +2749,29 @@ export function StudioCopilot({
             title="New chat"
             aria-label="New chat"
           >
-            <SquarePen className="w-6 h-6" />
+            <SquarePen className="w-5 h-5" />
           </button>
-          <button
-            type="button"
-            onClick={handleShare}
-            disabled={isEmpty}
-            className="gs-mobile-action-btn disabled:opacity-45"
-            title="More"
-            aria-label="More chat actions"
-          >
-            <MoreVertical className="w-6 h-6" />
-          </button>
+          <div ref={registerMoreMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMoreMenu(v => !v)}
+              className={cn("gs-mobile-action-btn", showMoreMenu && "gs-mobile-action-btn-active")}
+              title="More"
+              aria-label="More chat actions"
+              aria-haspopup="menu"
+              aria-expanded={showMoreMenu}
+            >
+              <MoreVertical className="w-5 h-5" />
+            </button>
+            {showMoreMenu && (
+              <ChatMoreMenu
+                isEmpty={isEmpty}
+                onOpenWorkspace={() => { setShowWorkspace(true); setShowMoreMenu(false); }}
+                onShare={() => { handleShare(); setShowMoreMenu(false); }}
+                onOpenHistory={() => { setShowHistory(true); setShowMoreMenu(false); }}
+              />
+            )}
+          </div>
         </div>
       </div>
       {/* ── Genspark Header ── */}
@@ -1921,7 +2783,7 @@ export function StudioCopilot({
             title="Back"
             aria-label="Back to home"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={() => setShowHistory(h => !h)}
@@ -1932,7 +2794,7 @@ export function StudioCopilot({
             title="Chat history"
             aria-label="Toggle history"
           >
-            <Menu className="w-4 h-4" />
+            <Menu className="w-3.5 h-3.5" />
           </button>
         </div>
 
@@ -1966,12 +2828,6 @@ export function StudioCopilot({
         </div>
 
         <div className="gs-chat-header-right">
-          {!isEmpty && (
-            <button onClick={handleShare} className="gs-chat-share-btn" title="Share chat">
-              <Share2 className="w-3.5 h-3.5" />
-              <span>Share</span>
-            </button>
-          )}
           <button
             onClick={handleNewChat}
             disabled={streaming}
@@ -1979,50 +2835,44 @@ export function StudioCopilot({
             title="New chat"
             aria-label="New chat"
           >
-            <SquarePen className="w-4 h-4" />
+            <SquarePen className="w-3.5 h-3.5" />
           </button>
+          <div ref={registerMoreMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMoreMenu(v => !v)}
+              className={cn("gs-chat-icon-btn", showMoreMenu && "gs-chat-icon-btn-active")}
+              title="More"
+              aria-label="More chat actions"
+              aria-haspopup="menu"
+              aria-expanded={showMoreMenu}
+            >
+              <MoreVertical className="w-3.5 h-3.5" />
+            </button>
+            {showMoreMenu && (
+              <ChatMoreMenu
+                isEmpty={isEmpty}
+                onOpenWorkspace={() => { setShowWorkspace(true); setShowMoreMenu(false); }}
+                onShare={() => { handleShare(); setShowMoreMenu(false); }}
+              />
+            )}
+          </div>
         </div>
       </div>
 
-      {/* ── History panel ── */}
-      <AnimatePresence>
-        {showHistory && (
-          <>
-          <motion.div
-            className="agent-history-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setShowHistory(false)}
-          />
-          <motion.div initial={{ opacity: 0, x: -16 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -16 }}
-            className="absolute inset-y-[45px] left-0 right-0 z-20 flex flex-col agent-history-panel">
-            <div className="agent-history-header">
-              <span className="text-xs font-semibold text-white/50 uppercase tracking-wider">Chat History</span>
-              <button onClick={() => setShowHistory(false)} className="text-white/40 hover:text-white"><X className="w-4 h-4" /></button>
-            </div>
-            <div className="agent-history-list">
-              {sessions.length === 0 ? (
-                <div className="agent-history-empty">No previous chats</div>
-              ) : sessions.map(s => (
-                <div key={s.id} role="button" tabIndex={0}
-                  onClick={() => { setCurrentSessionId(s.id); sessionIdRef.current = s.id; setShowHistory(false); }}
-                  onKeyDown={e => { if (e.key === "Enter") { setCurrentSessionId(s.id); sessionIdRef.current = s.id; setShowHistory(false); } }}
-                  className={cn("agent-history-item group cursor-pointer", currentSessionId === s.id && "agent-history-item-active")}>
-                  <div className="flex-1 min-w-0 text-left">
-                    <p className="agent-history-title">{s.title}</p>
-                    <p className="agent-history-time">{s.updatedAt.toLocaleDateString([], { month: "short", day: "numeric" })}</p>
-                  </div>
-                  <button onClick={e => handleDeleteSession(s.id, e)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white/70 p-1 rounded transition-all">
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+      {/* ── Workspace drawer ── */}
+      <WorkspacePanel open={showWorkspace} onClose={() => setShowWorkspace(false)} />
+
+      {/* ── History drawer (slide-in from left, not full-screen) ── */}
+      <HistoryDrawer
+        open={showHistory}
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onClose={() => setShowHistory(false)}
+        onPickSession={(id) => { setCurrentSessionId(id); sessionIdRef.current = id; setShowHistory(false); }}
+        onDeleteSession={(id, e) => handleDeleteSession(id, e)}
+        onNewChat={() => { handleNewChat(); setShowHistory(false); }}
+      />
 
       {/* ── Genspark welcome (empty state) ── */}
       {isEmpty && (
@@ -2110,7 +2960,7 @@ export function StudioCopilot({
                         </AnimatePresence>
                       </motion.div>
                     )}
-                    <MessageBubble message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} />
+                    <MessageBubble message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} onOpenWorkspace={() => setShowWorkspace(true)} />
                   </React.Fragment>
                 );
               })}
@@ -2156,7 +3006,12 @@ export function StudioCopilot({
         )}
 
         <form
-          onSubmit={e => { e.preventDefault(); void sendMessage(input, pendingAttachments); }}
+          onSubmit={e => {
+            e.preventDefault();
+            if (streaming) return;
+            if (!input.trim() && pendingAttachments.length === 0) return;
+            void sendMessage(input, pendingAttachments);
+          }}
           className="gs-input-card"
         >
           {/* Attachment preview chips */}
@@ -2228,8 +3083,13 @@ export function StudioCopilot({
               // Surface the quick-action pill when the whole input is just a pasted/typed link
               const trimmed = val.trim();
               setPasteUrl(/^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null);
+              const maxH = getInputMaxHeight();
               e.target.style.height = "auto";
-              e.target.style.height = Math.min(e.target.scrollHeight, getInputMaxHeight()) + "px";
+              const desired = e.target.scrollHeight;
+              e.target.style.height = Math.min(desired, maxH) + "px";
+              // Once the content exceeds the cap, allow scrolling — without this the
+              // textarea was silently clipping long messages with no scrollbar.
+              e.target.style.overflowY = desired > maxH ? "auto" : "hidden";
             }}
             onKeyDown={e => {
               if (showSlashMenu && slashFilteredSkills.length > 0) {
@@ -2254,7 +3114,14 @@ export function StudioCopilot({
                   return;
                 }
               }
-              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(input, pendingAttachments); }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                // Guard: do not fire send if streaming or input is effectively empty.
+                // Without this, hitting Enter mid-stream queued an empty/stale request.
+                if (streaming) return;
+                if (!input.trim() && pendingAttachments.length === 0) return;
+                void sendMessage(input, pendingAttachments);
+              }
               if (e.key === "Backspace" && !input && activeSkills.length > 0) { removeActiveSkill(activeSkills[activeSkills.length - 1]); }
             }}
             onPaste={async e => {

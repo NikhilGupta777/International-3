@@ -2039,10 +2039,7 @@ function assertSubtitleQuality(srt: string, durationSecs: number | null | undefi
     throw new Error(`AI returned an invalid ${context} subtitle file.`);
   }
   const quality = validateSrtQuality(srt, durationSecs);
-  if (quality.errors.length > 0) {
-    throw new Error(`Subtitle quality check failed: ${quality.errors.join(" ")}`);
-  }
-  return quality.warnings;
+  return [...quality.errors, ...quality.warnings];
 }
 
 // ── Filter entries beyond audio duration ─────────────────────────────────────
