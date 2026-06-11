@@ -6161,7 +6161,7 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
 .gs-message-text-assistant {
   width: 100%;
   padding: 0;
-  color: rgba(255,255,255,0.94);
+  color: #ECECEC;
   background: transparent;
   border: 0;
 }
@@ -7087,8 +7087,8 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   .copilot-wrap .gs-message-text-assistant {
-    font-size: 15.5px;
-    line-height: 1.6;
+    font-size: 15px;
+    line-height: 1.625;
   }
 
   .copilot-wrap .gs-message-text-user {
