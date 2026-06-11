@@ -6145,7 +6145,7 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
 
 .gs-message-text {
   font-size: 16px;
-  line-height: 1.65;
+  line-height: 1.72;
   letter-spacing: 0;
   word-break: break-word;
 }
@@ -6918,6 +6918,9 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
     border-radius: 0 24px 24px 0;
     background: #111;
     border-right: 1px solid rgba(255,255,255,0.10);
+  }
+
+  body:has(.copilot-wrap) .gs-drawer.gs-drawer-open {
     box-shadow: 24px 0 70px rgba(0,0,0,0.58);
   }
 
@@ -7013,6 +7016,14 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
     line-height: inherit;
   }
 
+  .copilot-wrap .copilot-md p {
+    margin-bottom: 1.25em;
+  }
+
+  .copilot-wrap .copilot-md p:last-child {
+    margin-bottom: 0;
+  }
+
   .copilot-wrap .copilot-md :where(h1, h2, h3, h4, h5, h6) {
     margin: 0.8em 0 0.35em;
     font-weight: 650;
@@ -7088,7 +7099,7 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
   .copilot-wrap .gs-message-text-assistant {
     font-size: 15px;
-    line-height: 1.625;
+    line-height: 1.72;
   }
 
   .copilot-wrap .gs-message-text-user {
