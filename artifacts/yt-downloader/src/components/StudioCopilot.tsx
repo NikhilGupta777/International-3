@@ -1800,6 +1800,16 @@ export function StudioCopilot({
   const sessionsRef = useRef<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    if (showHistory) {
+      document.body.classList.add("history-open");
+    } else {
+      document.body.classList.remove("history-open");
+    }
+    return () => document.body.classList.remove("history-open");
+  }, [showHistory]);
+
   const [showWorkspace, setShowWorkspace] = useState(false);
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   // ChatMoreMenu is mounted twice (mobile pill + desktop header). A single

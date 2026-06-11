@@ -8700,3 +8700,9 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
     flex: 1 1 150px;
   }
 }
+
+body.history-open .studio-hamburger {
+  opacity: 0 !important;
+  transform: scale(0.5) !important;
+  pointer-events: none !important;
+}
