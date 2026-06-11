@@ -8722,3 +8722,13 @@ body.workspace-open .gs-chat-header-right {
   transform: translateX(20px) !important;
   pointer-events: none !important;
 }
+
+.gs-mobile-actions-pill {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body.workspace-open .gs-mobile-actions-pill {
+  opacity: 0 !important;
+  transform: translateX(20px) !important;
+  pointer-events: none !important;
+}
