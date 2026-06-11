@@ -2788,8 +2788,8 @@ export function StudioCopilot({
           <button
             onClick={() => setShowHistory(h => !h)}
             className={cn(
-              "gs-chat-icon-btn gs-chat-history-toggle",
-              showHistory && "gs-chat-icon-btn-active",
+              "gs-chat-icon-btn gs-chat-history-toggle transition-all duration-300 ease-in-out",
+              showHistory ? "opacity-0 scale-50 pointer-events-none -translate-x-2" : "opacity-100 scale-100 translate-x-0",
             )}
             title="Chat history"
             aria-label="Toggle history"
