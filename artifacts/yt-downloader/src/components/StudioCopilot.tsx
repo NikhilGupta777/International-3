@@ -1811,6 +1811,16 @@ export function StudioCopilot({
   }, [showHistory]);
 
   const [showWorkspace, setShowWorkspace] = useState(false);
+
+  useEffect(() => {
+    if (showWorkspace) {
+      document.body.classList.add("workspace-open");
+    } else {
+      document.body.classList.remove("workspace-open");
+    }
+    return () => document.body.classList.remove("workspace-open");
+  }, [showWorkspace]);
+
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   // ChatMoreMenu is mounted twice (mobile pill + desktop header). A single
   // moreMenuRef pointed at only one wrapper, so clicking inside the OTHER

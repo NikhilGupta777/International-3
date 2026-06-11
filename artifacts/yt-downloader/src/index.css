@@ -8706,3 +8706,19 @@ body.history-open .studio-hamburger {
   transform: scale(0.5) !important;
   pointer-events: none !important;
 }
+
+.gs-chat-header-right {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body.workspace-open .studio-hamburger {
+  opacity: 0 !important;
+  transform: translateX(-20px) scale(0.5) !important;
+  pointer-events: none !important;
+}
+
+body.workspace-open .gs-chat-header-right {
+  opacity: 0 !important;
+  transform: translateX(20px) !important;
+  pointer-events: none !important;
+}
