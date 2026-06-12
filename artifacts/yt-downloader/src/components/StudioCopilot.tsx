@@ -19,6 +19,10 @@ import { saveToMusicHistory } from "@/lib/music-history";
 import { upsertActiveTranslatorJob } from "@/lib/translator-history";
 
 const ULTRA_KEY = "studio-ultra-mode";
+// Separate key persists the full reasoning mode (flash/pro/advanced).
+// Without this, only `ultra` (advanced) was preserved across reloads — `pro`
+// silently reverted to `flash` and `advanced` reverted to `pro` after refresh.
+const REASONING_KEY = "studio-reasoning-mode";
 function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
@@ -31,7 +35,13 @@ const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: 
 ];
 
 function readReasoningInitial(): ReasoningMode {
-  return readUltraInitial() ? "pro" : "flash";
+  try {
+    const stored = localStorage.getItem(REASONING_KEY);
+    if (stored === "flash" || stored === "pro" || stored === "advanced") return stored;
+  } catch { /* localStorage unavailable */ }
+  // Backwards compat: if only the legacy `ultra` flag exists, derive a mode
+  // from it. `ultra=1` → advanced; otherwise → flash.
+  return readUltraInitial() ? "advanced" : "flash";
 }
 
 function getInputMaxHeight(): number {
@@ -46,23 +56,35 @@ const HISTORY_KEY = "copilot-sessions-v2";
 type ChatSession = { id: string; title: string; updatedAt: Date; messages: Message[] };
 
 function loadSessions(): ChatSession[] {
+  let parsed: any[] = [];
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
-    const parsed = JSON.parse(raw) as any[];
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter(s => s && typeof s.id === "string" && Array.isArray(s.messages))
-      .map(s => ({
+    const decoded = JSON.parse(raw);
+    if (!Array.isArray(decoded)) return [];
+    parsed = decoded;
+  } catch {
+    return [];
+  }
+  const sessions: ChatSession[] = [];
+  for (const s of parsed) {
+    // Per-session try/catch — a single corrupted session must NEVER discard
+    // the rest of the user's history.
+    try {
+      if (!s || typeof s.id !== "string" || !Array.isArray(s.messages)) continue;
+      sessions.push({
         ...s,
         title: typeof s.title === "string" && s.title.trim() ? s.title : "New Chat",
         updatedAt: new Date(s.updatedAt || Date.now()),
         messages: s.messages
           .filter((m: any) => m && (m.role === "user" || m.role === "assistant") && Array.isArray(m.parts))
           .map((m: any) => ({ ...m, timestamp: new Date(m.timestamp || Date.now()) })),
-      }))
-      .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-  } catch { return []; }
+      });
+    } catch {
+      // Skip just this session.
+    }
+  }
+  return sessions.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 // Strip heavy/ephemeral fields before persisting. Base64 image bytes (`data`)
 // blow the ~5MB localStorage quota with just a couple of images — a thrown
@@ -1996,7 +2018,7 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming, onOpenWorksp
               <ReadAloudButton text={allText} />
               {onRetry && (
                 <button onClick={onRetry} title="Regenerate" className="gs-message-action-btn">
-                  <RefreshCw />
+                  <RefreshCw className="w-3 h-3" />
                 </button>
               )}
             </div>
@@ -2149,6 +2171,10 @@ export function StudioCopilot({
   useEffect(() => {
     try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch { }
   }, [ultra]);
+  // Persist the full reasoning mode so flash/pro/advanced all survive a reload.
+  useEffect(() => {
+    try { localStorage.setItem(REASONING_KEY, reasoningMode); } catch { }
+  }, [reasoningMode]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const userIsNearBottom = useRef(true);
@@ -2195,6 +2221,22 @@ export function StudioCopilot({
     return () => document.removeEventListener("mousedown", handler);
   }, [showMoreMenu]);
 
+  // ── Esc key closes any open drawers/menus — keyboard parity with click-out ──
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Closing in priority order: top-most overlay first.
+      if (showSlashMenu) { setShowSlashMenu(false); return; }
+      if (showPlusMenu) { setShowPlusMenu(false); return; }
+      if (showMoreMenu) { setShowMoreMenu(false); return; }
+      if (showReasoningMenu) { setShowReasoningMenu(false); return; }
+      if (showWorkspace) { setShowWorkspace(false); return; }
+      if (showHistory) { setShowHistory(false); return; }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showSlashMenu, showPlusMenu, showMoreMenu, showReasoningMenu, showWorkspace, showHistory]);
+
   // Fetch available skills on mount
   useEffect(() => {
     fetch(`${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/agent/skills`)
@@ -2212,10 +2254,18 @@ export function StudioCopilot({
     return () => document.removeEventListener("mousedown", handler);
   }, [showSlashMenu]);
 
-  // Filtered skills for slash menu
-  const slashFilteredSkills = availableSkills.filter(s =>
+  // Filtered skills for slash menu — memoized so we can clamp the active
+  // index on the same render the filter changes.
+  const slashFilteredSkills = useMemo(() => availableSkills.filter(s =>
     !slashQuery || s.name.toLowerCase().includes(slashQuery.toLowerCase()) || s.id.toLowerCase().includes(slashQuery.toLowerCase())
-  );
+  ), [availableSkills, slashQuery]);
+
+  useEffect(() => {
+    // If the filtered list shrinks past the current selected index, clamp it.
+    // Without this, pressing Enter could index off the array end.
+    if (slashFilteredSkills.length === 0) { setSlashMenuIndex(0); return; }
+    setSlashMenuIndex(i => Math.min(Math.max(0, i), slashFilteredSkills.length - 1));
+  }, [slashFilteredSkills.length]);
 
   // Handle slash command detection in input
   const handleSlashInput = useCallback((value: string) => {
@@ -2593,8 +2643,10 @@ export function StudioCopilot({
         .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "the download button above")
         // Strip leaked [Tool: ...] markers from model output
         .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
-        // Strip leaked Result JSON objects
-        .replace(/\{"\w+(?:Url|url)":\s*"https?:\/\/[^"]*"[^}]*\}/g, "");
+        // Strip leaked tool-result residue JSON. Scoped to S3/CloudFront/empty
+        // values so a model legitimately quoting `{ "url": "https://docs..." }`
+        // in an answer is preserved.
+        .replace(/\{"\w*[Uu]rl":\s*"(?:|https?:\/\/[^"]*\.(?:s3|amazonaws|cloudfront)[^"]*)"[^}]*\}/g, "");
 
     const appendText = (content: string) => {
       const cleaned = cleanAssistantText(content);
@@ -2713,17 +2765,37 @@ export function StudioCopilot({
         return;
       }
       if (evt.type === "tool_progress") {
-        patchAssistant(m => ({
-          ...m, parts: m.parts.map(p => {
-            if (!(p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done)))) return p;
-            const msg = evt.message ?? evt.status;
-            const prev = (p as any).logs ?? [];
-            const next = msg && prev[prev.length - 1]?.msg !== msg
-              ? [...prev, { ts: Date.now(), msg, level: "info" as const }].slice(-30)
-              : prev;
-            return { ...p, progress: evt.percent ?? (p as any).progress ?? null, progressMsg: msg, logs: next };
-          }),
-        }));
+        patchAssistant(m => {
+          // When the event carries a toolId, scope the update to that
+          // exact card. Otherwise, fall back to the LAST still-running tool
+          // of the same name — using the *last* match means parallel calls
+          // each receive their own initial progress (the first message
+          // arrives before the second tool_start finishes processing
+          // anyway, so this avoids stomping all updates onto card #1).
+          let targetIdx = -1;
+          if (evt.toolId) {
+            targetIdx = m.parts.findIndex(p => p.kind === "tool_start" && (p as any).toolId === evt.toolId);
+          } else {
+            for (let i = m.parts.length - 1; i >= 0; i--) {
+              const p = m.parts[i];
+              if (p.kind === "tool_start" && (p as any).name === evt.name && !(p as any).done) {
+                targetIdx = i;
+                break;
+              }
+            }
+          }
+          if (targetIdx === -1) return m;
+          const target = m.parts[targetIdx] as any;
+          const msg = evt.message ?? evt.status;
+          const prev = target.logs ?? [];
+          const next = msg && prev[prev.length - 1]?.msg !== msg
+            ? [...prev, { ts: Date.now(), msg, level: "info" as const }].slice(-30)
+            : prev;
+          const updated = { ...target, progress: evt.percent ?? target.progress ?? null, progressMsg: msg, logs: next };
+          const parts = [...m.parts];
+          parts[targetIdx] = updated;
+          return { ...m, parts };
+        });
 
         // Register active job in global history tracking
         if (evt.jobId) {
@@ -3023,15 +3095,31 @@ export function StudioCopilot({
 
   const toggleVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) return;
-    if (listening) { recognitionRef.current?.stop(); setListening(false); return; }
+    if (!SR) {
+      toast({ title: "Voice input not supported", description: "Try Chrome, Edge, or Safari." });
+      return;
+    }
+    if (listening) {
+      try { recognitionRef.current?.stop(); } catch { /* ignore */ }
+      recognitionRef.current = null;
+      setListening(false);
+      return;
+    }
     const r = new SR();
     recognitionRef.current = r;
     r.continuous = false; r.interimResults = false; r.lang = detectVoiceLang();
     r.onresult = (ev: any) => { setInput(p => p + (p ? " " : "") + (ev.results[0]?.[0]?.transcript ?? "")); setListening(false); };
-    r.onend = () => setListening(false);
-    r.onerror = () => setListening(false);
-    r.start(); setListening(true);
+    r.onend = () => { setListening(false); recognitionRef.current = null; };
+    r.onerror = () => { setListening(false); recognitionRef.current = null; };
+    // start() can throw synchronously when the user denies the mic prompt
+    // — without a guard, the unhandled exception leaks into the click handler.
+    try {
+      r.start();
+      setListening(true);
+    } catch {
+      recognitionRef.current = null;
+      setListening(false);
+    }
   };
 
   const isEmpty = currentMessages.length === 0;
@@ -3368,7 +3456,7 @@ export function StudioCopilot({
           {/* Active skill inline prefix inside textarea area */}
           {/* Slash command menu */}
           {showSlashMenu && slashFilteredSkills.length > 0 && (
-            <div className="gs-slash-menu" ref={slashMenuRef}>
+            <div className="gs-slash-menu" ref={slashMenuRef} role="menu" aria-label="Slash commands">
               <div className="gs-slash-menu-header">Skills</div>
               {slashFilteredSkills.map((skill, i) => {
                 const isActive = activeSkills.includes(skill.id);
@@ -3376,6 +3464,8 @@ export function StudioCopilot({
                   <button
                     key={skill.id}
                     type="button"
+                    role="menuitem"
+                    aria-current={i === slashMenuIndex || undefined}
                     className={cn("gs-slash-menu-item", i === slashMenuIndex && "gs-slash-menu-item-focused", isActive && "gs-slash-menu-item-active")}
                     onMouseEnter={() => setSlashMenuIndex(i)}
                     onClick={() => selectSlashSkill(skill)}
@@ -3438,7 +3528,9 @@ export function StudioCopilot({
                 }
                 if (e.key === "Enter" || e.key === "Tab") {
                   e.preventDefault();
-                  selectSlashSkill(slashFilteredSkills[slashMenuIndex]);
+                  // Defensive: stale index after rapid filter shrinking.
+                  const target = slashFilteredSkills[slashMenuIndex] ?? slashFilteredSkills[0];
+                  if (target) selectSlashSkill(target);
                   return;
                 }
                 if (e.key === "Escape") {
@@ -3504,12 +3596,18 @@ export function StudioCopilot({
                       <span>Upload Files</span>
                     </button>
                     <button type="button" className="gs-plus-menu-item"
-                      onClick={() => { setInput("Create an image: "); setShowPlusMenu(false); }}>
+                      onClick={() => {
+                        setInput(prev => prev ? `${prev}${prev.endsWith("\n") ? "" : "\n"}Create an image: ` : "Create an image: ");
+                        setShowPlusMenu(false);
+                      }}>
                       <ImagePlus className="w-4 h-4" />
                       <span>Create Image</span>
                     </button>
                     <button type="button" className="gs-plus-menu-item"
-                      onClick={() => { setInput("Make music: "); setShowPlusMenu(false); }}>
+                      onClick={() => {
+                        setInput(prev => prev ? `${prev}${prev.endsWith("\n") ? "" : "\n"}Make music: ` : "Make music: ");
+                        setShowPlusMenu(false);
+                      }}>
                       <Music2 className="w-4 h-4" />
                       <span>Create Music</span>
                       <span className="gs-plus-menu-badge gs-plus-menu-badge-new">New</span>
