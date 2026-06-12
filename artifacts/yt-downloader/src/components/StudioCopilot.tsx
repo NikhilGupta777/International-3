@@ -2554,6 +2554,42 @@ export function StudioCopilot({
       });
     };
 
+    const surfaceStreamParseError = (err: unknown, raw: string) => {
+      console.warn("[agent] Ignored malformed SSE frame", {
+        error: err instanceof Error ? err.message : String(err),
+        preview: raw.slice(0, 240),
+      });
+    };
+
+    const parseSseFrame = (frame: string, isTrailing = false): boolean => {
+      const raw = frame
+        .split(/\r?\n/)
+        .filter(l => l.startsWith("data:"))
+        .map(l => l.slice(5).trimStart())
+        .join("\n")
+        .trim();
+      if (!raw) return true;
+      try {
+        handleEvent(JSON.parse(raw) as SseEvent);
+        return true;
+      } catch (err) {
+        surfaceStreamParseError(err, raw);
+        if (isTrailing) {
+          patchAssistant(m => ({
+            ...m,
+            parts: [
+              ...m.parts,
+              {
+                kind: "text",
+                content: "Note: the response stream ended with a partial update. If anything looks missing, send the request again.",
+              },
+            ],
+          }));
+        }
+        return false;
+      }
+    };
+
     const handleEvent = (evt: SseEvent) => {
       if (evt.type === "run_start") { setCurrentRunId(evt.runId); return; }
       if (evt.type === "heartbeat") return;
@@ -2849,14 +2885,11 @@ export function StudioCopilot({
         const frames = buf.split(/\r?\n\r?\n/);
         buf = frames.pop() ?? "";
         for (const frame of frames) {
-          const raw = frame.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n").trim();
-          if (!raw) continue;
-          try { handleEvent(JSON.parse(raw) as SseEvent); } catch { }
+          parseSseFrame(frame);
         }
       }
       // trailing buffer
-      const raw = buf.split(/\r?\n/).filter(l => l.startsWith("data:")).map(l => l.slice(5).trimStart()).join("\n").trim();
-      if (raw) { try { handleEvent(JSON.parse(raw) as SseEvent); } catch { } }
+      parseSseFrame(buf, true);
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         // Distinguish common failure modes for better user feedback
@@ -3507,5 +3540,3 @@ export function StudioCopilot({
     </CopilotErrorBoundary>
   );
 }
-
-

@@ -6074,7 +6074,7 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   --chatgpt-text: rgba(255,255,255,0.95);
   --chatgpt-muted: rgba(255,255,255,0.58);
   --chatgpt-faint: rgba(255,255,255,0.34);
-  --chatgpt-content: min(960px, calc(100vw - 132px));
+  --chatgpt-content: min(960px, 100%);
   --chatgpt-message: min(760px, 100%);
   background: var(--chatgpt-bg);
   color: var(--chatgpt-text);
@@ -6368,6 +6368,16 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   background: var(--chatgpt-surface);
   box-shadow: 0 18px 48px rgba(0,0,0,0.34);
   gap: 8px;
+}
+
+.copilot-wrap .agent-tool-v2,
+.copilot-wrap .agent-artifact-card {
+  width: 100%;
+  max-width: 100%;
+}
+
+.copilot-wrap .agent-tool-v2 {
+  min-width: 0;
 }
 
 .copilot-wrap .gs-input-card:focus-within {
