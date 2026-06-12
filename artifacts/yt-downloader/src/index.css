@@ -8876,21 +8876,20 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   font-size: 14px; color: rgba(255, 255, 255, 0.75);
   margin-bottom: 10px;
 }
-.ai-video-studio__render-progress-bar-wrap {
-  display: flex; align-items: center; gap: 10px;
-}
-.ai-video-studio__render-progress-bar {
-  flex: 1; height: 6px;
-  background: linear-gradient(90deg, #14b8a6, #06b6d4);
-  border-radius: 3px;
-  transition: width 0.4s ease;
-}
+/* Single, canonical declaration for the progress-bar wrapper. The previous
+   version declared this twice with conflicting `display: flex; gap` vs
+   `position: relative; overflow: hidden` rules — the second one won, which
+   meant the percent label (positioned absolutely *outside* the wrap with
+   right: -36px) was clipped to invisibility. Fix: keep only the relative/
+   overflow declaration AND give the row enough horizontal space for the
+   floating label by padding the parent. */
 .ai-video-studio__render-progress-bar-wrap {
   position: relative;
   height: 6px;
+  margin-right: 40px; /* room for the floating percent label */
   background: rgba(255, 255, 255, 0.06);
   border-radius: 3px;
-  overflow: hidden;
+  /* No `overflow: hidden` here — we intentionally let the label sit outside. */
 }
 .ai-video-studio__render-progress-bar {
   position: absolute; top: 0; left: 0; bottom: 0;
@@ -8899,9 +8898,9 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   transition: width 0.5s ease;
 }
 .ai-video-studio__render-progress-pct {
-  position: absolute; right: -36px; top: -6px;
+  position: absolute; right: -40px; top: -6px;
   font-size: 11px; color: rgba(255, 255, 255, 0.5);
-  width: 32px; text-align: right;
+  width: 36px; text-align: right;
 }
 
 /* ─── Artifact card ────────────────────────────────────────────────────────── */
@@ -8929,6 +8928,18 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
 }
 .ai-video-studio__artifact-card-thumb img {
   width: 100%; height: 100%; object-fit: cover;
+}
+/* Painted when the thumbnail endpoint 404s — gives a recognisable visual
+   instead of an empty grey square. */
+.ai-video-studio__artifact-card-thumb--placeholder {
+  background:
+    linear-gradient(135deg, rgba(20, 184, 166, 0.18), rgba(168, 85, 247, 0.15));
+}
+.ai-video-studio__artifact-card-thumb--placeholder::after {
+  content: "🎞";
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; opacity: 0.7;
 }
 .ai-video-studio__artifact-play {
   position: absolute; inset: 0;
@@ -9326,3 +9337,62 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   color: #ef4444;
 }
 
+
+
+/* ─── Loading placeholder for the artifact preview player ───────────────── */
+.ai-video-studio__artifact-loading {
+  width: 100%;
+  min-height: 240px;
+  display: flex; align-items: center; justify-content: center;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 14px;
+}
+
+/* ─── Markdown code blocks (fenced ``` blocks emitted by the agent) ─────── */
+.ai-video-studio__md-pre {
+  margin: 8px 0;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px; line-height: 1.5;
+  color: rgba(230, 240, 255, 0.92);
+}
+.ai-video-studio__md-pre code {
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* ─── Keyboard focus visibility for interactive elements ────────────────── */
+.ai-video-studio button:focus-visible,
+.ai-video-studio [role="button"]:focus-visible,
+.ai-video-studio textarea:focus-visible,
+.ai-video-studio a:focus-visible {
+  outline: 2px solid rgba(20, 184, 166, 0.7);
+  outline-offset: 2px;
+}
+
+/* ─── Respect prefers-reduced-motion for non-essential animations ───────── */
+@media (prefers-reduced-motion: reduce) {
+  .ai-video-studio__thinking-dots span { animation: none; }
+  .ai-video-studio__tile,
+  .ai-video-studio__submit-btn,
+  .ai-video-studio__send-btn,
+  .ai-video-studio__artifact-card,
+  .ai-video-studio__cap-pill,
+  .ai-video-studio__history-item,
+  .ai-video-studio__topbar-btn {
+    transition: none !important;
+  }
+  .ai-video-studio__tile:hover,
+  .ai-video-studio__submit-btn:hover:not(:disabled),
+  .ai-video-studio__send-btn:hover:not(:disabled),
+  .ai-video-studio__artifact-card:hover {
+    transform: none !important;
+  }
+  .ai-video-studio__render-progress-bar { transition: none !important; }
+}

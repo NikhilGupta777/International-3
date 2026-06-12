@@ -4,7 +4,9 @@ import { spawn } from "child_process";
 import { tmpdir } from "os";
 import { join, extname } from "path";
 import { mkdir, readFile, rm, writeFile } from "fs/promises";
-import { statSync } from "fs";
+import { createWriteStream, statSync } from "fs";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 import ffmpegStatic from "ffmpeg-static";
 import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
@@ -168,6 +170,34 @@ const jobs = new Map<string, EditorJob>();
 const activeRenderProcesses = new Map<string, ReturnType<typeof spawn>>();
 const FFMPEG_BIN = process.env.FFMPEG_BIN || ffmpegStatic || "ffmpeg";
 
+// Garbage-collect completed jobs from the in-memory map so a long-running
+// process doesn't accumulate every render that ever ran. We keep finished
+// jobs around for an hour so callers can still poll status briefly.
+const JOB_RETENTION_MS = 60 * 60 * 1000;
+const JOB_MAX_ENTRIES = 5000;
+function gcJobs(): void {
+  const now = Date.now();
+  for (const [id, job] of jobs.entries()) {
+    const isTerminal = job.status === "done" || job.status === "error" || job.status === "cancelled";
+    if (isTerminal && job.completedAt && now - job.completedAt > JOB_RETENTION_MS) {
+      jobs.delete(id);
+    }
+  }
+  // Hard cap: drop oldest terminal entries if we still have too many.
+  if (jobs.size > JOB_MAX_ENTRIES) {
+    const terminal = [...jobs.entries()]
+      .filter(([, j]) => j.status === "done" || j.status === "error" || j.status === "cancelled")
+      .sort(([, a], [, b]) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
+    for (const [id] of terminal) {
+      if (jobs.size <= JOB_MAX_ENTRIES) break;
+      jobs.delete(id);
+    }
+  }
+}
+const jobGcInterval = setInterval(gcJobs, 10 * 60 * 1000);
+// Don't keep the event loop alive solely for GC.
+if (typeof jobGcInterval.unref === "function") jobGcInterval.unref();
+
 function projectPath(projectId: string): string {
   if (!/^[a-f0-9-]{20,80}$/i.test(projectId)) throw new Error("invalid project id");
   return `editor/projects/${projectId}.json`;
@@ -294,18 +324,37 @@ function generateRecipe(prompt: string, sourceVideo: string | null, assets: Edit
 }
 
 function migrateRecipe(recipe: any): EditRecipe {
-  // Back-fill optional fields for older project records.
+  // Back-fill optional fields for older project records and clamp known enum
+  // values so a corrupted record can't crash the renderer.
+  const aspectRatios: AspectRatio[] = ["original", "9:16", "16:9", "1:1"];
+  const cropModes: CropMode[] = ["smart", "fit-blur", "contain"];
+  const colorPresets: ColorPreset[] = ["none", "vivid", "muted", "bw", "warm", "cool"];
   return {
-    aspectRatio: recipe?.aspectRatio || "original",
-    cropMode: recipe?.cropMode || "smart",
-    trim: recipe?.trim || { start: 0, end: null },
-    speed: typeof recipe?.speed === "number" ? recipe.speed : 1,
-    colorPreset: recipe?.colorPreset || "none",
+    aspectRatio: aspectRatios.includes(recipe?.aspectRatio) ? recipe.aspectRatio : "original",
+    cropMode: cropModes.includes(recipe?.cropMode) ? recipe.cropMode : "smart",
+    trim: recipe?.trim && typeof recipe.trim === "object"
+      ? {
+          start: Number.isFinite(recipe.trim.start) ? Math.max(0, recipe.trim.start) : 0,
+          end: recipe.trim.end == null ? null : Number.isFinite(recipe.trim.end) ? Math.max(0, recipe.trim.end) : null,
+        }
+      : { start: 0, end: null },
+    speed: typeof recipe?.speed === "number" && Number.isFinite(recipe.speed)
+      ? Math.max(0.25, Math.min(4, recipe.speed))
+      : 1,
+    colorPreset: colorPresets.includes(recipe?.colorPreset) ? recipe.colorPreset : "none",
     overlays: Array.isArray(recipe?.overlays) ? recipe.overlays : [],
-    intro: recipe?.intro || { enabled: false, asset: null },
-    outro: recipe?.outro || { enabled: false, asset: null },
-    transitions: recipe?.transitions || { fade: true },
-    export: recipe?.export || { format: "mp4", resolution: "1080p", videoCodec: "h264", audioCodec: "aac" },
+    intro: recipe?.intro && typeof recipe.intro === "object"
+      ? { enabled: Boolean(recipe.intro.enabled), asset: recipe.intro.asset ?? null }
+      : { enabled: false, asset: null },
+    outro: recipe?.outro && typeof recipe.outro === "object"
+      ? { enabled: Boolean(recipe.outro.enabled), asset: recipe.outro.asset ?? null }
+      : { enabled: false, asset: null },
+    transitions: recipe?.transitions && typeof recipe.transitions === "object"
+      ? { fade: recipe.transitions.fade !== false }
+      : { fade: true },
+    export: recipe?.export && typeof recipe.export === "object"
+      ? recipe.export
+      : { format: "mp4", resolution: "1080p", videoCodec: "h264", audioCodec: "aac" },
   };
 }
 
@@ -777,7 +826,26 @@ async function downloadWorkspaceFile(ws: ReturnType<typeof getWorkspace>, path: 
   const { url } = await ws.s3.presignGet(path, { disposition: "inline" });
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Could not read ${path}: ${res.status}`);
-  await writeFile(dest, Buffer.from(await res.arrayBuffer()));
+  await streamResponseToFile(res, dest);
+}
+
+/**
+ * Streams a fetch Response body straight to disk. Replaces the previous
+ * `Buffer.from(await res.arrayBuffer())` pattern that buffered entire video
+ * downloads (potentially gigabytes) in memory.
+ */
+async function streamResponseToFile(res: Response | globalThis.Response, dest: string): Promise<void> {
+  const body = (res as any).body;
+  if (!body) {
+    // Some test/mock responses don't expose a stream — fall back to buffer.
+    const buf = Buffer.from(await (res as any).arrayBuffer());
+    await writeFile(dest, buf);
+    return;
+  }
+  const nodeStream = typeof Readable.fromWeb === "function" && typeof body.getReader === "function"
+    ? Readable.fromWeb(body as any)
+    : (body as any);
+  await pipeline(nodeStream, createWriteStream(dest));
 }
 
 async function uploadWorkspaceFile(ws: ReturnType<typeof getWorkspace>, source: string, destPath: string): Promise<void> {
@@ -905,6 +973,10 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
 
       const normalizedPaths: string[] = [];
       const assetCache = new Map<string, string>();
+      // For preview kind, distribute the 8s budget across the first clips
+      // so multi-clip previews actually show transitions, not just clip 0.
+      const PREVIEW_BUDGET_SEC = 8;
+      let previewBudgetRemaining = PREVIEW_BUDGET_SEC;
       for (let i = 0; i < clips.length; i++) {
         const clip = clips[i];
         job.message = `Processing clip ${i + 1}/${clips.length}...`;
@@ -920,9 +992,18 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         const clipPath = join(dir, `clip-${i}.mp4`);
         const trimArgs: string[] = ["-y"];
         if (clip.srcIn > 0) trimArgs.push("-ss", String(clip.srcIn));
+        const speed = Math.max(0.25, Math.min(4, clip.speed || 1));
+        const fullClipDur = clip.srcOut > 0 ? (clip.srcOut - clip.srcIn) / speed : Infinity;
         if (clip.srcOut > 0) trimArgs.push("-t", String(clip.srcOut - clip.srcIn));
-        if (job.kind === "preview" && i === 0) trimArgs.push("-t", "8");
-        trimArgs.push("-i", assetPath);
+        let usedDur = fullClipDur;
+        if (job.kind === "preview") {
+          const slice = Math.min(previewBudgetRemaining, fullClipDur, 4);
+          if (slice <= 0) break;
+          usedDur = slice;
+          // -t consumed from input timeline (pre-speed adjustment), so scale
+          // back up by speed.
+          trimArgs.push("-t", String(slice * speed));
+        }
 
         const scaleFilter = cropModeVal === "contain"
           ? `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`
@@ -931,7 +1012,6 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
             : `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1`;
 
         const vFilters: string[] = [scaleFilter];
-        const speed = Math.max(0.25, Math.min(4, clip.speed || 1));
         if (Math.abs(speed - 1) > 0.001) vFilters.push(`setpts=${(1 / speed).toFixed(4)}*PTS`);
         const clipColor = clip.colorPreset || colorPresetVal;
         const cf = colorPresetFilter(clipColor as ColorPreset);
@@ -947,7 +1027,7 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
           aFilters.push(...chain);
         }
 
-        trimArgs.push("-vf", vFilters.join(","));
+        trimArgs.push("-i", assetPath, "-vf", vFilters.join(","));
         if (aFilters.length) trimArgs.push("-af", aFilters.join(","));
         trimArgs.push(
           "-c:v", "libx264", "-preset", "veryfast", "-crf", job.kind === "preview" ? "28" : "22",
@@ -957,7 +1037,10 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         await runFfmpegRaw(trimArgs, job);
         assertRenderNotCancelled(job);
         normalizedPaths.push(clipPath);
-        if (job.kind === "preview" && i === 0) break;
+        if (job.kind === "preview") {
+          previewBudgetRemaining -= usedDur;
+          if (previewBudgetRemaining <= 0.05) break;
+        }
       }
 
       job.message = `Joining ${normalizedPaths.length} clip(s)...`;
@@ -1208,6 +1291,28 @@ async function startRender(req: Request, res: Response, kind: "preview" | "final
     const project = await readProjectFromWorkspace(ws, routeParam(req.params.projectId, "projectId")) as EditorProjectV2;
     const hasTimelineClips = Boolean(project.timeline?.tracks.video.length);
     if (!project.sourceVideo && !hasTimelineClips) return bad(res, 400, "source video or timeline clips required");
+    // Idempotency: if a render of the same kind is already pending or
+    // running for this project, return the existing job instead of starting
+    // a second ffmpeg pass that races on the same workspace key.
+    const existing = project.renders.find(
+      (r) => r.kind === kind && (r.status === "pending" || r.status === "running"),
+    );
+    if (existing) {
+      const liveJob = jobs.get(existing.jobId);
+      const job: EditorJob = liveJob ?? {
+        jobId: existing.jobId,
+        projectId: project.projectId,
+        kind: existing.kind,
+        status: existing.status,
+        progress: existing.progress,
+        message: existing.message,
+        outputPath: existing.outputPath,
+        error: null,
+        createdAt: existing.createdAt,
+        completedAt: existing.completedAt,
+      };
+      return res.json({ job, project });
+    }
     const job: EditorJob = {
       jobId: randomUUID(),
       projectId: project.projectId,
@@ -1252,16 +1357,35 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
   try {
     const ddbStatus = await getJobStatusFromDdb(jobId);
     if (!ddbStatus) return bad(res, 404, "job not found");
+    // Normalize a wider set of producer-side status strings into the small
+    // closed enum the frontend understands. Previously, "cancelled" jobs
+    // surfaced as "running" because the unknown-fallback was hard-coded to
+    // running.
+    const ddbToRender: Record<string, RenderStatus> = {
+      pending: "pending",
+      queued: "pending",
+      running: "running",
+      processing: "running",
+      done: "done",
+      completed: "done",
+      success: "done",
+      error: "error",
+      failed: "error",
+      cancelled: "cancelled",
+      canceled: "cancelled",
+    };
+    const status: RenderStatus = ddbToRender[(ddbStatus.status || "").toLowerCase()] ?? "running";
+    const isTerminal = status === "done" || status === "error" || status === "cancelled";
     const mapped: EditorJob = {
       jobId,
       projectId: "",
       kind: "final",
-      status: (["pending", "running", "done", "error", "cancelled"].includes(ddbStatus.status) ? ddbStatus.status : "running") as RenderStatus,
-      progress: ddbStatus.progressPct ?? (ddbStatus.status === "done" ? 100 : ddbStatus.status === "queued" ? 1 : 50),
+      status,
+      progress: ddbStatus.progressPct ?? (status === "done" ? 100 : status === "pending" ? 1 : 50),
       message: ddbStatus.message,
       outputPath: ddbStatus.s3Key,
       createdAt: 0,
-      completedAt: ddbStatus.status === "done" || ddbStatus.status === "error" ? Date.now() : null,
+      completedAt: isTerminal ? Date.now() : null,
     };
     return res.json({ job: mapped });
   } catch (err) {
@@ -1383,14 +1507,34 @@ router.delete("/projects/:projectId", async (req: Request, res: Response) => {
   try {
     const pid = routeParam(req.params.projectId, "projectId");
     const ws = getWorkspace(req);
-    const projectPath = `editor/projects/${pid}.json`;
-    const chatPath = `editor/chats/${pid}.json`;
+    // Use distinct names from the module-level `projectPath` helper so
+    // there's no readability or refactor pitfall.
+    const projectKey = `editor/projects/${pid}.json`;
+    // The chat file actually lives at `editor/projects/<pid>.chat.json`
+    // (see `chatPath` further down). The legacy `editor/chats/<pid>.json`
+    // path was never used. Delete both for safety.
+    const chatKeyV1 = `editor/projects/${pid}.chat.json`;
+    const chatKeyLegacy = `editor/chats/${pid}.json`;
     const uploadsPrefix = `editor/uploads/${pid}/`;
-    await ws.s3.delete(projectPath).catch(() => {});
-    await ws.s3.delete(chatPath).catch(() => {});
-    const listing = await ws.s3.list(uploadsPrefix, { limit: 500 }).catch(() => ({ files: [] as Array<{ path: string }> }));
-    const files = (listing.files || []).map((f) => String(f.path || "")).filter(Boolean);
-    await Promise.all(files.map((f) => ws.s3.delete(f).catch(() => {})));
+    const rendersPrefix = `editor/renders/${pid}/`;
+    await ws.s3.delete(projectKey).catch(() => {});
+    await ws.s3.delete(chatKeyV1).catch(() => {});
+    await ws.s3.delete(chatKeyLegacy).catch(() => {});
+    // Wipe both upload and render trees so deleting a project actually frees
+    // storage instead of just orphaning every previously-rendered MP4.
+    for (const prefix of [uploadsPrefix, rendersPrefix]) {
+      const listing = await ws.s3
+        .list(prefix, { limit: 500 })
+        .catch(() => ({ files: [] as Array<{ path: string }> }));
+      const files = (listing.files || []).map((f) => String(f.path || "")).filter(Boolean);
+      await Promise.all(files.map((f) => ws.s3.delete(f).catch(() => {})));
+    }
+    // Drop any in-memory job entries for this project so a stale render isn't
+    // surfaced after the user creates a new project with the same id (rare,
+    // but possible when a legacy project file is restored from a backup).
+    for (const [jobId, job] of jobs.entries()) {
+      if (job.projectId === pid) jobs.delete(jobId);
+    }
     return res.json({ ok: true });
   } catch (err) {
     return fail(res, err);
@@ -1867,13 +2011,38 @@ function buildToolDispatcherV2(
       if (!project.sourceVideo && pendingTimeline.tracks.video.length === 0) {
         throw new Error("No video clips to render.");
       }
+      const kind = args?.kind === "preview" ? "preview" : "final";
+      // Idempotency guard: if an active job of the same kind already exists,
+      // return it instead of kicking off a parallel ffmpeg run that races on
+      // the same workspace output path.
+      const existing = project.renders.find(
+        (r) => r.kind === kind && (r.status === "pending" || r.status === "running"),
+      );
+      if (existing) {
+        const liveJob = jobs.get(existing.jobId);
+        return {
+          message: `${kind} render already in progress (${existing.progress}%) — waiting on the existing job.`,
+          project,
+          job: liveJob ?? {
+            jobId: existing.jobId,
+            projectId: project.projectId,
+            kind: existing.kind,
+            status: existing.status,
+            progress: existing.progress,
+            message: existing.message,
+            outputPath: existing.outputPath,
+            error: null,
+            createdAt: existing.createdAt,
+            completedAt: existing.completedAt,
+          },
+        };
+      }
       await resolveOpenEndedClipDurations(ws, pendingTimeline);
       // Save timeline to project so processRenderJob can use it directly
       project.timeline = JSON.parse(JSON.stringify(pendingTimeline));
       project.version = 2;
       project = await writeProjectToWorkspace(ws, project) as EditorProjectV2;
       setProject(project);
-      const kind = args?.kind === "preview" ? "preview" : "final";
       const job = enqueueRender(ws, project, kind);
       const next = await readProjectFromWorkspace(ws, project.projectId);
       setProject(next as EditorProjectV2);
@@ -1969,8 +2138,9 @@ function buildToolDispatcherV2(
         const localFile = join(tmp, filename);
         const dlResp = await fetch(downloadUrl, { headers });
         if (!dlResp.ok) throw new Error("Failed to fetch downloaded file");
-        const buffer = Buffer.from(await dlResp.arrayBuffer());
-        await writeFile(localFile, buffer);
+        // Stream to disk — full-length 1080p YouTube downloads can easily
+        // exceed a gigabyte and OOM the API server when buffered.
+        await streamResponseToFile(dlResp, localFile);
         await uploadWorkspaceFile(ws, localFile, wsPath);
       } finally {
         await rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -2010,8 +2180,7 @@ function buildToolDispatcherV2(
         const localFile = join(tmp, filename);
         const dlResp = await fetch(downloadUrl, { headers });
         if (!dlResp.ok) throw new Error("Failed to fetch clip file");
-        const buffer = Buffer.from(await dlResp.arrayBuffer());
-        await writeFile(localFile, buffer);
+        await streamResponseToFile(dlResp, localFile);
         await uploadWorkspaceFile(ws, localFile, wsPath);
       } finally {
         await rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -2047,14 +2216,31 @@ function buildToolDispatcherV2(
       if (splitAt <= clip.srcIn || (clip.srcOut > 0 && splitAt >= clip.srcOut)) {
         throw new Error(`splitAt ${splitAt}s is outside clip range ${clip.srcIn}s-${clip.srcOut || "end"}s.`);
       }
+      const speed = clip.speed || 1;
+      const aDuration = (splitAt - clip.srcIn) / speed;
       const clipA: TimelineClip = { ...clip, id: randomUUID(), srcOut: splitAt, transitionOut: undefined };
-      const clipB: TimelineClip = { ...clip, id: randomUUID(), srcIn: splitAt, tlStart: clip.tlStart + (splitAt - clip.srcIn) / (clip.speed || 1), transitionIn: undefined };
+      const clipB: TimelineClip = {
+        ...clip,
+        id: randomUUID(),
+        srcIn: splitAt,
+        tlStart: clip.tlStart + aDuration,
+        transitionIn: undefined,
+      };
       pendingTimeline.tracks.video.splice(idx, 1, clipA, clipB);
+      // The original clip occupied [tlStart, tlStart + origDuration). Splitting
+      // keeps the same total duration so subsequent clips stay where they
+      // were — no shift needed. (Previously this comment was missing and the
+      // split could orphan transition definitions on the boundary.)
       return { message: `Split into two clips: A (${clipA.srcIn}s-${clipA.srcOut}s) and B (${clipB.srcIn}s-${clipB.srcOut || "end"}s).` };
     },
 
     reorder_clips: async (args) => {
       if (!Array.isArray(args?.clipIds) || args.clipIds.length === 0) throw new Error("clipIds array required.");
+      // Resolve open-ended (srcOut=0) clips to their actual duration first,
+      // otherwise the cursor recalculation below uses a 30s placeholder and
+      // produces wildly wrong tlStart values for full-length clips.
+      const ws = getWorkspace(req);
+      await resolveOpenEndedClipDurations(ws, pendingTimeline);
       const reordered: TimelineClip[] = [];
       const requestedIds = Array.from(new Set(args.clipIds.map((id: unknown) => String(id))));
       for (const id of requestedIds) {
@@ -2182,7 +2368,17 @@ function getVideoEditorApiBase(req: Request): string {
 }
 
 function buildVideoEditorInternalHeaders(req: Request): Record<string, string> {
-  const secret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  // Hardcoded fallbacks let any caller spoof the internal-agent bypass header,
+  // which trivially defeats auth on the wrapped routes. Fail loudly in
+  // production if the secret is unset; allow a clearly-marked dev fallback
+  // only when NODE_ENV !== "production".
+  const explicit = process.env.INTERNAL_AGENT_SECRET;
+  if (!explicit && process.env.NODE_ENV === "production") {
+    throw new Error(
+      "INTERNAL_AGENT_SECRET must be set in production for video-editor agent calls.",
+    );
+  }
+  const secret = explicit ?? "dev-internal-agent-only-do-not-use-in-prod";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Cookie: (req.headers.cookie as string) ?? "",
@@ -2256,9 +2452,19 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
     }
 
     setupSse(res);
-    const send = (event: any) => sse(res, event);
-    const heartbeat = setInterval(() => send({ type: "heartbeat", ts: Date.now() }), 8000);
     let closed = false;
+    // Guard the SSE writer so a client disconnect mid-stream doesn't throw
+    // ERR_STREAM_WRITE_AFTER_END for every subsequent send (heartbeat, tool
+    // events, etc.). The flag is also flipped from `res.on("close")` below.
+    const send = (event: any) => {
+      if (closed) return;
+      try { sse(res, event); }
+      catch (writeErr) {
+        closed = true;
+        logger.debug({ err: writeErr }, "[video-editor] sse write after close, suppressing further frames");
+      }
+    };
+    const heartbeat = setInterval(() => send({ type: "heartbeat", ts: Date.now() }), 8000);
     res.on("close", () => { closed = true; clearInterval(heartbeat); });
 
     send({ type: "run_start", runId: randomUUID() });
@@ -2402,8 +2608,33 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
 });
 
 // ─── Server-side thumbnail for any render output ──────────────────────────────
+// Bounded LRU. Without a cap, a long-running server eventually pins ~200 MiB
+// of thumbnails per workspace.
+const THUMB_CACHE_MAX_ENTRIES = 256;
 const thumbCache = new Map<string, { buffer: Buffer; mtime: number }>();
 const THUMB_CACHE_TTL_MS = 30 * 60 * 1000;
+
+function thumbCacheGet(key: string): Buffer | null {
+  const hit = thumbCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.mtime > THUMB_CACHE_TTL_MS) {
+    thumbCache.delete(key);
+    return null;
+  }
+  // LRU touch.
+  thumbCache.delete(key);
+  thumbCache.set(key, hit);
+  return hit.buffer;
+}
+
+function thumbCacheSet(key: string, buffer: Buffer): void {
+  thumbCache.set(key, { buffer, mtime: Date.now() });
+  while (thumbCache.size > THUMB_CACHE_MAX_ENTRIES) {
+    const oldest = thumbCache.keys().next().value;
+    if (!oldest) break;
+    thumbCache.delete(oldest);
+  }
+}
 
 router.get("/projects/:projectId/renders/:jobId/thumb", async (req: Request, res: Response) => {
   try {
@@ -2416,11 +2647,11 @@ router.get("/projects/:projectId/renders/:jobId/thumb", async (req: Request, res
       return bad(res, 404, "render not ready");
     }
     const cacheKey = `${projectId}:${jobId}`;
-    const cached = thumbCache.get(cacheKey);
-    if (cached && Date.now() - cached.mtime < THUMB_CACHE_TTL_MS) {
+    const cachedBuf = thumbCacheGet(cacheKey);
+    if (cachedBuf) {
       res.setHeader("Content-Type", "image/jpeg");
       res.setHeader("Cache-Control", "public, max-age=1800");
-      return res.end(cached.buffer);
+      return res.end(cachedBuf);
     }
     const dir = join(tmpdir(), `editor-thumb-${jobId}`);
     await mkdir(dir, { recursive: true });
@@ -2436,7 +2667,7 @@ router.get("/projects/:projectId/renders/:jobId/thumb", async (req: Request, res
         thumbPath,
       ]);
       const buffer = await readFile(thumbPath);
-      thumbCache.set(cacheKey, { buffer, mtime: Date.now() });
+      thumbCacheSet(cacheKey, buffer);
       res.setHeader("Content-Type", "image/jpeg");
       res.setHeader("Cache-Control", "public, max-age=1800");
       return res.end(buffer);
