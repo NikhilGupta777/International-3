@@ -1,6 +1,5 @@
 packages:
   - artifacts/*
-  - '!artifacts/video-translation-src'
   - lib/*
   - lib/integrations/*
   - scripts

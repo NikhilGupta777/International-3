@@ -21,7 +21,6 @@ artifacts/
   queue-worker/           # Fargate worker (download/clip/subtitles/best-clips)
   video-translator-service/ # Python GPU Batch worker (CosyVoice 3.0 + LatentSync)
   mockup-sandbox/         # UI component prototyping sandbox (not deployed)
-  video-translation-src/  # Git submodule: github.com/NikhilGupta777/video-translation
 lib/
   api-spec/               # OpenAPI 3.1 YAML — source of truth for API contracts
   api-zod/                # Generated Zod schemas (do not hand-edit src/generated/)
