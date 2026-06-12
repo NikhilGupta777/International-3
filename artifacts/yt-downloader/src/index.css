@@ -6354,8 +6354,10 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
 }
 
 .copilot-wrap .gs-input-card {
+  position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-auto-rows: auto;
   align-items: end;
   width: var(--chatgpt-content);
   max-width: 960px;
@@ -6363,6 +6365,7 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   margin: 0 auto;
   padding: 10px 12px;
   min-width: 0;
+  box-sizing: border-box;
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 32px;
   background: var(--chatgpt-surface);
@@ -6395,17 +6398,23 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   grid-column: 2;
   grid-row: 2;
   min-height: 40px;
+  min-width: 0;
   padding: 0;
   display: flex;
   align-items: center;
+  overflow: hidden;
 }
 
 .copilot-wrap .gs-input-textarea {
+  width: 100%;
   min-height: 32px !important;
+  max-height: 132px;
   padding: 5px 4px;
   color: rgba(255,255,255,0.94);
   font-size: 16px;
   line-height: 1.5;
+  box-sizing: border-box;
+  overflow-y: auto !important;
 }
 
 .copilot-wrap .gs-input-textarea::placeholder {
@@ -6421,6 +6430,7 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   grid-row: 2;
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .copilot-wrap .gs-input-row-right {
@@ -6429,6 +6439,12 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.copilot-wrap .gs-inline-skill-prefix {
+  flex: 0 1 auto;
   min-width: 0;
 }
 
@@ -6835,6 +6851,7 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
     border-radius: 26px;
     gap: 6px;
     padding: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .copilot-wrap .gs-input-textarea-wrap {
@@ -6854,12 +6871,15 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   .copilot-wrap .gs-input-row-left {
     grid-column: 1;
     grid-row: 2;
+    align-self: center;
   }
 
   .copilot-wrap .gs-input-row-right {
     grid-column: 2 / -1;
     grid-row: 2;
     justify-content: flex-end;
+    align-self: center;
+    gap: 6px;
   }
 
   .copilot-wrap .gs-reasoning-button {
@@ -7134,9 +7154,9 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   .copilot-wrap .gs-reasoning-button {
-    max-width: 96px;
+    max-width: 86px;
     font-size: 12px;
-    padding: 0 8px;
+    padding: 0 7px;
   }
 
   .copilot-wrap .gs-reasoning-button span {
@@ -7176,8 +7196,8 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   .copilot-wrap .gs-inline-skill-prefix {
-    max-width: 132px;
-    margin-left: 6px;
+    max-width: min(38vw, 126px);
+    margin-left: 0;
     margin-right: 6px;
     padding: 5px 8px;
     font-size: 12px;

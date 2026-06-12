@@ -339,6 +339,29 @@ function renderMdTable(
   );
 }
 
+function safeExternalHref(href?: string): string | null {
+  const value = String(href || "").trim();
+  if (!value) return null;
+  const lower = value.toLowerCase();
+  if (lower.startsWith("javascript:") || lower.startsWith("data:") || lower.startsWith("vbscript:")) return null;
+  if (/^(https?:|mailto:|tel:|\/|#)/i.test(value)) return value;
+  return null;
+}
+
+function renderCodeBlock(code: string, language: string | undefined, key: string): React.ReactNode {
+  const label = normalizeCanvasLanguage(language, code);
+  return (
+    <div key={key} className="my-2 overflow-hidden rounded-lg border border-white/10 bg-black/30">
+      <div className="flex items-center justify-between border-b border-white/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-white/35">
+        <span>{label}</span>
+      </div>
+      <pre className="max-h-80 overflow-auto px-3 py-2 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
 // ── Markdown renderer ──────────────────────────────────────────────────────────
 function renderMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
   const lines = text.split("\n");
@@ -358,9 +381,11 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
       else {
         const linkMatch = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok);
         if (linkMatch) {
-          parts.push(
-            <a key={`${key}-a${k++}`} href={linkMatch[2]} target="_blank" rel="noopener noreferrer"
-              className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{linkMatch[1]}</a>
+          const href = safeExternalHref(linkMatch[2]);
+          parts.push(href
+            ? <a key={`${key}-a${k++}`} href={href} target="_blank" rel="noopener noreferrer"
+                className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{linkMatch[1]}</a>
+            : <span key={`${key}-a${k++}`}>{linkMatch[1]}</span>
           );
         } else {
           // Citation [N]
@@ -383,6 +408,19 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
   let li = 0;
   while (li < lines.length) {
     const line = lines[li];
+
+    const codeFenceMatch = /^```([a-zA-Z0-9+#.-]*)\s*$/.exec(line);
+    if (codeFenceMatch) {
+      const codeLines: string[] = [];
+      let bi = li + 1;
+      while (bi < lines.length && !/^```\s*$/.test(lines[bi])) {
+        codeLines.push(lines[bi]);
+        bi++;
+      }
+      result.push(renderCodeBlock(codeLines.join("\n"), codeFenceMatch[1], `code${li}`));
+      li = bi < lines.length ? bi + 1 : bi;
+      continue;
+    }
 
     // Table block: header row + separator row + body rows
     if (
@@ -474,9 +512,11 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
         else if (seg.type === "strike") parts.push(<del key={`${key}-s${k++}`}>{seg.text}</del>);
         else if (seg.type === "code") parts.push(<code key={`${key}-c${k++}`}>{seg.text}</code>);
         else if (seg.type === "link") {
-          parts.push(
-            <a key={`${key}-a${k++}`} href={seg.href} target="_blank" rel="noopener noreferrer"
-              className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{seg.text}</a>
+          const href = safeExternalHref(seg.href);
+          parts.push(href
+            ? <a key={`${key}-a${k++}`} href={href} target="_blank" rel="noopener noreferrer"
+                className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{seg.text}</a>
+            : <span key={`${key}-a${k++}`}>{seg.text}</span>
           );
         }
         else if (seg.type === "cite") {
@@ -510,8 +550,11 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
         continue;
       }
       if (seg.type === "link") {
-        const node = <a key={`link-${k++}`} href={seg.href} target="_blank" rel="noopener noreferrer"
-          className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{seg.text}</a>;
+        const href = safeExternalHref(seg.href);
+        const node = href
+          ? <a key={`link-${k++}`} href={href} target="_blank" rel="noopener noreferrer"
+              className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{seg.text}</a>
+          : <span key={`link-${k++}`}>{seg.text}</span>;
         allChars.push({ char: "", type: "static_node", node });
         continue;
       }
@@ -551,6 +594,19 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
   let li = 0;
   while (li < lines.length) {
     const line = lines[li];
+
+    const codeFenceMatch = /^```([a-zA-Z0-9+#.-]*)\s*$/.exec(line);
+    if (codeFenceMatch) {
+      const codeLines: string[] = [];
+      let bi = li + 1;
+      while (bi < lines.length && !/^```\s*$/.test(lines[bi])) {
+        codeLines.push(lines[bi]);
+        bi++;
+      }
+      result.push(renderCodeBlock(codeLines.join("\n"), codeFenceMatch[1], `code${li}`));
+      li = bi < lines.length ? bi + 1 : bi;
+      continue;
+    }
 
     // Table block: header row + separator row + body rows (rendered statically, no animation)
     if (
@@ -1515,7 +1571,7 @@ function WorkspaceListingCard({ part, onOpenWorkspace }: { part: MessagePart & {
                 <div className="text-[12px] text-white/85 font-mono truncate">{f.path}</div>
                 <div className="text-[10px] text-white/35">{formatBytesShort(f.size)} · {new Date(f.modifiedAt).toLocaleDateString()}</div>
               </div>
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                 <button onClick={() => copyPath(f.path)} className="p-1.5 rounded text-white/50 hover:text-white" title="Copy path">
                   <Copy className="w-3 h-3" />
                 </button>
@@ -1897,7 +1953,7 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming, onOpenWorksp
             // Strip internal model tags on the client side as a safety net
             const cleanContent = clientStripTags(part.content);
             if (!cleanContent.trim()) return null;
-            const isErrorMsg = !isUser && cleanContent.startsWith("⚠️");
+            const isErrorMsg = !isUser && (cleanContent.startsWith("Error:") || cleanContent.startsWith("Note:"));
             // Determine if this is the last text part being actively streamed
             const textPartIndexes = message.parts.map((p, idx) => p.kind === "text" ? idx : -1).filter(idx => idx >= 0);
             const isLastTextPart = !isUser && isStreaming && i === textPartIndexes[textPartIndexes.length - 1];
@@ -2861,7 +2917,7 @@ export function StudioCopilot({
           const inner = p?.error?.message ?? p?.message ?? cleanMsg;
           cleanMsg = String(inner).split(/\.?\s*Please refer to https?:\/\//).shift()!.trim();
         } catch { /* not JSON */ }
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `⚠️ ${cleanMsg}` }] }));
+        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `Error: ${cleanMsg}` }] }));
         return;
       }
       if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); }
@@ -2893,13 +2949,13 @@ export function StudioCopilot({
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         // Distinguish common failure modes for better user feedback
-        let msg = "⚠️ Connection interrupted. The job may still be running — try asking again.";
+        let msg = "Error: Connection interrupted. The job may still be running - try asking again.";
         if (err?.message?.includes("401") || err?.message?.includes("403")) {
-          msg = "⚠️ Authentication error — please refresh the page and try again.";
+          msg = "Error: Authentication error - please refresh the page and try again.";
         } else if (err?.message?.includes("503") || err?.message?.includes("502")) {
-          msg = "⚠️ Server is starting up — please wait a moment and try again.";
+          msg = "Error: Server is starting up - please wait a moment and try again.";
         } else if (err?.message?.includes("Server error:")) {
-          msg = `⚠️ ${err.message}`;
+          msg = `Error: ${err.message}`;
         }
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: msg }] }));
       }
