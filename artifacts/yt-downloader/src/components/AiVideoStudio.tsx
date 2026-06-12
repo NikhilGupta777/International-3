@@ -9,6 +9,7 @@ import {
   type ProposalDiffItem,
   type Timeline,
   type EditorJobSummary,
+  type EditorChatMessage,
 } from "@/lib/video-editor-api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -73,6 +74,52 @@ const FEATURE_TILES = [
   { icon: "✨", title: "Clean & Polish", desc: "Trim, fix audio, color grade", prefill: "Upload a video and I'll clean it up — trim dead air, fix audio, color grade." },
 ];
 
+const LAST_VIDEO_STUDIO_PROJECT_KEY = "videomaking-ai-video-studio-last-project-v1";
+
+function restoreBubblesFromProject(messages: EditorChatMessage[], project: EditorProject): ChatBubble[] {
+  const restored: ChatBubble[] = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => {
+      if (m.role === "user") return { kind: "user" as const, id: m.id, text: m.content, assets: [] as AttachedAsset[] };
+      return { kind: "assistant" as const, id: m.id, text: m.content };
+    });
+
+  for (const proposal of project.proposals || []) {
+    restored.push({
+      kind: "proposal",
+      id: `proposal-${proposal.proposalId}`,
+      status: proposal.status === "applied" ? "approved" : proposal.status === "rejected" ? "rejected" : "pending",
+      proposal: {
+        proposalId: proposal.proposalId,
+        summary: proposal.summary,
+        diff: proposal.diff || [],
+        timeline: proposal.timeline,
+        duration: computeTimelineDuration(proposal.timeline),
+      },
+    });
+  }
+
+  for (const render of (project.renders || []).filter((r) => r.status === "done" && r.outputPath).slice(0, 3).reverse()) {
+    restored.push({
+      kind: "artifact",
+      id: `artifact-${render.jobId}`,
+      title: project.title || "Rendered Video",
+      jobId: render.jobId,
+      outputPath: render.outputPath!,
+      projectId: project.projectId,
+    });
+  }
+
+  return restored;
+}
+
+function computeTimelineDuration(timeline: Timeline): number {
+  return timeline.tracks.video.reduce((max, clip) => {
+    const sourceDuration = clip.srcOut > clip.srcIn ? clip.srcOut - clip.srcIn : 0;
+    return Math.max(max, clip.tlStart + sourceDuration / (clip.speed || 1));
+  }, 0);
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 export function AiVideoStudio() {
   const [view, setView] = useState<ViewState>("landing");
@@ -131,18 +178,44 @@ export function AiVideoStudio() {
       // Load chat history
       try {
         const { messages } = await videoEditorApi.getChat(pid);
-        const restored: ChatBubble[] = messages.map((m) => {
-          if (m.role === "user") {
-            return { kind: "user" as const, id: m.id, text: m.content, assets: [] as AttachedAsset[] };
-          }
-          return { kind: "assistant" as const, id: m.id, text: m.content };
-        });
-        setBubbles(restored);
+        setBubbles(restoreBubblesFromProject(messages, loaded));
       } catch { /* no chat history */ }
     } catch (err) {
       console.error("Failed to load project:", err);
     }
   }, []);
+
+  useEffect(() => {
+    if (!projectId) return;
+    try { window.localStorage.setItem(LAST_VIDEO_STUDIO_PROJECT_KEY, projectId); } catch { /* ignore */ }
+  }, [projectId]);
+
+  useEffect(() => {
+    if (projectId) return;
+    let cancelled = false;
+    try {
+      const saved = window.localStorage.getItem(LAST_VIDEO_STUDIO_PROJECT_KEY);
+      if (!saved) return;
+      let loadedProject: EditorProject | null = null;
+      void videoEditorApi.getProject(saved)
+        .then(({ project: loaded }) => {
+          if (cancelled) return;
+          loadedProject = loaded;
+          setProjectId(loaded.projectId);
+          setProject(loaded);
+          setView("chat");
+          return videoEditorApi.getChat(loaded.projectId);
+        })
+        .then((chat) => {
+          if (cancelled || !chat) return;
+          if (loadedProject) setBubbles(restoreBubblesFromProject(chat.messages, loadedProject));
+        })
+        .catch(() => {
+          try { window.localStorage.removeItem(LAST_VIDEO_STUDIO_PROJECT_KEY); } catch { /* ignore */ }
+        });
+    } catch { /* ignore */ }
+    return () => { cancelled = true; };
+  }, [projectId]);
 
   const handleDeleteProject = useCallback(async (pid: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -155,6 +228,7 @@ export function AiVideoStudio() {
         setProjectId(null);
         setProject(null);
         setBubbles([]);
+        try { window.localStorage.removeItem(LAST_VIDEO_STUDIO_PROJECT_KEY); } catch { /* ignore */ }
       }
     } catch (err) {
       console.error("Failed to delete project:", err);
@@ -708,6 +782,7 @@ export function AiVideoStudio() {
                 setProjectId(null);
                 setProject(null);
                 setBubbles([]);
+                try { window.localStorage.removeItem(LAST_VIDEO_STUDIO_PROJECT_KEY); } catch { /* ignore */ }
                 streamRef.current?.cancel();
               }}
             >

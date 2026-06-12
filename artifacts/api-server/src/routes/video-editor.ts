@@ -361,6 +361,32 @@ function computeTimelineDuration(tl: Timeline): number {
   return maxEnd;
 }
 
+async function probeWorkspaceVideoDuration(ws: ReturnType<typeof getWorkspace>, asset: string): Promise<number> {
+  const dir = join(tmpdir(), `editor-duration-${randomUUID()}`);
+  await mkdir(dir, { recursive: true });
+  try {
+    const localPath = join(dir, `asset${extname(asset) || ".mp4"}`);
+    await downloadWorkspaceFile(ws, asset, localPath);
+    const meta = await probeMetadata(localPath);
+    return meta.duration;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function resolveOpenEndedClipDurations(ws: ReturnType<typeof getWorkspace>, tl: Timeline): Promise<void> {
+  const cache = new Map<string, number>();
+  for (const clip of tl.tracks.video) {
+    if (clip.srcOut > clip.srcIn) continue;
+    let duration = cache.get(clip.asset);
+    if (duration == null) {
+      duration = await probeWorkspaceVideoDuration(ws, clip.asset).catch(() => 0);
+      cache.set(clip.asset, duration);
+    }
+    if (duration > clip.srcIn) clip.srcOut = duration;
+  }
+}
+
 async function readProject(req: Request, projectId: string): Promise<EditorProject> {
   const ws = getWorkspace(req);
   const data = await ws.s3.readText(projectPath(projectId));
@@ -418,6 +444,24 @@ function overlayPosition(position: LogoPosition, margin: number): string {
     case "bottom-left": return `${margin}:H-h-${margin}`;
     case "top-right": return `W-w-${margin}:${margin}`;
   }
+}
+
+function overlayPositionAny(position: string, margin: number): string {
+  switch (position) {
+    case "top-left": return `${margin}:${margin}`;
+    case "top-center": return `(W-w)/2:${margin}`;
+    case "bottom-right": return `W-w-${margin}:H-h-${margin}`;
+    case "bottom-left": return `${margin}:H-h-${margin}`;
+    case "bottom-center": return `(W-w)/2:H-h-${margin}`;
+    case "top-right":
+    default:
+      return `W-w-${margin}:${margin}`;
+  }
+}
+
+function timelineEnable(clipStart: number, clipEnd: number): string {
+  if (!(clipEnd > clipStart)) return "";
+  return `:enable='between(t,${Math.max(0, clipStart).toFixed(3)},${clipEnd.toFixed(3)})'`;
 }
 
 function buildFfmpegArgs(params: {
@@ -622,9 +666,21 @@ async function probeDuration(input: string): Promise<number> {
 async function concatClips(inputs: string[], output: string): Promise<void> {
   const args: string[] = ["-y"];
   for (const p of inputs) args.push("-i", p);
-  const segs = inputs.map((_, i) => `[${i}:v:0][${i}:a:0]`).join("");
+  const filters: string[] = [];
+  const segs: string[] = [];
+  for (let i = 0; i < inputs.length; i += 1) {
+    const meta = await probeMetadata(inputs[i]).catch(() => ({ duration: 0, width: 0, height: 0, hasAudio: false }));
+    if (meta.hasAudio) {
+      segs.push(`[${i}:v:0][${i}:a:0]`);
+    } else {
+      const duration = Math.max(0.1, meta.duration || await probeDuration(inputs[i]).catch(() => 0) || 0.1);
+      filters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration.toFixed(3)}[a${i}]`);
+      segs.push(`[${i}:v:0][a${i}]`);
+    }
+  }
+  filters.push(`${segs.join("")}concat=n=${inputs.length}:v=1:a=1[v][a]`);
   args.push(
-    "-filter_complex", `${segs}concat=n=${inputs.length}:v=1:a=1[v][a]`,
+    "-filter_complex", filters.join(";"),
     "-map", "[v]", "-map", "[a]",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
     "-c:a", "aac", "-b:a", "160k",
@@ -638,12 +694,31 @@ async function concatClips(inputs: string[], output: string): Promise<void> {
  * Joins clips with a real video+audio crossfade (xfade + acrossfade) at the
  * boundaries. Falls back to plain concat if a duration probe fails.
  */
-async function crossfadeClips(inputs: string[], output: string, fadeDur = 0.5): Promise<void> {
+function xfadeTransitionName(type?: TransitionType): string {
+  switch (type) {
+    case "blur": return "hblur";
+    case "dip-to-black": return "fadeblack";
+    case "wipe": return "wipeleft";
+    case "crossfade":
+    case "fade":
+    default:
+      return "fade";
+  }
+}
+
+async function crossfadeClips(inputs: string[], output: string, transitions: TransitionDef[] = []): Promise<void> {
   if (inputs.length < 2) { await concatClips(inputs, output); return; }
+  const fadeDurations = Array.from({ length: inputs.length - 1 }, (_, i) =>
+    Math.max(0.1, Math.min(2, transitions[i]?.duration ?? 0.5)),
+  );
   const durations: number[] = [];
-  for (const p of inputs) {
-    const d = await probeDuration(p).catch(() => 0);
-    if (!Number.isFinite(d) || d <= fadeDur * 2) { await concatClips(inputs, output); return; }
+  for (let i = 0; i < inputs.length; i += 1) {
+    const p = inputs[i];
+    const meta = await probeMetadata(p).catch(() => ({ duration: 0, width: 0, height: 0, hasAudio: false }));
+    if (!meta.hasAudio) { await concatClips(inputs, output); return; }
+    const d = meta.duration || await probeDuration(p).catch(() => 0);
+    const required = Math.max(fadeDurations[i - 1] ?? 0, fadeDurations[i] ?? 0) * 2;
+    if (!Number.isFinite(d) || d <= required) { await concatClips(inputs, output); return; }
     durations.push(d);
   }
   const args: string[] = ["-y"];
@@ -654,10 +729,12 @@ async function crossfadeClips(inputs: string[], output: string, fadeDur = 0.5): 
   let aLabel = "0:a";
   let cumOffset = 0;
   for (let i = 1; i < inputs.length; i += 1) {
+    const transition = transitions[i - 1];
+    const fadeDur = fadeDurations[i - 1] ?? 0.5;
     cumOffset += durations[i - 1] - fadeDur;
     const vOut = `xv${i}`;
     const aOut = `xa${i}`;
-    vFilters.push(`[${vLabel}][${i}:v]xfade=transition=fade:duration=${fadeDur}:offset=${cumOffset.toFixed(3)}[${vOut}]`);
+    vFilters.push(`[${vLabel}][${i}:v]xfade=transition=${xfadeTransitionName(transition?.type)}:duration=${fadeDur}:offset=${cumOffset.toFixed(3)}[${vOut}]`);
     aFilters.push(`[${aLabel}][${i}:a]acrossfade=d=${fadeDur}:c1=tri:c2=tri[${aOut}]`);
     vLabel = vOut;
     aLabel = aOut;
@@ -787,6 +864,7 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
 
     if (hasV2Clips) {
       // ═══ V2 Multi-clip timeline render ═══
+      await resolveOpenEndedClipDurations(ws, tl!);
       const clips = tl!.tracks.video;
       const overlays = tl!.tracks.overlays;
       const audioTracks = tl!.tracks.audio;
@@ -858,8 +936,15 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
       } else {
         const hasXfade = clips.some((c, i) => i > 0 && (c.transitionIn?.type && c.transitionIn.type !== "none") || (clips[i - 1]?.transitionOut?.type && clips[i - 1].transitionOut!.type !== "none"));
         if (hasXfade) {
-          const fadeDur = clips.find((c, i) => i > 0 && c.transitionIn?.duration)?.transitionIn?.duration ?? 0.5;
-          await crossfadeClips(normalizedPaths, joinedPath, fadeDur);
+          const transitions = clips.slice(1).map((clip, i) => {
+            const prev = clips[i];
+            return clip.transitionIn?.type && clip.transitionIn.type !== "none"
+              ? clip.transitionIn
+              : prev.transitionOut?.type && prev.transitionOut.type !== "none"
+                ? prev.transitionOut
+                : { type: "fade" as const, duration: 0.5 };
+          });
+          await crossfadeClips(normalizedPaths, joinedPath, transitions);
         } else {
           await concatClips(normalizedPaths, joinedPath);
         }
@@ -877,15 +962,17 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         let step = 0;
 
         for (const ov of overlays) {
-          if (ov.type === "logo") {
-            const logoLocal = join(dir, `logo-${ov.id}${extname(ov.content) || ".png"}`);
-            await downloadWorkspaceFile(ws, ov.content, logoLocal);
-            oArgs.splice(oArgs.indexOf("-i") < 0 ? 1 : oArgs.length, 0, "-i", logoLocal);
-            const logoWidth = Math.max(48, Math.round(width * ((ov.style?.widthPercent || 8) / 100)));
+          if (ov.type === "logo" || ov.type === "image") {
+            const imageLocal = join(dir, `${ov.type}-${ov.id}${extname(ov.content) || ".png"}`);
+            await downloadWorkspaceFile(ws, ov.content, imageLocal);
+            oArgs.push("-i", imageLocal);
+            const widthPercent = ov.style?.widthPercent || (ov.type === "logo" ? 8 : 28);
+            const imageWidth = Math.max(48, Math.round(width * (widthPercent / 100)));
             const margin = Math.round(width * 0.045);
             const keyFilter = ov.style?.key === "auto-white" ? "format=rgba,colorkey=0xffffff:0.30:0.20," : ov.style?.key === "auto-black" ? "format=rgba,colorkey=0x000000:0.30:0.20," : "";
-            oFilters.push(`[${inputIdx}:v]${keyFilter}scale=${logoWidth}:-1:flags=lanczos[logo${step}]`);
-            oFilters.push(`[${current}][logo${step}]overlay=${overlayPosition((ov.position || "top-right") as LogoPosition, margin)}:format=auto[v${step}]`);
+            const enable = timelineEnable(ov.tlStart || 0, ov.tlEnd || 0);
+            oFilters.push(`[${inputIdx}:v]${keyFilter}scale=${imageWidth}:-1:flags=lanczos[image${step}]`);
+            oFilters.push(`[${current}][image${step}]overlay=${overlayPositionAny(ov.position || "top-right", margin)}:format=auto${enable}[v${step}]`);
             current = `v${step}`;
             step++;
             inputIdx++;
@@ -893,7 +980,8 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
             const fontSize = Math.max(34, Math.round(width * 0.055));
             const y = ov.position === "top-left" ? Math.round(height * 0.08) : Math.round(height * 0.88);
             const x = ov.position === "bottom-right" ? `w-text_w-${Math.round(width * 0.06)}` : "(w-text_w)/2";
-            oFilters.push(`[${current}]drawtext=text='${escapeDrawText(ov.content)}':fontcolor=white:fontsize=${fontSize}:borderw=3:bordercolor=black@0.65:x=${x}:y=${y}[v${step}]`);
+            const enable = timelineEnable(ov.tlStart || 0, ov.tlEnd || 0);
+            oFilters.push(`[${current}]drawtext=text='${escapeDrawText(ov.content)}':fontcolor=white:fontsize=${fontSize}:borderw=3:bordercolor=black@0.65:x=${x}:y=${y}${enable}[v${step}]`);
             current = `v${step}`;
             step++;
           }
@@ -913,16 +1001,27 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         const mixedPath = join(dir, "mixed.mp4");
         const mArgs: string[] = ["-y", "-i", currentPath];
         const mFilters: string[] = [];
+        const baseMeta = await probeMetadata(currentPath).catch(() => ({ duration: 0, width: 0, height: 0, hasAudio: false }));
+        const baseAudio = baseMeta.hasAudio ? "[0:a]" : "[basea]";
+        if (!baseMeta.hasAudio) {
+          const duration = Math.max(0.1, baseMeta.duration || await probeDuration(currentPath).catch(() => 0) || 0.1);
+          mFilters.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration.toFixed(3)}[basea]`);
+        }
         let aIdx = 1;
         for (const at of audioTracks) {
           const audioLocal = join(dir, `audio-${at.id}${extname(at.asset) || ".mp3"}`);
           await downloadWorkspaceFile(ws, at.asset, audioLocal);
           mArgs.push("-i", audioLocal);
           const vol = Math.pow(10, (at.volumeDb || -10) / 20);
-          mFilters.push(`[${aIdx}:a]volume=${vol.toFixed(3)},adelay=${Math.round((at.tlStart || 0) * 1000)}|${Math.round((at.tlStart || 0) * 1000)}[bg${aIdx}]`);
+          const filters = [`volume=${vol.toFixed(3)}`];
+          if (at.tlEnd > at.tlStart) filters.push(`atrim=duration=${Math.max(0.1, at.tlEnd - at.tlStart).toFixed(3)}`);
+          if (at.fadeIn > 0) filters.push(`afade=t=in:st=0:d=${Math.max(0.01, at.fadeIn).toFixed(3)}`);
+          if (at.fadeOut > 0 && at.tlEnd > at.tlStart) filters.push(`afade=t=out:st=${Math.max(0, at.tlEnd - at.tlStart - at.fadeOut).toFixed(3)}:d=${Math.max(0.01, at.fadeOut).toFixed(3)}`);
+          filters.push(`adelay=${Math.round((at.tlStart || 0) * 1000)}|${Math.round((at.tlStart || 0) * 1000)}`);
+          mFilters.push(`[${aIdx}:a]${filters.join(",")}[bg${aIdx}]`);
           aIdx++;
         }
-        mFilters.push(`[0:a]${audioTracks.map((_, i) => `[bg${i + 1}]`).join("")}amix=inputs=${audioTracks.length + 1}:duration=first:dropout_transition=2[aout]`);
+        mFilters.push(`${baseAudio}${audioTracks.map((_, i) => `[bg${i + 1}]`).join("")}amix=inputs=${audioTracks.length + 1}:duration=first:dropout_transition=2[aout]`);
         mArgs.push("-filter_complex", mFilters.join(";"), "-map", "0:v", "-map", "[aout]");
         mArgs.push("-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", mixedPath);
         await runFfmpegRaw(mArgs);
@@ -1063,8 +1162,9 @@ router.post("/projects/:projectId/render", async (req: Request, res: Response) =
 async function startRender(req: Request, res: Response, kind: "preview" | "final") {
   try {
     const ws = getWorkspace(req);
-    const project = await readProject(req, routeParam(req.params.projectId, "projectId"));
-    if (!project.sourceVideo) return bad(res, 400, "source video required");
+    const project = await readProjectFromWorkspace(ws, routeParam(req.params.projectId, "projectId")) as EditorProjectV2;
+    const hasTimelineClips = Boolean(project.timeline?.tracks.video.length);
+    if (!project.sourceVideo && !hasTimelineClips) return bad(res, 400, "source video or timeline clips required");
     const job: EditorJob = {
       jobId: randomUUID(),
       projectId: project.projectId,
@@ -1078,7 +1178,7 @@ async function startRender(req: Request, res: Response, kind: "preview" | "final
       completedAt: null,
     };
     jobs.set(job.jobId, job);
-    const next = await writeProject(req, {
+    const next = await writeProjectToWorkspace(ws, {
       ...project,
       renders: [
         {
@@ -1568,11 +1668,19 @@ function buildToolDispatcherV2(
       return { message: `Assets: source=${p.sourceVideo || "(none)"}, logo=${p.assets.logo || "(none)"}, intro=${p.assets.intro || "(none)"}, outro=${p.assets.outro || "(none)"}.` };
     },
     add_clip: async (args) => {
+      const ws = getWorkspace(req);
+      await resolveOpenEndedClipDurations(ws, pendingTimeline);
+      const srcIn = args.srcIn ?? 0;
+      let srcOut = args.srcOut ?? 0;
+      if (!(srcOut > srcIn)) {
+        const duration = await probeWorkspaceVideoDuration(ws, args.asset).catch(() => 0);
+        if (duration > srcIn) srcOut = duration;
+      }
       const clip: TimelineClip = {
         id: randomUUID(),
         asset: args.asset,
-        srcIn: args.srcIn ?? 0,
-        srcOut: args.srcOut ?? 0,
+        srcIn,
+        srcOut,
         tlStart: args.tlStart ?? computeTimelineDuration(pendingTimeline),
         speed: Math.max(0.25, Math.min(4, args.speed ?? 1)),
       };
@@ -1662,6 +1770,8 @@ function buildToolDispatcherV2(
       return { message: `Export: ${pendingTimeline.export.aspectRatio}, ${pendingTimeline.export.cropMode}, color=${pendingTimeline.export.colorPreset}.` };
     },
     propose: async (args) => {
+      const ws = getWorkspace(req);
+      await resolveOpenEndedClipDurations(ws, pendingTimeline);
       const proposal: Proposal = {
         proposalId: randomUUID(),
         status: "pending",
@@ -1675,10 +1785,9 @@ function buildToolDispatcherV2(
         createdAt: Date.now(),
       };
       // Save proposal to project
-      const ws = getWorkspace(req);
       const cur = getProject();
       const proposals = [...((cur as any).proposals || []).filter((p: Proposal) => p.status !== "pending"), proposal];
-      const next = await writeProjectToWorkspace(ws, { ...cur, proposals, timeline: pendingTimeline, version: 2 } as any);
+      const next = await writeProjectToWorkspace(ws, { ...cur, proposals, version: 2 } as any);
       setProject(next as EditorProjectV2);
       // Emit proposal SSE event
       sendSse({
@@ -1703,6 +1812,7 @@ function buildToolDispatcherV2(
       if (!project.sourceVideo && pendingTimeline.tracks.video.length === 0) {
         throw new Error("No video clips to render.");
       }
+      await resolveOpenEndedClipDurations(ws, pendingTimeline);
       // Save timeline to project so processRenderJob can use it directly
       project.timeline = JSON.parse(JSON.stringify(pendingTimeline));
       project.version = 2;

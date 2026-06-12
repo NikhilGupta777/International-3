@@ -103,6 +103,9 @@ export type EditorProject = {
   assets: EditorAssets;
   prompt: string;
   recipe: EditRecipe;
+  timeline?: Timeline | null;
+  proposals?: Proposal[];
+  version?: number;
   renders: EditorJobSummary[];
 };
 
@@ -207,6 +210,8 @@ export const videoEditorApi = {
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let parseErrorReported = false;
+        let sawDone = false;
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -221,11 +226,22 @@ export const videoEditorApi = {
             if (!raw) continue;
             try {
               const event = JSON.parse(raw);
+              if (event?.type === "done") sawDone = true;
               handlers.onEvent(event);
-            } catch {
-              // ignore parse errors
+            } catch (err) {
+              console.warn("[video-editor] malformed SSE frame", {
+                error: err instanceof Error ? err.message : String(err),
+                preview: raw.slice(0, 200),
+              });
+              parseErrorReported = true;
             }
           }
+        }
+        if (parseErrorReported && !sawDone) {
+          handlers.onEvent({
+            type: "error",
+            message: "The response stream ended with an incomplete update. Please retry if anything looks missing.",
+          });
         }
         handlers.onClose?.();
       } catch (err) {
