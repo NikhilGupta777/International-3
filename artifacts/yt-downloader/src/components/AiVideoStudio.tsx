@@ -204,6 +204,37 @@ export function AiVideoStudio() {
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   projectRef.current = project;
 
+  // Project restore can load a completed render even when chat history is
+  // empty. Surface those renders as artifact cards so refresh/history restore
+  // never lands on a blank chat with only the project title.
+  useEffect(() => {
+    if (!project?.projectId) return;
+    const completed = (project.renders || [])
+      .filter((r) => r.status === "done" && r.outputPath)
+      .slice(0, 3);
+    if (!completed.length) return;
+    setBubbles((prev) => {
+      const existingJobIds = new Set(
+        prev
+          .filter((b) => b.kind === "artifact")
+          .map((b) => (b as Extract<ChatBubble, { kind: "artifact" }>).jobId)
+      );
+      const missing = completed.filter((r) => !existingJobIds.has(r.jobId));
+      if (!missing.length) return prev;
+      return [
+        ...prev,
+        ...missing.map((render) => ({
+          kind: "artifact" as const,
+          id: `artifact-${render.jobId}`,
+          title: project.title || "Rendered Video",
+          jobId: render.jobId,
+          outputPath: render.outputPath!,
+          projectId: project.projectId,
+        })),
+      ];
+    });
+  }, [project]);
+
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });

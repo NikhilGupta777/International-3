@@ -170,6 +170,7 @@ const jobs = new Map<string, EditorJob>();
 const activeRenderProcesses = new Map<string, ReturnType<typeof spawn>>();
 const FFMPEG_BIN = process.env.FFMPEG_BIN || ffmpegStatic || "ffmpeg";
 const STALE_PENDING_RENDER_MS = 2 * 60_000;
+const RUN_RENDER_INLINE = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) && !VIDEO_EDITOR_QUEUE_ENABLED;
 
 // Garbage-collect completed jobs from the in-memory map so a long-running
 // process doesn't accumulate every render that ever ran. We keep finished
@@ -1213,12 +1214,18 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
     job.message = "Saving render to workspace...";
     job.progress = 92;
     await uploadWorkspaceFile(ws, outputPath, workspaceOutput);
-    job.status = "done";
-    job.progress = 100;
-    job.message = "Render saved to workspace.";
     job.outputPath = workspaceOutput;
-    job.completedAt = Date.now();
-    await persistJobToProject(ws, projectId, job);
+    job.progress = 99;
+    job.message = "Finalizing render...";
+    const completedJob: EditorJob = {
+      ...job,
+      status: "done",
+      progress: 100,
+      message: "Render saved to workspace.",
+      completedAt: Date.now(),
+    };
+    await persistJobToProject(ws, projectId, completedJob);
+    Object.assign(job, completedJob);
   } catch (err) {
     if (job.status === "cancelled") {
       job.progress = 0;
@@ -1396,7 +1403,11 @@ async function startRender(req: Request, res: Response, kind: "preview" | "final
         ...project.renders,
       ].slice(0, 20),
     });
-    void processRenderJob(ws, project.projectId, job);
+    if (RUN_RENDER_INLINE) {
+      await processRenderJob(ws, project.projectId, job);
+    } else {
+      void processRenderJob(ws, project.projectId, job);
+    }
     return res.json({ job, project: next });
   } catch (err) {
     return fail(res, err);
@@ -1639,7 +1650,7 @@ type ToolExec = (args: any) => Promise<{ message: string; project?: EditorProjec
 
 // V1 dispatcher removed — all agent logic uses buildToolDispatcherV2.
 
-function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: EditorProject, kind: "preview" | "final"): EditorJob {
+async function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: EditorProject, kind: "preview" | "final"): Promise<EditorJob> {
   const job: EditorJob = {
     jobId: randomUUID(),
     projectId: project.projectId,
@@ -1653,7 +1664,7 @@ function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: EditorProje
     completedAt: null,
   };
   jobs.set(job.jobId, job);
-  void (async () => {
+  await (async () => {
     const latest = await readProjectFromWorkspace(ws, project.projectId).catch(() => project);
     await writeProjectToWorkspace(ws, {
       ...latest,
@@ -1676,14 +1687,17 @@ function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: EditorProje
           jobs.delete(job.jobId);
         } else {
           job.message = "Queued (Batch not available — falling back)";
-          void processRenderJob(ws, project.projectId, job);
+          if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
+          else void processRenderJob(ws, project.projectId, job);
         }
       } catch (err) {
         logger.error({ err, jobId: job.jobId }, "[video-editor] batch submit failed; falling back to in-process");
-        void processRenderJob(ws, project.projectId, job);
+        if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
+        else void processRenderJob(ws, project.projectId, job);
       }
     } else {
-      void processRenderJob(ws, project.projectId, job);
+      if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
+      else void processRenderJob(ws, project.projectId, job);
     }
   })();
   return job;
@@ -2100,7 +2114,7 @@ function buildToolDispatcherV2(
       project.version = 2;
       project = await writeProjectToWorkspace(ws, project) as EditorProjectV2;
       setProject(project);
-      const job = enqueueRender(ws, project, kind);
+      const job = await enqueueRender(ws, project, kind);
       const next = await readProjectFromWorkspace(ws, project.projectId);
       setProject(next as EditorProjectV2);
       return { message: `${kind} render started.`, project: next, job };
