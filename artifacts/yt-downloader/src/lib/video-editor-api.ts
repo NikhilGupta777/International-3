@@ -154,6 +154,9 @@ export const videoEditorApi = {
   getProject: (projectId: string) =>
     req<{ project: EditorProject }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}`),
 
+  deleteProject: (projectId: string) =>
+    req<{ ok: boolean }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }),
+
   generateRecipe: (projectId: string, body: { prompt: string; sourceVideo?: string | null; assets?: EditorAssets }) =>
     req<{ project: EditorProject; message: string }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/agent`, {
       method: "POST",
@@ -268,6 +271,7 @@ export type EditorChatEvent =
   | { type: "assistant_message"; message: EditorChatMessage }
   | { type: "text"; content: string }
   | { type: "tool_start"; name: string; args: any; toolCallId?: string }
+  | { type: "tool_progress"; name: string; message?: string; percent?: number }
   | { type: "tool_done"; name: string; ok: boolean; message?: string; error?: string; project?: EditorProject; job?: EditorJobSummary; toolCallId?: string }
   | { type: "proposal"; proposalId: string; summary: string; diff: ProposalDiffItem[]; timeline: Timeline; duration: number }
   | { type: "proposal_applied"; proposalId: string }

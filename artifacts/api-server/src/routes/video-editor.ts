@@ -772,59 +772,184 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
   const dir = join(tmpdir(), `video-editor-${job.jobId}`);
   await mkdir(dir, { recursive: true });
   try {
-    const project = await readProjectFromWorkspace(ws, projectId);
-    if (!project.sourceVideo) throw new Error("source video required");
-    const sourcePath = join(dir, `source${extname(project.sourceVideo) || ".mp4"}`);
-    const logoOverlay = project.recipe.overlays.find((item) => item.type === "logo") as
-      | Extract<EditRecipe["overlays"][number], { type: "logo" }>
-      | undefined;
-    const logoPath = logoOverlay?.asset ? join(dir, `logo${extname(logoOverlay.asset) || ".png"}`) : null;
-    const mainPath = join(dir, `main.mp4`);
+    const project = await readProjectFromWorkspace(ws, projectId) as EditorProjectV2;
+    const tl = project.timeline ?? undefined;
+    const hasV2Clips = tl && tl.tracks.video.length > 0;
+
+    if (!hasV2Clips && !project.sourceVideo) throw new Error("No video clips to render.");
+
     const outputPath = join(dir, `${job.kind}.mp4`);
     const workspaceOutput = `editor/renders/${projectId}/${job.kind}-${job.jobId}.mp4`;
-    const intro = project.recipe.intro.enabled && project.recipe.intro.asset ? project.recipe.intro.asset : null;
-    const outro = project.recipe.outro.enabled && project.recipe.outro.asset ? project.recipe.outro.asset : null;
-    const introPath = intro && job.kind === "final" ? join(dir, `intro${extname(intro) || ".mp4"}`) : null;
-    const outroPath = outro && job.kind === "final" ? join(dir, `outro${extname(outro) || ".mp4"}`) : null;
-    const introNorm = introPath ? join(dir, "intro-norm.mp4") : null;
-    const outroNorm = outroPath ? join(dir, "outro-norm.mp4") : null;
+    const aspectRatio = tl?.export?.aspectRatio || project.recipe.aspectRatio || "original";
+    const cropModeVal = tl?.export?.cropMode || project.recipe.cropMode || "smart";
+    const colorPresetVal = tl?.export?.colorPreset || project.recipe.colorPreset || "none";
+    const { width, height } = targetSize(aspectRatio);
 
-    job.message = "Downloading source assets...";
-    job.progress = 10;
-    await downloadWorkspaceFile(ws, project.sourceVideo, sourcePath);
-    if (logoOverlay?.asset && logoPath) await downloadWorkspaceFile(ws, logoOverlay.asset, logoPath);
-    if (intro && introPath) await downloadWorkspaceFile(ws, intro, introPath);
-    if (outro && outroPath) await downloadWorkspaceFile(ws, outro, outroPath);
+    if (hasV2Clips) {
+      // ═══ V2 Multi-clip timeline render ═══
+      const clips = tl!.tracks.video;
+      const overlays = tl!.tracks.overlays;
+      const audioTracks = tl!.tracks.audio;
 
-    await runFfmpeg(buildFfmpegArgs({
-      sourcePath,
-      logoPath,
-      outputPath: mainPath,
-      recipe: project.recipe,
-      preview: job.kind === "preview",
-    }), job);
-    if (!statSync(mainPath).size) throw new Error("Render produced an empty file");
+      job.message = "Downloading clips...";
+      job.progress = 5;
 
-    const { width, height } = targetSize(project.recipe.aspectRatio);
-    const fade = project.recipe.transitions?.fade ?? true;
-    if (introPath && introNorm) {
-      job.message = "Normalizing intro...";
-      // When crossfading, skip the inner fade-out so the xfade isn't doubled.
-      await normalizeClip(introPath, introNorm, width, height, fade, true, !fade);
-    }
-    if (outroPath && outroNorm) {
-      job.message = "Normalizing outro...";
-      // When crossfading, skip the inner fade-in so the xfade isn't doubled.
-      await normalizeClip(outroPath, outroNorm, width, height, fade, !fade, true);
-    }
-    const chain = [introNorm, mainPath, outroNorm].filter((p): p is string => Boolean(p));
-    if (chain.length > 1) {
-      job.message = fade ? "Crossfading intro/outro..." : "Joining intro/outro...";
-      job.progress = Math.max(job.progress, 90);
-      if (fade) await crossfadeClips(chain, outputPath, 0.5);
-      else await concatClips(chain, outputPath);
+      const normalizedPaths: string[] = [];
+      const assetCache = new Map<string, string>();
+      for (let i = 0; i < clips.length; i++) {
+        const clip = clips[i];
+        job.message = `Processing clip ${i + 1}/${clips.length}...`;
+        job.progress = 5 + Math.round((i / clips.length) * 40);
+
+        let assetPath = assetCache.get(clip.asset);
+        if (!assetPath) {
+          assetPath = join(dir, `asset-${i}${extname(clip.asset) || ".mp4"}`);
+          await downloadWorkspaceFile(ws, clip.asset, assetPath);
+          assetCache.set(clip.asset, assetPath);
+        }
+
+        const clipPath = join(dir, `clip-${i}.mp4`);
+        const trimArgs: string[] = ["-y"];
+        if (clip.srcIn > 0) trimArgs.push("-ss", String(clip.srcIn));
+        if (clip.srcOut > 0) trimArgs.push("-t", String(clip.srcOut - clip.srcIn));
+        if (job.kind === "preview" && i === 0) trimArgs.push("-t", "8");
+        trimArgs.push("-i", assetPath);
+
+        const scaleFilter = cropModeVal === "contain"
+          ? `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`
+          : cropModeVal === "fit-blur"
+            ? `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`
+            : `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1`;
+
+        const vFilters: string[] = [scaleFilter];
+        const speed = Math.max(0.25, Math.min(4, clip.speed || 1));
+        if (Math.abs(speed - 1) > 0.001) vFilters.push(`setpts=${(1 / speed).toFixed(4)}*PTS`);
+        const clipColor = clip.colorPreset || colorPresetVal;
+        const cf = colorPresetFilter(clipColor as ColorPreset);
+        if (cf) vFilters.push(cf);
+
+        const aFilters: string[] = [];
+        if (Math.abs(speed - 1) > 0.001) {
+          let remaining = speed;
+          const chain: string[] = [];
+          while (remaining > 2.0001) { chain.push("atempo=2.0"); remaining /= 2; }
+          while (remaining < 0.5 - 0.0001) { chain.push("atempo=0.5"); remaining /= 0.5; }
+          chain.push(`atempo=${remaining.toFixed(4)}`);
+          aFilters.push(...chain);
+        }
+
+        trimArgs.push("-vf", vFilters.join(","));
+        if (aFilters.length) trimArgs.push("-af", aFilters.join(","));
+        trimArgs.push(
+          "-c:v", "libx264", "-preset", "veryfast", "-crf", job.kind === "preview" ? "28" : "22",
+          "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
+          "-pix_fmt", "yuv420p", "-movflags", "+faststart", clipPath,
+        );
+        await runFfmpegRaw(trimArgs);
+        normalizedPaths.push(clipPath);
+        if (job.kind === "preview" && i === 0) break;
+      }
+
+      job.message = `Joining ${normalizedPaths.length} clip(s)...`;
+      job.progress = 50;
+      const joinedPath = join(dir, "joined.mp4");
+      if (normalizedPaths.length === 1) {
+        await (await import("fs/promises")).rename(normalizedPaths[0], joinedPath);
+      } else {
+        const hasXfade = clips.some((c, i) => i > 0 && (c.transitionIn?.type && c.transitionIn.type !== "none") || (clips[i - 1]?.transitionOut?.type && clips[i - 1].transitionOut!.type !== "none"));
+        if (hasXfade) {
+          const fadeDur = clips.find((c, i) => i > 0 && c.transitionIn?.duration)?.transitionIn?.duration ?? 0.5;
+          await crossfadeClips(normalizedPaths, joinedPath, fadeDur);
+        } else {
+          await concatClips(normalizedPaths, joinedPath);
+        }
+      }
+
+      let currentPath = joinedPath;
+      if (overlays.length > 0) {
+        job.message = "Applying overlays...";
+        job.progress = 70;
+        const overlayedPath = join(dir, "overlayed.mp4");
+        const oArgs: string[] = ["-y", "-i", currentPath];
+        const oFilters: string[] = [];
+        let inputIdx = 1;
+        let current = "0:v";
+        let step = 0;
+
+        for (const ov of overlays) {
+          if (ov.type === "logo") {
+            const logoLocal = join(dir, `logo-${ov.id}${extname(ov.content) || ".png"}`);
+            await downloadWorkspaceFile(ws, ov.content, logoLocal);
+            oArgs.splice(oArgs.indexOf("-i") < 0 ? 1 : oArgs.length, 0, "-i", logoLocal);
+            const logoWidth = Math.max(48, Math.round(width * ((ov.style?.widthPercent || 8) / 100)));
+            const margin = Math.round(width * 0.045);
+            const keyFilter = ov.style?.key === "auto-white" ? "format=rgba,colorkey=0xffffff:0.30:0.20," : ov.style?.key === "auto-black" ? "format=rgba,colorkey=0x000000:0.30:0.20," : "";
+            oFilters.push(`[${inputIdx}:v]${keyFilter}scale=${logoWidth}:-1:flags=lanczos[logo${step}]`);
+            oFilters.push(`[${current}][logo${step}]overlay=${overlayPosition((ov.position || "top-right") as LogoPosition, margin)}:format=auto[v${step}]`);
+            current = `v${step}`;
+            step++;
+            inputIdx++;
+          } else if (ov.type === "text") {
+            const fontSize = Math.max(34, Math.round(width * 0.055));
+            const y = ov.position === "top-left" ? Math.round(height * 0.08) : Math.round(height * 0.88);
+            const x = ov.position === "bottom-right" ? `w-text_w-${Math.round(width * 0.06)}` : "(w-text_w)/2";
+            oFilters.push(`[${current}]drawtext=text='${escapeDrawText(ov.content)}':fontcolor=white:fontsize=${fontSize}:borderw=3:bordercolor=black@0.65:x=${x}:y=${y}[v${step}]`);
+            current = `v${step}`;
+            step++;
+          }
+        }
+        if (oFilters.length > 0) {
+          oArgs.push("-filter_complex", oFilters.join(";"), "-map", `[${current}]`, "-map", "0:a?");
+          oArgs.push("-c:v", "libx264", "-preset", "veryfast", "-crf", job.kind === "preview" ? "28" : "22");
+          oArgs.push("-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", overlayedPath);
+          await runFfmpegRaw(oArgs);
+          currentPath = overlayedPath;
+        }
+      }
+
+      if (audioTracks.length > 0 && job.kind === "final") {
+        job.message = "Mixing audio...";
+        job.progress = 80;
+        const mixedPath = join(dir, "mixed.mp4");
+        const mArgs: string[] = ["-y", "-i", currentPath];
+        const mFilters: string[] = [];
+        let aIdx = 1;
+        for (const at of audioTracks) {
+          const audioLocal = join(dir, `audio-${at.id}${extname(at.asset) || ".mp3"}`);
+          await downloadWorkspaceFile(ws, at.asset, audioLocal);
+          mArgs.push("-i", audioLocal);
+          const vol = Math.pow(10, (at.volumeDb || -10) / 20);
+          mFilters.push(`[${aIdx}:a]volume=${vol.toFixed(3)},adelay=${Math.round((at.tlStart || 0) * 1000)}|${Math.round((at.tlStart || 0) * 1000)}[bg${aIdx}]`);
+          aIdx++;
+        }
+        mFilters.push(`[0:a]${audioTracks.map((_, i) => `[bg${i + 1}]`).join("")}amix=inputs=${audioTracks.length + 1}:duration=first:dropout_transition=2[aout]`);
+        mArgs.push("-filter_complex", mFilters.join(";"), "-map", "0:v", "-map", "[aout]");
+        mArgs.push("-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", mixedPath);
+        await runFfmpegRaw(mArgs);
+        currentPath = mixedPath;
+      }
+
+      if (currentPath !== outputPath) {
+        await (await import("fs/promises")).rename(currentPath, outputPath);
+      }
     } else {
-      await rm(outputPath, { force: true }).catch(() => {});
+      // ═══ Legacy single-source render (fallback) ═══
+      const sourcePath = join(dir, `source${extname(project.sourceVideo!) || ".mp4"}`);
+      const logoOverlay = project.recipe.overlays.find((item) => item.type === "logo") as
+        | Extract<EditRecipe["overlays"][number], { type: "logo" }>
+        | undefined;
+      const logoPath = logoOverlay?.asset ? join(dir, `logo${extname(logoOverlay.asset) || ".png"}`) : null;
+      const mainPath = join(dir, `main.mp4`);
+
+      job.message = "Downloading source assets...";
+      job.progress = 10;
+      await downloadWorkspaceFile(ws, project.sourceVideo!, sourcePath);
+      if (logoOverlay?.asset && logoPath) await downloadWorkspaceFile(ws, logoOverlay.asset, logoPath);
+
+      await runFfmpeg(buildFfmpegArgs({
+        sourcePath, logoPath, outputPath: mainPath, recipe: project.recipe, preview: job.kind === "preview",
+      }), job);
+      if (!statSync(mainPath).size) throw new Error("Render produced an empty file");
       await (await import("fs/promises")).rename(mainPath, outputPath);
     }
 
@@ -1110,6 +1235,24 @@ router.get("/projects", async (req: Request, res: Response) => {
   }
 });
 
+router.delete("/projects/:projectId", async (req: Request, res: Response) => {
+  try {
+    const pid = routeParam(req.params.projectId, "projectId");
+    const ws = getWorkspace(req);
+    const projectPath = `editor/projects/${pid}.json`;
+    const chatPath = `editor/chats/${pid}.json`;
+    const uploadsPrefix = `editor/uploads/${pid}/`;
+    await ws.s3.delete(projectPath).catch(() => {});
+    await ws.s3.delete(chatPath).catch(() => {});
+    const listing = await ws.s3.list(uploadsPrefix, { limit: 500 }).catch(() => ({ files: [] as Array<{ path: string }> }));
+    const files = (listing.files || []).map((f) => String(f.path || "")).filter(Boolean);
+    await Promise.all(files.map((f) => ws.s3.delete(f).catch(() => {})));
+    return res.json({ ok: true });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
 router.post("/projects/:projectId/probe", async (req: Request, res: Response) => {
   try {
     const project = await readProject(req, routeParam(req.params.projectId, "projectId"));
@@ -1182,181 +1325,7 @@ router.get("/projects/:projectId/chat", async (req: Request, res: Response) => {
 // ─── Agent tool dispatcher ────────────────────────────────────────────────────
 type ToolExec = (args: any) => Promise<{ message: string; project?: EditorProject; job?: EditorJob }>;
 
-function buildToolDispatcher(req: Request, getProject: () => EditorProject, setProject: (p: EditorProject) => void): Record<string, ToolExec> {
-  return {
-    read_project: async () => ({ message: "Loaded project state.", project: getProject() }),
-    set_aspect_ratio: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { aspectRatio: args?.aspectRatio }) });
-      setProject(next);
-      return { message: `Aspect ratio set to ${next.recipe.aspectRatio}.`, project: next };
-    },
-    set_crop_mode: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { cropMode: args?.cropMode }) });
-      setProject(next);
-      return { message: `Crop mode set to ${next.recipe.cropMode}.`, project: next };
-    },
-    set_trim: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { trim: { start: args?.start ?? 0, end: args?.end ?? null } }) });
-      setProject(next);
-      return { message: `Trim set ${next.recipe.trim.start}s → ${next.recipe.trim.end ?? "end"}.`, project: next };
-    },
-    add_logo_overlay: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const asset = typeof args?.asset === "string" && args.asset ? args.asset : cur.assets.logo;
-      if (!asset) throw new Error("No logo asset uploaded yet.");
-      const overlays: EditRecipe["overlays"] = cur.recipe.overlays.filter((o) => o.type !== "logo");
-      overlays.push({
-        type: "logo",
-        asset,
-        position: args?.position || "top-right",
-        widthPercent: typeof args?.widthPercent === "number" ? args.widthPercent : 8,
-        key: args?.key || "none",
-      });
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { overlays }) });
-      setProject(next);
-      return { message: `Logo placed ${next.recipe.overlays.find((o) => o.type === "logo") ? (next.recipe.overlays.find((o) => o.type === "logo") as any).position : "top-right"}.`, project: next };
-    },
-    add_text_overlay: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const text = String(args?.text || "").slice(0, 200);
-      if (!text) throw new Error("Text is required.");
-      const overlays = [...cur.recipe.overlays, {
-        type: "text" as const,
-        text,
-        position: args?.position || "bottom-center",
-        style: args?.style === "headline" ? "headline" as const : "bold-clean" as const,
-      }];
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { overlays }) });
-      setProject(next);
-      return { message: `Added text "${text}".`, project: next };
-    },
-    remove_overlays: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const kind = args?.type;
-      const overlays = kind ? cur.recipe.overlays.filter((o) => o.type !== kind) : [];
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { overlays }) });
-      setProject(next);
-      return { message: kind ? `Removed all ${kind} overlays.` : "Cleared overlays.", project: next };
-    },
-    enable_intro: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const enabled = args?.enabled !== false;
-      if (enabled && !cur.assets.intro) throw new Error("No intro asset uploaded.");
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { intro: { enabled, asset: cur.assets.intro || null } }) });
-      setProject(next);
-      return { message: enabled ? "Intro enabled." : "Intro disabled.", project: next };
-    },
-    enable_outro: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const enabled = args?.enabled !== false;
-      if (enabled && !cur.assets.outro) throw new Error("No outro asset uploaded.");
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { outro: { enabled, asset: cur.assets.outro || null } }) });
-      setProject(next);
-      return { message: enabled ? "Outro enabled." : "Outro disabled.", project: next };
-    },
-    set_transitions: async (args) => {
-      const ws = getWorkspace(req);
-      const cur = getProject();
-      const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { transitions: { fade: args?.fade !== false } }) });
-      setProject(next);
-      return { message: `Transitions: ${next.recipe.transitions?.fade === false ? "hard cut" : "fade"}.`, project: next };
-    },
-    start_preview_render: async () => {
-      const ws = getWorkspace(req);
-      const project = getProject();
-      if (!project.sourceVideo) throw new Error("Upload a source video first.");
-      const job = enqueueRender(ws, project, "preview");
-      const next = await readProjectFromWorkspace(ws, project.projectId);
-      setProject(next);
-      return { message: "Preview render started.", project: next, job };
-    },
-    start_final_render: async () => {
-      const ws = getWorkspace(req);
-      const project = getProject();
-      if (!project.sourceVideo) throw new Error("Upload a source video first.");
-      const job = enqueueRender(ws, project, "final");
-      const next = await readProjectFromWorkspace(ws, project.projectId);
-      setProject(next);
-      return { message: "Final render started.", project: next, job };
-    },
-    get_render_status: async () => {
-      const project = getProject();
-      const latest = project.renders[0];
-      if (!latest) return { message: "No renders yet." };
-      const live = jobs.get(latest.jobId);
-      const status = live?.status ?? latest.status;
-      const progress = live?.progress ?? latest.progress;
-      const msg = live?.message ?? latest.message;
-      return { message: `${latest.kind}: ${status} · ${progress}% — ${msg}` };
-    },
-    cancel_render: async () => {
-      const project = getProject();
-      const latest = project.renders[0];
-      if (!latest) throw new Error("No active render to cancel.");
-      const live = jobs.get(latest.jobId);
-      if (live && (live.status === "pending" || live.status === "running")) {
-        live.status = "cancelled";
-        live.message = "Cancelled";
-        live.completedAt = Date.now();
-      }
-      return { message: `Cancelled ${latest.kind} render.` };
-    },
-    detect_logo_background: async () => {
-      const cur = getProject();
-      if (!cur.assets.logo) throw new Error("No logo uploaded yet.");
-      if (!isGeminiConfigured()) {
-        // No vision model — best we can do is leave key as none.
-        return { message: "Vision model not configured; left logo background as-is." };
-      }
-      const ws = getWorkspace(req);
-      const tmp = join(tmpdir(), `editor-logo-${randomUUID()}`);
-      await mkdir(tmp, { recursive: true });
-      try {
-        const ext = (extname(cur.assets.logo) || ".png").toLowerCase();
-        const localPath = join(tmp, `logo${ext}`);
-        await downloadWorkspaceFile(ws, cur.assets.logo, localPath);
-        const bytes = await readFile(localPath);
-        const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
-        const ai = createGeminiClient();
-        const resp: any = await ai.models.generateContent({
-          model: (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim(),
-          contents: [{
-            role: "user",
-            parts: [
-              { text: 'Look at this logo. Reply with ONLY one word from this list: "transparent" (logo already has alpha and needs no key), "white" (solid white background should be removed), "black" (solid black background should be removed), "none" (background is colored/photographic — keying would damage the logo). No punctuation, no explanation.' },
-              { inlineData: { mimeType: mime, data: bytes.toString("base64") } },
-            ],
-          }],
-          config: { maxOutputTokens: 16, thinkingConfig: { thinkingLevel: "LOW" as any } },
-        });
-        const text: string = String(
-          resp?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p.text === "string")?.text || "",
-        ).trim().toLowerCase().replace(/[^a-z]/g, "");
-        const decision: LogoKey = text === "white" ? "auto-white" : text === "black" ? "auto-black" : "none";
-        const overlays: EditRecipe["overlays"] = cur.recipe.overlays.map((o) => o.type === "logo" ? { ...o, key: decision } : o);
-        if (!overlays.find((o) => o.type === "logo") && cur.assets.logo) {
-          overlays.push({ type: "logo", asset: cur.assets.logo, position: "top-right", widthPercent: 8, key: decision });
-        }
-        const next = await writeProjectToWorkspace(ws, { ...cur, recipe: normalizeRecipePatch(cur.recipe, { overlays }) });
-        setProject(next);
-        return { message: `Logo background: ${text || "unclear"} → key=${decision}.`, project: next };
-      } finally {
-        await rm(tmp, { recursive: true, force: true }).catch(() => {});
-      }
-    },
-  };
-}
+// V1 dispatcher removed — all agent logic uses buildToolDispatcherV2.
 
 function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: EditorProject, kind: "preview" | "final"): EditorJob {
   const job: EditorJob = {
@@ -1408,41 +1377,7 @@ function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: EditorProje
   return job;
 }
 
-const AGENT_TOOL_DECLARATIONS = [
-  { name: "read_project", description: "Read the current project, recipe, assets, and last renders.", parameters: { type: Type.OBJECT, properties: {} } },
-  { name: "set_aspect_ratio", description: "Set output aspect ratio.", parameters: { type: Type.OBJECT, properties: { aspectRatio: { type: Type.STRING, description: "original | 9:16 | 16:9 | 1:1" } }, required: ["aspectRatio"] } },
-  { name: "set_crop_mode", description: "Set how the source video is fit to the target aspect.", parameters: { type: Type.OBJECT, properties: { cropMode: { type: Type.STRING, description: "smart | fit-blur | contain" } }, required: ["cropMode"] } },
-  { name: "set_trim", description: "Trim seconds from start and/or end.", parameters: { type: Type.OBJECT, properties: { start: { type: Type.NUMBER }, end: { type: Type.NUMBER } } } },
-  { name: "add_logo_overlay", description: "Place the uploaded logo on the output.", parameters: { type: Type.OBJECT, properties: { position: { type: Type.STRING, description: "top-right | top-left | bottom-right | bottom-left" }, widthPercent: { type: Type.NUMBER, description: "3-25" }, key: { type: Type.STRING, description: "none | auto-white | auto-black for simple background removal" } } } },
-  { name: "add_text_overlay", description: "Add a text/date overlay to the output.", parameters: { type: Type.OBJECT, properties: { text: { type: Type.STRING }, position: { type: Type.STRING, description: "bottom-center | bottom-right | top-left" }, style: { type: Type.STRING, description: "bold-clean | headline" } }, required: ["text"] } },
-  { name: "remove_overlays", description: "Remove overlays by type, or all if no type given.", parameters: { type: Type.OBJECT, properties: { type: { type: Type.STRING, description: "logo | text" } } } },
-  { name: "enable_intro", description: "Use the uploaded intro asset.", parameters: { type: Type.OBJECT, properties: { enabled: { type: Type.BOOLEAN } } } },
-  { name: "enable_outro", description: "Use the uploaded outro asset.", parameters: { type: Type.OBJECT, properties: { enabled: { type: Type.BOOLEAN } } } },
-  { name: "set_transitions", description: "Enable or disable fade transitions for intro/outro.", parameters: { type: Type.OBJECT, properties: { fade: { type: Type.BOOLEAN } } } },
-  { name: "start_preview_render", description: "Start a short low-res preview render so the user can check the recipe quickly.", parameters: { type: Type.OBJECT, properties: {} } },
-  { name: "start_final_render", description: "Start the full final render.", parameters: { type: Type.OBJECT, properties: {} } },
-  { name: "get_render_status", description: "Read the status, progress, and message of the most recent render.", parameters: { type: Type.OBJECT, properties: {} } },
-  { name: "cancel_render", description: "Cancel the active or queued render.", parameters: { type: Type.OBJECT, properties: {} } },
-  { name: "detect_logo_background", description: "Use a vision model to look at the uploaded logo and decide whether to key out a white/black background or leave it as-is. Updates the logo overlay's `key` field. Call this when the user asks to remove the logo's background and you're unsure which color to key.", parameters: { type: Type.OBJECT, properties: {} } },
-];
-
-const AGENT_SYSTEM_PROMPT = `You are the AI Video Studio finishing agent. You ONLY finish videos by editing a structured recipe and running renders. You have these tools: read_project, set_aspect_ratio, set_crop_mode, set_trim, add_logo_overlay, add_text_overlay, remove_overlays, enable_intro, enable_outro, set_transitions, start_preview_render, start_final_render, get_render_status, cancel_render, detect_logo_background.
-
-Defaults for vague instructions:
-- "shorts" / "reels" / "tiktok" / "vertical" → set_aspect_ratio 9:16, set_crop_mode smart.
-- "square" → 1:1. "youtube" / "landscape" → 16:9.
-- Logo asks default to top-right at 8% width. If the user says "remove logo background" without naming a color, call detect_logo_background first so a vision model picks the right key. If they explicitly say "remove white background" / "transparent logo", use key="auto-white"; "black background" → "auto-black".
-- Dates / short text default to bottom-center, style="bold-clean".
-- If the user mentions intro/outro and assets exist, enable them with fade transitions.
-
-Behavior:
-- Chain multiple tools in ONE turn when the user describes a multi-step finish. Example: "make vertical, add logo top-right, add 22 FEB 2026 at bottom, render preview" → set_aspect_ratio + add_logo_overlay + add_text_overlay + start_preview_render.
-- After tool calls, end with ONE short sentence summarizing what changed. No markdown headings, no bullet lists.
-- Never invent assets. If logo/intro/outro is missing, say so plainly and offer to proceed without it.
-- For unsupported asks (object removal, manual timeline editing, frame-perfect keyframe animation, complex motion graphics, color grading wheels): explain the closest supported recipe in one sentence and offer to apply it.
-- "render", "make it", "ship it", "do it" → start_final_render. "preview", "quick look", "check" → start_preview_render.
-- If the user asks "what's happening" / "status" / "where are we" during a render, call get_render_status.
-- Refuse general chat, web search, code, or non-finishing requests in one short sentence and redirect.`;
+// V1 tool declarations + system prompt removed — all logic uses V2 below.
 
 // ─── Agent V2: Timeline-based composable tools ────────────────────────────────
 const AGENT_TOOL_DECLARATIONS_V2 = [
@@ -1509,6 +1444,44 @@ const AGENT_TOOL_DECLARATIONS_V2 = [
   { name: "get_render_status", description: "Check the status of the current render.", parameters: { type: Type.OBJECT, properties: {} } },
   { name: "detect_logo_background", description: "Use vision AI to detect logo background color for keying.", parameters: { type: Type.OBJECT, properties: {} } },
   { name: "clear_timeline", description: "Clear ALL clips, overlays, and audio from the pending timeline. Use before rebuilding from scratch to avoid duplicates.", parameters: { type: Type.OBJECT, properties: {} } },
+  // YouTube integration
+  { name: "fetch_video_info", description: "Fetch metadata (title, duration, channel, views, thumbnail) for a YouTube URL. Use this first to check the video before downloading.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube video URL" },
+  }, required: ["url"] } },
+  { name: "download_youtube", description: "Download a YouTube video and add it as the project source. Takes 30-120 seconds depending on length.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube video URL" },
+    quality: { type: Type.STRING, description: "1080p | 720p | 480p | 360p | audio_only (default: 720p)" },
+  }, required: ["url"] } },
+  { name: "clip_cut_youtube", description: "Download and cut a specific segment from a YouTube video. Faster than downloading full video.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube video URL" },
+    startTime: { type: Type.STRING, description: "Start timestamp like '1:30' or '0:45' or seconds like '90'" },
+    endTime: { type: Type.STRING, description: "End timestamp like '2:15' or seconds like '135'" },
+    quality: { type: Type.STRING, description: "1080p | 720p | 480p (default: 720p)" },
+  }, required: ["url", "startTime", "endTime"] } },
+  { name: "probe_video", description: "Get duration, resolution, and audio info for a video asset. Use this to know exact duration before trimming.", parameters: { type: Type.OBJECT, properties: {
+    asset: { type: Type.STRING, description: "Workspace path to the video file" },
+  }, required: ["asset"] } },
+  { name: "split_clip", description: "Split a clip into two at a given time offset (relative to the clip's source). Creates two clips from one.", parameters: { type: Type.OBJECT, properties: {
+    clipId: { type: Type.STRING, description: "The clip ID to split" },
+    splitAt: { type: Type.NUMBER, description: "Time in source seconds where to split" },
+  }, required: ["clipId", "splitAt"] } },
+  { name: "reorder_clips", description: "Reorder clips on the timeline by providing clip IDs in the desired order.", parameters: { type: Type.OBJECT, properties: {
+    clipIds: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Clip IDs in desired playback order" },
+  }, required: ["clipIds"] } },
+  { name: "cancel_render", description: "Cancel the active or queued render.", parameters: { type: Type.OBJECT, properties: {} } },
+  { name: "generate_subtitles", description: "Generate SRT subtitles from a YouTube video URL. Polls until complete. Returns the SRT content.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube video URL" },
+    language: { type: Type.STRING, description: "Source language code, e.g. 'hi'. Default: auto-detect." },
+    translateTo: { type: Type.STRING, description: "Target translation language code, e.g. 'en'. Optional." },
+  }, required: ["url"] } },
+  { name: "find_best_clips", description: "Find the most valuable segments from a YouTube video using AI analysis. Returns clip timestamps and descriptions.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube video URL" },
+    durationMode: { type: Type.STRING, description: "Preferred clip length: 'auto', '1m', '3m', '8m'. Default: auto." },
+    instructions: { type: Type.STRING, description: "Optional topic focus, e.g. 'focus on spiritual stories'" },
+  }, required: ["url"] } },
+  { name: "generate_timestamps", description: "Generate YouTube chapter timestamps from a video using AI.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube video URL" },
+  }, required: ["url"] } },
 ];
 
 const AGENT_SYSTEM_PROMPT_V2 = `You are the AI Video Agent — a professional video editor that works through conversation. Users upload videos, logos, music, and other assets, then describe what they want in natural language. You analyze their request, build an edit plan using timeline operations, and present it for approval before rendering.
@@ -1524,6 +1497,14 @@ FILE HANDLING:
 - When users upload files, the paths appear in the message as [Uploaded video: filename → workspace_path] or [Uploaded image: filename → workspace_path].
 - Use these EXACT workspace paths in add_clip(asset: ...) and add_overlay(content: ...).
 - The project's sourceVideo and assets.logo fields are also auto-set from uploads.
+
+YOUTUBE CAPABILITIES:
+- If a user pastes a YouTube URL, use fetch_video_info first to get metadata.
+- Use download_youtube to download the full video as source material.
+- Use clip_cut_youtube to extract just a segment (faster than full download).
+- After download completes, the video is stored in workspace and can be used with add_clip.
+- For requests like "edit this YouTube video" → fetch_video_info → download_youtube → add_clip → propose.
+- For requests like "cut 1:30-2:15 from this video" → clip_cut_youtube → add_clip → propose.
 
 BEHAVIOR RULES:
 - Be warm, clear, and conversational. You're a creative collaborator, not a robot.
@@ -1548,6 +1529,21 @@ TIMELINE RULES:
 - Overlays have tlStart/tlEnd — they appear only during that window. tlEnd=0 means full duration.
 - Transitions are per-clip: transitionIn at start, transitionOut at end.
 - For joining clips, add them sequentially and set crossfade transitions at boundaries.
+
+ADVANCED TOOLS:
+- probe_video: Get exact duration/resolution of a video asset. Always probe before trimming to know boundaries.
+- split_clip: Split one clip into two at a specific timestamp. Great for removing a middle section.
+- reorder_clips: Rearrange clip order by providing IDs in desired sequence. Automatically recomputes timeline positions.
+- cancel_render: Stop an in-progress render.
+- generate_subtitles: Generate SRT subtitles from a YouTube URL (with optional translation). Use when user wants subtitles/captions.
+- find_best_clips: AI analysis to find the best moments/highlights from a YouTube video.
+- generate_timestamps: Generate YouTube chapter timestamps from a video.
+
+MULTI-CLIP EDITING:
+- You can add multiple clips from different sources. They render in timeline order with optional crossfades.
+- Each clip can have independent speed, color preset, and trim settings.
+- For "join these clips" requests: add each clip → set crossfade transitions at boundaries → propose.
+- For "remove middle section": probe_video → split_clip at start of bad section → split again at end → remove the middle clip.
 
 IMPORTANT: The propose() tool presents the plan to the user as a visual card. Make the summary clear and the diff items descriptive.`;
 
@@ -1707,52 +1703,11 @@ function buildToolDispatcherV2(
       if (!project.sourceVideo && pendingTimeline.tracks.video.length === 0) {
         throw new Error("No video clips to render.");
       }
-      // ── Bridge V2 Timeline → V1 project fields for render engine ──
-      if (pendingTimeline.tracks.video.length > 0 && !project.sourceVideo) {
-        // Set sourceVideo from the first clip
-        project.sourceVideo = pendingTimeline.tracks.video[0].asset;
-        // Apply trim from first clip
-        project.recipe.trim = {
-          start: pendingTimeline.tracks.video[0].srcIn || null,
-          end: pendingTimeline.tracks.video[0].srcOut || null,
-        };
-        // Apply speed
-        project.recipe.speed = pendingTimeline.tracks.video[0].speed || 1;
-      }
-      // Bridge export settings
-      if (pendingTimeline.export) {
-        project.recipe.aspectRatio = pendingTimeline.export.aspectRatio as any;
-        project.recipe.cropMode = pendingTimeline.export.cropMode as any;
-        project.recipe.colorPreset = pendingTimeline.export.colorPreset as any;
-      }
-      // Bridge overlays
-      const bridgedOverlays: any[] = [];
-      for (const ov of pendingTimeline.tracks.overlays) {
-        if (ov.type === "logo") {
-          bridgedOverlays.push({
-            type: "logo",
-            asset: ov.content,
-            position: (ov.position || "top-right") as any,
-            widthPercent: ov.style?.widthPercent ?? 8,
-            key: ov.style?.key ?? "none",
-          });
-          // Also set project.assets.logo
-          if (!project.assets.logo) project.assets.logo = ov.content;
-        } else if (ov.type === "text") {
-          bridgedOverlays.push({
-            type: "text",
-            text: ov.content,
-            position: (ov.position || "bottom-center") as any,
-            style: ov.style?.style || "bold-clean",
-          });
-        }
-      }
-      if (bridgedOverlays.length > 0) {
-        project.recipe.overlays = bridgedOverlays;
-      }
-      // Save bridged project
-      project = await writeProjectToWorkspace(ws, project);
-      setProject(project as EditorProjectV2);
+      // Save timeline to project so processRenderJob can use it directly
+      project.timeline = JSON.parse(JSON.stringify(pendingTimeline));
+      project.version = 2;
+      project = await writeProjectToWorkspace(ws, project) as EditorProjectV2;
+      setProject(project);
       const kind = args?.kind === "preview" ? "preview" : "final";
       const job = enqueueRender(ws, project, kind);
       const next = await readProjectFromWorkspace(ws, project.projectId);
@@ -1798,7 +1753,307 @@ function buildToolDispatcherV2(
         await rm(tmp, { recursive: true, force: true }).catch(() => {});
       }
     },
+
+    // ── YouTube integration tools ─────────────────────────────────────────
+    fetch_video_info: async (args) => {
+      if (!args?.url) throw new Error("URL required.");
+      const apiBase = getVideoEditorApiBase(req);
+      const headers = buildVideoEditorInternalHeaders(req);
+      const r = await fetch(`${apiBase}/youtube/info`, {
+        method: "POST", headers, body: JSON.stringify({ url: args.url }),
+      });
+      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Info fetch failed: ${r.status}`); }
+      const data = await r.json() as any;
+      sendSse({ type: "tool_progress", name: "fetch_video_info", message: `Fetched: ${data.title || "video"}` });
+      return {
+        message: `Title: ${data.title || "Unknown"}\nDuration: ${data.duration || "?"}\nChannel: ${data.uploader || "?"}\nViews: ${data.view_count != null ? Number(data.view_count).toLocaleString() : "?"}`,
+        data,
+      };
+    },
+
+    download_youtube: async (args) => {
+      if (!args?.url) throw new Error("URL required.");
+      const apiBase = getVideoEditorApiBase(req);
+      const headers = buildVideoEditorInternalHeaders(req);
+      const quality = args.quality || "720p";
+      const formatSelectors: Record<string, string> = {
+        "1080p": "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]",
+        "720p": "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]",
+        "480p": "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]",
+        "360p": "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]",
+        "audio_only": "audio:bestaudio",
+      };
+      sendSse({ type: "tool_progress", name: "download_youtube", message: `Starting download (${quality})...` });
+      const r = await fetch(`${apiBase}/youtube/download`, {
+        method: "POST", headers,
+        body: JSON.stringify({ url: args.url, formatId: formatSelectors[quality] || formatSelectors["720p"] }),
+      });
+      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Download failed: ${r.status}`); }
+      const { jobId } = await r.json() as any;
+      // Poll until done
+      const result = await pollVideoEditorJob(apiBase, jobId, headers, sendSse, "download_youtube");
+      // Store in workspace and set as source
+      const downloadUrl = `${apiBase}/youtube/file/${jobId}`;
+      const ws = getWorkspace(req);
+      const filename = result.filename || "youtube-download.mp4";
+      const wsPath = `editor/uploads/${getProject().projectId}/source/${filename}`;
+      // Download from internal API to temp, then upload to workspace
+      const tmp = join(tmpdir(), `yt-dl-${randomUUID()}`);
+      await mkdir(tmp, { recursive: true });
+      try {
+        const localFile = join(tmp, filename);
+        const dlResp = await fetch(downloadUrl, { headers });
+        if (!dlResp.ok) throw new Error("Failed to fetch downloaded file");
+        const buffer = Buffer.from(await dlResp.arrayBuffer());
+        await writeFile(localFile, buffer);
+        await uploadWorkspaceFile(ws, localFile, wsPath);
+      } finally {
+        await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      }
+      // Set as source video
+      const cur = getProject();
+      cur.sourceVideo = wsPath;
+      const next = await writeProjectToWorkspace(ws, cur);
+      setProject(next as EditorProjectV2);
+      return { message: `Downloaded "${result.filename || "video"}" → ${wsPath}. Set as source video.` };
+    },
+
+    clip_cut_youtube: async (args) => {
+      if (!args?.url || !args?.startTime || !args?.endTime) throw new Error("URL, startTime, endTime required.");
+      const apiBase = getVideoEditorApiBase(req);
+      const headers = buildVideoEditorInternalHeaders(req);
+      const startSecs = parseEditorTimestamp(String(args.startTime));
+      const endSecs = parseEditorTimestamp(String(args.endTime));
+      const quality = args.quality || "720p";
+      sendSse({ type: "tool_progress", name: "clip_cut_youtube", message: `Cutting ${args.startTime} → ${args.endTime}...` });
+      const r = await fetch(`${apiBase}/youtube/clip-cut`, {
+        method: "POST", headers,
+        body: JSON.stringify({ url: args.url, startTime: startSecs, endTime: endSecs, quality }),
+      });
+      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Clip cut failed: ${r.status}`); }
+      const { jobId } = await r.json() as any;
+      // Poll until done
+      const result = await pollVideoEditorJob(apiBase, jobId, headers, sendSse, "clip_cut_youtube");
+      // Store in workspace
+      const downloadUrl = `${apiBase}/youtube/file/${jobId}`;
+      const ws = getWorkspace(req);
+      const filename = result.filename || `clip-${startSecs}-${endSecs}.mp4`;
+      const wsPath = `editor/uploads/${getProject().projectId}/source/${filename}`;
+      const tmp = join(tmpdir(), `yt-clip-${randomUUID()}`);
+      await mkdir(tmp, { recursive: true });
+      try {
+        const localFile = join(tmp, filename);
+        const dlResp = await fetch(downloadUrl, { headers });
+        if (!dlResp.ok) throw new Error("Failed to fetch clip file");
+        const buffer = Buffer.from(await dlResp.arrayBuffer());
+        await writeFile(localFile, buffer);
+        await uploadWorkspaceFile(ws, localFile, wsPath);
+      } finally {
+        await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      }
+      // Set as source video
+      const cur = getProject();
+      cur.sourceVideo = wsPath;
+      const next = await writeProjectToWorkspace(ws, cur);
+      setProject(next as EditorProjectV2);
+      return { message: `Clip cut (${args.startTime}→${args.endTime}) → ${wsPath}. Set as source video.` };
+    },
+
+    probe_video: async (args) => {
+      if (!args?.asset) throw new Error("asset path required.");
+      const ws = getWorkspace(req);
+      const tmp = join(tmpdir(), `editor-probe-${randomUUID()}`);
+      await mkdir(tmp, { recursive: true });
+      try {
+        const localPath = join(tmp, `probe${extname(args.asset) || ".mp4"}`);
+        await downloadWorkspaceFile(ws, args.asset, localPath);
+        const meta = await probeMetadata(localPath);
+        return { message: `Duration: ${meta.duration.toFixed(2)}s | Resolution: ${meta.width}×${meta.height} | Audio: ${meta.hasAudio ? "yes" : "no"}` };
+      } finally {
+        await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+
+    split_clip: async (args) => {
+      const idx = pendingTimeline.tracks.video.findIndex(c => c.id === args.clipId);
+      if (idx < 0) throw new Error("Clip not found.");
+      const clip = pendingTimeline.tracks.video[idx];
+      const splitAt = args.splitAt;
+      if (splitAt <= clip.srcIn || (clip.srcOut > 0 && splitAt >= clip.srcOut)) {
+        throw new Error(`splitAt ${splitAt}s is outside clip range ${clip.srcIn}s-${clip.srcOut || "end"}s.`);
+      }
+      const clipA: TimelineClip = { ...clip, id: randomUUID(), srcOut: splitAt, transitionOut: undefined };
+      const clipB: TimelineClip = { ...clip, id: randomUUID(), srcIn: splitAt, tlStart: clip.tlStart + (splitAt - clip.srcIn) / (clip.speed || 1), transitionIn: undefined };
+      pendingTimeline.tracks.video.splice(idx, 1, clipA, clipB);
+      return { message: `Split into two clips: A (${clipA.srcIn}s-${clipA.srcOut}s) and B (${clipB.srcIn}s-${clipB.srcOut || "end"}s).` };
+    },
+
+    reorder_clips: async (args) => {
+      if (!Array.isArray(args?.clipIds) || args.clipIds.length === 0) throw new Error("clipIds array required.");
+      const reordered: TimelineClip[] = [];
+      for (const id of args.clipIds) {
+        const clip = pendingTimeline.tracks.video.find(c => c.id === id);
+        if (!clip) throw new Error(`Clip ${id} not found.`);
+        reordered.push(clip);
+      }
+      // Keep any clips not mentioned at the end
+      for (const clip of pendingTimeline.tracks.video) {
+        if (!args.clipIds.includes(clip.id)) reordered.push(clip);
+      }
+      // Recompute tlStart sequentially
+      let cursor = 0;
+      for (const clip of reordered) {
+        clip.tlStart = cursor;
+        const dur = ((clip.srcOut || 0) > clip.srcIn ? clip.srcOut - clip.srcIn : 30) / (clip.speed || 1);
+        cursor += dur;
+      }
+      pendingTimeline.tracks.video = reordered;
+      return { message: `Reordered ${reordered.length} clips.` };
+    },
+
+    cancel_render: async () => {
+      const project = getProject();
+      const latest = project.renders[0];
+      if (!latest) throw new Error("No active render to cancel.");
+      const live = jobs.get(latest.jobId);
+      if (live && (live.status === "pending" || live.status === "running")) {
+        live.status = "cancelled";
+        live.message = "Cancelled";
+        live.completedAt = Date.now();
+      }
+      return { message: `Cancelled ${latest.kind} render.` };
+    },
+
+    generate_subtitles: async (args) => {
+      if (!args?.url) throw new Error("URL required.");
+      const apiBase = getVideoEditorApiBase(req);
+      const headers = buildVideoEditorInternalHeaders(req);
+      sendSse({ type: "tool_progress", name: "generate_subtitles", message: "Starting subtitle generation..." });
+      const r = await fetch(`${apiBase}/subtitles/generate`, {
+        method: "POST", headers,
+        body: JSON.stringify({ url: args.url, language: args.language ?? "auto", translateTo: args.translateTo ?? null, source: "url" }),
+      });
+      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Subtitle job failed: ${r.status}`); }
+      const { id: jobId } = await r.json() as any;
+      // Poll subtitle status
+      const maxWait = 10 * 60 * 1000;
+      const start = Date.now();
+      let lastMsg = "";
+      while (Date.now() - start < maxWait) {
+        await new Promise(r => setTimeout(r, 4000));
+        const sr = await fetch(`${apiBase}/subtitles/status/${jobId}`, { headers }).catch(() => null);
+        if (!sr || !sr.ok) continue;
+        const sd = await sr.json() as any;
+        const msg = sd.message || sd.stage || "";
+        if (msg && msg !== lastMsg) { sendSse({ type: "tool_progress", name: "generate_subtitles", message: msg, percent: sd.progress }); lastMsg = msg; }
+        if (sd.status === "done" || sd.status === "completed") {
+          return { message: `Subtitles generated: ${sd.srtFilename || "subtitles.srt"}. View in Subtitles tab.` };
+        }
+        if (sd.status === "error" || sd.status === "failed") throw new Error(sd.error || "Subtitle generation failed.");
+      }
+      throw new Error("Subtitle generation timed out.");
+    },
+
+    find_best_clips: async (args) => {
+      if (!args?.url) throw new Error("URL required.");
+      const apiBase = getVideoEditorApiBase(req);
+      const headers = buildVideoEditorInternalHeaders(req);
+      sendSse({ type: "tool_progress", name: "find_best_clips", message: "Starting best clips analysis..." });
+      const r = await fetch(`${apiBase}/youtube/clips`, {
+        method: "POST", headers,
+        body: JSON.stringify({ url: args.url, durationMode: args.durationMode ?? "auto", instructions: args.instructions ?? "" }),
+      });
+      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Best clips failed: ${r.status}`); }
+      const { jobId } = await r.json() as any;
+      const result = await pollVideoEditorJob(apiBase, jobId, headers, sendSse, "find_best_clips");
+      return { message: `Best clips analysis complete. Found highlights from the video. View in Best Clips tab.` };
+    },
+
+    generate_timestamps: async (args) => {
+      if (!args?.url) throw new Error("URL required.");
+      const apiBase = getVideoEditorApiBase(req);
+      const headers = buildVideoEditorInternalHeaders(req);
+      sendSse({ type: "tool_progress", name: "generate_timestamps", message: "Generating timestamps..." });
+      const r = await fetch(`${apiBase}/youtube/timestamps`, {
+        method: "POST", headers,
+        body: JSON.stringify({ url: args.url }),
+      });
+      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Timestamps failed: ${r.status}`); }
+      const { jobId } = await r.json() as any;
+      // Poll timestamps status
+      const maxWait = 10 * 60 * 1000;
+      const start = Date.now();
+      let lastMsg = "";
+      while (Date.now() - start < maxWait) {
+        await new Promise(r => setTimeout(r, 4000));
+        const sr = await fetch(`${apiBase}/youtube/timestamps/status/${jobId}`, { headers }).catch(() => null);
+        if (!sr || !sr.ok) continue;
+        const sd = await sr.json() as any;
+        const msg = sd.message || sd.stage || "";
+        if (msg && msg !== lastMsg) { sendSse({ type: "tool_progress", name: "generate_timestamps", message: msg }); lastMsg = msg; }
+        if (sd.status === "done" || sd.status === "completed") {
+          let tsText = "";
+          if (sd.timestamps) {
+            if (typeof sd.timestamps === "string") tsText = sd.timestamps;
+            else if (Array.isArray(sd.timestamps)) tsText = sd.timestamps.map((t: any) => `${t.time ?? t.timestamp ?? ""} ${t.title ?? t.label ?? ""}`).join("\n");
+          }
+          return { message: tsText || "Timestamps generated. View in Timestamps tab." };
+        }
+        if (sd.status === "error" || sd.status === "failed") throw new Error(sd.error || "Timestamp generation failed.");
+      }
+      throw new Error("Timestamp generation timed out.");
+    },
   };
+}
+
+// ── Helper: get API base for internal calls ────────────────────────────────
+function getVideoEditorApiBase(req: Request): string {
+  if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
+  const proto = req.headers["x-forwarded-proto"] ?? "http";
+  const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:8080";
+  return `${proto}://${host}/api`;
+}
+
+function buildVideoEditorInternalHeaders(req: Request): Record<string, string> {
+  const secret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Cookie: (req.headers.cookie as string) ?? "",
+    "x-internal-agent": secret,
+  };
+  if (req.headers["x-forwarded-for"]) headers["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
+  return headers;
+}
+
+function parseEditorTimestamp(ts: string): number {
+  ts = ts.trim();
+  // Already a number
+  if (/^\d+(\.\d+)?$/.test(ts)) return parseFloat(ts);
+  // MM:SS or H:MM:SS
+  const parts = ts.split(":").map(Number);
+  if (parts.length === 2) return (parts[0] || 0) * 60 + (parts[1] || 0);
+  if (parts.length === 3) return (parts[0] || 0) * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+  return parseFloat(ts) || 0;
+}
+
+async function pollVideoEditorJob(
+  apiBase: string, jobId: string, headers: Record<string, string>,
+  sendSse: (event: any) => void, toolName: string,
+): Promise<{ status: string; filename?: string }> {
+  const deadline = Date.now() + 10 * 60 * 1000; // 10 min timeout
+  while (Date.now() < deadline) {
+    const r = await fetch(`${apiBase}/youtube/progress/${jobId}`, {
+      headers: { ...headers, "Cache-Control": "no-cache" },
+    });
+    if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
+    const data = await r.json() as any;
+    sendSse({ type: "tool_progress", name: toolName, message: data.message || data.status, percent: data.percent });
+    if (data.status === "done") return { status: "done", filename: data.filename };
+    if (["error", "cancelled", "expired", "not_found"].includes(data.status))
+      throw new Error(`Job ${data.status}: ${data.message ?? ""}`);
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  throw new Error("Download timed out after 10 minutes");
 }
 
 function sse(res: Response, event: any) {

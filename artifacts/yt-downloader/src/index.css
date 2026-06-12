@@ -9087,6 +9087,31 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
 .ai-video-studio__send-btn:disabled {
   opacity: 0.25; cursor: default;
 }
+.ai-video-studio__send-btn--stop {
+  background: #ef4444; color: #fff; font-size: 12px;
+}
+.ai-video-studio__send-btn--stop:hover {
+  background: #dc2626 !important; transform: scale(1.05);
+}
+
+/* ── Agent markdown ─────────────────────────────────────────────────────── */
+.ai-video-studio__md-heading {
+  font-size: 14px; font-weight: 600; margin-top: 6px; margin-bottom: 2px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.ai-video-studio__md-li {
+  display: flex; gap: 6px; padding-left: 4px;
+}
+.ai-video-studio__md-bullet {
+  flex-shrink: 0; color: rgba(255, 255, 255, 0.4); min-width: 14px;
+}
+.ai-video-studio__md-gap {
+  height: 8px;
+}
+.ai-video-studio__md-code {
+  background: rgba(255, 255, 255, 0.08); padding: 1px 5px;
+  border-radius: 4px; font-size: 12px; font-family: monospace;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    ARTIFACT VIEW (Full-screen player)
@@ -9269,7 +9294,7 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   font-size: 20px; flex-shrink: 0;
 }
 .ai-video-studio__history-item-info {
-  min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px;
 }
 .ai-video-studio__history-item-title {
   font-size: 14px; font-weight: 500;
@@ -9279,5 +9304,25 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
 .ai-video-studio__history-item-date {
   font-size: 12px;
   color: rgba(255, 255, 255, 0.35);
+}
+.ai-video-studio__history-item-delete {
+  flex-shrink: 0;
+  margin-left: auto;
+  background: none; border: none;
+  font-size: 14px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.5);
+}
+.ai-video-studio__history-item:hover .ai-video-studio__history-item-delete {
+  opacity: 1;
+}
+.ai-video-studio__history-item-delete:hover {
+  opacity: 1 !important;
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
 }
 

@@ -99,6 +99,8 @@ export function AiVideoStudio() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
+  const projectRef = useRef<EditorProject | null>(null);
+  projectRef.current = project;
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -141,6 +143,23 @@ export function AiVideoStudio() {
       console.error("Failed to load project:", err);
     }
   }, []);
+
+  const handleDeleteProject = useCallback(async (pid: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("Delete this project? This cannot be undone.")) return;
+    try {
+      await videoEditorApi.deleteProject(pid);
+      setHistoryProjects((prev) => prev.filter((p) => p.projectId !== pid));
+      if (projectId === pid) {
+        setView("landing");
+        setProjectId(null);
+        setProject(null);
+        setBubbles([]);
+      }
+    } catch (err) {
+      console.error("Failed to delete project:", err);
+    }
+  }, [projectId]);
 
   // Auto-resize textarea
   const adjustTextarea = useCallback(() => {
@@ -293,6 +312,18 @@ export function AiVideoStudio() {
               }
               break;
 
+            case "tool_progress":
+              if (event.name && thinkingId) {
+                const label = getToolLabel(event.name);
+                const progressText = event.message ? `${label}: ${event.message}` : `${label}...`;
+                const pidx = thinkingSteps.findIndex((s) => s.startsWith(label));
+                if (pidx >= 0) thinkingSteps[pidx] = progressText;
+                setBubbles((prev) =>
+                  prev.map((b) => (b.id === thinkingId ? { ...b, steps: [...thinkingSteps] } : b))
+                );
+              }
+              break;
+
             case "tool_done":
               if (event.name) {
                 const idx = thinkingSteps.findIndex((s) => s.startsWith(getToolLabel(event.name)));
@@ -313,7 +344,7 @@ export function AiVideoStudio() {
                   {
                     kind: "artifact",
                     id: crypto.randomUUID(),
-                    title: project?.title || "Rendered Video",
+                    title: projectRef.current?.title || "Rendered Video",
                     jobId: event.job!.jobId,
                     outputPath: event.job!.outputPath!,
                     projectId: pid,
@@ -357,10 +388,7 @@ export function AiVideoStudio() {
                 thinkingId = null;
               }
               setIsStreaming(false);
-              // Check for newly completed renders
-              if (project) {
-                checkForCompletedRender(pid);
-              }
+              checkForCompletedRender(pid);
               break;
 
             case "error":
@@ -389,7 +417,7 @@ export function AiVideoStudio() {
       });
       streamRef.current = handle;
     },
-    [project]
+    []
   );
 
   // Check for renders that completed
@@ -564,8 +592,13 @@ export function AiVideoStudio() {
         e.preventDefault();
         handleSubmit();
       }
+      if (e.key === "Escape" && isStreaming) {
+        streamRef.current?.cancel();
+        streamRef.current = null;
+        setIsStreaming(false);
+      }
     },
-    [handleSubmit]
+    [handleSubmit, isStreaming]
   );
 
   // ─── Feature Tile Click ────────────────────────────────────────────────────
@@ -604,7 +637,7 @@ export function AiVideoStudio() {
           <h2 className="ai-video-studio__artifact-title">{artifactView.title}</h2>
           <div className="ai-video-studio__artifact-actions">
             <a
-              href={`/api/workspace/files/presign?path=${encodeURIComponent(artifactView.outputPath)}`}
+              href={`/api/workspace/files/presign?path=${encodeURIComponent(artifactView.outputPath)}&download=1`}
               target="_blank"
               rel="noreferrer"
               className="ai-video-studio__artifact-action-btn"
@@ -616,7 +649,7 @@ export function AiVideoStudio() {
             <video
               controls
               autoPlay
-              src={`/api/workspace/files/presign?path=${encodeURIComponent(artifactView.outputPath)}`}
+              src={`/api/workspace/files/presign?path=${encodeURIComponent(artifactView.outputPath)}&inline=1`}
               className="ai-video-studio__video-el"
             />
           </div>
@@ -712,10 +745,12 @@ export function AiVideoStudio() {
                     <div className="ai-video-studio__history-empty">No projects yet</div>
                   ) : (
                     historyProjects.map((p) => (
-                      <button
+                      <div
                         key={p.projectId}
                         className={`ai-video-studio__history-item ${p.projectId === projectId ? "ai-video-studio__history-item--active" : ""}`}
                         onClick={() => loadProject(p.projectId)}
+                        role="button"
+                        tabIndex={0}
                       >
                         <div className="ai-video-studio__history-item-icon">🎬</div>
                         <div className="ai-video-studio__history-item-info">
@@ -724,7 +759,14 @@ export function AiVideoStudio() {
                             {new Date(p.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                           </div>
                         </div>
-                      </button>
+                        <button
+                          className="ai-video-studio__history-item-delete"
+                          title="Delete project"
+                          onClick={(e) => handleDeleteProject(p.projectId, e)}
+                        >
+                          🗑
+                        </button>
+                      </div>
                     ))
                   )}
                 </div>
@@ -851,13 +893,27 @@ export function AiVideoStudio() {
               rows={1}
               disabled={isStreaming}
             />
-            <button
-              className="ai-video-studio__send-btn"
-              onClick={handleSubmit}
-              disabled={isStreaming || (!inputText.trim() && attachedAssets.length === 0)}
-            >
-              {isStreaming ? "●" : "↑"}
-            </button>
+            {isStreaming ? (
+              <button
+                className="ai-video-studio__send-btn ai-video-studio__send-btn--stop"
+                onClick={() => {
+                  streamRef.current?.cancel();
+                  streamRef.current = null;
+                  setIsStreaming(false);
+                }}
+                title="Stop generating"
+              >
+                ■
+              </button>
+            ) : (
+              <button
+                className="ai-video-studio__send-btn"
+                onClick={handleSubmit}
+                disabled={!inputText.trim() && attachedAssets.length === 0}
+              >
+                ↑
+              </button>
+            )}
           </div>
         </div>
 
@@ -927,10 +983,12 @@ export function AiVideoStudio() {
                   <div className="ai-video-studio__history-empty">No projects yet</div>
                 ) : (
                   historyProjects.map((p) => (
-                    <button
+                    <div
                       key={p.projectId}
                       className="ai-video-studio__history-item"
                       onClick={() => loadProject(p.projectId)}
+                      role="button"
+                      tabIndex={0}
                     >
                       <div className="ai-video-studio__history-item-icon">🎬</div>
                       <div className="ai-video-studio__history-item-info">
@@ -939,7 +997,14 @@ export function AiVideoStudio() {
                           {new Date(p.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
                         </div>
                       </div>
-                    </button>
+                      <button
+                        className="ai-video-studio__history-item-delete"
+                        title="Delete project"
+                        onClick={(e) => handleDeleteProject(p.projectId, e)}
+                      >
+                        🗑
+                      </button>
+                    </div>
                   ))
                 )}
               </div>
@@ -1137,7 +1202,7 @@ export function AiVideoStudio() {
       case "assistant":
         return (
           <div className="ai-video-studio__agent-msg">
-            <div className="ai-video-studio__msg-text">{bubble.text}</div>
+            <div className="ai-video-studio__msg-text">{renderAgentMarkdown(bubble.text)}</div>
           </div>
         );
 
@@ -1328,6 +1393,50 @@ export function AiVideoStudio() {
   }
 }
 
+// ─── Simple markdown renderer for agent messages ────────────────────────────
+function renderAgentMarkdown(text: string): React.ReactNode {
+  const lines = text.split("\n");
+  const result: React.ReactNode[] = [];
+
+  const inlineFormat = (str: string, key: string): React.ReactNode => {
+    const parts: React.ReactNode[] = [];
+    const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g;
+    let last = 0; let m; let k = 0;
+    while ((m = re.exec(str)) !== null) {
+      if (m.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, m.index)}</span>);
+      const tok = m[0];
+      if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2, -2)}</strong>);
+      else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`} className="ai-video-studio__md-code">{tok.slice(1, -1)}</code>);
+      else parts.push(<em key={`${key}-i${k++}`}>{tok.slice(1, -1)}</em>);
+      last = m.index + tok.length;
+    }
+    if (last < str.length) parts.push(<span key={`${key}-e`}>{str.slice(last)}</span>);
+    return parts.length > 0 ? parts : str;
+  };
+
+  let li = 0;
+  while (li < lines.length) {
+    const line = lines[li];
+    const headingMatch = /^(#{1,4})\s+(.*)/.exec(line);
+    const ulMatch = /^[-*+]\s+(.*)/.exec(line);
+    const olMatch = /^(\d+)\.\s+(.*)/.exec(line);
+
+    if (headingMatch) {
+      result.push(<div key={li} className="ai-video-studio__md-heading">{inlineFormat(headingMatch[2], `h${li}`)}</div>);
+    } else if (ulMatch) {
+      result.push(<div key={li} className="ai-video-studio__md-li"><span className="ai-video-studio__md-bullet">•</span>{inlineFormat(ulMatch[1], `ul${li}`)}</div>);
+    } else if (olMatch) {
+      result.push(<div key={li} className="ai-video-studio__md-li"><span className="ai-video-studio__md-bullet">{olMatch[1]}.</span>{inlineFormat(olMatch[2], `ol${li}`)}</div>);
+    } else if (line.trim() === "") {
+      if (li < lines.length - 1) result.push(<div key={li} className="ai-video-studio__md-gap" />);
+    } else {
+      result.push(<div key={li}>{inlineFormat(line, `ln${li}`)}</div>);
+    }
+    li++;
+  }
+  return <>{result}</>;
+}
+
 // ─── Tool label mapping ──────────────────────────────────────────────────────
 function getToolLabel(name: string): string {
   const labels: Record<string, string> = {
@@ -1347,6 +1456,17 @@ function getToolLabel(name: string): string {
     read_project: "Reading project",
     read_timeline: "Reading timeline",
     read_assets: "Reading assets",
+    clear_timeline: "Clearing timeline",
+    fetch_video_info: "Fetching video info",
+    download_youtube: "Downloading video",
+    clip_cut_youtube: "Cutting clip",
+    probe_video: "Probing video",
+    split_clip: "Splitting clip",
+    reorder_clips: "Reordering clips",
+    cancel_render: "Cancelling render",
+    generate_subtitles: "Generating subtitles",
+    find_best_clips: "Finding best clips",
+    generate_timestamps: "Generating timestamps",
   };
   return labels[name] || name;
 }
