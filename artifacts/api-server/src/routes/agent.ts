@@ -7,7 +7,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { Modality, Type } from "@google/genai";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { Sandbox } from "e2b";
 import { setupSse } from "../lib/sse";
 import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3, readTextFromS3 } from "../lib/s3-storage";
@@ -142,8 +142,11 @@ function stripReasoningTags(text: string, isDelta = false): string {
     .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
     // Strip leaked tool result JSON — e.g. "| Result: {"audioUrl":"","imageUrl":""}"
     .replace(/\|\s*Result:\s*\{[^}]*\}/gi, "")
-    // Strip leaked URL-field JSON objects (any value, including empty strings)
-    .replace(/\{(?:\s*"\w+(?:Url|url)"\s*:\s*"[^"]*"\s*,?\s*)+\}/g, "")
+    // Strip leaked URL-field JSON objects whose values look like S3/presigned
+    // URLs OR are empty strings — both are leaked tool-result residue. We
+    // deliberately do NOT strip arbitrary {"url":"https://..."} so a model
+    // genuinely answering with a URL inside an object still survives.
+    .replace(/\{\s*(?:"\w*[Uu]rl"\s*:\s*"(?:|https?:\/\/[^"]*\.(?:s3|amazonaws|cloudfront)[^"]*)"\s*,?\s*)+\}/g, "")
     // Collapse excess blank lines left by stripping
     .replace(/\n{3,}/g, "\n\n");
   // Only trim final/complete text — NOT streaming deltas, which may be
@@ -165,12 +168,20 @@ function sseEvent(res: any, payload: object) {
   // Skip empty text events (after stripping) — but never skip whitespace-only
   // deltas, which are spaces between words that must be preserved
   if (isTextEvent && !(safePayload as any).content) return;
-  res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
-  // Triple-layer flush to guarantee real-time delivery:
-  // 1. Express compression middleware (if present)
-  if (typeof res.flush === "function") res.flush();
-  // 2. socket.write("") flushes the OS TCP send buffer past Nagle algorithm
-  if (res.socket && !res.socket.destroyed) res.socket.write("");
+  // The socket can disappear at any time — a heartbeat after `res.end()` or a
+  // client abort mid-frame would otherwise throw ERR_STREAM_WRITE_AFTER_END
+  // and tear down the entire agent loop. Guard every write.
+  try {
+    if (res.writableEnded || (res.socket && res.socket.destroyed)) return;
+    res.write(`data: ${JSON.stringify(safePayload)}\n\n`);
+    // Triple-layer flush to guarantee real-time delivery:
+    // 1. Express compression middleware (if present)
+    if (typeof res.flush === "function") res.flush();
+    // 2. socket.write("") flushes the OS TCP send buffer past Nagle algorithm
+    if (res.socket && !res.socket.destroyed) res.socket.write("");
+  } catch {
+    // Client gone; future writes are no-ops via the guard above.
+  }
 }
 
 // ── Job poller ────────────────────────────────────────────────────────────
@@ -288,11 +299,17 @@ async function pollTimestampsUntilDone(
 
 // ── Parse timestamps like "5:32" or "1:22:10" into seconds ───────────────
 function parseTimestamp(ts: string): number {
-  const parts = ts.trim().split(":").map(Number);
+  const trimmed = String(ts ?? "").trim();
+  if (!trimmed) throw new Error(`Invalid timestamp: empty value`);
+  const parts = trimmed.split(":").map(s => Number(s));
+  if (parts.some(n => !Number.isFinite(n) || n < 0)) {
+    throw new Error(`Invalid timestamp: "${ts}"`);
+  }
   let result: number;
   if (parts.length === 3) result = parts[0] * 3600 + parts[1] * 60 + parts[2];
   else if (parts.length === 2) result = parts[0] * 60 + parts[1];
-  else result = parts[0];
+  else if (parts.length === 1) result = parts[0];
+  else throw new Error(`Invalid timestamp: "${ts}"`);
   if (!Number.isFinite(result) || result < 0) throw new Error(`Invalid timestamp: "${ts}"`);
   return result;
 }
@@ -1161,7 +1178,21 @@ function buildInternalHeaders(req: any): Record<string, string> {
 // ── Tool executor ─────────────────────────────────────────────────────────
 // E2B sandboxes are keyed by the browser-side chat session. This gives the
 // agent ChatGPT-like continuity without letting commands touch the app host.
-const e2bSandboxBySession = new Map<string, string>();
+// We track lastUsed time and prune entries that haven't been touched for
+// longer than the sandbox's own timeout — without this, the map grew
+// unboundedly across the lifetime of the API process.
+const e2bSandboxBySession = new Map<string, { sandboxId: string; lastUsed: number }>();
+
+function pruneExpiredSandboxEntries(): void {
+  const cutoff = Date.now() - E2B_SANDBOX_TIMEOUT_MS;
+  for (const [key, entry] of e2bSandboxBySession) {
+    if (entry.lastUsed < cutoff) e2bSandboxBySession.delete(key);
+  }
+}
+
+function rememberSandbox(sessionKey: string, sandboxId: string): void {
+  e2bSandboxBySession.set(sessionKey, { sandboxId, lastUsed: Date.now() });
+}
 
 function e2bConfigured(): boolean {
   return Boolean(process.env.E2B_API_KEY?.trim());
@@ -1169,7 +1200,11 @@ function e2bConfigured(): boolean {
 
 function sandboxSessionKey(req: any): string {
   const raw = String(req.body?.sessionId ?? "").trim();
-  return raw.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 96) || `anon-${randomUUID()}`;
+  if (!raw) return `anon-${randomUUID()}`;
+  // Stripping non-alphanumeric chars in-place caused two distinct sessionIds
+  // (e.g. "aaa.bbb" vs "aaabbb") to collapse onto the same sandbox. Hash the
+  // raw value so the namespace is collision-resistant.
+  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
 }
 
 async function getChatSandbox(req: any): Promise<any> {
@@ -1177,15 +1212,17 @@ async function getChatSandbox(req: any): Promise<any> {
     throw new Error("E2B sandbox is not configured. Set E2B_API_KEY on the API server.");
   }
 
+  pruneExpiredSandboxEntries();
   const sessionKey = sandboxSessionKey(req);
-  const existingId = e2bSandboxBySession.get(sessionKey);
-  if (existingId) {
+  const existing = e2bSandboxBySession.get(sessionKey);
+  if (existing) {
     try {
-      const connected = await Sandbox.connect(existingId, { timeoutMs: E2B_SANDBOX_TIMEOUT_MS });
+      const connected = await Sandbox.connect(existing.sandboxId, { timeoutMs: E2B_SANDBOX_TIMEOUT_MS });
       await connected.setTimeout(E2B_SANDBOX_TIMEOUT_MS).catch(() => {});
+      rememberSandbox(sessionKey, existing.sandboxId);
       return connected;
     } catch (err) {
-      logger.warn({ err, sessionKey, existingId }, "Could not reconnect E2B sandbox; creating a new one");
+      logger.warn({ err, sessionKey, existingId: existing.sandboxId }, "Could not reconnect E2B sandbox; creating a new one");
       e2bSandboxBySession.delete(sessionKey);
     }
   }
@@ -1197,14 +1234,15 @@ async function getChatSandbox(req: any): Promise<any> {
       sessionId: sessionKey,
     },
   });
-  e2bSandboxBySession.set(sessionKey, sandbox.sandboxId);
+  rememberSandbox(sessionKey, sandbox.sandboxId);
   return sandbox;
 }
 
 async function resetChatSandbox(req: any): Promise<{ reset: boolean; sandboxId?: string }> {
   const sessionKey = sandboxSessionKey(req);
-  const sandboxId = e2bSandboxBySession.get(sessionKey);
+  const entry = e2bSandboxBySession.get(sessionKey);
   e2bSandboxBySession.delete(sessionKey);
+  const sandboxId = entry?.sandboxId;
   if (sandboxId && e2bConfigured()) {
     await Sandbox.kill(sandboxId).catch(err => logger.warn({ err, sandboxId }, "Could not kill E2B sandbox"));
   }
@@ -1214,7 +1252,8 @@ async function resetChatSandbox(req: any): Promise<{ reset: boolean; sandboxId?:
 async function chatSandboxStatus(req: any): Promise<{ configured: boolean; sessionKey: string; sandboxId?: string; running?: boolean; timeoutMs: number }> {
   const configured = e2bConfigured();
   const sessionKey = sandboxSessionKey(req);
-  const sandboxId = e2bSandboxBySession.get(sessionKey);
+  const entry = e2bSandboxBySession.get(sessionKey);
+  const sandboxId = entry?.sandboxId;
   let running: boolean | undefined;
   if (configured && sandboxId) {
     try {
@@ -1605,14 +1644,25 @@ function latestArtifactFromMemory(req: any): { artifactType: string; label: stri
   const artifactLines = text.split("\n").filter(line => line.startsWith("[Artifact:"));
   const line = artifactLines.at(-1);
   if (!line) return null;
-  const pick = (key: string) => new RegExp(`${key}: ([^|\\]]+)`, "i").exec(line)?.[1]?.trim();
+  // Strip the leading "[" and trailing "]" so the regex doesn't have to fight them.
+  const inner = line.replace(/^\[/, "").replace(/\]\s*$/, "");
+  // Split on " | " (with surrounding whitespace) so URL values containing
+  // `]` (rare but legal in query strings) survive intact.
+  const fields: Record<string, string> = {};
+  for (const segment of inner.split(/\s+\|\s+/)) {
+    const colonIdx = segment.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = segment.slice(0, colonIdx).trim().toLowerCase();
+    const value = segment.slice(colonIdx + 1).trim();
+    if (key && value) fields[key] = value;
+  }
   return {
-    artifactType: pick("Artifact") ?? pick("Type") ?? "download",
-    label: pick("Label") ?? "Previous result",
-    downloadUrl: pick("URL"),
-    imageUrl: pick("Image"),
-    tab: pick("Tab"),
-    jobId: pick("Job"),
+    artifactType: fields["artifact"] ?? fields["type"] ?? "download",
+    label: fields["label"] ?? "Previous result",
+    downloadUrl: fields["url"],
+    imageUrl: fields["image"],
+    tab: fields["tab"],
+    jobId: fields["job"],
   };
 }
 
@@ -1637,17 +1687,40 @@ function htmlToReadableText(html: string): string {
 }
 
 function isInternalHost(hostname: string): boolean {
+  // Strip IPv6 brackets if present (e.g. "[::1]" → "::1").
+  const host = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+
   // Block AWS metadata, loopback, and private RFC-1918 ranges
-  if (hostname === "localhost" || hostname === "[::1]") return true;
-  const parts = hostname.split(".").map(Number);
-  if (parts.length === 4 && parts.every(n => n >= 0 && n <= 255)) {
-    if (parts[0] === 127) return true;                              // 127.x.x.x
-    if (parts[0] === 10) return true;                               // 10.x.x.x
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true; // 172.16-31.x.x
-    if (parts[0] === 192 && parts[1] === 168) return true;         // 192.168.x.x
-    if (parts[0] === 169 && parts[1] === 254) return true;         // 169.254.x.x (AWS metadata)
-    if (parts[0] === 0) return true;                                // 0.x.x.x
+  if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host === "::") return true;
+
+  // IPv4
+  const v4parts = host.split(".").map(Number);
+  if (v4parts.length === 4 && v4parts.every(n => Number.isFinite(n) && n >= 0 && n <= 255)) {
+    if (v4parts[0] === 127) return true;                              // 127.x.x.x loopback
+    if (v4parts[0] === 10) return true;                               // 10.x.x.x private
+    if (v4parts[0] === 172 && v4parts[1] >= 16 && v4parts[1] <= 31) return true; // 172.16-31.x.x private
+    if (v4parts[0] === 192 && v4parts[1] === 168) return true;        // 192.168.x.x private
+    if (v4parts[0] === 169 && v4parts[1] === 254) return true;        // 169.254.x.x AWS metadata / link-local
+    if (v4parts[0] === 0) return true;                                // 0.x.x.x
+    if (v4parts[0] === 100 && v4parts[1] >= 64 && v4parts[1] <= 127) return true; // CGNAT 100.64.0.0/10
+    return false;
   }
+
+  // IPv6 — coarse but covers the dangerous categories.
+  if (host.includes(":")) {
+    const lower = host.toLowerCase();
+    // Loopback (::1) and unspecified (::) handled above.
+    if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return true; // link-local
+    if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;                          // unique-local fc00::/7
+    if (lower.startsWith("ff")) return true;                                    // multicast
+    // IPv4-mapped IPv6 (::ffff:127.0.0.1 etc): re-check the embedded v4.
+    const mapped = /^::ffff:([0-9a-f.]+)$/.exec(lower);
+    if (mapped) return isInternalHost(mapped[1]);
+    return false;
+  }
+
   return false;
 }
 
@@ -1730,6 +1803,9 @@ async function executeTool(
     case "cut_video_clip": {
       const startSecs = parseTimestamp(String(args.startTime));
       const endSecs = parseTimestamp(String(args.endTime));
+      if (endSecs <= startSecs) {
+        throw new Error(`End time (${args.endTime}) must be after start time (${args.startTime}).`);
+      }
       const quality = args.quality ?? "1080p";
       logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
@@ -2191,16 +2267,13 @@ async function executeTool(
       const language = String(args.language ?? "en");
       const quality = args.quality ?? "best";
       const results: Record<string, any> = {};
-      const artifacts: object[] = [];
 
       const runStep = async (stepName: string, stepArgs: Record<string, any>) => {
         sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Full package: ${stepName.replace(/_/g, " ")}...` });
         const sub = await executeTool(stepName, stepArgs, req, res, isConnected, toolId, runId);
         results[stepName] = sub.result;
-        // Collect sub-artifacts for the summary but DO NOT emit them here —
-        // the outer caller will emit the do_full_package artifact once, and
-        // emitting each sub-artifact too causes double cards in the UI.
-        if (sub.artifact) artifacts.push(sub.artifact);
+        // Sub-artifacts are intentionally not re-emitted — emitting each one
+        // double-stacks cards in the UI on top of the do_full_package summary.
         return sub;
       };
 
@@ -2234,7 +2307,7 @@ async function executeTool(
       }
 
       return {
-        result: { completed: true, results, artifactCount: artifacts.length },
+        result: { completed: true, results },
         artifact: {
           artifactType: "text",
           label: "Full Package Summary",
@@ -3344,7 +3417,7 @@ router.post("/agent/chat", async (req, res) => {
           continue;
         }
         // Three empty responses — give graceful message and stop
-        sseEvent(res, { type: "text", content: "Hmm, I'm having trouble responding right now. Please try again in a moment.", runId });
+        sseEvent(res, { type: "text", content: "I'm having trouble responding right now. Please try sending that again in a moment.", runId });
         finalAnswerSent = true;
         break;
       }
@@ -3546,7 +3619,14 @@ const MUSIC_SHARE_SITE_URL = (
 ).replace(/\/+$/, "");
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    // Apostrophe must be escaped too — without it, a title containing `'`
+    // can break out of HTML attribute contexts in the share page.
+    .replace(/'/g, "&#39;");
 }
 
 router.post("/agent/music-share", async (req: Request, res: Response) => {

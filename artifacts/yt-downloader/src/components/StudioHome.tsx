@@ -101,13 +101,17 @@ export function StudioHome({
   }, [ultra]);
 
   // Stop recognition if the component unmounts mid-listen.
-  useEffect(() => () => { try { recognitionRef.current?.stop(); } catch { } }, []);
+  useEffect(() => () => {
+    try { recognitionRef.current?.stop(); } catch { /* ignore */ }
+    recognitionRef.current = null;
+  }, []);
 
   const submit = () => {
     const t = text.trim();
     if (!t) return;
     onLaunchAgent(t);
     setText("");
+    setShowPlusMenu(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   };
 
@@ -137,8 +141,8 @@ export function StudioHome({
         textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 160) + "px";
       }
     };
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
+    rec.onend = () => { setListening(false); recognitionRef.current = null; };
+    rec.onerror = () => { setListening(false); recognitionRef.current = null; };
     recognitionRef.current = rec;
     setListening(true);
     try { rec.start(); } catch { setListening(false); }
@@ -201,8 +205,13 @@ export function StudioHome({
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
-    for (const file of files) await uploadFile(file);
-    if (fileInputRef.current) fileInputRef.current.value = "";
+    try {
+      for (const file of files) await uploadFile(file);
+    } finally {
+      // Always reset the input — without this, picking the same file twice
+      // in a row silently no-ops because `change` doesn't fire on identical values.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
   };
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -294,6 +303,7 @@ export function StudioHome({
                 {showPlusMenu && (
                   <div className="gs-plus-menu">
                     <button
+                      type="button"
                       className="gs-plus-menu-item"
                       disabled={uploading}
                       onClick={() => { fileInputRef.current?.click(); setShowPlusMenu(false); }}
@@ -302,6 +312,7 @@ export function StudioHome({
                       <span>Upload Files</span>
                     </button>
                     <button
+                      type="button"
                       className="gs-plus-menu-item"
                       onClick={() => {
                         const prompt = "Create an image";
@@ -314,6 +325,7 @@ export function StudioHome({
                       <span>Create Images</span>
                     </button>
                     <button
+                      type="button"
                       className="gs-plus-menu-item"
                       onClick={() => {
                         const prompt = "Make music";
