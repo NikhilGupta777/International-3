@@ -169,6 +169,7 @@ const router = Router();
 const jobs = new Map<string, EditorJob>();
 const activeRenderProcesses = new Map<string, ReturnType<typeof spawn>>();
 const FFMPEG_BIN = process.env.FFMPEG_BIN || ffmpegStatic || "ffmpeg";
+const STALE_PENDING_RENDER_MS = 2 * 60_000;
 
 // Garbage-collect completed jobs from the in-memory map so a long-running
 // process doesn't accumulate every render that ever ran. We keep finished
@@ -904,6 +905,42 @@ async function persistJobToProject(ws: ReturnType<typeof getWorkspace>, projectI
   });
 }
 
+function mapDdbStatusToRenderStatus(status: string | undefined): RenderStatus {
+  const ddbToRender: Record<string, RenderStatus> = {
+    pending: "pending",
+    queued: "pending",
+    runnable: "pending",
+    starting: "running",
+    running: "running",
+    processing: "running",
+    done: "done",
+    completed: "done",
+    success: "done",
+    error: "error",
+    failed: "error",
+    cancelled: "cancelled",
+    canceled: "cancelled",
+  };
+  return ddbToRender[(status || "").toLowerCase()] ?? "running";
+}
+
+function mapDdbRenderJob(jobId: string, ddbStatus: any, fallback?: Partial<EditorJob>): EditorJob {
+  const status = mapDdbStatusToRenderStatus(ddbStatus?.status);
+  const isTerminal = status === "done" || status === "error" || status === "cancelled";
+  return {
+    jobId,
+    projectId: fallback?.projectId ?? "",
+    kind: fallback?.kind ?? "final",
+    status,
+    progress: ddbStatus?.progressPct ?? (status === "done" ? 100 : status === "pending" ? 1 : 50),
+    message: ddbStatus?.message || fallback?.message || status,
+    outputPath: ddbStatus?.s3Key ?? fallback?.outputPath ?? null,
+    error: status === "error" ? (ddbStatus?.message || fallback?.error || "Render failed") : null,
+    createdAt: fallback?.createdAt ?? 0,
+    completedAt: isTerminal ? Date.now() : fallback?.completedAt ?? null,
+  };
+}
+
 export type EditorRenderProgress = (state: { status: RenderStatus; progress: number; message: string; outputPath?: string | null; error?: string | null }) => void | Promise<void>;
 
 export async function runEditorRenderStandalone(params: {
@@ -1288,7 +1325,7 @@ router.post("/projects/:projectId/render", async (req: Request, res: Response) =
 async function startRender(req: Request, res: Response, kind: "preview" | "final") {
   try {
     const ws = getWorkspace(req);
-    const project = await readProjectFromWorkspace(ws, routeParam(req.params.projectId, "projectId")) as EditorProjectV2;
+    let project = await readProjectFromWorkspace(ws, routeParam(req.params.projectId, "projectId")) as EditorProjectV2;
     const hasTimelineClips = Boolean(project.timeline?.tracks.video.length);
     if (!project.sourceVideo && !hasTimelineClips) return bad(res, 400, "source video or timeline clips required");
     // Idempotency: if a render of the same kind is already pending or
@@ -1299,7 +1336,8 @@ async function startRender(req: Request, res: Response, kind: "preview" | "final
     );
     if (existing) {
       const liveJob = jobs.get(existing.jobId);
-      const job: EditorJob = liveJob ?? {
+      if (liveJob) return res.json({ job: liveJob, project });
+      const fallback: EditorJob = {
         jobId: existing.jobId,
         projectId: project.projectId,
         kind: existing.kind,
@@ -1311,7 +1349,23 @@ async function startRender(req: Request, res: Response, kind: "preview" | "final
         createdAt: existing.createdAt,
         completedAt: existing.completedAt,
       };
-      return res.json({ job, project });
+      if (VIDEO_EDITOR_QUEUE_ENABLED) {
+        const ddbStatus = await getJobStatusFromDdb(existing.jobId).catch(() => null);
+        if (ddbStatus) return res.json({ job: mapDdbRenderJob(existing.jobId, ddbStatus, fallback), project });
+      }
+      if (Date.now() - existing.createdAt < STALE_PENDING_RENDER_MS) {
+        return res.json({ job: fallback, project });
+      }
+      project = {
+        ...project,
+        renders: project.renders.map((entry) => entry.jobId === existing.jobId ? {
+          ...entry,
+          status: "error" as const,
+          progress: 0,
+          message: "Previous render worker stopped before reporting progress. Starting a fresh render.",
+          completedAt: Date.now(),
+        } : entry),
+      };
     }
     const job: EditorJob = {
       jobId: randomUUID(),
@@ -1357,37 +1411,7 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
   try {
     const ddbStatus = await getJobStatusFromDdb(jobId);
     if (!ddbStatus) return bad(res, 404, "job not found");
-    // Normalize a wider set of producer-side status strings into the small
-    // closed enum the frontend understands. Previously, "cancelled" jobs
-    // surfaced as "running" because the unknown-fallback was hard-coded to
-    // running.
-    const ddbToRender: Record<string, RenderStatus> = {
-      pending: "pending",
-      queued: "pending",
-      running: "running",
-      processing: "running",
-      done: "done",
-      completed: "done",
-      success: "done",
-      error: "error",
-      failed: "error",
-      cancelled: "cancelled",
-      canceled: "cancelled",
-    };
-    const status: RenderStatus = ddbToRender[(ddbStatus.status || "").toLowerCase()] ?? "running";
-    const isTerminal = status === "done" || status === "error" || status === "cancelled";
-    const mapped: EditorJob = {
-      jobId,
-      projectId: "",
-      kind: "final",
-      status,
-      progress: ddbStatus.progressPct ?? (status === "done" ? 100 : status === "pending" ? 1 : 50),
-      message: ddbStatus.message,
-      outputPath: ddbStatus.s3Key,
-      createdAt: 0,
-      completedAt: isTerminal ? Date.now() : null,
-    };
-    return res.json({ job: mapped });
+    return res.json({ job: mapDdbRenderJob(jobId, ddbStatus) });
   } catch (err) {
     logger.warn({ err, jobId }, "[video-editor] ddb job lookup failed");
     return bad(res, 404, "job not found");
@@ -2020,22 +2044,55 @@ function buildToolDispatcherV2(
       );
       if (existing) {
         const liveJob = jobs.get(existing.jobId);
-        return {
-          message: `${kind} render already in progress (${existing.progress}%) — waiting on the existing job.`,
-          project,
-          job: liveJob ?? {
-            jobId: existing.jobId,
-            projectId: project.projectId,
-            kind: existing.kind,
-            status: existing.status,
-            progress: existing.progress,
-            message: existing.message,
-            outputPath: existing.outputPath,
-            error: null,
-            createdAt: existing.createdAt,
-            completedAt: existing.completedAt,
-          },
+        if (liveJob) {
+          return {
+            message: `${kind} render already in progress (${liveJob.progress}%) — waiting on the existing job.`,
+            project,
+            job: liveJob,
+          };
+        }
+        const fallback: EditorJob = {
+          jobId: existing.jobId,
+          projectId: project.projectId,
+          kind: existing.kind,
+          status: existing.status,
+          progress: existing.progress,
+          message: existing.message,
+          outputPath: existing.outputPath,
+          error: null,
+          createdAt: existing.createdAt,
+          completedAt: existing.completedAt,
         };
+        if (VIDEO_EDITOR_QUEUE_ENABLED) {
+          const ddbStatus = await getJobStatusFromDdb(existing.jobId).catch(() => null);
+          if (ddbStatus) {
+            const job = mapDdbRenderJob(existing.jobId, ddbStatus, fallback);
+            return {
+              message: `${kind} render already in progress (${job.progress}%) — waiting on the existing job.`,
+              project,
+              job,
+            };
+          }
+        }
+        if (Date.now() - existing.createdAt >= STALE_PENDING_RENDER_MS) {
+          project = {
+            ...project,
+            renders: project.renders.map((entry) => entry.jobId === existing.jobId ? {
+              ...entry,
+              status: "error" as const,
+              progress: 0,
+              message: "Previous render worker stopped before reporting progress. Starting a fresh render.",
+              completedAt: Date.now(),
+            } : entry),
+          };
+          setProject(project);
+        } else {
+          return {
+            message: `${kind} render already in progress (${existing.progress}%) — waiting on the existing job.`,
+            project,
+            job: fallback,
+          };
+        }
       }
       await resolveOpenEndedClipDurations(ws, pendingTimeline);
       // Save timeline to project so processRenderJob can use it directly
@@ -2053,7 +2110,25 @@ function buildToolDispatcherV2(
       const latest = project.renders[0];
       if (!latest) return { message: "No renders yet." };
       const live = jobs.get(latest.jobId);
-      return { message: `${latest.kind}: ${live?.status ?? latest.status} · ${live?.progress ?? latest.progress}% — ${live?.message ?? latest.message}` };
+      if (live) return { message: `${latest.kind}: ${live.status} · ${live.progress}% — ${live.message}` };
+      if (VIDEO_EDITOR_QUEUE_ENABLED) {
+        const ddbStatus = await getJobStatusFromDdb(latest.jobId).catch(() => null);
+        if (ddbStatus) {
+          const job = mapDdbRenderJob(latest.jobId, ddbStatus, {
+            projectId: project.projectId,
+            kind: latest.kind,
+            message: latest.message,
+            outputPath: latest.outputPath,
+            createdAt: latest.createdAt,
+            completedAt: latest.completedAt,
+          });
+          return { message: `${latest.kind}: ${job.status} · ${job.progress}% — ${job.message}` };
+        }
+      }
+      if ((latest.status === "pending" || latest.status === "running") && Date.now() - latest.createdAt >= STALE_PENDING_RENDER_MS) {
+        return { message: `${latest.kind}: error · 0% — Previous render worker stopped before reporting progress. Please start a fresh render.` };
+      }
+      return { message: `${latest.kind}: ${latest.status} · ${latest.progress}% — ${latest.message}` };
     },
     detect_logo_background: async () => {
       const cur = getProject();

@@ -9111,10 +9111,19 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   color: rgba(255, 255, 255, 0.9);
 }
 .ai-video-studio__md-li {
-  display: flex; gap: 6px; padding-left: 4px;
+  display: flex; align-items: flex-start; gap: 8px; padding-left: 4px;
+  white-space: normal;
 }
 .ai-video-studio__md-bullet {
-  flex-shrink: 0; color: rgba(255, 255, 255, 0.4); min-width: 14px;
+  flex: 0 0 20px; color: rgba(255, 255, 255, 0.4);
+  text-align: right;
+}
+.ai-video-studio__md-li-content {
+  display: block;
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .ai-video-studio__md-gap {
   height: 8px;

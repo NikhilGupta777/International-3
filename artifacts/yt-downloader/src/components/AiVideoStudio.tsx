@@ -105,6 +105,7 @@ const CAPABILITY_PILLS: Array<{ key: string; icon: string; label: string }> = [
 ];
 
 const LAST_VIDEO_STUDIO_PROJECT_KEY = "videomaking-ai-video-studio-last-project-v1";
+const STALE_RENDER_MS = 2 * 60_000;
 
 function restoreBubblesFromProject(messages: EditorChatMessage[], project: EditorProject): ChatBubble[] {
   // Build a chronologically-ordered list. Previously the chat messages were
@@ -778,14 +779,17 @@ export function AiVideoStudio() {
           return;
         }
         try {
-          const { project: latest } = await videoEditorApi.getProject(pid);
+          let latest = projectRef.current;
+          let activeRender: EditorJobSummary | null = null;
+          if (initialJob?.jobId) {
+            const live = await videoEditorApi.getJob(initialJob.jobId);
+            activeRender = live.job;
+          } else {
+            const projectResp = await videoEditorApi.getProject(pid);
+            latest = projectResp.project;
+            activeRender = latest.renders[0] ?? null;
+          }
           renderPollErrorsRef.current = 0;
-          setProject(latest);
-          // Match by jobId when possible (project.renders[0] may not be the
-          // job we started polling on if the user kicked off another).
-          const activeRender =
-            latest.renders.find((r) => initialJob?.jobId && r.jobId === initialJob.jobId) ??
-            latest.renders[0];
           if (!activeRender) return;
           // Update progress bubble (match either by initial bubble id or jobId).
           setBubbles((prev) =>
@@ -798,6 +802,9 @@ export function AiVideoStudio() {
           );
           if (activeRender.status === "done") {
             stop();
+            const { project: refreshed } = await videoEditorApi.getProject(pid);
+            setProject(refreshed);
+            const completedRender = refreshed.renders.find((r) => r.jobId === activeRender.jobId) ?? activeRender;
             // Remove progress bubble and add artifact (dedupe by jobId).
             setBubbles((prev) => {
               const without = prev.filter((b) => !(b.kind === "render-progress" && (b.id === progressBubbleId || b.jobId === activeRender.jobId)));
@@ -808,9 +815,9 @@ export function AiVideoStudio() {
                 {
                   kind: "artifact" as const,
                   id: safeUuid(),
-                  title: latest.title || "Rendered Video",
+                  title: refreshed.title || "Rendered Video",
                   jobId: activeRender.jobId,
-                  outputPath: activeRender.outputPath || "",
+                  outputPath: completedRender.outputPath || "",
                   projectId: pid,
                 },
               ];
@@ -827,6 +834,28 @@ export function AiVideoStudio() {
             );
           }
         } catch {
+          try {
+            const projectResp = await videoEditorApi.getProject(pid);
+            const staleRender = projectResp.project.renders.find((r) => initialJob?.jobId && r.jobId === initialJob.jobId);
+            if (
+              staleRender &&
+              (staleRender.status === "pending" || staleRender.status === "running") &&
+              Date.now() - staleRender.createdAt >= STALE_RENDER_MS
+            ) {
+              stop();
+              setProject(projectResp.project);
+              setBubbles((prev) =>
+                prev.map((b) =>
+                  b.kind === "render-progress" && (b.id === progressBubbleId || b.jobId === staleRender.jobId)
+                    ? { ...b, status: "error", progress: 0, message: "Render worker stopped before reporting progress. Start render again." }
+                    : b
+                )
+              );
+              return;
+            }
+          } catch {
+            // Keep the normal retry path for transient project/job lookup failures.
+          }
           // Tolerate transient network blips, but bail after enough successive
           // failures so we don't pin an infinite poll on a broken backend.
           renderPollErrorsRef.current += 1;
@@ -1774,9 +1803,9 @@ function renderAgentMarkdown(text: string): React.ReactNode {
       if (headingMatch) {
         result.push(<div key={lineKey} className="ai-video-studio__md-heading">{inlineFormat(headingMatch[2], `h${lineKey}`)}</div>);
       } else if (ulMatch) {
-        result.push(<div key={lineKey} className="ai-video-studio__md-li"><span className="ai-video-studio__md-bullet">•</span>{inlineFormat(ulMatch[1], `ul${lineKey}`)}</div>);
+        result.push(<div key={lineKey} className="ai-video-studio__md-li"><span className="ai-video-studio__md-bullet">•</span><span className="ai-video-studio__md-li-content">{inlineFormat(ulMatch[1], `ul${lineKey}`)}</span></div>);
       } else if (olMatch) {
-        result.push(<div key={lineKey} className="ai-video-studio__md-li"><span className="ai-video-studio__md-bullet">{olMatch[1]}.</span>{inlineFormat(olMatch[2], `ol${lineKey}`)}</div>);
+        result.push(<div key={lineKey} className="ai-video-studio__md-li"><span className="ai-video-studio__md-bullet">{olMatch[1]}.</span><span className="ai-video-studio__md-li-content">{inlineFormat(olMatch[2], `ol${lineKey}`)}</span></div>);
       } else if (line.trim() === "") {
         if (li < lines.length - 1) result.push(<div key={lineKey} className="ai-video-studio__md-gap" />);
       } else {
