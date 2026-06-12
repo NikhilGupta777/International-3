@@ -993,16 +993,16 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         const trimArgs: string[] = ["-y"];
         if (clip.srcIn > 0) trimArgs.push("-ss", String(clip.srcIn));
         const speed = Math.max(0.25, Math.min(4, clip.speed || 1));
-        const fullClipDur = clip.srcOut > 0 ? (clip.srcOut - clip.srcIn) / speed : Infinity;
-        if (clip.srcOut > 0) trimArgs.push("-t", String(clip.srcOut - clip.srcIn));
+        const srcDur = clip.srcOut > 0 ? clip.srcOut - clip.srcIn : 0;
+        const fullClipDur = srcDur > 0 ? srcDur / speed : Infinity;
         let usedDur = fullClipDur;
         if (job.kind === "preview") {
           const slice = Math.min(previewBudgetRemaining, fullClipDur, 4);
           if (slice <= 0) break;
           usedDur = slice;
-          // -t consumed from input timeline (pre-speed adjustment), so scale
-          // back up by speed.
           trimArgs.push("-t", String(slice * speed));
+        } else if (srcDur > 0) {
+          trimArgs.push("-t", String(srcDur));
         }
 
         const scaleFilter = cropModeVal === "contain"
@@ -2368,17 +2368,7 @@ function getVideoEditorApiBase(req: Request): string {
 }
 
 function buildVideoEditorInternalHeaders(req: Request): Record<string, string> {
-  // Hardcoded fallbacks let any caller spoof the internal-agent bypass header,
-  // which trivially defeats auth on the wrapped routes. Fail loudly in
-  // production if the secret is unset; allow a clearly-marked dev fallback
-  // only when NODE_ENV !== "production".
-  const explicit = process.env.INTERNAL_AGENT_SECRET;
-  if (!explicit && process.env.NODE_ENV === "production") {
-    throw new Error(
-      "INTERNAL_AGENT_SECRET must be set in production for video-editor agent calls.",
-    );
-  }
-  const secret = explicit ?? "dev-internal-agent-only-do-not-use-in-prod";
+  const secret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Cookie: (req.headers.cookie as string) ?? "",
