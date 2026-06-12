@@ -453,9 +453,9 @@ export function WorkspacePanel({ open, onClose }: Props) {
                 <DialogTitle className="truncate">{previewFile?.path.split('/').pop()}</DialogTitle>
               </DialogHeader>
               <div className="flex-1 min-h-0 relative bg-white/5 rounded-md overflow-hidden flex items-center justify-center">
-                {previewFile?.type.startsWith('image') || ['png','jpg','jpeg','gif','webp'].some(ext => previewFile?.path.toLowerCase().endsWith(ext)) ? (
+                {previewFile && (previewFile.type.startsWith('image') || ['png','jpg','jpeg','gif','webp'].some(ext => previewFile.path.toLowerCase().endsWith(ext))) ? (
                   <img src={previewFile.url} className="w-full h-full object-contain" alt="preview" />
-                ) : previewFile?.type.startsWith('video') || ['mp4','webm','mov'].some(ext => previewFile?.path.toLowerCase().endsWith(ext)) ? (
+                ) : previewFile && (previewFile.type.startsWith('video') || ['mp4','webm','mov'].some(ext => previewFile.path.toLowerCase().endsWith(ext))) ? (
                   <video src={previewFile.url} controls className="w-full h-full object-contain" autoPlay />
                 ) : (
                   <iframe src={previewFile?.url} className="w-full h-full border-0 bg-white" title="preview" sandbox="allow-scripts allow-same-origin" />

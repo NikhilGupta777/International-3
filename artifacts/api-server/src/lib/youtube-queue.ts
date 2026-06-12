@@ -19,7 +19,8 @@ type QueueJobType =
   | "subtitles"
   | "best-clips"
   | "bhagwat-analyze"
-  | "bhagwat-render";
+  | "bhagwat-render"
+  | "editor-render";
 
 type QueuePayload = {
   jobId: string;
@@ -100,6 +101,7 @@ const ALL_JOB_TYPES: QueueJobType[] = [
   "best-clips",
   "bhagwat-analyze",
   "bhagwat-render",
+  "editor-render",
 ];
 
 function parseJobTypeList(value: string | undefined): Set<QueueJobType> | null {
@@ -273,6 +275,96 @@ export async function submitYoutubeQueueShadowJob(input: QueueSubmitInput): Prom
 
 export async function submitYoutubeQueuePrimaryJob(input: QueueSubmitInput): Promise<string | null> {
   return submitYoutubeQueueJob(input, "primary");
+}
+
+/**
+ * Submit an editor render job to Batch. Independent of the youtube
+ * primary/shadow allowlist — gated on its own env flag, but shares the same
+ * Batch queue/definition and DynamoDB jobs table.
+ */
+export async function submitEditorRenderJob(input: {
+  jobId: string;
+  workspaceId: string;
+  projectId: string;
+  kind: "preview" | "final";
+}): Promise<string | null> {
+  if (!ddb || !batch || !JOB_TABLE || !JOB_QUEUE || !JOB_DEFINITION) {
+    logger.warn(
+      { hasDdb: !!ddb, hasBatch: !!batch, hasJobTable: !!JOB_TABLE, hasJobQueue: !!JOB_QUEUE, hasJobDefinition: !!JOB_DEFINITION },
+      "[editor-render] queue config incomplete",
+    );
+    return null;
+  }
+  const payload: QueuePayload = {
+    jobId: input.jobId,
+    jobType: "editor-render",
+    sourceUrl: `editor://${input.projectId}/${input.kind}`,
+    requestedAt: Date.now(),
+    meta: { workspaceId: input.workspaceId, projectId: input.projectId, kind: input.kind },
+  };
+  const now = Date.now();
+  await ddb.send(new PutItemCommand({
+    TableName: JOB_TABLE,
+    Item: {
+      jobId: { S: input.jobId },
+      jobType: { S: "editor-render" },
+      sourceUrl: { S: payload.sourceUrl },
+      status: { S: "queued" },
+      message: { S: "Editor render submitted" },
+      createdAt: { N: String(now) },
+      updatedAt: { N: String(now) },
+    },
+  }));
+  const submit = await batch.send(new SubmitJobCommand({
+    jobName: `editor-${input.kind}-${Date.now()}`,
+    jobQueue: JOB_QUEUE,
+    jobDefinition: process.env.VIDEO_EDITOR_BATCH_JOB_DEFINITION || JOB_DEFINITION,
+    containerOverrides: {
+      environment: [
+        { name: "JOB_PAYLOAD", value: JSON.stringify(payload) },
+        { name: "JOB_TABLE", value: JOB_TABLE },
+        { name: "AWS_REGION", value: REGION },
+        { name: "QUEUE_MODE", value: "primary" },
+        { name: "QUEUE_INVOCATION_ID", value: randomUUID() },
+      ],
+    },
+  }));
+  const batchJobId = submit.jobId ?? null;
+  if (batchJobId) {
+    await ddb.send(new PutItemCommand({
+      TableName: JOB_TABLE,
+      Item: {
+        jobId: { S: input.jobId },
+        jobType: { S: "editor-render" },
+        sourceUrl: { S: payload.sourceUrl },
+        status: { S: "queued" },
+        message: { S: "Queued — starting soon..." },
+        batchJobId: { S: batchJobId },
+        createdAt: { N: String(now) },
+        updatedAt: { N: String(Date.now()) },
+      },
+    }));
+  }
+  return batchJobId;
+}
+
+export async function getJobStatusFromDdb(jobId: string): Promise<{
+  status: string;
+  message: string;
+  progressPct: number | null;
+  s3Key: string | null;
+  batchJobId: string | null;
+} | null> {
+  if (!ddb || !JOB_TABLE) return null;
+  const resp = await ddb.send(new GetItemCommand({ TableName: JOB_TABLE, Key: { jobId: { S: jobId } } }));
+  if (!resp.Item) return null;
+  return {
+    status: resp.Item.status?.S ?? "queued",
+    message: resp.Item.message?.S ?? "",
+    progressPct: resp.Item.progressPct ? Number(resp.Item.progressPct.N) : null,
+    s3Key: resp.Item.s3Key?.S ?? null,
+    batchJobId: resp.Item.batchJobId?.S ?? null,
+  };
 }
 
 export async function putYoutubeQueueLocalJob(input: {

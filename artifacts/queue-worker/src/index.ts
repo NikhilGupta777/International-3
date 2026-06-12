@@ -30,7 +30,8 @@ type WorkerPayload = {
     | "subtitles"
     | "best-clips"
     | "bhagwat-analyze"
-    | "bhagwat-render";
+    | "bhagwat-render"
+    | "editor-render";
   sourceUrl: string;
   requestedAt: number;
   meta?: Record<string, unknown>;
@@ -1305,6 +1306,49 @@ async function handleBhagwatRender(payload: WorkerPayload): Promise<void> {
   }
 }
 
+async function handleEditorRender(payload: WorkerPayload): Promise<void> {
+  const meta = (payload.meta || {}) as { workspaceId?: string; projectId?: string; kind?: "preview" | "final" };
+  const workspaceId = String(meta.workspaceId || "");
+  const projectId = String(meta.projectId || "");
+  const kind = meta.kind === "preview" ? "preview" : "final";
+  if (!workspaceId || !projectId) {
+    await updateJobState(payload.jobId, "error", "missing workspaceId/projectId in payload");
+    throw new Error("editor-render payload missing workspaceId/projectId");
+  }
+  await updateJobState(payload.jobId, "running", "Starting editor render...");
+  // The api-server module is co-installed in the worker image (per CLAUDE.md).
+  // Dynamic string-only import — api-server is co-installed in the worker image
+  // at runtime per CLAUDE.md; not resolvable at typecheck time, so we go through
+  // a Function constructor to keep TS from trying to resolve the module.
+  const dynImport = new Function("p", "return import(p)") as (p: string) => Promise<any>;
+  let apiMod: any = await dynImport("@workspace/api-server/dist/routes/video-editor.js").catch(() => null);
+  if (!apiMod) apiMod = await dynImport("@workspace/api-server/src/routes/video-editor").catch(() => null);
+  if (!apiMod) throw new Error("api-server module not available in worker image");
+  if (typeof apiMod.runEditorRenderStandalone !== "function") {
+    throw new Error("api-server runEditorRenderStandalone export not found");
+  }
+  try {
+    const { outputPath } = await apiMod.runEditorRenderStandalone({
+      workspaceId,
+      projectId,
+      jobId: payload.jobId,
+      kind,
+      onProgress: async (state: { status: string; progress: number; message: string; outputPath?: string | null }) => {
+        await updateJobState(
+          payload.jobId,
+          state.status === "done" ? "running" : state.status,
+          state.message,
+          { progressPct: state.progress },
+        );
+      },
+    });
+    await updateJobState(payload.jobId, "done", "Editor render complete", { s3Key: outputPath });
+  } catch (err) {
+    await updateJobState(payload.jobId, "error", err instanceof Error ? err.message : "editor render failed");
+    throw err;
+  }
+}
+
 async function main(): Promise<void> {
   await loadCookiesFromS3IfConfigured();
   const payload = parsePayload();
@@ -1339,6 +1383,10 @@ async function main(): Promise<void> {
   }
   if (payload.jobType === "bhagwat-render") {
     await handleBhagwatRender(payload);
+    return;
+  }
+  if (payload.jobType === "editor-render") {
+    await handleEditorRender(payload);
     return;
   }
 

@@ -13,11 +13,12 @@ export type EditRecipe = {
   cropMode: EditorCropMode;
   trim: { start: number; end: number | null };
   overlays: Array<
-    | { type: "logo"; asset: string; position: "top-right" | "top-left" | "bottom-right" | "bottom-left"; widthPercent: number }
+    | { type: "logo"; asset: string; position: "top-right" | "top-left" | "bottom-right" | "bottom-left"; widthPercent: number; key?: "none" | "auto-white" | "auto-black" }
     | { type: "text"; text: string; position: "bottom-center" | "bottom-right" | "top-left"; style: "bold-clean" | "headline" }
   >;
   intro: { enabled: boolean; asset: string | null };
   outro: { enabled: boolean; asset: string | null };
+  transitions?: { fade: boolean };
   export: {
     format: "mp4";
     resolution: "1080p";
@@ -101,4 +102,84 @@ export const videoEditorApi = {
     const safeName = file.name.replace(/[^\w.\-() ]+/g, "_").slice(-120) || `${role}.bin`;
     return workspaceApi.uploadFile(`editor/uploads/${projectId}/${role}/${safeName}`, file);
   },
+
+  patchRecipe: (projectId: string, recipe: Partial<EditRecipe>) =>
+    req<{ project: EditorProject }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/recipe`, {
+      method: "PATCH",
+      body: JSON.stringify({ recipe }),
+    }),
+
+  getChat: (projectId: string) =>
+    req<{ messages: EditorChatMessage[] }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/chat`),
+
+  streamChat: (projectId: string, message: string, handlers: EditorChatHandlers): { cancel: () => void } => {
+    const ctrl = new AbortController();
+    void (async () => {
+      try {
+        const resp = await fetch(`/api/video-editor/projects/${encodeURIComponent(projectId)}/chat`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+          body: JSON.stringify({ message }),
+          signal: ctrl.signal,
+        });
+        if (!resp.ok || !resp.body) throw new Error(`${resp.status} ${resp.statusText}`);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf("\n\n")) >= 0) {
+            const chunk = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+            if (!line) continue;
+            const raw = line.slice(5).trim();
+            if (!raw) continue;
+            try {
+              const event = JSON.parse(raw);
+              handlers.onEvent(event);
+            } catch {
+              // ignore parse errors
+            }
+          }
+        }
+        handlers.onClose?.();
+      } catch (err) {
+        if ((err as any)?.name === "AbortError") return;
+        handlers.onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    })();
+    return { cancel: () => ctrl.abort() };
+  },
+};
+
+export type EditorChatMessage = {
+  id: string;
+  role: "user" | "assistant" | "tool";
+  content: string;
+  tool?: { name: string; args?: any; result?: any };
+  createdAt: number;
+};
+
+export type EditorChatEvent =
+  | { type: "run_start"; runId: string }
+  | { type: "heartbeat"; ts: number }
+  | { type: "thinking"; iteration: number; total: number }
+  | { type: "project"; project: EditorProject }
+  | { type: "user_message"; message: EditorChatMessage }
+  | { type: "assistant_message"; message: EditorChatMessage }
+  | { type: "text"; content: string }
+  | { type: "tool_start"; name: string; args: any; toolCallId?: string }
+  | { type: "tool_done"; name: string; ok: boolean; message?: string; error?: string; project?: EditorProject; job?: EditorJobSummary; toolCallId?: string }
+  | { type: "error"; message: string }
+  | { type: "done" };
+
+export type EditorChatHandlers = {
+  onEvent: (event: EditorChatEvent) => void;
+  onError?: (err: Error) => void;
+  onClose?: () => void;
 };

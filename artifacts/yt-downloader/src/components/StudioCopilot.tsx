@@ -233,24 +233,136 @@ function clientStripTags(text: string): string {
 }
 
 
+// ── Markdown table helpers ──────────────────────────────────────────────────────
+const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+function isTableRowLine(line: string): boolean {
+  return line.includes("|") && line.trim() !== "";
+}
+
+function splitTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
+}
+
+function tableAlignClass(spec: string): string {
+  const left = spec.startsWith(":");
+  const right = spec.endsWith(":");
+  if (left && right) return "text-center";
+  if (right) return "text-right";
+  return "text-left";
+}
+
+// ── List item helpers (shared by renderMd and renderStreamingMd) ───────────────
+function listIndentStyle(indent: string): React.CSSProperties | undefined {
+  const indentPx = Math.min(indent.length, 12) * 8;
+  return indentPx ? { marginLeft: indentPx } : undefined;
+}
+
+function renderUlItem(
+  key: string | number,
+  indent: string,
+  content: string,
+  inline: (str: string, key: string) => React.ReactNode,
+  inlineKeyPrefix: string
+): React.ReactNode {
+  const style = listIndentStyle(indent);
+  const checkboxMatch = /^\[( |x|X)\]\s+(.*)/.exec(content);
+  if (checkboxMatch) {
+    const checked = checkboxMatch[1].toLowerCase() === "x";
+    return (
+      <div key={key} className="flex gap-2 ml-1 items-start" style={style}>
+        <span className={`mt-0.5 shrink-0 w-3.5 h-3.5 rounded-sm border flex items-center justify-center text-[9px] leading-none ${checked ? "bg-sky-500/30 border-sky-400 text-sky-300" : "border-white/30"}`}>{checked ? "✓" : ""}</span>
+        <span className={checked ? "text-white/50 line-through" : undefined}>{inline(checkboxMatch[2], inlineKeyPrefix)}</span>
+      </div>
+    );
+  }
+  return (
+    <div key={key} className="flex gap-2 ml-1" style={style}>
+      <span className="text-white/30 shrink-0">•</span>
+      <span>{inline(content, inlineKeyPrefix)}</span>
+    </div>
+  );
+}
+
+function renderOlItem(
+  key: string | number,
+  indent: string,
+  num: string,
+  content: string,
+  inline: (str: string, key: string) => React.ReactNode,
+  inlineKeyPrefix: string
+): React.ReactNode {
+  const style = listIndentStyle(indent);
+  return (
+    <div key={key} className="flex gap-2 ml-1" style={style}>
+      <span className="text-white/40 shrink-0">{num}.</span>
+      <span>{inline(content, inlineKeyPrefix)}</span>
+    </div>
+  );
+}
+
+function renderMdTable(
+  headerCells: string[],
+  aligns: string[],
+  bodyRows: string[][],
+  keyPrefix: string,
+  inline: (str: string, key: string) => React.ReactNode
+): React.ReactNode {
+  return (
+    <div key={keyPrefix} className="overflow-x-auto my-2 rounded-md border border-white/10">
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="bg-white/5">
+            {headerCells.map((c, ci) => (
+              <th key={`${keyPrefix}-h${ci}`} className={`px-2 py-1 border border-white/10 font-semibold whitespace-nowrap ${tableAlignClass(aligns[ci] || "")}`}>
+                {inline(c, `${keyPrefix}-h${ci}`)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {bodyRows.map((row, ri) => (
+            <tr key={`${keyPrefix}-r${ri}`}>
+              {row.map((c, ci) => (
+                <td key={`${keyPrefix}-r${ri}-c${ci}`} className={`px-2 py-1 border border-white/10 align-top ${tableAlignClass(aligns[ci] || "")}`}>
+                  {inline(c, `${keyPrefix}-r${ri}-c${ci}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ── Markdown renderer ──────────────────────────────────────────────────────────
 function renderMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
-  lines.forEach((line, li) => {
-    const olMatch = /^(\d+)\.\s+(.*)/.exec(line);
-    const ulMatch = /^[-*]\s+(.*)/.exec(line);
-    const inline = (str: string, key: string): React.ReactNode => {
-      const parts: React.ReactNode[] = [];
-      // Match bold, code, and citation [N] patterns
-      const re = /(\*\*[^*]+\*\*|`[^`]+`|\[\d+\])/g;
-      let last = 0; let m; let k = 0;
-      while ((m = re.exec(str)) !== null) {
-        if (m.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, m.index)}</span>);
-        const tok = m[0];
-        if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2, -2)}</strong>);
-        else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1, -1)}</code>);
-        else {
+  const inline = (str: string, key: string): React.ReactNode => {
+    const parts: React.ReactNode[] = [];
+    // Match bold, strikethrough, code, markdown links [text](url), citation [N], and italic patterns
+    const re = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\[\d+\]|\*[^*\n]+\*|_[^_\n]+_)/g;
+    let last = 0; let m; let k = 0;
+    while ((m = re.exec(str)) !== null) {
+      if (m.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, m.index)}</span>);
+      const tok = m[0];
+      if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2, -2)}</strong>);
+      else if (tok.startsWith("~~")) parts.push(<del key={`${key}-s${k++}`}>{tok.slice(2, -2)}</del>);
+      else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1, -1)}</code>);
+      else if (tok.startsWith("*") || tok.startsWith("_")) parts.push(<em key={`${key}-i${k++}`}>{tok.slice(1, -1)}</em>);
+      else {
+        const linkMatch = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok);
+        if (linkMatch) {
+          parts.push(
+            <a key={`${key}-a${k++}`} href={linkMatch[2]} target="_blank" rel="noopener noreferrer"
+              className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{linkMatch[1]}</a>
+          );
+        } else {
           // Citation [N]
           const idx = parseInt(tok.slice(1, -1), 10) - 1;
           const src = sources?.[idx];
@@ -261,16 +373,58 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
             : <span key={`${key}-ref${k++}`} className="text-white/40 text-[9px] align-super">{tok}</span>
           );
         }
-        last = m.index + tok.length;
       }
-      if (last < str.length) parts.push(<span key={`${key}-e`}>{str.slice(last)}</span>);
-      return parts.length > 0 ? parts : str;
-    };
-    if (olMatch) result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/40 shrink-0">{olMatch[1]}.</span><span>{inline(olMatch[2], `ol${li}`)}</span></div>);
-    else if (ulMatch) result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">•</span><span>{inline(ulMatch[1], `ul${li}`)}</span></div>);
+      last = m.index + tok.length;
+    }
+    if (last < str.length) parts.push(<span key={`${key}-e`}>{str.slice(last)}</span>);
+    return parts.length > 0 ? parts : str;
+  };
+
+  let li = 0;
+  while (li < lines.length) {
+    const line = lines[li];
+
+    // Table block: header row + separator row + body rows
+    if (
+      isTableRowLine(line) &&
+      li + 1 < lines.length &&
+      isTableRowLine(lines[li + 1]) &&
+      TABLE_SEPARATOR_RE.test(lines[li + 1]) &&
+      lines[li + 1].includes("-")
+    ) {
+      const headerCells = splitTableRow(line);
+      const aligns = splitTableRow(lines[li + 1]);
+      const bodyRows: string[][] = [];
+      let bi = li + 2;
+      while (bi < lines.length && isTableRowLine(lines[bi]) && !TABLE_SEPARATOR_RE.test(lines[bi])) {
+        bodyRows.push(splitTableRow(lines[bi]));
+        bi++;
+      }
+      result.push(renderMdTable(headerCells, aligns, bodyRows, `tbl${li}`, inline));
+      li = bi;
+      continue;
+    }
+
+    const headingMatch = /^(#{1,6})\s+(.*)/.exec(line);
+    const hrMatch = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.exec(line);
+    const quoteMatch = /^>\s?(.*)/.exec(line);
+    const olMatch = /^(\s*)(\d+)\.\s+(.*)/.exec(line);
+    const ulMatch = /^(\s*)[-*+]\s+(.*)/.exec(line);
+
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const cls = level <= 2 ? "text-[15px] font-bold mt-2 mb-1" : "text-sm font-semibold mt-1.5 mb-0.5";
+      result.push(<div key={li} className={cls}>{inline(headingMatch[2], `h${li}`)}</div>);
+    }
+    else if (hrMatch) result.push(<hr key={li} className="my-2 border-white/10" />);
+    else if (quoteMatch) result.push(<div key={li} className="border-l-2 border-white/20 pl-2 ml-1 text-white/70">{inline(quoteMatch[1], `q${li}`)}</div>);
+    else if (olMatch) result.push(renderOlItem(li, olMatch[1], olMatch[2], olMatch[3], inline, `ol${li}`));
+    else if (ulMatch) result.push(renderUlItem(li, ulMatch[1], ulMatch[2], inline, `ul${li}`));
     else if (line.trim() === "") { if (li < lines.length - 1) result.push(<div key={li} className="h-5" />); }
     else result.push(<div key={li}>{inline(line, `ln${li}`)}</div>);
-  });
+
+    li++;
+  }
   return result;
 }
 
@@ -294,16 +448,20 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
   // Inline parser that can optionally animate trailing tokens
   const inlineAnimated = (str: string, key: string, animateTrailing: boolean): React.ReactNode => {
     const parts: React.ReactNode[] = [];
-    const re = /(\*\*[^*]+\*\*|`[^`]+`|\[\d+\])/g;
+    const re = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\[\d+\]|\*[^*\n]+\*|_[^_\n]+_)/g;
     let last = 0; let m; let k = 0;
     // First pass: parse markdown into segments
-    const segments: Array<{ text: string; type: "plain" | "bold" | "code" | "cite" }> = [];
+    const segments: Array<{ text: string; type: "plain" | "bold" | "italic" | "strike" | "code" | "cite" | "link"; href?: string }> = [];
     while ((m = re.exec(str)) !== null) {
       if (m.index > last) segments.push({ text: str.slice(last, m.index), type: "plain" });
       const tok = m[0];
+      const linkMatch = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok);
       if (tok.startsWith("**")) segments.push({ text: tok.slice(2, -2), type: "bold" });
+      else if (tok.startsWith("~~")) segments.push({ text: tok.slice(2, -2), type: "strike" });
       else if (tok.startsWith("`")) segments.push({ text: tok.slice(1, -1), type: "code" });
-      else segments.push({ text: tok, type: "cite" });
+      else if (linkMatch) segments.push({ text: linkMatch[1], type: "link", href: linkMatch[2] });
+      else if (tok.startsWith("[")) segments.push({ text: tok, type: "cite" });
+      else segments.push({ text: tok.slice(1, -1), type: "italic" });
       last = m.index + tok.length;
     }
     if (last < str.length) segments.push({ text: str.slice(last), type: "plain" });
@@ -312,7 +470,15 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
       // Static render — same as renderMd
       for (const seg of segments) {
         if (seg.type === "bold") parts.push(<strong key={`${key}-b${k++}`}>{seg.text}</strong>);
+        else if (seg.type === "italic") parts.push(<em key={`${key}-i${k++}`}>{seg.text}</em>);
+        else if (seg.type === "strike") parts.push(<del key={`${key}-s${k++}`}>{seg.text}</del>);
         else if (seg.type === "code") parts.push(<code key={`${key}-c${k++}`}>{seg.text}</code>);
+        else if (seg.type === "link") {
+          parts.push(
+            <a key={`${key}-a${k++}`} href={seg.href} target="_blank" rel="noopener noreferrer"
+              className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{seg.text}</a>
+          );
+        }
         else if (seg.type === "cite") {
           const idx = parseInt(seg.text.slice(1, -1), 10) - 1;
           const src = sources?.[idx];
@@ -328,8 +494,8 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     }
 
     // Animated render — split all text into graphemes for a smoother typewriter feel.
-    // cite segments are rendered as static superscripts inline with the animated chars.
-    const allChars: Array<{ char: string; type: "plain" | "bold" | "code" | "cite_node"; node?: React.ReactNode }> = [];
+    // cite/link segments are rendered as static nodes inline with the animated chars.
+    const allChars: Array<{ char: string; type: "plain" | "bold" | "italic" | "strike" | "code" | "static_node"; node?: React.ReactNode }> = [];
     for (const seg of segments) {
       if (seg.type === "cite") {
         // Render citation as a single non-animated node entry
@@ -340,12 +506,18 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
                className="inline-flex items-center justify-center w-4 h-4 text-[9px] font-semibold rounded bg-white/10 hover:bg-white/20 text-white/60 hover:text-white/90 transition-colors align-super leading-none mx-0.5 no-underline"
                title={src.title}>{idx + 1}</a>
           : <span key={`cite-${k++}`} className="text-white/40 text-[9px] align-super">{seg.text}</span>;
-        allChars.push({ char: "", type: "cite_node", node });
+        allChars.push({ char: "", type: "static_node", node });
+        continue;
+      }
+      if (seg.type === "link") {
+        const node = <a key={`link-${k++}`} href={seg.href} target="_blank" rel="noopener noreferrer"
+          className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{seg.text}</a>;
+        allChars.push({ char: "", type: "static_node", node });
         continue;
       }
       const chars = splitGraphemes(seg.text);
       for (const ch of chars) {
-        if (ch) allChars.push({ char: ch, type: seg.type as "plain" | "bold" | "code" });
+        if (ch) allChars.push({ char: ch, type: seg.type as "plain" | "bold" | "italic" | "strike" | "code" });
       }
     }
 
@@ -356,10 +528,14 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
       const cls = shouldAnimate ? "stream-token" : undefined;
       const delay = shouldAnimate ? { animationDelay: `${Math.min((i - animStart) * 8, 420)}ms` } : undefined;
 
-      if (type === "cite_node") {
+      if (type === "static_node") {
         parts.push((allChars[i] as any).node as React.ReactNode);
       } else if (type === "bold") {
         parts.push(<strong key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</strong>);
+      } else if (type === "italic") {
+        parts.push(<em key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</em>);
+      } else if (type === "strike") {
+        parts.push(<del key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</del>);
       } else if (type === "code") {
         parts.push(<code key={`${key}-ch${k++}`} className={cls} style={delay}>{char}</code>);
       } else {
@@ -370,22 +546,61 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
   };
 
   const lastNonEmptyIdx = lines.length - 1 - [...lines].reverse().findIndex(l => l.trim() !== "");
+  const tableInline = (str: string, key: string): React.ReactNode => inlineAnimated(str, key, false);
 
-  lines.forEach((line, li) => {
+  let li = 0;
+  while (li < lines.length) {
+    const line = lines[li];
+
+    // Table block: header row + separator row + body rows (rendered statically, no animation)
+    if (
+      isTableRowLine(line) &&
+      li + 1 < lines.length &&
+      isTableRowLine(lines[li + 1]) &&
+      TABLE_SEPARATOR_RE.test(lines[li + 1]) &&
+      lines[li + 1].includes("-")
+    ) {
+      const headerCells = splitTableRow(line);
+      const aligns = splitTableRow(lines[li + 1]);
+      const bodyRows: string[][] = [];
+      let bi = li + 2;
+      while (bi < lines.length && isTableRowLine(lines[bi]) && !TABLE_SEPARATOR_RE.test(lines[bi])) {
+        bodyRows.push(splitTableRow(lines[bi]));
+        bi++;
+      }
+      result.push(renderMdTable(headerCells, aligns, bodyRows, `tbl${li}`, tableInline));
+      li = bi;
+      continue;
+    }
+
     const isLastLine = li === lastNonEmptyIdx;
-    const olMatch = /^(\d+)\.\s+(.*)/.exec(line);
-    const ulMatch = /^[-*]\s+(.*)/.exec(line);
+    const headingMatch = /^(#{1,6})\s+(.*)/.exec(line);
+    const hrMatch = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.exec(line);
+    const quoteMatch = /^>\s?(.*)/.exec(line);
+    const olMatch = /^(\s*)(\d+)\.\s+(.*)/.exec(line);
+    const ulMatch = /^(\s*)[-*+]\s+(.*)/.exec(line);
+    const lineInline = (str: string, key: string) => inlineAnimated(str, key, isLastLine);
 
-    if (olMatch) {
-      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/40 shrink-0">{olMatch[1]}.</span><span>{inlineAnimated(olMatch[2], `ol${li}`, isLastLine)}</span></div>);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const cls = level <= 2 ? "text-[15px] font-bold mt-2 mb-1" : "text-sm font-semibold mt-1.5 mb-0.5";
+      result.push(<div key={li} className={cls}>{inlineAnimated(headingMatch[2], `h${li}`, isLastLine)}</div>);
+    } else if (hrMatch) {
+      result.push(<hr key={li} className="my-2 border-white/10" />);
+    } else if (quoteMatch) {
+      result.push(<div key={li} className="border-l-2 border-white/20 pl-2 ml-1 text-white/70">{inlineAnimated(quoteMatch[1], `q${li}`, isLastLine)}</div>);
+    } else if (olMatch) {
+      result.push(renderOlItem(li, olMatch[1], olMatch[2], olMatch[3], lineInline, `ol${li}`));
     } else if (ulMatch) {
-      result.push(<div key={li} className="flex gap-2 ml-1"><span className="text-white/30 shrink-0">•</span><span>{inlineAnimated(ulMatch[1], `ul${li}`, isLastLine)}</span></div>);
+      result.push(renderUlItem(li, ulMatch[1], ulMatch[2], lineInline, `ul${li}`));
     } else if (line.trim() === "") {
       if (li < lines.length - 1) result.push(<div key={li} className="h-5" />);
     } else {
       result.push(<div key={li}>{inlineAnimated(line, `ln${li}`, isLastLine)}</div>);
     }
-  });
+
+    li++;
+  }
 
   // Blinking cursor at the end
   result.push(<span key="cursor" className="stream-cursor" />);

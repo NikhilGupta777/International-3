@@ -315,6 +315,13 @@ export function getWorkspace(req: any): Workspace {
   };
 }
 
+export function getWorkspaceById(workspaceId: string): Workspace {
+  return {
+    identity: { workspaceId, displayName: workspaceId, authMethod: "unknown" },
+    s3: new S3WorkspaceAdapter(workspaceId),
+  };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 function inferContentType(filename: string): string {
   const dot = filename.lastIndexOf(".");
