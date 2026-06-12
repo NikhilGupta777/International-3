@@ -132,8 +132,18 @@ async function req<T>(input: string, init?: RequestInit): Promise<T> {
     },
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new Error(data?.error || `${res.status} ${res.statusText}`);
+  // Tolerate non-JSON error responses (e.g. an HTML 502 from an upstream
+  // load balancer). The previous `JSON.parse(text)` would throw a generic
+  // SyntaxError and hide the actual HTTP status from the caller.
+  let data: any = null;
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch { data = null; }
+  }
+  if (!res.ok) {
+    const detail = data?.error || (text && !data ? text.slice(0, 240) : `${res.status} ${res.statusText}`);
+    throw new Error(detail);
+  }
   return data as T;
 }
 
@@ -206,21 +216,44 @@ export const videoEditorApi = {
           body: JSON.stringify({ message }),
           signal: ctrl.signal,
         });
-        if (!resp.ok || !resp.body) throw new Error(`${resp.status} ${resp.statusText}`);
+        if (!resp.ok || !resp.body) {
+          // Try to surface the server-supplied error message instead of a
+          // generic "500 Internal Server Error" — the chat endpoint returns
+          // JSON `{error}` for validation failures.
+          let detail = `${resp.status} ${resp.statusText}`;
+          try {
+            const text = await resp.text();
+            if (text) {
+              try { const j = JSON.parse(text); if (j?.error) detail = String(j.error); }
+              catch { detail = text.slice(0, 240); }
+            }
+          } catch { /* ignore */ }
+          throw new Error(detail);
+        }
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
         let parseErrorReported = false;
         let sawDone = false;
+        // SSE event boundary is a blank line. Some proxies normalize line
+        // endings to CRLF, so accept both \n\n and \r\n\r\n.
+        const findBoundary = (s: string): number => {
+          const a = s.indexOf("\n\n");
+          const b = s.indexOf("\r\n\r\n");
+          if (a < 0) return b;
+          if (b < 0) return a;
+          return Math.min(a, b);
+        };
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           let idx;
-          while ((idx = buffer.indexOf("\n\n")) >= 0) {
+          while ((idx = findBoundary(buffer)) >= 0) {
+            const sep = buffer.startsWith("\r\n\r\n", idx) || buffer.slice(idx, idx + 4) === "\r\n\r\n" ? 4 : 2;
             const chunk = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+            buffer = buffer.slice(idx + sep);
+            const line = chunk.split(/\r?\n/).find((l) => l.startsWith("data:"));
             if (!line) continue;
             const raw = line.slice(5).trim();
             if (!raw) continue;
