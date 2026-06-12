@@ -1712,21 +1712,22 @@ function buildToolDispatcherV2(
       return { message: `Assets: source=${p.sourceVideo || "(none)"}, logo=${p.assets.logo || "(none)"}, intro=${p.assets.intro || "(none)"}, outro=${p.assets.outro || "(none)"}.` };
     },
     add_clip: async (args) => {
+      if (typeof args?.asset !== "string" || !args.asset.trim()) throw new Error("asset path required.");
       const ws = getWorkspace(req);
       await resolveOpenEndedClipDurations(ws, pendingTimeline);
-      const srcIn = args.srcIn ?? 0;
-      let srcOut = args.srcOut ?? 0;
+      const srcIn = clampNumber(args.srcIn, 0, 86400, 0);
+      let srcOut = clampNumber(args.srcOut, 0, 86400, 0);
       if (!(srcOut > srcIn)) {
         const duration = await probeWorkspaceVideoDuration(ws, args.asset).catch(() => 0);
         if (duration > srcIn) srcOut = duration;
       }
       const clip: TimelineClip = {
         id: randomUUID(),
-        asset: args.asset,
+        asset: args.asset.trim(),
         srcIn,
         srcOut,
-        tlStart: args.tlStart ?? computeTimelineDuration(pendingTimeline),
-        speed: Math.max(0.25, Math.min(4, args.speed ?? 1)),
+        tlStart: clampNumber(args.tlStart, 0, 86400, computeTimelineDuration(pendingTimeline)),
+        speed: clampNumber(args.speed, 0.25, 4, 1),
       };
       pendingTimeline.tracks.video.push(clip);
       return { message: `Added clip from ${clip.asset} (${clip.srcIn}s-${clip.srcOut || "end"}s) at timeline ${clip.tlStart}s.` };
@@ -1740,14 +1741,15 @@ function buildToolDispatcherV2(
     trim_clip: async (args) => {
       const clip = pendingTimeline.tracks.video.find(c => c.id === args.clipId);
       if (!clip) throw new Error("Clip not found.");
-      if (args.srcIn != null) clip.srcIn = args.srcIn;
-      if (args.srcOut != null) clip.srcOut = args.srcOut;
+      if (args.srcIn != null) clip.srcIn = clampNumber(args.srcIn, 0, 86400, clip.srcIn);
+      if (args.srcOut != null) clip.srcOut = clampNumber(args.srcOut, 0, 86400, clip.srcOut);
+      if (clip.srcOut > 0 && clip.srcOut <= clip.srcIn) throw new Error("Clip end must be after start.");
       return { message: `Clip trimmed to ${clip.srcIn}s-${clip.srcOut || "end"}s.` };
     },
     set_clip_speed: async (args) => {
       const clip = pendingTimeline.tracks.video.find(c => c.id === args.clipId);
       if (!clip) throw new Error("Clip not found.");
-      clip.speed = Math.max(0.25, Math.min(4, args.speed));
+      clip.speed = clampNumber(args.speed, 0.25, 4, 1);
       return { message: `Clip speed set to ${clip.speed}x.` };
     },
     set_transition: async (args) => {
@@ -1762,22 +1764,29 @@ function buildToolDispatcherV2(
       return { message: `${args.boundary === "in" ? "In" : "Out"} transition set to ${def.type} (${def.duration}s).` };
     },
     add_overlay: async (args) => {
+      const overlayType = ["logo", "text", "image"].includes(args?.overlayType) ? args.overlayType as TimedOverlay["type"] : null;
+      if (!overlayType) throw new Error("overlayType must be logo, text, or image.");
+      if (typeof args.content !== "string" || !args.content.trim()) throw new Error("overlay content required.");
       let style: Record<string, any> = {};
       if (typeof args.style === "string") {
         try { style = JSON.parse(args.style); } catch { style = {}; }
       }
-      if (args.overlayType === "logo" && !style.widthPercent) style.widthPercent = 8;
-      if (args.overlayType === "logo" && !style.key) style.key = "none";
-      if (args.overlayType === "text" && !style.style) style.style = "bold-clean";
+      if ((overlayType === "logo" || overlayType === "image") && style.widthPercent != null) {
+        style.widthPercent = clampNumber(style.widthPercent, 3, 50, overlayType === "logo" ? 8 : 28);
+      }
+      if (overlayType === "logo" && !style.widthPercent) style.widthPercent = 8;
+      if (overlayType === "logo" && !["none", "auto-white", "auto-black"].includes(style.key)) style.key = "none";
+      if (overlayType === "text" && !["bold-clean", "headline"].includes(style.style)) style.style = "bold-clean";
       const overlay: TimedOverlay = {
         id: randomUUID(),
-        type: args.overlayType || "text",
-        content: args.content,
-        tlStart: args.tlStart ?? 0,
-        tlEnd: args.tlEnd ?? 0,
-        position: args.position || (args.overlayType === "logo" ? "top-right" : "bottom-center"),
+        type: overlayType,
+        content: args.content.trim(),
+        tlStart: clampNumber(args.tlStart, 0, 86400, 0),
+        tlEnd: clampNumber(args.tlEnd, 0, 86400, 0),
+        position: args.position || (overlayType === "logo" ? "top-right" : "bottom-center"),
         style,
       };
+      if (overlay.tlEnd > 0 && overlay.tlEnd <= overlay.tlStart) throw new Error("Overlay end must be after start.");
       pendingTimeline.tracks.overlays.push(overlay);
       return { message: `Added ${overlay.type} overlay "${overlay.content.slice(0, 40)}" at ${overlay.position}.` };
     },
@@ -1788,16 +1797,18 @@ function buildToolDispatcherV2(
       return { message: "Overlay removed." };
     },
     add_audio: async (args) => {
+      if (typeof args?.asset !== "string" || !args.asset.trim()) throw new Error("audio asset path required.");
       const audio: AudioClip = {
         id: randomUUID(),
-        asset: args.asset,
-        tlStart: args.tlStart ?? 0,
-        tlEnd: args.tlEnd ?? 0,
-        volumeDb: Math.max(-30, Math.min(6, args.volumeDb ?? -10)),
-        fadeIn: args.fadeIn ?? 0,
-        fadeOut: args.fadeOut ?? 0,
+        asset: args.asset.trim(),
+        tlStart: clampNumber(args.tlStart, 0, 86400, 0),
+        tlEnd: clampNumber(args.tlEnd, 0, 86400, 0),
+        volumeDb: clampNumber(args.volumeDb, -30, 6, -10),
+        fadeIn: clampNumber(args.fadeIn, 0, 30, 0),
+        fadeOut: clampNumber(args.fadeOut, 0, 30, 0),
         duckSpeech: args.duckSpeech !== false,
       };
+      if (audio.tlEnd > 0 && audio.tlEnd <= audio.tlStart) throw new Error("Audio end must be after start.");
       pendingTimeline.tracks.audio.push(audio);
       return { message: `Added audio ${audio.asset} at ${audio.tlStart}s, vol=${audio.volumeDb}dB.` };
     },
@@ -2032,7 +2043,7 @@ function buildToolDispatcherV2(
       const idx = pendingTimeline.tracks.video.findIndex(c => c.id === args.clipId);
       if (idx < 0) throw new Error("Clip not found.");
       const clip = pendingTimeline.tracks.video[idx];
-      const splitAt = args.splitAt;
+      const splitAt = clampNumber(args.splitAt, 0, 86400, -1);
       if (splitAt <= clip.srcIn || (clip.srcOut > 0 && splitAt >= clip.srcOut)) {
         throw new Error(`splitAt ${splitAt}s is outside clip range ${clip.srcIn}s-${clip.srcOut || "end"}s.`);
       }
@@ -2045,14 +2056,15 @@ function buildToolDispatcherV2(
     reorder_clips: async (args) => {
       if (!Array.isArray(args?.clipIds) || args.clipIds.length === 0) throw new Error("clipIds array required.");
       const reordered: TimelineClip[] = [];
-      for (const id of args.clipIds) {
+      const requestedIds = Array.from(new Set(args.clipIds.map((id: unknown) => String(id))));
+      for (const id of requestedIds) {
         const clip = pendingTimeline.tracks.video.find(c => c.id === id);
         if (!clip) throw new Error(`Clip ${id} not found.`);
         reordered.push(clip);
       }
       // Keep any clips not mentioned at the end
       for (const clip of pendingTimeline.tracks.video) {
-        if (!args.clipIds.includes(clip.id)) reordered.push(clip);
+        if (!requestedIds.includes(clip.id)) reordered.push(clip);
       }
       // Recompute tlStart sequentially
       let cursor = 0;

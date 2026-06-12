@@ -11,6 +11,7 @@ import {
   type EditorJobSummary,
   type EditorChatMessage,
 } from "@/lib/video-editor-api";
+import { workspaceApi } from "@/lib/workspace-api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ViewState = "landing" | "chat" | "artifact";
@@ -129,6 +130,7 @@ export function AiVideoStudio() {
   const [inputText, setInputText] = useState("");
   const [attachedAssets, setAttachedAssets] = useState<AttachedAsset[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [applyingProposalId, setApplyingProposalId] = useState<string | null>(null);
   const [showAttachPopover, setShowAttachPopover] = useState(false);
   const [artifactView, setArtifactView] = useState<{
     jobId: string;
@@ -136,6 +138,7 @@ export function AiVideoStudio() {
     title: string;
     projectId: string;
   } | null>(null);
+  const [artifactPreviewUrl, setArtifactPreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [activeCapabilities, setActiveCapabilities] = useState<Set<string>>(new Set());
   const [showHistory, setShowHistory] = useState(false);
@@ -302,8 +305,8 @@ export function AiVideoStudio() {
       const uploaded = [...attachedAssets];
       for (const asset of uploaded) {
         if (asset.file) {
-          const role = asset.type === "video" ? "source" : asset.type === "audio" ? "intro" : "logo";
-          const result = await videoEditorApi.uploadAsset(pid, role as any, asset.file);
+          const role = asset.type === "video" ? "source" : asset.type === "audio" ? "audio" : "logo";
+          const result = await videoEditorApi.uploadAsset(pid, role, asset.file);
           asset.path = result.path;
         }
       }
@@ -530,6 +533,8 @@ export function AiVideoStudio() {
   const handleApplyProposal = useCallback(
     async (proposalId: string) => {
       if (!projectId) return;
+      if (applyingProposalId) return;
+      setApplyingProposalId(proposalId);
       try {
         const { project: updated } = await videoEditorApi.applyProposal(projectId, proposalId);
         setProject(updated);
@@ -546,15 +551,20 @@ export function AiVideoStudio() {
           ...prev,
           { kind: "system" as const, id: crypto.randomUUID(), text: "✅ Plan approved! Starting render..." },
         ]);
-        // Start render polling
-        streamChat(projectId, "The user approved the proposal. Start the final render now.");
-        // Poll for render progress after a delay
-        setTimeout(() => startRenderPolling(projectId), 3000);
+        const { project: renderingProject, job } = await videoEditorApi.startRender(projectId);
+        setProject(renderingProject);
+        startRenderPolling(projectId, job);
       } catch (err) {
         console.error("Apply error:", err);
+        setBubbles((prev) => [
+          ...prev,
+          { kind: "assistant" as const, id: crypto.randomUUID(), text: `Could not start render: ${(err as Error).message}` },
+        ]);
+      } finally {
+        setApplyingProposalId(null);
       }
     },
-    [projectId, streamChat]
+    [applyingProposalId, projectId]
   );
 
   const handleRefineProposal = useCallback(
@@ -581,12 +591,19 @@ export function AiVideoStudio() {
   // ─── Render Progress Polling ────────────────────────────────────────────────
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startRenderPolling = useCallback(
-    (pid: string) => {
+    (pid: string, initialJob?: EditorJobSummary) => {
       if (renderPollRef.current) clearInterval(renderPollRef.current);
       const progressBubbleId = crypto.randomUUID();
       setBubbles((prev) => [
         ...prev,
-        { kind: "render-progress" as const, id: progressBubbleId, jobId: "", progress: 0, message: "Starting render...", status: "pending" },
+        {
+          kind: "render-progress" as const,
+          id: progressBubbleId,
+          jobId: initialJob?.jobId ?? "",
+          progress: initialJob?.progress ?? 0,
+          message: initialJob?.message ?? "Starting render...",
+          status: initialJob?.status ?? "pending",
+        },
       ]);
       renderPollRef.current = setInterval(async () => {
         try {
@@ -622,14 +639,14 @@ export function AiVideoStudio() {
                 },
               ];
             });
-          } else if (activeRender.status === "error") {
+          } else if (activeRender.status === "error" || activeRender.status === "cancelled") {
             if (renderPollRef.current) clearInterval(renderPollRef.current);
             renderPollRef.current = null;
-            // Update progress to show error
+            // Update progress to show terminal failure/cancel state
             setBubbles((prev) =>
               prev.map((b) =>
                 b.id === progressBubbleId && b.kind === "render-progress"
-                  ? { kind: "render-progress" as const, id: b.id, jobId: b.jobId, progress: 0, message: activeRender.message || "Render failed", status: "error" }
+                  ? { kind: "render-progress" as const, id: b.id, jobId: b.jobId, progress: 0, message: activeRender.message || (activeRender.status === "cancelled" ? "Render cancelled" : "Render failed"), status: activeRender.status }
                   : b
               )
             );
@@ -646,6 +663,20 @@ export function AiVideoStudio() {
       if (renderPollRef.current) clearInterval(renderPollRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setArtifactPreviewUrl(null);
+    if (!artifactView?.outputPath) return;
+    void workspaceApi.getFile(artifactView.outputPath, { inline: true })
+      .then(({ url }) => {
+        if (!cancelled) setArtifactPreviewUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setArtifactPreviewUrl(null);
+      });
+    return () => { cancelled = true; };
+  }, [artifactView?.outputPath]);
 
   // ─── Quick Actions ─────────────────────────────────────────────────────────
   const handleQuickAction = useCallback(
@@ -711,7 +742,7 @@ export function AiVideoStudio() {
           <h2 className="ai-video-studio__artifact-title">{artifactView.title}</h2>
           <div className="ai-video-studio__artifact-actions">
             <a
-              href={`/api/workspace/files/presign?path=${encodeURIComponent(artifactView.outputPath)}&download=1`}
+              href={`/api/workspace/file?path=${encodeURIComponent(artifactView.outputPath)}&download=1`}
               target="_blank"
               rel="noreferrer"
               className="ai-video-studio__artifact-action-btn"
@@ -720,12 +751,16 @@ export function AiVideoStudio() {
             </a>
           </div>
           <div className="ai-video-studio__artifact-player">
-            <video
-              controls
-              autoPlay
-              src={`/api/workspace/files/presign?path=${encodeURIComponent(artifactView.outputPath)}&inline=1`}
-              className="ai-video-studio__video-el"
-            />
+            {artifactPreviewUrl ? (
+              <video
+                controls
+                autoPlay
+                src={artifactPreviewUrl}
+                className="ai-video-studio__video-el"
+              />
+            ) : (
+              <div className="ai-video-studio__artifact-loading">Loading preview...</div>
+            )}
           </div>
         </div>
       </div>
@@ -1386,7 +1421,7 @@ export function AiVideoStudio() {
                 <button
                   className="ai-video-studio__proposal-apply"
                   onClick={() => handleApplyProposal(bubble.proposal.proposalId)}
-                  disabled={isStreaming}
+                  disabled={isStreaming || applyingProposalId === bubble.proposal.proposalId}
                 >
                   ✓ Looks good, render it
                 </button>

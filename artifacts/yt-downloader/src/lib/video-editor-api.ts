@@ -181,7 +181,7 @@ export const videoEditorApi = {
   getJob: (jobId: string) =>
     req<{ job: EditorJobSummary }>(`/api/video-editor/jobs/${encodeURIComponent(jobId)}`),
 
-  uploadAsset: async (projectId: string, role: "source" | "logo" | "intro" | "outro", file: File): Promise<WorkspaceFile> => {
+  uploadAsset: async (projectId: string, role: "source" | "logo" | "intro" | "outro" | "audio", file: File): Promise<WorkspaceFile> => {
     const safeName = file.name.replace(/[^\w.\-() ]+/g, "_").slice(-120) || `${role}.bin`;
     return workspaceApi.uploadFile(`editor/uploads/${projectId}/${role}/${safeName}`, file);
   },
