@@ -91,6 +91,7 @@ type ClientAccessConfig = {
 };
 
 const GUIDE_SEEN_KEY = "videomaking-guide-seen-v1";
+const ACTIVE_MODE_KEY = "videomaking-active-mode-v1";
 const CLIP_JOB_MISSING_GRACE_MS = 15 * 60 * 1000;
 const NOTIFICATION_SOUND_URL = `${import.meta.env.BASE_URL.replace(/\/$/, "")}/notification-agent.mp3`;
 const MODE_LABELS: Record<Mode, string> = {
@@ -113,6 +114,44 @@ const MODE_LABELS: Record<Mode, string> = {
   admin: "Admin",
   settings: "Settings",
 };
+
+const VALID_MODES = new Set<Mode>(Object.keys(MODE_LABELS) as Mode[]);
+
+function normalizeMode(value: string | null | undefined): Mode | null {
+  const clean = String(value || "").trim().toLowerCase();
+  return VALID_MODES.has(clean as Mode) ? clean as Mode : null;
+}
+
+function readModeFromUrl(): Mode | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return normalizeMode(params.get("tab") || params.get("mode"));
+}
+
+function readStoredMode(): Mode | null {
+  if (typeof window === "undefined") return null;
+  try { return normalizeMode(window.localStorage.getItem(ACTIVE_MODE_KEY)); } catch { return null; }
+}
+
+function readInitialMode(): Mode {
+  return readModeFromUrl() ?? readStoredMode() ?? "home";
+}
+
+function hasModeRestoreHint(): boolean {
+  return Boolean(readModeFromUrl() ?? readStoredMode());
+}
+
+function persistMode(mode: Mode) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.setItem(ACTIVE_MODE_KEY, mode); } catch { /* ignore */ }
+  try {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("tab") === mode) return;
+    url.searchParams.set("tab", mode);
+    url.searchParams.delete("mode");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch { /* ignore */ }
+}
 
 
 // GUIDE_TABS now lives in @/lib/guide-tabs and is imported above so the
@@ -242,7 +281,8 @@ export default function Home({
   const bestClipsRef = useRef<BestClipsHandle>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>("home");
+  const [mode, setMode] = useState<Mode>(() => readInitialMode());
+  const hadInitialModeRestoreHintRef = useRef(hasModeRestoreHint());
   const [pendingCopilotPrompt, setPendingCopilotPrompt] = useState<string | null>(null);
   const [copilotResetKey, setCopilotResetKey] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -261,8 +301,26 @@ export default function Home({
   const initializedCompletionsRef = useRef(false);
   const { toast } = useToast();
 
+  useEffect(() => {
+    persistMode(mode);
+  }, [mode]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const next = readModeFromUrl() ?? readStoredMode() ?? "home";
+      setMode(next);
+    };
+    window.addEventListener("popstate", onPopState);
+    window.addEventListener("hashchange", onPopState);
+    return () => {
+      window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("hashchange", onPopState);
+    };
+  }, []);
+
   // Restore an active download job from localStorage on page load
   useEffect(() => {
+    if (hadInitialModeRestoreHintRef.current) return;
     const saved = loadActiveDownload();
     if (saved) {
       setJobId(saved.jobId);
@@ -273,6 +331,7 @@ export default function Home({
 
   useEffect(() => {
     try {
+      if (hadInitialModeRestoreHintRef.current) return;
       const seen = localStorage.getItem(GUIDE_SEEN_KEY);
       if (!seen) {
         setHelpInitialMode("download");
@@ -280,6 +339,7 @@ export default function Home({
         try { localStorage.setItem(GUIDE_SEEN_KEY, "1"); } catch { /* ignore */ }
       }
     } catch {
+      if (hadInitialModeRestoreHintRef.current) return;
       setHelpInitialMode("download");
       setMode("help");
     }
