@@ -1414,7 +1414,7 @@ function SaveToWorkspaceBtn({ sourceUrl, suggestedName, className }: { sourceUrl
       title="Save to my workspace"
     >
       {state === "saving" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : state === "done" ? <CheckCircle className="w-3.5 h-3.5 text-green-400" /> : <FolderOpen className="w-3.5 h-3.5" />}
-      <span>{state === "saving" ? "Saving…" : state === "done" ? "Saved" : "Save"}</span>
+      <span className="hidden sm:inline">{state === "saving" ? "Saving…" : state === "done" ? "Saved" : "Save"}</span>
     </button>
   );
 }
@@ -1467,7 +1467,7 @@ function ArtifactShell({
             {subtitle && <span className="block text-[10.5px] text-white/40 truncate mt-0.5">{subtitle}</span>}
           </span>
         </button>
-        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-end gap-1 shrink-0 flex-wrap max-w-[48%] sm:max-w-none" onClick={(e) => e.stopPropagation()}>
           {actions}
           {!hideToggle && children !== undefined && children !== null && (
             <button
@@ -2616,6 +2616,7 @@ export function StudioCopilot({
         preview: raw.slice(0, 240),
       });
     };
+    let sawDoneEvent = false;
 
     const parseSseFrame = (frame: string, isTrailing = false): boolean => {
       const raw = frame
@@ -2626,11 +2627,13 @@ export function StudioCopilot({
         .trim();
       if (!raw) return true;
       try {
-        handleEvent(JSON.parse(raw) as SseEvent);
+        const evt = JSON.parse(raw) as SseEvent;
+        if (evt.type === "done") sawDoneEvent = true;
+        handleEvent(evt);
         return true;
       } catch (err) {
         surfaceStreamParseError(err, raw);
-        if (isTrailing) {
+        if (isTrailing && !sawDoneEvent) {
           patchAssistant(m => ({
             ...m,
             parts: [

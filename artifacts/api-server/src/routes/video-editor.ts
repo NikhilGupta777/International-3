@@ -165,6 +165,7 @@ type EditorJob = {
 
 const router = Router();
 const jobs = new Map<string, EditorJob>();
+const activeRenderProcesses = new Map<string, ReturnType<typeof spawn>>();
 const FFMPEG_BIN = process.env.FFMPEG_BIN || ffmpegStatic || "ffmpeg";
 
 function projectPath(projectId: string): string {
@@ -576,16 +577,38 @@ function colorPresetFilter(preset: ColorPreset): string | null {
   }
 }
 
-function runFfmpegRaw(args: string[]): Promise<void> {
+function assertRenderNotCancelled(job?: EditorJob): void {
+  if (job?.status === "cancelled") throw new Error("render cancelled");
+}
+
+function cancelRenderJob(job: EditorJob): void {
+  job.status = "cancelled";
+  job.progress = 0;
+  job.message = "Cancelled";
+  job.error = null;
+  job.completedAt = Date.now();
+  const proc = activeRenderProcesses.get(job.jobId);
+  if (proc && !proc.killed) proc.kill("SIGTERM");
+}
+
+function runFfmpegRaw(args: string[], job?: EditorJob): Promise<void> {
   return new Promise((resolve, reject) => {
+    try { assertRenderNotCancelled(job); } catch (err) { reject(err); return; }
     const proc = spawn(FFMPEG_BIN, args);
+    if (job) activeRenderProcesses.set(job.jobId, proc);
     let stderr = "";
     proc.stderr.on("data", (chunk) => {
       stderr += String(chunk);
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
     });
-    proc.on("error", (err) => reject(new Error(`Failed to start FFmpeg: ${err.message}`)));
+    proc.on("error", (err) => {
+      if (job) activeRenderProcesses.delete(job.jobId);
+      if (job?.status === "cancelled") return reject(new Error("render cancelled"));
+      return reject(new Error(`Failed to start FFmpeg: ${err.message}`));
+    });
     proc.on("close", (code) => {
+      if (job) activeRenderProcesses.delete(job.jobId);
+      if (job?.status === "cancelled") return reject(new Error("render cancelled"));
       if (code === 0) resolve();
       else reject(new Error(stderr.slice(-1200) || `FFmpeg exited with code ${code}`));
     });
@@ -663,7 +686,7 @@ async function probeDuration(input: string): Promise<number> {
   });
 }
 
-async function concatClips(inputs: string[], output: string): Promise<void> {
+async function concatClips(inputs: string[], output: string, job?: EditorJob): Promise<void> {
   const args: string[] = ["-y"];
   for (const p of inputs) args.push("-i", p);
   const filters: string[] = [];
@@ -687,7 +710,7 @@ async function concatClips(inputs: string[], output: string): Promise<void> {
     "-movflags", "+faststart",
     output,
   );
-  await runFfmpegRaw(args);
+  await runFfmpegRaw(args, job);
 }
 
 /**
@@ -706,8 +729,8 @@ function xfadeTransitionName(type?: TransitionType): string {
   }
 }
 
-async function crossfadeClips(inputs: string[], output: string, transitions: TransitionDef[] = []): Promise<void> {
-  if (inputs.length < 2) { await concatClips(inputs, output); return; }
+async function crossfadeClips(inputs: string[], output: string, transitions: TransitionDef[] = [], job?: EditorJob): Promise<void> {
+  if (inputs.length < 2) { await concatClips(inputs, output, job); return; }
   const fadeDurations = Array.from({ length: inputs.length - 1 }, (_, i) =>
     Math.max(0.1, Math.min(2, transitions[i]?.duration ?? 0.5)),
   );
@@ -715,10 +738,10 @@ async function crossfadeClips(inputs: string[], output: string, transitions: Tra
   for (let i = 0; i < inputs.length; i += 1) {
     const p = inputs[i];
     const meta = await probeMetadata(p).catch(() => ({ duration: 0, width: 0, height: 0, hasAudio: false }));
-    if (!meta.hasAudio) { await concatClips(inputs, output); return; }
+    if (!meta.hasAudio) { await concatClips(inputs, output, job); return; }
     const d = meta.duration || await probeDuration(p).catch(() => 0);
     const required = Math.max(fadeDurations[i - 1] ?? 0, fadeDurations[i] ?? 0) * 2;
-    if (!Number.isFinite(d) || d <= required) { await concatClips(inputs, output); return; }
+    if (!Number.isFinite(d) || d <= required) { await concatClips(inputs, output, job); return; }
     durations.push(d);
   }
   const args: string[] = ["-y"];
@@ -747,7 +770,7 @@ async function crossfadeClips(inputs: string[], output: string, transitions: Tra
     "-movflags", "+faststart",
     output,
   );
-  await runFfmpegRaw(args);
+  await runFfmpegRaw(args, job);
 }
 
 async function downloadWorkspaceFile(ws: ReturnType<typeof getWorkspace>, path: string, dest: string): Promise<void> {
@@ -770,18 +793,26 @@ async function uploadWorkspaceFile(ws: ReturnType<typeof getWorkspace>, source: 
 
 function runFfmpeg(args: string[], job: EditorJob): Promise<void> {
   return new Promise((resolve, reject) => {
+    try { assertRenderNotCancelled(job); } catch (err) { reject(err); return; }
     job.status = "running";
     job.progress = Math.max(job.progress, 25);
     job.message = "Rendering video...";
     const proc = spawn(FFMPEG_BIN, args);
+    activeRenderProcesses.set(job.jobId, proc);
     let stderr = "";
     proc.stderr.on("data", (chunk) => {
       stderr += String(chunk);
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
       if (job.status === "running") job.progress = Math.min(88, job.progress + 2);
     });
-    proc.on("error", (err) => reject(new Error(`Failed to start FFmpeg: ${err.message}`)));
+    proc.on("error", (err) => {
+      activeRenderProcesses.delete(job.jobId);
+      if (job.status === "cancelled") return reject(new Error("render cancelled"));
+      return reject(new Error(`Failed to start FFmpeg: ${err.message}`));
+    });
     proc.on("close", (code) => {
+      activeRenderProcesses.delete(job.jobId);
+      if (job.status === "cancelled") return reject(new Error("render cancelled"));
       if (code === 0) resolve();
       else reject(new Error(stderr.slice(-1200) || `FFmpeg exited with code ${code}`));
     });
@@ -923,7 +954,8 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
           "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
           "-pix_fmt", "yuv420p", "-movflags", "+faststart", clipPath,
         );
-        await runFfmpegRaw(trimArgs);
+        await runFfmpegRaw(trimArgs, job);
+        assertRenderNotCancelled(job);
         normalizedPaths.push(clipPath);
         if (job.kind === "preview" && i === 0) break;
       }
@@ -944,11 +976,12 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
                 ? prev.transitionOut
                 : { type: "fade" as const, duration: 0.5 };
           });
-          await crossfadeClips(normalizedPaths, joinedPath, transitions);
+          await crossfadeClips(normalizedPaths, joinedPath, transitions, job);
         } else {
-          await concatClips(normalizedPaths, joinedPath);
+          await concatClips(normalizedPaths, joinedPath, job);
         }
       }
+      assertRenderNotCancelled(job);
 
       let currentPath = joinedPath;
       if (overlays.length > 0) {
@@ -990,7 +1023,8 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
           oArgs.push("-filter_complex", oFilters.join(";"), "-map", `[${current}]`, "-map", "0:a?");
           oArgs.push("-c:v", "libx264", "-preset", "veryfast", "-crf", job.kind === "preview" ? "28" : "22");
           oArgs.push("-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", overlayedPath);
-          await runFfmpegRaw(oArgs);
+          await runFfmpegRaw(oArgs, job);
+          assertRenderNotCancelled(job);
           currentPath = overlayedPath;
         }
       }
@@ -1024,7 +1058,8 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         mFilters.push(`${baseAudio}${audioTracks.map((_, i) => `[bg${i + 1}]`).join("")}amix=inputs=${audioTracks.length + 1}:duration=first:dropout_transition=2[aout]`);
         mArgs.push("-filter_complex", mFilters.join(";"), "-map", "0:v", "-map", "[aout]");
         mArgs.push("-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", mixedPath);
-        await runFfmpegRaw(mArgs);
+        await runFfmpegRaw(mArgs, job);
+        assertRenderNotCancelled(job);
         currentPath = mixedPath;
       }
 
@@ -1048,10 +1083,12 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
       await runFfmpeg(buildFfmpegArgs({
         sourcePath, logoPath, outputPath: mainPath, recipe: project.recipe, preview: job.kind === "preview",
       }), job);
+      assertRenderNotCancelled(job);
       if (!statSync(mainPath).size) throw new Error("Render produced an empty file");
       await (await import("fs/promises")).rename(mainPath, outputPath);
     }
 
+    assertRenderNotCancelled(job);
     if (!statSync(outputPath).size) throw new Error("Render produced an empty file");
     job.message = "Saving render to workspace...";
     job.progress = 92;
@@ -1063,10 +1100,16 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
     job.completedAt = Date.now();
     await persistJobToProject(ws, projectId, job);
   } catch (err) {
-    job.status = "error";
-    job.progress = 0;
-    job.message = err instanceof Error ? err.message : "Render failed";
-    job.error = job.message;
+    if (job.status === "cancelled") {
+      job.progress = 0;
+      job.message = "Cancelled";
+      job.error = null;
+    } else {
+      job.status = "error";
+      job.progress = 0;
+      job.message = err instanceof Error ? err.message : "Render failed";
+      job.error = job.message;
+    }
     job.completedAt = Date.now();
     await persistJobToProject(ws, projectId, job).catch((writeErr) => {
       logger.warn({ err: writeErr, jobId: job.jobId }, "[video-editor] failed to persist render error");
@@ -1227,13 +1270,14 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/jobs/:jobId/cancel", (req: Request, res: Response) => {
+router.post("/jobs/:jobId/cancel", async (req: Request, res: Response) => {
   const job = jobs.get(routeParam(req.params.jobId, "jobId"));
   if (!job) return bad(res, 404, "job not found");
   if (job.status === "pending" || job.status === "running") {
-    job.status = "cancelled";
-    job.message = "Cancelled";
-    job.completedAt = Date.now();
+    cancelRenderJob(job);
+    await persistJobToProject(getWorkspace(req), job.projectId, job).catch((err) => {
+      logger.warn({ err, jobId: job.jobId }, "[video-editor] failed to persist render cancellation");
+    });
   }
   return res.json({ job });
 });
@@ -2027,9 +2071,10 @@ function buildToolDispatcherV2(
       if (!latest) throw new Error("No active render to cancel.");
       const live = jobs.get(latest.jobId);
       if (live && (live.status === "pending" || live.status === "running")) {
-        live.status = "cancelled";
-        live.message = "Cancelled";
-        live.completedAt = Date.now();
+        cancelRenderJob(live);
+        await persistJobToProject(getWorkspace(req), live.projectId, live).catch((err) => {
+          logger.warn({ err, jobId: live.jobId }, "[video-editor] failed to persist agent render cancellation");
+        });
       }
       return { message: `Cancelled ${latest.kind} render.` };
     },
