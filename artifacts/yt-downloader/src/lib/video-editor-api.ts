@@ -8,6 +8,73 @@ export type EditorAssets = {
   outro?: string | null;
 };
 
+// ─── Timeline v2 types ────────────────────────────────────────────────────────
+export type TransitionType = "none" | "fade" | "crossfade" | "blur" | "dip-to-black" | "wipe";
+export type TransitionDef = { type: TransitionType; duration: number };
+
+export type TimelineClip = {
+  id: string;
+  asset: string;
+  srcIn: number;
+  srcOut: number;
+  tlStart: number;
+  speed: number;
+  transitionIn?: TransitionDef;
+  transitionOut?: TransitionDef;
+  colorPreset?: string;
+  reverse?: boolean;
+};
+
+export type TimedOverlay = {
+  id: string;
+  type: "logo" | "text" | "image";
+  content: string;
+  tlStart: number;
+  tlEnd: number;
+  position: string;
+  style: Record<string, any>;
+};
+
+export type AudioClip = {
+  id: string;
+  asset: string;
+  tlStart: number;
+  tlEnd: number;
+  volumeDb: number;
+  fadeIn: number;
+  fadeOut: number;
+  duckSpeech: boolean;
+};
+
+export type Timeline = {
+  tracks: {
+    video: TimelineClip[];
+    overlays: TimedOverlay[];
+    audio: AudioClip[];
+  };
+  export: {
+    aspectRatio: EditorAspectRatio;
+    resolution: string;
+    cropMode: EditorCropMode;
+    colorPreset: string;
+  };
+};
+
+export type ProposalDiffItem = {
+  action: "add" | "remove" | "modify" | "reorder";
+  target: string;
+  description: string;
+};
+
+export type Proposal = {
+  proposalId: string;
+  status: "pending" | "applied" | "rejected" | "superseded";
+  summary: string;
+  diff: ProposalDiffItem[];
+  timeline: Timeline;
+  createdAt: number;
+};
+
 export type EditRecipe = {
   aspectRatio: EditorAspectRatio;
   cropMode: EditorCropMode;
@@ -67,7 +134,17 @@ async function req<T>(input: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+export type EditorProjectSummary = {
+  projectId: string;
+  title: string;
+  updatedAt: number;
+  sourceVideo: string | null;
+};
+
 export const videoEditorApi = {
+  listProjects: () =>
+    req<{ projects: EditorProjectSummary[] }>("/api/video-editor/projects"),
+
   createProject: (body: { title?: string; prompt?: string; sourceVideo?: string | null; assets?: EditorAssets }) =>
     req<{ project: EditorProject }>("/api/video-editor/projects", {
       method: "POST",
@@ -155,6 +232,23 @@ export const videoEditorApi = {
     })();
     return { cancel: () => ctrl.abort() };
   },
+
+  applyProposal: (projectId: string, proposalId: string) =>
+    req<{ project: EditorProject; proposal: Proposal }>(
+      `/api/video-editor/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}/apply`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+
+  rejectProposal: (projectId: string, proposalId: string) =>
+    req<{ project: EditorProject; proposal: Proposal }>(
+      `/api/video-editor/projects/${encodeURIComponent(projectId)}/proposals/${encodeURIComponent(proposalId)}/reject`,
+      { method: "POST", body: JSON.stringify({}) }
+    ),
+
+  getProposals: (projectId: string) =>
+    req<{ proposals: Proposal[] }>(
+      `/api/video-editor/projects/${encodeURIComponent(projectId)}/proposals`
+    ),
 };
 
 export type EditorChatMessage = {
@@ -175,6 +269,9 @@ export type EditorChatEvent =
   | { type: "text"; content: string }
   | { type: "tool_start"; name: string; args: any; toolCallId?: string }
   | { type: "tool_done"; name: string; ok: boolean; message?: string; error?: string; project?: EditorProject; job?: EditorJobSummary; toolCallId?: string }
+  | { type: "proposal"; proposalId: string; summary: string; diff: ProposalDiffItem[]; timeline: Timeline; duration: number }
+  | { type: "proposal_applied"; proposalId: string }
+  | { type: "proposal_rejected"; proposalId: string }
   | { type: "error"; message: string }
   | { type: "done" };
 

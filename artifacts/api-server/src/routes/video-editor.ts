@@ -51,6 +51,84 @@ type EditRecipe = {
   };
 };
 
+// ─── Timeline v2 types ────────────────────────────────────────────────────────
+type TransitionType = "none" | "fade" | "crossfade" | "blur" | "dip-to-black" | "wipe";
+
+type TransitionDef = {
+  type: TransitionType;
+  duration: number; // seconds, 0.1-2.0
+};
+
+type TimelineClip = {
+  id: string;
+  asset: string;       // workspace path to the source video
+  srcIn: number;       // source start time (seconds)
+  srcOut: number;      // source end time (seconds), 0 = full duration
+  tlStart: number;     // position on timeline (seconds)
+  speed: number;       // 0.25-4.0, default 1
+  transitionIn?: TransitionDef;
+  transitionOut?: TransitionDef;
+  colorPreset?: ColorPreset;
+  reverse?: boolean;
+};
+
+type TimedOverlay = {
+  id: string;
+  type: "logo" | "text" | "image";
+  content: string;     // text string or asset path
+  tlStart: number;
+  tlEnd: number;       // 0 = full duration
+  position: string;    // "top-right", "bottom-center", etc.
+  style: Record<string, any>;
+};
+
+type AudioClip = {
+  id: string;
+  asset: string;
+  tlStart: number;
+  tlEnd: number;       // 0 = full duration
+  volumeDb: number;    // -30 to 6
+  fadeIn: number;       // seconds
+  fadeOut: number;      // seconds
+  duckSpeech: boolean;
+};
+
+type Timeline = {
+  tracks: {
+    video: TimelineClip[];
+    overlays: TimedOverlay[];
+    audio: AudioClip[];
+  };
+  export: {
+    aspectRatio: AspectRatio;
+    resolution: string;
+    cropMode: CropMode;
+    colorPreset: ColorPreset;
+  };
+};
+
+type ProposalDiffItem = {
+  action: "add" | "remove" | "modify" | "reorder";
+  target: string;          // "clip", "overlay", "transition", "audio", "export"
+  description: string;     // human-readable
+};
+
+type Proposal = {
+  proposalId: string;
+  status: "pending" | "applied" | "rejected" | "superseded";
+  summary: string;
+  diff: ProposalDiffItem[];
+  timeline: Timeline;
+  createdAt: number;
+};
+
+// Extended project type supporting both legacy and timeline v2
+type EditorProjectV2 = EditorProject & {
+  timeline?: Timeline | null;
+  proposals?: Proposal[];
+  version?: number; // 1 = legacy EditRecipe, 2 = Timeline
+};
+
 type EditorProject = {
   projectId: string;
   title: string;
@@ -228,6 +306,59 @@ function migrateRecipe(recipe: any): EditRecipe {
     transitions: recipe?.transitions || { fade: true },
     export: recipe?.export || { format: "mp4", resolution: "1080p", videoCodec: "h264", audioCodec: "aac" },
   };
+}
+
+// ─── Timeline helpers ─────────────────────────────────────────────────────────
+function defaultTimeline(): Timeline {
+  return {
+    tracks: { video: [], overlays: [], audio: [] },
+    export: { aspectRatio: "original", resolution: "1080p", cropMode: "smart", colorPreset: "none" },
+  };
+}
+
+function recipeToTimeline(recipe: EditRecipe, sourceVideo: string | null): Timeline {
+  const tl = defaultTimeline();
+  tl.export = {
+    aspectRatio: recipe.aspectRatio,
+    resolution: recipe.export?.resolution || "1080p",
+    cropMode: recipe.cropMode,
+    colorPreset: recipe.colorPreset,
+  };
+  if (sourceVideo) {
+    tl.tracks.video.push({
+      id: randomUUID(),
+      asset: sourceVideo,
+      srcIn: recipe.trim.start || 0,
+      srcOut: recipe.trim.end || 0,
+      tlStart: 0,
+      speed: recipe.speed || 1,
+      colorPreset: recipe.colorPreset !== "none" ? recipe.colorPreset : undefined,
+    });
+  }
+  for (const ov of recipe.overlays) {
+    tl.tracks.overlays.push({
+      id: randomUUID(),
+      type: ov.type as "logo" | "text",
+      content: ov.type === "logo" ? (ov as any).asset : (ov as any).text,
+      tlStart: 0,
+      tlEnd: 0,
+      position: (ov as any).position || "top-right",
+      style: ov.type === "logo"
+        ? { widthPercent: (ov as any).widthPercent || 8, key: (ov as any).key || "none" }
+        : { style: (ov as any).style || "bold-clean" },
+    });
+  }
+  return tl;
+}
+
+function computeTimelineDuration(tl: Timeline): number {
+  let maxEnd = 0;
+  for (const clip of tl.tracks.video) {
+    const clipDur = (clip.srcOut > 0 ? clip.srcOut - clip.srcIn : 0) / (clip.speed || 1);
+    const end = clip.tlStart + clipDur;
+    if (end > maxEnd) maxEnd = end;
+  }
+  return maxEnd;
 }
 
 async function readProject(req: Request, projectId: string): Promise<EditorProject> {
@@ -1199,7 +1330,7 @@ function buildToolDispatcher(req: Request, getProject: () => EditorProject, setP
         const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
         const ai = createGeminiClient();
         const resp: any = await ai.models.generateContent({
-          model: (process.env.EDITOR_AGENT_MODEL || "gemini-2.5-flash").trim(),
+          model: (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim(),
           contents: [{
             role: "user",
             parts: [
@@ -1313,6 +1444,363 @@ Behavior:
 - If the user asks "what's happening" / "status" / "where are we" during a render, call get_render_status.
 - Refuse general chat, web search, code, or non-finishing requests in one short sentence and redirect.`;
 
+// ─── Agent V2: Timeline-based composable tools ────────────────────────────────
+const AGENT_TOOL_DECLARATIONS_V2 = [
+  { name: "read_project", description: "Read the current project state, timeline, assets, and renders.", parameters: { type: Type.OBJECT, properties: {} } },
+  { name: "read_timeline", description: "Read the current timeline state.", parameters: { type: Type.OBJECT, properties: {} } },
+  { name: "read_assets", description: "List all uploaded assets with metadata.", parameters: { type: Type.OBJECT, properties: {} } },
+  { name: "add_clip", description: "Add a video clip segment to the timeline.", parameters: { type: Type.OBJECT, properties: {
+    asset: { type: Type.STRING, description: "Workspace path to the video file" },
+    srcIn: { type: Type.NUMBER, description: "Source start time in seconds (default 0)" },
+    srcOut: { type: Type.NUMBER, description: "Source end time in seconds (0 = full duration)" },
+    tlStart: { type: Type.NUMBER, description: "Position on timeline in seconds. If omitted, appends after last clip." },
+    speed: { type: Type.NUMBER, description: "Playback speed 0.25-4.0 (default 1)" },
+  }, required: ["asset"] } },
+  { name: "remove_clip", description: "Remove a clip from the timeline by ID.", parameters: { type: Type.OBJECT, properties: {
+    clipId: { type: Type.STRING, description: "The clip ID to remove" },
+  }, required: ["clipId"] } },
+  { name: "trim_clip", description: "Adjust a clip's source in/out points.", parameters: { type: Type.OBJECT, properties: {
+    clipId: { type: Type.STRING, description: "The clip ID to trim" },
+    srcIn: { type: Type.NUMBER, description: "New source start time" },
+    srcOut: { type: Type.NUMBER, description: "New source end time" },
+  }, required: ["clipId"] } },
+  { name: "set_clip_speed", description: "Set playback speed for a clip.", parameters: { type: Type.OBJECT, properties: {
+    clipId: { type: Type.STRING, description: "The clip ID" },
+    speed: { type: Type.NUMBER, description: "0.25-4.0" },
+  }, required: ["clipId", "speed"] } },
+  { name: "set_transition", description: "Set transition at a clip boundary.", parameters: { type: Type.OBJECT, properties: {
+    clipId: { type: Type.STRING, description: "The clip ID" },
+    boundary: { type: Type.STRING, description: "'in' for start of clip or 'out' for end of clip" },
+    transitionType: { type: Type.STRING, description: "none | fade | crossfade | blur | dip-to-black | wipe" },
+    duration: { type: Type.NUMBER, description: "Transition duration in seconds (0.1-2.0, default 0.4)" },
+  }, required: ["clipId", "boundary", "transitionType"] } },
+  { name: "add_overlay", description: "Add a timed overlay (logo, text, or image) to the timeline.", parameters: { type: Type.OBJECT, properties: {
+    overlayType: { type: Type.STRING, description: "logo | text | image" },
+    content: { type: Type.STRING, description: "Text string or asset path" },
+    tlStart: { type: Type.NUMBER, description: "Start time on timeline (default 0)" },
+    tlEnd: { type: Type.NUMBER, description: "End time on timeline (0 = full duration)" },
+    position: { type: Type.STRING, description: "top-right | top-left | bottom-right | bottom-left | bottom-center | top-center" },
+    style: { type: Type.STRING, description: "JSON string of style options. For logo: {widthPercent, key}. For text: {style: bold-clean|headline}" },
+  }, required: ["overlayType", "content"] } },
+  { name: "remove_overlay", description: "Remove an overlay by ID.", parameters: { type: Type.OBJECT, properties: {
+    overlayId: { type: Type.STRING, description: "The overlay ID to remove" },
+  }, required: ["overlayId"] } },
+  { name: "add_audio", description: "Add a background audio clip.", parameters: { type: Type.OBJECT, properties: {
+    asset: { type: Type.STRING, description: "Workspace path to audio file" },
+    tlStart: { type: Type.NUMBER, description: "Start time on timeline (default 0)" },
+    tlEnd: { type: Type.NUMBER, description: "End time (0 = full duration)" },
+    volumeDb: { type: Type.NUMBER, description: "Volume in dB (-30 to 6, default -10)" },
+    fadeIn: { type: Type.NUMBER, description: "Fade in seconds (default 0)" },
+    fadeOut: { type: Type.NUMBER, description: "Fade out seconds (default 0)" },
+    duckSpeech: { type: Type.BOOLEAN, description: "Auto-duck when speech detected (default true)" },
+  }, required: ["asset"] } },
+  { name: "set_export", description: "Set output format settings.", parameters: { type: Type.OBJECT, properties: {
+    aspectRatio: { type: Type.STRING, description: "original | 9:16 | 16:9 | 1:1" },
+    cropMode: { type: Type.STRING, description: "smart | fit-blur | contain" },
+    colorPreset: { type: Type.STRING, description: "none | vivid | muted | bw | warm | cool" },
+  } } },
+  { name: "propose", description: "CRITICAL: Present the current edit plan to the user for approval. Call this AFTER setting up the timeline. The user must approve before rendering.", parameters: { type: Type.OBJECT, properties: {
+    summary: { type: Type.STRING, description: "Human-readable summary of the edit" },
+    diffItems: { type: Type.ARRAY, items: { type: Type.OBJECT, properties: { action: { type: Type.STRING }, target: { type: Type.STRING }, description: { type: Type.STRING } } }, description: "List of changes for the user to review" },
+  }, required: ["summary", "diffItems"] } },
+  { name: "start_render", description: "Start rendering the approved timeline. Only call after user approves a proposal.", parameters: { type: Type.OBJECT, properties: {
+    kind: { type: Type.STRING, description: "preview (fast, low quality) or final (full quality)" },
+  } } },
+  { name: "get_render_status", description: "Check the status of the current render.", parameters: { type: Type.OBJECT, properties: {} } },
+  { name: "detect_logo_background", description: "Use vision AI to detect logo background color for keying.", parameters: { type: Type.OBJECT, properties: {} } },
+  { name: "clear_timeline", description: "Clear ALL clips, overlays, and audio from the pending timeline. Use before rebuilding from scratch to avoid duplicates.", parameters: { type: Type.OBJECT, properties: {} } },
+];
+
+const AGENT_SYSTEM_PROMPT_V2 = `You are the AI Video Agent — a professional video editor that works through conversation. Users upload videos, logos, music, and other assets, then describe what they want in natural language. You analyze their request, build an edit plan using timeline operations, and present it for approval before rendering.
+
+YOUR WORKFLOW:
+1. ALWAYS call read_timeline first to check the current state. If clips already exist, do NOT add duplicates — work with what's there or call clear_timeline to start fresh.
+2. Use timeline tools to build the edit: add_clip, trim_clip, set_transition, add_overlay, add_audio, set_export.
+3. ALWAYS call propose() to show the plan BEFORE rendering. Never render without user approval.
+4. After user approves, call start_render to execute.
+5. If user wants changes, modify the timeline and propose() again.
+
+FILE HANDLING:
+- When users upload files, the paths appear in the message as [Uploaded video: filename → workspace_path] or [Uploaded image: filename → workspace_path].
+- Use these EXACT workspace paths in add_clip(asset: ...) and add_overlay(content: ...).
+- The project's sourceVideo and assets.logo fields are also auto-set from uploads.
+
+BEHAVIOR RULES:
+- Be warm, clear, and conversational. You're a creative collaborator, not a robot.
+- Chain multiple tools in ONE turn. Example: read_timeline + clear_timeline + add_clip + add_overlay + set_export + propose.
+- Make smart defaults: logo defaults to top-right 8%, text to bottom-center bold-clean, transitions to crossfade 0.4s.
+- When the request is vague ("make it nice"), make good creative choices and explain why in the proposal.
+- When the request is specific ("cut 2:30-3:15"), follow exactly.
+- ALWAYS explain your creative choices in the proposal summary.
+- For "shorts"/"reels"/"vertical" → set_export 9:16, smart crop.
+- For dates/text overlays, detect date formats in the user's message and use them.
+- If a logo is uploaded, call detect_logo_background to pick the right key.
+- If the user says "render"/"do it"/"go"/"approved" and there's an approved plan, start_render final.
+- Refuse non-video tasks in one short sentence.
+
+CRITICAL DUPLICATE PREVENTION:
+- ALWAYS read_timeline before adding clips. If clips already exist from uploads, do NOT add them again.
+- If you need to rebuild, call clear_timeline FIRST, then add clips fresh.
+
+TIMELINE RULES:
+- Clips are placed on the timeline at tlStart. If tlStart is omitted, append after the last clip.
+- srcIn/srcOut define which part of the source video to use. srcOut=0 means use full duration.
+- Overlays have tlStart/tlEnd — they appear only during that window. tlEnd=0 means full duration.
+- Transitions are per-clip: transitionIn at start, transitionOut at end.
+- For joining clips, add them sequentially and set crossfade transitions at boundaries.
+
+IMPORTANT: The propose() tool presents the plan to the user as a visual card. Make the summary clear and the diff items descriptive.`;
+
+function buildToolDispatcherV2(
+  req: Request,
+  getProject: () => EditorProjectV2,
+  setProject: (p: EditorProjectV2) => void,
+  pendingTimeline: Timeline,
+  sendSse: (event: any) => void,
+): Record<string, ToolExec> {
+  return {
+    read_project: async () => {
+      const p = getProject();
+      return { message: `Project "${p.title}": source=${p.sourceVideo || "(none)"}, logo=${p.assets.logo || "(none)"}, ${p.renders.length} renders.` };
+    },
+    read_timeline: async () => {
+      const tl = pendingTimeline;
+      return { message: `Timeline: ${tl.tracks.video.length} clips, ${tl.tracks.overlays.length} overlays, ${tl.tracks.audio.length} audio. Export: ${tl.export.aspectRatio} ${tl.export.cropMode}.` };
+    },
+    read_assets: async () => {
+      const p = getProject();
+      return { message: `Assets: source=${p.sourceVideo || "(none)"}, logo=${p.assets.logo || "(none)"}, intro=${p.assets.intro || "(none)"}, outro=${p.assets.outro || "(none)"}.` };
+    },
+    add_clip: async (args) => {
+      const clip: TimelineClip = {
+        id: randomUUID(),
+        asset: args.asset,
+        srcIn: args.srcIn ?? 0,
+        srcOut: args.srcOut ?? 0,
+        tlStart: args.tlStart ?? computeTimelineDuration(pendingTimeline),
+        speed: Math.max(0.25, Math.min(4, args.speed ?? 1)),
+      };
+      pendingTimeline.tracks.video.push(clip);
+      return { message: `Added clip from ${clip.asset} (${clip.srcIn}s-${clip.srcOut || "end"}s) at timeline ${clip.tlStart}s.` };
+    },
+    remove_clip: async (args) => {
+      const idx = pendingTimeline.tracks.video.findIndex(c => c.id === args.clipId);
+      if (idx < 0) throw new Error("Clip not found.");
+      pendingTimeline.tracks.video.splice(idx, 1);
+      return { message: "Clip removed." };
+    },
+    trim_clip: async (args) => {
+      const clip = pendingTimeline.tracks.video.find(c => c.id === args.clipId);
+      if (!clip) throw new Error("Clip not found.");
+      if (args.srcIn != null) clip.srcIn = args.srcIn;
+      if (args.srcOut != null) clip.srcOut = args.srcOut;
+      return { message: `Clip trimmed to ${clip.srcIn}s-${clip.srcOut || "end"}s.` };
+    },
+    set_clip_speed: async (args) => {
+      const clip = pendingTimeline.tracks.video.find(c => c.id === args.clipId);
+      if (!clip) throw new Error("Clip not found.");
+      clip.speed = Math.max(0.25, Math.min(4, args.speed));
+      return { message: `Clip speed set to ${clip.speed}x.` };
+    },
+    set_transition: async (args) => {
+      const clip = pendingTimeline.tracks.video.find(c => c.id === args.clipId);
+      if (!clip) throw new Error("Clip not found.");
+      const def: TransitionDef = {
+        type: (["none", "fade", "crossfade", "blur", "dip-to-black", "wipe"].includes(args.transitionType) ? args.transitionType : "crossfade") as TransitionType,
+        duration: Math.max(0.1, Math.min(2, args.duration ?? 0.4)),
+      };
+      if (args.boundary === "in") clip.transitionIn = def;
+      else clip.transitionOut = def;
+      return { message: `${args.boundary === "in" ? "In" : "Out"} transition set to ${def.type} (${def.duration}s).` };
+    },
+    add_overlay: async (args) => {
+      let style: Record<string, any> = {};
+      if (typeof args.style === "string") {
+        try { style = JSON.parse(args.style); } catch { style = {}; }
+      }
+      if (args.overlayType === "logo" && !style.widthPercent) style.widthPercent = 8;
+      if (args.overlayType === "logo" && !style.key) style.key = "none";
+      if (args.overlayType === "text" && !style.style) style.style = "bold-clean";
+      const overlay: TimedOverlay = {
+        id: randomUUID(),
+        type: args.overlayType || "text",
+        content: args.content,
+        tlStart: args.tlStart ?? 0,
+        tlEnd: args.tlEnd ?? 0,
+        position: args.position || (args.overlayType === "logo" ? "top-right" : "bottom-center"),
+        style,
+      };
+      pendingTimeline.tracks.overlays.push(overlay);
+      return { message: `Added ${overlay.type} overlay "${overlay.content.slice(0, 40)}" at ${overlay.position}.` };
+    },
+    remove_overlay: async (args) => {
+      const idx = pendingTimeline.tracks.overlays.findIndex(o => o.id === args.overlayId);
+      if (idx < 0) throw new Error("Overlay not found.");
+      pendingTimeline.tracks.overlays.splice(idx, 1);
+      return { message: "Overlay removed." };
+    },
+    add_audio: async (args) => {
+      const audio: AudioClip = {
+        id: randomUUID(),
+        asset: args.asset,
+        tlStart: args.tlStart ?? 0,
+        tlEnd: args.tlEnd ?? 0,
+        volumeDb: Math.max(-30, Math.min(6, args.volumeDb ?? -10)),
+        fadeIn: args.fadeIn ?? 0,
+        fadeOut: args.fadeOut ?? 0,
+        duckSpeech: args.duckSpeech !== false,
+      };
+      pendingTimeline.tracks.audio.push(audio);
+      return { message: `Added audio ${audio.asset} at ${audio.tlStart}s, vol=${audio.volumeDb}dB.` };
+    },
+    set_export: async (args) => {
+      if (args.aspectRatio && ["original", "9:16", "16:9", "1:1"].includes(args.aspectRatio)) {
+        pendingTimeline.export.aspectRatio = args.aspectRatio;
+      }
+      if (args.cropMode && ["smart", "fit-blur", "contain"].includes(args.cropMode)) {
+        pendingTimeline.export.cropMode = args.cropMode;
+      }
+      if (args.colorPreset && ["none", "vivid", "muted", "bw", "warm", "cool"].includes(args.colorPreset)) {
+        pendingTimeline.export.colorPreset = args.colorPreset;
+      }
+      return { message: `Export: ${pendingTimeline.export.aspectRatio}, ${pendingTimeline.export.cropMode}, color=${pendingTimeline.export.colorPreset}.` };
+    },
+    propose: async (args) => {
+      const proposal: Proposal = {
+        proposalId: randomUUID(),
+        status: "pending",
+        summary: args.summary || "Edit plan ready for review.",
+        diff: Array.isArray(args.diffItems) ? args.diffItems.map((d: any) => ({
+          action: d.action || "add",
+          target: d.target || "clip",
+          description: d.description || "",
+        })) : [],
+        timeline: JSON.parse(JSON.stringify(pendingTimeline)),
+        createdAt: Date.now(),
+      };
+      // Save proposal to project
+      const ws = getWorkspace(req);
+      const cur = getProject();
+      const proposals = [...((cur as any).proposals || []).filter((p: Proposal) => p.status !== "pending"), proposal];
+      const next = await writeProjectToWorkspace(ws, { ...cur, proposals, timeline: pendingTimeline, version: 2 } as any);
+      setProject(next as EditorProjectV2);
+      // Emit proposal SSE event
+      sendSse({
+        type: "proposal",
+        proposalId: proposal.proposalId,
+        summary: proposal.summary,
+        diff: proposal.diff,
+        timeline: proposal.timeline,
+        duration: computeTimelineDuration(proposal.timeline),
+      });
+      return { message: `Proposal ready: ${proposal.summary}` };
+    },
+    clear_timeline: async () => {
+      pendingTimeline.tracks.video = [];
+      pendingTimeline.tracks.overlays = [];
+      pendingTimeline.tracks.audio = [];
+      return { message: "Timeline cleared. All clips, overlays, and audio removed." };
+    },
+    start_render: async (args) => {
+      const ws = getWorkspace(req);
+      let project = getProject();
+      if (!project.sourceVideo && pendingTimeline.tracks.video.length === 0) {
+        throw new Error("No video clips to render.");
+      }
+      // ── Bridge V2 Timeline → V1 project fields for render engine ──
+      if (pendingTimeline.tracks.video.length > 0 && !project.sourceVideo) {
+        // Set sourceVideo from the first clip
+        project.sourceVideo = pendingTimeline.tracks.video[0].asset;
+        // Apply trim from first clip
+        project.recipe.trim = {
+          start: pendingTimeline.tracks.video[0].srcIn || null,
+          end: pendingTimeline.tracks.video[0].srcOut || null,
+        };
+        // Apply speed
+        project.recipe.speed = pendingTimeline.tracks.video[0].speed || 1;
+      }
+      // Bridge export settings
+      if (pendingTimeline.export) {
+        project.recipe.aspectRatio = pendingTimeline.export.aspectRatio as any;
+        project.recipe.cropMode = pendingTimeline.export.cropMode as any;
+        project.recipe.colorPreset = pendingTimeline.export.colorPreset as any;
+      }
+      // Bridge overlays
+      const bridgedOverlays: any[] = [];
+      for (const ov of pendingTimeline.tracks.overlays) {
+        if (ov.type === "logo") {
+          bridgedOverlays.push({
+            type: "logo",
+            asset: ov.content,
+            position: (ov.position || "top-right") as any,
+            widthPercent: ov.style?.widthPercent ?? 8,
+            key: ov.style?.key ?? "none",
+          });
+          // Also set project.assets.logo
+          if (!project.assets.logo) project.assets.logo = ov.content;
+        } else if (ov.type === "text") {
+          bridgedOverlays.push({
+            type: "text",
+            text: ov.content,
+            position: (ov.position || "bottom-center") as any,
+            style: ov.style?.style || "bold-clean",
+          });
+        }
+      }
+      if (bridgedOverlays.length > 0) {
+        project.recipe.overlays = bridgedOverlays;
+      }
+      // Save bridged project
+      project = await writeProjectToWorkspace(ws, project);
+      setProject(project as EditorProjectV2);
+      const kind = args?.kind === "preview" ? "preview" : "final";
+      const job = enqueueRender(ws, project, kind);
+      const next = await readProjectFromWorkspace(ws, project.projectId);
+      setProject(next as EditorProjectV2);
+      return { message: `${kind} render started.`, project: next, job };
+    },
+    get_render_status: async () => {
+      const project = getProject();
+      const latest = project.renders[0];
+      if (!latest) return { message: "No renders yet." };
+      const live = jobs.get(latest.jobId);
+      return { message: `${latest.kind}: ${live?.status ?? latest.status} · ${live?.progress ?? latest.progress}% — ${live?.message ?? latest.message}` };
+    },
+    detect_logo_background: async () => {
+      const cur = getProject();
+      if (!cur.assets.logo) throw new Error("No logo uploaded yet.");
+      if (!isGeminiConfigured()) return { message: "Vision model not configured." };
+      const ws = getWorkspace(req);
+      const tmp = join(tmpdir(), `editor-logo-${randomUUID()}`);
+      await mkdir(tmp, { recursive: true });
+      try {
+        const ext = (extname(cur.assets.logo) || ".png").toLowerCase();
+        const localPath = join(tmp, `logo${ext}`);
+        await downloadWorkspaceFile(ws, cur.assets.logo, localPath);
+        const bytes = await readFile(localPath);
+        const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
+        const ai = createGeminiClient();
+        const resp: any = await ai.models.generateContent({
+          model: (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim(),
+          contents: [{ role: "user", parts: [
+            { text: 'Look at this logo. Reply with ONLY one word: "transparent", "white", "black", or "none". No punctuation.' },
+            { inlineData: { mimeType: mime, data: bytes.toString("base64") } },
+          ]}],
+          config: { maxOutputTokens: 16, thinkingConfig: { thinkingLevel: "LOW" as any } },
+        });
+        const text: string = String(resp?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p.text === "string")?.text || "").trim().toLowerCase().replace(/[^a-z]/g, "");
+        const decision = text === "white" ? "auto-white" : text === "black" ? "auto-black" : "none";
+        for (const ov of pendingTimeline.tracks.overlays) {
+          if (ov.type === "logo") ov.style.key = decision;
+        }
+        return { message: `Logo background: ${text || "unclear"} → key=${decision}.` };
+      } finally {
+        await rm(tmp, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+  };
+}
+
 function sse(res: Response, event: any) {
   res.write(`data: ${JSON.stringify(event)}\n\n`);
   sseFlush(res);
@@ -1333,6 +1821,18 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
     const ws = getWorkspace(req);
     let project = await readProjectFromWorkspace(ws, projectId);
 
+    // ── Auto-link uploaded files from chat message markers ──
+    const videoMatch = userText.match(/\[Uploaded video:.*?→\s*([^\]]+)\]/);
+    const imageMatch = userText.match(/\[Uploaded image:.*?→\s*([^\]]+)\]/);
+    if (videoMatch && !project.sourceVideo) {
+      project.sourceVideo = videoMatch[1].trim();
+      project = await writeProjectToWorkspace(ws, project);
+    }
+    if (imageMatch && !project.assets.logo) {
+      project.assets.logo = imageMatch[1].trim();
+      project = await writeProjectToWorkspace(ws, project);
+    }
+
     setupSse(res);
     const send = (event: any) => sse(res, event);
     const heartbeat = setInterval(() => send({ type: "heartbeat", ts: Date.now() }), 8000);
@@ -1349,9 +1849,15 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
 
     const assistantMessage: ChatMessage = { id: randomUUID(), role: "assistant", content: "", createdAt: Date.now() };
 
-    const getProject = () => project;
-    const setProject = (p: EditorProject) => { project = p; send({ type: "project", project: p }); };
-    const tools = buildToolDispatcher(req, getProject, setProject);
+    // Initialize pending timeline from project state (v2) or convert from legacy recipe
+    const projectV2 = project as EditorProjectV2;
+    const pendingTimeline: Timeline = projectV2.timeline
+      ? JSON.parse(JSON.stringify(projectV2.timeline))
+      : recipeToTimeline(project.recipe, project.sourceVideo);
+
+    const getProject = () => project as EditorProjectV2;
+    const setProject = (p: EditorProjectV2) => { project = p; send({ type: "project", project: p }); };
+    const tools = buildToolDispatcherV2(req, getProject, setProject, pendingTimeline, send);
 
     if (!isGeminiConfigured()) {
       // Offline fallback: regex generator + auto preview render if user said render
@@ -1369,7 +1875,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
     }
 
     const ai = createGeminiClient();
-    const model = (process.env.EDITOR_AGENT_MODEL || "gemini-2.5-flash").trim();
+    const model = (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim();
     const thinkingBudget = process.env.EDITOR_AGENT_THINKING_BUDGET || "MEDIUM";
 
     const projectContext = `Current project:\n- sourceVideo: ${project.sourceVideo ?? "(none)"}\n- assets.logo: ${project.assets.logo ?? "(none)"}\n- assets.intro: ${project.assets.intro ?? "(none)"}\n- assets.outro: ${project.assets.outro ?? "(none)"}\n- recipe: ${snapshotRecipeSummary(project)}`;
@@ -1391,10 +1897,10 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
         model,
         contents,
         config: {
-          systemInstruction: AGENT_SYSTEM_PROMPT,
-          tools: [{ functionDeclarations: AGENT_TOOL_DECLARATIONS as any }],
+          systemInstruction: AGENT_SYSTEM_PROMPT_V2,
+          tools: [{ functionDeclarations: AGENT_TOOL_DECLARATIONS_V2 as any }],
           toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
-          maxOutputTokens: 2048,
+          maxOutputTokens: 4096,
           thinkingConfig: { thinkingLevel: thinkingBudget as any },
         },
       });
@@ -1515,6 +2021,57 @@ router.get("/projects/:projectId/renders/:jobId/thumb", async (req: Request, res
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
+// ─── Proposal endpoints ───────────────────────────────────────────────────────
+router.post("/projects/:projectId/proposals/:proposalId/apply", async (req: Request, res: Response) => {
+  try {
+    const projectId = routeParam(req.params.projectId, "projectId");
+    const proposalId = routeParam(req.params.proposalId, "proposalId");
+    const ws = getWorkspace(req);
+    const project = await readProjectFromWorkspace(ws, projectId) as EditorProjectV2;
+    const proposal = (project.proposals || []).find(p => p.proposalId === proposalId);
+    if (!proposal) return bad(res, 404, "proposal not found");
+    if (proposal.status !== "pending") return bad(res, 400, `proposal already ${proposal.status}`);
+
+    proposal.status = "applied";
+    const next = await writeProjectToWorkspace(ws, {
+      ...project,
+      timeline: proposal.timeline,
+      version: 2,
+      proposals: project.proposals,
+    } as any);
+    return res.json({ project: next, proposal });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
+router.post("/projects/:projectId/proposals/:proposalId/reject", async (req: Request, res: Response) => {
+  try {
+    const projectId = routeParam(req.params.projectId, "projectId");
+    const proposalId = routeParam(req.params.proposalId, "proposalId");
+    const ws = getWorkspace(req);
+    const project = await readProjectFromWorkspace(ws, projectId) as EditorProjectV2;
+    const proposal = (project.proposals || []).find(p => p.proposalId === proposalId);
+    if (!proposal) return bad(res, 404, "proposal not found");
+
+    proposal.status = "rejected";
+    const next = await writeProjectToWorkspace(ws, { ...project, proposals: project.proposals } as any);
+    return res.json({ project: next, proposal });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
+router.get("/projects/:projectId/proposals", async (req: Request, res: Response) => {
+  try {
+    const projectId = routeParam(req.params.projectId, "projectId");
+    const project = await readProject(req, projectId) as EditorProjectV2;
+    return res.json({ proposals: project.proposals || [] });
   } catch (err) {
     return fail(res, err);
   }
