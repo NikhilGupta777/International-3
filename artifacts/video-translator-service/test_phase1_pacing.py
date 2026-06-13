@@ -183,5 +183,71 @@ class PacingPrimitivesTests(unittest.TestCase):
         self.assertGreater(window_target, phonation_target)
 
 
+class DynamicTimelineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.worker = import_worker()
+
+    def test_no_expansion_keeps_original_starts(self):
+        segs = [{"start": 0.0, "end": 2.0}, {"start": 3.0, "end": 5.0}]
+        natural = [1.5, 1.5]
+        placements, freezes, new_total, extra, tail = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=6.0, min_gap=0.12,
+        )
+        self.assertEqual(freezes, [])
+        self.assertAlmostEqual(extra, 0.0, places=6)
+        self.assertAlmostEqual(tail, 0.0, places=6)
+        self.assertAlmostEqual(placements[0], 0.0, places=6)
+        self.assertAlmostEqual(placements[1], 3.0, places=6)
+        self.assertAlmostEqual(new_total, 6.0, places=6)
+
+    def test_expansion_pushes_later_and_records_freeze(self):
+        # First line's natural dub (3.0s) runs past the next line's start (2.0s).
+        segs = [{"start": 0.0, "end": 2.0}, {"start": 2.0, "end": 3.0}]
+        natural = [3.0, 1.0]
+        placements, freezes, new_total, extra, tail = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=5.0, min_gap=0.1,
+        )
+        # A freeze is inserted at the second line's original start.
+        self.assertEqual(len(freezes), 1)
+        self.assertAlmostEqual(freezes[0][0], 2.0, places=6)
+        self.assertGreater(freezes[0][1], 0.0)
+        # The second line never overlaps the first → no speed-up needed.
+        self.assertGreaterEqual(placements[1] - placements[0], natural[0] - 1e-6)
+        self.assertAlmostEqual(extra, 1.1, places=3)
+        self.assertAlmostEqual(new_total, 6.1, places=3)
+
+    def test_last_segment_overflow_extends_tail(self):
+        segs = [{"start": 0.0, "end": 2.0}]
+        natural = [4.0]
+        placements, freezes, new_total, extra, tail = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=3.0, min_gap=0.1,
+        )
+        self.assertEqual(freezes, [])
+        self.assertAlmostEqual(placements[0], 0.0, places=6)
+        # Audio (4s) exceeds the 3s video → tail hold extends the picture.
+        self.assertAlmostEqual(new_total, 4.1, places=3)
+        self.assertAlmostEqual(tail, 1.1, places=3)
+
+    def test_every_segment_has_natural_room(self):
+        # General invariant: under dynamic length, consecutive placements never
+        # overlap a line's natural duration (so the voice is never compressed).
+        segs = [
+            {"start": 0.0, "end": 1.0},
+            {"start": 1.2, "end": 2.0},
+            {"start": 2.1, "end": 3.0},
+            {"start": 5.0, "end": 6.0},
+        ]
+        natural = [2.5, 1.8, 0.6, 1.0]
+        placements, _f, _nt, _ex, _t = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=7.0, min_gap=0.1,
+        )
+        for i in range(len(segs) - 1):
+            self.assertGreaterEqual(
+                placements[i + 1] - placements[i], natural[i] - 1e-6,
+                f"segment {i} would be compressed",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

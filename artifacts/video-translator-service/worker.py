@@ -113,6 +113,12 @@ if not SOURCE_LANG_CODE and SOURCE_LANG not in ("", "auto"):
     SOURCE_LANG_CODE = _LANG_NAME_TO_CODE.get(SOURCE_LANG.lower().strip(), "")
 VOICE_CLONE         = os.environ.get("VOICE_CLONE", "true").lower() == "true"
 LIP_SYNC            = os.environ.get("LIP_SYNC", "false").lower() == "true"
+# Dynamic Video Length (advanced): never speed the voice up to fit the
+# original timeline.  Instead, synthesize every line at its natural rate and
+# let the OUTPUT video grow — inserting frozen-frame holds during the natural
+# pauses between lines so audio and picture stay aligned (also keeps lip-sync
+# valid).  The video gets a few seconds longer; the voice never sounds rushed.
+DYNAMIC_VIDEO_LENGTH = os.environ.get("DYNAMIC_VIDEO_LENGTH", "false").lower() == "true"
 # Demucs and diarization are quality-heavy options. The API/frontend decide
 # when to enable them; default OFF prevents hidden multi-minute work in direct
 # worker invocations that omit these env vars.
@@ -3007,7 +3013,12 @@ def synthesize_segments_cosyvoice(
         )
         # Combine duration-fit ratio with Gemini's per-segment speaking_rate.
         # speed > 1 = faster speech = shorter duration.
-        if predicted_seconds > 0 and target_speech_seconds > 0:
+        if DYNAMIC_VIDEO_LENGTH:
+            # Dynamic Video Length: never compress the voice to fit a slot.
+            # Speak at the natural rate (only the prosodic speaking_rate
+            # applies); the timeline is grown later to fit.
+            duration_speed = 1.0
+        elif predicted_seconds > 0 and target_speech_seconds > 0:
             duration_speed = predicted_seconds / target_speech_seconds
         else:
             duration_speed = 1.0
@@ -3177,8 +3188,11 @@ def synthesize_segments_cosyvoice(
             qa_retry = "no"
 
             # ── Post-synthesis QA gate (Phase 1: missing-from-audit item) ──
+            # Skipped under Dynamic Video Length — that mode never speeds the
+            # voice up to hit a duration target.
             if (
-                speed_supported
+                not DYNAMIC_VIDEO_LENGTH
+                and speed_supported
                 and target_speech_seconds > 0
                 and actual_seconds / target_speech_seconds > QA_OVER_RATIO
             ):
@@ -4266,6 +4280,171 @@ def mux_final_video(
     log.info(f"[Mux] Final video: {out_path}")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Dynamic Video Length — grow the timeline instead of speeding up the voice
+# ─────────────────────────────────────────────────────────────────────────────
+# Minimum silence kept between two consecutive lines on the rebuilt timeline.
+DYNAMIC_MIN_GAP_SECONDS = 0.12
+# Below this, a tail/freeze hold is treated as negligible and skipped (avoids
+# a needless full video re-encode for sub-frame rounding).
+DYNAMIC_HOLD_EPSILON_SECONDS = 0.05
+
+
+def measure_audio_seconds(path: Path) -> float:
+    """Duration of an audio file in seconds (soundfile, ffprobe fallback)."""
+    try:
+        import soundfile as sf
+        info = sf.info(str(path))
+        if info.samplerate and info.frames:
+            return float(info.frames) / float(info.samplerate)
+    except Exception as exc:
+        log.debug("[Dynamic] soundfile.info failed for %s: %s", path, exc)
+    try:
+        result = run_ffprobe(
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        )
+        return max(0.0, float(result.stdout.strip()))
+    except Exception as exc:
+        log.warning("[Dynamic] Could not measure duration for %s: %s", path, exc)
+        return 0.0
+
+
+def build_dynamic_timeline(
+    segments: list[dict],
+    natural_durations: list[float],
+    video_duration: float,
+    min_gap: float = DYNAMIC_MIN_GAP_SECONDS,
+):
+    """
+    Re-time the dub so every line plays at its natural (un-sped) length.
+
+    Walks segments in order, keeping each line's original start when there is
+    room; when a line's natural audio would run into the next line, the
+    following content is pushed later and that pushed time is recorded as a
+    frozen-frame hold to insert into the video at that point.  This keeps the
+    voice at a natural rate and the picture in sync.
+
+    Returns (placements, freezes, new_total, extra_seconds, tail_hold):
+      placements    list[float]            new start time per segment
+      freezes       list[(orig_sec, hold)] frame-holds to insert in the source
+      new_total     float                  final timeline / output duration
+      extra_seconds float                  total mid-timeline time inserted
+      tail_hold     float                  extra frozen seconds appended at end
+    """
+    placements: list[float] = []
+    freezes: list[tuple[float, float]] = []
+    extra = 0.0
+    cursor = 0.0
+    valid_vd = (
+        float(video_duration)
+        if isinstance(video_duration, (int, float)) and math.isfinite(video_duration) and video_duration > 0
+        else 0.0
+    )
+
+    for i, seg in enumerate(segments):
+        orig_start = max(0.0, float(seg.get("start", 0.0)))
+        nat = max(0.0, float(natural_durations[i])) if i < len(natural_durations) else 0.0
+        new_start = orig_start + extra
+        if new_start < cursor:
+            push = cursor - new_start
+            freezes.append((orig_start, push))
+            extra += push
+            new_start = cursor
+        placements.append(new_start)
+        cursor = new_start + nat + max(0.0, min_gap)
+
+    base = valid_vd + extra            # length of source after mid-freezes
+    new_total = max(base, cursor)
+    tail_hold = max(0.0, new_total - base)
+    return placements, freezes, new_total, extra, tail_hold
+
+
+def build_extended_video(
+    video_path: Path,
+    freezes: list[tuple[float, float]],
+    tail_hold: float,
+    total_duration: float,
+    out_dir: Path,
+) -> Path:
+    """
+    Produce a video that matches the dynamic (grown) timeline by inserting
+    frozen-frame holds at the given source timestamps and (optionally) holding
+    the final frame for `tail_hold` seconds.
+
+    The held frame is the last frame before each cut, cloned via ffmpeg
+    `tpad=stop_mode=clone`, so a pause shows a still picture (natural during
+    the gap between sentences and lip-sync-safe).  Returns the original video
+    untouched when there is nothing meaningful to insert.
+    """
+    # Coalesce holds that land on the same timestamp; drop negligible ones.
+    hold_by_time: dict[float, float] = {}
+    for t, d in freezes:
+        if d <= 0:
+            continue
+        key = round(max(0.0, float(t)), 3)
+        hold_by_time[key] = hold_by_time.get(key, 0.0) + float(d)
+    cut_times = sorted(k for k, v in hold_by_time.items() if v > 0)
+    tail_hold = max(0.0, float(tail_hold))
+
+    if not cut_times and tail_hold <= DYNAMIC_HOLD_EPSILON_SECONDS:
+        # Nothing to insert — source already matches the timeline.
+        return video_path
+
+    filters: list[str] = []
+    labels: list[str] = []
+    prev = 0.0
+    idx = 0
+    for t in cut_times:
+        if t <= prev + 1e-3:
+            # Degenerate/coincident cut (shouldn't occur given strictly
+            # increasing starts).  Preserve total duration by deferring this
+            # hold to the tail rather than emitting an empty trim.
+            tail_hold += hold_by_time[t]
+            continue
+        hold = hold_by_time[t]
+        filters.append(
+            f"[0:v]trim=start={prev:.3f}:end={t:.3f},setpts=PTS-STARTPTS,"
+            f"tpad=stop_mode=clone:stop_duration={hold:.3f}[v{idx}]"
+        )
+        labels.append(f"[v{idx}]")
+        prev = t
+        idx += 1
+
+    # Final chunk: from the last cut to the end of the source, plus tail hold.
+    final_chunk = f"[0:v]trim=start={prev:.3f},setpts=PTS-STARTPTS"
+    if tail_hold > DYNAMIC_HOLD_EPSILON_SECONDS:
+        final_chunk += f",tpad=stop_mode=clone:stop_duration={tail_hold:.3f}"
+    final_chunk += f"[v{idx}]"
+    filters.append(final_chunk)
+    labels.append(f"[v{idx}]")
+
+    concat = f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[outv]"
+    filter_complex = ";".join(filters + [concat])
+
+    out_path = out_dir / "video_extended.mp4"
+    run_ffmpeg(
+        "-i", str(video_path),
+        "-filter_complex", filter_complex,
+        "-map", "[outv]",
+        "-an",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        str(out_path),
+    )
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("Extended-video build produced no output.")
+    log.info(
+        "[Dynamic] Extended video built: %d freeze insert(s), tail=%.2fs, total=%.2fs",
+        len(cut_times), tail_hold, total_duration,
+    )
+    return out_path
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 10: Generate transcript JSON
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4599,38 +4778,77 @@ def main():
         elif voice_was_cloned:
             log.info("[Main] Voice cloning successful -- CosyVoice used.")
 
-        # -- 7c. Timing fit ----------------------------------------------------
-        update_progress("CLONING", 60, "Fitting audio timing to video...")
-        fitted_paths = []
-        for idx, (seg, audio_path) in enumerate(zip(segments, seg_audio_paths)):
-            # Use the same pause-aware window the speed solver and QA gate used
-            # so the timing-fit pass agrees on one target.  Falling back to the
-            # raw slot keeps legacy/un-annotated segments working.
-            target_dur = compute_target_speech_seconds(seg)
-            if not (isinstance(target_dur, (int, float)) and target_dur > 0):
-                target_dur = seg["end"] - seg["start"]
-            # Pass the next segment's start so fit_audio_to_duration knows how
-            # far it can let the dub overflow without colliding with the next
-            # line.  When this is the final segment, use video_duration as the
-            # virtual "next start".
-            next_seg_start = (
-                segments[idx + 1]["start"] if idx + 1 < len(segments) else video_duration
+        # -- 7c. Timing fit (or dynamic-length timeline) -----------------------
+        # Defaults: dub fitted into the original fixed-length timeline.
+        dynamic_applied = False
+        dynamic_extra_seconds = 0.0
+        mux_video = video_path
+        mux_duration = video_duration
+
+        if DYNAMIC_VIDEO_LENGTH:
+            # Voice was synthesized at natural rate (speed solver locked above).
+            # Build a grown timeline that fits every line without speeding it
+            # up, and extend the video with frozen-frame holds in the pauses.
+            update_progress("CLONING", 60, "Building natural-length timeline...")
+            natural_durations = [measure_audio_seconds(p) for p in seg_audio_paths]
+            placements, freezes, new_total, dynamic_extra_seconds, tail_hold = build_dynamic_timeline(
+                segments, natural_durations, video_duration,
             )
-            seg.setdefault("_pacing", {})
-            fitted = fit_audio_to_duration(
-                audio_path,
-                target_dur,
-                seg_dir,
-                next_seg_start=float(next_seg_start),
-                seg_start=float(seg["start"]),
-                pacing=seg["_pacing"],
-            )
-            fitted_paths.append(fitted)
+            try:
+                extended_video = build_extended_video(
+                    video_path, freezes, tail_hold, new_total, work_dir
+                )
+                # Commit the dynamic timeline: re-time segments to the new
+                # placements so assembly, SRT and transcript all stay in sync.
+                for seg, new_start, nat in zip(segments, placements, natural_durations):
+                    seg["start"] = round(float(new_start), 4)
+                    seg["end"] = round(float(new_start) + max(0.0, float(nat)), 4)
+                fitted_paths = list(seg_audio_paths)  # natural, never sped up
+                mux_video = extended_video
+                mux_duration = new_total
+                dynamic_applied = True
+                log.info(
+                    "[Dynamic] Applied: +%.2fs over %d insert(s); output duration %.2fs",
+                    dynamic_extra_seconds, len(freezes), new_total,
+                )
+            except Exception as dyn_err:
+                log.warning(
+                    "[Dynamic] Extended-video build failed (%s). "
+                    "Falling back to fixed-length timing.", dyn_err,
+                )
+
+        if not dynamic_applied:
+            update_progress("CLONING", 60, "Fitting audio timing to video...")
+            fitted_paths = []
+            for idx, (seg, audio_path) in enumerate(zip(segments, seg_audio_paths)):
+                # Use the same pause-aware window the speed solver and QA gate
+                # used so the timing-fit pass agrees on one target.  Falling
+                # back to the raw slot keeps legacy/un-annotated segments working.
+                target_dur = compute_target_speech_seconds(seg)
+                if not (isinstance(target_dur, (int, float)) and target_dur > 0):
+                    target_dur = seg["end"] - seg["start"]
+                # Pass the next segment's start so fit_audio_to_duration knows
+                # how far it can let the dub overflow without colliding with the
+                # next line.  When this is the final segment, use video_duration
+                # as the virtual "next start".
+                next_seg_start = (
+                    segments[idx + 1]["start"] if idx + 1 < len(segments) else video_duration
+                )
+                seg.setdefault("_pacing", {})
+                fitted = fit_audio_to_duration(
+                    audio_path,
+                    target_dur,
+                    seg_dir,
+                    next_seg_start=float(next_seg_start),
+                    seg_start=float(seg["start"]),
+                    pacing=seg["_pacing"],
+                )
+                fitted_paths.append(fitted)
 
         # -- 8. Assemble dubbed audio track ------------------------------------
         update_progress("CLONING", 65, "Assembling dubbed audio track...")
         dubbed_audio = assemble_dubbed_audio(
-            segments, fitted_paths, video_duration, work_dir, background_audio
+            segments, fitted_paths, mux_duration, work_dir, background_audio
         )
 
         # -- 9. Lip sync (optional) --------------------------------------------
@@ -4641,7 +4859,7 @@ def main():
             update_progress("LIPSYNC", 70, f"Running lip sync ({LIP_SYNC_QUALITY})...")
             lip_dir = work_dir / "lipsync"
             lip_dir.mkdir()
-            lipsync_video = run_lipsync(video_path, dubbed_audio, lip_dir)
+            lipsync_video = run_lipsync(mux_video, dubbed_audio, lip_dir)
             if lipsync_video is not None:
                 shutil.copy(lipsync_video, final_video_path)
                 lip_sync_applied = True
@@ -4649,16 +4867,16 @@ def main():
             else:
                 log.warning("[Main] Lip sync failed, muxing dubbed audio without lip sync.")
                 update_progress("MERGING", 78, "Merging video and dubbed audio (no lip sync)...")
-                mux_final_video(video_path, dubbed_audio, final_video_path, video_duration=video_duration)
+                mux_final_video(mux_video, dubbed_audio, final_video_path, video_duration=mux_duration)
         else:
             update_progress("MERGING", 78, "Merging video and dubbed audio...")
-            mux_final_video(video_path, dubbed_audio, final_video_path, video_duration=video_duration)
+            mux_final_video(mux_video, dubbed_audio, final_video_path, video_duration=mux_duration)
 
         # â”€â”€ 10. Generate SRT and transcript â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("MERGING", 88, "Generating subtitles...")
         srt_path = work_dir / "subtitles.srt"
         transcript_path = work_dir / "transcript.json"
-        generate_srt(segments, srt_path, video_duration=video_duration)
+        generate_srt(segments, srt_path, video_duration=mux_duration)
         generate_transcript_json(segments, transcript_path)
 
         # â”€â”€ 11. Upload to S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4685,6 +4903,10 @@ def main():
                 "demucsWarning": demucs_warning,
                 "lipSync": LIP_SYNC,
                 "lipSyncApplied": lip_sync_applied,
+                "dynamicVideoLength": DYNAMIC_VIDEO_LENGTH,
+                "dynamicVideoLengthApplied": dynamic_applied,
+                "dynamicExtraSeconds": round(dynamic_extra_seconds, 3),
+                "outputDurationSeconds": round(mux_duration, 3),
                 "translationMode": TRANSLATION_MODE,
                 "targetLang": TARGET_LANG,
                 "segmentCount": len(segments),
@@ -4714,6 +4936,8 @@ def main():
             "voiceCloneApplied": voice_was_cloned,
             "lipSync": LIP_SYNC,
             "lipSyncApplied": lip_sync_applied,
+            "dynamicVideoLength": DYNAMIC_VIDEO_LENGTH,
+            "dynamicVideoLengthApplied": dynamic_applied,
             "reportKey": report_key,
         })
 
