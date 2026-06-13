@@ -990,11 +990,18 @@ export function AiVideoStudio() {
         ];
       });
       const targetBubbleId = initialJob?.jobId || progressBubbleId;
+      // Capture the interval id locally so `stop()` clears *this* poll's
+      // interval and never the next project's. Without the identity check
+      // below, a stale-session callback racing against a fast project
+      // switch could call clearInterval on the NEW project's interval id
+      // (since renderPollRef.current is mutable), silently freezing the
+      // new render's progress bubble.
+      let intervalId: ReturnType<typeof setInterval> | null = null;
       const stop = () => {
-        if (renderPollRef.current) clearInterval(renderPollRef.current);
-        renderPollRef.current = null;
+        if (intervalId !== null) clearInterval(intervalId);
+        if (renderPollRef.current === intervalId) renderPollRef.current = null;
       };
-      renderPollRef.current = setInterval(async () => {
+      intervalId = setInterval(async () => {
         if (isStaleSession()) { stop(); return; }
         if (Date.now() - renderPollStartRef.current > MAX_POLL_MS) {
           stop();
@@ -1129,6 +1136,7 @@ export function AiVideoStudio() {
           }
         }
       }, 2500);
+      renderPollRef.current = intervalId;
     },
     []
   );

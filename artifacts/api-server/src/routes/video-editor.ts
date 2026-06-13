@@ -2914,7 +2914,15 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
         }
         try {
           const result = await exec(args);
-          if (TIMELINE_MUTATING_TOOLS.has(name)) timelineMutated = true;
+          if (TIMELINE_MUTATING_TOOLS.has(name)) {
+            timelineMutated = true;
+            // Any mutation that runs AFTER a propose/start_render means the
+            // snapshot we just persisted no longer matches pendingTimeline.
+            // Re-arm so the end-of-turn auto-snapshot fires and captures the
+            // post-propose tweaks — otherwise `set_transition` after
+            // `propose()` in the same turn would be lost on refresh.
+            timelinePersistedThisRun = false;
+          }
           // propose() saves the timeline as a pending proposal record;
           // start_render() commits pendingTimeline straight to project.timeline.
           // Both make the run durable, so we don't need to auto-snapshot.
