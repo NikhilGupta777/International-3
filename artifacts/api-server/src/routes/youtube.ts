@@ -2991,6 +2991,7 @@ function buildProgressPayload(jobId: string, job: DownloadJob) {
     startedAt: job.startedAt ?? null,
     completedAt: job.completedAt ?? null,
     elapsedMs: (job.completedAt ?? Date.now()) - (job.startedAt ?? Date.now()),
+    s3Key: job.s3Key ?? null,
   };
 }
 

@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, Languages, Mic, MicOff, Play, Download, CheckCircle,
   Loader2, AlertCircle, X, ChevronDown, Subtitles, RefreshCw,
-  Film, Wand2, Volume2, Eye, Share2, History, Trash2, Terminal, ChevronUp
+  Film, Wand2, Volume2, Eye, Share2, History, Trash2, Terminal, ChevronUp,
+  Youtube, Scissors, Clock, Sparkles, ArrowRight
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -34,9 +35,12 @@ const LANGS = [
   { code: "uk", name: "Ukrainian" }, { code: "vi", name: "Vietnamese" }, { code: "id", name: "Indonesian" },
   { code: "fil", name: "Filipino" }, { code: "fi", name: "Finnish" },
 ];
-const TARGET_LANGS = LANGS.filter(l => l.code !== "auto");
+const TARGET_LANGS = LANGS.filter(l => l.code !== "auto" && l.code !== "hi");
 const MAX_VIDEO_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
 const NO_STORE: RequestCache = "no-store";
+// YouTube endpoints live under /api/youtube/* (same battle-tested yt-dlp +
+// clip-cut path used by the Studio copilot and Clip Cutter).
+const YT_BASE = `${BASE}/api/youtube`;
 type TranslatorStep = {
   name: string;
   label: string;
@@ -106,6 +110,42 @@ function translatedVideoFilename(filename?: string, langCode?: string): string {
     : "video";
   const lang = langCode ? `_${langCode}` : "";
   return `${base}_translated${lang}.mp4`;
+}
+
+// Parse "MM:SS", "HH:MM:SS", or a plain seconds string into total seconds.
+// Returns null when the input is empty or malformed.
+function parseTimeToSeconds(value: string): number | null {
+  const t = (value ?? "").trim();
+  if (!t) return null;
+  if (/^\d+$/.test(t)) return parseInt(t, 10);
+  const parts = t.split(":").map((p) => p.trim());
+  if (parts.length < 2 || parts.length > 3 || parts.some((p) => !/^\d+$/.test(p))) return null;
+  const nums = parts.map(Number);
+  if (parts.length === 2) return nums[0] * 60 + nums[1];
+  return nums[0] * 3600 + nums[1] * 60 + nums[2];
+}
+
+// Format seconds back to a friendly clock label (used for the clip duration hint).
+function secondsToClock(total: number): string {
+  const s = Math.max(0, Math.round(total));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
+const YOUTUBE_URL_RE = /(?:youtube\.com\/(?:watch\?[^\s]*v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{6,})/;
+
+function isLikelyYouTubeUrl(url: string): boolean {
+  return YOUTUBE_URL_RE.test((url ?? "").trim());
+}
+
+// Derive a tidy filename from a YouTube URL: "youtube_<id>.mp4".
+function youtubeFilename(url: string): string {
+  const m = (url ?? "").match(YOUTUBE_URL_RE);
+  return m ? `youtube_${m[1]}.mp4` : "youtube-video.mp4";
 }
 
 // ── Step config ─────────────────────────────────────────────────────────────
@@ -275,8 +315,15 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
 export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncAvailable?: boolean }) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
-  const [srcLang, setSrcLang] = useState("auto");
-  const [tgtLang, setTgtLang] = useState("hi");
+  const [sourceMode, setSourceMode] = useState<"upload" | "youtube">("upload");
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [useClip, setUseClip] = useState(false);
+  const [clipStart, setClipStart] = useState("");
+  const [clipEnd, setClipEnd] = useState("");
+  const [preparing, setPreparing] = useState(false);
+  const [prepareMsg, setPrepareMsg] = useState("");
+  const [srcLang, setSrcLang] = useState("hi");
+  const [tgtLang, setTgtLang] = useState("en");
   const [voiceStyle, setVoiceStyle] = useState<"original" | "female">("original");
   const [lipSync, setLipSync] = useState(false);
   const [translationMode, setTranslationMode] = useState<"full" | "subtitle-only">("full");
@@ -296,6 +343,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [showDebug, setShowDebug] = useState(false);
   const [stuckWarning, setStuckWarning] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ytPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollStartRef = useRef<number>(0);
   const lastProgressRef = useRef<{ progress: number; status: string; ts: number }>({ progress: 0, status: "", ts: 0 });
 
@@ -500,6 +548,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     };
   }, [jobId, pollStatus]);
 
+  // Clear the YouTube-prep poll timer if the component unmounts mid-fetch.
+  useEffect(() => () => {
+    if (ytPollRef.current) { clearTimeout(ytPollRef.current); ytPollRef.current = null; }
+  }, []);
+
   useEffect(() => {
     let closed = false;
     const reconcileTranslatorJobs = async () => {
@@ -634,6 +687,129 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     };
   }, [fetchResultUrls, jobId, refreshHistory]);
 
+  // Shared translator options for both the file-upload and YouTube paths.
+  const buildSubmitOptions = useCallback(() => {
+    const isVoiceClone = voiceStyle === "original" && translationMode === "full";
+    return {
+      targetLang: TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
+      targetLangCode: tgtLang,
+      sourceLang: srcLang,
+      voiceClone: isVoiceClone,
+      lipSync: lipSyncAvailable && lipSync && translationMode === "full",
+      lipSyncQuality: "latentsync",
+      translationMode: translationMode === "subtitle-only" ? "subtitle-only" : "default",
+      multiSpeaker: isVoiceClone ? multiSpeaker : false,
+      useDemucs: keepBackgroundMusic && translationMode === "full",
+      dynamicVideoLength: translationMode === "full" && dynamicVideoLength,
+    };
+  }, [voiceStyle, translationMode, tgtLang, srcLang, lipSyncAvailable, lipSync, multiSpeaker, keepBackgroundMusic, dynamicVideoLength]);
+
+  // Poll a YouTube download/clip-cut job until it produces an S3 object.
+  const pollYoutubeUntilReady = useCallback((ytJobId: string, mode: "clip" | "full") =>
+    new Promise<string | null>((resolve, reject) => {
+      const startedAt = Date.now();
+      const tick = async () => {
+        try {
+          const res = await fetch(`${YT_BASE}/progress/${ytJobId}`, { cache: NO_STORE });
+          if (res.ok) {
+            const data = await readJsonResponse<any>(res);
+            const status = String(data.status ?? "");
+            if (typeof data.percent === "number") {
+              setPrepareMsg(`${mode === "clip" ? "Cutting" : "Downloading"} from YouTube… ${Math.round(data.percent)}%`);
+            }
+            if (["done", "complete", "finished"].includes(status)) {
+              resolve(data.s3Key ?? data.queue?.s3Key ?? null);
+              return;
+            }
+            if (["error", "failed", "cancelled", "expired", "not_found"].includes(status)) {
+              reject(new Error(data.message || `YouTube job ${status}`));
+              return;
+            }
+          }
+        } catch { /* transient — keep polling */ }
+        if (Date.now() - startedAt > 20 * 60_000) {
+          reject(new Error("YouTube fetch timed out. Try a shorter clip."));
+          return;
+        }
+        ytPollRef.current = setTimeout(tick, 2500);
+      };
+      void tick();
+    }), []);
+
+  const handleYoutubeTranslate = useCallback(async () => {
+    setError(null);
+    const url = youtubeUrl.trim();
+    if (!url) { setError("Paste a YouTube link first."); return; }
+    if (!isLikelyYouTubeUrl(url)) { setError("That doesn't look like a valid YouTube link."); return; }
+
+    let clipBody: { startTime: number; endTime: number } | null = null;
+    if (useClip) {
+      const s = parseTimeToSeconds(clipStart);
+      const e = parseTimeToSeconds(clipEnd);
+      if (s == null || e == null) { setError("Enter a valid start and end time (e.g. 1:30 and 2:45)."); return; }
+      if (e <= s) { setError("The end time must be after the start time."); return; }
+      if (e - s > 3600) { setError("A clip can be at most 60 minutes long."); return; }
+      clipBody = { startTime: s, endTime: e };
+    }
+
+    setPreparing(true);
+    setJob(null); setTranscript([]);
+    setPrepareMsg(clipBody ? "Cutting the selected part from YouTube…" : "Fetching the video from YouTube…");
+    try {
+      const endpoint = clipBody ? `${YT_BASE}/clip-cut` : `${YT_BASE}/download`;
+      const body = clipBody ? { url, ...clipBody, quality: "best" } : { url };
+      const startRes = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!startRes.ok) throw await responseError(startRes, "Failed to fetch the video from YouTube.");
+      const startData = await readJsonResponse<any>(startRes);
+      const ytJobId = String(startData.jobId ?? "");
+      if (!ytJobId) throw new Error("YouTube did not return a job id.");
+
+      const sourceS3Key = await pollYoutubeUntilReady(ytJobId, clipBody ? "clip" : "full");
+      if (!sourceS3Key) {
+        throw new Error("The YouTube video could not be prepared for translation (no cloud file produced).");
+      }
+
+      setPrepareMsg("Starting translation…");
+      const filename = youtubeFilename(url);
+      const submitRes = await fetch(`${API}/submit-from-s3`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...translatorAuthHeaders() },
+        body: JSON.stringify({ sourceS3Key, filename, ...buildSubmitOptions() }),
+      });
+      if (!submitRes.ok) throw await responseError(submitRes, "Failed to start translation.");
+      const submitData = await readJsonResponse<any>(submitRes);
+      const newJobId = String(submitData?.jobId ?? "");
+      if (!newJobId) throw new Error("Translation submit response was incomplete.");
+
+      const opts = buildSubmitOptions();
+      upsertActiveTranslatorJob({
+        jobId: newJobId,
+        filename,
+        targetLang: opts.targetLang,
+        targetLangCode: tgtLang,
+        sourceLang: srcLang,
+        startedAt: Date.now(),
+        progress: 0,
+        step: "Job queued, waiting for worker...",
+        status: "QUEUED",
+        voiceClone: opts.voiceClone,
+        lipSync: opts.lipSync,
+      });
+      setJobId(newJobId);
+      refreshHistory();
+    } catch (e: any) {
+      setError(e?.message ?? "YouTube translation failed.");
+    } finally {
+      setPreparing(false);
+      setPrepareMsg("");
+      if (ytPollRef.current) { clearTimeout(ytPollRef.current); ytPollRef.current = null; }
+    }
+  }, [youtubeUrl, useClip, clipStart, clipEnd, buildSubmitOptions, pollYoutubeUntilReady, tgtLang, srcLang, refreshHistory]);
+
   const handleUpload = async () => {
     if (!file) return;
     setError(null); setUploading(true); setJob(null); setTranscript([]);
@@ -747,9 +923,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
 
   const reset = () => {
     if (pollRef.current) clearTimeout(pollRef.current);
+    if (ytPollRef.current) { clearTimeout(ytPollRef.current); ytPollRef.current = null; }
     setFile(null); setJobId(null); setJob(null);
     setTranscript([]); setError(null); setShowTranscript(false);
     setStuckWarning(null);
+    setPreparing(false); setPrepareMsg("");
     lastProgressRef.current = { progress: 0, status: "", ts: 0 };
   };
 
@@ -912,19 +1090,25 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       <div className="max-w-3xl mx-auto w-full px-4 py-8 flex flex-col gap-6">
 
         {/* Header */}
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-primary/15 border border-primary/30 flex items-center justify-center">
-            <Languages className="w-5 h-5 text-primary" />
+        <div className="relative overflow-hidden rounded-3xl border border-white/[0.08] bg-gradient-to-br from-primary/15 via-purple-500/5 to-transparent p-5">
+          <div className="absolute -top-10 -right-8 w-40 h-40 rounded-full bg-primary/20 blur-3xl pointer-events-none" />
+          <div className="relative flex items-center gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shadow-lg shadow-primary/30 shrink-0">
+              <Languages className="w-6 h-6 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h1 className="text-2xl font-extrabold text-white tracking-tight flex items-center gap-2 flex-wrap">
+                Video Translator
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">AI Dub</span>
+              </h1>
+              <p className="text-sm text-white/50 mt-0.5">Clone the speaker's voice into 18+ languages — upload a file or paste a YouTube link.</p>
+            </div>
+            {jobId && (
+              <button onClick={reset} className="shrink-0 p-2.5 rounded-xl bg-white/6 hover:bg-white/12 text-white/50 hover:text-white transition-colors" title="Start over">
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            )}
           </div>
-          <div>
-            <h1 className="text-xl font-bold text-white">Video Translator</h1>
-            <p className="text-sm text-white/40">GPU-powered voice cloning · 20 languages</p>
-          </div>
-          {jobId && (
-            <button onClick={reset} className="ml-auto p-2 rounded-xl bg-white/6 hover:bg-white/10 text-white/50 hover:text-white transition-colors">
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          )}
         </div>
 
         {/* Error */}
@@ -997,18 +1181,112 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           </div>
         )}
 
+        {preparing && (
+          <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+            className="rounded-2xl border border-primary/25 bg-primary/[0.06] p-5 flex items-center gap-3">
+            <Loader2 className="w-5 h-5 animate-spin text-primary shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-white/85">Preparing your video…</p>
+              <p className="text-xs text-white/45 mt-0.5 truncate">{prepareMsg || "Working…"}</p>
+            </div>
+          </motion.div>
+        )}
+
         <>
-          {!isProcessing && <>
-            {/* Drop zone */}
-            <DropZone onFile={setFile} disabled={uploading} />
-            {file && (
-              <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08]">
-                <Film className="w-4 h-4 text-primary shrink-0" />
-                <span className="text-sm text-white/80 flex-1 truncate">{file.name}</span>
-                <span className="text-xs text-white/40">{(file.size / 1024 / 1024).toFixed(1)} MB</span>
-                <button onClick={() => setFile(null)} className="text-white/30 hover:text-white/70 transition-colors">
-                  <X className="w-4 h-4" />
-                </button>
+          {!isProcessing && !preparing && <>
+            {/* Source selector */}
+            <div className="grid grid-cols-2 gap-2 p-1 rounded-2xl bg-white/[0.04] border border-white/[0.08]">
+              <button
+                onClick={() => setSourceMode("upload")}
+                className={cn("flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all",
+                  sourceMode === "upload" ? "bg-primary text-white shadow-lg shadow-primary/25" : "text-white/50 hover:text-white/80")}
+              >
+                <Upload className="w-4 h-4" /> Upload file
+              </button>
+              <button
+                onClick={() => setSourceMode("youtube")}
+                className={cn("flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-all",
+                  sourceMode === "youtube" ? "bg-primary text-white shadow-lg shadow-primary/25" : "text-white/50 hover:text-white/80")}
+              >
+                <Youtube className="w-4 h-4" /> YouTube link
+              </button>
+            </div>
+
+            {sourceMode === "upload" ? (
+              <>
+                {/* Drop zone */}
+                <DropZone onFile={setFile} disabled={uploading} />
+                {file && (
+                  <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08]">
+                    <Film className="w-4 h-4 text-primary shrink-0" />
+                    <span className="text-sm text-white/80 flex-1 truncate">{file.name}</span>
+                    <span className="text-xs text-white/40">{(file.size / 1024 / 1024).toFixed(1)} MB</span>
+                    <button onClick={() => setFile(null)} className="text-white/30 hover:text-white/70 transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {/* YouTube URL */}
+                <div className="relative">
+                  <Youtube className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-red-400/80 pointer-events-none" />
+                  <input
+                    type="url"
+                    inputMode="url"
+                    value={youtubeUrl}
+                    onChange={(e) => setYoutubeUrl(e.target.value)}
+                    placeholder="https://youtube.com/watch?v=…"
+                    className="w-full bg-white/[0.06] border border-white/[0.1] rounded-2xl pl-12 pr-4 py-4 text-sm text-white/90 placeholder:text-white/30 focus:outline-none focus:border-primary/60 transition-colors"
+                  />
+                </div>
+                {youtubeUrl.trim() && !isLikelyYouTubeUrl(youtubeUrl) && (
+                  <p className="text-[11px] text-amber-300/70 flex items-center gap-1.5 pl-1">
+                    <AlertCircle className="w-3 h-3" /> This doesn't look like a YouTube link.
+                  </p>
+                )}
+
+                {/* Clip a specific part */}
+                <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] p-4 flex flex-col gap-3">
+                  <label className="flex items-center gap-3 select-none cursor-pointer">
+                    <div onClick={() => setUseClip(!useClip)}
+                      className={cn("w-10 h-6 rounded-full transition-all relative cursor-pointer shrink-0", useClip ? "bg-primary" : "bg-white/20")}>
+                      <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all", useClip ? "left-[18px]" : "left-0.5")} />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Scissors className="w-4 h-4 text-primary/80 shrink-0" />
+                      <div>
+                        <p className="text-sm text-white/80 font-medium">Translate only a part</p>
+                        <p className="text-xs text-white/40">Cut a specific time range and translate just that clip.</p>
+                      </div>
+                    </div>
+                  </label>
+                  {useClip && (
+                    <div className="flex flex-col gap-2 pl-1">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-white/40 font-medium uppercase tracking-wider flex items-center gap-1"><Clock className="w-3 h-3" /> Start</label>
+                          <input value={clipStart} onChange={(e) => setClipStart(e.target.value)} placeholder="0:00"
+                            className="w-full bg-white/[0.06] border border-white/[0.1] rounded-xl px-3 py-2.5 text-sm text-white/90 placeholder:text-white/30 focus:outline-none focus:border-primary/60 font-mono" />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-xs text-white/40 font-medium uppercase tracking-wider flex items-center gap-1"><Clock className="w-3 h-3" /> End</label>
+                          <input value={clipEnd} onChange={(e) => setClipEnd(e.target.value)} placeholder="2:30"
+                            className="w-full bg-white/[0.06] border border-white/[0.1] rounded-xl px-3 py-2.5 text-sm text-white/90 placeholder:text-white/30 focus:outline-none focus:border-primary/60 font-mono" />
+                        </div>
+                      </div>
+                      {(() => {
+                        const s = parseTimeToSeconds(clipStart);
+                        const e = parseTimeToSeconds(clipEnd);
+                        if (s == null || e == null) return <p className="text-[11px] text-white/35 pl-1">Use mm:ss (e.g. 1:30) or h:mm:ss.</p>;
+                        if (e <= s) return <p className="text-[11px] text-red-300/70 pl-1">End time must be after start time.</p>;
+                        if (e - s > 3600) return <p className="text-[11px] text-red-300/70 pl-1">Maximum clip length is 60 minutes.</p>;
+                        return <p className="text-[11px] text-emerald-300/70 pl-1">Clip length: {secondsToClock(e - s)}</p>;
+                      })()}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1161,18 +1439,26 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             </div>
 
             {/* Submit */}
-            <button
-              onClick={handleUpload}
-              disabled={!file || uploading}
-              className={cn(
-                "w-full py-3.5 rounded-2xl font-bold text-base flex items-center justify-center gap-2 transition-all",
-                file && !uploading
-                  ? "bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/25"
-                  : "bg-white/10 text-white/30 cursor-not-allowed"
-              )}
-            >
-              {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploading...</> : <><Languages className="w-5 h-5" /> Translate Video</>}
-            </button>
+            {(() => {
+              const canSubmit = sourceMode === "upload" ? !!file : youtubeUrl.trim().length > 0;
+              const busy = uploading || preparing;
+              return (
+                <button
+                  onClick={() => (sourceMode === "youtube" ? void handleYoutubeTranslate() : void handleUpload())}
+                  disabled={!canSubmit || busy}
+                  className={cn(
+                    "w-full py-3.5 rounded-2xl font-bold text-base flex items-center justify-center gap-2 transition-all",
+                    canSubmit && !busy
+                      ? "bg-gradient-to-r from-primary to-orange-400 hover:opacity-95 text-white shadow-lg shadow-primary/25"
+                      : "bg-white/10 text-white/30 cursor-not-allowed"
+                  )}
+                >
+                  {uploading ? <><Loader2 className="w-5 h-5 animate-spin" /> Uploading…</>
+                    : preparing ? <><Loader2 className="w-5 h-5 animate-spin" /> Preparing…</>
+                    : <><Sparkles className="w-5 h-5" /> {sourceMode === "youtube" ? (useClip ? "Cut & Translate Clip" : "Translate from YouTube") : "Translate Video"} <ArrowRight className="w-4 h-4" /></>}
+                </button>
+              );
+            })()}
           </>}
         </>
 
