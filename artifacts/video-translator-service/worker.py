@@ -4388,6 +4388,193 @@ def build_dynamic_timeline(
     return placements, freezes, new_total, extra, tail_hold
 
 
+# ── Smooth time-warp (no freezing): the picture keeps moving ─────────────────
+# Instead of freezing a frame to make room for a longer dubbed line, we gently
+# slow the *video* for that line so it keeps playing, and warp the background
+# audio by the exact same factor so it stays locked to the picture.  The cap
+# keeps the slow-down subtle so the flow isn't broken; only genuinely dense
+# lines (dub far longer than the source span even at max slow-down) fall back
+# to a small voice speed-up.
+DYNAMIC_MAX_VIDEO_STRETCH = max(
+    1.05, min(2.0, float(os.environ.get("DYNAMIC_MAX_VIDEO_STRETCH", "1.25")))
+)
+DYNAMIC_MIN_CHUNK_SECONDS = 0.05
+
+
+def _apply_atempo(in_path: Path, speed: float, out_dir: Path, label: str) -> Path:
+    """Change an audio clip's tempo (pitch-preserving) by `speed`×."""
+    speed = max(0.5, min(2.0, float(speed)))
+    if abs(speed - 1.0) < 1e-3:
+        return in_path
+    out = out_dir / f"{label}.wav"
+    run_ffmpeg("-i", str(in_path), "-filter:a", f"atempo={speed:.5f}", str(out))
+    if not out.exists() or out.stat().st_size == 0:
+        raise RuntimeError(f"atempo produced no output for {in_path}")
+    return out
+
+
+def build_timewarp_plan(
+    segments: list[dict],
+    natural_durations: list[float],
+    video_duration: float,
+    max_stretch: float = DYNAMIC_MAX_VIDEO_STRETCH,
+):
+    """
+    Plan a continuous, never-freezing output timeline.
+
+    The source video is split at segment starts into contiguous chunks that
+    together cover [0, video_duration].  Each chunk that owns a spoken line is
+    stretched (slowed) just enough for that line's natural dub to fit, capped
+    at `max_stretch` so the slow-down stays subtle.  Chunks whose dub already
+    fits keep factor 1.0 — the picture plays exactly as-is there.
+
+    Returns (chunks, seg_plan, total):
+      chunks   list[{src_start, src_end, out_dur, factor, seg_index}]
+               factor = out_dur / source_dur  (>= 1.0; 1.0 == untouched)
+      seg_plan list[{out_start, out_dur, dub_speed, placed_dur}] per segment
+               dub_speed > 1.0 only for the rare clamped (very dense) line.
+      total    float  final output duration
+    """
+    n = len(segments)
+    vd = (
+        float(video_duration)
+        if isinstance(video_duration, (int, float)) and math.isfinite(video_duration) and video_duration > 0
+        else None
+    )
+    starts = [max(0.0, float(s.get("start", 0.0))) for s in segments]
+    nats = [
+        max(0.0, float(natural_durations[i])) if i < len(natural_durations) else 0.0
+        for i in range(n)
+    ]
+    if vd is None:
+        vd = (starts[-1] + nats[-1] + 1.0) if n else 1.0
+
+    chunks: list[dict] = []
+    seg_plan: list[dict] = []
+    out_cursor = 0.0
+
+    # Lead chunk before the first line (intro / no dub) — plays untouched.
+    if n and starts[0] > DYNAMIC_MIN_CHUNK_SECONDS:
+        chunks.append({
+            "src_start": 0.0, "src_end": starts[0],
+            "out_dur": starts[0], "factor": 1.0, "seg_index": None,
+        })
+        out_cursor += starts[0]
+
+    for i in range(n):
+        s = starts[i]
+        e = starts[i + 1] if i + 1 < n else vd
+        if e <= s:
+            e = s + DYNAMIC_MIN_CHUNK_SECONDS
+        src = max(DYNAMIC_MIN_CHUNK_SECONDS, e - s)
+        nd = nats[i]
+        # Never shorter than the source span (slow-only), and never longer
+        # than max_stretch × source (keeps the slow-down subtle).
+        out_dur = min(max(nd, src), src * max_stretch)
+        factor = out_dur / src
+        if nd > out_dur + 1e-3:
+            dub_speed = nd / out_dur          # rare: very dense line
+            placed = out_dur
+        else:
+            dub_speed = 1.0                    # voice stays natural
+            placed = nd
+        chunks.append({
+            "src_start": s, "src_end": e,
+            "out_dur": out_dur, "factor": factor, "seg_index": i,
+        })
+        seg_plan.append({
+            "out_start": out_cursor, "out_dur": out_dur,
+            "dub_speed": dub_speed, "placed_dur": placed,
+        })
+        out_cursor += out_dur
+
+    return chunks, seg_plan, out_cursor
+
+
+def build_timewarped_video(video_path: Path, chunks: list[dict], total: float, out_dir: Path) -> Path:
+    """
+    Re-time the video per the plan via per-chunk setpts (no frame freezing).
+    Chunks with factor 1.0 pass through untouched; chunks that own a longer
+    dubbed line are slowed smoothly.  Returns the original video when nothing
+    needs warping.
+    """
+    if not chunks or all(abs(c["factor"] - 1.0) < 1e-3 for c in chunks):
+        return video_path
+
+    filters: list[str] = []
+    labels: list[str] = []
+    last = len(chunks) - 1
+    for k, c in enumerate(chunks):
+        a = float(c["src_start"]); b = float(c["src_end"]); f = float(c["factor"])
+        trim = f"trim=start={a:.3f}" if k == last else f"trim=start={a:.3f}:end={b:.3f}"
+        if abs(f - 1.0) < 1e-3:
+            filters.append(f"[0:v]{trim},setpts=PTS-STARTPTS[v{k}]")
+        else:
+            filters.append(f"[0:v]{trim},setpts={f:.5f}*(PTS-STARTPTS)[v{k}]")
+        labels.append(f"[v{k}]")
+    concat = f"{''.join(labels)}concat=n={len(labels)}:v=1:a=0[outv]"
+    filter_complex = ";".join(filters + [concat])
+
+    out_path = out_dir / "video_timewarped.mp4"
+    run_ffmpeg(
+        "-i", str(video_path),
+        "-filter_complex", filter_complex,
+        "-map", "[outv]", "-an",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+        str(out_path),
+    )
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("Time-warped video build produced no output.")
+    warped = sum(1 for c in chunks if abs(c["factor"] - 1.0) >= 1e-3)
+    log.info("[Dynamic] Time-warped video: %d/%d chunk(s) slowed, total=%.2fs", warped, len(chunks), total)
+    return out_path
+
+
+def timewarp_background(
+    background_audio: Path,
+    chunks: list[dict],
+    total: float,
+    out_dir: Path,
+    sample_rate: int = 44100,
+) -> Path:
+    """
+    Warp the Demucs background track by the SAME per-chunk factor as the video
+    (atempo = 1/factor) so music/ambience stays locked to the picture.  Guard
+    with try/except; fall back to the original track on failure.
+    """
+    if not chunks or all(abs(c["factor"] - 1.0) < 1e-3 for c in chunks):
+        return background_audio
+
+    sr = int(sample_rate)
+    parts: list[str] = []
+    labels: list[str] = []
+    last = len(chunks) - 1
+    for k, c in enumerate(chunks):
+        a = float(c["src_start"]); b = float(c["src_end"]); f = float(c["factor"])
+        atrim = f"atrim=start={a:.3f}" if k == last else f"atrim=start={a:.3f}:end={b:.3f}"
+        base = f"[0:a]aresample={sr},aformat=channel_layouts=mono,{atrim},asetpts=PTS-STARTPTS"
+        tempo = (1.0 / f) if f > 1e-6 else 1.0
+        if abs(tempo - 1.0) > 1e-3:
+            base += f",atempo={tempo:.5f}"
+        base += f"[b{k}]"
+        parts.append(base)
+        labels.append(f"[b{k}]")
+    concat = f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[outa]"
+    filter_complex = ";".join(parts + [concat])
+
+    out_path = out_dir / "background_timewarped.wav"
+    run_ffmpeg(
+        "-i", str(background_audio),
+        "-filter_complex", filter_complex,
+        "-map", "[outa]", "-ar", str(sr),
+        str(out_path),
+    )
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("Background time-warp produced no output.")
+    log.info("[Dynamic] Background track time-warped to match the picture.")
+    return out_path
+
+
 def build_extended_video(
     video_path: Path,
     freezes: list[tuple[float, float]],
@@ -4891,47 +5078,56 @@ def main():
 
         if DYNAMIC_VIDEO_LENGTH:
             # Voice was synthesized at natural rate (speed solver locked above).
-            # Build a grown timeline that fits every line without speeding it
-            # up, and extend the video with frozen-frame holds in the pauses.
-            update_progress("CLONING", 60, "Building natural-length timeline...")
+            # Keep the picture MOVING: gently slow the video for each line that
+            # needs more room (capped, so flow isn't broken) and warp the
+            # background audio by the same factor.  No frame freezing.
+            update_progress("CLONING", 60, "Time-stretching video to match natural voice...")
             natural_durations = [measure_audio_seconds(p) for p in seg_audio_paths]
-            placements, freezes, new_total, dynamic_extra_seconds, tail_hold = build_dynamic_timeline(
+            chunks, seg_plan, new_total = build_timewarp_plan(
                 segments, natural_durations, video_duration,
             )
+            dynamic_extra_seconds = max(0.0, new_total - float(video_duration))
             try:
-                extended_video = build_extended_video(
-                    video_path, freezes, tail_hold, new_total, work_dir
-                )
-                # Commit the dynamic timeline: re-time segments to the new
-                # placements so assembly, SRT and transcript all stay in sync.
-                for seg, new_start, nat in zip(segments, placements, natural_durations):
-                    seg["start"] = round(float(new_start), 4)
-                    seg["end"] = round(float(new_start) + max(0.0, float(nat)), 4)
-                fitted_paths = list(seg_audio_paths)  # natural, never sped up
-                mux_video = extended_video
+                warped_video = build_timewarped_video(video_path, chunks, new_total, work_dir)
+                # Re-time each line onto the warped timeline and, for the rare
+                # clamped (very dense) line, apply a small voice speed-up.
+                warped_paths: list[Path] = []
+                for i, (seg, plan, audio_path) in enumerate(zip(segments, seg_plan, seg_audio_paths)):
+                    path = audio_path
+                    if plan["dub_speed"] > 1.001:
+                        try:
+                            path = _apply_atempo(audio_path, plan["dub_speed"], seg_dir, f"dyn_speed_{i}")
+                        except Exception as sp_err:
+                            log.warning("[Dynamic] dub speed-up failed for seg %d (%s); using natural.", i, sp_err)
+                    seg["start"] = round(float(plan["out_start"]), 4)
+                    seg["end"] = round(float(plan["out_start"]) + max(0.0, float(plan["placed_dur"])), 4)
+                    warped_paths.append(path)
+                fitted_paths = warped_paths
+                mux_video = warped_video
                 mux_duration = new_total
                 dynamic_applied = True
-                # Keep Demucs background music aligned with the frozen-frame
-                # holds so it doesn't drift against the grown picture.
+                # Warp the background by the SAME factor so it stays locked to
+                # the picture.
                 if background_audio is not None and background_audio.exists():
                     try:
-                        background_audio = align_background_to_timeline(
-                            background_audio, freezes, tail_hold, work_dir
-                        )
+                        background_audio = timewarp_background(background_audio, chunks, new_total, work_dir)
                     except Exception as bg_err:
                         log.warning(
-                            "[Dynamic] Background alignment failed (%s); "
+                            "[Dynamic] Background time-warp failed (%s); "
                             "using original background (may drift slightly).", bg_err,
                         )
                 log.info(
-                    "[Dynamic] Applied: +%.2fs over %d insert(s); output duration %.2fs",
-                    dynamic_extra_seconds, len(freezes), new_total,
+                    "[Dynamic] Applied (time-warp): +%.2fs; output duration %.2fs",
+                    dynamic_extra_seconds, new_total,
                 )
             except Exception as dyn_err:
                 log.warning(
-                    "[Dynamic] Extended-video build failed (%s). "
+                    "[Dynamic] Time-warp build failed (%s). "
                     "Falling back to fixed-length timing.", dyn_err,
                 )
+                dynamic_applied = False
+                mux_video = video_path
+                mux_duration = video_duration
 
         if not dynamic_applied:
             update_progress("CLONING", 60, "Fitting audio timing to video...")
