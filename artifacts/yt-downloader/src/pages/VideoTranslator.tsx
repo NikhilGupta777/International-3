@@ -283,6 +283,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [keepBackgroundMusic, setKeepBackgroundMusic] = useState(false);
   const [multiSpeaker, setMultiSpeaker] = useState(false);
+  const [dynamicVideoLength, setDynamicVideoLength] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<any>(null);
   const [transcript, setTranscript] = useState<any[]>([]);
@@ -709,6 +710,10 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           // P2-7: background music separation (Demucs).  When disabled,
           // the dubbed audio is voice-only with no background music mix.
           useDemucs: keepBackgroundMusic && translationMode === "full",
+          // Dynamic Video Length: keep the dubbed voice at natural speed and
+          // let the output video grow (frozen-frame holds in the pauses)
+          // rather than speeding the voice up to fit the original length.
+          dynamicVideoLength: translationMode === "full" && dynamicVideoLength,
         }),
       });
       if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");
@@ -1120,6 +1125,20 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                           </div>
                         </label>
                       )}
+
+                      {/* Dynamic Video Length toggle */}
+                      <label className="flex items-center gap-3 select-none cursor-pointer">
+                        <div onClick={() => setDynamicVideoLength(!dynamicVideoLength)}
+                          className={cn("w-10 h-6 rounded-full transition-all relative cursor-pointer",
+                            dynamicVideoLength ? "bg-primary" : "bg-white/20")}>
+                          <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all",
+                            dynamicVideoLength ? "left-[18px]" : "left-0.5")} />
+                        </div>
+                        <div>
+                          <p className="text-sm text-white/80 font-medium">Dynamic Video Length</p>
+                          <p className="text-xs text-white/40">Keeps the dubbed voice at its natural speed (no speed-up). The video may get a few seconds longer, holding the frame during pauses.</p>
+                        </div>
+                      </label>
                     </div>
                   )}
                 </div>
@@ -1283,6 +1302,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                     {job?.segmentCount != null && (
                       <span className="px-2 py-0.5 rounded-full border border-white/15 text-white/40">
                         {job.segmentCount} segments
+                      </span>
+                    )}
+                    {job?.dynamicExtraSeconds != null && job.dynamicExtraSeconds > 0.05 && (
+                      <span className="px-2 py-0.5 rounded-full border border-sky-400/40 text-sky-300/80">
+                        Dynamic length +{job.dynamicExtraSeconds.toFixed(1)}s
                       </span>
                     )}
                   </div>

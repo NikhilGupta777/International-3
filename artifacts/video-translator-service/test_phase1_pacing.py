@@ -4,7 +4,6 @@ Phase 1 pacing-primitives smoke tests.
 These are pure-function unit tests on the helpers introduced by the
 Phase 1 audit fix.  They do NOT call CosyVoice, ffmpeg, or AssemblyAI.
 """
-import math
 import unittest
 
 from test_worker_guards import import_worker
@@ -133,6 +132,194 @@ class PacingPrimitivesTests(unittest.TestCase):
         self.assertEqual(summary["fitActions"]["passthrough"], 1)
         self.assertEqual(summary["fitActions"]["atempo"], 1)
         self.assertEqual(summary["placedActions"]["tail_trim"], 1)
+
+    # ── Pause-aware window pacing (the "artificial speed" fix) ────────────
+    def test_annotate_dub_windows_reclaims_bounded_gap(self):
+        # slot=3, gap_to_next=2 → usable_gap capped at GAP_REUSE_MAX_SECONDS.
+        segs = [
+            {"id": 0, "start": 0.0, "end": 3.0},
+            {"id": 1, "start": 5.0, "end": 6.0},
+        ]
+        self.worker.annotate_dub_windows(segs, video_duration=10.0)
+        expected = 3.0 + self.worker.GAP_REUSE_MAX_SECONDS - self.worker.TARGET_SLOT_SAFETY_PAD_SECONDS
+        self.assertAlmostEqual(segs[0]["dub_window_seconds"], expected, places=3)
+
+    def test_annotate_dub_windows_small_gap_uses_whole_gap(self):
+        # gap=0.30 (< cap) → entire gap is reusable.
+        segs = [
+            {"id": 0, "start": 0.0, "end": 3.0},
+            {"id": 1, "start": 3.3, "end": 4.0},
+        ]
+        self.worker.annotate_dub_windows(segs, video_duration=10.0)
+        expected = 3.0 + 0.30 - self.worker.TARGET_SLOT_SAFETY_PAD_SECONDS
+        self.assertAlmostEqual(segs[0]["dub_window_seconds"], expected, places=3)
+
+    def test_annotate_dub_windows_last_segment_uses_video_duration(self):
+        segs = [{"id": 0, "start": 0.0, "end": 3.0}]
+        self.worker.annotate_dub_windows(segs, video_duration=10.0)
+        expected = 3.0 + self.worker.GAP_REUSE_MAX_SECONDS - self.worker.TARGET_SLOT_SAFETY_PAD_SECONDS
+        self.assertAlmostEqual(segs[0]["dub_window_seconds"], expected, places=3)
+
+    def test_compute_target_prefers_annotated_window_over_phonation(self):
+        # When a window is annotated it overrides the phonation-only target —
+        # this is what stops a longer translation being sped up to fit the
+        # shorter phonation window.
+        seg = {"start": 0.0, "end": 5.0, "speech_duration": 2.0, "dub_window_seconds": 4.2}
+        self.assertAlmostEqual(
+            self.worker.compute_target_speech_seconds(seg), 4.2, places=3
+        )
+
+    def test_compute_target_window_larger_than_phonation(self):
+        # End-to-end: a 5 s slot with 2 s phonation and a following pause.
+        # Old behaviour targeted ~2 s (forcing speed-up); the window now gives
+        # the dub the full natural slot, so the target is materially larger.
+        seg = {"id": 0, "start": 0.0, "end": 5.0,
+               "speech_duration": 2.0,
+               "words": [{"word": "hi", "start": 0.0, "end": 2.0}]}
+        phonation_target = self.worker.compute_target_speech_seconds(dict(seg))
+        self.worker.annotate_dub_windows([seg], video_duration=8.0)
+        window_target = self.worker.compute_target_speech_seconds(seg)
+        self.assertGreater(window_target, phonation_target)
+
+
+class DynamicTimelineTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.worker = import_worker()
+
+    def test_no_expansion_keeps_original_starts(self):
+        segs = [{"start": 0.0, "end": 2.0}, {"start": 3.0, "end": 5.0}]
+        natural = [1.5, 1.5]
+        placements, freezes, new_total, extra, tail = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=6.0, min_gap=0.12,
+        )
+        self.assertEqual(freezes, [])
+        self.assertAlmostEqual(extra, 0.0, places=6)
+        self.assertAlmostEqual(tail, 0.0, places=6)
+        self.assertAlmostEqual(placements[0], 0.0, places=6)
+        self.assertAlmostEqual(placements[1], 3.0, places=6)
+        self.assertAlmostEqual(new_total, 6.0, places=6)
+
+    def test_expansion_pushes_later_and_records_freeze(self):
+        # First line's natural dub (3.0s) runs past the next line's start (2.0s).
+        segs = [{"start": 0.0, "end": 2.0}, {"start": 2.0, "end": 3.0}]
+        natural = [3.0, 1.0]
+        placements, freezes, new_total, extra, tail = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=5.0, min_gap=0.1,
+        )
+        # A freeze is inserted at the second line's original start.
+        self.assertEqual(len(freezes), 1)
+        self.assertAlmostEqual(freezes[0][0], 2.0, places=6)
+        self.assertGreater(freezes[0][1], 0.0)
+        # The second line never overlaps the first → no speed-up needed.
+        self.assertGreaterEqual(placements[1] - placements[0], natural[0] - 1e-6)
+        self.assertAlmostEqual(extra, 1.1, places=3)
+        self.assertAlmostEqual(new_total, 6.1, places=3)
+
+    def test_last_segment_overflow_extends_tail(self):
+        segs = [{"start": 0.0, "end": 2.0}]
+        natural = [4.0]
+        placements, freezes, new_total, extra, tail = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=3.0, min_gap=0.1,
+        )
+        self.assertEqual(freezes, [])
+        self.assertAlmostEqual(placements[0], 0.0, places=6)
+        # Audio (4s) exceeds the 3s video → tail hold extends the picture.
+        self.assertAlmostEqual(new_total, 4.1, places=3)
+        self.assertAlmostEqual(tail, 1.1, places=3)
+
+    def test_every_segment_has_natural_room(self):
+        # General invariant: under dynamic length, consecutive placements never
+        # overlap a line's natural duration (so the voice is never compressed).
+        segs = [
+            {"start": 0.0, "end": 1.0},
+            {"start": 1.2, "end": 2.0},
+            {"start": 2.1, "end": 3.0},
+            {"start": 5.0, "end": 6.0},
+        ]
+        natural = [2.5, 1.8, 0.6, 1.0]
+        placements, _f, _nt, _ex, _t = self.worker.build_dynamic_timeline(
+            segs, natural, video_duration=7.0, min_gap=0.1,
+        )
+        for i in range(len(segs) - 1):
+            self.assertGreaterEqual(
+                placements[i + 1] - placements[i], natural[i] - 1e-6,
+                f"segment {i} would be compressed",
+            )
+
+
+class DdbSafeTests(unittest.TestCase):
+    """
+    Regression guard for the DynamoDB resource serializer rejecting Python
+    floats.  The DONE status payload carries float fields (outputDurationSeconds,
+    dynamicExtraSeconds); if any reaches table.update_item un-coerced, the whole
+    status write raises TypeError and is swallowed — the job never reaches DONE.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.worker = import_worker()
+
+    @staticmethod
+    def _assert_no_float(value):
+        from decimal import Decimal
+        # bool is a subclass of int — allowed (serializes to BOOL).
+        if isinstance(value, bool):
+            return
+        assert not isinstance(value, float), f"float leaked through: {value!r}"
+        if isinstance(value, dict):
+            for v in value.values():
+                DdbSafeTests._assert_no_float(v)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                DdbSafeTests._assert_no_float(v)
+        else:
+            # Numbers must be int or Decimal for the DDB resource serializer.
+            if isinstance(value, (int, Decimal)):
+                return
+
+    def test_float_becomes_decimal(self):
+        from decimal import Decimal
+        self.assertIsInstance(self.worker._ddb_safe(0.0), Decimal)
+        self.assertIsInstance(self.worker._ddb_safe(312.456), Decimal)
+        self.assertEqual(self.worker._ddb_safe(312.456), Decimal("312.456"))
+
+    def test_bool_stays_bool_not_decimal(self):
+        from decimal import Decimal
+        # bool must survive as bool so it serializes to BOOL, not a number.
+        self.assertIs(self.worker._ddb_safe(True), True)
+        self.assertIs(self.worker._ddb_safe(False), False)
+        self.assertNotIsInstance(self.worker._ddb_safe(True), Decimal)
+
+    def test_int_and_str_pass_through(self):
+        self.assertEqual(self.worker._ddb_safe(12), 12)
+        self.assertIsInstance(self.worker._ddb_safe(12), int)
+        self.assertEqual(self.worker._ddb_safe("k"), "k")
+
+    def test_non_finite_floats_dropped(self):
+        self.assertIsNone(self.worker._ddb_safe(float("nan")))
+        self.assertIsNone(self.worker._ddb_safe(float("inf")))
+        self.assertIsNone(self.worker._ddb_safe(float("-inf")))
+
+    def test_done_shaped_payload_is_float_free(self):
+        # Mirrors the real DONE extra dict (worker.py update_progress).
+        payload = {
+            "outputKey": "k", "srtKey": "s", "transcriptKey": "t",
+            "segmentCount": 12, "targetLang": "hi",
+            "voiceClone": True, "voiceCloneApplied": False,
+            "lipSync": False, "lipSyncApplied": False,
+            "dynamicVideoLength": False, "dynamicVideoLengthApplied": True,
+            "dynamicExtraSeconds": round(8.123, 3),
+            "outputDurationSeconds": round(312.456, 3),
+            "reportKey": "r",
+        }
+        safe = {k: self.worker._ddb_safe(v) for k, v in payload.items()}
+        self._assert_no_float(safe)
+        # bools preserved
+        self.assertIs(safe["dynamicVideoLengthApplied"], True)
+
+    def test_nested_structures_sanitized(self):
+        out = self.worker._ddb_safe({"a": [1.5, {"b": 2.5}], "c": (0.1,)})
+        self._assert_no_float(out)
 
 
 if __name__ == "__main__":

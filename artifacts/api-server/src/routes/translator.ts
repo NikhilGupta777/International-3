@@ -484,6 +484,7 @@ type TranslatorOptions = {
   multiSpeaker: boolean;
   asrModel: string;
   translationMode: string;
+  dynamicVideoLength: boolean;
   filename: string;
 };
 
@@ -615,6 +616,9 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "PREMIUM_ASR",       value: String(options.premiumAsr) },
     { name: "ASR_MODEL",         value: options.asrModel },
     { name: "TRANSLATION_MODE",  value: options.translationMode },
+    // Dynamic Video Length (advanced): worker keeps the voice at natural speed
+    // and grows the output video instead of speeding up the dub.
+    { name: "DYNAMIC_VIDEO_LENGTH", value: String(options.dynamicVideoLength) },
     // Allow overriding the exact Gemini model ID used for translation via Lambda env.
     // Defaults to gemini-3.5-flash in the worker when blank.
     { name: "TRANSLATION_MODEL", value: process.env.TRANSLATION_MODEL ?? "" },
@@ -1282,6 +1286,7 @@ async function createTranslatorJobRecord(jobId: string, s3Key: string, options: 
       lipSync:     { BOOL: options.lipSync },
       useDemucs:   { BOOL: options.useDemucs },
       multiSpeaker: { BOOL: options.multiSpeaker },
+      dynamicVideoLength: { BOOL: options.dynamicVideoLength },
       runtime:     { S: isLambdaFastCandidate(options) ? "lambda-fast" : "batch" },
       createdAt:   { N: String(now) },
       updatedAt:   { N: String(now) },
@@ -1356,6 +1361,7 @@ router.post("/submit", async (req: Request, res: ExpressResponse) => {
       multiSpeaker   = false,
       asrModel       = "large-v3-turbo",
       translationMode = "default",
+      dynamicVideoLength = false,
       filename,
     } = req.body;
 
@@ -1377,6 +1383,7 @@ router.post("/submit", async (req: Request, res: ExpressResponse) => {
       multiSpeaker: boolValue(multiSpeaker, false),
       asrModel: String(asrModel),
       translationMode: String(translationMode),
+      dynamicVideoLength: boolValue(dynamicVideoLength, false),
       filename: typeof filename === "string" && filename.trim() ? filename.trim() : "video.mp4",
     };
 
@@ -1413,6 +1420,7 @@ router.post("/submit-from-url", async (req: Request, res: ExpressResponse) => {
       multiSpeaker   = false,
       asrModel       = "large-v3-turbo",
       translationMode = "default",
+      dynamicVideoLength = false,
       filename       = "uploaded-video.mp4",
     } = req.body;
 
@@ -1437,6 +1445,7 @@ router.post("/submit-from-url", async (req: Request, res: ExpressResponse) => {
       multiSpeaker: boolValue(multiSpeaker, false),
       asrModel: String(asrModel),
       translationMode: String(translationMode),
+      dynamicVideoLength: boolValue(dynamicVideoLength, false),
       filename: typeof filename === "string" && filename.trim() ? filename.trim() : "uploaded-video.mp4",
     };
 
@@ -1507,6 +1516,9 @@ router.get("/status/:jobId", async (req: Request, res: ExpressResponse) => {
       lipSyncApplied: item.lipSyncApplied?.BOOL,
       useDemucs:    item.useDemucs?.BOOL,
       multiSpeaker: item.multiSpeaker?.BOOL,
+      dynamicVideoLength: item.dynamicVideoLength?.BOOL,
+      dynamicExtraSeconds: item.dynamicExtraSeconds?.N ? parseFloat(item.dynamicExtraSeconds.N) : undefined,
+      outputDurationSeconds: item.outputDurationSeconds?.N ? parseFloat(item.outputDurationSeconds.N) : undefined,
       runtime:      item.runtime?.S,
       segmentCount: item.segmentCount?.N != null ? parseInt(item.segmentCount.N) : undefined,
       batchJobId:   item.batchJobId?.S,
