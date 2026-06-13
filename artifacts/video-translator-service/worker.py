@@ -1037,6 +1037,22 @@ TARGET_SLOT_SAFETY_PAD_SECONDS = 0.10
 # unnatural micro-utterances regardless of speed=.
 TARGET_SLOT_MIN_SECONDS = 0.45
 
+# ── Pause-aware pacing (the "artificial speed" fix) ───────────────────────────
+# The dominant cause of rushed / chipmunk dubbing was sizing the dub to the
+# *phonation-only* duration (the time the original speaker was actually
+# vocalising) instead of the natural time slot available before the next line
+# begins.  Translations — especially English→Indic — expand 30-60%, so forcing
+# the longer translated line into the shorter phonation window pushed CosyVoice
+# to speed= 1.20 and then the timing pass to atempo 1.10 (≈1.32× = unnatural).
+#
+# A real subtitle slot almost always has trailing silence (the speaker paused
+# before the next sentence).  We let the dub reclaim a bounded amount of that
+# pause so the voice keeps its natural rate.  GAP_REUSE_MAX_SECONDS caps how
+# much of the following silence a segment may borrow — enough to absorb normal
+# translation expansion, but not so much that the dub bleeds across a long
+# deliberate pause or that Gemini's character budget balloons.
+GAP_REUSE_MAX_SECONDS = 0.75
+
 
 def chars_per_second_for_target() -> float:
     """Lookup CHARS_PER_SEC for the configured TARGET_LANG_CODE."""
@@ -1087,11 +1103,24 @@ def compute_target_speech_seconds(seg: dict) -> float:
     """
     Return the duration the dubbed audio for this segment should occupy.
 
-    Uses the merged-segment 'speech_duration' (set by merge_segments_for_dubbing)
-    when available — that is the actual amount of source-spoken time, free of
-    the inter-segment silence we merged across.  Falls back to (end - start)
-    minus a small safety pad for legacy callers.
+    Pause-aware pacing (primary path): when annotate_dub_windows() has run it
+    stores ``dub_window_seconds`` on every segment — the natural time available
+    before the next line begins (its own slot plus a bounded reuse of the
+    following silence).  Sizing the dub to that window is what keeps CosyVoice
+    speaking at a natural rate instead of being sped up to cram a longer
+    translation into the phonation-only window.  Translation char budgets, the
+    CosyVoice speed= solver, the post-synthesis QA gate and the timing-fit pass
+    all read this same value so they agree on one target.
+
+    Legacy/unit-test fallback: when no window has been annotated (e.g. callers
+    that build a bare segment dict) we fall back to the merged-segment
+    ``speech_duration`` clamped into the slot, then to (end - start) minus a
+    small safety pad.
     """
+    window = seg.get("dub_window_seconds")
+    if isinstance(window, (int, float)) and math.isfinite(window) and window > 0:
+        return max(TARGET_SLOT_MIN_SECONDS, float(window))
+
     speech_duration = seg.get("speech_duration")
     slot_duration = float(seg.get("end", 0)) - float(seg.get("start", 0))
     if not isinstance(speech_duration, (int, float)) or speech_duration <= 0:
@@ -1102,6 +1131,50 @@ def compute_target_speech_seconds(seg: dict) -> float:
     if not math.isfinite(target):
         return TARGET_SLOT_MIN_SECONDS
     return max(TARGET_SLOT_MIN_SECONDS, target)
+
+
+def annotate_dub_windows(segments: list[dict], video_duration: float) -> list[dict]:
+    """
+    Stamp each segment with ``dub_window_seconds`` — the natural amount of time
+    the dubbed line may occupy before the next line must start.
+
+    window = own_slot + min(gap_to_next, GAP_REUSE_MAX_SECONDS) - safety_pad
+
+    By reclaiming a bounded slice of the trailing pause, a translation that is
+    30-60% longer than the source can still be spoken at a natural rate.  The
+    cap (GAP_REUSE_MAX_SECONDS) keeps deliberate pauses intact and stops the
+    translation character budget from ballooning.  Must run AFTER
+    merge_segments_for_dubbing() and BEFORE translation so every downstream
+    stage (Gemini budget, speed solver, QA, timing-fit) shares one target.
+    """
+    if not segments:
+        return segments
+
+    n = len(segments)
+    valid_video_duration = (
+        float(video_duration)
+        if isinstance(video_duration, (int, float)) and math.isfinite(video_duration) and video_duration > 0
+        else None
+    )
+
+    for i, seg in enumerate(segments):
+        start = float(seg.get("start", 0.0))
+        end = float(seg.get("end", 0.0))
+        slot = max(0.0, end - start)
+
+        if i + 1 < n:
+            next_start = float(segments[i + 1].get("start", end))
+        elif valid_video_duration is not None:
+            next_start = valid_video_duration
+        else:
+            next_start = end
+
+        gap = max(0.0, next_start - end)
+        usable_gap = min(gap, GAP_REUSE_MAX_SECONDS)
+        window = slot + usable_gap - TARGET_SLOT_SAFETY_PAD_SECONDS
+        seg["dub_window_seconds"] = max(TARGET_SLOT_MIN_SECONDS, window)
+
+    return segments
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3445,11 +3518,19 @@ def synthesize_all(
 # dub audio.
 ATEMPO_MIN = 0.92
 ATEMPO_MAX = 1.10
+# Hard ceiling on the COMBINED speed-up a segment may ever receive
+# (CosyVoice speed= × post-pass atempo).  The model's internal speed= is the
+# higher-quality, prosody-aware mechanism; atempo is a raw tempo stretch.  We
+# let the model do the heavy lifting (up to SPEED_MAX) and only allow atempo to
+# add whatever headroom remains under this ceiling.  Anything still over budget
+# leans into the pause (overflow) or is silence-trimmed rather than warped into
+# an unnatural, rushed delivery.
+MAX_COMBINED_SPEED = 1.25
 # How much the dub may overflow past the slot boundary into the inter-segment
 # gap.  Lets CosyVoice keep natural prosody without colliding with the next
 # segment's start.  Phase 4 will add equal-power crossfades that benefit
 # from this headroom too.
-SLOT_OVERFLOW_MAX_SECONDS = 0.30
+SLOT_OVERFLOW_MAX_SECONDS = 0.40
 
 
 def fit_audio_to_duration(
@@ -3571,11 +3652,20 @@ def fit_audio_to_duration(
 
     # 3b. Still too long -> atempo clamped to [ATEMPO_MIN, ATEMPO_MAX].
     # We pick the ratio that lands at exactly max_dur, but never above
-    # ATEMPO_MAX (= 1.10x).  The remaining overshoot is then truncated by
-    # assemble_dubbed_audio() - which is now silence-only trim, so the
-    # actual loss in voiced samples is bounded to a couple frames at most.
+    # ATEMPO_MAX (= 1.10x) AND never so far that the COMBINED speed-up
+    # (CosyVoice speed= × atempo) exceeds MAX_COMBINED_SPEED.  The model's
+    # speed= is the higher-quality mechanism, so when a segment was already
+    # sped up in-model we shrink the atempo headroom accordingly.  Any
+    # remaining overshoot is then silence-trimmed by assemble_dubbed_audio()
+    # — bounded to a couple of frames of voiced samples at most.
     raw_ratio = actual_dur / max(max_dur, 0.1)
-    applied_atempo = max(ATEMPO_MIN, min(ATEMPO_MAX, raw_ratio))
+    model_speed = float(pacing.get("applied_speed", 1.0) or 1.0)
+    atempo_ceiling = ATEMPO_MAX
+    if model_speed > 1.0:
+        # Keep model_speed × atempo ≤ MAX_COMBINED_SPEED; never force a
+        # slowdown in this (too-long) branch, so floor the ceiling at 1.0.
+        atempo_ceiling = max(1.0, min(ATEMPO_MAX, MAX_COMBINED_SPEED / model_speed))
+    applied_atempo = max(ATEMPO_MIN, min(atempo_ceiling, raw_ratio))
     final_seconds = actual_dur / applied_atempo
 
     # If the trim already fit, write the trimmed buffer; otherwise re-run
@@ -3599,8 +3689,9 @@ def fit_audio_to_duration(
         "final_seconds": round(final_seconds, 3),
         "overflow_into_gap": round(overflow_into_gap, 3),
         "tail_trimmed_seconds": round(trimmed_seconds, 3),
-        "fit_action": "atempo_clamped" if applied_atempo == ATEMPO_MAX else "atempo",
+        "fit_action": "atempo_clamped" if raw_ratio > applied_atempo + 1e-6 else "atempo",
         "raw_atempo_needed": round(raw_ratio, 3),
+        "atempo_ceiling": round(atempo_ceiling, 3),
     })
     return atempo_out
 
@@ -4456,6 +4547,14 @@ def main():
 
         log.info(f"Transcription: {len(segments)} segments (after merge)")
 
+        # ── 5c. Annotate pause-aware dub windows ──────────────────────
+        # Establishes one shared per-segment duration target (own slot + a
+        # bounded slice of the following pause).  Every downstream stage —
+        # Gemini's character budget, the CosyVoice speed= solver, the QA gate
+        # and the timing-fit pass — sizes the dub to this window so a longer
+        # translation is spoken at a natural rate instead of being sped up.
+        segments = annotate_dub_windows(segments, video_duration)
+
         # â”€â”€ 6. Translation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("TRANSLATING", 35, f"Translating to {TARGET_LANG}...")
         segments = translate_segments(segments)
@@ -4504,7 +4603,12 @@ def main():
         update_progress("CLONING", 60, "Fitting audio timing to video...")
         fitted_paths = []
         for idx, (seg, audio_path) in enumerate(zip(segments, seg_audio_paths)):
-            target_dur = seg["end"] - seg["start"]
+            # Use the same pause-aware window the speed solver and QA gate used
+            # so the timing-fit pass agrees on one target.  Falling back to the
+            # raw slot keeps legacy/un-annotated segments working.
+            target_dur = compute_target_speech_seconds(seg)
+            if not (isinstance(target_dur, (int, float)) and target_dur > 0):
+                target_dur = seg["end"] - seg["start"]
             # Pass the next segment's start so fit_audio_to_duration knows how
             # far it can let the dub overflow without colliding with the next
             # line.  When this is the final segment, use video_duration as the

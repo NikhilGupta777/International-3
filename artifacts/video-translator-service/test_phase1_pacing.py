@@ -134,6 +134,54 @@ class PacingPrimitivesTests(unittest.TestCase):
         self.assertEqual(summary["fitActions"]["atempo"], 1)
         self.assertEqual(summary["placedActions"]["tail_trim"], 1)
 
+    # ── Pause-aware window pacing (the "artificial speed" fix) ────────────
+    def test_annotate_dub_windows_reclaims_bounded_gap(self):
+        # slot=3, gap_to_next=2 → usable_gap capped at GAP_REUSE_MAX_SECONDS.
+        segs = [
+            {"id": 0, "start": 0.0, "end": 3.0},
+            {"id": 1, "start": 5.0, "end": 6.0},
+        ]
+        self.worker.annotate_dub_windows(segs, video_duration=10.0)
+        expected = 3.0 + self.worker.GAP_REUSE_MAX_SECONDS - self.worker.TARGET_SLOT_SAFETY_PAD_SECONDS
+        self.assertAlmostEqual(segs[0]["dub_window_seconds"], expected, places=3)
+
+    def test_annotate_dub_windows_small_gap_uses_whole_gap(self):
+        # gap=0.30 (< cap) → entire gap is reusable.
+        segs = [
+            {"id": 0, "start": 0.0, "end": 3.0},
+            {"id": 1, "start": 3.3, "end": 4.0},
+        ]
+        self.worker.annotate_dub_windows(segs, video_duration=10.0)
+        expected = 3.0 + 0.30 - self.worker.TARGET_SLOT_SAFETY_PAD_SECONDS
+        self.assertAlmostEqual(segs[0]["dub_window_seconds"], expected, places=3)
+
+    def test_annotate_dub_windows_last_segment_uses_video_duration(self):
+        segs = [{"id": 0, "start": 0.0, "end": 3.0}]
+        self.worker.annotate_dub_windows(segs, video_duration=10.0)
+        expected = 3.0 + self.worker.GAP_REUSE_MAX_SECONDS - self.worker.TARGET_SLOT_SAFETY_PAD_SECONDS
+        self.assertAlmostEqual(segs[0]["dub_window_seconds"], expected, places=3)
+
+    def test_compute_target_prefers_annotated_window_over_phonation(self):
+        # When a window is annotated it overrides the phonation-only target —
+        # this is what stops a longer translation being sped up to fit the
+        # shorter phonation window.
+        seg = {"start": 0.0, "end": 5.0, "speech_duration": 2.0, "dub_window_seconds": 4.2}
+        self.assertAlmostEqual(
+            self.worker.compute_target_speech_seconds(seg), 4.2, places=3
+        )
+
+    def test_compute_target_window_larger_than_phonation(self):
+        # End-to-end: a 5 s slot with 2 s phonation and a following pause.
+        # Old behaviour targeted ~2 s (forcing speed-up); the window now gives
+        # the dub the full natural slot, so the target is materially larger.
+        seg = {"id": 0, "start": 0.0, "end": 5.0,
+               "speech_duration": 2.0,
+               "words": [{"word": "hi", "start": 0.0, "end": 2.0}]}
+        phonation_target = self.worker.compute_target_speech_seconds(dict(seg))
+        self.worker.annotate_dub_windows([seg], video_duration=8.0)
+        window_target = self.worker.compute_target_speech_seconds(seg)
+        self.assertGreater(window_target, phonation_target)
+
 
 if __name__ == "__main__":
     unittest.main()
