@@ -4,7 +4,6 @@ Phase 1 pacing-primitives smoke tests.
 These are pure-function unit tests on the helpers introduced by the
 Phase 1 audit fix.  They do NOT call CosyVoice, ffmpeg, or AssemblyAI.
 """
-import math
 import unittest
 
 from test_worker_guards import import_worker
@@ -247,6 +246,80 @@ class DynamicTimelineTests(unittest.TestCase):
                 placements[i + 1] - placements[i], natural[i] - 1e-6,
                 f"segment {i} would be compressed",
             )
+
+
+class DdbSafeTests(unittest.TestCase):
+    """
+    Regression guard for the DynamoDB resource serializer rejecting Python
+    floats.  The DONE status payload carries float fields (outputDurationSeconds,
+    dynamicExtraSeconds); if any reaches table.update_item un-coerced, the whole
+    status write raises TypeError and is swallowed — the job never reaches DONE.
+    """
+    @classmethod
+    def setUpClass(cls):
+        cls.worker = import_worker()
+
+    @staticmethod
+    def _assert_no_float(value):
+        from decimal import Decimal
+        # bool is a subclass of int — allowed (serializes to BOOL).
+        if isinstance(value, bool):
+            return
+        assert not isinstance(value, float), f"float leaked through: {value!r}"
+        if isinstance(value, dict):
+            for v in value.values():
+                DdbSafeTests._assert_no_float(v)
+        elif isinstance(value, (list, tuple)):
+            for v in value:
+                DdbSafeTests._assert_no_float(v)
+        else:
+            # Numbers must be int or Decimal for the DDB resource serializer.
+            if isinstance(value, (int, Decimal)):
+                return
+
+    def test_float_becomes_decimal(self):
+        from decimal import Decimal
+        self.assertIsInstance(self.worker._ddb_safe(0.0), Decimal)
+        self.assertIsInstance(self.worker._ddb_safe(312.456), Decimal)
+        self.assertEqual(self.worker._ddb_safe(312.456), Decimal("312.456"))
+
+    def test_bool_stays_bool_not_decimal(self):
+        from decimal import Decimal
+        # bool must survive as bool so it serializes to BOOL, not a number.
+        self.assertIs(self.worker._ddb_safe(True), True)
+        self.assertIs(self.worker._ddb_safe(False), False)
+        self.assertNotIsInstance(self.worker._ddb_safe(True), Decimal)
+
+    def test_int_and_str_pass_through(self):
+        self.assertEqual(self.worker._ddb_safe(12), 12)
+        self.assertIsInstance(self.worker._ddb_safe(12), int)
+        self.assertEqual(self.worker._ddb_safe("k"), "k")
+
+    def test_non_finite_floats_dropped(self):
+        self.assertIsNone(self.worker._ddb_safe(float("nan")))
+        self.assertIsNone(self.worker._ddb_safe(float("inf")))
+        self.assertIsNone(self.worker._ddb_safe(float("-inf")))
+
+    def test_done_shaped_payload_is_float_free(self):
+        # Mirrors the real DONE extra dict (worker.py update_progress).
+        payload = {
+            "outputKey": "k", "srtKey": "s", "transcriptKey": "t",
+            "segmentCount": 12, "targetLang": "hi",
+            "voiceClone": True, "voiceCloneApplied": False,
+            "lipSync": False, "lipSyncApplied": False,
+            "dynamicVideoLength": False, "dynamicVideoLengthApplied": True,
+            "dynamicExtraSeconds": round(8.123, 3),
+            "outputDurationSeconds": round(312.456, 3),
+            "reportKey": "r",
+        }
+        safe = {k: self.worker._ddb_safe(v) for k, v in payload.items()}
+        self._assert_no_float(safe)
+        # bools preserved
+        self.assertIs(safe["dynamicVideoLengthApplied"], True)
+
+    def test_nested_structures_sanitized(self):
+        out = self.worker._ddb_safe({"a": [1.5, {"b": 2.5}], "c": (0.1,)})
+        self._assert_no_float(out)
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ import shutil
 import subprocess
 import math
 import base64
+from decimal import Decimal
 import inspect
 import threading
 import importlib.metadata
@@ -251,6 +252,29 @@ def _stage_snapshot(status: str, progress: int, step: str) -> list[dict]:
 # DynamoDB progress helpers
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+def _ddb_safe(value):
+    """
+    Coerce a value into something the boto3 DynamoDB *resource* serializer
+    accepts.  The resource API rejects Python ``float`` outright
+    (``TypeError: Float types are not supported. Use Decimal types instead``),
+    so any float — including 0.0 and values nested inside dicts/lists — must be
+    converted to ``Decimal`` before it reaches ``table.update_item``.  Doing
+    this centrally means callers can pass plain floats (e.g. round(x, 3)) and
+    a single missed conversion can never silently abort the whole status write.
+    """
+    if isinstance(value, bool):
+        return value  # bool is a subclass of int — keep it a BOOL, not a number
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None  # NaN/Inf are not representable in DynamoDB
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _ddb_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_ddb_safe(v) for v in value]
+    return value
+
+
 def update_progress(status: str, progress: int, step: str, extra: Optional[dict] = None):
     """Write progress to DynamoDB so the frontend can poll it."""
     try:
@@ -258,7 +282,9 @@ def update_progress(status: str, progress: int, step: str, extra: Optional[dict]
         if status != "FAILED":
             _LAST_PIPELINE_STATUS = status
             _LAST_PIPELINE_PROGRESS = progress
-        extra = extra or {}
+        # Sanitize floats → Decimal so a numeric extra (e.g. outputDurationSeconds)
+        # can never abort the DDB write — see _ddb_safe.
+        extra = {k: _ddb_safe(v) for k, v in (extra or {}).items()}
         now_ms = int(time.time() * 1000)
         stage_snapshot = _stage_snapshot(status, progress, step)
         item = {
