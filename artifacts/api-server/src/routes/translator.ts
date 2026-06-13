@@ -1517,6 +1517,8 @@ router.get("/status/:jobId", async (req: Request, res: ExpressResponse) => {
       useDemucs:    item.useDemucs?.BOOL,
       multiSpeaker: item.multiSpeaker?.BOOL,
       dynamicVideoLength: item.dynamicVideoLength?.BOOL,
+      dynamicExtraSeconds: item.dynamicExtraSeconds?.N ? parseFloat(item.dynamicExtraSeconds.N) : undefined,
+      outputDurationSeconds: item.outputDurationSeconds?.N ? parseFloat(item.outputDurationSeconds.N) : undefined,
       runtime:      item.runtime?.S,
       segmentCount: item.segmentCount?.N != null ? parseInt(item.segmentCount.N) : undefined,
       batchJobId:   item.batchJobId?.S,

@@ -1304,6 +1304,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                         {job.segmentCount} segments
                       </span>
                     )}
+                    {job?.dynamicExtraSeconds != null && job.dynamicExtraSeconds > 0.05 && (
+                      <span className="px-2 py-0.5 rounded-full border border-sky-400/40 text-sky-300/80">
+                        Dynamic length +{job.dynamicExtraSeconds.toFixed(1)}s
+                      </span>
+                    )}
                   </div>
                 )}
                 {job?.voiceClone && job?.voiceCloneApplied === false && (

@@ -4445,6 +4445,84 @@ def build_extended_video(
     return out_path
 
 
+def align_background_to_timeline(
+    background_audio: Path,
+    freezes: list[tuple[float, float]],
+    tail_hold: float,
+    out_dir: Path,
+    sample_rate: int = 44100,
+) -> Path:
+    """
+    Insert silence into the Demucs background track at the same points the
+    video is frozen, so background music/ambience stays aligned with the
+    (grown) picture under Dynamic Video Length.  Mirrors build_extended_video
+    but for audio.  Returns the original track unchanged when there is nothing
+    to insert.  Caller should guard with try/except and fall back to the
+    original background on failure.
+    """
+    hold_by_time: dict[float, float] = {}
+    for t, d in freezes:
+        if d <= 0:
+            continue
+        key = round(max(0.0, float(t)), 3)
+        hold_by_time[key] = hold_by_time.get(key, 0.0) + float(d)
+    cut_times = sorted(k for k, v in hold_by_time.items() if v > 0)
+    tail_hold = max(0.0, float(tail_hold))
+
+    if not cut_times and tail_hold <= DYNAMIC_HOLD_EPSILON_SECONDS:
+        return background_audio
+
+    parts: list[str] = []
+    labels: list[str] = []
+    prev = 0.0
+    idx = 0
+    sr = int(sample_rate)
+    for t in cut_times:
+        if t <= prev + 1e-3:
+            tail_hold += hold_by_time[t]
+            continue
+        hold = hold_by_time[t]
+        # Chunk of real background [prev, t], then `hold` seconds of silence.
+        parts.append(
+            f"[0:a]aresample={sr},aformat=channel_layouts=mono,"
+            f"atrim=start={prev:.3f}:end={t:.3f},asetpts=PTS-STARTPTS[b{idx}]"
+        )
+        labels.append(f"[b{idx}]")
+        parts.append(
+            f"anullsrc=r={sr}:cl=mono,atrim=duration={hold:.3f},asetpts=PTS-STARTPTS[s{idx}]"
+        )
+        labels.append(f"[s{idx}]")
+        prev = t
+        idx += 1
+
+    parts.append(
+        f"[0:a]aresample={sr},aformat=channel_layouts=mono,"
+        f"atrim=start={prev:.3f},asetpts=PTS-STARTPTS[b{idx}]"
+    )
+    labels.append(f"[b{idx}]")
+    if tail_hold > DYNAMIC_HOLD_EPSILON_SECONDS:
+        parts.append(
+            f"anullsrc=r={sr}:cl=mono,atrim=duration={tail_hold:.3f},asetpts=PTS-STARTPTS[s{idx}]"
+        )
+        labels.append(f"[s{idx}]")
+
+    concat = f"{''.join(labels)}concat=n={len(labels)}:v=0:a=1[outa]"
+    filter_complex = ";".join(parts + [concat])
+
+    out_path = out_dir / "background_aligned.wav"
+    run_ffmpeg(
+        "-i", str(background_audio),
+        "-filter_complex", filter_complex,
+        "-map", "[outa]",
+        "-ar", str(sr),
+        str(out_path),
+    )
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError("Background alignment produced no output.")
+    log.info("[Dynamic] Background track aligned to grown timeline.")
+    return out_path
+
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Stage 10: Generate transcript JSON
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4807,6 +4885,18 @@ def main():
                 mux_video = extended_video
                 mux_duration = new_total
                 dynamic_applied = True
+                # Keep Demucs background music aligned with the frozen-frame
+                # holds so it doesn't drift against the grown picture.
+                if background_audio is not None and background_audio.exists():
+                    try:
+                        background_audio = align_background_to_timeline(
+                            background_audio, freezes, tail_hold, work_dir
+                        )
+                    except Exception as bg_err:
+                        log.warning(
+                            "[Dynamic] Background alignment failed (%s); "
+                            "using original background (may drift slightly).", bg_err,
+                        )
                 log.info(
                     "[Dynamic] Applied: +%.2fs over %d insert(s); output duration %.2fs",
                     dynamic_extra_seconds, len(freezes), new_total,
@@ -4938,6 +5028,8 @@ def main():
             "lipSyncApplied": lip_sync_applied,
             "dynamicVideoLength": DYNAMIC_VIDEO_LENGTH,
             "dynamicVideoLengthApplied": dynamic_applied,
+            "dynamicExtraSeconds": round(dynamic_extra_seconds, 3),
+            "outputDurationSeconds": round(mux_duration, 3),
             "reportKey": report_key,
         })
 
