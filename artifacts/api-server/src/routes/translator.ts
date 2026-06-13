@@ -1487,14 +1487,19 @@ router.post("/submit-from-url", async (req: Request, res: ExpressResponse) => {
 // or /youtube/download endpoints (same battle-tested yt-dlp path the Studio
 // copilot uses), then hands the resulting S3 key here. No re-download: a
 // same-bucket CopyObject is fast and avoids Lambda size/time limits.
-const ALLOWED_TRANSLATOR_SOURCE_PREFIXES = ["youtube/clips/", "youtube/downloads/"];
+// The real S3 key produced by buildObjectKey() in lib/s3-storage.ts is
+//   `${S3_OBJECT_PREFIX}/youtube/(clips|downloads)/${day}/${jobId}-${file}`
+// e.g. "ytgrabber/youtube/clips/2026-06-13/abc-clip.mp4" — it is NOT a bare
+// "youtube/clips/..." prefix.  Match the namespace as a path segment so the
+// configurable S3_OBJECT_PREFIX and the date segment don't break the check.
+const ALLOWED_TRANSLATOR_SOURCE_RE = /(?:^|\/)youtube\/(?:clips|downloads)\/.+/;
 
 function assertAllowedTranslatorSourceKey(sourceKey: string): string {
   const key = String(sourceKey || "").replace(/^\/+/, "");
   if (!key || key.includes("..")) {
     throw Object.assign(new Error("Invalid sourceS3Key."), { statusCode: 400 });
   }
-  if (!ALLOWED_TRANSLATOR_SOURCE_PREFIXES.some((p) => key.startsWith(p))) {
+  if (!ALLOWED_TRANSLATOR_SOURCE_RE.test(key)) {
     throw Object.assign(
       new Error("sourceS3Key must be a YouTube download or clip output."),
       { statusCode: 400 },
