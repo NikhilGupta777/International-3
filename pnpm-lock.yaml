@@ -307,6 +307,8 @@ importers:
         specifier: 3.1.0
         version: 3.1.0
 
+  artifacts/hyperframes-repo-showcase: {}
+
   artifacts/mockup-sandbox:
     devDependencies:
       '@hookform/resolvers':
@@ -498,6 +500,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1028.0
         version: 3.1028.0
+      '@workspace/api-server':
+        specifier: workspace:*
+        version: link:../api-server
       pino:
         specifier: ^9
         version: 9.14.0

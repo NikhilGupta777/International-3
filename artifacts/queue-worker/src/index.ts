@@ -1321,8 +1321,11 @@ async function handleEditorRender(payload: WorkerPayload): Promise<void> {
   // at runtime per CLAUDE.md; not resolvable at typecheck time, so we go through
   // a Function constructor to keep TS from trying to resolve the module.
   const dynImport = new Function("p", "return import(p)") as (p: string) => Promise<any>;
-  let apiMod: any = await dynImport("@workspace/api-server/dist/routes/video-editor.js").catch(() => null);
-  if (!apiMod) apiMod = await dynImport("@workspace/api-server/src/routes/video-editor").catch(() => null);
+  // api-server's esbuild config rewrites `.js` outputs to `.mjs`
+  // (outExtension override), so the produced file is video-editor.mjs.
+  // Keep `.js` as a legacy fallback in case an older image is in flight.
+  let apiMod: any = await dynImport("@workspace/api-server/dist/routes/video-editor.mjs").catch(() => null);
+  if (!apiMod) apiMod = await dynImport("@workspace/api-server/dist/routes/video-editor.js").catch(() => null);
   if (!apiMod) throw new Error("api-server module not available in worker image");
   if (typeof apiMod.runEditorRenderStandalone !== "function") {
     throw new Error("api-server runEditorRenderStandalone export not found");

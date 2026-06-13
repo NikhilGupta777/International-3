@@ -34,6 +34,11 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 # Copy source after dependencies are installed (maximize cache reuse)
 COPY . .
 
+# Build api-server first — the queue worker dynamically imports
+# `@workspace/api-server/dist/routes/video-editor.mjs` at runtime to run
+# editor-render jobs. Without this step that file doesn't exist in the
+# image and editor renders fail with "api-server module not available".
+RUN pnpm --filter @workspace/api-server run build
 RUN pnpm --filter @workspace/queue-worker run build
 
 CMD ["node", "artifacts/queue-worker/dist/index.mjs"]

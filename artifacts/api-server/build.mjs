@@ -28,6 +28,12 @@ async function buildAll() {
     entryPoints: [
       path.resolve(artifactDir, "src/index.ts"),
       path.resolve(artifactDir, "src/lambda.ts"),
+      // Standalone bundle of the editor render module. The Fargate queue
+      // worker dynamically imports `dist/routes/video-editor.mjs` to call
+      // `runEditorRenderStandalone` — without this entry point the file
+      // doesn't exist and editor-render Batch jobs fail with
+      // "api-server module not available in worker image".
+      path.resolve(artifactDir, "src/routes/video-editor.ts"),
     ],
     platform: "node",
     bundle: true,
