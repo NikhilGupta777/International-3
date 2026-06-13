@@ -644,16 +644,60 @@ function cancelRenderJob(job: EditorJob): void {
   if (proc && !proc.killed) proc.kill("SIGTERM");
 }
 
-function runFfmpegRaw(args: string[], job?: EditorJob): Promise<void> {
+type FfmpegProgressOpts = {
+  /** Total expected output duration in seconds. Required for percent calc. */
+  expectedDurationSec: number;
+  /** Called with the latest output time in seconds (0..expectedDurationSec). */
+  onProgress: (secsDone: number, totalSecs: number) => void;
+};
+
+function runFfmpegRaw(args: string[], job?: EditorJob, progressOpts?: FfmpegProgressOpts): Promise<void> {
   return new Promise((resolve, reject) => {
     try { assertRenderNotCancelled(job); } catch (err) { reject(err); return; }
-    const proc = spawn(FFMPEG_BIN, args);
+    // When progress is requested we route FFmpeg's machine-readable progress
+    // stream to stdout (`-progress pipe:1`) and silence its noisy stderr
+    // stats (`-nostats`). We still keep the regular stderr captured for
+    // error reporting on non-zero exits.
+    const enableProgress = Boolean(
+      progressOpts && progressOpts.expectedDurationSec > 0 && typeof progressOpts.onProgress === "function",
+    );
+    const finalArgs = enableProgress
+      ? ["-progress", "pipe:1", "-nostats", ...args]
+      : args;
+    const proc = spawn(FFMPEG_BIN, finalArgs);
     if (job) activeRenderProcesses.set(job.jobId, proc);
     let stderr = "";
     proc.stderr.on("data", (chunk) => {
       stderr += String(chunk);
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
     });
+    if (enableProgress && proc.stdout) {
+      let buf = "";
+      proc.stdout.on("data", (chunk) => {
+        buf += String(chunk);
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          // FFmpeg emits key=value lines ending with `progress=continue|end`.
+          // We only need out_time_us for time-based progress. Other useful
+          // signals (frame=, fps=, bitrate=) are ignored to keep the parser
+          // cheap.
+          if (line.startsWith("out_time_us=") || line.startsWith("out_time_ms=")) {
+            const raw = line.split("=")[1] || "";
+            // FFmpeg historically named this key `out_time_ms` but
+            // confusingly emitted microseconds. Newer builds use
+            // `out_time_us`. Treat both as microseconds.
+            const usec = parseInt(raw, 10);
+            if (Number.isFinite(usec) && usec >= 0) {
+              const secs = Math.min(usec / 1e6, progressOpts!.expectedDurationSec);
+              try { progressOpts!.onProgress(secs, progressOpts!.expectedDurationSec); }
+              catch { /* never let a UI callback crash the encode */ }
+            }
+          }
+        }
+      });
+    }
     proc.on("error", (err) => {
       if (job) activeRenderProcesses.delete(job.jobId);
       if (job?.status === "cancelled") return reject(new Error("render cancelled"));
@@ -666,6 +710,31 @@ function runFfmpegRaw(args: string[], job?: EditorJob): Promise<void> {
       else reject(new Error(stderr.slice(-1200) || `FFmpeg exited with code ${code}`));
     });
   });
+}
+
+/**
+ * Convenience wrapper that maps a single FFmpeg pass's wall-clock progress
+ * onto a sub-range of the overall job progress bar. `fromPct..toPct` is the
+ * slice of the job's 0..100 budget reserved for this stage.
+ */
+function ffmpegStageProgress(
+  job: EditorJob,
+  expectedDurationSec: number,
+  fromPct: number,
+  toPct: number,
+): FfmpegProgressOpts {
+  const span = Math.max(0, toPct - fromPct);
+  return {
+    expectedDurationSec,
+    onProgress: (secsDone) => {
+      if (expectedDurationSec <= 0) return;
+      const stagePct = Math.min(1, secsDone / expectedDurationSec);
+      const next = Math.round(fromPct + span * stagePct);
+      // Never go backwards — earlier coarse stage updates may have already
+      // advanced past `fromPct` when concurrent stages report progress.
+      if (next > job.progress) job.progress = Math.min(toPct, next);
+    },
+  };
 }
 
 async function normalizeClip(input: string, output: string, width: number, height: number, fade: boolean, fadeIn: boolean, fadeOut: boolean): Promise<void> {
@@ -739,7 +808,7 @@ async function probeDuration(input: string): Promise<number> {
   });
 }
 
-async function concatClips(inputs: string[], output: string, job?: EditorJob): Promise<void> {
+async function concatClips(inputs: string[], output: string, job?: EditorJob, progressOpts?: FfmpegProgressOpts): Promise<void> {
   const args: string[] = ["-y"];
   for (const p of inputs) args.push("-i", p);
   const filters: string[] = [];
@@ -763,7 +832,7 @@ async function concatClips(inputs: string[], output: string, job?: EditorJob): P
     "-movflags", "+faststart",
     output,
   );
-  await runFfmpegRaw(args, job);
+  await runFfmpegRaw(args, job, progressOpts);
 }
 
 /**
@@ -782,8 +851,8 @@ function xfadeTransitionName(type?: TransitionType): string {
   }
 }
 
-async function crossfadeClips(inputs: string[], output: string, transitions: TransitionDef[] = [], job?: EditorJob): Promise<void> {
-  if (inputs.length < 2) { await concatClips(inputs, output, job); return; }
+async function crossfadeClips(inputs: string[], output: string, transitions: TransitionDef[] = [], job?: EditorJob, progressOpts?: FfmpegProgressOpts): Promise<void> {
+  if (inputs.length < 2) { await concatClips(inputs, output, job, progressOpts); return; }
   const fadeDurations = Array.from({ length: inputs.length - 1 }, (_, i) =>
     Math.max(0.1, Math.min(2, transitions[i]?.duration ?? 0.5)),
   );
@@ -791,10 +860,10 @@ async function crossfadeClips(inputs: string[], output: string, transitions: Tra
   for (let i = 0; i < inputs.length; i += 1) {
     const p = inputs[i];
     const meta = await probeMetadata(p).catch(() => ({ duration: 0, width: 0, height: 0, hasAudio: false }));
-    if (!meta.hasAudio) { await concatClips(inputs, output, job); return; }
+    if (!meta.hasAudio) { await concatClips(inputs, output, job, progressOpts); return; }
     const d = meta.duration || await probeDuration(p).catch(() => 0);
     const required = Math.max(fadeDurations[i - 1] ?? 0, fadeDurations[i] ?? 0) * 2;
-    if (!Number.isFinite(d) || d <= required) { await concatClips(inputs, output, job); return; }
+    if (!Number.isFinite(d) || d <= required) { await concatClips(inputs, output, job, progressOpts); return; }
     durations.push(d);
   }
   const args: string[] = ["-y"];
@@ -823,7 +892,7 @@ async function crossfadeClips(inputs: string[], output: string, transitions: Tra
     "-movflags", "+faststart",
     output,
   );
-  await runFfmpegRaw(args, job);
+  await runFfmpegRaw(args, job, progressOpts);
 }
 
 async function downloadWorkspaceFile(ws: ReturnType<typeof getWorkspace>, path: string, dest: string): Promise<void> {
@@ -1078,15 +1147,24 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
       job.progress = 5;
 
       const normalizedPaths: string[] = [];
+      const normalizedDurations: number[] = [];
       const assetCache = new Map<string, string>();
       // For preview kind, distribute the 8s budget across the first clips
       // so multi-clip previews actually show transitions, not just clip 0.
       const PREVIEW_BUDGET_SEC = 8;
       let previewBudgetRemaining = PREVIEW_BUDGET_SEC;
+      // Reserve 5..45 of the progress bar for clip processing — split it
+      // evenly across clips so the bar advances smoothly inside each pass
+      // instead of jumping in 40/N steps once per clip.
+      const CLIP_PROGRESS_FROM = 5;
+      const CLIP_PROGRESS_TO = 45;
+      const perClipSpan = clips.length > 0 ? (CLIP_PROGRESS_TO - CLIP_PROGRESS_FROM) / clips.length : 0;
       for (let i = 0; i < clips.length; i++) {
         const clip = clips[i];
         job.message = `Processing clip ${i + 1}/${clips.length}...`;
-        job.progress = 5 + Math.round((i / clips.length) * 40);
+        const clipFromPct = CLIP_PROGRESS_FROM + Math.round(i * perClipSpan);
+        const clipToPct = CLIP_PROGRESS_FROM + Math.round((i + 1) * perClipSpan);
+        job.progress = Math.max(job.progress, clipFromPct);
 
         let assetPath = assetCache.get(clip.asset);
         if (!assetPath) {
@@ -1140,9 +1218,15 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
           "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
           "-pix_fmt", "yuv420p", "-movflags", "+faststart", clipPath,
         );
-        await runFfmpegRaw(trimArgs, job);
+        const expectedClipOutSec = Number.isFinite(usedDur) && usedDur > 0 ? usedDur : 0;
+        await runFfmpegRaw(
+          trimArgs,
+          job,
+          expectedClipOutSec > 0 ? ffmpegStageProgress(job, expectedClipOutSec, clipFromPct, clipToPct) : undefined,
+        );
         assertRenderNotCancelled(job);
         normalizedPaths.push(clipPath);
+        normalizedDurations.push(expectedClipOutSec);
         if (job.kind === "preview") {
           previewBudgetRemaining -= usedDur;
           if (previewBudgetRemaining <= 0.05) break;
@@ -1150,12 +1234,17 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
       }
 
       job.message = `Joining ${normalizedPaths.length} clip(s)...`;
-      job.progress = 50;
+      job.progress = Math.max(job.progress, CLIP_PROGRESS_TO);
       const joinedPath = join(dir, "joined.mp4");
+      // Sum of expected output durations gives us a good estimate for the
+      // join+overlay+mix passes; xfade subtracts a little but a rough
+      // estimate is much better than a frozen progress bar.
+      const joinedExpectedSec = normalizedDurations.reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
       if (normalizedPaths.length === 1) {
         await (await import("fs/promises")).rename(normalizedPaths[0], joinedPath);
       } else {
         const hasXfade = clips.some((c, i) => i > 0 && (c.transitionIn?.type && c.transitionIn.type !== "none") || (clips[i - 1]?.transitionOut?.type && clips[i - 1].transitionOut!.type !== "none"));
+        const joinProgress = joinedExpectedSec > 0 ? ffmpegStageProgress(job, joinedExpectedSec, CLIP_PROGRESS_TO, 65) : undefined;
         if (hasXfade) {
           const transitions = clips.slice(1).map((clip, i) => {
             const prev = clips[i];
@@ -1165,9 +1254,9 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
                 ? prev.transitionOut
                 : { type: "fade" as const, duration: 0.5 };
           });
-          await crossfadeClips(normalizedPaths, joinedPath, transitions, job);
+          await crossfadeClips(normalizedPaths, joinedPath, transitions, job, joinProgress);
         } else {
-          await concatClips(normalizedPaths, joinedPath, job);
+          await concatClips(normalizedPaths, joinedPath, job, joinProgress);
         }
       }
       assertRenderNotCancelled(job);
@@ -1175,7 +1264,7 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
       let currentPath = joinedPath;
       if (overlays.length > 0) {
         job.message = "Applying overlays...";
-        job.progress = 70;
+        job.progress = Math.max(job.progress, 65);
         const overlayedPath = join(dir, "overlayed.mp4");
         const oArgs: string[] = ["-y", "-i", currentPath];
         const oFilters: string[] = [];
@@ -1212,7 +1301,10 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
           oArgs.push("-filter_complex", oFilters.join(";"), "-map", `[${current}]`, "-map", "0:a?");
           oArgs.push("-c:v", "libx264", "-preset", "veryfast", "-crf", job.kind === "preview" ? "28" : "22");
           oArgs.push("-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", overlayedPath);
-          await runFfmpegRaw(oArgs, job);
+          const overlayProgress = joinedExpectedSec > 0
+            ? ffmpegStageProgress(job, joinedExpectedSec, 65, 78)
+            : undefined;
+          await runFfmpegRaw(oArgs, job, overlayProgress);
           assertRenderNotCancelled(job);
           currentPath = overlayedPath;
         }
@@ -1220,7 +1312,7 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
 
       if (audioTracks.length > 0 && job.kind === "final") {
         job.message = "Mixing audio...";
-        job.progress = 80;
+        job.progress = Math.max(job.progress, 78);
         const mixedPath = join(dir, "mixed.mp4");
         const mArgs: string[] = ["-y", "-i", currentPath];
         const mFilters: string[] = [];
@@ -1247,7 +1339,10 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         mFilters.push(`${baseAudio}${audioTracks.map((_, i) => `[bg${i + 1}]`).join("")}amix=inputs=${audioTracks.length + 1}:duration=first:dropout_transition=2[aout]`);
         mArgs.push("-filter_complex", mFilters.join(";"), "-map", "0:v", "-map", "[aout]");
         mArgs.push("-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", mixedPath);
-        await runFfmpegRaw(mArgs, job);
+        const audioMixProgress = joinedExpectedSec > 0
+          ? ffmpegStageProgress(job, joinedExpectedSec, 78, 88)
+          : undefined;
+        await runFfmpegRaw(mArgs, job, audioMixProgress);
         assertRenderNotCancelled(job);
         currentPath = mixedPath;
       }
@@ -2602,12 +2697,59 @@ function snapshotRecipeSummary(project: EditorProject): string {
 }
 
 router.post("/projects/:projectId/chat", async (req: Request, res: Response): Promise<void> => {
+  // Use a non-throwing scope so we can persist defensively in error paths
+  // without losing the user message or any tool progress on a Gemini failure
+  // or mid-stream client disconnect.
+  let projectIdSafe: string | null = null;
+  let wsSafe: ReturnType<typeof getWorkspace> | null = null;
+  // Coalesce concurrent persistChat() calls so we don't issue two S3 writes
+  // in parallel for the same chat — the second one would clobber the first.
+  let writingChat: Promise<void> | null = null;
+  let pendingChatRewrite = false;
+  // History is captured outside the try so the catch handler can still
+  // persist whatever we accumulated before the failure.
+  let history: ChatMessage[] = [];
+  let assistantMessageRef: ChatMessage | null = null;
+  let finalTextSoFar = "";
+  let closed = false;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+  const persistChat = async (): Promise<void> => {
+    if (!wsSafe || !projectIdSafe) return;
+    if (writingChat) {
+      // A write is already in flight; queue exactly one rewrite and let the
+      // current write coalesce updates that came in while it was executing.
+      pendingChatRewrite = true;
+      return;
+    }
+    const ws = wsSafe;
+    const pid = projectIdSafe;
+    writingChat = (async () => {
+      try {
+        await writeChat(ws, pid, history);
+      } catch (err) {
+        logger.warn({ err, pid }, "[video-editor] chat persist failed");
+      }
+    })().finally(async () => {
+      writingChat = null;
+      if (pendingChatRewrite) {
+        pendingChatRewrite = false;
+        await persistChat();
+      }
+    });
+  };
+
   try {
     const projectId = routeParam(req.params.projectId, "projectId");
-    const userText = typeof req.body?.message === "string" ? req.body.message.trim() : "";
+    projectIdSafe = projectId;
+    const rawMessage = typeof req.body?.message === "string" ? req.body.message : "";
+    // Clamp absurdly long messages — protects against accidental paste of a
+    // multi-MB blob and keeps Gemini context cost predictable.
+    const userText = rawMessage.trim().slice(0, 16000);
     if (!userText) { bad(res, 400, "message required"); return; }
 
     const ws = getWorkspace(req);
+    wsSafe = ws;
     let project = await readProjectFromWorkspace(ws, projectId);
 
     // ── Auto-link uploaded files from chat message markers ──
@@ -2623,7 +2765,6 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
     }
 
     setupSse(res);
-    let closed = false;
     // Guard the SSE writer so a client disconnect mid-stream doesn't throw
     // ERR_STREAM_WRITE_AFTER_END for every subsequent send (heartbeat, tool
     // events, etc.). The flag is also flipped from `res.on("close")` below.
@@ -2635,18 +2776,26 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
         logger.debug({ err: writeErr }, "[video-editor] sse write after close, suppressing further frames");
       }
     };
-    const heartbeat = setInterval(() => send({ type: "heartbeat", ts: Date.now() }), 8000);
-    res.on("close", () => { closed = true; clearInterval(heartbeat); });
+    heartbeat = setInterval(() => send({ type: "heartbeat", ts: Date.now() }), 8000);
+    res.on("close", () => {
+      closed = true;
+      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
+    });
 
     send({ type: "run_start", runId: randomUUID() });
     send({ type: "project", project });
 
-    const history = await readChat(req, projectId);
+    history = await readChat(req, projectId);
     const userMessage: ChatMessage = { id: randomUUID(), role: "user", content: userText, createdAt: Date.now() };
     history.push(userMessage);
     send({ type: "user_message", message: userMessage });
+    // CRITICAL: persist the user message immediately so a Gemini failure or
+    // the client refreshing mid-stream still leaves the question visible in
+    // the chat log on reload.
+    await persistChat();
 
     const assistantMessage: ChatMessage = { id: randomUUID(), role: "assistant", content: "", createdAt: Date.now() };
+    assistantMessageRef = assistantMessage;
 
     // Initialize pending timeline from project state (v2) or convert from legacy recipe
     const projectV2 = project as EditorProjectV2;
@@ -2667,8 +2816,8 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
       send({ type: "text", content: assistantMessage.content });
       send({ type: "done" });
       history.push(assistantMessage);
-      await writeChat(ws, projectId, history);
-      clearInterval(heartbeat);
+      await persistChat();
+      if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
       res.end();
       return;
     }
@@ -2687,7 +2836,20 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
 
     let iterations = 0;
     const maxIterations = 6;
-    let finalText = "";
+    // Track whether the agent mutated the timeline this run and whether it
+    // made the result durable via propose() / start_render(). If it mutated
+    // but didn't persist, we auto-snapshot at the end so a refresh restores
+    // the work as a pending proposal the user can apply or discard. Without
+    // this, calling `add_clip` without `propose` silently loses the change
+    // because pendingTimeline only lives in this request's scope.
+    const TIMELINE_MUTATING_TOOLS = new Set([
+      "add_clip", "remove_clip", "trim_clip", "set_clip_speed",
+      "set_transition", "add_overlay", "remove_overlay", "add_audio",
+      "set_export", "clear_timeline", "split_clip", "reorder_clips",
+      "detect_logo_background",
+    ]);
+    let timelineMutated = false;
+    let timelinePersistedThisRun = false;
 
     while (iterations < maxIterations && !closed) {
       iterations += 1;
@@ -2709,6 +2871,9 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
       let text = "";
       try {
         for await (const chunk of stream) {
+          // Bail out fast if the client disconnected — the agent can still
+          // continue to mutate state but we stop pushing more network IO.
+          if (closed) break;
           const cParts: any[] = chunk?.candidates?.[0]?.content?.parts || [];
           for (const part of cParts) {
             aggregatedParts.push(part);
@@ -2726,8 +2891,12 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
       contents.push({ role: "model", parts: aggregatedParts });
 
       // Accumulate streamed text across iterations so the persisted
-      // assistant message matches what the user actually saw.
-      if (text) finalText = (finalText ? `${finalText}\n` : "") + text;
+      // assistant message matches what the user actually saw, and snapshot
+      // it onto the assistantMessage so a refresh shows partial replies.
+      if (text) {
+        finalTextSoFar = (finalTextSoFar ? `${finalTextSoFar}\n` : "") + text;
+        assistantMessage.content = finalTextSoFar;
+      }
 
       if (fnCalls.length === 0) break;
 
@@ -2745,6 +2914,11 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
         }
         try {
           const result = await exec(args);
+          if (TIMELINE_MUTATING_TOOLS.has(name)) timelineMutated = true;
+          // propose() saves the timeline as a pending proposal record;
+          // start_render() commits pendingTimeline straight to project.timeline.
+          // Both make the run durable, so we don't need to auto-snapshot.
+          if (name === "propose" || name === "start_render") timelinePersistedThisRun = true;
           send({ type: "tool_done", name, ok: true, message: result.message, project: result.project, job: result.job, toolCallId });
           history.push({ id: randomUUID(), role: "tool", content: result.message, tool: { name, args, result: { message: result.message, jobId: result.job?.jobId } }, createdAt: Date.now() });
           responseParts.push({ functionResponse: { name, response: { ok: true, message: result.message, recipe: project.recipe } } });
@@ -2755,21 +2929,74 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
           responseParts.push({ functionResponse: { name, response: { ok: false, error: msg } } });
         }
       }
+      // Snapshot history after each iteration's tools so a long download or
+      // render in tool #2 of an 8-step plan isn't lost on disconnect.
+      await persistChat();
       contents.push({ role: "user", parts: responseParts });
     }
 
-    if (!finalText) finalText = `Updated. Recipe: ${snapshotRecipeSummary(project)}.`;
-    assistantMessage.content = finalText;
+    if (!finalTextSoFar) finalTextSoFar = `Updated. Recipe: ${snapshotRecipeSummary(project)}.`;
+    assistantMessage.content = finalTextSoFar;
     history.push(assistantMessage);
-    await writeChat(ws, projectId, history);
+    // Auto-snapshot pending timeline as a proposal if the agent mutated the
+    // timeline but never called propose() / start_render(). This is the
+    // refresh-recovery safety net: without it, every "add a 5s fade-in" or
+    // "trim the second clip" silently disappears when the user reloads,
+    // because pendingTimeline only exists inside this request scope.
+    if (timelineMutated && !timelinePersistedThisRun && !closed) {
+      try {
+        const cur = getProject();
+        await resolveOpenEndedClipDurations(ws, pendingTimeline);
+        const snapshotProposal: Proposal = {
+          proposalId: randomUUID(),
+          status: "pending",
+          summary: "Auto-saved edit plan — apply to keep these changes, or refine in chat.",
+          diff: [],
+          timeline: JSON.parse(JSON.stringify(pendingTimeline)),
+          createdAt: Date.now(),
+        };
+        const proposals = [
+          ...((cur as any).proposals || []).filter((p: Proposal) => p.status !== "pending"),
+          snapshotProposal,
+        ];
+        const next = await writeProjectToWorkspace(ws, { ...cur, proposals, version: 2 } as any);
+        setProject(next as EditorProjectV2);
+        send({
+          type: "proposal",
+          proposalId: snapshotProposal.proposalId,
+          summary: snapshotProposal.summary,
+          diff: snapshotProposal.diff,
+          timeline: snapshotProposal.timeline,
+          duration: computeTimelineDuration(snapshotProposal.timeline),
+        });
+      } catch (snapshotErr) {
+        logger.warn({ err: snapshotErr }, "[video-editor] auto-snapshot proposal failed");
+      }
+    }
+    await persistChat();
     send({ type: "assistant_message", message: assistantMessage });
     send({ type: "done" });
-    clearInterval(heartbeat);
+    if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     res.end();
   } catch (err) {
     logger.error({ err }, "[video-editor] chat failed");
+    // Even on a hard failure, salvage whatever was captured so the user
+    // doesn't reload to a blank chat. We append a short error line to the
+    // assistant message so reviewers see what went wrong.
+    const errMsg = err instanceof Error ? err.message : "chat failed";
+    if (assistantMessageRef && projectIdSafe && wsSafe) {
+      const finalContent = finalTextSoFar
+        ? `${finalTextSoFar}\n\n⚠️ ${errMsg}`
+        : `⚠️ ${errMsg}`;
+      assistantMessageRef.content = finalContent;
+      // Only push if it isn't already in history (we push at the end on the
+      // happy path; this branch fires before that).
+      if (!history.includes(assistantMessageRef)) history.push(assistantMessageRef);
+      await persistChat().catch(() => {});
+    }
+    if (heartbeat) { clearInterval(heartbeat); heartbeat = null; }
     try {
-      sse(res, { type: "error", message: err instanceof Error ? err.message : "chat failed" });
+      sse(res, { type: "error", message: errMsg });
       sse(res, { type: "done" });
       res.end();
     } catch {

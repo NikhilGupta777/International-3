@@ -191,9 +191,14 @@ export const videoEditorApi = {
   getJob: (jobId: string) =>
     req<{ job: EditorJobSummary }>(`/api/video-editor/jobs/${encodeURIComponent(jobId)}`),
 
-  uploadAsset: async (projectId: string, role: "source" | "logo" | "intro" | "outro" | "audio", file: File): Promise<WorkspaceFile> => {
+  uploadAsset: async (
+    projectId: string,
+    role: "source" | "logo" | "intro" | "outro" | "audio",
+    file: File,
+    onProgress?: (fraction: number) => void,
+  ): Promise<WorkspaceFile> => {
     const safeName = file.name.replace(/[^\w.\-() ]+/g, "_").slice(-120) || `${role}.bin`;
-    return workspaceApi.uploadFile(`editor/uploads/${projectId}/${role}/${safeName}`, file);
+    return workspaceApi.uploadFile(`editor/uploads/${projectId}/${role}/${safeName}`, file, onProgress);
   },
 
   patchRecipe: (projectId: string, recipe: Partial<EditRecipe>) =>
@@ -237,26 +242,42 @@ export const videoEditorApi = {
         let sawDone = false;
         // SSE event boundary is a blank line. Some proxies normalize line
         // endings to CRLF, so accept both \n\n and \r\n\r\n.
-        const findBoundary = (s: string): number => {
+        const findBoundary = (s: string): { idx: number; sep: number } | null => {
           const a = s.indexOf("\n\n");
           const b = s.indexOf("\r\n\r\n");
-          if (a < 0) return b;
-          if (b < 0) return a;
-          return Math.min(a, b);
+          if (a < 0 && b < 0) return null;
+          if (b < 0) return { idx: a, sep: 2 };
+          if (a < 0 || b < a) return { idx: b, sep: 4 };
+          return { idx: a, sep: 2 };
         };
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          let idx;
-          while ((idx = findBoundary(buffer)) >= 0) {
-            const sep = buffer.startsWith("\r\n\r\n", idx) || buffer.slice(idx, idx + 4) === "\r\n\r\n" ? 4 : 2;
-            const chunk = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + sep);
-            const line = chunk.split(/\r?\n/).find((l) => l.startsWith("data:"));
-            if (!line) continue;
-            const raw = line.slice(5).trim();
-            if (!raw) continue;
+          let boundary = findBoundary(buffer);
+          while (boundary) {
+            const chunk = buffer.slice(0, boundary.idx);
+            buffer = buffer.slice(boundary.idx + boundary.sep);
+            // Per the SSE spec, an event can have multiple `data:` lines
+            // which should be concatenated with `\n`. Comments (`:` prefix)
+            // and other field names like `event:` / `id:` / `retry:` are
+            // ignored — we only consume the JSON payload off the data line(s).
+            const dataLines = chunk.split(/\r?\n/).reduce<string[]>((acc, line) => {
+              if (line.startsWith("data:")) {
+                // Strip exactly one optional space after the colon, per spec.
+                acc.push(line.slice(5).replace(/^ /, ""));
+              }
+              return acc;
+            }, []);
+            if (dataLines.length === 0) {
+              boundary = findBoundary(buffer);
+              continue;
+            }
+            const raw = dataLines.join("\n").trim();
+            if (!raw) {
+              boundary = findBoundary(buffer);
+              continue;
+            }
             try {
               const event = JSON.parse(raw);
               if (event?.type === "done") sawDone = true;
@@ -268,6 +289,7 @@ export const videoEditorApi = {
               });
               parseErrorReported = true;
             }
+            boundary = findBoundary(buffer);
           }
         }
         if (parseErrorReported && !sawDone) {
