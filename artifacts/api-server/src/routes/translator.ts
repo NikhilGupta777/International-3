@@ -1532,7 +1532,11 @@ router.post("/submit-from-s3", async (req: Request, res: ExpressResponse) => {
     await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: validatedSourceKey }));
 
     const jobId = randomUUID();
-    const ext = safeVideoExtension(validatedSourceKey) || "mp4";
+    // Be lenient about the container: yt-dlp may produce mp4/webm/mkv and the
+    // worker probes by content, not extension.  Never 500 here on an unusual
+    // extension — fall back to mp4.
+    let ext = "mp4";
+    try { ext = safeVideoExtension(validatedSourceKey); } catch { ext = "mp4"; }
     const s3Key = `translator-jobs/${jobId}/input.${ext}`;
     const resolvedLipSync = resolveRequestedLipSync(req, res, lipSync);
     const options: TranslatorOptions = {

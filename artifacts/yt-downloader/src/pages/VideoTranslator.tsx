@@ -548,6 +548,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     };
   }, [jobId, pollStatus]);
 
+  // Clear the YouTube-prep poll timer if the component unmounts mid-fetch.
+  useEffect(() => () => {
+    if (ytPollRef.current) { clearTimeout(ytPollRef.current); ytPollRef.current = null; }
+  }, []);
+
   useEffect(() => {
     let closed = false;
     const reconcileTranslatorJobs = async () => {
@@ -755,7 +760,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       const body = clipBody ? { url, ...clipBody, quality: "best" } : { url };
       const startRes = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...translatorAuthHeaders() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       if (!startRes.ok) throw await responseError(startRes, "Failed to fetch the video from YouTube.");
