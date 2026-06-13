@@ -1478,6 +1478,103 @@ router.post("/submit-from-url", async (req: Request, res: ExpressResponse) => {
   }
 });
 
+// ── POST /submit-from-s3 ───────────────────────────────────────────────────────
+// Ingests a video that already lives in our S3 bucket (a finished YouTube
+// download or clip-cut produced by the /youtube/* endpoints) by COPYING it
+// server-side into the translator-jobs prefix, then submitting the job.
+// This is how "translate a YouTube URL / a specific part of it" works: the
+// frontend first cuts/downloads the clip via the existing /youtube/clip-cut
+// or /youtube/download endpoints (same battle-tested yt-dlp path the Studio
+// copilot uses), then hands the resulting S3 key here. No re-download: a
+// same-bucket CopyObject is fast and avoids Lambda size/time limits.
+const ALLOWED_TRANSLATOR_SOURCE_PREFIXES = ["youtube/clips/", "youtube/downloads/"];
+
+function assertAllowedTranslatorSourceKey(sourceKey: string): string {
+  const key = String(sourceKey || "").replace(/^\/+/, "");
+  if (!key || key.includes("..")) {
+    throw Object.assign(new Error("Invalid sourceS3Key."), { statusCode: 400 });
+  }
+  if (!ALLOWED_TRANSLATOR_SOURCE_PREFIXES.some((p) => key.startsWith(p))) {
+    throw Object.assign(
+      new Error("sourceS3Key must be a YouTube download or clip output."),
+      { statusCode: 400 },
+    );
+  }
+  return key;
+}
+
+router.post("/submit-from-s3", async (req: Request, res: ExpressResponse) => {
+  try {
+    const ownerId = getRequesterId(req);
+    const {
+      sourceS3Key,
+      targetLang     = "Hindi",
+      targetLangCode = "hi",
+      sourceLang     = "auto",
+      voiceClone     = true,
+      lipSync        = false,
+      lipSyncQuality = "latentsync",
+      useDemucs      = false,
+      premiumAsr     = false,
+      multiSpeaker   = false,
+      asrModel       = "large-v3-turbo",
+      translationMode = "default",
+      dynamicVideoLength = false,
+      filename       = "youtube-video.mp4",
+    } = req.body;
+
+    if (!sourceS3Key) {
+      return res.status(400).json({ error: "sourceS3Key is required" });
+    }
+    const validatedSourceKey = assertAllowedTranslatorSourceKey(String(sourceS3Key));
+
+    // Confirm the source object exists before we create a job around it.
+    await s3.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: validatedSourceKey }));
+
+    const jobId = randomUUID();
+    // Be lenient about the container: yt-dlp may produce mp4/webm/mkv and the
+    // worker probes by content, not extension.  Never 500 here on an unusual
+    // extension — fall back to mp4.
+    let ext = "mp4";
+    try { ext = safeVideoExtension(validatedSourceKey); } catch { ext = "mp4"; }
+    const s3Key = `translator-jobs/${jobId}/input.${ext}`;
+    const resolvedLipSync = resolveRequestedLipSync(req, res, lipSync);
+    const options: TranslatorOptions = {
+      targetLang: String(targetLang),
+      targetLangCode: String(targetLangCode),
+      sourceLang: String(sourceLang),
+      voiceClone: boolValue(voiceClone, true),
+      lipSync: resolvedLipSync.enabled,
+      lipSyncQuality: String(lipSyncQuality),
+      useDemucs: boolValue(useDemucs, false),
+      premiumAsr: boolValue(premiumAsr, false),
+      multiSpeaker: boolValue(multiSpeaker, false),
+      asrModel: String(asrModel),
+      translationMode: String(translationMode),
+      dynamicVideoLength: boolValue(dynamicVideoLength, false),
+      filename: typeof filename === "string" && filename.trim() ? filename.trim() : "youtube-video.mp4",
+    };
+
+    await s3.send(new CopyObjectCommand({
+      Bucket:     S3_BUCKET,
+      Key:        s3Key,
+      CopySource: `${S3_BUCKET}/${encodeURIComponent(validatedSourceKey).replace(/%2F/g, "/")}`,
+    }));
+    console.log(`[Translator] /submit-from-s3 copied s3://${S3_BUCKET}/${validatedSourceKey} → ${s3Key}`);
+
+    await createTranslatorJobRecord(jobId, s3Key, options, ownerId);
+
+    const started = await startTranslatorJob(jobId, s3Key, options);
+    return res.json({ jobId, batchJobId: started.batchJobId, runtime: started.runtime, status: "QUEUED", lipsyncWarning: resolvedLipSync.warning });
+  } catch (err: any) {
+    console.error("[Translator] /submit-from-s3 error:", err);
+    if (isConditionalWriteFailure(err)) {
+      return res.status(409).json({ error: "A translation job with this jobId already exists." });
+    }
+    return res.status(translatorErrorStatus(err)).json({ error: err.message });
+  }
+});
+
 // ── GET /status/:jobId ────────────────────────────────────────────────────────
 // Reads real-time job status from DynamoDB (updated by the Python worker).
 router.get("/status/:jobId", async (req: Request, res: ExpressResponse) => {
