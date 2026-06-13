@@ -277,24 +277,14 @@ export async function submitYoutubeQueuePrimaryJob(input: QueueSubmitInput): Pro
   return submitYoutubeQueueJob(input, "primary");
 }
 
-/**
- * Submit an editor render job to Batch. Independent of the youtube
- * primary/shadow allowlist — gated on its own env flag, but shares the same
- * Batch queue/definition and DynamoDB jobs table.
- */
-export async function submitEditorRenderJob(input: {
+async function submitEditorRenderJobDurable(input: {
   jobId: string;
   workspaceId: string;
   projectId: string;
   kind: "preview" | "final";
 }): Promise<string | null> {
-  if (!ddb || !batch || !JOB_TABLE || !JOB_QUEUE || !JOB_DEFINITION) {
-    logger.warn(
-      { hasDdb: !!ddb, hasBatch: !!batch, hasJobTable: !!JOB_TABLE, hasJobQueue: !!JOB_QUEUE, hasJobDefinition: !!JOB_DEFINITION },
-      "[editor-render] queue config incomplete",
-    );
-    return null;
-  }
+  if (!ddb || !batch || !JOB_TABLE || !JOB_QUEUE || !JOB_DEFINITION) return null;
+
   const payload: QueuePayload = {
     jobId: input.jobId,
     jobType: "editor-render",
@@ -310,42 +300,79 @@ export async function submitEditorRenderJob(input: {
       jobType: { S: "editor-render" },
       sourceUrl: { S: payload.sourceUrl },
       status: { S: "queued" },
-      message: { S: "Editor render submitted" },
+      message: { S: "Submitting editor render..." },
       createdAt: { N: String(now) },
       updatedAt: { N: String(now) },
     },
   }));
-  const submit = await batch.send(new SubmitJobCommand({
-    jobName: `editor-${input.kind}-${Date.now()}`,
-    jobQueue: JOB_QUEUE,
-    jobDefinition: process.env.VIDEO_EDITOR_BATCH_JOB_DEFINITION || JOB_DEFINITION,
-    containerOverrides: {
-      environment: [
-        { name: "JOB_PAYLOAD", value: JSON.stringify(payload) },
-        { name: "JOB_TABLE", value: JOB_TABLE },
-        { name: "AWS_REGION", value: REGION },
-        { name: "QUEUE_MODE", value: "primary" },
-        { name: "QUEUE_INVOCATION_ID", value: randomUUID() },
-      ],
-    },
-  }));
+
+  let submit;
+  try {
+    submit = await batch.send(new SubmitJobCommand({
+      jobName: `editor-${input.kind}-${Date.now()}`,
+      jobQueue: JOB_QUEUE,
+      jobDefinition: process.env.VIDEO_EDITOR_BATCH_JOB_DEFINITION || JOB_DEFINITION,
+      containerOverrides: {
+        environment: [
+          { name: "JOB_PAYLOAD", value: JSON.stringify(payload) },
+          { name: "JOB_TABLE", value: JOB_TABLE },
+          { name: "AWS_REGION", value: REGION },
+          { name: "QUEUE_MODE", value: "primary" },
+          { name: "QUEUE_INVOCATION_ID", value: randomUUID() },
+        ],
+      },
+    }));
+  } catch (err) {
+    await ddb.send(new UpdateItemCommand({
+      TableName: JOB_TABLE,
+      Key: { jobId: { S: input.jobId } },
+      UpdateExpression: "SET #s = :s, #m = :m, updatedAt = :updatedAt",
+      ExpressionAttributeNames: { "#s": "status", "#m": "message" },
+      ExpressionAttributeValues: {
+        ":s": { S: "error" },
+        ":m": { S: err instanceof Error ? `Batch submission failed: ${err.message}` : "Batch submission failed" },
+        ":updatedAt": { N: String(Date.now()) },
+      },
+    }));
+    throw err;
+  }
+
   const batchJobId = submit.jobId ?? null;
   if (batchJobId) {
-    await ddb.send(new PutItemCommand({
+    await ddb.send(new UpdateItemCommand({
       TableName: JOB_TABLE,
-      Item: {
-        jobId: { S: input.jobId },
-        jobType: { S: "editor-render" },
-        sourceUrl: { S: payload.sourceUrl },
-        status: { S: "queued" },
-        message: { S: "Queued — starting soon..." },
-        batchJobId: { S: batchJobId },
-        createdAt: { N: String(now) },
-        updatedAt: { N: String(Date.now()) },
+      Key: { jobId: { S: input.jobId } },
+      UpdateExpression: "SET #m = :m, batchJobId = :batchJobId, updatedAt = :updatedAt",
+      ExpressionAttributeNames: { "#m": "message" },
+      ExpressionAttributeValues: {
+        ":m": { S: "Queued - starting soon..." },
+        ":batchJobId": { S: batchJobId },
+        ":updatedAt": { N: String(Date.now()) },
       },
     }));
   }
   return batchJobId;
+}
+
+/**
+ * Submit an editor render job to Batch. Independent of the youtube
+ * primary/shadow allowlist; gated on its own env flag, but shares the same
+ * Batch queue/definition and DynamoDB jobs table.
+ */
+export async function submitEditorRenderJob(input: {
+  jobId: string;
+  workspaceId: string;
+  projectId: string;
+  kind: "preview" | "final";
+}): Promise<string | null> {
+  if (!ddb || !batch || !JOB_TABLE || !JOB_QUEUE || !JOB_DEFINITION) {
+    logger.warn(
+      { hasDdb: !!ddb, hasBatch: !!batch, hasJobTable: !!JOB_TABLE, hasJobQueue: !!JOB_QUEUE, hasJobDefinition: !!JOB_DEFINITION },
+      "[editor-render] queue config incomplete",
+    );
+    return null;
+  }
+  return submitEditorRenderJobDurable(input);
 }
 
 export async function getJobStatusFromDdb(jobId: string): Promise<{
