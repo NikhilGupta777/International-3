@@ -10205,3 +10205,87 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   .ai-video-studio__agent-icon--active { animation: none; }
   .ai-video-studio__think-dots span { animation: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   Polish pass — fix the white-on-white text the original dark-theme rules
+   produced when the cards/bubbles flipped to light backgrounds. Every fix
+   here exists because the *base* style in this file (lines ~8800–8900)
+   was authored for the dark theme with `color: rgba(255, 255, 255, …)`
+   and we never re-stated the color when we made the surface light.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+/* Proposal — restate diff items + action buttons against the white card */
+.ai-video-studio__proposal-diff-item { color: #24292f; }
+.ai-video-studio__proposal-apply {
+  background: #0d1117; color: #ffffff;
+  border-radius: 999px;
+}
+.ai-video-studio__proposal-apply:hover:not(:disabled) {
+  background: #1f2328; transform: none;
+}
+.ai-video-studio__proposal-refine {
+  background: #ffffff; color: #0d1117;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+}
+.ai-video-studio__proposal-refine:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.04);
+}
+.ai-video-studio__proposal-card--approved {
+  border-color: rgba(20, 184, 166, 0.4) !important;
+  opacity: 1;
+}
+.ai-video-studio__proposal-card--rejected {
+  border-color: rgba(234, 88, 12, 0.4) !important;
+  opacity: 0.85;
+}
+
+/* Render-progress — header & percent label needed light-theme colors */
+.ai-video-studio__render-progress-header { color: #0d1117; }
+.ai-video-studio__render-progress--error {
+  background: rgba(239, 68, 68, 0.06);
+  border-color: rgba(239, 68, 68, 0.35);
+}
+.ai-video-studio__render-progress--error .ai-video-studio__render-progress-header {
+  color: #b91c1c;
+}
+.ai-video-studio__render-progress-retry {
+  background: #ffffff; color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+.ai-video-studio__render-progress-retry:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+/* System message — green check + tealish text, but bumped opacity so it
+   reads clearly against the white messages panel */
+.ai-video-studio__system-msg {
+  color: #0ea5e9;
+}
+
+/* Quick action chip — make the outline pop slightly more on white */
+.ai-video-studio__quick-btn {
+  border-color: rgba(0, 0, 0, 0.14);
+  color: #0d1117;
+}
+
+/* Guard against the chat surface ever showing the legacy dark backdrop —
+   gives our HeyGen overrides more specificity than the original
+   `.ai-video-studio { background: #0a0a0c; }` so a stale dev-server HMR
+   or a cached CSS chunk can't bleed the old colour through. */
+.ai-video-studio.ai-video-studio--chat,
+.ai-video-studio.ai-video-studio--chat .ai-video-studio__messages,
+.ai-video-studio.ai-video-studio--chat .ai-video-studio__quick-actions,
+.ai-video-studio.ai-video-studio--chat .ai-video-studio__input-bar,
+.ai-video-studio.ai-video-studio--chat .ai-video-studio__topbar {
+  background: #ffffff;
+  background-image: none;
+  color: #0d1117;
+}
+.ai-video-studio.ai-video-studio--landing { color: #0d1117; }
+.ai-video-studio.ai-video-studio--artifact {
+  background: #ffffff;
+  background-image: none;
+  color: #0d1117;
+}
