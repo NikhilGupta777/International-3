@@ -25,11 +25,21 @@ COPY scripts/enforce-pnpm.mjs scripts/optional-uv-sync.mjs ./scripts/
 # so api-server and its dependencies must also be installed.
 COPY artifacts/queue-worker/package.json ./artifacts/queue-worker/
 COPY artifacts/api-server/package.json ./artifacts/api-server/
+# api-server transitively depends on these workspace libs (zod schemas +
+# Drizzle DB types). Their package.json files must be present at install
+# time so pnpm can resolve the workspace graph from the lockfile, AND
+# their own deps must be installed (otherwise esbuild fails to resolve
+# `zod` when bundling lib/api-zod source into the api-server output).
+COPY lib/api-zod/package.json ./lib/api-zod/
+COPY lib/db/package.json ./lib/db/
 
-# Install only the worker plus API packages needed by bundled dynamic imports.
+# Install the worker plus all transitive workspace deps (leading `...`).
+# The previous trailing-dots variant (`@workspace/api-server...`) selected
+# api-server AND its dependents (none), so lib/api-zod's `zod` dependency
+# was never installed and esbuild failed at build time.
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
     pnpm config set network-concurrency 4 && \
-    pnpm --filter @workspace/queue-worker... --filter @workspace/api-server... install --frozen-lockfile
+    pnpm --filter "...@workspace/queue-worker" --filter "...@workspace/api-server" install --frozen-lockfile
 
 # Copy source after dependencies are installed (maximize cache reuse)
 COPY . .
