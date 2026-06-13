@@ -708,25 +708,32 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const pollYoutubeUntilReady = useCallback((ytJobId: string, mode: "clip" | "full") =>
     new Promise<string | null>((resolve, reject) => {
       const startedAt = Date.now();
+      const verb = mode === "clip" ? "Cutting" : "Downloading";
       const tick = async () => {
+        const elapsed = Math.round((Date.now() - startedAt) / 1000);
         try {
           const res = await fetch(`${YT_BASE}/progress/${ytJobId}`, { cache: NO_STORE });
           if (res.ok) {
             const data = await readJsonResponse<any>(res);
             const status = String(data.status ?? "");
-            if (typeof data.percent === "number") {
-              setPrepareMsg(`${mode === "clip" ? "Cutting" : "Downloading"} from YouTube… ${Math.round(data.percent)}%`);
-            }
+            // Always show movement: percent when known, else an elapsed timer,
+            // so a legitimate multi-minute fetch never looks frozen.
+            const pct = typeof data.percent === "number" ? ` ${Math.round(data.percent)}%` : ` ${elapsed}s`;
+            setPrepareMsg(`${verb} from YouTube…${pct}`);
             if (["done", "complete", "finished"].includes(status)) {
               resolve(data.s3Key ?? data.queue?.s3Key ?? null);
               return;
             }
             if (["error", "failed", "cancelled", "expired", "not_found"].includes(status)) {
-              reject(new Error(data.message || `YouTube job ${status}`));
+              reject(new Error(data.message || `YouTube ${mode === "clip" ? "clip" : "download"} ${status}.`));
               return;
             }
+          } else {
+            setPrepareMsg(`${verb} from YouTube… ${elapsed}s`);
           }
-        } catch { /* transient — keep polling */ }
+        } catch {
+          setPrepareMsg(`${verb} from YouTube… ${elapsed}s`);
+        }
         if (Date.now() - startedAt > 20 * 60_000) {
           reject(new Error("YouTube fetch timed out. Try a shorter clip."));
           return;
