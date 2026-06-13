@@ -63,6 +63,12 @@ type ChatBubble =
       outputPath: string;
       projectId: string;
     }
+  | {
+      kind: "summary";
+      id: string;
+      elapsedSec: number;
+      steps: string[];
+    }
   | { kind: "tool"; id: string; name: string; message: string };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -103,18 +109,264 @@ function fileTypeFromFile(file: File): AttachedAsset["type"] {
 }
 
 const FEATURE_TILES = [
-  { icon: "✂️", title: "Cut & Join Clips", desc: "Trim, join, and rearrange video segments", prefill: "I'll help you cut and join video clips. Upload your videos to start." },
-  { icon: "🎨", title: "Add Branding", desc: "Logo, date text, watermarks", prefill: "Upload your video and logo — I'll add branding and polish it." },
-  { icon: "📱", title: "Make Reels", desc: "Vertical format for social media", prefill: "Upload your video — I'll make it vertical for Instagram Reels or YouTube Shorts." },
-  { icon: "🔗", title: "From YouTube", desc: "Download and edit from a link", prefill: "" },
-  { icon: "✨", title: "Clean & Polish", desc: "Trim, fix audio, color grade", prefill: "Upload a video and I'll clean it up — trim dead air, fix audio, color grade." },
+  { icon: "🎬", title: "Cut & Join Clips", desc: "Go to clips →", prefill: "I'll help you cut and join video clips. Upload your videos to start." },
+  { icon: "🪄", title: "Speech Cleanup", desc: "Create now →", prefill: "Upload a video and I'll clean it up — trim dead air, fix audio, color grade." },
+  { icon: "🎨", title: "Add Branding", desc: "Go to branding →", prefill: "Upload your video and logo — I'll add branding and polish it." },
+  { icon: "📱", title: "Make Reels", desc: "Reformat now →", prefill: "Upload your video — I'll make it vertical for Instagram Reels or YouTube Shorts." },
+  { icon: "🔗", title: "From YouTube", desc: "Paste a link →", prefill: "" },
 ];
 
-const CAPABILITY_PILLS: Array<{ key: string; icon: string; label: string }> = [
-  { key: "auto-edit", icon: "🎬", label: "Auto Edit" },
-  { key: "auto-format", icon: "📐", label: "Auto Format" },
-  { key: "auto-brand", icon: "🎨", label: "Auto Brand" },
+const CAPABILITY_PILLS: Array<{ key: string; icon: string; label: string; sub: string }> = [
+  { key: "auto-edit", icon: "🎬", label: "Auto", sub: "Edit" },
+  { key: "auto-format", icon: "📐", label: "Auto", sub: "Format" },
+  { key: "auto-brand", icon: "🎨", label: "Auto", sub: "Brand" },
 ];
+
+/** Tiny character avatar (teardrop-marker with eyes) — rendered beside
+ *  assistant + thinking bubbles to give the agent a face. SVG inlined so
+ *  it themes cleanly with the page background. */
+function CharacterAvatar() {
+  return (
+    <span className="ai-video-studio__chr-avatar" aria-hidden="true">
+      <svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="aiv-chr-body" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#5eead4" />
+            <stop offset="100%" stopColor="#0ea5e9" />
+          </linearGradient>
+        </defs>
+        <path d="M18 3 C 26 12, 30 18, 30 23 A 12 12 0 0 1 6 23 C 6 18, 10 12, 18 3 Z"
+              fill="url(#aiv-chr-body)" />
+        <ellipse cx="14" cy="22" rx="2.4" ry="3" fill="#0d1117" />
+        <ellipse cx="22" cy="22" rx="2.4" ry="3" fill="#0d1117" />
+        <ellipse cx="15" cy="21" rx="0.7" ry="0.9" fill="#ffffff" />
+        <ellipse cx="23" cy="21" rx="0.7" ry="0.9" fill="#ffffff" />
+        <path d="M11 7 L 13 11 L 9 10 Z" fill="#34d399" opacity="0.85" />
+        <path d="M25 7 L 27 11 L 23 10 Z" fill="#34d399" opacity="0.85" transform="scale(-1,1) translate(-50,0)" />
+      </svg>
+    </span>
+  );
+}
+
+/** Slider/adjust icon for the secondary action button in the input card. */
+function SliderIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <line x1="4" y1="6" x2="13" y2="6" /><circle cx="17" cy="6" r="2.4" />
+      <line x1="11" y1="12" x2="20" y2="12" /><circle cx="7" cy="12" r="2.4" />
+      <line x1="4" y1="18" x2="13" y2="18" /><circle cx="17" cy="18" r="2.4" />
+    </svg>
+  );
+}
+
+/** Right-side chat-header action icons (open-link, share, split-view). */
+function IconOpenLink() {
+  return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M14 3h7v7" /><path d="M21 3L10 14" />
+    <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+  </svg>);
+}
+function IconShare() {
+  return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+  </svg>);
+}
+function IconSplit() {
+  return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <line x1="12" y1="4" x2="12" y2="20" />
+    <line x1="14" y1="8" x2="20" y2="8" /><line x1="14" y1="12" x2="20" y2="12" /><line x1="14" y1="16" x2="20" y2="16" />
+  </svg>);
+}
+
+/** Cloud-up icon for the Choose Assets modal's dropzone. */
+function IconCloudUp() {
+  return (<svg viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="2.4"
+    strokeLinecap="round" strokeLinejoin="round" className="ai-video-studio__modal-dropzone-icon">
+    <path d="M18 44H14a8 8 0 0 1 0-16 12 12 0 0 1 23-4 10 10 0 0 1 5 20h-4" />
+    <path d="M32 36v18" /><path d="M26 42l6-6 6 6" />
+  </svg>);
+}
+
+/** "Choose Assets" modal — Upload tab opens the file picker, Assets tab
+ *  lists prior uploads under the project's workspace folder so the user
+ *  can attach an existing file without re-uploading. Mirrors HeyGen's
+ *  Assets dialog (img 4) where the dropzone is the default tab. */
+function ChooseAssetsModal({
+  open, tab, projectId, onChangeTab, onClose, onPickFiles, onSelectAsset,
+}: {
+  open: boolean;
+  tab: "upload" | "assets";
+  projectId: string | null;
+  onChangeTab: (t: "upload" | "assets") => void;
+  onClose: () => void;
+  onPickFiles: () => void;
+  onSelectAsset: (asset: { path: string; name: string; type: "video" | "image" | "audio" }) => void;
+}) {
+  const [assets, setAssets] = useState<Array<{ path: string; size: number; modifiedAt: number }>>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Reload the asset list whenever the modal opens on the Assets tab —
+  // ensures uploads made elsewhere in the project show up promptly.
+  useEffect(() => {
+    if (!open || tab !== "assets" || !projectId) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    void workspaceApi
+      .listFiles(`editor/uploads/${projectId}/`, 60)
+      .then((res) => {
+        if (cancelled) return;
+        setAssets(res.files.filter((f) => f.path && !f.path.endsWith("/")));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Could not load assets");
+        setAssets([]);
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, tab, projectId]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: globalThis.KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div
+      className="ai-video-studio__modal-backdrop"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="ai-video-studio__modal" role="dialog" aria-modal="true" aria-label="Choose Assets">
+        <div className="ai-video-studio__modal-header">
+          <div className="ai-video-studio__modal-title">Choose Assets</div>
+          <button
+            type="button"
+            className="ai-video-studio__modal-close"
+            onClick={onClose}
+            aria-label="Close"
+          >×</button>
+        </div>
+        <div className="ai-video-studio__modal-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "upload"}
+            className={`ai-video-studio__modal-tab ${tab === "upload" ? "ai-video-studio__modal-tab--active" : ""}`}
+            onClick={() => onChangeTab("upload")}
+          >Upload</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === "assets"}
+            className={`ai-video-studio__modal-tab ${tab === "assets" ? "ai-video-studio__modal-tab--active" : ""}`}
+            onClick={() => onChangeTab("assets")}
+          >Assets</button>
+        </div>
+        {tab === "upload" ? (
+          <button
+            type="button"
+            className="ai-video-studio__modal-dropzone"
+            onClick={onPickFiles}
+          >
+            <IconCloudUp />
+            <span className="ai-video-studio__modal-dropzone-title">Upload file or drag and drop here</span>
+            <span className="ai-video-studio__modal-dropzone-hint">Supports videos, images, and audio</span>
+          </button>
+        ) : (
+          <div className="ai-video-studio__modal-asset-list">
+            {loading && <div className="ai-video-studio__modal-empty">Loading…</div>}
+            {error && !loading && (
+              <div className="ai-video-studio__modal-empty">Could not load assets — {error}</div>
+            )}
+            {!loading && !error && assets.length === 0 && (
+              <div className="ai-video-studio__modal-empty">No prior assets yet. Upload one to get started.</div>
+            )}
+            {!loading && !error && assets.map((a) => {
+              const name = a.path.split("/").pop() || a.path;
+              const ext = name.split(".").pop()?.toLowerCase() || "";
+              const type: "video" | "image" | "audio" =
+                ["mp4","mov","webm","mkv","avi","m4v"].includes(ext) ? "video"
+                : ["mp3","wav","m4a","aac","ogg","flac","opus"].includes(ext) ? "audio"
+                : "image";
+              return (
+                <button
+                  key={a.path}
+                  type="button"
+                  className="ai-video-studio__modal-asset-item"
+                  onClick={() => { onSelectAsset({ path: a.path, name, type }); onClose(); }}
+                >
+                  <div className="ai-video-studio__modal-asset-item-name">
+                    {type === "video" ? "🎬 " : type === "audio" ? "🎵 " : "🖼 "}{name}
+                  </div>
+                  <div className="ai-video-studio__modal-asset-item-meta">{(a.size / 1024 / 1024).toFixed(1)} MB</div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Completed-run summary card rendered after the agent says "done". Shows
+ *  the total elapsed time and a bulleted list of what the agent did (one
+ *  line per tool that succeeded). The list collapses by default after a
+ *  cutoff so long runs don't overwhelm the chat. */
+function SummaryBubble({ elapsedSec, steps }: { elapsedSec: number; steps: string[] }) {
+  const COLLAPSED_LIMIT = 6;
+  const [open, setOpen] = useState(true);
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? steps : steps.slice(0, COLLAPSED_LIMIT);
+  const hasMore = steps.length > visible.length;
+  const elapsedLabel = elapsedSec >= 60
+    ? `${Math.floor(elapsedSec / 60)}m ${Math.round(elapsedSec % 60)}s`
+    : `${Math.round(elapsedSec)}s`;
+  return (
+    <div className="ai-video-studio__summary-row">
+      <CharacterAvatar />
+      <div className="ai-video-studio__summary-body">
+        <button
+          type="button"
+          className="ai-video-studio__summary-header"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span className={`ai-video-studio__summary-chev ${open ? "ai-video-studio__summary-chev--open" : ""}`}>▶</span>
+          Completed {elapsedLabel}
+        </button>
+        {open && (
+          <>
+            <ul className="ai-video-studio__summary-list">
+              {visible.map((s, i) => (
+                <li key={i} className="ai-video-studio__summary-item">{s}</li>
+              ))}
+            </ul>
+            {hasMore && (
+              <button
+                type="button"
+                className="ai-video-studio__summary-loadmore"
+                onClick={() => setShowAll(true)}
+              >
+                Load more
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const LAST_VIDEO_STUDIO_PROJECT_KEY = "videomaking-ai-video-studio-last-project-v1";
 const STALE_RENDER_MS = 2 * 60_000;
@@ -207,6 +459,15 @@ export function AiVideoStudio() {
   const [showHistory, setShowHistory] = useState(false);
   const [historyProjects, setHistoryProjects] = useState<EditorProjectSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // Choose Assets modal — Upload / Assets tabs. Selecting an existing
+  // workspace asset attaches it to the prompt without uploading again.
+  const [showAssetsModal, setShowAssetsModal] = useState(false);
+  const [assetsModalTab, setAssetsModalTab] = useState<"upload" | "assets">("upload");
+  // Per-artifact thumb feedback, stored in localStorage so it survives
+  // refresh. Map<jobId, "up" | "down" | undefined>.
+  const [artifactFeedback, setArtifactFeedback] = useState<Record<string, "up" | "down" | undefined>>(() => {
+    try { return JSON.parse(localStorage.getItem("vm-aivs-feedback-v1") || "{}"); } catch { return {}; }
+  });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
@@ -648,6 +909,12 @@ export function AiVideoStudio() {
       let thinkingSteps: string[] = [];
       let assistantId: string | null = null;
       let assistantText = "";
+      // Track the start of this run so the completed-summary bubble can
+      // surface a human-readable elapsed time matching what HeyGen shows
+      // ("Completed 462s"). Also collect the unique completed tools so we
+      // can list them as bullet points in the summary card.
+      const runStartedAt = Date.now();
+      const completedLabels = new Set<string>();
 
       const dropThinkingBubble = () => {
         if (thinkingId) {
@@ -733,6 +1000,7 @@ export function AiVideoStudio() {
             case "tool_done":
               if (event.name) {
                 const label = getToolLabel(event.name);
+                if (event.ok) completedLabels.add(label);
                 const idx = thinkingSteps.findIndex((s) => s.startsWith(label));
                 if (idx >= 0) {
                   thinkingSteps[idx] = `✓ ${label}`;
@@ -800,6 +1068,18 @@ export function AiVideoStudio() {
             case "done":
               dropThinkingBubble();
               setIsStreaming(false);
+              // Push a "Completed Xs" summary card with the list of tools
+              // that ran during this turn. This mirrors the collapsible
+              // summary HeyGen shows under the assistant message and lets
+              // the user inspect what the agent actually did.
+              if (completedLabels.size > 0) {
+                const elapsedSec = (Date.now() - runStartedAt) / 1000;
+                const stepsArr = Array.from(completedLabels);
+                setBubbles((prev) => [
+                  ...prev,
+                  { kind: "summary" as const, id: safeUuid(), elapsedSec, steps: stepsArr },
+                ]);
+              }
               checkForCompletedRender(pid);
               break;
 
@@ -1364,6 +1644,20 @@ export function AiVideoStudio() {
 
   // ─── Artifact View ─────────────────────────────────────────────────────────
   if (view === "artifact" && artifactView) {
+    // List of done renders for this project — powers the "Artifacts ⌄"
+    // dropdown that lets users flip between prior renders without leaving
+    // the player.
+    const doneRenders = (project?.renders || []).filter((r) => r.status === "done" && r.outputPath);
+    const switchToRender = (jobId: string) => {
+      const r = doneRenders.find((x) => x.jobId === jobId);
+      if (!r || !r.outputPath) return;
+      setArtifactView({
+        jobId: r.jobId,
+        outputPath: r.outputPath,
+        title: project?.title || "Rendered Video",
+        projectId: artifactView.projectId,
+      });
+    };
     return (
       <div className="ai-video-studio ai-video-studio--artifact">
         <div className="ai-video-studio__artifact-header">
@@ -1376,18 +1670,59 @@ export function AiVideoStudio() {
           >
             ← Back to chat
           </button>
+          {doneRenders.length > 1 ? (
+            <select
+              className="ai-video-studio__renders-dropdown"
+              value={artifactView.jobId}
+              onChange={(e) => switchToRender(e.target.value)}
+              aria-label="Switch artifact"
+            >
+              {doneRenders.map((r, i) => (
+                <option key={r.jobId} value={r.jobId}>
+                  Artifact {doneRenders.length - i} {r.kind === "preview" ? "(preview)" : ""}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="ai-video-studio__renders-dropdown" aria-hidden="true">Artifacts</span>
+          )}
         </div>
         <div className="ai-video-studio__artifact-content">
           <h2 className="ai-video-studio__artifact-title">{artifactView.title}</h2>
-          <div className="ai-video-studio__artifact-actions">
+          <div className="ai-video-studio__artifact-action-bar">
+            <button
+              type="button"
+              className="ai-video-studio__artifact-action-circle"
+              title="Toggle captions (coming soon)"
+              aria-label="Toggle captions"
+              disabled
+            >CC</button>
             <a
               href={`/api/workspace/file?path=${encodeURIComponent(artifactView.outputPath)}&download=1`}
               target="_blank"
               rel="noreferrer"
-              className="ai-video-studio__artifact-action-btn"
-            >
-              ↓ Download
-            </a>
+              className="ai-video-studio__artifact-action-circle"
+              title="Download"
+              aria-label="Download"
+            >↓</a>
+            <button
+              type="button"
+              className="ai-video-studio__artifact-action-circle"
+              title="Share link"
+              aria-label="Share link"
+              onClick={() => {
+                try { void navigator.clipboard.writeText(window.location.href); } catch { /* ignore */ }
+              }}
+            >↗</button>
+            <button
+              type="button"
+              className="ai-video-studio__artifact-action-circle"
+              title="Copy workspace path"
+              aria-label="Copy workspace path"
+              onClick={() => {
+                try { void navigator.clipboard.writeText(artifactView.outputPath); } catch { /* ignore */ }
+              }}
+            >📋</button>
           </div>
           <div className="ai-video-studio__artifact-player">
             {artifactPreviewUrl ? (
@@ -1448,23 +1783,64 @@ export function AiVideoStudio() {
         {/* Top bar */}
         <div className="ai-video-studio__topbar">
           <div className="ai-video-studio__topbar-left">
-            <span className="ai-video-studio__agent-icon">🎬</span>
+            <span
+              className={`ai-video-studio__agent-icon ${isStreaming ? "ai-video-studio__agent-icon--active" : ""}`}
+              aria-hidden="true"
+            >
+              <span className="ai-video-studio__agent-icon-glyph">◆</span>
+            </span>
             <span className="ai-video-studio__project-title">
               {project?.title || "AI Video Agent"}
             </span>
           </div>
-          <div className="ai-video-studio__topbar-right">
+          <div className="ai-video-studio__topbar-actions">
+            {bubbles.some((b) => b.kind === "artifact") && artifactView == null && (
+              <button
+                type="button"
+                className="ai-video-studio__action-circle"
+                title="Open latest artifact"
+                aria-label="Open latest artifact"
+                onClick={() => {
+                  const last = [...bubbles].reverse().find((b) => b.kind === "artifact") as
+                    | Extract<ChatBubble, { kind: "artifact" }>
+                    | undefined;
+                  if (!last) return;
+                  setArtifactView({
+                    jobId: last.jobId,
+                    outputPath: last.outputPath,
+                    title: last.title,
+                    projectId: last.projectId,
+                  });
+                  setView("artifact");
+                }}
+              >
+                <IconOpenLink />
+              </button>
+            )}
             <button
               type="button"
-              className="ai-video-studio__topbar-btn"
+              className="ai-video-studio__action-circle"
+              title="Share project link"
+              aria-label="Share project link"
+              onClick={() => {
+                try {
+                  void navigator.clipboard.writeText(window.location.href);
+                } catch { /* ignore */ }
+              }}
+            >
+              <IconShare />
+            </button>
+            <button
+              type="button"
+              className="ai-video-studio__action-circle"
               title="History"
               aria-label="Open project history"
               onClick={() => setShowHistory(true)}
             >
-              📋
+              <IconSplit />
             </button>
             <button
-              className="ai-video-studio__topbar-btn"
+              className="ai-video-studio__action-circle"
               title="New project"
               aria-label="New project"
               onClick={() => {
@@ -1493,6 +1869,22 @@ export function AiVideoStudio() {
 
         {/* History panel — shared with landing view */}
         {renderHistoryPanel()}
+
+        {/* Choose Assets modal — also rendered on landing */}
+        <ChooseAssetsModal
+          open={showAssetsModal}
+          tab={assetsModalTab}
+          projectId={projectId}
+          onChangeTab={setAssetsModalTab}
+          onClose={() => setShowAssetsModal(false)}
+          onPickFiles={() => fileInputRef.current?.click()}
+          onSelectAsset={(asset) =>
+            setAttachedAssets((prev) => [
+              ...prev,
+              { id: safeUuid(), name: asset.name, type: asset.type, path: asset.path },
+            ])
+          }
+        />
 
         {/* Messages */}
         <div
@@ -1543,14 +1935,14 @@ export function AiVideoStudio() {
           <div className="ai-video-studio__quick-actions">
             {bubbles.some((b) => b.kind === "artifact") && (
               <>
-                <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Looks great!")}>
-                  👍 Looks great!
+                <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Looks amazing!")}>
+                  Looks amazing!
                 </button>
-                <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Can we change something?")}>
-                  ✏️ Change something
+                <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Can we edit something?")}>
+                  Can we edit something?
                 </button>
                 <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Make another version")}>
-                  🔄 Another version
+                  Make another version
                 </button>
               </>
             )}
@@ -1575,11 +1967,13 @@ export function AiVideoStudio() {
               ))}
             </div>
           )}
-          <div className="ai-video-studio__input-row">
+          <div className={`ai-video-studio__input-row ${isStreaming ? "ai-video-studio__input-row--streaming" : ""}`}>
             <div className="ai-video-studio__attach-wrap">
               <button
-                className="ai-video-studio__attach-btn"
+                className={`ai-video-studio__attach-btn ${showAttachPopover ? "ai-video-studio__attach-btn--open" : ""}`}
                 onClick={() => setShowAttachPopover(!showAttachPopover)}
+                aria-expanded={showAttachPopover}
+                aria-label="Add asset or knowledge"
               >
                 ＋
               </button>
@@ -1593,11 +1987,12 @@ export function AiVideoStudio() {
                   >
                     <button
                       onClick={() => {
-                        fileInputRef.current?.click();
+                        setAssetsModalTab("upload");
+                        setShowAssetsModal(true);
                         setShowAttachPopover(false);
                       }}
                     >
-                      📁 Upload files
+                      🖼 Assets
                     </button>
                     <button
                       onClick={() => {
@@ -1606,7 +2001,7 @@ export function AiVideoStudio() {
                         setShowAttachPopover(false);
                       }}
                     >
-                      🔗 YouTube link
+                      📖 Knowledge
                     </button>
                   </motion.div>
                 )}
@@ -1686,6 +2081,22 @@ export function AiVideoStudio() {
       {/* History panel — shared with chat view */}
       {renderHistoryPanel()}
 
+      {/* Choose Assets modal — also rendered in chat view */}
+      <ChooseAssetsModal
+        open={showAssetsModal}
+        tab={assetsModalTab}
+        projectId={projectId}
+        onChangeTab={setAssetsModalTab}
+        onClose={() => setShowAssetsModal(false)}
+        onPickFiles={() => fileInputRef.current?.click()}
+        onSelectAsset={(asset) =>
+          setAttachedAssets((prev) => [
+            ...prev,
+            { id: safeUuid(), name: asset.name, type: asset.type, path: asset.path },
+          ])
+        }
+      />
+
       <div className="ai-video-studio__landing-scroll">
         {/* Hero */}
         <motion.div
@@ -1715,7 +2126,10 @@ export function AiVideoStudio() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, delay: 0.1 }}
         >
-          {/* Capability pills */}
+          {/* Capability pills — horizontally scrollable; attached assets
+              slot into the same row to mirror HeyGen's flow where uploading
+              a file scrolls the Auto pills off-screen-left and surfaces a
+              chip with the file in their place. */}
           <div className="ai-video-studio__cap-pills">
             {CAPABILITY_PILLS.map((pill) => (
               <button
@@ -1731,29 +2145,26 @@ export function AiVideoStudio() {
                   })
                 }
               >
-                <span aria-hidden="true">{pill.icon}</span>
-                <span>{pill.label}</span>
+                <span className="ai-video-studio__cap-pill-icon" aria-hidden="true">{pill.icon}</span>
+                <span className="ai-video-studio__cap-pill-label">
+                  <span>{pill.label}</span>
+                  <span className="ai-video-studio__cap-pill-sub">{pill.sub}</span>
+                </span>
               </button>
             ))}
+            {attachedAssets.map((a) => (
+              <div key={a.id} className="ai-video-studio__asset-chip">
+                <span className="ai-video-studio__asset-chip-icon">
+                  {a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "🖼"}
+                </span>
+                <span className="ai-video-studio__asset-chip-name">{a.name}</span>
+                <span className="ai-video-studio__asset-chip-type">{a.type}</span>
+                <button className="ai-video-studio__asset-chip-remove" onClick={() => removeAsset(a.id)}>
+                  ×
+                </button>
+              </div>
+            ))}
           </div>
-
-          {/* Attached assets in card */}
-          {attachedAssets.length > 0 && (
-            <div className="ai-video-studio__card-assets">
-              {attachedAssets.map((a) => (
-                <div key={a.id} className="ai-video-studio__asset-chip">
-                  <span className="ai-video-studio__asset-chip-icon">
-                    {a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "🖼"}
-                  </span>
-                  <span className="ai-video-studio__asset-chip-name">{a.name}</span>
-                  <span className="ai-video-studio__asset-chip-type">{a.type}</span>
-                  <button className="ai-video-studio__asset-chip-remove" onClick={() => removeAsset(a.id)}>
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
 
           {/* Textarea */}
           <textarea
@@ -1771,8 +2182,10 @@ export function AiVideoStudio() {
             <div className="ai-video-studio__card-actions-left">
               <div className="ai-video-studio__attach-wrap">
                 <button
-                  className="ai-video-studio__attach-btn"
+                  className={`ai-video-studio__attach-btn ${showAttachPopover ? "ai-video-studio__attach-btn--open" : ""}`}
                   onClick={() => setShowAttachPopover(!showAttachPopover)}
+                  aria-expanded={showAttachPopover}
+                  aria-label="Add asset or knowledge"
                 >
                   ＋
                 </button>
@@ -1786,11 +2199,12 @@ export function AiVideoStudio() {
                     >
                       <button
                         onClick={() => {
-                          fileInputRef.current?.click();
+                          setAssetsModalTab("upload");
+                          setShowAssetsModal(true);
                           setShowAttachPopover(false);
                         }}
                       >
-                        📁 Upload files
+                        🖼 Assets
                       </button>
                       <button
                         onClick={() => {
@@ -1799,12 +2213,21 @@ export function AiVideoStudio() {
                           setShowAttachPopover(false);
                         }}
                       >
-                        🔗 YouTube link
+                        📖 Knowledge
                       </button>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
+              <button
+                type="button"
+                className="ai-video-studio__slider-btn"
+                aria-label="Open advanced settings"
+                title="Advanced settings"
+                onClick={() => setShowHistory(true)}
+              >
+                <SliderIcon />
+              </button>
             </div>
             <button
               className="ai-video-studio__submit-btn"
@@ -1905,29 +2328,43 @@ export function AiVideoStudio() {
 
       case "assistant":
         return (
-          <div className="ai-video-studio__agent-msg">
-            <div className="ai-video-studio__msg-text">{renderAgentMarkdown(bubble.text)}</div>
+          <div className="ai-video-studio__assistant-row">
+            <CharacterAvatar />
+            <div className="ai-video-studio__assistant-body">
+              <div className="ai-video-studio__msg-text">{renderAgentMarkdown(bubble.text)}</div>
+            </div>
           </div>
         );
 
       case "thinking":
         return (
-          <div className="ai-video-studio__thinking">
-            <div className="ai-video-studio__thinking-header">
-              <span className="ai-video-studio__thinking-dots">
-                <span>●</span><span>●</span><span>●</span>
-              </span>
-              <span>Working...</span>
-            </div>
-            <div className="ai-video-studio__thinking-steps">
-              {bubble.steps.map((step, i) => (
-                <div key={i} className={`ai-video-studio__thinking-step ${step.startsWith("✓") ? "ai-video-studio__thinking-step--done" : ""}`}>
-                  {step}
-                </div>
-              ))}
+          <div className="ai-video-studio__think-row">
+            <CharacterAvatar />
+            <div className="ai-video-studio__think-body">
+              <div className="ai-video-studio__think-header">
+                Thinking
+                <span className="ai-video-studio__think-dots">
+                  <span>.</span><span>.</span><span>.</span>
+                </span>
+              </div>
+              {bubble.steps.length > 0 && (
+                <ul className="ai-video-studio__think-bullets">
+                  {bubble.steps.map((step, i) => (
+                    <li
+                      key={i}
+                      className={step.startsWith("✓") ? "ai-video-studio__think-bullet--done" : ""}
+                    >
+                      {step.replace(/^✓ /, "")}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         );
+
+      case "summary":
+        return <SummaryBubble elapsedSec={bubble.elapsedSec} steps={bubble.steps} />;
 
       case "proposal": {
         const isApproved = (bubble as any).status === "approved";
@@ -2070,24 +2507,22 @@ export function AiVideoStudio() {
           </div>
         );
 
-      case "artifact":
+      case "artifact": {
+        const feedback = artifactFeedback[bubble.jobId];
+        const setFeedback = (v: "up" | "down") => {
+          setArtifactFeedback((prev) => {
+            const next = { ...prev, [bubble.jobId]: prev[bubble.jobId] === v ? undefined : v };
+            try { localStorage.setItem("vm-aivs-feedback-v1", JSON.stringify(next)); } catch { /* ignore */ }
+            return next;
+          });
+        };
         return (
-          <div
-            className="ai-video-studio__artifact-card"
-            role="button"
-            tabIndex={0}
-            onClick={() => {
-              setArtifactView({
-                jobId: bubble.jobId,
-                outputPath: bubble.outputPath,
-                title: bubble.title,
-                projectId: bubble.projectId,
-              });
-              setView("artifact");
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
+          <div>
+            <div
+              className="ai-video-studio__artifact-card"
+              role="button"
+              tabIndex={0}
+              onClick={() => {
                 setArtifactView({
                   jobId: bubble.jobId,
                   outputPath: bubble.outputPath,
@@ -2095,31 +2530,72 @@ export function AiVideoStudio() {
                   projectId: bubble.projectId,
                 });
                 setView("artifact");
-              }
-            }}
-          >
-            <div className="ai-video-studio__artifact-card-thumb">
-              <img
-                src={`/api/video-editor/projects/${encodeURIComponent(bubble.projectId)}/renders/${encodeURIComponent(bubble.jobId)}/thumb`}
-                alt=""
-                loading="lazy"
-                onError={(e) => {
-                  // Hide the broken <img> AND mark the wrapper as "no-thumb"
-                  // so CSS can paint a placeholder gradient instead of an
-                  // empty rectangle.
-                  const img = e.target as HTMLImageElement;
-                  img.style.display = "none";
-                  img.parentElement?.classList.add("ai-video-studio__artifact-card-thumb--placeholder");
-                }}
-              />
-              <div className="ai-video-studio__artifact-play" aria-hidden="true">▶</div>
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setArtifactView({
+                    jobId: bubble.jobId,
+                    outputPath: bubble.outputPath,
+                    title: bubble.title,
+                    projectId: bubble.projectId,
+                  });
+                  setView("artifact");
+                }
+              }}
+            >
+              <div className="ai-video-studio__artifact-card-thumb">
+                <img
+                  src={`/api/video-editor/projects/${encodeURIComponent(bubble.projectId)}/renders/${encodeURIComponent(bubble.jobId)}/thumb`}
+                  alt=""
+                  loading="lazy"
+                  onError={(e) => {
+                    const img = e.target as HTMLImageElement;
+                    img.style.display = "none";
+                    img.parentElement?.classList.add("ai-video-studio__artifact-card-thumb--placeholder");
+                  }}
+                />
+                <div className="ai-video-studio__artifact-play" aria-hidden="true">▶</div>
+              </div>
+              <div className="ai-video-studio__artifact-card-info">
+                <div className="ai-video-studio__artifact-card-title">{bubble.title}</div>
+                <div className="ai-video-studio__artifact-card-label">Artifact</div>
+              </div>
             </div>
-            <div className="ai-video-studio__artifact-card-info">
-              <div className="ai-video-studio__artifact-card-title">{bubble.title}</div>
-              <div className="ai-video-studio__artifact-card-label">Artifact</div>
+            <div className="ai-video-studio__artifact-feedback">
+              <button
+                type="button"
+                className={`ai-video-studio__feedback-btn ${feedback === "up" ? "ai-video-studio__feedback-btn--active" : ""}`}
+                aria-label="Looks good"
+                aria-pressed={feedback === "up"}
+                onClick={(e) => { e.stopPropagation(); setFeedback("up"); }}
+              >
+                👍
+              </button>
+              <button
+                type="button"
+                className={`ai-video-studio__feedback-btn ${feedback === "down" ? "ai-video-studio__feedback-btn--active" : ""}`}
+                aria-label="Needs work"
+                aria-pressed={feedback === "down"}
+                onClick={(e) => { e.stopPropagation(); setFeedback("down"); }}
+              >
+                👎
+              </button>
+              <a
+                className="ai-video-studio__feedback-btn"
+                href={`/api/workspace/file?path=${encodeURIComponent(bubble.outputPath)}&download=1`}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Download"
+                title="Download"
+                onClick={(e) => e.stopPropagation()}
+              >
+                ↓
+              </a>
             </div>
           </div>
         );
+      }
 
       case "tool":
         // Tool rows are surfaced inline inside the thinking bubble — there is
