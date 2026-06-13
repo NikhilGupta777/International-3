@@ -166,6 +166,21 @@ jobs:
       - uses: aws-actions/amazon-ecr-login@v2
       - uses: docker/setup-buildx-action@v3
 
+      # Pre-build api-server's dist on the runner (NOT inside Docker —
+      # bundling esbuild across the workspace graph is fiddly to do in a
+      # filter-installed container). The dist tree is then included in the
+      # Docker build context so the queue worker can dynImport
+      # `@workspace/api-server/dist/routes/video-editor.mjs` at runtime to
+      # execute editor-render jobs. Mirrors the build-api job above.
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.33.0 }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @workspace/api-server run build
+
       - name: Build & push worker image
         id: push
         run: |
