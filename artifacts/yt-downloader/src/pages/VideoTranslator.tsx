@@ -872,7 +872,24 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           jobId: newJobId,
           s3Key,
           filename: file.name,
-          ...buildSubmitOptions(),
+          targetLang: TARGET_LANGS.find(l => l.code === tgtLang)?.name ?? tgtLang,
+          targetLangCode: tgtLang,
+          sourceLang: srcLang,
+          voiceClone: isVoiceClone,
+          lipSync: lipSyncAvailable && lipSync && translationMode === "full",
+          lipSyncQuality: "latentsync",
+          translationMode: translationMode === "subtitle-only" ? "subtitle-only" : "default",
+          // P2-8: multiSpeaker controlled by user toggle (defaults to true
+          // when voice cloning).  Single-speaker vlogs can disable this to
+          // skip diarization and save ~1-2 min.
+          multiSpeaker: isVoiceClone ? multiSpeaker : false,
+          // P2-7: background music separation (Demucs).  When disabled,
+          // the dubbed audio is voice-only with no background music mix.
+          useDemucs: keepBackgroundMusic && translationMode === "full",
+          // Dynamic Video Length: keep the dubbed voice at natural speed and
+          // let the output video grow (frozen-frame holds in the pauses)
+          // rather than speeding the voice up to fit the original length.
+          dynamicVideoLength: translationMode === "full" && dynamicVideoLength,
         }),
       });
       if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");

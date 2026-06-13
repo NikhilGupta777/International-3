@@ -40,4 +40,13 @@ COPY . .
 
 RUN pnpm --filter @workspace/queue-worker run build
 
+# Pin the ffmpeg/ffprobe paths to the system binaries installed via apt
+# above. Without these, the api-server bundle that handleEditorRender
+# dynImports falls back to `ffmpeg-static`'s default export, whose path
+# was computed by esbuild at bundle time as `__dirname + "/ffmpeg"` —
+# i.e. `/app/artifacts/api-server/dist/routes/ffmpeg`, which doesn't
+# exist in this image. Mirrors the api-lambda Dockerfile pattern.
+ENV FFMPEG_BIN=/usr/bin/ffmpeg
+ENV FFPROBE_BIN=/usr/bin/ffprobe
+
 CMD ["node", "artifacts/queue-worker/dist/index.mjs"]
