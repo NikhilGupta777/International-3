@@ -15,7 +15,8 @@ import { setupSse, sseFlush } from "../lib/sse";
 import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb } from "../lib/youtube-queue";
 
-const VIDEO_EDITOR_QUEUE_ENABLED = (process.env.VIDEO_EDITOR_QUEUE_ENABLED || "").toLowerCase() === "true";
+const VIDEO_EDITOR_QUEUE_ENABLED =
+  (process.env.VIDEO_EDITOR_BATCH_ENABLED || "").toLowerCase() === "true";
 
 type AspectRatio = "original" | "9:16" | "16:9" | "1:1";
 type CropMode = "smart" | "fit-blur" | "contain";
