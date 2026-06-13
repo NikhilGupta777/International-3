@@ -8902,6 +8902,57 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   font-size: 11px; color: rgba(255, 255, 255, 0.5);
   width: 36px; text-align: right;
 }
+.ai-video-studio__render-progress-actions {
+  margin-top: 10px;
+  display: flex; gap: 8px;
+}
+.ai-video-studio__render-progress-retry {
+  appearance: none;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fca5a5;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.ai-video-studio__render-progress-retry:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+.ai-video-studio__render-progress-retry:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Per-asset upload progress on the user message bubble — narrow bar at the
+   bottom of the chip with the same teal/cyan gradient as the render bar so
+   the visual language stays consistent. */
+.ai-video-studio__msg-asset-chip--uploading {
+  border-color: rgba(20, 184, 166, 0.35);
+  background: rgba(20, 184, 166, 0.08);
+}
+.ai-video-studio__msg-asset-chip--error {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.08);
+}
+.ai-video-studio__msg-asset-progress {
+  position: relative;
+  margin-top: 4px;
+  height: 3px;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.ai-video-studio__msg-asset-progress-bar {
+  position: absolute; top: 0; left: 0; bottom: 0;
+  background: linear-gradient(90deg, #14b8a6, #06b6d4);
+  border-radius: 2px;
+  transition: width 0.2s ease;
+}
 
 /* ─── Artifact card ────────────────────────────────────────────────────────── */
 .ai-video-studio__artifact-card {

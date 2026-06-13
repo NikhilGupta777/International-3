@@ -28,6 +28,13 @@ type AttachedAsset = {
   path?: string;
   file?: File;
   url?: string;
+  /**
+   * Upload progress in 0..1 once an asset is being sent to the workspace.
+   * `undefined` means "not in flight"; `1` means "done". The user bubble
+   * renders a thin progress bar on each chip while < 1.
+   */
+  uploadProgress?: number;
+  uploadError?: string;
 };
 
 type ChatBubble =
@@ -202,11 +209,22 @@ export function AiVideoStudio() {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
+  // Tracks whether the user is currently looking at the bottom. Auto-scroll
+  // only fires when this is true so scrolling up to read older messages
+  // doesn't yank the user back down each time a new event lands.
+  const followBottomRef = useRef<boolean>(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<{ cancel: () => void } | null>(null);
   const projectRef = useRef<EditorProject | null>(null);
   const renderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Monotonic session token. Bumped on every project switch / delete /
+  // unmount so any in-flight async callback inside startRenderPolling can
+  // detect "I'm running for an old project" and bail before it stomps on
+  // the bubbles of the *new* project. Without this, switching projects
+  // mid-render briefly shows the old render's progress in the new chat.
+  const renderPollSessionRef = useRef<number>(0);
   projectRef.current = project;
 
   // Project restore can load a completed render even when chat history is
@@ -240,21 +258,50 @@ export function AiVideoStudio() {
     });
   }, [project]);
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages — but only when the user is
+  // already at the bottom. Otherwise, respect the user's reading position
+  // and surface a "new messages" hint via the bubble pulse instead.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!followBottomRef.current) return;
+    // `instant` for streaming text updates; smooth scroll competing with
+    // every chunk causes visible jitter. The browser will still scroll
+    // smoothly when the user navigates manually.
+    messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
   }, [bubbles]);
 
-  // Load history when panel opens
+  // Track scroll position on the messages container. We're at the "bottom"
+  // when within 80px of the end — within one bubble of the floor, which
+  // accommodates iOS rubber-banding without flipping the flag.
+  const handleMessagesScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    followBottomRef.current = distanceFromBottom < 80;
+  }, []);
+
+  // Load history when panel opens. Result is cached for HISTORY_CACHE_MS so
+  // tapping the icon repeatedly doesn't burn a /projects request each time;
+  // the panel still shows live data while a background refresh runs after
+  // the cache window has elapsed.
+  const historyFetchedAtRef = useRef<number>(0);
+  const historyProjectsRef = useRef<EditorProjectSummary[]>([]);
+  historyProjectsRef.current = historyProjects;
   useEffect(() => {
     if (!showHistory) return;
-    setHistoryLoading(true);
+    const HISTORY_CACHE_MS = 30_000;
+    const fresh = Date.now() - historyFetchedAtRef.current < HISTORY_CACHE_MS;
+    // Only show the loading state if we have nothing cached at all.
+    if (!fresh && historyProjectsRef.current.length === 0) setHistoryLoading(true);
+    if (fresh) return; // skip refresh; user has up-to-date data
+    let cancelled = false;
     videoEditorApi.listProjects()
       .then(({ projects }) => {
+        if (cancelled) return;
         setHistoryProjects(projects.sort((a, b) => b.updatedAt - a.updatedAt));
+        historyFetchedAtRef.current = Date.now();
       })
-      .catch(() => setHistoryProjects([]))
-      .finally(() => setHistoryLoading(false));
+      .catch(() => { /* keep last-known list rather than blanking it */ })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
   }, [showHistory]);
 
   // Allow Esc to close the history modal even if focus isn't on the panel.
@@ -288,12 +335,18 @@ export function AiVideoStudio() {
         clearInterval(renderPollRef.current);
         renderPollRef.current = null;
       }
+      // Old polling callback may already be awaiting a fetch — ensure it
+      // can detect the project switch and bail.
+      renderPollSessionRef.current += 1;
       const { project: loaded } = await videoEditorApi.getProject(pid);
       setProjectId(loaded.projectId);
       setProject(loaded);
       setBubbles([]);
       setShowHistory(false);
       setView("chat");
+      // Loading a project explicitly should land at the bottom so the
+      // freshest activity is in view.
+      followBottomRef.current = true;
       // Load chat history
       try {
         const { messages } = await videoEditorApi.getChat(pid);
@@ -345,6 +398,21 @@ export function AiVideoStudio() {
     e.stopPropagation();
     if (!confirm("Delete this project? This cannot be undone.")) return;
     try {
+      // If we're deleting the active project, tear down any in-flight chat
+      // stream and render polling first. Without this, the polling loop
+      // keeps hitting the now-deleted project and surfaces "Lost connection
+      // to render service." after a dozen 404s — confusing and noisy.
+      if (projectId === pid) {
+        streamRef.current?.cancel();
+        streamRef.current = null;
+        if (renderPollRef.current) {
+          clearInterval(renderPollRef.current);
+          renderPollRef.current = null;
+        }
+        // Bump the session token so any in-flight async callback inside
+        // startRenderPolling drops its update on return.
+        renderPollSessionRef.current += 1;
+      }
       await videoEditorApi.deleteProject(pid);
       setHistoryProjects((prev) => prev.filter((p) => p.projectId !== pid));
       if (projectId === pid) {
@@ -352,6 +420,10 @@ export function AiVideoStudio() {
         setProjectId(null);
         setProject(null);
         setBubbles([]);
+        setIsStreaming(false);
+        setApplyingProposalId(null);
+        setArtifactView(null);
+        setArtifactPreviewUrl(null);
         try { window.localStorage.removeItem(LAST_VIDEO_STUDIO_PROJECT_KEY); } catch { /* ignore */ }
       }
     } catch (err) {
@@ -360,18 +432,31 @@ export function AiVideoStudio() {
   }, [projectId]);
 
   // Auto-resize textarea — but never below the CSS-defined min-height so the
-  // landing card's 72px target isn't squashed to a single line.
+  // landing card's 72px target isn't squashed to a single line. Coalesced
+  // through requestAnimationFrame so a fast typist doesn't trigger one
+  // layout pass per keystroke (which becomes visible jank on long messages).
+  const adjustTextareaRafRef = useRef<number | null>(null);
   const adjustTextarea = useCallback(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    const cs = window.getComputedStyle(el);
-    const minH = parseFloat(cs.minHeight || "0") || 0;
-    el.style.height = "auto";
-    el.style.height = Math.max(minH, Math.min(el.scrollHeight, 160)) + "px";
+    if (adjustTextareaRafRef.current != null) return;
+    adjustTextareaRafRef.current = requestAnimationFrame(() => {
+      adjustTextareaRafRef.current = null;
+      const el = inputRef.current;
+      if (!el) return;
+      const cs = window.getComputedStyle(el);
+      const minH = parseFloat(cs.minHeight || "0") || 0;
+      el.style.height = "auto";
+      el.style.height = Math.max(minH, Math.min(el.scrollHeight, 160)) + "px";
+    });
   }, []);
 
   useEffect(() => {
     adjustTextarea();
+    return () => {
+      if (adjustTextareaRafRef.current != null) {
+        cancelAnimationFrame(adjustTextareaRafRef.current);
+        adjustTextareaRafRef.current = null;
+      }
+    };
   }, [inputText, adjustTextarea]);
 
   // ─── File Handling ──────────────────────────────────────────────────────────
@@ -435,6 +520,12 @@ export function AiVideoStudio() {
     const stagedAssets = attachedAssets;
     setAttachedAssets([]);
 
+    // Pre-create a stable id for the user bubble so we can update its asset
+    // chips with live upload progress. Without this users tap Send and stare
+    // at a blank chat for the upload duration — which on a 200MB clip can
+    // be 30+ seconds and looks indistinguishable from a frozen UI.
+    const userBubbleId = safeUuid();
+
     try {
       let pid = projectId;
       if (!pid) {
@@ -447,26 +538,75 @@ export function AiVideoStudio() {
         setView("chat");
       }
 
+      // Show the user message + upload chips immediately, before uploads
+      // start. Each chip will paint its progress bar as the upload runs.
+      const initialAssets: AttachedAsset[] = stagedAssets.map((a) => ({
+        ...a,
+        uploadProgress: a.file ? 0 : 1,
+      }));
+      // Force a scroll-to-bottom on the next render — a new user message
+      // is an explicit action and should always be brought into view.
+      followBottomRef.current = true;
+      setBubbles((prev) => [
+        ...prev,
+        { kind: "user", id: userBubbleId, text, assets: initialAssets },
+      ]);
+
+      // Helper that patches one asset on the in-flight user bubble. We
+      // re-derive from `prev` each call so concurrent uploads (Promise.all)
+      // don't race each other to the same setBubbles update.
+      const patchAsset = (assetId: string, patch: Partial<AttachedAsset>) => {
+        setBubbles((prev) =>
+          prev.map((b) =>
+            b.kind === "user" && b.id === userBubbleId
+              ? {
+                  ...b,
+                  assets: b.assets.map((a) =>
+                    a.id === assetId ? { ...a, ...patch } : a,
+                  ),
+                }
+              : b,
+          ),
+        );
+      };
+
       // Upload attached files in parallel — sequential uploads on a 5-clip
       // request blocked the chat round-trip for tens of seconds.
-      const uploaded = stagedAssets.map((a) => ({ ...a }));
+      const uploaded: AttachedAsset[] = stagedAssets.map((a) => ({ ...a }));
       await Promise.all(
         uploaded.map(async (asset) => {
-          if (!asset.file) return;
+          if (!asset.file) {
+            patchAsset(asset.id, { uploadProgress: 1 });
+            return;
+          }
           const role = asset.type === "video" ? "source" : asset.type === "audio" ? "audio" : "logo";
-          const result = await videoEditorApi.uploadAsset(pid!, role, asset.file);
-          asset.path = result.path;
+          try {
+            // Throttle progress updates to every 5% to avoid bombarding
+            // React with a setState per network packet on huge uploads.
+            let lastReported = 0;
+            const result = await videoEditorApi.uploadAsset(
+              pid!,
+              role,
+              asset.file,
+              (fraction) => {
+                const pct = Math.min(0.99, Math.max(0, fraction));
+                if (pct - lastReported >= 0.05 || pct >= 0.99) {
+                  lastReported = pct;
+                  patchAsset(asset.id, { uploadProgress: pct });
+                }
+              },
+            );
+            asset.path = result.path;
+            patchAsset(asset.id, { uploadProgress: 1, path: result.path });
+          } catch (uploadErr) {
+            const msg = uploadErr instanceof Error ? uploadErr.message : "Upload failed";
+            patchAsset(asset.id, { uploadProgress: undefined, uploadError: msg });
+            // Re-throw so Promise.all rejects and the outer catch restores
+            // the staged list + input text for retry.
+            throw uploadErr;
+          }
         })
       );
-
-      // Add user bubble
-      const userBubble: ChatBubble = {
-        kind: "user",
-        id: safeUuid(),
-        text,
-        assets: uploaded,
-      };
-      setBubbles((prev) => [...prev, userBubble]);
 
       // Build message with asset context
       const assetCtx = uploaded
@@ -482,7 +622,9 @@ export function AiVideoStudio() {
     } catch (err) {
       console.error("Submit error:", err);
       // Restore the user's typed text and staged files so they don't have to
-      // re-pick everything after a transient upload failure.
+      // re-pick everything after a transient upload failure. Drop the
+      // optimistic user bubble so the input row matches what they staged.
+      setBubbles((prev) => prev.filter((b) => !(b.kind === "user" && b.id === userBubbleId)));
       setInputText(text);
       setAttachedAssets((prev) => [...stagedAssets, ...prev]);
       setBubbles((prev) => [
@@ -496,49 +638,83 @@ export function AiVideoStudio() {
   // ─── Stream Chat ────────────────────────────────────────────────────────────
   const streamChat = useCallback(
     (pid: string, message: string) => {
+      // Per-iteration bubble state. The agent loop emits a `thinking` event
+      // at the start of each iteration; we treat that as a hard reset for
+      // the steps array so the user doesn't see iteration-1's tool history
+      // resurface inside iteration-2's thinking bubble. Same goes for the
+      // assistant bubble — each `text` run produces its own bubble unless
+      // it's contiguous chunks of the same iteration.
       let thinkingId: string | null = null;
-      const thinkingSteps: string[] = [];
+      let thinkingSteps: string[] = [];
       let assistantId: string | null = null;
       let assistantText = "";
+
+      const dropThinkingBubble = () => {
+        if (thinkingId) {
+          const dead = thinkingId;
+          setBubbles((prev) => prev.filter((b) => b.id !== dead));
+          thinkingId = null;
+        }
+        thinkingSteps = [];
+      };
+      const startNewAssistantStream = () => {
+        // Reset assistant accumulator so the next `text` event creates a
+        // fresh bubble rather than appending to a stale one (e.g. after a
+        // tool completed mid-stream and the agent kicked off another iter).
+        assistantId = null;
+        assistantText = "";
+      };
 
       const handle = videoEditorApi.streamChat(pid, message, {
         onEvent: (event: EditorChatEvent) => {
           switch (event.type) {
             case "thinking":
-              if (!thinkingId) {
-                thinkingId = safeUuid();
-                setBubbles((prev) => [...prev, { kind: "thinking", id: thinkingId!, steps: ["Thinking..."] }]);
-              }
+              // New iteration boundary — drop the previous iteration's
+              // thinking bubble so its now-stale step list doesn't bleed
+              // into the new pass, and ensure the next `text` chunk opens
+              // a fresh assistant bubble.
+              dropThinkingBubble();
+              startNewAssistantStream();
+              thinkingId = safeUuid();
+              thinkingSteps = ["Thinking..."];
+              setBubbles((prev) => [...prev, { kind: "thinking", id: thinkingId!, steps: [...thinkingSteps] }]);
               break;
 
             case "text":
               if (!assistantId) {
                 assistantId = safeUuid();
-                if (thinkingId) {
-                  setBubbles((prev) => prev.filter((b) => b.id !== thinkingId));
-                  thinkingId = null;
-                }
+                dropThinkingBubble();
                 assistantText = event.content;
-                setBubbles((prev) => [...prev, { kind: "assistant", id: assistantId!, text: assistantText }]);
+                const newId = assistantId;
+                setBubbles((prev) => [...prev, { kind: "assistant", id: newId, text: assistantText }]);
               } else {
                 assistantText += event.content;
+                const idForUpdate = assistantId;
                 setBubbles((prev) =>
-                  prev.map((b) => (b.id === assistantId ? { ...b, text: assistantText } : b))
+                  prev.map((b) => (b.id === idForUpdate ? { ...b, text: assistantText } : b))
                 );
               }
               break;
 
-            case "tool_start":
-              thinkingSteps.push(`${getToolLabel(event.name)}...`);
+            case "tool_start": {
+              const label = getToolLabel(event.name);
+              // Avoid duplicating the same tool entry if a duplicate
+              // tool_start somehow arrives (e.g. after retry). Find by
+              // exact label prefix and bump it instead of pushing twice.
+              const existing = thinkingSteps.findIndex((s) => s.startsWith(label));
+              if (existing < 0) thinkingSteps.push(`${label}...`);
+              else thinkingSteps[existing] = `${label}...`;
               if (thinkingId) {
+                const idForUpdate = thinkingId;
                 setBubbles((prev) =>
-                  prev.map((b) => (b.id === thinkingId ? { ...b, steps: [...thinkingSteps] } : b))
+                  prev.map((b) => (b.id === idForUpdate ? { ...b, steps: [...thinkingSteps] } : b))
                 );
               } else {
                 thinkingId = safeUuid();
                 setBubbles((prev) => [...prev, { kind: "thinking", id: thinkingId!, steps: [...thinkingSteps] }]);
               }
               break;
+            }
 
             case "tool_progress":
               if (event.name && thinkingId) {
@@ -546,20 +722,24 @@ export function AiVideoStudio() {
                 const progressText = event.message ? `${label}: ${event.message}` : `${label}...`;
                 const pidx = thinkingSteps.findIndex((s) => s.startsWith(label));
                 if (pidx >= 0) thinkingSteps[pidx] = progressText;
+                else thinkingSteps.push(progressText);
+                const idForUpdate = thinkingId;
                 setBubbles((prev) =>
-                  prev.map((b) => (b.id === thinkingId ? { ...b, steps: [...thinkingSteps] } : b))
+                  prev.map((b) => (b.id === idForUpdate ? { ...b, steps: [...thinkingSteps] } : b))
                 );
               }
               break;
 
             case "tool_done":
               if (event.name) {
-                const idx = thinkingSteps.findIndex((s) => s.startsWith(getToolLabel(event.name)));
+                const label = getToolLabel(event.name);
+                const idx = thinkingSteps.findIndex((s) => s.startsWith(label));
                 if (idx >= 0) {
-                  thinkingSteps[idx] = `✓ ${getToolLabel(event.name)}`;
+                  thinkingSteps[idx] = `✓ ${label}`;
                   if (thinkingId) {
+                    const idForUpdate = thinkingId;
                     setBubbles((prev) =>
-                      prev.map((b) => (b.id === thinkingId ? { ...b, steps: [...thinkingSteps] } : b))
+                      prev.map((b) => (b.id === idForUpdate ? { ...b, steps: [...thinkingSteps] } : b))
                     );
                   }
                 }
@@ -594,13 +774,8 @@ export function AiVideoStudio() {
               break;
 
             case "proposal":
-              if (thinkingId) {
-                setBubbles((prev) => prev.filter((b) => b.id !== thinkingId));
-                thinkingId = null;
-              }
-              // Also clear any assistant text that was building
-              assistantId = null;
-              assistantText = "";
+              dropThinkingBubble();
+              startNewAssistantStream();
               setBubbles((prev) => [
                 ...prev,
                 {
@@ -623,19 +798,13 @@ export function AiVideoStudio() {
               break;
 
             case "done":
-              if (thinkingId) {
-                setBubbles((prev) => prev.filter((b) => b.id !== thinkingId));
-                thinkingId = null;
-              }
+              dropThinkingBubble();
               setIsStreaming(false);
               checkForCompletedRender(pid);
               break;
 
             case "error":
-              if (thinkingId) {
-                setBubbles((prev) => prev.filter((b) => b.id !== thinkingId));
-                thinkingId = null;
-              }
+              dropThinkingBubble();
               setIsStreaming(false);
               setBubbles((prev) => [
                 ...prev,
@@ -646,6 +815,9 @@ export function AiVideoStudio() {
         },
         onError: (err) => {
           setIsStreaming(false);
+          // Stream is dead; drop the cancel handle so a later cancelActiveStream
+          // call doesn't fire abort() on a request that already errored.
+          streamRef.current = null;
           setBubbles((prev) => [
             ...prev.filter((b) => b.kind !== "thinking"),
             { kind: "assistant", id: safeUuid(), text: `Connection error: ${err.message}` },
@@ -653,6 +825,7 @@ export function AiVideoStudio() {
         },
         onClose: () => {
           setIsStreaming(false);
+          streamRef.current = null;
           // Belt-and-braces: drop any leftover thinking bubble if the stream
           // closed before a `done` frame arrived (e.g. proxy timeout).
           setBubbles((prev) => prev.filter((b) => b.kind !== "thinking"));
@@ -777,6 +950,12 @@ export function AiVideoStudio() {
       if (renderPollRef.current) clearInterval(renderPollRef.current);
       renderPollErrorsRef.current = 0;
       renderPollStartRef.current = Date.now();
+      // Snapshot the current session token. Every async branch below checks
+      // this before calling setBubbles / setProject / saveVideoStudioRenderHistory,
+      // so an in-flight callback whose project was deleted or replaced
+      // simply drops its update.
+      const sessionToken = renderPollSessionRef.current;
+      const isStaleSession = () => renderPollSessionRef.current !== sessionToken;
       const activityTitle = projectRef.current?.title || "AI Studio render";
       if (initialJob?.jobId) {
         upsertActiveVideoStudioRender({
@@ -816,8 +995,10 @@ export function AiVideoStudio() {
         renderPollRef.current = null;
       };
       renderPollRef.current = setInterval(async () => {
+        if (isStaleSession()) { stop(); return; }
         if (Date.now() - renderPollStartRef.current > MAX_POLL_MS) {
           stop();
+          if (isStaleSession()) return;
           setBubbles((prev) =>
             prev.map((b) =>
               b.kind === "render-progress" && (b.jobId === targetBubbleId || b.id === progressBubbleId)
@@ -838,6 +1019,10 @@ export function AiVideoStudio() {
             latest = projectResp.project;
             activeRender = latest.renders[0] ?? null;
           }
+          // Network came back — but the user may have switched projects
+          // between the request firing and the response arriving. Drop the
+          // update if so.
+          if (isStaleSession()) { stop(); return; }
           renderPollErrorsRef.current = 0;
           if (!activeRender) return;
           upsertActiveVideoStudioRender({
@@ -863,6 +1048,7 @@ export function AiVideoStudio() {
             stop();
             removeActiveVideoStudioRender(activeRender.jobId);
             const { project: refreshed } = await videoEditorApi.getProject(pid);
+            if (isStaleSession()) return;
             setProject(refreshed);
             const completedRender = refreshed.renders.find((r) => r.jobId === activeRender.jobId) ?? activeRender;
             saveVideoStudioRenderHistory({
@@ -903,8 +1089,10 @@ export function AiVideoStudio() {
             );
           }
         } catch {
+          if (isStaleSession()) { stop(); return; }
           try {
             const projectResp = await videoEditorApi.getProject(pid);
+            if (isStaleSession()) { stop(); return; }
             const staleRender = projectResp.project.renders.find((r) => initialJob?.jobId && r.jobId === initialJob.jobId);
             if (
               staleRender &&
@@ -954,6 +1142,9 @@ export function AiVideoStudio() {
   // Cleanup polling and any in-flight SSE stream on unmount.
   useEffect(() => {
     return () => {
+      // Bump session before cleaning up so any in-flight async callback
+      // detects the unmount and drops its update.
+      renderPollSessionRef.current += 1;
       if (renderPollRef.current) {
         clearInterval(renderPollRef.current);
         renderPollRef.current = null;
@@ -963,18 +1154,48 @@ export function AiVideoStudio() {
     };
   }, []);
 
+  // Fetch (and periodically re-fetch) the presigned URL for the artifact
+  // preview. Workspace presigned URLs expire — usually within an hour — so
+  // a user lingering on the artifact view eventually finds the player
+  // broken. We schedule a refresh well before `expiresIn` elapses, and
+  // also wire `<video>`'s `onError` below so we re-fetch on demand if the
+  // URL ages out faster than expected.
+  const artifactPreviewRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refetchArtifactUrlRef = useRef<() => void>(() => {});
   useEffect(() => {
     let cancelled = false;
     setArtifactPreviewUrl(null);
+    if (artifactPreviewRefreshRef.current) {
+      clearTimeout(artifactPreviewRefreshRef.current);
+      artifactPreviewRefreshRef.current = null;
+    }
     if (!artifactView?.outputPath) return;
-    void workspaceApi.getFile(artifactView.outputPath, { inline: true })
-      .then(({ url }) => {
-        if (!cancelled) setArtifactPreviewUrl(url);
-      })
-      .catch(() => {
-        if (!cancelled) setArtifactPreviewUrl(null);
-      });
-    return () => { cancelled = true; };
+
+    const path = artifactView.outputPath;
+    const fetchOnce = () => {
+      void workspaceApi.getFile(path, { inline: true })
+        .then(({ url, expiresIn }) => {
+          if (cancelled) return;
+          setArtifactPreviewUrl(url);
+          // Re-fetch 60s before expiry, with a 30s floor so we don't
+          // hammer the workspace when expiresIn is tiny or missing.
+          const refreshIn = Math.max(30_000, ((expiresIn ?? 3600) - 60) * 1000);
+          if (artifactPreviewRefreshRef.current) clearTimeout(artifactPreviewRefreshRef.current);
+          artifactPreviewRefreshRef.current = setTimeout(fetchOnce, refreshIn);
+        })
+        .catch(() => {
+          if (!cancelled) setArtifactPreviewUrl(null);
+        });
+    };
+    refetchArtifactUrlRef.current = fetchOnce;
+    fetchOnce();
+    return () => {
+      cancelled = true;
+      if (artifactPreviewRefreshRef.current) {
+        clearTimeout(artifactPreviewRefreshRef.current);
+        artifactPreviewRefreshRef.current = null;
+      }
+    };
   }, [artifactView?.outputPath]);
 
   // ─── Quick Actions ─────────────────────────────────────────────────────────
@@ -997,6 +1218,29 @@ export function AiVideoStudio() {
     setBubbles((prev) => prev.filter((b) => b.kind !== "thinking"));
     setIsStreaming(false);
   }, []);
+
+  // ─── Retry a failed render ─────────────────────────────────────────────────
+  // Triggered from the Retry button inside a render-progress bubble in
+  // error state. We drop the failed bubble first so the new poll can spawn
+  // a fresh one (otherwise we stack two progress cards).
+  const handleRetryRender = useCallback(async (failedBubbleId: string) => {
+    if (!projectId) return;
+    setBubbles((prev) => prev.filter((b) => b.id !== failedBubbleId));
+    try {
+      const { project: renderingProject, job } = await videoEditorApi.startRender(projectId);
+      setProject(renderingProject);
+      startRenderPollingRef.current(projectId, job);
+    } catch (err) {
+      setBubbles((prev) => [
+        ...prev,
+        {
+          kind: "assistant",
+          id: safeUuid(),
+          text: `Could not restart render: ${(err as Error).message}`,
+        },
+      ]);
+    }
+  }, [projectId]);
 
   // ─── Key Handling ──────────────────────────────────────────────────────────
   const handleKeyDown = useCallback(
@@ -1140,6 +1384,7 @@ export function AiVideoStudio() {
           <div className="ai-video-studio__artifact-player">
             {artifactPreviewUrl ? (
               <video
+                key={artifactPreviewUrl}
                 controls
                 // `autoPlay` requires `muted` (and `playsInline` on iOS) to
                 // satisfy modern browser autoplay policies — without these
@@ -1150,6 +1395,11 @@ export function AiVideoStudio() {
                 preload="metadata"
                 src={artifactPreviewUrl}
                 className="ai-video-studio__video-el"
+                onError={() => {
+                  // The presigned URL likely expired. Re-fetch and let the
+                  // <video> remount via the `key` prop above on the new URL.
+                  refetchArtifactUrlRef.current();
+                }}
               />
             ) : (
               <div className="ai-video-studio__artifact-loading">Loading preview...</div>
@@ -1215,10 +1465,16 @@ export function AiVideoStudio() {
                   clearInterval(renderPollRef.current);
                   renderPollRef.current = null;
                 }
+                // Drop any in-flight render polling callback so it doesn't
+                // resurrect a progress bubble in the new (empty) chat.
+                renderPollSessionRef.current += 1;
                 setView("landing");
                 setProjectId(null);
                 setProject(null);
                 setBubbles([]);
+                setApplyingProposalId(null);
+                setArtifactView(null);
+                setArtifactPreviewUrl(null);
                 try { window.localStorage.removeItem(LAST_VIDEO_STUDIO_PROJECT_KEY); } catch { /* ignore */ }
               }}
             >
@@ -1231,7 +1487,11 @@ export function AiVideoStudio() {
         {renderHistoryPanel()}
 
         {/* Messages */}
-        <div className="ai-video-studio__messages">
+        <div
+          className="ai-video-studio__messages"
+          ref={messagesScrollRef}
+          onScroll={handleMessagesScroll}
+        >
           <AnimatePresence initial={false}>
             {bubbles.map((bubble) => (
               <motion.div
@@ -1264,8 +1524,14 @@ export function AiVideoStudio() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Quick actions */}
-        {!isStreaming && bubbles.length > 0 && bubbles[bubbles.length - 1]?.kind !== "user" && (
+        {/* Quick actions — hide while a render is in progress so users
+            don't tap "Looks great!" while the previous one is still
+            cooking, and hide while the agent is mid-stream. */}
+        {!isStreaming
+          && bubbles.length > 0
+          && bubbles[bubbles.length - 1]?.kind !== "user"
+          && !bubbles.some((b) => b.kind === "render-progress" && b.status !== "done" && b.status !== "error" && b.status !== "cancelled")
+          && (
           <div className="ai-video-studio__quick-actions">
             {bubbles.some((b) => b.kind === "artifact") && (
               <>
@@ -1341,12 +1607,11 @@ export function AiVideoStudio() {
             <textarea
               ref={inputRef}
               className="ai-video-studio__input-textarea"
-              placeholder="Enter your next prompt..."
+              placeholder={isStreaming ? "Type while the agent is working — pressing Enter will wait for it to finish…" : "Enter your next prompt..."}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
               rows={1}
-              disabled={isStreaming}
             />
             {isStreaming ? (
               <button
@@ -1586,17 +1851,44 @@ export function AiVideoStudio() {
           <div className="ai-video-studio__user-msg">
             {bubble.assets.length > 0 && (
               <div className="ai-video-studio__msg-assets">
-                {bubble.assets.map((a) => (
-                  <div key={a.id} className="ai-video-studio__msg-asset-chip">
-                    <span className="ai-video-studio__asset-chip-icon">
-                      {a.type === "video" ? "▶" : a.type === "audio" ? "♪" : "🖼"}
-                    </span>
-                    <div>
-                      <div className="ai-video-studio__msg-asset-name">{a.name}</div>
-                      <div className="ai-video-studio__msg-asset-type">{a.type}</div>
+                {bubble.assets.map((a) => {
+                  const inFlight = a.uploadProgress !== undefined && a.uploadProgress < 1;
+                  const failed = Boolean(a.uploadError);
+                  const pct = Math.round((a.uploadProgress ?? 0) * 100);
+                  return (
+                    <div
+                      key={a.id}
+                      className={
+                        "ai-video-studio__msg-asset-chip" +
+                        (inFlight ? " ai-video-studio__msg-asset-chip--uploading" : "") +
+                        (failed ? " ai-video-studio__msg-asset-chip--error" : "")
+                      }
+                      title={failed ? a.uploadError : undefined}
+                    >
+                      <span className="ai-video-studio__asset-chip-icon">
+                        {a.type === "video" ? "▶" : a.type === "audio" ? "♪" : "🖼"}
+                      </span>
+                      <div>
+                        <div className="ai-video-studio__msg-asset-name">{a.name}</div>
+                        <div className="ai-video-studio__msg-asset-type">
+                          {failed
+                            ? `Upload failed`
+                            : inFlight
+                              ? `Uploading… ${pct}%`
+                              : a.type}
+                        </div>
+                        {inFlight && (
+                          <div className="ai-video-studio__msg-asset-progress" aria-hidden="true">
+                            <div
+                              className="ai-video-studio__msg-asset-progress-bar"
+                              style={{ width: `${Math.max(2, pct)}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
             {bubble.text && <div className="ai-video-studio__msg-text">{bubble.text}</div>}
@@ -1752,6 +2044,19 @@ export function AiVideoStudio() {
                   style={{ width: `${Math.max(bubble.progress, 2)}%` }}
                 />
                 <span className="ai-video-studio__render-progress-pct">{bubble.progress}%</span>
+              </div>
+            )}
+            {bubble.status === "error" && (
+              <div className="ai-video-studio__render-progress-actions">
+                <button
+                  type="button"
+                  className="ai-video-studio__render-progress-retry"
+                  onClick={() => handleRetryRender(bubble.id)}
+                  disabled={!projectId || isStreaming}
+                  aria-label="Retry render"
+                >
+                  ↻ Retry render
+                </button>
               </div>
             )}
           </div>
