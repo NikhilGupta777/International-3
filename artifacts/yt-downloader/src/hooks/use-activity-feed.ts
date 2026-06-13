@@ -44,8 +44,18 @@ import {
   clearMusicHistory,
   type MusicHistoryEntry,
 } from "@/lib/music-history";
+import {
+  loadActiveVideoStudioRenders,
+  saveActiveVideoStudioRenders,
+  loadVideoStudioRenderHistory,
+  saveVideoStudioRenderHistory,
+  deleteVideoStudioRenderHistory,
+  clearVideoStudioRenderHistory,
+  type VideoStudioRenderHistoryEntry,
+} from "@/lib/video-studio-history";
+import { videoEditorApi } from "@/lib/video-editor-api";
 
-export type ActivityTabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator";
+export type ActivityTabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator" | "videostudio";
 
 export type ActivityCompletedEntry =
   | { kind: "subtitle"; data: SubtitleHistoryEntry }
@@ -53,10 +63,11 @@ export type ActivityCompletedEntry =
   | { kind: "bestclips"; data: BestClipsHistoryEntry }
   | { kind: "download"; data: CompletedDownloadRecord }
   | { kind: "translator"; data: TranslatorHistoryEntry }
-  | { kind: "music"; data: MusicHistoryEntry };
+  | { kind: "music"; data: MusicHistoryEntry }
+  | { kind: "videostudio"; data: VideoStudioRenderHistoryEntry };
 
 export interface ActivityActiveEntry {
-  kind: "subtitle" | "clipcutter" | "download" | "translator";
+  kind: "subtitle" | "clipcutter" | "download" | "translator" | "videostudio";
   label: string;
   sub: string;
   tab: ActivityTabMode;
@@ -110,7 +121,10 @@ function loadAllCompleted(): ActivityCompletedEntry[] {
   const music = loadMusicHistory().map(
     (data): ActivityCompletedEntry => ({ kind: "music", data }),
   );
-  return [...subtitles, ...clips, ...bestClips, ...downloads, ...translations, ...music].sort(
+  const videoStudio = loadVideoStudioRenderHistory().map(
+    (data): ActivityCompletedEntry => ({ kind: "videostudio", data }),
+  );
+  return [...subtitles, ...clips, ...bestClips, ...downloads, ...translations, ...music, ...videoStudio].sort(
     (a, b) => b.data.createdAt - a.data.createdAt,
   );
 }
@@ -163,6 +177,17 @@ function loadAllActive(): ActivityActiveEntry[] {
       tab: "translator",
       startedAt: translatorJob.startedAt,
       progress: translatorJob.progress,
+    });
+  }
+
+  for (const render of loadActiveVideoStudioRenders()) {
+    active.push({
+      kind: "videostudio",
+      label: `Rendering ${render.kind === "preview" ? "preview" : "video"} ${render.progress}%`,
+      sub: render.title || "AI Studio project",
+      tab: "videostudio",
+      startedAt: render.startedAt,
+      progress: render.progress,
     });
   }
 
@@ -371,6 +396,40 @@ async function syncActiveWithServer() {
     }
     saveActiveTranslatorJobs(kept);
   }
+
+  const studioRenders = loadActiveVideoStudioRenders();
+  if (studioRenders.length > 0) {
+    const kept = [] as typeof studioRenders;
+    for (const render of studioRenders) {
+      try {
+        const live = await videoEditorApi.getJob(render.jobId);
+        const job = live.job;
+        if (job.status === "done") {
+          saveVideoStudioRenderHistory({
+            projectId: render.projectId,
+            jobId: render.jobId,
+            title: render.title,
+            kind: render.kind,
+            createdAt: Date.now(),
+            outputPath: job.outputPath,
+          });
+          continue;
+        }
+        if (job.status === "error" || job.status === "cancelled") continue;
+        kept.push({
+          ...render,
+          progress: job.progress ?? render.progress,
+          status: job.status,
+          message: job.message || render.message,
+        });
+      } catch {
+        if (Date.now() - render.startedAt < QUEUE_MISSING_GRACE_MS) {
+          kept.push(render);
+        }
+      }
+    }
+    saveActiveVideoStudioRenders(kept);
+  }
 }
 
 async function refreshShared() {
@@ -441,6 +500,8 @@ export function useActivityFeed(pollMs = 4000) {
       deleteCompletedDownload(entry.data.jobId);
     else if (entry.kind === "translator")
       deleteTranslatorHistory(entry.data.jobId);
+    else if (entry.kind === "videostudio")
+      deleteVideoStudioRenderHistory(entry.data.jobId);
     else if (entry.kind === "music") deleteFromMusicHistory(entry.data.id);
     else deleteFromBestClipsHistory(entry.data.id);
     await refreshShared();
@@ -455,6 +516,7 @@ export function useActivityFeed(pollMs = 4000) {
     clearTranslatorHistory();
     clearCompletedDownloads();
     clearMusicHistory();
+    clearVideoStudioRenderHistory();
     await refreshShared();
   }, []);
 

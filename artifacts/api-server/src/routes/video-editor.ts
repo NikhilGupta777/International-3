@@ -171,7 +171,8 @@ const jobs = new Map<string, EditorJob>();
 const activeRenderProcesses = new Map<string, ReturnType<typeof spawn>>();
 const FFMPEG_BIN = process.env.FFMPEG_BIN || ffmpegStatic || "ffmpeg";
 const STALE_PENDING_RENDER_MS = 2 * 60_000;
-const RUN_RENDER_INLINE = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME) && !VIDEO_EDITOR_QUEUE_ENABLED;
+const IS_LAMBDA = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+const RUN_RENDER_INLINE = IS_LAMBDA && !VIDEO_EDITOR_QUEUE_ENABLED;
 
 // Garbage-collect completed jobs from the in-memory map so a long-running
 // process doesn't accumulate every render that ever ran. We keep finished
@@ -943,6 +944,72 @@ function mapDdbRenderJob(jobId: string, ddbStatus: any, fallback?: Partial<Edito
   };
 }
 
+async function markRenderDispatchError(
+  ws: ReturnType<typeof getWorkspace>,
+  projectId: string,
+  job: EditorJob,
+  message: string,
+): Promise<void> {
+  job.status = "error";
+  job.progress = 0;
+  job.message = message;
+  job.error = message;
+  job.completedAt = Date.now();
+  await persistJobToProject(ws, projectId, job).catch((err) => {
+    logger.warn({ err, jobId: job.jobId }, "[video-editor] failed to persist render dispatch error");
+  });
+}
+
+async function dispatchRenderJob(
+  ws: ReturnType<typeof getWorkspace>,
+  projectId: string,
+  job: EditorJob,
+): Promise<void> {
+  if (VIDEO_EDITOR_QUEUE_ENABLED) {
+    try {
+      const batchId = await submitEditorRenderJob({
+        jobId: job.jobId,
+        workspaceId: ws.identity.workspaceId,
+        projectId,
+        kind: job.kind,
+      });
+      if (batchId) {
+        jobs.delete(job.jobId);
+        return;
+      }
+      const message = "Render queue is enabled but Batch submission was unavailable.";
+      logger.error({ jobId: job.jobId }, `[video-editor] ${message}`);
+      if (IS_LAMBDA && job.kind === "final") {
+        await markRenderDispatchError(ws, projectId, job, message);
+        return;
+      }
+      job.message = "Queued (Batch unavailable - falling back locally)";
+    } catch (err) {
+      logger.error({ err, jobId: job.jobId }, "[video-editor] batch submit failed");
+      if (IS_LAMBDA && job.kind === "final") {
+        await markRenderDispatchError(
+          ws,
+          projectId,
+          job,
+          err instanceof Error ? `Render queue submission failed: ${err.message}` : "Render queue submission failed.",
+        );
+        return;
+      }
+    }
+  } else if (IS_LAMBDA && job.kind === "final") {
+    await markRenderDispatchError(
+      ws,
+      projectId,
+      job,
+      "AI Studio final renders require the background render queue in production.",
+    );
+    return;
+  }
+
+  if (RUN_RENDER_INLINE) await processRenderJob(ws, projectId, job);
+  else void processRenderJob(ws, projectId, job);
+}
+
 export type EditorRenderProgress = (state: { status: RenderStatus; progress: number; message: string; outputPath?: string | null; error?: string | null }) => void | Promise<void>;
 
 export async function runEditorRenderStandalone(params: {
@@ -1404,12 +1471,9 @@ async function startRender(req: Request, res: Response, kind: "preview" | "final
         ...project.renders,
       ].slice(0, 20),
     });
-    if (RUN_RENDER_INLINE) {
-      await processRenderJob(ws, project.projectId, job);
-    } else {
-      void processRenderJob(ws, project.projectId, job);
-    }
-    return res.json({ job, project: next });
+    await dispatchRenderJob(ws, project.projectId, job);
+    const responseProject = await readProjectFromWorkspace(ws, project.projectId).catch(() => next);
+    return res.json({ job, project: responseProject });
   } catch (err) {
     return fail(res, err);
   }
@@ -1688,15 +1752,42 @@ async function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: Edito
           jobs.delete(job.jobId);
         } else {
           job.message = "Queued (Batch not available — falling back)";
+          if (IS_LAMBDA && job.kind === "final") {
+            await markRenderDispatchError(
+              ws,
+              project.projectId,
+              job,
+              "Render queue is enabled but Batch submission was unavailable.",
+            );
+            return;
+          }
           if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
           else void processRenderJob(ws, project.projectId, job);
         }
       } catch (err) {
         logger.error({ err, jobId: job.jobId }, "[video-editor] batch submit failed; falling back to in-process");
+        if (IS_LAMBDA && job.kind === "final") {
+          await markRenderDispatchError(
+            ws,
+            project.projectId,
+            job,
+            err instanceof Error ? `Render queue submission failed: ${err.message}` : "Render queue submission failed.",
+          );
+          return;
+        }
         if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
         else void processRenderJob(ws, project.projectId, job);
       }
     } else {
+      if (IS_LAMBDA && job.kind === "final") {
+        await markRenderDispatchError(
+          ws,
+          project.projectId,
+          job,
+          "AI Studio final renders require the background render queue in production.",
+        );
+        return;
+      }
       if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
       else void processRenderJob(ws, project.projectId, job);
     }

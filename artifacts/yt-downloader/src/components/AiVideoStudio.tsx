@@ -12,6 +12,11 @@ import {
   type EditorChatMessage,
 } from "@/lib/video-editor-api";
 import { workspaceApi } from "@/lib/workspace-api";
+import {
+  upsertActiveVideoStudioRender,
+  removeActiveVideoStudioRender,
+  saveVideoStudioRenderHistory,
+} from "@/lib/video-studio-history";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ViewState = "landing" | "chat" | "artifact";
@@ -772,6 +777,19 @@ export function AiVideoStudio() {
       if (renderPollRef.current) clearInterval(renderPollRef.current);
       renderPollErrorsRef.current = 0;
       renderPollStartRef.current = Date.now();
+      const activityTitle = projectRef.current?.title || "AI Studio render";
+      if (initialJob?.jobId) {
+        upsertActiveVideoStudioRender({
+          projectId: pid,
+          jobId: initialJob.jobId,
+          title: activityTitle,
+          kind: initialJob.kind,
+          startedAt: initialJob.createdAt || Date.now(),
+          progress: initialJob.progress ?? 0,
+          status: initialJob.status,
+          message: initialJob.message || "Queued render...",
+        });
+      }
       const progressBubbleId = safeUuid();
       // If we already have a progress bubble for this job (e.g. resume after
       // reload), reuse it instead of stacking another one.
@@ -822,6 +840,16 @@ export function AiVideoStudio() {
           }
           renderPollErrorsRef.current = 0;
           if (!activeRender) return;
+          upsertActiveVideoStudioRender({
+            projectId: pid,
+            jobId: activeRender.jobId,
+            title: projectRef.current?.title || activityTitle,
+            kind: activeRender.kind,
+            startedAt: activeRender.createdAt || Date.now(),
+            progress: activeRender.progress ?? 0,
+            status: activeRender.status,
+            message: activeRender.message || "Rendering...",
+          });
           // Update progress bubble (match either by initial bubble id or jobId).
           setBubbles((prev) =>
             prev.map((b) =>
@@ -833,9 +861,18 @@ export function AiVideoStudio() {
           );
           if (activeRender.status === "done") {
             stop();
+            removeActiveVideoStudioRender(activeRender.jobId);
             const { project: refreshed } = await videoEditorApi.getProject(pid);
             setProject(refreshed);
             const completedRender = refreshed.renders.find((r) => r.jobId === activeRender.jobId) ?? activeRender;
+            saveVideoStudioRenderHistory({
+              projectId: pid,
+              jobId: activeRender.jobId,
+              title: refreshed.title || activityTitle,
+              kind: activeRender.kind,
+              createdAt: Date.now(),
+              outputPath: completedRender.outputPath || activeRender.outputPath || null,
+            });
             // Remove progress bubble and add artifact (dedupe by jobId).
             setBubbles((prev) => {
               const without = prev.filter((b) => !(b.kind === "render-progress" && (b.id === progressBubbleId || b.jobId === activeRender.jobId)));
@@ -855,6 +892,7 @@ export function AiVideoStudio() {
             });
           } else if (activeRender.status === "error" || activeRender.status === "cancelled") {
             stop();
+            removeActiveVideoStudioRender(activeRender.jobId);
             // Update progress to show terminal failure/cancel state
             setBubbles((prev) =>
               prev.map((b) =>
@@ -892,6 +930,7 @@ export function AiVideoStudio() {
           renderPollErrorsRef.current += 1;
           if (renderPollErrorsRef.current >= 12) {
             stop();
+            if (initialJob?.jobId) removeActiveVideoStudioRender(initialJob.jobId);
             setBubbles((prev) =>
               prev.map((b) =>
                 b.kind === "render-progress" && (b.id === progressBubbleId)

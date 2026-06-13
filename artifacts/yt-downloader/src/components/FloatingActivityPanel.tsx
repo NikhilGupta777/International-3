@@ -254,6 +254,7 @@ export function FloatingActivityPanel({
                           entry.kind === "clip" ? `clip-${entry.data.jobId}` :
                           entry.kind === "download" ? `dl-${entry.data.jobId}` :
                           entry.kind === "translator" ? `tr-${entry.data.jobId}` :
+                          entry.kind === "videostudio" ? `studio-${entry.data.jobId}` :
                           `best-${entry.data.id}`;
                         const isExpanded = expandedId === key;
                         const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");

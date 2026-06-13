@@ -160,6 +160,7 @@ export function ActivityPanel({
                         entry.kind === "download" ? `dl-${entry.data.jobId}` :
                         entry.kind === "translator" ? `tr-${entry.data.jobId}` :
                         entry.kind === "music" ? `music-${entry.data.id}` :
+                        entry.kind === "videostudio" ? `studio-${entry.data.jobId}` :
                         `best-${entry.data.id}`;
                       const isExpanded = expandedId === key;
 
@@ -376,6 +377,40 @@ export function ActivityPanel({
                                 <a href={d.audioUrl} download={d.filename} className="activity-icon-btn" title="Download audio">
                                   <Download className="w-3.5 h-3.5" />
                                 </a>
+                                <button onClick={() => handleDelete(entry)} className="activity-icon-btn activity-icon-btn-danger">
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      if (entry.kind === "videostudio") {
+                        const d = entry.data;
+                        return (
+                          <div key={key} className="activity-row-card">
+                            <div className="activity-row">
+                              <Film className="w-4 h-4 text-cyan-400 shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium text-white/85 truncate">{d.title}</p>
+                                <div className="activity-row-meta">
+                                  <span className="text-cyan-400/70 font-medium">AI Studio Render</span>
+                                  <span>Â·</span>
+                                  <span>{d.kind === "preview" ? "Preview" : "Final"}</span>
+                                  <span>Â·</span>
+                                  <span>{relativeTime(d.createdAt)}</span>
+                                </div>
+                              </div>
+                              <div className="activity-row-actions">
+                                {d.outputPath && (
+                                  <a href={`${BASE}/api/workspace/file?path=${encodeURIComponent(d.outputPath)}&download=1`} className="activity-icon-btn" title="Download render">
+                                    <Download className="w-3.5 h-3.5" />
+                                  </a>
+                                )}
+                                <button onClick={() => navigate("videostudio")} className="activity-icon-btn" title="Open AI Studio">
+                                  <ArrowRight className="w-3.5 h-3.5" />
+                                </button>
                                 <button onClick={() => handleDelete(entry)} className="activity-icon-btn activity-icon-btn-danger">
                                   <X className="w-3.5 h-3.5" />
                                 </button>

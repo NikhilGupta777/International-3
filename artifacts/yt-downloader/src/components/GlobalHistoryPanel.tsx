@@ -42,7 +42,7 @@ import {
 } from "@/lib/translator-history";
 import { useActivityFeed } from "@/hooks/use-activity-feed";
 
-type TabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator";
+type TabMode = "download" | "clips" | "subtitles" | "clipcutter" | "translator" | "videostudio";
 
 // ── Unified completed-entry type ─────────────────────────────────────────────
 
@@ -69,7 +69,7 @@ function loadAll(): AnyEntry[] {
 // ── Active / in-progress entries ─────────────────────────────────────────────
 
 interface ActiveEntry {
-  kind: "subtitle" | "clipcutter" | "download" | "translator";
+  kind: "subtitle" | "clipcutter" | "download" | "translator" | "videostudio";
   label: string;
   sub: string;
   tab: TabMode;
@@ -690,6 +690,7 @@ export function GlobalHistoryPanel({ onSwitchTab }: { onSwitchTab: (tab: TabMode
                       );
                     }
                     if (entry.kind === "music") return null; // music shown in ActivityPanel
+                    if (entry.kind === "videostudio") return null; // video renders shown in ActivityPanel
                     return (
                       <BestClipsRow
                         key={`best-${entry.data.id}`}
