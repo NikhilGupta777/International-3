@@ -145,6 +145,12 @@ Parameters:
     Type: String
   YoutubeBatchJobDefinition:
     Type: String
+  VideoEditorBatchEnabled:
+    Type: String
+    Default: "false"
+  VideoEditorBatchJobDefinition:
+    Type: String
+    Default: ""
   TranslatorBatchJobQueue:
     Type: String
     Default: "ytgrabber-green-gpu-queue"
@@ -467,6 +473,8 @@ Resources:
           YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable
           YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue
           YOUTUBE_BATCH_JOB_DEFINITION: !Ref YoutubeBatchJobDefinition
+          VIDEO_EDITOR_BATCH_ENABLED: !Ref VideoEditorBatchEnabled
+          VIDEO_EDITOR_BATCH_JOB_DEFINITION: !Ref VideoEditorBatchJobDefinition
           TRANSLATOR_BATCH_JOB_QUEUE: !Ref TranslatorBatchJobQueue
           TRANSLATOR_BATCH_JOB_QUEUE_FAST: !Ref TranslatorBatchJobQueueFast
           TRANSLATOR_BATCH_JOB_DEFINITION: !Ref TranslatorBatchJobDefinition
