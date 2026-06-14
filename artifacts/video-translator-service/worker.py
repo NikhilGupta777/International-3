@@ -2029,6 +2029,171 @@ def compute_segment_max_chars(target_seconds: float, chars_per_sec: float) -> in
     return max(_MIN_CHARS_BUDGET, int(math.ceil(raw)))
 
 
+def _parse_chant_indices(raw_text: str, num_segments: int) -> dict:
+    """
+    Parse Gemini's chant-classification JSON into {segment_index: type}.
+
+    Accepts {"preserve": [{"index": i, "type": "bhajan"}, ...]}, a bare list of
+    ints, or a list of objects.  Out-of-range / malformed entries are ignored.
+    Pure function — unit-tested.
+    """
+    out: dict = {}
+    if not raw_text or not str(raw_text).strip():
+        return out
+    text = str(raw_text).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text).rsplit("```", 1)[0].strip()
+    data = None
+    try:
+        data = json.loads(text)
+    except Exception:
+        m = re.search(r"[\[{].*[\]}]", text, re.DOTALL)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+            except Exception:
+                data = None
+    if data is None:
+        return out
+    items = []
+    if isinstance(data, dict):
+        items = data.get("preserve") or data.get("segments") or data.get("indices") or []
+    elif isinstance(data, list):
+        items = data
+    if not isinstance(items, list):
+        return out
+    for it in items:
+        idx = None
+        ctype = "chant"
+        if isinstance(it, bool):
+            continue
+        if isinstance(it, (int, float)):
+            idx = int(it)
+        elif isinstance(it, dict):
+            for k in ("index", "id", "i", "segment"):
+                v = it.get(k)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    idx = int(v)
+                    break
+            ctype = str(it.get("type") or it.get("kind") or "chant").strip().lower()[:24] or "chant"
+        if idx is not None and 0 <= idx < num_segments:
+            out[idx] = ctype
+    return out
+
+
+def classify_chant_segments(segments: list[dict]) -> int:
+    """
+    Flag segments that are devotional content to PRESERVE in the original audio
+    (not translated/dubbed): sung bhajans/kirtan, chanting of divine names, and
+    Sanskrit/Odia shlokas/mantras/verses.  Sets seg["preserve_original"]=True and
+    seg["preserve_type"] on matches.  Returns the count.  Best-effort: any
+    failure leaves every segment as normal translatable speech.
+    """
+    if not segments:
+        return 0
+    payload = [
+        {
+            "index": i,
+            "start": round(float(s.get("start", 0) or 0), 2),
+            "end": round(float(s.get("end", 0) or 0), 2),
+            "text": str(s.get("text", ""))[:400],
+        }
+        for i, s in enumerate(segments)
+    ]
+    prompt = (
+        "Below are timed transcript segments from a spiritual/devotional video "
+        "(a Hindi discourse that may also contain Sanskrit/Odia verses and sung "
+        "bhajans). The ASR text for sung/chanted parts is often garbled or "
+        "repetitive.\n\n"
+        "Identify ONLY the segments that are NOT normal spoken explanation, i.e.:\n"
+        "  - a sung bhajan / kirtan / devotional song,\n"
+        "  - chanting or repetition of divine names (e.g. 'Govinda Govinda', "
+        "'Hare Krishna', 'Radhe Radhe'),\n"
+        "  - a Sanskrit shloka or mantra being recited,\n"
+        "  - an Odia or Sanskrit devotional verse (e.g. lines of the Bhagavata) "
+        "being recited or sung.\n\n"
+        "These must stay in their ORIGINAL language/audio and must NOT be "
+        "translated. Ordinary teaching/explanation is NOT preserved, even when it "
+        "briefly quotes a phrase. Prefer contiguous ranges (a bhajan usually spans "
+        "several consecutive segments).\n\n"
+        "Return STRICT JSON only: "
+        "{\"preserve\": [{\"index\": <int>, \"type\": "
+        "\"bhajan|kirtan|shloka|mantra|verse|chant\"}]}. "
+        "If there are none, return {\"preserve\": []}.\n\n"
+        f"SEGMENTS:\n{json.dumps(payload, ensure_ascii=False)}"
+    )
+    try:
+        client = _get_gemini_client()
+        model = os.environ.get("PRESERVE_CHANTS_MODEL", "").strip() or _gemini_model_for_mode("default")
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config={
+                "system_instruction": (
+                    "You label transcript segments for a dubbing pipeline. You never "
+                    "translate. You only return the requested JSON object."
+                ),
+                "temperature": 0.0,
+                "response_mime_type": "application/json",
+            },
+        )
+        marks = _parse_chant_indices(getattr(response, "text", "") or "", len(segments))
+    except Exception as e:
+        log.warning("[Chants] Classification failed (%s); translating everything normally.", e)
+        return 0
+
+    count = 0
+    for idx, ctype in marks.items():
+        segments[idx]["preserve_original"] = True
+        segments[idx]["preserve_type"] = ctype
+        count += 1
+    if count:
+        ranges = [
+            f"{round(float(segments[i].get('start', 0) or 0), 1)}-"
+            f"{round(float(segments[i].get('end', 0) or 0), 1)}s"
+            f"({segments[i].get('preserve_type')})"
+            for i in sorted(marks)
+        ]
+        log.info("[Chants] Preserving %d segment(s) in original audio: %s", count, ", ".join(ranges))
+    else:
+        log.info("[Chants] No devotional/chant segments detected.")
+    return count
+
+
+def extract_original_slice(src_audio: Path, start: float, end: float, out_path: Path,
+                           sample_rate: int = 24000) -> Path:
+    """
+    Cut [start, end] from the ORIGINAL audio (full mix, including any music) as a
+    mono WAV at sample_rate.  Used to keep bhajan/shloka segments untranslated by
+    placing the original audio in the dubbed timeline.
+    """
+    dur = max(0.05, float(end) - float(start))
+    run_ffmpeg(
+        "-ss", f"{max(0.0, float(start)):.3f}",
+        "-t", f"{dur:.3f}",
+        "-i", str(src_audio),
+        "-ac", "1",
+        "-ar", str(sample_rate),
+        str(out_path),
+    )
+    return out_path
+
+
+def mute_background_windows(bg: Path, windows: list, out: Path) -> Path:
+    """
+    Silence the (Demucs) background track inside the given [start,end] windows so
+    a preserved devotional segment — whose original slice already contains the
+    music — doesn't get the separated background layered on top of it (double
+    music).  Returns the original path unchanged if there is nothing to mute.
+    """
+    spans = [(float(a), float(b)) for a, b in (windows or []) if float(b) > float(a)]
+    if not spans:
+        return bg
+    enable = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in spans)
+    run_ffmpeg("-i", str(bg), "-af", f"volume=0:enable='{enable}'", str(out))
+    return out
+
+
 def translate_segments(segments: list[dict]) -> list[dict]:
     """
     Translate all segments using Gemini with dubbing-aware prompts.
@@ -2069,6 +2234,16 @@ def translate_segments(segments: list[dict]) -> list[dict]:
 
     seg_payload_all = []
     for idx, s in enumerate(segments):
+        # Preserved devotional segments (bhajans / shlokas) are kept in the
+        # original audio — don't translate them. Pass the original text through
+        # so the SRT shows the original, and leave tts_text empty (the original
+        # audio slice is substituted during synthesis).
+        if s.get("preserve_original"):
+            s["translated_text"] = s.get("text", "")
+            s["tts_text"] = ""
+            s.setdefault("emotion", "neutral")
+            s.setdefault("speaking_rate", 1.0)
+            continue
         prev_text = segments[idx - 1]["text"] if idx > 0 else ""
         next_text = segments[idx + 1]["text"] if idx + 1 < len(segments) else ""
         seg_target_seconds = round(compute_target_speech_seconds(s), 2)
@@ -4626,6 +4801,21 @@ def build_timewarp_plan(
         src = spans[i]
         nd = nats[i]
 
+        # Preserved devotional segments keep their ORIGINAL audio and must never
+        # be time-warped — the picture plays at natural speed (factor 1.0) and
+        # the original slice is placed unchanged.
+        if i < len(segments) and segments[i].get("preserve_original"):
+            chunks.append({
+                "src_start": s, "src_end": e,
+                "out_dur": src, "factor": 1.0, "seg_index": i,
+            })
+            seg_plan.append({
+                "out_start": out_cursor, "out_dur": src,
+                "dub_speed": 1.0, "placed_dur": src,
+            })
+            out_cursor += src
+            continue
+
         if smooth and nd > src + 1e-3:
             # Eased slow-down across several slices.  target_avg is how much we
             # *want* to stretch (to fit the natural dub); _eased_subchunks
@@ -5197,6 +5387,19 @@ def main():
         # translation is spoken at a natural rate instead of being sped up.
         segments = annotate_dub_windows(segments, video_duration)
 
+        # -- 5b. Detect devotional content to keep in the original audio -------
+        # Bhajans/kirtan, chanting of divine names, and Sanskrit/Odia shlokas
+        # are flagged here so translation + synthesis skip them and the original
+        # audio is used instead.
+        preserved_count = 0
+        if PRESERVE_CHANTS:
+            update_progress("TRANSLATING", 33, "Detecting bhajans/shlokas to keep original...")
+            try:
+                preserved_count = classify_chant_segments(segments)
+            except Exception as ch_err:
+                log.warning("[Chants] preserve step failed (%s); continuing normally.", ch_err)
+                preserved_count = 0
+
         # â”€â”€ 6. Translation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("TRANSLATING", 35, f"Translating to {TARGET_LANG}...")
         segments = translate_segments(segments)
@@ -5270,6 +5473,29 @@ def main():
         elif voice_was_cloned:
             log.info("[Main] Voice cloning successful -- CosyVoice used.")
 
+        # -- 7b-2. Substitute ORIGINAL audio for preserved devotional segments -
+        # Bhajans / shlokas keep the original audio (full mix, incl. music)
+        # instead of a synthesized dub. We cut the slice from the original audio
+        # here so all downstream timing (dynamic time-warp measurement, fixed
+        # fit, assembly) treats it as a natural-rate, fixed-length segment.
+        if PRESERVE_CHANTS and preserved_count:
+            for i, seg in enumerate(segments):
+                if not seg.get("preserve_original"):
+                    continue
+                try:
+                    slice_path = extract_original_slice(
+                        full_audio_hq, float(seg["start"]), float(seg["end"]),
+                        seg_dir / f"orig_{i}.wav",
+                    )
+                    seg_audio_paths[i] = slice_path
+                    seg.setdefault("_pacing", {})["synth_method"] = "preserved_original"
+                except Exception as ex:
+                    log.warning(
+                        "[Chants] Could not extract original slice for seg %d (%s); "
+                        "it will be dubbed instead.", i, ex,
+                    )
+                    seg["preserve_original"] = False
+
         # -- 7c. Timing fit (or dynamic-length timeline) -----------------------
         # Defaults: dub fitted into the original fixed-length timeline.
         dynamic_applied = False
@@ -5304,7 +5530,7 @@ def main():
                 warped_paths: list[Path] = []
                 for i, (seg, plan, audio_path) in enumerate(zip(segments, seg_plan, seg_audio_paths)):
                     path = audio_path
-                    if plan["dub_speed"] > 1.001:
+                    if plan["dub_speed"] > 1.001 and not seg.get("preserve_original"):
                         try:
                             path = _apply_atempo(audio_path, plan["dub_speed"], seg_dir, f"dyn_speed_{i}")
                         except Exception as sp_err:
@@ -5343,6 +5569,11 @@ def main():
             update_progress("CLONING", 60, "Fitting audio timing to video...")
             fitted_paths = []
             for idx, (seg, audio_path) in enumerate(zip(segments, seg_audio_paths)):
+                # Preserved devotional segments keep their original audio as-is
+                # — never speed/trim them to fit a slot.
+                if seg.get("preserve_original"):
+                    fitted_paths.append(audio_path)
+                    continue
                 # Use the same pause-aware window the speed solver and QA gate
                 # used so the timing-fit pass agrees on one target.  Falling
                 # back to the raw slot keeps legacy/un-annotated segments working.
@@ -5369,6 +5600,26 @@ def main():
 
         # -- 8. Assemble dubbed audio track ------------------------------------
         update_progress("CLONING", 65, "Assembling dubbed audio track...")
+        # If we're keeping the separated background AND preserving devotional
+        # segments, silence the background under those windows — the preserved
+        # original slice already contains the music, so we must not layer the
+        # Demucs background on top of it.  (seg start/end are in the output
+        # timeline here: dynamic mode rewrote them; fixed mode == original.)
+        if (PRESERVE_CHANTS and preserved_count
+                and background_audio is not None and background_audio.exists()):
+            preserve_windows = [
+                (float(seg["start"]), float(seg["end"]))
+                for seg in segments if seg.get("preserve_original")
+            ]
+            try:
+                background_audio = mute_background_windows(
+                    background_audio, preserve_windows, work_dir / "background_muted.wav",
+                )
+            except Exception as mb_err:
+                log.warning(
+                    "[Chants] Could not mute background under preserved windows (%s); "
+                    "using background as-is (may double the music there).", mb_err,
+                )
         dubbed_audio = assemble_dubbed_audio(
             segments, fitted_paths, mux_duration, work_dir, background_audio
         )
@@ -5433,6 +5684,8 @@ def main():
                 "dynamicSmoothTimewarp": DYNAMIC_SMOOTH_TIMEWARP,
                 "dynamicExtraSeconds": round(dynamic_extra_seconds, 3),
                 "outputDurationSeconds": round(mux_duration, 3),
+                "preserveChants": PRESERVE_CHANTS,
+                "preservedSegmentCount": preserved_count,
                 "translationMode": TRANSLATION_MODE,
                 "targetLang": TARGET_LANG,
                 "segmentCount": len(segments),
@@ -5467,6 +5720,8 @@ def main():
             "dynamicVideoLengthApplied": dynamic_applied,
             "dynamicExtraSeconds": round(dynamic_extra_seconds, 3),
             "outputDurationSeconds": round(mux_duration, 3),
+            "preserveChants": PRESERVE_CHANTS,
+            "preservedSegmentCount": preserved_count,
             "reportKey": report_key,
         })
 

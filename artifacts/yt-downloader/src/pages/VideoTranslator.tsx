@@ -331,6 +331,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [keepBackgroundMusic, setKeepBackgroundMusic] = useState(false);
   const [multiSpeaker, setMultiSpeaker] = useState(false);
   const [dynamicVideoLength, setDynamicVideoLength] = useState(false);
+  const [preserveChants, setPreserveChants] = useState(true);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<any>(null);
   const [transcript, setTranscript] = useState<any[]>([]);
@@ -748,8 +749,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       multiSpeaker: isVoiceClone ? multiSpeaker : false,
       useDemucs: keepBackgroundMusic && translationMode === "full",
       dynamicVideoLength: translationMode === "full" && dynamicVideoLength,
+      preserveChants: translationMode === "full" && preserveChants,
     };
-  }, [voiceStyle, translationMode, tgtLang, srcLang, lipSyncAvailable, lipSync, multiSpeaker, keepBackgroundMusic, dynamicVideoLength]);
+  }, [voiceStyle, translationMode, tgtLang, srcLang, lipSyncAvailable, lipSync, multiSpeaker, keepBackgroundMusic, dynamicVideoLength, preserveChants]);
 
   // Poll a YouTube download/clip-cut job until it produces an S3 object.
   const pollYoutubeUntilReady = useCallback((ytJobId: string, mode: "clip" | "full") =>
@@ -944,6 +946,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           // let the output video grow (frozen-frame holds in the pauses)
           // rather than speeding the voice up to fit the original length.
           dynamicVideoLength: translationMode === "full" && dynamicVideoLength,
+          // Keep devotional content (bhajans/kirtan/shlokas) in the original
+          // audio instead of translating/dubbing it.
+          preserveChants: translationMode === "full" && preserveChants,
         }),
       });
       if (!submitRes.ok) throw await responseError(submitRes, "Submit failed");
@@ -1469,6 +1474,20 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                         <div>
                           <p className="text-sm text-white/80 font-medium">Dynamic Video Length</p>
                           <p className="text-xs text-white/40">Keeps the dubbed voice at its natural speed (no speed-up). The video may get a few seconds longer, holding the frame during pauses.</p>
+                        </div>
+                      </label>
+
+                      {/* Preserve bhajans/shlokas toggle */}
+                      <label className="flex items-center gap-3 select-none cursor-pointer">
+                        <div onClick={() => setPreserveChants(!preserveChants)}
+                          className={cn("w-10 h-6 rounded-full transition-all relative cursor-pointer",
+                            preserveChants ? "bg-primary" : "bg-white/20")}>
+                          <div className={cn("absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all",
+                            preserveChants ? "left-[18px]" : "left-0.5")} />
+                        </div>
+                        <div>
+                          <p className="text-sm text-white/80 font-medium">Keep bhajans &amp; shlokas original</p>
+                          <p className="text-xs text-white/40">Detects sung bhajans/kirtan and Sanskrit/Odia shlokas and leaves them in the original audio — only the spoken parts are dubbed.</p>
                         </div>
                       </label>
                     </div>

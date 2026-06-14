@@ -407,5 +407,56 @@ class TimewarpPlanTests(unittest.TestCase):
         self.assertEqual(total, 0.0)
 
 
+class PreserveChantsTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.worker = import_worker()
+
+    def test_parse_object_form(self):
+        raw = '{"preserve": [{"index": 1, "type": "Bhajan"}, {"index": 3, "type": "shloka"}]}'
+        marks = self.worker._parse_chant_indices(raw, 5)
+        self.assertEqual(marks, {1: "bhajan", 3: "shloka"})
+
+    def test_parse_bare_list_of_ints(self):
+        marks = self.worker._parse_chant_indices("[0, 2, 4]", 5)
+        self.assertEqual(set(marks.keys()), {0, 2, 4})
+        self.assertTrue(all(v == "chant" for v in marks.values()))
+
+    def test_parse_strips_code_fence(self):
+        raw = '```json\n{"preserve": [{"index": 2, "type": "kirtan"}]}\n```'
+        self.assertEqual(self.worker._parse_chant_indices(raw, 5), {2: "kirtan"})
+
+    def test_parse_ignores_out_of_range_and_garbage(self):
+        raw = '{"preserve": [{"index": 99}, {"index": -1}, {"nope": 1}, true, {"index": 2}]}'
+        self.assertEqual(self.worker._parse_chant_indices(raw, 5), {2: "chant"})
+
+    def test_parse_empty_and_invalid(self):
+        self.assertEqual(self.worker._parse_chant_indices("", 5), {})
+        self.assertEqual(self.worker._parse_chant_indices("not json at all", 5), {})
+        self.assertEqual(self.worker._parse_chant_indices('{"preserve": []}', 5), {})
+
+    def test_preserved_segment_is_never_timewarped(self):
+        # A preserved segment must stay factor 1.0 with dub_speed 1.0 even if its
+        # "natural duration" is much longer than its source span (which would
+        # normally trigger a slow-down / voice speed-up).
+        segs = [
+            {"start": 0.0, "end": 3.0},
+            {"start": 3.0, "end": 6.0, "preserve_original": True},
+            {"start": 6.0, "end": 9.0},
+        ]
+        natural = [3.6, 9.0, 3.2]  # seg 1 (preserved) "wants" 9s but must not stretch
+        chunks, seg_plan, total = self.worker.build_timewarp_plan(
+            segs, natural, video_duration=9.0, max_stretch=1.25, smooth=True,
+        )
+        preserved_chunks = [c for c in chunks if c.get("seg_index") == 1]
+        self.assertTrue(preserved_chunks)
+        for c in preserved_chunks:
+            self.assertAlmostEqual(c["factor"], 1.0, places=6)
+        self.assertAlmostEqual(seg_plan[1]["dub_speed"], 1.0, places=6)
+        # Its output slot equals its source span (3s) — unchanged.
+        self.assertAlmostEqual(seg_plan[1]["out_dur"], 3.0, places=3)
+        self.assertAlmostEqual(total, sum(c["out_dur"] for c in chunks), places=3)
+
+
 if __name__ == "__main__":
     unittest.main()
