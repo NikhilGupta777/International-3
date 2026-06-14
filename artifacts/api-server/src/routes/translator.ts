@@ -485,6 +485,7 @@ type TranslatorOptions = {
   asrModel: string;
   translationMode: string;
   dynamicVideoLength: boolean;
+  preserveChants: boolean;
   filename: string;
 };
 
@@ -619,6 +620,9 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     // Dynamic Video Length (advanced): worker keeps the voice at natural speed
     // and grows the output video instead of speeding up the dub.
     { name: "DYNAMIC_VIDEO_LENGTH", value: String(options.dynamicVideoLength) },
+    // Preserve devotional content (bhajans/kirtan/shlokas) in the original
+    // audio instead of translating it.
+    { name: "PRESERVE_CHANTS", value: String(options.preserveChants) },
     // Allow overriding the exact Gemini model ID used for translation via Lambda env.
     // Defaults to gemini-3.5-flash in the worker when blank.
     { name: "TRANSLATION_MODEL", value: process.env.TRANSLATION_MODEL ?? "" },
@@ -1287,6 +1291,7 @@ async function createTranslatorJobRecord(jobId: string, s3Key: string, options: 
       useDemucs:   { BOOL: options.useDemucs },
       multiSpeaker: { BOOL: options.multiSpeaker },
       dynamicVideoLength: { BOOL: options.dynamicVideoLength },
+      preserveChants: { BOOL: options.preserveChants },
       runtime:     { S: isLambdaFastCandidate(options) ? "lambda-fast" : "batch" },
       createdAt:   { N: String(now) },
       updatedAt:   { N: String(now) },
@@ -1362,6 +1367,7 @@ router.post("/submit", async (req: Request, res: ExpressResponse) => {
       asrModel       = "large-v3-turbo",
       translationMode = "default",
       dynamicVideoLength = false,
+      preserveChants = true,
       filename,
     } = req.body;
 
@@ -1384,6 +1390,7 @@ router.post("/submit", async (req: Request, res: ExpressResponse) => {
       asrModel: String(asrModel),
       translationMode: String(translationMode),
       dynamicVideoLength: boolValue(dynamicVideoLength, false),
+      preserveChants: boolValue(preserveChants, true),
       filename: typeof filename === "string" && filename.trim() ? filename.trim() : "video.mp4",
     };
 
@@ -1421,6 +1428,7 @@ router.post("/submit-from-url", async (req: Request, res: ExpressResponse) => {
       asrModel       = "large-v3-turbo",
       translationMode = "default",
       dynamicVideoLength = false,
+      preserveChants = true,
       filename       = "uploaded-video.mp4",
     } = req.body;
 
@@ -1446,6 +1454,7 @@ router.post("/submit-from-url", async (req: Request, res: ExpressResponse) => {
       asrModel: String(asrModel),
       translationMode: String(translationMode),
       dynamicVideoLength: boolValue(dynamicVideoLength, false),
+      preserveChants: boolValue(preserveChants, true),
       filename: typeof filename === "string" && filename.trim() ? filename.trim() : "uploaded-video.mp4",
     };
 
@@ -1525,6 +1534,7 @@ router.post("/submit-from-s3", async (req: Request, res: ExpressResponse) => {
       asrModel       = "large-v3-turbo",
       translationMode = "default",
       dynamicVideoLength = false,
+      preserveChants = true,
       filename       = "youtube-video.mp4",
     } = req.body;
 
@@ -1557,6 +1567,7 @@ router.post("/submit-from-s3", async (req: Request, res: ExpressResponse) => {
       asrModel: String(asrModel),
       translationMode: String(translationMode),
       dynamicVideoLength: boolValue(dynamicVideoLength, false),
+      preserveChants: boolValue(preserveChants, true),
       filename: typeof filename === "string" && filename.trim() ? filename.trim() : "youtube-video.mp4",
     };
 
@@ -1619,6 +1630,7 @@ router.get("/status/:jobId", async (req: Request, res: ExpressResponse) => {
       useDemucs:    item.useDemucs?.BOOL,
       multiSpeaker: item.multiSpeaker?.BOOL,
       dynamicVideoLength: item.dynamicVideoLength?.BOOL,
+      preserveChants: item.preserveChants?.BOOL,
       dynamicExtraSeconds: item.dynamicExtraSeconds?.N ? parseFloat(item.dynamicExtraSeconds.N) : undefined,
       outputDurationSeconds: item.outputDurationSeconds?.N ? parseFloat(item.outputDurationSeconds.N) : undefined,
       runtime:      item.runtime?.S,
