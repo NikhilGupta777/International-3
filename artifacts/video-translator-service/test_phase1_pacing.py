@@ -322,5 +322,80 @@ class DdbSafeTests(unittest.TestCase):
         self._assert_no_float(out)
 
 
+class TimewarpPlanTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.worker = import_worker()
+
+    def test_dub_fits_leaves_video_untouched(self):
+        # Each line's natural dub fits inside its source span → factor 1.0,
+        # no speed-up, video plays exactly as-is.
+        segs = [{"start": 0.0, "end": 2.0}, {"start": 5.0, "end": 7.0}]
+        chunks, seg_plan, total = self.worker.build_timewarp_plan(
+            segs, [1.5, 1.5], video_duration=10.0,
+        )
+        self.assertTrue(all(abs(c["factor"] - 1.0) < 1e-6 for c in chunks))
+        self.assertTrue(all(abs(p["dub_speed"] - 1.0) < 1e-6 for p in seg_plan))
+        self.assertAlmostEqual(total, 10.0, places=3)
+        self.assertAlmostEqual(seg_plan[0]["out_start"], 0.0, places=3)
+        self.assertAlmostEqual(seg_plan[1]["out_start"], 5.0, places=3)
+
+    def test_slightly_longer_slows_video_only(self):
+        # Dub a touch longer than the span → video slows within the cap, voice
+        # stays natural (dub_speed 1.0).
+        segs = [{"start": 0.0, "end": 3.0}]
+        chunks, seg_plan, total = self.worker.build_timewarp_plan(
+            segs, [3.3], video_duration=3.0,
+        )
+        self.assertAlmostEqual(chunks[-1]["factor"], 1.1, places=3)
+        self.assertAlmostEqual(seg_plan[0]["dub_speed"], 1.0, places=6)
+        self.assertAlmostEqual(total, 3.3, places=3)
+
+    def test_dense_line_clamps_video_and_nudges_voice(self):
+        # Dub far longer than the span: video slows to the cap (1.25) and the
+        # leftover is absorbed by a small voice speed-up.
+        segs = [{"start": 0.0, "end": 2.0}]
+        chunks, seg_plan, total = self.worker.build_timewarp_plan(
+            segs, [3.0], video_duration=2.0, max_stretch=1.25,
+        )
+        self.assertAlmostEqual(chunks[-1]["factor"], 1.25, places=3)
+        self.assertAlmostEqual(seg_plan[0]["dub_speed"], 1.2, places=3)
+        self.assertAlmostEqual(seg_plan[0]["placed_dur"], 2.5, places=3)
+        self.assertAlmostEqual(total, 2.5, places=3)
+
+    def test_lead_chunk_before_first_line_is_untouched(self):
+        segs = [{"start": 2.0, "end": 4.0}]
+        chunks, seg_plan, total = self.worker.build_timewarp_plan(
+            segs, [1.5], video_duration=6.0,
+        )
+        self.assertIsNone(chunks[0]["seg_index"])
+        self.assertAlmostEqual(chunks[0]["out_dur"], 2.0, places=3)
+        self.assertAlmostEqual(chunks[0]["factor"], 1.0, places=6)
+        self.assertAlmostEqual(seg_plan[0]["out_start"], 2.0, places=3)
+
+    def test_no_overlap_and_total_consistency(self):
+        segs = [
+            {"start": 0.0, "end": 1.0},
+            {"start": 1.2, "end": 2.0},
+            {"start": 3.0, "end": 4.0},
+        ]
+        natural = [2.5, 0.6, 1.0]
+        chunks, seg_plan, total = self.worker.build_timewarp_plan(
+            segs, natural, video_duration=6.0,
+        )
+        # placements never overlap the placed dub of the previous line.
+        for i in range(len(seg_plan) - 1):
+            self.assertGreaterEqual(
+                seg_plan[i + 1]["out_start"] + 1e-6,
+                seg_plan[i]["out_start"] + seg_plan[i]["placed_dur"],
+            )
+        # total equals the sum of all chunk output durations.
+        self.assertAlmostEqual(total, sum(c["out_dur"] for c in chunks), places=3)
+        # video factors stay within [1.0, cap].
+        for c in chunks:
+            self.assertGreaterEqual(c["factor"], 1.0 - 1e-6)
+            self.assertLessEqual(c["factor"], self.worker.DYNAMIC_MAX_VIDEO_STRETCH + 1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()
