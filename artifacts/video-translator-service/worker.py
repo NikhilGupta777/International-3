@@ -5088,6 +5088,14 @@ def main():
             )
             dynamic_extra_seconds = max(0.0, new_total - float(video_duration))
             try:
+                # Defensive guard: an empty/degenerate plan (e.g. zero usable
+                # segments) would yield new_total <= 0 and produce a broken,
+                # zero-length mux.  Bail to the fixed-length path instead.
+                if not chunks or not seg_plan or not (new_total > 0):
+                    raise RuntimeError(
+                        f"empty/invalid time-warp plan "
+                        f"(chunks={len(chunks)}, segs={len(seg_plan)}, total={new_total})"
+                    )
                 warped_video = build_timewarped_video(video_path, chunks, new_total, work_dir)
                 # Re-time each line onto the warped timeline and, for the rare
                 # clamped (very dense) line, apply a small voice speed-up.
