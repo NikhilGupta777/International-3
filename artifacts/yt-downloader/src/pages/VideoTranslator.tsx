@@ -24,19 +24,36 @@ import { translatorAuthHeaders } from "@/lib/translator-client-id";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API = `${BASE}/api/translator`;
 
+// ── Translation Assistant message shape ──────────────────────────────────────
+type AiSource = { title: string; url: string };
+type AiMsg = {
+  role: "user" | "model";
+  content: string;
+  thoughts?: string;
+  searches?: string[];
+  sources?: AiSource[];
+  status?: "thinking" | "searching" | "answering" | "done" | "error";
+};
+
 // ── Lightweight Markdown renderer for the Translation Assistant ───────────────
-// Supports **bold**, *italic*, `code`, fenced ```code``` blocks, #/## headings
-// and -/* / numbered lists. Uses Tailwind utility classes (no extra CSS).
+// Supports **bold**, *italic*, `code`, [links](url), fenced ```code``` blocks,
+// #/## headings, -/* / numbered lists, > blockquotes and --- rules. Styled for
+// the assistant's light (white) theme with Tailwind utility classes (no CSS).
 function renderAssistantMarkdown(text: string): ReactNode {
   const inlineFormat = (str: string, key: string): ReactNode => {
     const parts: ReactNode[] = [];
-    const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g;
+    // Order matters: links first, then bold, code, italic.
+    const re = /(\[[^\]]+\]\([^)\s]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g;
     let last = 0; let mm: RegExpExecArray | null; let k = 0;
     while ((mm = re.exec(str)) !== null) {
       if (mm.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, mm.index)}</span>);
       const tok = mm[0];
-      if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`} className="font-semibold text-white">{tok.slice(2, -2)}</strong>);
-      else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`} className="px-1 py-0.5 rounded bg-black/40 text-primary text-[12px] font-mono">{tok.slice(1, -1)}</code>);
+      if (tok.startsWith("[")) {
+        const lm = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok);
+        if (lm) parts.push(<a key={`${key}-a${k++}`} href={lm[2]} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2 hover:text-orange-600 break-all">{lm[1]}</a>);
+        else parts.push(<span key={`${key}-a${k++}`}>{tok}</span>);
+      } else if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`} className="font-semibold text-slate-900">{tok.slice(2, -2)}</strong>);
+      else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`} className="px-1 py-0.5 rounded bg-slate-100 text-primary text-[12px] font-mono">{tok.slice(1, -1)}</code>);
       else parts.push(<em key={`${key}-i${k++}`}>{tok.slice(1, -1)}</em>);
       last = mm.index + tok.length;
     }
@@ -59,7 +76,7 @@ function renderAssistantMarkdown(text: string): ReactNode {
   segments.forEach((seg, segIdx) => {
     if (seg.kind === "code") {
       out.push(
-        <pre key={`pre-${segIdx}`} className="my-1.5 p-2 rounded-lg bg-black/40 overflow-x-auto text-[12px] font-mono text-white/80">
+        <pre key={`pre-${segIdx}`} className="my-1.5 p-2.5 rounded-lg bg-slate-900 overflow-x-auto text-[12px] font-mono text-slate-100">
           <code>{seg.body.replace(/\n$/, "")}</code>
         </pre>,
       );
@@ -69,14 +86,20 @@ function renderAssistantMarkdown(text: string): ReactNode {
     lines.forEach((line, li) => {
       const key = `s${segIdx}-${li}`;
       const heading = /^(#{1,4})\s+(.*)/.exec(line);
-      const ul = /^[-*+]\s+(.*)/.exec(line);
-      const ol = /^(\d+)\.\s+(.*)/.exec(line);
-      if (heading) {
-        out.push(<div key={key} className="font-bold text-white mt-2 mb-0.5">{inlineFormat(heading[2], `h${key}`)}</div>);
+      const ul = /^\s*[-*+]\s+(.*)/.exec(line);
+      const ol = /^\s*(\d+)[.)]\s+(.*)/.exec(line);
+      const quote = /^>\s?(.*)/.exec(line);
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        out.push(<hr key={key} className="my-2 border-slate-200" />);
+      } else if (heading) {
+        const big = heading[1].length <= 2;
+        out.push(<div key={key} className={cn("font-bold text-slate-900", big ? "text-[15px] mt-2.5 mb-1" : "text-[13px] mt-2 mb-0.5")}>{inlineFormat(heading[2], `h${key}`)}</div>);
+      } else if (quote) {
+        out.push(<div key={key} className="border-l-2 border-primary/40 pl-2.5 my-1 text-slate-500 italic">{inlineFormat(quote[1], `q${key}`)}</div>);
       } else if (ul) {
-        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0">•</span><span className="flex-1">{inlineFormat(ul[1], `u${key}`)}</span></div>);
+        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0 leading-relaxed">•</span><span className="flex-1">{inlineFormat(ul[1], `u${key}`)}</span></div>);
       } else if (ol) {
-        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0">{ol[1]}.</span><span className="flex-1">{inlineFormat(ol[2], `o${key}`)}</span></div>);
+        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0 font-medium leading-relaxed">{ol[1]}.</span><span className="flex-1">{inlineFormat(ol[2], `o${key}`)}</span></div>);
       } else if (line.trim() === "") {
         if (li < lines.length - 1) out.push(<div key={key} className="h-1.5" />);
       } else {
@@ -85,6 +108,77 @@ function renderAssistantMarkdown(text: string): ReactNode {
     });
   });
   return <>{out}</>;
+}
+
+// ── Live status pill shown while the assistant is working ─────────────────────
+function AssistantStatusPill({ status }: { status?: AiMsg["status"] }) {
+  if (status === "searching") {
+    return <span className="inline-flex items-center gap-1 text-[11px] text-blue-600"><Loader2 className="w-3 h-3 animate-spin" /> Searching the web…</span>;
+  }
+  if (status === "answering") {
+    return <span className="inline-flex items-center gap-1 text-[11px] text-slate-400"><Loader2 className="w-3 h-3 animate-spin" /> Writing…</span>;
+  }
+  if (status === "thinking") {
+    return <span className="inline-flex items-center gap-1 text-[11px] text-slate-400"><Loader2 className="w-3 h-3 animate-spin" /> Thinking…</span>;
+  }
+  return null;
+}
+
+// ── A single assistant message: live thinking trace, search chips, the Markdown
+//    answer, and grounding sources. Light (white) theme. ───────────────────────
+function AssistantBubble({ m }: { m: AiMsg }) {
+  const [showThoughts, setShowThoughts] = useState(false);
+  const live = m.status === "thinking" || m.status === "searching" || m.status === "answering";
+  const hasThoughts = !!(m.thoughts && m.thoughts.trim());
+  return (
+    <div className="max-w-[88%] rounded-2xl rounded-tl-sm px-3 py-2.5 text-sm break-words bg-white border border-slate-200 text-slate-800 leading-relaxed shadow-sm">
+      {!!m.searches?.length && (
+        <div className="flex flex-wrap gap-1 mb-1.5">
+          {m.searches.map((s, idx) => (
+            <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100 text-[11px] max-w-full truncate">
+              <Sparkles className="w-3 h-3 shrink-0" /> <span className="truncate">{s}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {hasThoughts && (
+        <div className="mb-1.5">
+          <button
+            onClick={() => setShowThoughts((v) => !v)}
+            className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600 transition-colors"
+          >
+            {(showThoughts || live) ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            {live ? "Thinking…" : "Thought process"}
+          </button>
+          {(showThoughts || live) && (
+            <div className="mt-1 pl-2 border-l-2 border-slate-200 text-[12px] text-slate-500 whitespace-pre-wrap max-h-40 overflow-y-auto">
+              {m.thoughts}
+            </div>
+          )}
+        </div>
+      )}
+
+      {m.content
+        ? renderAssistantMarkdown(m.content)
+        : (live && !hasThoughts ? <AssistantStatusPill status={m.status} /> : null)}
+
+      {live && m.content ? <div className="mt-1"><AssistantStatusPill status={m.status} /></div> : null}
+
+      {!!m.sources?.length && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Sources</p>
+          <div className="flex flex-col gap-0.5">
+            {m.sources.map((s, idx) => (
+              <a key={idx} href={s.url} target="_blank" rel="noreferrer" className="text-[12px] text-primary hover:underline truncate">
+                {idx + 1}. {s.title}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // â”€â”€ Language options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1980,16 +2074,13 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             )}
             {aiMessages.map((m, i) => (
               <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-                <div
-                  className={cn(
-                    "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words",
-                    m.role === "user"
-                      ? "bg-primary text-white whitespace-pre-wrap"
-                      : "bg-white/[0.06] text-white/90 leading-relaxed",
-                  )}
-                >
-                  {m.role === "user" ? m.content : renderAssistantMarkdown(m.content)}
-                </div>
+                {m.role === "user" ? (
+                  <div className="max-w-[85%] rounded-2xl rounded-tr-sm px-3 py-2 text-sm break-words whitespace-pre-wrap bg-primary text-white shadow-sm">
+                    {m.content}
+                  </div>
+                ) : (
+                  <AssistantBubble m={m} />
+                )}
               </div>
             ))}
           </div>

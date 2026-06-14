@@ -2219,62 +2219,69 @@ router.post("/assistant/stream", async (req: Request, res: ExpressResponse) => {
     send({ type: "meta", jobCount: jobs.length });
 
     const ai = createGeminiClient();
-    const systemInstruction = `${TRANSLATOR_ASSISTANT_SYSTEM_PROMPT}\n\n=== LIVE DATA (current snapshot) ===\n${dataBlock}`;
-    // Web grounding gives the assistant "search" ability to explain unfamiliar
-    // technical errors. Toggle off with TRANSLATOR_ASSISTANT_SEARCH=0.
     const useSearch = process.env.TRANSLATOR_ASSISTANT_SEARCH !== "0";
 
-    // Pull the answer out of a response, tolerating the case where the SDK's
-    // `.text` getter returns empty (e.g. when only thought/grounding parts are
-    // present) by manually concatenating the visible (non-thought) text parts.
-    const extractReply = (response: any): { text: string; finishReason?: string } => {
-      let text = "";
-      try { text = String(response?.text ?? "").trim(); } catch { text = ""; }
-      const cand = response?.candidates?.[0];
-      if (!text && Array.isArray(cand?.content?.parts)) {
-        text = cand.content.parts
-          .filter((p: any) => typeof p?.text === "string" && p?.thought !== true)
-          .map((p: any) => p.text)
-          .join("")
-          .trim();
-      }
-      return { text, finishReason: cand?.finishReason };
-    };
-
-    // Attempt 1: low thinking + a generous output budget so the model never
-    // exhausts the budget on thinking tokens (the old 1400 cap + MEDIUM thinking
-    // routinely produced empty replies). Optionally grounded with web search.
-    const runGenerate = (opts: { search: boolean }) =>
-      ai.models.generateContent({
+    const runStream = (opts: { search: boolean }) =>
+      ai.models.generateContentStream({
         model: TRANSLATOR_ASSISTANT_MODEL,
         contents: convo,
         config: {
           systemInstruction,
           maxOutputTokens: 8192,
-          thinkingConfig: { thinkingLevel: "LOW" as any },
+          thinkingConfig: { thinkingLevel: "LOW" as any, includeThoughts: true },
           ...(opts.search ? { tools: [{ googleSearch: {} }] } : {}),
         },
       });
 
-    let { text: reply, finishReason } = extractReply(await runGenerate({ search: useSearch }));
+    const seenQueries = new Set<string>();
+    const sources = new Map<string, { title: string; url: string }>();
 
-    // Retry once without tools if the first pass came back empty. Grounding can
-    // occasionally return only grounding metadata with no text part.
-    if (!reply) {
-      try {
-        ({ text: reply, finishReason } = extractReply(await runGenerate({ search: false })));
-      } catch (retryErr) {
-        console.warn("[Translator] /assistant retry failed:", retryErr);
+    const consume = async (opts: { search: boolean }): Promise<string> => {
+      let answer = "";
+      const stream = await runStream(opts);
+      for await (const chunk of stream) {
+        if (!isConnected()) break;
+        const cand = chunk.candidates?.[0];
+        for (const p of cand?.content?.parts ?? []) {
+          if (p?.thought && p?.text) {
+            send({ type: "thought", content: p.text });
+          } else if (typeof p?.text === "string" && p.text) {
+            answer += p.text;
+            send({ type: "text", content: p.text });
+          }
+        }
+        // Grounding: surface the web-search queries + citation links.
+        const gm: any = cand?.groundingMetadata;
+        if (gm) {
+          const queries: string[] = (gm.webSearchQueries ?? []).filter(
+            (q: string) => q && !seenQueries.has(q) && (seenQueries.add(q), true),
+          );
+          if (queries.length) send({ type: "search", queries });
+          for (const c of gm.groundingChunks ?? []) {
+            const web = c?.web;
+            if (web?.uri && !sources.has(web.uri)) {
+              sources.set(web.uri, { title: web.title || web.uri, url: web.uri });
+            }
+          }
+        }
       }
+      return answer.trim();
+    };
+
+    let answer = await consume({ search: useSearch });
+    // Retry once without grounding if nothing came back (grounding can yield
+    // only metadata with no text part).
+    if (!answer && isConnected()) {
+      answer = await consume({ search: false });
     }
 
-    if (!reply) {
-      reply = finishReason === "SAFETY" || finishReason === "PROHIBITED_CONTENT"
-        ? "I can't answer that one — it was blocked by a safety filter. Try rephrasing your question about your jobs."
-        : "I couldn't generate a response just now — please try asking again.";
+    if (isConnected()) {
+      if (sources.size) send({ type: "sources", items: [...sources.values()] });
+      if (!answer) {
+        send({ type: "text", content: "I couldn't generate a response just now — please try asking again." });
+      }
+      send({ type: "done" });
     }
-
-    return res.json({ reply, jobCount: jobs.length });
   } catch (err: any) {
     console.error("[Translator] /assistant/stream error:", err);
     if (isConnected()) send({ type: "error", message: err?.message || "Assistant failed." });
