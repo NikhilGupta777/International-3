@@ -8,6 +8,11 @@ out-tsc
 .expo
 .expo-shared
 
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
 # dependencies
 node_modules
 

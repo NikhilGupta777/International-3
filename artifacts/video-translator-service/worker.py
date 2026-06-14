@@ -2387,12 +2387,24 @@ def translate_segments(segments: list[dict]) -> list[dict]:
                 all_translations.extend(chunk_results[idx])
 
     # ── Merge translations back into segments ─────────────────────────────────
+    # Preserved devotional segments (bhajans/shlokas/chants) were intentionally
+    # NOT sent to Gemini — they already had translated_text/tts_text/emotion/
+    # speaking_rate populated in the payload-building loop above and are kept in
+    # the original audio.  They must be excluded from both the completeness check
+    # and the merge below, otherwise they would be falsely reported as
+    # "missing segment ids" and their original text would be clobbered.
     trans_map = {t["id"]: t for t in all_translations}
-    missing = [seg["id"] for seg in segments if seg["id"] not in trans_map]
+    missing = [
+        seg["id"]
+        for seg in segments
+        if not seg.get("preserve_original") and seg["id"] not in trans_map
+    ]
     if missing:
         raise RuntimeError(f"Gemini translation missing segment ids: {missing[:10]}")
 
     for seg in segments:
+        if seg.get("preserve_original"):
+            continue
         t = trans_map.get(seg["id"], {})
         translated = str(t.get("translated_text", "")).strip()
         if not translated and seg["text"].strip():
