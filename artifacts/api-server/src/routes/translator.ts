@@ -699,9 +699,13 @@ async function submitTranslatorBatchJob(
 // ── Bulk: one GPU Batch job that translates many videos in a single session ────
 // The worker loads CosyVoice/LatentSync once and loops the manifest, so the
 // model-load + GPU cold start is paid once for the whole batch instead of N×.
-const MAX_BULK_VIDEOS = Number(process.env.TRANSLATOR_MAX_BULK_VIDEOS ?? "10");
-const BULK_PER_VIDEO_SECONDS = Number(process.env.TRANSLATOR_BULK_PER_VIDEO_SECONDS ?? "1200");
-const BULK_MAX_TIMEOUT_SECONDS = Number(process.env.TRANSLATOR_BULK_MAX_TIMEOUT_SECONDS ?? "21600");
+const envInt = (name: string, fallback: number): number => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+const MAX_BULK_VIDEOS = envInt("TRANSLATOR_MAX_BULK_VIDEOS", 10);
+const BULK_PER_VIDEO_SECONDS = envInt("TRANSLATOR_BULK_PER_VIDEO_SECONDS", 1200);
+const BULK_MAX_TIMEOUT_SECONDS = envInt("TRANSLATOR_BULK_MAX_TIMEOUT_SECONDS", 21600);
 
 async function submitBulkTranslatorBatchJob(
   groupId: string,
@@ -1886,7 +1890,12 @@ router.post("/cancel/:jobId", async (req: Request, res: ExpressResponse) => {
     }
 
     const batchJobId = current.Item.batchJobId?.S;
-    if (batchJobId) {
+    // In a bulk batch, many videos share ONE Batch job — terminating it here
+    // would kill every sibling. So for a bulk member we only mark THIS video
+    // cancelled (the worker skips it if it hasn't started yet) and leave the
+    // shared job running. Use /cancel-batch/:groupId to stop the whole batch.
+    const isBulk = Boolean(current.Item.batchGroupId?.S);
+    if (batchJobId && !isBulk) {
       await batch.send(new TerminateJobCommand({
         jobId: batchJobId,
         reason: "Cancelled by user",
@@ -1913,6 +1922,59 @@ router.post("/cancel/:jobId", async (req: Request, res: ExpressResponse) => {
     return res.json({ jobId, batchJobId, status: "CANCELLED" });
   } catch (err: any) {
     console.error("[Translator] /cancel error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /cancel-batch/:groupId ───────────────────────────────────────────────
+// Stop an entire bulk batch: terminate the shared GPU job and mark every
+// non-terminal member CANCELLED. Owner-scoped.
+router.post("/cancel-batch/:groupId", async (req: Request, res: ExpressResponse) => {
+  try {
+    const groupId = String(req.params.groupId);
+    const ownerId = getRequesterId(req);
+
+    // Find this owner's jobs in the group.
+    const out = await ddb.send(new ScanCommand({
+      TableName: DDB_TABLE,
+      FilterExpression: "batchGroupId = :g AND #ownerId = :o",
+      ExpressionAttributeNames: { "#ownerId": "ownerId" },
+      ExpressionAttributeValues: { ":g": { S: groupId }, ":o": { S: ownerId } },
+    }));
+    const items = out.Items ?? [];
+    if (!items.length) {
+      return res.status(404).json({ error: "Batch not found" });
+    }
+
+    // Terminate the shared Batch job once.
+    const batchJobId = items.find((it) => it.batchJobId?.S)?.batchJobId?.S;
+    if (batchJobId) {
+      await batch.send(new TerminateJobCommand({ jobId: batchJobId, reason: "Bulk batch cancelled by user" }));
+    }
+
+    const now = Date.now();
+    const cancelled: string[] = [];
+    await Promise.all(items.map((it) => {
+      const id = it.jobId?.S;
+      if (!id || isTerminalTranslatorStatus(it.status?.S)) return Promise.resolve();
+      cancelled.push(id);
+      return ddb.send(new UpdateItemCommand({
+        TableName: DDB_TABLE,
+        Key: { jobId: { S: id } },
+        UpdateExpression: "SET #s = :s, step = :st, #e = :e, updatedAt = :u",
+        ExpressionAttributeNames: { "#s": "status", "#e": "error" },
+        ExpressionAttributeValues: {
+          ":s": { S: "CANCELLED" },
+          ":st": { S: "Bulk batch cancelled by user." },
+          ":e": { S: "Cancelled by user." },
+          ":u": { N: String(now) },
+        },
+      }));
+    }));
+
+    return res.json({ groupId, batchJobId, cancelled, status: "CANCELLED" });
+  } catch (err: any) {
+    console.error("[Translator] /cancel-batch error:", err);
     return res.status(500).json({ error: err.message });
   }
 });

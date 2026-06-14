@@ -200,6 +200,10 @@ ddb = boto3.resource("dynamodb", region_name=DYNAMODB_REGION)
 table = ddb.Table(DYNAMODB_TABLE)
 _LAST_PIPELINE_STATUS = "STARTING"
 _LAST_PIPELINE_PROGRESS = 0
+# Session-level CosyVoice model cache. Loaded on the first video and reused for
+# every subsequent one in the same process — in bulk mode this means the model
+# is loaded ONCE for the whole batch instead of per video.
+_COSYVOICE_MODEL = None
 
 PIPELINE_STEPS = [
     {"name": "download", "label": "Downloading video", "start": 0, "end": 3, "statuses": ["STARTING"]},
@@ -2841,8 +2845,14 @@ def synthesize_segments_cosyvoice(
     log.info("[CosyVoice] Class import: %.1fs", time.monotonic() - _t)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = None
+    global _COSYVOICE_MODEL
+    # Reuse a model already loaded earlier in this process (bulk: one load for
+    # the whole batch). model_path/device are not referenced after the load loop,
+    # so skipping the loop on a cache hit is safe.
+    model = _COSYVOICE_MODEL
     last_err: Optional[Exception] = None
+    if model is not None:
+        log.info("[CosyVoice] Reusing model loaded earlier in this session — skipping reload.")
 
     def _resolve_model_path(model_name: str) -> Optional[Path]:
         for root in [
@@ -2872,6 +2882,8 @@ def synthesize_segments_cosyvoice(
             candidate_models.append(name)
 
     tried_model_paths: set[str] = set()
+    if model is not None:
+        candidate_models = []  # cached — skip the (re)load loop entirely
     for model_name in candidate_models:
         model_path = _resolve_model_path(model_name)
         if model_path is None:
@@ -2921,6 +2933,7 @@ def synthesize_segments_cosyvoice(
     if model is None:
         raise RuntimeError(f"CosyVoice model load failed: {last_err}")
     cosy_model = model
+    _COSYVOICE_MODEL = model  # cache for the rest of this session (bulk reuse)
     _model_load_dur = time.monotonic() - _model_load_t0
     log.info("[CosyVoice] Model loaded in %.1fs", _model_load_dur)
 
@@ -5774,12 +5787,12 @@ def _apply_job_overrides(job_id: str, input_key: str) -> None:
     _LAST_PIPELINE_PROGRESS = 0
 
 
-def _job_already_done(job_id: str) -> bool:
-    """Resume support: if a bulk job is retried (e.g. Spot interruption), skip
-    videos already finished so we never redo completed work."""
+def _bulk_should_skip(job_id: str) -> bool:
+    """Skip a manifest entry that is already finished (DONE — resume support for
+    a retried batch) or that the user cancelled before it started (CANCELLED)."""
     try:
         item = table.get_item(Key={"jobId": job_id}).get("Item") or {}
-        return item.get("status") == "DONE"
+        return item.get("status") in ("DONE", "CANCELLED")
     except Exception:
         return False
 
@@ -5804,8 +5817,8 @@ def run_bulk(manifest_key: str) -> None:
         if not job_id or not input_key:
             log.warning(f"[Bulk {idx}/{total}] Skipping malformed manifest entry: {entry!r}")
             continue
-        if _job_already_done(job_id):
-            log.info(f"[Bulk {idx}/{total}] {job_id} already DONE — skipping (resume).")
+        if _bulk_should_skip(job_id):
+            log.info(f"[Bulk {idx}/{total}] {job_id} already finished or cancelled — skipping.")
             skipped += 1
             continue
         _apply_job_overrides(job_id, input_key)
