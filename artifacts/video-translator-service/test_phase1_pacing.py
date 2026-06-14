@@ -396,6 +396,16 @@ class TimewarpPlanTests(unittest.TestCase):
             self.assertGreaterEqual(c["factor"], 1.0 - 1e-6)
             self.assertLessEqual(c["factor"], self.worker.DYNAMIC_MAX_VIDEO_STRETCH + 1e-6)
 
+    def test_empty_segments_yield_degenerate_plan(self):
+        # No segments -> empty plan, zero total.  main() must guard this and
+        # fall back to fixed-length timing (a zero-length mux would be broken).
+        chunks, seg_plan, total = self.worker.build_timewarp_plan(
+            [], [], video_duration=10.0,
+        )
+        self.assertEqual(chunks, [])
+        self.assertEqual(seg_plan, [])
+        self.assertEqual(total, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
