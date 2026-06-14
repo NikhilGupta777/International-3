@@ -3985,6 +3985,54 @@ def _ensure_latentsync_checkpoint(ckpt_dir: Path) -> Path:
     return path
 
 
+# Wrapper that runs LatentSync's scripts/inference.py with a monkeypatch that
+# tolerates brief no-face frames. By default LatentSync raises "Face not detected"
+# on the FIRST frame without a detectable face (a quick head-turn, motion blur or
+# a short transition), which aborts the WHOLE video. The patch reuses the previous
+# frame's face transform for up to LATENTSYNC_MAX_BRIDGE_FRAMES consecutive
+# missing frames so the rest of the video still gets lip-synced. It is
+# safe-by-construction: it only changes frames that would otherwise raise (and
+# fail) today — videos with a face in every frame are completely unaffected.
+# Longer genuine no-face stretches still raise → graceful dubbed-audio fallback.
+_LATENTSYNC_WRAPPER_SRC = '''
+import os, sys, runpy
+
+MAX_BRIDGE = int(os.environ.get("LATENTSYNC_MAX_BRIDGE_FRAMES", "12"))
+
+def _apply_face_bridge():
+    try:
+        from latentsync.utils.image_processor import ImageProcessor
+    except Exception as e:
+        print("[face-bridge] ImageProcessor import failed, running unpatched:", e, flush=True)
+        return
+    orig = getattr(ImageProcessor, "affine_transform", None)
+    if orig is None or getattr(orig, "_face_bridge", False):
+        return
+    def affine_transform(self, image, *a, **k):
+        try:
+            res = orig(self, image, *a, **k)
+            self._fb_last = res
+            self._fb_miss = 0
+            return res
+        except RuntimeError as e:
+            if "face not detected" not in str(e).lower():
+                raise
+            last = getattr(self, "_fb_last", None)
+            miss = getattr(self, "_fb_miss", 0)
+            if last is None or miss >= MAX_BRIDGE:
+                raise
+            self._fb_miss = miss + 1
+            print("[face-bridge] bridging no-face frame", self._fb_miss, "/", MAX_BRIDGE, flush=True)
+            return last
+    affine_transform._face_bridge = True
+    ImageProcessor.affine_transform = affine_transform
+    print("[face-bridge] enabled (max", MAX_BRIDGE, "consecutive no-face frames)", flush=True)
+
+_apply_face_bridge()
+runpy.run_path("scripts/inference.py", run_name="__main__")
+'''
+
+
 def _gpu_total_vram_gb() -> float:
     """Total VRAM of GPU 0 in GiB, or 0.0 if it can't be determined."""
     try:
@@ -4121,12 +4169,20 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
     progress_thread = threading.Thread(target=_progress_updater, daemon=True)
     progress_thread.start()
 
+    # Run inference through the face-bridging wrapper (unless disabled), so brief
+    # no-face frames don't abort the whole video. Falls back to the raw script if
+    # bridging is turned off.
+    if os.environ.get("LATENTSYNC_FACE_BRIDGE", "1").lower() in ("1", "true", "yes", "on"):
+        entry_script = str(temp_dir / "_latentsync_run.py")
+        Path(entry_script).write_text(_LATENTSYNC_WRAPPER_SRC, encoding="utf-8")
+    else:
+        entry_script = "scripts/inference.py"
+
     try:
         result = subprocess.run(
             [
-                sys.executable, "scripts/inference.py",
-                # FIXED: correct argparse argument names (--unet_config and
-                # --inference_ckpt would be silently ignored / raise errors)
+                sys.executable, entry_script,
+                # argparse names per upstream scripts/inference.py
                 "--unet_config_path",   config_file,
                 "--inference_ckpt_path", str(ckpt_path),
                 "--inference_steps",    "20",
