@@ -696,6 +696,51 @@ async function submitTranslatorBatchJob(
   return String(batchResult.jobId);
 }
 
+// ── Bulk: one GPU Batch job that translates many videos in a single session ────
+// The worker loads CosyVoice/LatentSync once and loops the manifest, so the
+// model-load + GPU cold start is paid once for the whole batch instead of N×.
+const envInt = (name: string, fallback: number): number => {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+const MAX_BULK_VIDEOS = envInt("TRANSLATOR_MAX_BULK_VIDEOS", 10);
+const BULK_PER_VIDEO_SECONDS = envInt("TRANSLATOR_BULK_PER_VIDEO_SECONDS", 1200);
+const BULK_MAX_TIMEOUT_SECONDS = envInt("TRANSLATOR_BULK_MAX_TIMEOUT_SECONDS", 21600);
+
+async function submitBulkTranslatorBatchJob(
+  groupId: string,
+  manifestKey: string,
+  options: TranslatorOptions,
+  videoCount: number,
+): Promise<string> {
+  // Bulk always runs on the GPU queue — the whole point is to share one warm
+  // GPU + loaded models across every video. Reuse the per-job env builder with
+  // empty job/input (the worker reads BULK_MANIFEST_KEY and ignores them) and
+  // append the manifest pointer.
+  const environment = [
+    ...buildBatchEnvironment("", "", options),
+    { name: "BULK_MANIFEST_KEY", value: manifestKey },
+  ];
+
+  // Timeout scales with the batch size: a cold-start floor + per-video budget,
+  // capped so a runaway batch can't hold a GPU indefinitely.
+  const timeout = Math.min(
+    BULK_MAX_TIMEOUT_SECONDS,
+    Math.max(TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS, videoCount * BULK_PER_VIDEO_SECONDS),
+  );
+
+  const batchResult = await batch.send(new SubmitJobCommand({
+    jobName:       `translator-bulk-${groupId.slice(0, 8)}`,
+    jobQueue:      BATCH_QUEUE,
+    jobDefinition: BATCH_JOB_DEF,
+    timeout:       { attemptDurationSeconds: timeout },
+    containerOverrides: { environment },
+  }));
+
+  console.log(`[Translator] Submitted BULK Batch job ${batchResult.jobId} (group ${groupId}, ${videoCount} videos, timeout ${timeout}s)`);
+  return String(batchResult.jobId);
+}
+
 function runCommand(command: string, args: string[], timeoutMs = 120_000): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -1596,6 +1641,121 @@ router.post("/submit-from-s3", async (req: Request, res: ExpressResponse) => {
   }
 });
 
+// ── POST /submit-bulk ─────────────────────────────────────────────────────────
+// Translate many already-uploaded videos in ONE GPU Batch job so the model load
+// + GPU cold start is paid once for the whole batch. Each video still gets its
+// own job record (own status/progress/result); they share the GPU session.
+// Body: { videos: [{ jobId, s3Key, filename }], <shared options> }.
+router.post("/submit-bulk", async (req: Request, res: ExpressResponse) => {
+  try {
+    const ownerId = getRequesterId(req);
+    const {
+      videos,
+      targetLang     = "Hindi",
+      targetLangCode = "hi",
+      sourceLang     = "auto",
+      voiceClone     = true,
+      lipSync        = false,
+      lipSyncQuality = "latentsync",
+      useDemucs      = false,
+      premiumAsr     = false,
+      multiSpeaker   = false,
+      asrModel       = "large-v3-turbo",
+      translationMode = "default",
+      dynamicVideoLength = false,
+      preserveChants = true,
+    } = req.body ?? {};
+
+    if (!Array.isArray(videos) || videos.length === 0) {
+      return res.status(400).json({ error: "videos array is required" });
+    }
+    if (videos.length > MAX_BULK_VIDEOS) {
+      return res.status(400).json({ error: `Too many videos: max ${MAX_BULK_VIDEOS} per batch.` });
+    }
+
+    const entries = videos.map((v: any, i: number) => ({
+      jobId: String(v?.jobId ?? "").trim(),
+      s3Key: String(v?.s3Key ?? "").trim(),
+      filename: typeof v?.filename === "string" && v.filename.trim() ? v.filename.trim() : `video-${i + 1}.mp4`,
+    }));
+    if (entries.some((e) => !e.jobId || !e.s3Key)) {
+      return res.status(400).json({ error: "each video needs jobId and s3Key" });
+    }
+
+    const resolvedLipSync = resolveRequestedLipSync(req, res, lipSync);
+    const sharedOptions: Omit<TranslatorOptions, "filename"> = {
+      targetLang: String(targetLang),
+      targetLangCode: String(targetLangCode),
+      sourceLang: String(sourceLang),
+      voiceClone: boolValue(voiceClone, true),
+      lipSync: resolvedLipSync.enabled,
+      lipSyncQuality: String(lipSyncQuality),
+      useDemucs: boolValue(useDemucs, false),
+      premiumAsr: boolValue(premiumAsr, false),
+      multiSpeaker: boolValue(multiSpeaker, false),
+      asrModel: String(asrModel),
+      translationMode: String(translationMode),
+      dynamicVideoLength: boolValue(dynamicVideoLength, false),
+      preserveChants: boolValue(preserveChants, true),
+    };
+
+    // Confirm every upload exists, then create one job record per video.
+    for (const e of entries) {
+      await assertUploadedTranslatorObject(e.jobId, e.s3Key);
+    }
+    const groupId = randomUUID();
+    for (const e of entries) {
+      await createTranslatorJobRecord(e.jobId, e.s3Key, { ...sharedOptions, filename: e.filename }, ownerId);
+    }
+
+    // Write the manifest the worker loops over, then submit ONE GPU job.
+    const manifestKey = `translator-jobs/bulk/${groupId}/manifest.json`;
+    await s3.send(new PutObjectCommand({
+      Bucket:      S3_BUCKET,
+      Key:         manifestKey,
+      Body:        JSON.stringify({ groupId, jobs: entries.map((e) => ({ jobId: e.jobId, s3InputKey: e.s3Key })) }),
+      ContentType: "application/json",
+    }));
+
+    const batchJobId = await submitBulkTranslatorBatchJob(
+      groupId,
+      manifestKey,
+      { ...sharedOptions, filename: entries[0].filename },
+      entries.length,
+    );
+
+    // Tag every record with the shared batch + group so the UI can track them.
+    const now = Date.now();
+    await Promise.all(entries.map((e) => ddb.send(new UpdateItemCommand({
+      TableName: DDB_TABLE,
+      Key: { jobId: { S: e.jobId } },
+      UpdateExpression: "SET batchJobId = :b, batchGroupId = :g, runtime = :r, #st = :s, updatedAt = :u",
+      ExpressionAttributeNames: { "#st": "step" },
+      ExpressionAttributeValues: {
+        ":b": { S: batchJobId },
+        ":g": { S: groupId },
+        ":r": { S: "batch-bulk" },
+        ":s": { S: "Queued in bulk batch, waiting for shared GPU worker..." },
+        ":u": { N: String(now) },
+      },
+    }))));
+
+    return res.json({
+      groupId,
+      batchJobId,
+      status: "QUEUED",
+      jobIds: entries.map((e) => e.jobId),
+      lipsyncWarning: resolvedLipSync.warning,
+    });
+  } catch (err: any) {
+    console.error("[Translator] /submit-bulk error:", err);
+    if (isConditionalWriteFailure(err)) {
+      return res.status(409).json({ error: "A translation job with this jobId already exists." });
+    }
+    return res.status(translatorErrorStatus(err)).json({ error: err.message });
+  }
+});
+
 // ── GET /status/:jobId ────────────────────────────────────────────────────────
 // Reads real-time job status from DynamoDB (updated by the Python worker).
 router.get("/status/:jobId", async (req: Request, res: ExpressResponse) => {
@@ -1730,7 +1890,12 @@ router.post("/cancel/:jobId", async (req: Request, res: ExpressResponse) => {
     }
 
     const batchJobId = current.Item.batchJobId?.S;
-    if (batchJobId) {
+    // In a bulk batch, many videos share ONE Batch job — terminating it here
+    // would kill every sibling. So for a bulk member we only mark THIS video
+    // cancelled (the worker skips it if it hasn't started yet) and leave the
+    // shared job running. Use /cancel-batch/:groupId to stop the whole batch.
+    const isBulk = Boolean(current.Item.batchGroupId?.S);
+    if (batchJobId && !isBulk) {
       await batch.send(new TerminateJobCommand({
         jobId: batchJobId,
         reason: "Cancelled by user",
@@ -1757,6 +1922,59 @@ router.post("/cancel/:jobId", async (req: Request, res: ExpressResponse) => {
     return res.json({ jobId, batchJobId, status: "CANCELLED" });
   } catch (err: any) {
     console.error("[Translator] /cancel error:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /cancel-batch/:groupId ───────────────────────────────────────────────
+// Stop an entire bulk batch: terminate the shared GPU job and mark every
+// non-terminal member CANCELLED. Owner-scoped.
+router.post("/cancel-batch/:groupId", async (req: Request, res: ExpressResponse) => {
+  try {
+    const groupId = String(req.params.groupId);
+    const ownerId = getRequesterId(req);
+
+    // Find this owner's jobs in the group.
+    const out = await ddb.send(new ScanCommand({
+      TableName: DDB_TABLE,
+      FilterExpression: "batchGroupId = :g AND #ownerId = :o",
+      ExpressionAttributeNames: { "#ownerId": "ownerId" },
+      ExpressionAttributeValues: { ":g": { S: groupId }, ":o": { S: ownerId } },
+    }));
+    const items = out.Items ?? [];
+    if (!items.length) {
+      return res.status(404).json({ error: "Batch not found" });
+    }
+
+    // Terminate the shared Batch job once.
+    const batchJobId = items.find((it) => it.batchJobId?.S)?.batchJobId?.S;
+    if (batchJobId) {
+      await batch.send(new TerminateJobCommand({ jobId: batchJobId, reason: "Bulk batch cancelled by user" }));
+    }
+
+    const now = Date.now();
+    const cancelled: string[] = [];
+    await Promise.all(items.map((it) => {
+      const id = it.jobId?.S;
+      if (!id || isTerminalTranslatorStatus(it.status?.S)) return Promise.resolve();
+      cancelled.push(id);
+      return ddb.send(new UpdateItemCommand({
+        TableName: DDB_TABLE,
+        Key: { jobId: { S: id } },
+        UpdateExpression: "SET #s = :s, step = :st, #e = :e, updatedAt = :u",
+        ExpressionAttributeNames: { "#s": "status", "#e": "error" },
+        ExpressionAttributeValues: {
+          ":s": { S: "CANCELLED" },
+          ":st": { S: "Bulk batch cancelled by user." },
+          ":e": { S: "Cancelled by user." },
+          ":u": { N: String(now) },
+        },
+      }));
+    }));
+
+    return res.json({ groupId, batchJobId, cancelled, status: "CANCELLED" });
+  } catch (err: any) {
+    console.error("[Translator] /cancel-batch error:", err);
     return res.status(500).json({ error: err.message });
   }
 });
