@@ -4,7 +4,7 @@ import {
   Upload, Languages, Mic, MicOff, Play, Download, CheckCircle,
   Loader2, AlertCircle, X, ChevronDown, Subtitles, RefreshCw,
   Film, Wand2, Volume2, Eye, Share2, History, Trash2, Terminal, ChevronUp,
-  Youtube, Scissors, Clock, Sparkles, ArrowRight
+  Youtube, Scissors, Clock, Sparkles, ArrowRight, Send, Bot
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -342,6 +342,12 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [history, setHistory] = useState<TranslatorHistoryEntry[]>(() => loadTranslatorHistory());
   const [debugLog, setDebugLog] = useState<{ ts: number; level: "info" | "warn" | "error"; msg: string }[]>([]);
   const [showDebug, setShowDebug] = useState(false);
+  // ── Temporary in-tab AI status assistant ──────────────────────────────
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiMessages, setAiMessages] = useState<{ role: "user" | "model"; content: string }[]>([]);
+  const [aiInput, setAiInput] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const aiScrollRef = useRef<HTMLDivElement | null>(null);
   const [stuckWarning, setStuckWarning] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ytPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -367,6 +373,47 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     setActiveJobs(loadActiveTranslatorJobs());
     setHistory(loadTranslatorHistory());
   }, []);
+
+  // Ask the in-tab AI assistant. It receives the full conversation, the
+  // currently-open jobId, and the client-side activity log, and the backend
+  // adds a live snapshot of ALL the user's translation jobs + their logs.
+  const askAi = useCallback(async (text: string) => {
+    const q = text.trim();
+    if (!q || aiBusy) return;
+    const history = [...aiMessages, { role: "user" as const, content: q }];
+    setAiMessages(history);
+    setAiInput("");
+    setAiBusy(true);
+    try {
+      const res = await fetch(`${API}/assistant`, {
+        method: "POST",
+        headers: { ...translatorAuthHeaders(), "Content-Type": "application/json" },
+        cache: NO_STORE,
+        body: JSON.stringify({
+          messages: history,
+          focusJobId: jobId ?? undefined,
+          clientLogs: debugLog.slice(-120),
+        }),
+      });
+      if (!res.ok) throw await responseError(res, `Assistant error (${res.status})`);
+      const data = await readJsonResponse<{ reply?: string }>(res);
+      setAiMessages((prev) => [...prev, { role: "model", content: data.reply?.trim() || "No response." }]);
+    } catch (e: any) {
+      setAiMessages((prev) => [
+        ...prev,
+        { role: "model", content: `⚠️ ${e?.message || "The assistant couldn't respond. Try again."}` },
+      ]);
+    } finally {
+      setAiBusy(false);
+    }
+  }, [aiBusy, aiMessages, jobId, debugLog]);
+
+  // Keep the assistant chat scrolled to the newest message.
+  useEffect(() => {
+    if (aiOpen && aiScrollRef.current) {
+      aiScrollRef.current.scrollTop = aiScrollRef.current.scrollHeight;
+    }
+  }, [aiMessages, aiOpen, aiBusy]);
 
   const fetchResultUrls = useCallback(async (id: string) => {
     const tr = await fetch(`${API}/result/${id}`, { headers: translatorAuthHeaders(), cache: NO_STORE });
@@ -1743,6 +1790,96 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           </div>
         )}
       </div>
+
+      {/* ── Temporary in-tab AI status assistant ───────────────────────────── */}
+      <button
+        onClick={() => setAiOpen((o) => !o)}
+        className="fixed bottom-5 right-5 z-40 flex items-center gap-2 px-4 py-3 rounded-full bg-gradient-to-br from-primary to-orange-400 text-white shadow-lg shadow-primary/30 hover:scale-105 active:scale-95 transition-transform"
+        title="Ask AI about your translations"
+      >
+        <Sparkles className="w-5 h-5" />
+        <span className="text-sm font-bold hidden sm:inline">Ask AI</span>
+      </button>
+
+      {aiOpen && (
+        <div className="fixed bottom-20 right-5 z-40 w-[min(92vw,380px)] h-[min(70vh,520px)] flex flex-col rounded-2xl border border-white/10 bg-[#16161c] shadow-2xl overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10 bg-white/[0.03]">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shrink-0">
+              <Bot className="w-4 h-4 text-white" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-bold text-white leading-none">Translation Assistant</p>
+              <p className="text-[11px] text-white/40 mt-0.5">Sees all your jobs, status &amp; logs</p>
+            </div>
+            <button
+              onClick={() => setAiOpen(false)}
+              className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+              title="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div ref={aiScrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+            {aiMessages.length === 0 && (
+              <div className="text-center text-white/40 text-xs px-4 py-6 space-y-2">
+                <Sparkles className="w-6 h-6 mx-auto text-primary/60" />
+                <p>Ask me anything about your translations — live status, logs, and what happened.</p>
+                <div className="flex flex-wrap gap-1.5 justify-center pt-1">
+                  {["What's the status?", "What happened to my last job?", "Did anything fail?"].map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => void askAi(s)}
+                      className="px-2.5 py-1 rounded-full bg-white/5 hover:bg-white/10 text-white/60 text-[11px] transition-colors"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {aiMessages.map((m, i) => (
+              <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+                <div
+                  className={cn(
+                    "max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words",
+                    m.role === "user" ? "bg-primary text-white" : "bg-white/[0.06] text-white/90",
+                  )}
+                >
+                  {m.content}
+                </div>
+              </div>
+            ))}
+            {aiBusy && (
+              <div className="flex justify-start">
+                <div className="rounded-2xl px-3 py-2 bg-white/[0.06] text-white/60 text-sm flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Thinking…
+                </div>
+              </div>
+            )}
+          </div>
+
+          <form
+            onSubmit={(e) => { e.preventDefault(); void askAi(aiInput); }}
+            className="flex items-center gap-2 p-2.5 border-t border-white/10 bg-white/[0.02]"
+          >
+            <input
+              value={aiInput}
+              onChange={(e) => setAiInput(e.target.value)}
+              placeholder="Ask about status, logs, errors…"
+              className="flex-1 bg-white/5 rounded-xl px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:ring-1 focus:ring-primary/50"
+            />
+            <button
+              type="submit"
+              disabled={aiBusy || !aiInput.trim()}
+              className="p-2 rounded-xl bg-primary text-white disabled:opacity-40 transition-opacity"
+              title="Send"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

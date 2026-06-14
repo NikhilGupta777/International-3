@@ -9,7 +9,6 @@ Tests cover:
 import os
 import sys
 import unittest
-import math
 
 # Add parent dir so we can import worker
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -107,58 +106,67 @@ class EnvFlagTests(unittest.TestCase):
 
 
 class ReferenceCapTests(unittest.TestCase):
-    """P1-5: Reference audio capped at 10s."""
+    """Voice-clone reference length cap (env-tunable via REFERENCE_MAX_SECONDS)."""
 
-    def test_extract_speaker_reference_default_cap_is_10s(self):
-        """The default max_ref_duration parameter should be 10.0s."""
+    def test_extract_speaker_reference_default_cap_matches_constant(self):
+        """The default max_ref_duration should follow REFERENCE_MAX_SECONDS."""
         import inspect
-        from worker import extract_speaker_reference
+        from worker import extract_speaker_reference, REFERENCE_MAX_SECONDS
 
         sig = inspect.signature(extract_speaker_reference)
         default = sig.parameters["max_ref_duration"].default
-        self.assertEqual(default, 10.0)
+        self.assertEqual(default, REFERENCE_MAX_SECONDS)
+
+    def test_reference_max_seconds_default_is_15(self):
+        """Default reference cap is 15s when env is unset (bumped from 10s)."""
+        from worker import REFERENCE_MAX_SECONDS
+        if "REFERENCE_MAX_SECONDS" not in os.environ:
+            self.assertEqual(REFERENCE_MAX_SECONDS, 15.0)
 
 
-class DemucsReferenceTests(unittest.TestCase):
-    """P1-6: When Demucs is on, reference stays = original audio."""
+class CloneReferenceFromVocalsTests(unittest.TestCase):
+    """Clone reference is built from Demucs-isolated vocals, not mixed audio."""
 
-    def _has_direct_reference_reassignment_to_vocals(self, func):
-        """Return True if func directly assigns reference_audio = vocals_path."""
+    def test_clone_reference_from_vocals_default_on(self):
+        """The clean-vocals clone reference is enabled by default."""
+        from worker import CLONE_REFERENCE_FROM_VOCALS
+        if "CLONE_REFERENCE_FROM_VOCALS" not in os.environ:
+            self.assertTrue(CLONE_REFERENCE_FROM_VOCALS)
+
+    def test_main_uses_vocals_as_clone_reference(self):
+        """
+        main() should reassign reference_audio to a Demucs vocals source when
+        voice cloning is on (the whole point of the clean-vocals fix), and
+        record the source it used.
+        """
         import ast
         import inspect
         import textwrap
+        import worker
 
-        source = textwrap.dedent(inspect.getsource(func))
+        source = textwrap.dedent(inspect.getsource(worker.main))
         tree = ast.parse(source)
 
+        reassigned_to_vocals = False
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Assign):
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
                 continue
-            if len(node.targets) != 1:
-                continue
-
             target = node.targets[0]
-            value = node.value
             if (
                 isinstance(target, ast.Name)
                 and target.id == "reference_audio"
-                and isinstance(value, ast.Name)
-                and value.id == "vocals_path"
+                and isinstance(node.value, ast.Name)
+                and "vocal" in node.value.id.lower()
             ):
-                return True
+                reassigned_to_vocals = True
+                break
 
-        return False
-
-    def test_reference_not_reassigned_to_vocals(self):
-        """
-        In the main() flow, reference_audio should NOT be directly reassigned
-        to vocals_path when Demucs runs.
-        """
-        import worker
-
-        self.assertFalse(
-            self._has_direct_reference_reassignment_to_vocals(worker.main)
+        self.assertTrue(
+            reassigned_to_vocals,
+            "main() should use isolated vocals as the clone reference.",
         )
+        # And the chosen source must be surfaced for diagnosability.
+        self.assertIn("clone_reference_source", source)
 
 
 class Instruct2Tests(unittest.TestCase):

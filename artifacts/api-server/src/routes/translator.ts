@@ -86,6 +86,10 @@ const TRANSLATOR_LAMBDA_FAST_MAX_SECONDS = Math.max(
 const FFMPEG_BIN = process.env.FFMPEG_BIN || "/opt/bin/ffmpeg";
 const FFPROBE_BIN = process.env.FFPROBE_BIN || "/opt/bin/ffprobe";
 const TRANSLATOR_TEXT_MODEL = process.env.TRANSLATOR_TEXT_MODEL || process.env.GEMINI_MODEL || "gemini-3.5-flash";
+// Model for the in-tab AI status assistant. "Gemini 3.5 medium" = gemini-3.5-flash
+// with MEDIUM thinking (the codebase has no separate "medium" model id — flash +
+// thinkingLevel MEDIUM is the canonical default the agent route uses).
+const TRANSLATOR_ASSISTANT_MODEL = process.env.TRANSLATOR_ASSISTANT_MODEL || "gemini-3.5-flash";
 const TRANSLATOR_URL_FETCH_TIMEOUT_MS = Math.max(
   5000,
   Math.min(120000, Number(process.env.TRANSLATOR_URL_FETCH_TIMEOUT_MS ?? "45000") || 45000),
@@ -1882,6 +1886,204 @@ router.get("/result/:jobId", async (req: Request, res: ExpressResponse) => {
   } catch (err: any) {
     console.error("[Translator] /result error:", err);
     return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── POST /assistant ────────────────────────────────────────────────────────
+// A temporary in-tab AI helper for the Translation page.  It can see EVERY
+// translator job for the current user (status, progress, per-step logs,
+// warnings, errors, options, runtime, timestamps) plus the client-side
+// activity log the user is currently looking at, and answers natural-language
+// questions like "what's the status?", "what happened to my last job?",
+// "why did it fail?".  Uses Gemini 3.5 Flash with MEDIUM thinking — the same
+// client/model the rest of the app uses.  Non-streaming JSON for robustness.
+const TRANSLATOR_ASSISTANT_SYSTEM_PROMPT = [
+  "You are the Video Translation Assistant built into the Translation tab of this app.",
+  "You are given a live snapshot of ALL of the current user's video-translation jobs —",
+  "their status, progress, per-step logs, warnings, errors, options (voice clone, lip-sync,",
+  "keep background music, multi-speaker, dynamic video length), runtime and timestamps —",
+  "plus the client-side activity log the user is currently looking at.",
+  "",
+  "Answer the user's questions about status and what happened. Be concise, specific and friendly.",
+  "Use ONLY the actual data provided. When a job failed, explain the likely reason from its",
+  "error/warnings and suggest a concrete next step (retry, cancel, shorten the clip, turn off",
+  "lip-sync, etc.). Refer to jobs by filename + language (and a short job id when helpful).",
+  "If the data does not contain something, say so plainly — never invent statuses, times or logs.",
+  "Keep answers short unless the user asks for detail. Use simple formatting (short lines or bullets).",
+].join("\n");
+
+function serializeJobForAssistant(item: Record<string, any>): Record<string, any> | null {
+  const jobId = item.jobId?.S;
+  if (!jobId) return null;
+  const steps = parseJsonAttribute<any[]>(item.stepsJson?.S, []);
+  return {
+    jobId,
+    status: item.status?.S ?? "UNKNOWN",
+    progress: parseInt(item.progress?.N ?? "0"),
+    step: item.step?.S ?? "",
+    steps: Array.isArray(steps)
+      ? steps.map((s) => ({ label: s?.label ?? s?.name, status: s?.status, progress: s?.progress, message: s?.message }))
+      : [],
+    error: item.error?.S,
+    lipsyncWarning: item.lipsync_warning?.S,
+    voiceCloneWarning: item.voice_clone_warning?.S,
+    filename: item.filename?.S,
+    sourceLang: item.sourceLang?.S,
+    targetLang: item.targetLang?.S,
+    voiceClone: item.voiceClone?.BOOL,
+    voiceCloneApplied: item.voiceCloneApplied?.BOOL,
+    lipSync: item.lipSync?.BOOL,
+    lipSyncApplied: item.lipSyncApplied?.BOOL,
+    useDemucs: item.useDemucs?.BOOL,
+    multiSpeaker: item.multiSpeaker?.BOOL,
+    dynamicVideoLength: item.dynamicVideoLength?.BOOL,
+    runtime: item.runtime?.S,
+    segmentCount: item.segmentCount?.N != null ? parseInt(item.segmentCount.N) : undefined,
+    createdAt: item.createdAt?.N ? parseInt(item.createdAt.N) : parseEpoch(item.createdAt?.S),
+    updatedAt: item.updatedAt?.N ? parseInt(item.updatedAt.N) : parseEpoch(item.updatedAt?.S),
+    batchJobId: item.batchJobId?.S,
+  };
+}
+
+function buildAssistantDataBlock(
+  jobs: Record<string, any>[],
+  focusJobId: string | undefined,
+  clientLogs: Array<{ ts?: number; level?: string; msg?: string }>,
+): string {
+  const now = Date.now();
+  const ago = (ts: unknown) =>
+    typeof ts === "number" && ts > 0 ? `${Math.max(0, Math.round((now - ts) / 60000))} min ago` : "unknown";
+  const lines: string[] = [];
+  lines.push(`Now: ${new Date(now).toISOString()}`);
+  lines.push(`Total jobs visible: ${jobs.length}`);
+  if (focusJobId) lines.push(`The user currently has this job open: ${focusJobId}`);
+  lines.push("");
+  lines.push("JOBS (newest first):");
+  if (!jobs.length) lines.push("  (no translation jobs found for this user yet)");
+  for (const j of jobs) {
+    lines.push(`- jobId=${j.jobId}${j.jobId === focusJobId ? " (CURRENTLY OPEN)" : ""}`);
+    lines.push(
+      `  file="${j.filename ?? "?"}" ${j.sourceLang ?? "?"}->${j.targetLang ?? "?"} ` +
+      `status=${j.status} progress=${j.progress}% step="${j.step ?? ""}"`,
+    );
+    const opts = [
+      j.voiceClone && "voiceClone",
+      j.lipSync && "lipSync",
+      j.useDemucs && "keepMusic",
+      j.multiSpeaker && "multiSpeaker",
+      j.dynamicVideoLength && "dynamicLength",
+    ].filter(Boolean).join(",");
+    if (opts) lines.push(`  options=${opts}`);
+    if (j.runtime || j.segmentCount != null) lines.push(`  runtime=${j.runtime ?? "?"} segments=${j.segmentCount ?? "?"}`);
+    lines.push(`  created=${ago(j.createdAt)} updated=${ago(j.updatedAt)}`);
+    if (j.error) lines.push(`  ERROR: ${String(j.error).slice(0, 500)}`);
+    if (j.voiceCloneWarning) lines.push(`  voiceCloneWarning: ${String(j.voiceCloneWarning).slice(0, 300)}`);
+    if (j.lipsyncWarning) lines.push(`  lipsyncWarning: ${String(j.lipsyncWarning).slice(0, 300)}`);
+    if (Array.isArray(j.steps) && j.steps.length) {
+      lines.push("  steps:");
+      for (const s of j.steps) {
+        lines.push(
+          `    - ${s.label ?? "?"}: ${s.status ?? "?"}` +
+          `${typeof s.progress === "number" ? ` ${s.progress}%` : ""}` +
+          `${s.message ? ` - ${String(s.message).slice(0, 200)}` : ""}`,
+        );
+      }
+    }
+  }
+  if (Array.isArray(clientLogs) && clientLogs.length) {
+    lines.push("");
+    lines.push("CLIENT ACTIVITY LOG (what the user has seen in the UI, oldest -> newest):");
+    for (const l of clientLogs.slice(-120)) {
+      const ts = typeof l?.ts === "number" ? new Date(l.ts).toISOString().slice(11, 19) : "";
+      lines.push(`  [${ts}] ${String(l?.level ?? "info").toUpperCase()}: ${String(l?.msg ?? "").slice(0, 300)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+router.post("/assistant", async (req: Request, res: ExpressResponse) => {
+  try {
+    if (!isGeminiConfigured()) {
+      return res.status(503).json({ error: "AI assistant is not configured on the server." });
+    }
+
+    const ownerId = getRequesterId(req);
+    const { messages = [], focusJobId, clientLogs = [] } = (req.body ?? {}) as {
+      messages?: Array<{ role?: string; content?: string }>;
+      focusJobId?: string;
+      clientLogs?: Array<{ ts?: number; level?: string; msg?: string }>;
+    };
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ error: "messages array is required" });
+    }
+
+    const convo = messages
+      .filter((m) => m && (m.role === "user" || m.role === "model" || m.role === "assistant") && typeof m.content === "string")
+      .slice(-24)
+      .map((m) => ({
+        role: m.role === "user" ? "user" : "model",
+        parts: [{ text: String(m.content).slice(0, 4000) }],
+      }));
+
+    if (!convo.length) {
+      return res.status(400).json({ error: "messages array has no valid messages" });
+    }
+
+    // Gather ALL of this user's translator jobs (same owner scope as /history).
+    const items: Record<string, any>[] = [];
+    let exclusiveStartKey: Record<string, any> | undefined;
+    for (let page = 0; page < 5; page += 1) {
+      const out = await ddb.send(new ScanCommand({
+        TableName: DDB_TABLE,
+        FilterExpression: "#type = :type AND #ownerId = :ownerId",
+        ExpressionAttributeNames: { "#type": "type", "#ownerId": "ownerId" },
+        ExpressionAttributeValues: { ":type": { S: "translator" }, ":ownerId": { S: ownerId } },
+        Limit: 100,
+        ExclusiveStartKey: exclusiveStartKey,
+      }));
+      items.push(...(out.Items ?? []));
+      exclusiveStartKey = out.LastEvaluatedKey;
+      if (!exclusiveStartKey || items.length >= 120) break;
+    }
+
+    // Refresh only the jobs whose status could be stale (non-terminal), capped
+    // so we never fan out dozens of Batch DescribeJobs calls per question.
+    let syncBudget = 15;
+    const synced = await Promise.all(items.map((it) => {
+      const terminal = isTerminalTranslatorStatus(it.status?.S);
+      if (!terminal && syncBudget > 0) {
+        syncBudget -= 1;
+        return syncTerminalBatchState(it).catch(() => it);
+      }
+      return Promise.resolve(it);
+    }));
+
+    const jobs = synced
+      .map(serializeJobForAssistant)
+      .filter((j): j is Record<string, any> => Boolean(j))
+      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+      .slice(0, 40);
+
+    const safeClientLogs = Array.isArray(clientLogs) ? clientLogs : [];
+    const dataBlock = buildAssistantDataBlock(jobs, focusJobId ? String(focusJobId) : undefined, safeClientLogs);
+
+    const ai = createGeminiClient();
+    const response = await ai.models.generateContent({
+      model: TRANSLATOR_ASSISTANT_MODEL,
+      contents: convo,
+      config: {
+        systemInstruction: `${TRANSLATOR_ASSISTANT_SYSTEM_PROMPT}\n\n=== LIVE DATA (current snapshot) ===\n${dataBlock}`,
+        maxOutputTokens: 1400,
+        thinkingConfig: { thinkingLevel: "MEDIUM" as any },
+      },
+    });
+
+    const reply = (response.text ?? "").trim() || "I couldn't generate a response just now — please try asking again.";
+    return res.json({ reply, jobCount: jobs.length });
+  } catch (err: any) {
+    console.error("[Translator] /assistant error:", err);
+    return res.status(500).json({ error: err?.message || "Assistant failed." });
   }
 });
 

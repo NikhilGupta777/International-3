@@ -125,11 +125,18 @@ DYNAMIC_VIDEO_LENGTH = os.environ.get("DYNAMIC_VIDEO_LENGTH", "false").lower() =
 # worker invocations that omit these env vars.
 USE_DEMUCS          = os.environ.get("USE_DEMUCS", "false").lower() == "true"
 MULTI_SPEAKER       = os.environ.get("MULTI_SPEAKER", "false").lower() == "true"
-# Keep devotional content (sung bhajans/kirtan, chanting of divine names, and
-# Sanskrit/Odia shlokas/mantras/verses) in the ORIGINAL audio instead of
-# translating/dubbing it. Gemini flags those segments; the worker substitutes
-# the original audio slice for them and leaves the rest dubbed as usual.
-PRESERVE_CHANTS     = os.environ.get("PRESERVE_CHANTS", "false").lower() == "true"
+# Voice-clone quality: clone from the Demucs-isolated VOCALS rather than the
+# full mixed audio.  Background music/noise in the reference is a top cause of
+# the cloned voice drifting to a different-sounding timbre.  When on (default)
+# and voice cloning is requested, we use clean vocals as the clone reference —
+# reusing the Demucs result if "keep background music" already ran it, else
+# computing the vocal stem once just for the reference (the background is NOT
+# added to the output unless the user asked for it).  Falls back safely to the
+# mixed audio if separation is unavailable/fails, so there is no regression.
+CLONE_REFERENCE_FROM_VOCALS = os.environ.get("CLONE_REFERENCE_FROM_VOCALS", "true").lower() == "true"
+# Length cap for the voice-clone reference.  Upstream best practice is ~5-15s;
+# a longer, clean reference captures more of the speaker's timbre.
+REFERENCE_MAX_SECONDS = max(5.0, min(30.0, float(os.environ.get("REFERENCE_MAX_SECONDS", "15"))))
 ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
 LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | latentsync_hq
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget
@@ -893,7 +900,7 @@ def extract_speaker_reference(
     audio_path: Path,
     segments: list[dict],
     out_dir: Path,
-    max_ref_duration: float = 10.0,
+    max_ref_duration: float = REFERENCE_MAX_SECONDS,
     min_segment_duration: float = 1.5,
 ) -> tuple[dict, dict]:
     """
@@ -2962,8 +2969,8 @@ def synthesize_segments_cosyvoice(
             rw_24k = torchaudio.functional.resample(rw, rs, 24000)
         else:
             rw_24k = rw
-        rw_16k = rw_16k[:, : 16000 * 10]  # cap at 10 s — upstream best practice (5-10 s)
-        rw_24k = rw_24k[:, : 24000 * 10]  # cap at 10 s — longer refs confuse speaker encoder
+        rw_16k = rw_16k[:, : int(16000 * REFERENCE_MAX_SECONDS)]  # cap — upstream best practice (5-15 s)
+        rw_24k = rw_24k[:, : int(24000 * REFERENCE_MAX_SECONDS)]  # cap — longer refs can confuse speaker encoder
         safe_spk = re.sub(r"[^A-Za-z0-9_\-]", "_", speaker)
         fname = out_dir / f"ref_{safe_spk}_24k.wav"
         torchaudio.save(str(fname), rw_24k, 24000)
@@ -5256,7 +5263,9 @@ def main():
 
         demucs_applied = False
         demucs_warning = ""
-
+        # Demucs-isolated vocals, captured for use as the voice-clone reference
+        # (see step 5d).  None until Demucs runs.
+        vocals_for_clone: Optional[Path] = None
         # Phase 4 (P1-24): Demucs (GPU, ~30s) and AssemblyAI (HTTP, ~20-40s)
         # are independent when transcription runs on the original audio.
         # We launch Demucs in a background thread and run AssemblyAI
@@ -5293,6 +5302,7 @@ def main():
                 try:
                     _vocals_path, bg_path = demucs_future.result(timeout=600)
                     background_audio = bg_path
+                    vocals_for_clone = _vocals_path
                     demucs_applied = True
                     log.info("[Demucs+ASR] Parallel execution complete. Demucs OK.")
                 except Exception as e:
@@ -5308,6 +5318,7 @@ def main():
                 vocals_path, bg_path = run_demucs(full_audio_hq, work_dir)
                 transcription_audio = resample_audio(vocals_path, work_dir / "vocals_16k.wav", 16000, mono=True)
                 background_audio = bg_path
+                vocals_for_clone = vocals_path
                 demucs_applied = True
             except Exception as e:
                 demucs_warning = str(e)
@@ -5393,6 +5404,35 @@ def main():
         update_progress("TRANSLATING", 35, f"Translating to {TARGET_LANG}...")
         segments = translate_segments(segments)
         update_progress("TRANSLATING", 48, "Translation complete. Generating voice...")
+
+        # -- 6b. Clean-vocals reference for voice cloning ----------------------
+        # The clone is only as good as its reference.  Cloning from the full
+        # mixed audio (music/noise) makes the cloned voice drift to a different
+        # timbre.  When cloning is on, prefer the Demucs-isolated vocals as the
+        # clone reference: reuse the stem already computed for "keep background
+        # music", otherwise compute it once here just for the reference (the
+        # background is NOT added to the output).  Any failure falls back to the
+        # mixed audio, so there is no regression.
+        clone_reference_source = "mixed"
+        if VOICE_CLONE and CLONE_REFERENCE_FROM_VOCALS:
+            if vocals_for_clone is not None and Path(vocals_for_clone).exists():
+                reference_audio = vocals_for_clone
+                clone_reference_source = "demucs_vocals"
+                log.info("[CloneRef] Using Demucs-isolated vocals as clone reference.")
+            else:
+                try:
+                    update_progress("CLONING", 49, "Isolating clean voice for cloning...")
+                    _clone_vocals, _clone_bg = run_demucs(full_audio_hq, work_dir)
+                    if _clone_vocals and Path(_clone_vocals).exists():
+                        reference_audio = _clone_vocals
+                        clone_reference_source = "demucs_vocals"
+                        log.info("[CloneRef] Isolated vocals computed for clone reference.")
+                except Exception as cr_err:
+                    clone_reference_source = "mixed_fallback"
+                    log.warning(
+                        "[CloneRef] Vocal isolation for clone reference failed (%s); "
+                        "using mixed audio.", cr_err
+                    )
 
         # -- 7. Extract per-speaker voice references (when voice cloning + multiple speakers) -
         speaker_refs: dict = {}
@@ -5630,6 +5670,9 @@ def main():
                 "cosyvoiceModelId": COSYVOICE_MODEL_ID,
                 "voiceCloneRequested": VOICE_CLONE,
                 "voiceCloneApplied": voice_was_cloned,
+                "cloneReferenceFromVocals": CLONE_REFERENCE_FROM_VOCALS,
+                "cloneReferenceSource": clone_reference_source,
+                "referenceMaxSeconds": REFERENCE_MAX_SECONDS,
                 "multiSpeaker": MULTI_SPEAKER,
                 "useDemucs": USE_DEMUCS,
                 "demucsApplied": demucs_applied,
@@ -5670,6 +5713,7 @@ def main():
             "targetLang": TARGET_LANG,
             "voiceClone": VOICE_CLONE,
             "voiceCloneApplied": voice_was_cloned,
+            "cloneReferenceSource": clone_reference_source,
             "lipSync": LIP_SYNC,
             "lipSyncApplied": lip_sync_applied,
             "dynamicVideoLength": DYNAMIC_VIDEO_LENGTH,
