@@ -170,6 +170,7 @@ FFPROBE_TIMEOUT_SECONDS = _env_int("FFPROBE_TIMEOUT_SECONDS", 120)
 # image contents.  Enable per-environment via env vars.
 COSYVOICE_FP16  = os.environ.get("COSYVOICE_FP16", "false").lower() in ("1", "true", "yes", "on")
 COSYVOICE_VLLM  = os.environ.get("COSYVOICE_VLLM", "false").lower() in ("1", "true", "yes", "on")
+COSYVOICE_PRELOAD = os.environ.get("COSYVOICE_PRELOAD", "true").lower() in ("1", "true", "yes", "on")
 # Reserved for future parallel synthesis support.  Current inference remains
 # sequential, so values >1 are accepted for forward compatibility but are a
 # no-op today.
@@ -204,6 +205,10 @@ _LAST_PIPELINE_PROGRESS = 0
 # every subsequent one in the same process — in bulk mode this means the model
 # is loaded ONCE for the whole batch instead of per video.
 _COSYVOICE_MODEL = None
+_COSYVOICE_PRELOAD_FUTURE = None
+_COSYVOICE_PRELOAD_EXECUTOR = None
+_COSYVOICE_PRELOAD_LOCK = threading.Lock()
+_COSYVOICE_PRELOAD_STARTED_AT = None
 
 PIPELINE_STEPS = [
     {"name": "download", "label": "Downloading video", "start": 0, "end": 3, "statuses": ["STARTING"]},
@@ -1799,7 +1804,203 @@ def _patch_torch_load_for_fast_checkpoint_loading() -> None:
     torch.load = _instrumented_load
     log.info("[CosyVoice] Patched torch.load for mmap + per-file timing.")
 
+def _resolve_cosyvoice_model_path(model_name: str) -> Optional[Path]:
+    for root in [
+        MODELSCOPE_CACHE / "hub" / "iic",
+        MODELSCOPE_CACHE / "hub" / "models" / "iic",
+        MODELSCOPE_CACHE / "iic",
+        MODELSCOPE_CACHE / "models" / "iic",
+    ]:
+        p = root / model_name
+        if p.exists():
+            return p
+        for candidate in root.glob(f"{model_name.split('-')[0]}*") if root.exists() else []:
+            if candidate.is_dir():
+                return candidate
+    return None
+
+
+def _log_gpu_runtime(torch_module) -> None:
+    log.info(
+        "[GPU] torch=%s cuda=%s CUDA_MODULE_LOADING=%s",
+        getattr(torch_module, "__version__", "unknown"),
+        torch_module.cuda.is_available(),
+        os.environ.get("CUDA_MODULE_LOADING", ""),
+    )
+    if not torch_module.cuda.is_available():
+        return
+    try:
+        log.info("[GPU] device=%s", torch_module.cuda.get_device_name(0))
+    except Exception as exc:
+        log.warning("[GPU] Could not read CUDA device name: %s", exc)
+    try:
+        smi = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu", "--format=csv,noheader"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if smi.stdout.strip():
+            log.info("[GPU] nvidia-smi: %s", smi.stdout.strip())
+        elif smi.stderr.strip():
+            log.warning("[GPU] nvidia-smi stderr: %s", smi.stderr.strip()[-500:])
+    except Exception as exc:
+        log.warning("[GPU] nvidia-smi unavailable: %s", exc)
+
+
+def load_cosyvoice_model(*, emit_progress: bool = True, reason: str = "direct"):
+    """Load and cache CosyVoice without synthesizing segments."""
+    global _COSYVOICE_MODEL
+
+    if _COSYVOICE_MODEL is not None:
+        log.info("[CosyVoice] Reusing model loaded earlier in this session.")
+        return _COSYVOICE_MODEL
+
+    import torch
+
+    _log_gpu_runtime(torch)
+    if emit_progress:
+        update_progress("CLONING", 52, "Loading CosyVoice model (CUDA init)...")
+
+    load_t0 = time.monotonic()
+    timings: dict[str, float] = {}
+    log.info("[CosyVoice] Model load started (%s).", reason)
+    _patch_torch_load_for_fast_checkpoint_loading()
+
+    cv_dir = _ensure_cosyvoice()
+    if str(cv_dir) not in sys.path:
+        sys.path.insert(0, str(cv_dir))
+    matcha_root = cv_dir / "third_party" / "Matcha-TTS"
+    if str(matcha_root) not in sys.path:
+        sys.path.insert(0, str(matcha_root))
+    timings["repo_path_setup_sec"] = time.monotonic() - load_t0
+    log.info("[CosyVoice] Repo/path setup: %.1fs", timings["repo_path_setup_sec"])
+
+    t0 = time.monotonic()
+    _verify_onnxruntime_cuda_stack()
+    _ensure_cosyvoice_yaml_compatibility()
+    timings["onnx_dep_verify_sec"] = time.monotonic() - t0
+    log.info("[CosyVoice] ONNXRuntime + dep verification: %.1fs", timings["onnx_dep_verify_sec"])
+
+    t0 = time.monotonic()
+    CosyVoiceClass = _import_cosyvoice_class()
+    timings["class_import_sec"] = time.monotonic() - t0
+    log.info("[CosyVoice] Class import: %.1fs", timings["class_import_sec"])
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    primary_model_name = COSYVOICE_MODEL_ID.split("/")[-1].strip()
+    candidate_models: list[str] = []
+    for name in (
+        primary_model_name,
+        "Fun-CosyVoice3-0.5B-2512",
+        "Fun-CosyVoice3-0.5B",
+        "CosyVoice3-0.5B",
+        "CosyVoice2-0.5B",
+    ):
+        if name and name not in candidate_models:
+            candidate_models.append(name)
+
+    model = None
+    last_err: Optional[Exception] = None
+    tried_model_paths: set[str] = set()
+    for model_name in candidate_models:
+        model_path = _resolve_cosyvoice_model_path(model_name)
+        if model_path is None:
+            model_path = _find_cosyvoice_model()
+        if model_path is None:
+            log.warning("[CosyVoice] %s not found in cache, skipping.", model_name)
+            continue
+        model_path_key = str(model_path.resolve())
+        if model_path_key in tried_model_paths:
+            continue
+        tried_model_paths.add(model_path_key)
+        try:
+            log.info("[CosyVoice] Loading %s from %s on %s...", model_name, model_path, device)
+            init_sig = inspect.signature(CosyVoiceClass)
+            init_kw: dict = {}
+            if "load_jit" in init_sig.parameters:
+                init_kw["load_jit"] = False
+            if "load_trt" in init_sig.parameters:
+                init_kw["load_trt"] = False
+            if COSYVOICE_FP16 and "fp16" in init_sig.parameters:
+                init_kw["fp16"] = True
+                log.info("[CosyVoice] fp16=True enabled via COSYVOICE_FP16 flag.")
+            if COSYVOICE_VLLM and "load_vllm" in init_sig.parameters:
+                vllm_dir = model_path / "vllm"
+                if vllm_dir.exists():
+                    init_kw["load_vllm"] = True
+                    log.info("[CosyVoice] load_vllm=True enabled via COSYVOICE_VLLM flag.")
+                else:
+                    log.warning(
+                        "[CosyVoice] COSYVOICE_VLLM=true but %s does not exist. Skipping vLLM.",
+                        vllm_dir,
+                    )
+            construct_t0 = time.monotonic()
+            model = CosyVoiceClass(model_dir=str(model_path), **init_kw)
+            try:
+                setattr(model, "_videomaking_init_kw", dict(init_kw))
+            except Exception:
+                pass
+            timings["constructor_sec"] = time.monotonic() - construct_t0
+            log.info("[CosyVoice] AutoModel(model_dir=...) constructor: %.1fs", timings["constructor_sec"])
+            break
+        except Exception as exc:
+            last_err = exc
+            log.warning("[CosyVoice] Failed loading %s: %s", model_name, exc)
+
+    if model is None:
+        raise RuntimeError(f"CosyVoice model load failed: {last_err}")
+
+    _COSYVOICE_MODEL = model
+    timings["total_model_load_sec"] = time.monotonic() - load_t0
+    log.info("[CosyVoice] Model loaded in %.1fs timings=%s", timings["total_model_load_sec"], timings)
+    return model
+
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def start_cosyvoice_preload():
+    """Start CosyVoice model loading in a background thread for this job."""
+    global _COSYVOICE_PRELOAD_EXECUTOR, _COSYVOICE_PRELOAD_FUTURE, _COSYVOICE_PRELOAD_STARTED_AT
+    if not VOICE_CLONE or not COSYVOICE_PRELOAD or _COSYVOICE_MODEL is not None:
+        return None
+    with _COSYVOICE_PRELOAD_LOCK:
+        if _COSYVOICE_PRELOAD_FUTURE is not None:
+            return _COSYVOICE_PRELOAD_FUTURE
+        from concurrent.futures import ThreadPoolExecutor
+
+        _COSYVOICE_PRELOAD_STARTED_AT = time.monotonic()
+        _COSYVOICE_PRELOAD_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cosyvoice-preload")
+        _COSYVOICE_PRELOAD_FUTURE = _COSYVOICE_PRELOAD_EXECUTOR.submit(
+            load_cosyvoice_model,
+            emit_progress=False,
+            reason="background-preload",
+        )
+        log.info("[CosyVoice] Background preload started.")
+        return _COSYVOICE_PRELOAD_FUTURE
+
+
+def wait_for_cosyvoice_preload():
+    """Return the background-loaded model, or load synchronously if needed."""
+    global _COSYVOICE_MODEL, _COSYVOICE_PRELOAD_FUTURE
+    future = _COSYVOICE_PRELOAD_FUTURE
+    if future is None:
+        return load_cosyvoice_model(emit_progress=True, reason="clone-stage")
+    wait_t0 = time.monotonic()
+    if not future.done():
+        update_progress("CLONING", 52, "Waiting for voice model preload to finish...")
+        log.info("[CosyVoice] Waiting for background preload to finish at clone stage.")
+    try:
+        model = future.result()
+    except Exception as exc:
+        log.warning("[CosyVoice] Background preload failed; retrying synchronously at clone stage: %s", exc)
+        _COSYVOICE_PRELOAD_FUTURE = None
+        return load_cosyvoice_model(emit_progress=True, reason="preload-retry")
+    waited = time.monotonic() - wait_t0
+    _COSYVOICE_MODEL = model
+    log.info("[CosyVoice] Background preload ready; clone stage waited %.1fs.", waited)
+    return model
+
+
 # Stage 3: Translation (Gemini dubbing-aware)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -2798,144 +2999,9 @@ def synthesize_segments_cosyvoice(
     import torch
     import torchaudio
 
-    log.info(
-        "[GPU] torch=%s cuda=%s",
-        getattr(torch, "__version__", "unknown"),
-        torch.cuda.is_available(),
-    )
-    if torch.cuda.is_available():
-        try:
-            log.info("[GPU] device=%s", torch.cuda.get_device_name(0))
-        except Exception as exc:
-            log.warning("[GPU] Could not read CUDA device name: %s", exc)
-        try:
-            smi = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu", "--format=csv,noheader"],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if smi.stdout.strip():
-                log.info("[GPU] nvidia-smi: %s", smi.stdout.strip())
-            elif smi.stderr.strip():
-                log.warning("[GPU] nvidia-smi stderr: %s", smi.stderr.strip()[-500:])
-        except Exception as exc:
-            log.warning("[GPU] nvidia-smi unavailable: %s", exc)
-
-    update_progress("CLONING", 52, "Loading CosyVoice model (CUDA init)...")
-    _model_load_t0 = time.monotonic()
-    _patch_torch_load_for_fast_checkpoint_loading()
-
-    cv_dir = _ensure_cosyvoice()
-    if str(cv_dir) not in sys.path:
-        sys.path.insert(0, str(cv_dir))
-    matcha_root = cv_dir / "third_party" / "Matcha-TTS"
-    if str(matcha_root) not in sys.path:
-        sys.path.insert(0, str(matcha_root))
-    log.info("[CosyVoice] Repo/path setup: %.1fs", time.monotonic() - _model_load_t0)
-
-    _t = time.monotonic()
-    _verify_onnxruntime_cuda_stack()
-    _ensure_cosyvoice_yaml_compatibility()
-    log.info("[CosyVoice] ONNXRuntime + dep verification: %.1fs", time.monotonic() - _t)
-
-    _t = time.monotonic()
-    _CosyVoice = _import_cosyvoice_class()
-    log.info("[CosyVoice] Class import: %.1fs", time.monotonic() - _t)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    global _COSYVOICE_MODEL
-    # Reuse a model already loaded earlier in this process (bulk: one load for
-    # the whole batch). model_path/device are not referenced after the load loop,
-    # so skipping the loop on a cache hit is safe.
-    model = _COSYVOICE_MODEL
-    last_err: Optional[Exception] = None
-    if model is not None:
-        log.info("[CosyVoice] Reusing model loaded earlier in this session — skipping reload.")
-
-    def _resolve_model_path(model_name: str) -> Optional[Path]:
-        for root in [
-            MODELSCOPE_CACHE / "hub" / "iic",
-            MODELSCOPE_CACHE / "hub" / "models" / "iic",
-            MODELSCOPE_CACHE / "iic",
-            MODELSCOPE_CACHE / "models" / "iic",
-        ]:
-            p = root / model_name
-            if p.exists():
-                return p
-            for candidate in root.glob(f"{model_name.split('-')[0]}*") if root.exists() else []:
-                if candidate.is_dir():
-                    return candidate
-        return None
-
-    primary_model_name = COSYVOICE_MODEL_ID.split("/")[-1].strip()
-    candidate_models: list[str] = []
-    for name in (
-        primary_model_name,
-        "Fun-CosyVoice3-0.5B-2512",
-        "Fun-CosyVoice3-0.5B",
-        "CosyVoice3-0.5B",
-        "CosyVoice2-0.5B",
-    ):
-        if name and name not in candidate_models:
-            candidate_models.append(name)
-
-    tried_model_paths: set[str] = set()
-    if model is not None:
-        candidate_models = []  # cached — skip the (re)load loop entirely
-    for model_name in candidate_models:
-        model_path = _resolve_model_path(model_name)
-        if model_path is None:
-            model_path = _find_cosyvoice_model()
-        if model_path is None:
-            log.warning(f"[CosyVoice] {model_name} not found in cache, skipping.")
-            continue
-        model_path_key = str(model_path.resolve())
-        if model_path_key in tried_model_paths:
-            continue
-        tried_model_paths.add(model_path_key)
-        try:
-            log.info(f"[CosyVoice] Loading {model_name} from {model_path} on {device}...")
-            # CosyVoice3 (AutoModel) dropped load_jit — only pass what the
-            # constructor accepts so v2 and v3 both work.
-            _init_sig = inspect.signature(_CosyVoice)
-            _init_kw: dict = {}
-            if "load_jit" in _init_sig.parameters:
-                _init_kw["load_jit"] = False
-            if "load_trt" in _init_sig.parameters:
-                _init_kw["load_trt"] = False
-            # Phase 3 (P1-8): fp16 when enabled and constructor supports it.
-            if COSYVOICE_FP16 and "fp16" in _init_sig.parameters:
-                _init_kw["fp16"] = True
-                log.info("[CosyVoice] fp16=True enabled via COSYVOICE_FP16 flag.")
-            # Phase 3 (P1-10): vLLM when enabled and constructor supports it.
-            if COSYVOICE_VLLM and "load_vllm" in _init_sig.parameters:
-                # Verify the vllm directory exists before enabling (prevents
-                # hard crash if Docker image doesn't have vLLM weights).
-                _vllm_dir = model_path / "vllm"
-                if _vllm_dir.exists():
-                    _init_kw["load_vllm"] = True
-                    log.info("[CosyVoice] load_vllm=True enabled via COSYVOICE_VLLM flag.")
-                else:
-                    log.warning(
-                        "[CosyVoice] COSYVOICE_VLLM=true but %s does not exist. "
-                        "Skipping vLLM. Rebuild Docker image with vLLM weights.",
-                        _vllm_dir,
-                    )
-            _t_construct = time.monotonic()
-            model = _CosyVoice(model_dir=str(model_path), **_init_kw)
-            log.info("[CosyVoice] AutoModel(model_dir=...) constructor: %.1fs", time.monotonic() - _t_construct)
-            break
-        except Exception as e:
-            last_err = e
-            log.warning(f"[CosyVoice] Failed loading {model_name}: {e}")
-    if model is None:
-        raise RuntimeError(f"CosyVoice model load failed: {last_err}")
+    model = wait_for_cosyvoice_preload()
     cosy_model = model
-    _COSYVOICE_MODEL = model  # cache for the rest of this session (bulk reuse)
-    _model_load_dur = time.monotonic() - _model_load_t0
-    log.info("[CosyVoice] Model loaded in %.1fs", _model_load_dur)
+    model_init_kw = getattr(model, "_videomaking_init_kw", {})
 
     # ── Phase 3 (P1-4): Detect CosyVoice version via class name ────────────
     # Upstream hierarchy: CosyVoice3 extends CosyVoice2 extends CosyVoice.
@@ -3206,10 +3272,10 @@ def synthesize_segments_cosyvoice(
     #   post-synthesis I/O (timing-fit, ffmpeg) while synthesis runs.  The
     #   model inference itself is NOT thread-safe without vLLM, so we keep it
     #   sequential in the main loop.
-    _vllm_loaded = _init_kw.get("load_vllm", False)
+    _vllm_loaded = model_init_kw.get("load_vllm", False)
     if _vllm_loaded:
         log.info("[CosyVoice] vLLM continuous batching active — expect ~3× throughput.")
-    if COSYVOICE_FP16 and _init_kw.get("fp16", False):
+    if COSYVOICE_FP16 and model_init_kw.get("fp16", False):
         log.info("[CosyVoice] fp16 active — expect ~1.5-2× faster inference.")
 
     seg_audios: list[Path] = []
@@ -5579,19 +5645,25 @@ def process_single_job():
     log.info(f"=== Translator Worker starting. JobId={JOB_ID} ===")
     log.info(f"Target: {TARGET_LANG} ({TARGET_LANG_CODE}), LipSync={LIP_SYNC}, VoiceClone={VOICE_CLONE}")
     log.info(
-        "[Config] useDemucs=%s multiSpeaker=%s model=%s runtimeDownloads=%s fp16=%s vllm=%s",
+        "[Config] useDemucs=%s multiSpeaker=%s model=%s runtimeDownloads=%s fp16=%s vllm=%s preload=%s",
         USE_DEMUCS,
         MULTI_SPEAKER,
         COSYVOICE_MODEL_ID,
         ALLOW_RUNTIME_MODEL_DOWNLOADS,
         COSYVOICE_FP16,
         COSYVOICE_VLLM,
+        COSYVOICE_PRELOAD,
     )
 
     work_dir = Path(tempfile.mkdtemp(prefix=f"translator_{JOB_ID}_"))
     log.info(f"Working directory: {work_dir}")
 
     try:
+        try:
+            start_cosyvoice_preload()
+        except Exception as exc:
+            log.warning("[CosyVoice] Could not start background preload; clone stage will load synchronously: %s", exc)
+
         # â”€â”€ 1. Download video from S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("STARTING", 3, "Downloading video from cloud...")
         input_ext = Path(S3_INPUT_KEY).suffix or ".mp4"

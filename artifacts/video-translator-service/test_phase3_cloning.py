@@ -169,6 +169,68 @@ class CloneReferenceFromVocalsTests(unittest.TestCase):
         self.assertIn("clone_reference_source", source)
 
 
+class CosyVoicePreloadTests(unittest.TestCase):
+    """CosyVoice should start loading before the pipeline reaches cloning."""
+
+    def test_preload_helpers_exist(self):
+        """Model load must be callable separately from segment synthesis."""
+        import worker
+
+        self.assertTrue(callable(worker.load_cosyvoice_model))
+        self.assertTrue(callable(worker.start_cosyvoice_preload))
+        self.assertTrue(callable(worker.wait_for_cosyvoice_preload))
+
+    def test_process_single_job_starts_preload_before_download(self):
+        """The worker should overlap model loading with download/ASR/translation."""
+        import ast
+        import inspect
+        import textwrap
+        import worker
+
+        source = textwrap.dedent(inspect.getsource(worker.process_single_job))
+        tree = ast.parse(source)
+
+        preload_line = None
+        download_line = None
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "start_cosyvoice_preload"
+            ):
+                preload_line = node.lineno if preload_line is None else min(preload_line, node.lineno)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "download_from_s3"
+            ):
+                download_line = node.lineno if download_line is None else min(download_line, node.lineno)
+
+        self.assertIsNotNone(preload_line, "process_single_job should start CosyVoice preload.")
+        self.assertIsNotNone(download_line, "process_single_job should still download input video.")
+        self.assertLess(preload_line, download_line)
+
+    def test_wait_for_preload_reuses_completed_future(self):
+        """Synthesis should be able to consume a model already loaded in the background."""
+        import concurrent.futures
+        import worker
+
+        sentinel = object()
+        previous_model = worker._COSYVOICE_MODEL
+        previous_future = getattr(worker, "_COSYVOICE_PRELOAD_FUTURE", None)
+        try:
+            future = concurrent.futures.Future()
+            future.set_result(sentinel)
+            worker._COSYVOICE_MODEL = None
+            worker._COSYVOICE_PRELOAD_FUTURE = future
+
+            self.assertIs(worker.wait_for_cosyvoice_preload(), sentinel)
+            self.assertIs(worker._COSYVOICE_MODEL, sentinel)
+        finally:
+            worker._COSYVOICE_MODEL = previous_model
+            worker._COSYVOICE_PRELOAD_FUTURE = previous_future
+
+
 class Instruct2Tests(unittest.TestCase):
     """P1-2: inference_instruct2 for non-neutral emotions."""
 
