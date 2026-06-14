@@ -3985,10 +3985,27 @@ def _ensure_latentsync_checkpoint(ckpt_dir: Path) -> Path:
     return path
 
 
+def _gpu_total_vram_gb() -> float:
+    """Total VRAM of GPU 0 in GiB, or 0.0 if it can't be determined."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    except Exception as e:
+        log.warning("[LatentSync] Could not query GPU VRAM: %s", e)
+    return 0.0
+
+
 def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """LatentSync — diffusion-based lip sync.
-    Defaults to 256x256 (stage2.yaml) which fits on a T4 GPU (16 GB VRAM).
-    Set LIP_SYNC_QUALITY="latentsync_hq" for 512x512 (needs 24 GB+ VRAM).
+    """LatentSync 1.6 — diffusion-based lip sync.
+
+    The UNet config is chosen to FIT the GPU's VRAM (LatentSync 1.6 needs far
+    more than the older 1.5 line):
+      * stage2_efficient.yaml ≈ 20 GB  (default — fits a 24 GB A10G / g5)
+      * stage2.yaml           ≈ 30 GB
+      * stage2_512.yaml       ≈ 55 GB  (HQ; only on very large GPUs)
+    If no config fits the detected VRAM we raise so the caller falls back to a
+    plain dubbed-audio mux instead of OOM-crashing.
     """
     out_path = out_dir / "latentsync_output.mp4"
     ls_dir = MODEL_CACHE_DIR / "LatentSync"
@@ -4034,15 +4051,44 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
             "Rebuild the Docker image."
         )
 
-    # Choose resolution config based on quality setting.
-    # stage2_512.yaml = 512x512 (official recommended, needs ~18-24 GB VRAM)
-    # stage2.yaml     = 256x256 (T4-compatible, 16 GB VRAM sufficient)
-    if LIP_SYNC_QUALITY in ("latentsync_hq", "hq", "512"):
-        config_file = "configs/unet/stage2_512.yaml"
-        log.info("[LatentSync] 512x512 HQ mode (requires 24 GB+ VRAM)")
-    else:
-        config_file = "configs/unet/stage2.yaml"
-        log.info("[LatentSync] 256x256 standard mode (T4 / 16 GB VRAM compatible)")
+    # Choose the UNet config that actually FITS this GPU's VRAM. The old code
+    # hard-picked stage2.yaml which, on LatentSync 1.6, needs ~30 GB and OOMs on
+    # the 24 GB lip-sync GPU — the main reason lip sync was failing.
+    vram_gb = _gpu_total_vram_gb()
+    log.info("[LatentSync] Detected GPU VRAM: %.1f GB", vram_gb)
+    want_hq = LIP_SYNC_QUALITY in ("latentsync_hq", "hq", "512")
+
+    # (config, approx VRAM needed) in descending quality order.
+    tiers = [
+        ("configs/unet/stage2_512.yaml", 46.0),
+        ("configs/unet/stage2.yaml",     28.0),
+        ("configs/unet/stage2_efficient.yaml", 18.0),
+    ]
+    if not want_hq:
+        tiers = [t for t in tiers if "512" not in t[0]]  # never the 55 GB config
+
+    config_file = None
+    for cfg, need in tiers:
+        if vram_gb + 0.5 >= need and (ls_dir / cfg).exists():
+            config_file = cfg
+            log.info("[LatentSync] Using %s (needs ~%.0f GB, have %.1f GB)", cfg, need, vram_gb)
+            break
+
+    if config_file is None and vram_gb <= 0:
+        # VRAM unknown — best-effort with the smallest config that exists.
+        for cfg, _ in reversed(tiers):
+            if (ls_dir / cfg).exists():
+                config_file = cfg
+                log.warning("[LatentSync] VRAM unknown — defaulting to %s", cfg)
+                break
+
+    if config_file is None:
+        unet_dir = ls_dir / "configs" / "unet"
+        available = sorted(p.name for p in unet_dir.glob("*.yaml")) if unet_dir.exists() else []
+        raise RuntimeError(
+            f"No LatentSync config fits this GPU ({vram_gb:.1f} GB VRAM); "
+            f"LatentSync 1.6 needs ~18 GB minimum. Available configs: {available}."
+        )
 
     # Per-job isolated temp dir — auto-cleaned with the job work_dir
     temp_dir = out_dir / "latentsync_temp"
@@ -4111,10 +4157,19 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
         log.info(f"[LatentSync] stderr (last 3000 chars):\n{result.stderr[-3000:]}")
 
     if result.returncode != 0:
-        raise RuntimeError(
-            f"LatentSync failed (exit {result.returncode}):\n"
-            f"{result.stderr[-4000:]}"
-        )
+        err_tail = result.stderr[-4000:]
+        low = err_tail.lower()
+        if "face" in low and ("not detect" in low or "no face" in low or "face detect" in low):
+            reason = ("No face detected in part of the video (e.g. a transition "
+                      "scene or the speaker turning away) — kept the dubbed audio "
+                      "without lip movement.")
+        elif "out of memory" in low or "outofmemory" in low or ("cuda" in low and "memory" in low):
+            reason = ("Not enough GPU memory for lip sync on this video — kept the "
+                      "dubbed audio without lip movement.")
+        else:
+            reason = f"Lip sync failed (exit {result.returncode})."
+        # First line is the clean, user-facing reason; stderr follows for logs.
+        raise RuntimeError(f"{reason}\n{err_tail}")
     if not out_path.exists():
         raise FileNotFoundError(
             f"LatentSync exited 0 but produced no output at {out_path}. "
@@ -4133,14 +4188,16 @@ def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Optional
     try:
         return run_lipsync_latentsync(video_path, dubbed_audio, out_dir)
     except Exception as e:
-        warn_msg = f"LatentSync failed: {e}"
+        full = str(e).strip()
+        # The raisers above put a clean, user-friendly reason on the first line.
+        user_reason = (full.splitlines()[0] if full else "Lip sync failed.").strip()
+        log.warning("[LipSync] LatentSync failed: %s -- continuing with dubbed audio only.", full[:2000])
         if not ALLOW_LIP_SYNC_FALLBACK:
-            raise RuntimeError(warn_msg) from e
-        log.warning(f"[LipSync] {warn_msg} -- continuing with dubbed audio only.")
+            raise RuntimeError(user_reason) from e
         update_progress(
             "LIPSYNC", 82,
-            "Lip sync unavailable -- video will have dubbed audio only.",
-            {"lipsync_warning": warn_msg}
+            f"Lip sync skipped — {user_reason}",
+            {"lipsync_warning": user_reason}
         )
         return None  # Caller will mux dubbed audio into original video
 
