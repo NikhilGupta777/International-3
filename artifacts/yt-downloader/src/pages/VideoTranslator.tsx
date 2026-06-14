@@ -397,6 +397,10 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [preserveChants, setPreserveChants] = useState(true);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<any>(null);
+  // When the user clicks "Translate another video" we show the upload form again
+  // while existing jobs keep running in the background. This flag stops the
+  // reconcile effect from auto-re-opening the running job over the fresh form.
+  const [composingNew, setComposingNew] = useState(false);
   const [transcript, setTranscript] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -407,7 +411,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [showDebug, setShowDebug] = useState(false);
   // ── Temporary in-tab AI status assistant ──────────────────────────────
   const [aiOpen, setAiOpen] = useState(false);
-  const [aiMessages, setAiMessages] = useState<{ role: "user" | "model"; content: string }[]>([]);
+  const [aiMessages, setAiMessages] = useState<AiMsg[]>([]);
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
@@ -437,18 +441,30 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     setHistory(loadTranslatorHistory());
   }, []);
 
-  // Ask the in-tab AI assistant. It receives the full conversation, the
-  // currently-open jobId, and the client-side activity log, and the backend
-  // adds a live snapshot of ALL the user's translation jobs + their logs.
+  // Ask the in-tab AI assistant via the streaming endpoint. The backend streams
+  // the model's live thinking, any web searches, and the answer as Markdown,
+  // backed by a read-only snapshot of ALL the user's translation jobs + logs.
   const askAi = useCallback(async (text: string) => {
     const q = text.trim();
     if (!q || aiBusy) return;
-    const history = [...aiMessages, { role: "user" as const, content: q }];
-    setAiMessages(history);
+    const history: AiMsg[] = [...aiMessages, { role: "user", content: q }];
+    // Append the user turn + an empty assistant turn we'll fill as events arrive.
+    setAiMessages([...history, { role: "model", content: "", status: "thinking", thoughts: "", searches: [], sources: [] }]);
     setAiInput("");
     setAiBusy(true);
+
+    // Mutate only the trailing (assistant) message.
+    const patchLast = (fn: (m: AiMsg) => AiMsg) =>
+      setAiMessages((prev) => {
+        if (!prev.length) return prev;
+        const next = prev.slice();
+        const i = next.length - 1;
+        if (next[i]?.role === "model") next[i] = fn(next[i]);
+        return next;
+      });
+
     try {
-      const res = await fetch(`${API}/assistant`, {
+      const res = await fetch(`${API}/assistant/stream`, {
         method: "POST",
         headers: { ...translatorAuthHeaders(), "Content-Type": "application/json" },
         cache: NO_STORE,
@@ -458,14 +474,44 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           clientLogs: debugLog.slice(-120),
         }),
       });
-      if (!res.ok) throw await responseError(res, `Assistant error (${res.status})`);
-      const data = await readJsonResponse<{ reply?: string }>(res);
-      setAiMessages((prev) => [...prev, { role: "model", content: data.reply?.trim() || "No response." }]);
+      if (!res.ok || !res.body) throw await responseError(res, `Assistant error (${res.status})`);
+
+      const handle = (e: any) => {
+        if (!e || typeof e.type !== "string") return;
+        if (e.type === "thought" && e.content) {
+          patchLast((m) => ({ ...m, thoughts: (m.thoughts ?? "") + e.content, status: m.content ? m.status : "thinking" }));
+        } else if (e.type === "search" && Array.isArray(e.queries)) {
+          patchLast((m) => ({ ...m, searches: [...(m.searches ?? []), ...e.queries], status: m.content ? m.status : "searching" }));
+        } else if (e.type === "text" && e.content) {
+          patchLast((m) => ({ ...m, content: (m.content ?? "") + e.content, status: "answering" }));
+        } else if (e.type === "sources" && Array.isArray(e.items)) {
+          patchLast((m) => ({ ...m, sources: e.items }));
+        } else if (e.type === "done") {
+          patchLast((m) => ({ ...m, status: "done" }));
+        } else if (e.type === "error") {
+          patchLast((m) => ({ ...m, content: m.content || `⚠️ ${e.message || "The assistant couldn't respond. Try again."}`, status: "error" }));
+        }
+      };
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      const drain = (chunk: string) => {
+        const raw = chunk.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n").trim();
+        if (raw) { try { handle(JSON.parse(raw)); } catch { /* ignore partial */ } }
+      };
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const frames = buf.split(/\r?\n\r?\n/);
+        buf = frames.pop() ?? "";
+        for (const frame of frames) drain(frame);
+      }
+      if (buf.trim()) drain(buf);
+      patchLast((m) => ({ ...m, status: m.status === "error" ? "error" : "done" }));
     } catch (e: any) {
-      setAiMessages((prev) => [
-        ...prev,
-        { role: "model", content: `⚠️ ${e?.message || "The assistant couldn't respond. Try again."}` },
-      ]);
+      patchLast((m) => ({ ...m, content: m.content || `⚠️ ${e?.message || "The assistant couldn't respond. Try again."}`, status: "error" }));
     } finally {
       setAiBusy(false);
     }
@@ -773,7 +819,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         }
         if (!closed) {
           refreshHistory();
-          if (!jobId) {
+          // Auto-open the newest running job on load — but NOT while the user is
+          // composing a new translation, or we'd hijack their fresh form.
+          if (!jobId && !composingNew) {
             const active = loadActiveTranslatorJobs();
             const newest = active.sort((a, b) => b.startedAt - a.startedAt)[0];
             if (newest) {
@@ -796,7 +844,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     return () => {
       closed = true;
     };
-  }, [fetchResultUrls, jobId, refreshHistory]);
+  }, [fetchResultUrls, jobId, refreshHistory, composingNew]);
 
   // Shared translator options for both the file-upload and YouTube paths.
   const buildSubmitOptions = useCallback(() => {
@@ -918,6 +966,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         voiceClone: opts.voiceClone,
         lipSync: opts.lipSync,
       });
+      setComposingNew(false);
       setJobId(newJobId);
       refreshHistory();
     } catch (e: any) {
@@ -1034,6 +1083,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         voiceClone: isVoiceClone,
         lipSync: lipSyncAvailable && lipSync && translationMode === "full",
       });
+      setComposingNew(false);
       setJobId(newJobId);
       refreshHistory();
     } catch (e: any) {
@@ -1053,8 +1103,18 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     lastProgressRef.current = { progress: 0, status: "", ts: 0 };
   };
 
+  // Return to the upload form to start an additional translation WITHOUT
+  // cancelling the running one — it keeps processing and stays visible in the
+  // "Active translations" list. `composingNew` blocks the reconcile effect from
+  // snapping the foreground back to the running job.
+  const startAnother = () => {
+    setComposingNew(true);
+    reset();
+  };
+
   const openActiveEntry = (entry: ActiveTranslatorJob) => {
     if (pollRef.current) clearTimeout(pollRef.current);
+    setComposingNew(false);
     setFile(null);
     setError(null);
     setTranscript([]);
@@ -1100,6 +1160,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
 
   const openHistoryEntry = async (entry: TranslatorHistoryEntry) => {
     if (pollRef.current) clearTimeout(pollRef.current);
+    setComposingNew(false);
     setFile(null);
     setError(null);
     setTranscript([]);
@@ -1269,7 +1330,15 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
               <Loader2 className="w-4 h-4 text-amber-300 animate-spin" />
               <span className="text-sm font-semibold text-white/85">Active translations</span>
-              <span className="text-xs text-white/35 ml-auto">{activeJobs.length}</span>
+              <span className="text-xs text-white/35">{activeJobs.length}</span>
+              {(isProcessing || (!composingNew && !preparing)) && (
+                <button
+                  onClick={startAnother}
+                  className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 transition-colors"
+                >
+                  + Translate another
+                </button>
+              )}
             </div>
             <div className="divide-y divide-white/[0.05]">
               {activeJobs.map((entry) => (
@@ -1605,8 +1674,14 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
               <>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-semibold text-white/88">Translating video...</span>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
+                    <button
+                      onClick={startAnother}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 transition-colors"
+                    >
+                      + New
+                    </button>
                     <button
                       onClick={() => jobId && void cancelTranslation(jobId)}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-colors"
@@ -1865,35 +1940,37 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       </button>
 
       {aiOpen && (
-        <div className="fixed bottom-20 right-5 z-40 w-[min(92vw,380px)] h-[min(70vh,520px)] flex flex-col rounded-2xl border border-white/10 bg-[#16161c] shadow-2xl overflow-hidden">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10 bg-white/[0.03]">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shrink-0">
-              <Bot className="w-4 h-4 text-white" />
+        <div className="fixed bottom-20 right-5 z-40 w-[min(94vw,400px)] h-[min(76vh,580px)] flex flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
+          <div className="flex items-center gap-2.5 px-4 py-3 border-b border-slate-200 bg-white">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shrink-0 shadow-sm shadow-primary/30">
+              <Bot className="w-5 h-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-white leading-none">Translation Assistant</p>
-              <p className="text-[11px] text-white/40 mt-0.5">Sees all your jobs, status &amp; logs</p>
+              <p className="text-sm font-bold text-slate-900 leading-none">Translation Assistant</p>
+              <p className="text-[11px] text-slate-500 mt-1">Senior debugger · reads all jobs &amp; logs (read-only)</p>
             </div>
             <button
               onClick={() => setAiOpen(false)}
-              className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
               title="Close"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
-          <div ref={aiScrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+          <div ref={aiScrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-slate-50">
             {aiMessages.length === 0 && (
-              <div className="text-center text-white/40 text-xs px-4 py-6 space-y-2">
-                <Sparkles className="w-6 h-6 mx-auto text-primary/60" />
-                <p>Ask me anything about your translations — live status, logs, and what happened.</p>
+              <div className="text-center text-slate-500 text-xs px-4 py-6 space-y-2">
+                <div className="w-10 h-10 mx-auto rounded-xl bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shadow-sm shadow-primary/30">
+                  <Sparkles className="w-5 h-5 text-white" />
+                </div>
+                <p className="text-slate-600">I'm your translation debugger. I can read every job's status, steps, warnings and errors — ask me anything.</p>
                 <div className="flex flex-wrap gap-1.5 justify-center pt-1">
-                  {["What's the status?", "What happened to my last job?", "Did anything fail?"].map((s) => (
+                  {["What's the status?", "Why did my last job fail?", "Did anything fail today?", "How do I fix the lip-sync error?"].map((s) => (
                     <button
                       key={s}
                       onClick={() => void askAi(s)}
-                      className="px-2.5 py-1 rounded-full bg-white/5 hover:bg-white/10 text-white/60 text-[11px] transition-colors"
+                      className="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-primary/40 hover:text-primary text-slate-600 text-[11px] transition-colors"
                     >
                       {s}
                     </button>
@@ -1915,29 +1992,22 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                 </div>
               </div>
             ))}
-            {aiBusy && (
-              <div className="flex justify-start">
-                <div className="rounded-2xl px-3 py-2 bg-white/[0.06] text-white/60 text-sm flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Thinking…
-                </div>
-              </div>
-            )}
           </div>
 
           <form
             onSubmit={(e) => { e.preventDefault(); void askAi(aiInput); }}
-            className="flex items-center gap-2 p-2.5 border-t border-white/10 bg-white/[0.02]"
+            className="flex items-center gap-2 p-2.5 border-t border-slate-200 bg-white"
           >
             <input
               value={aiInput}
               onChange={(e) => setAiInput(e.target.value)}
               placeholder="Ask about status, logs, errors…"
-              className="flex-1 bg-white/5 rounded-xl px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:ring-1 focus:ring-primary/50"
+              className="flex-1 bg-slate-100 rounded-xl px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-primary/40 focus:bg-white transition-colors"
             />
             <button
               type="submit"
               disabled={aiBusy || !aiInput.trim()}
-              className="p-2 rounded-xl bg-primary text-white disabled:opacity-40 transition-opacity"
+              className="p-2 rounded-xl bg-primary text-white disabled:opacity-40 transition-opacity hover:bg-orange-500"
               title="Send"
             >
               <Send className="w-4 h-4" />
