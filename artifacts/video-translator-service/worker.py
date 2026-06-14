@@ -4400,6 +4400,119 @@ DYNAMIC_MAX_VIDEO_STRETCH = max(
 )
 DYNAMIC_MIN_CHUNK_SECONDS = 0.05
 
+# ── Smooth speed "curve" (eased slow-down, not a hard step) ──────────────────
+# A constant per-line slow-down factor makes the speed jump abruptly at line
+# boundaries (normal → slow → normal): the eye catches the "snap".  When
+# smoothing is on we keep the SAME amount of slow-down for a line but spread it
+# over a gentle curve: the video eases from normal speed into the slow-down and
+# back out, so the change is felt but never seen as a sudden jump.  We realise
+# the curve by subdividing a stretched line's source span into several small
+# slices whose factors follow a flat-top profile with smoothstep shoulders
+# (≈1.0× at the edges, peaking in the middle).  The peak is capped at
+# max_stretch so the slow-down never gets stronger than the configured limit.
+DYNAMIC_SMOOTH_TIMEWARP = os.environ.get("DYNAMIC_SMOOTH_TIMEWARP", "true").lower() == "true"
+# Target length of each micro-slice (seconds).  Smaller = smoother but more
+# ffmpeg filter nodes.
+DYNAMIC_TIMEWARP_SLICE_SECONDS = max(
+    0.08, min(1.0, float(os.environ.get("DYNAMIC_TIMEWARP_SLICE_SECONDS", "0.25")))
+)
+DYNAMIC_TIMEWARP_MIN_SLICES = 4
+DYNAMIC_TIMEWARP_MAX_SLICES = 12
+# Fraction of each stretched span used to ease in / ease out (each side).
+DYNAMIC_TIMEWARP_SHOULDER = max(
+    0.05, min(0.5, float(os.environ.get("DYNAMIC_TIMEWARP_SHOULDER", "0.30")))
+)
+# Upper bound on the total number of video slices across the whole timeline, so
+# a very long / very dense video can't explode the ffmpeg filter graph.  When
+# exceeded, slices-per-line are reduced (the curve gets coarser but stays
+# smooth-ish and still never freezes).
+DYNAMIC_TIMEWARP_SLICE_BUDGET = max(
+    64, int(os.environ.get("DYNAMIC_TIMEWARP_SLICE_BUDGET", "800"))
+)
+
+
+def _ease_weight(x: float, shoulder: float) -> float:
+    """
+    Flat-top easing weight in [0, 1] over normalised position x∈[0, 1].
+
+    0.0 at the edges (x=0, x=1), rising via a smoothstep over `shoulder` on
+    each side to a 1.0 plateau in the middle.  Its zero slope at the edges is
+    what makes neighbouring lines join without a visible speed jump.
+    """
+    if shoulder <= 0.0:
+        return 1.0
+    if x <= shoulder:
+        t = x / shoulder
+    elif x >= 1.0 - shoulder:
+        t = (1.0 - x) / shoulder
+    else:
+        return 1.0
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)  # smoothstep
+
+
+def _eased_subchunks(
+    src_start: float,
+    src_end: float,
+    target_avg: float,
+    max_stretch: float,
+    seg_index: int,
+    max_slices: int,
+    shoulder: float = DYNAMIC_TIMEWARP_SHOULDER,
+    slice_seconds: float = DYNAMIC_TIMEWARP_SLICE_SECONDS,
+):
+    """
+    Subdivide one stretched line's source span [src_start, src_end] into slices
+    whose per-slice factors follow an eased (flat-top smoothstep) curve.
+
+    The slices are chosen so their output durations sum EXACTLY to
+    `src_span * achieved_avg`, where `achieved_avg <= target_avg` is whatever
+    the eased profile can deliver without the peak factor exceeding
+    `max_stretch`.  Returns (subchunks, out_total, achieved_avg).
+    """
+    span = max(DYNAMIC_MIN_CHUNK_SECONDS, src_end - src_start)
+    max_slices = max(2, int(max_slices))
+    n = int(round(span / slice_seconds)) if slice_seconds > 0 else max_slices
+    n = max(DYNAMIC_TIMEWARP_MIN_SLICES, min(max_slices, n))
+    if n < 2:
+        n = 2
+
+    xs = [(j + 0.5) / n for j in range(n)]
+    ws = [_ease_weight(x, shoulder) for x in xs]
+    mean_w = sum(ws) / n
+
+    # The eased profile can lift the average to at most this, given the peak
+    # factor is capped at max_stretch.
+    cap_avg = 1.0 + (max_stretch - 1.0) * mean_w if mean_w > 1e-9 else max_stretch
+    avg = max(1.0, min(float(target_avg), cap_avg))
+
+    # No meaningful stretch (or degenerate weights) → single passthrough chunk.
+    if mean_w <= 1e-9 or avg <= 1.0 + 1e-9:
+        return (
+            [{
+                "src_start": src_start, "src_end": src_end,
+                "out_dur": span, "factor": 1.0, "seg_index": seg_index,
+            }],
+            span,
+            1.0,
+        )
+
+    peak_minus_1 = (avg - 1.0) / mean_w  # ≤ max_stretch - 1 by construction
+    width = span / n
+    sub: list[dict] = []
+    out_total = 0.0
+    for j in range(n):
+        a = src_start + j * width
+        b = src_end if j == n - 1 else src_start + (j + 1) * width
+        f = 1.0 + peak_minus_1 * ws[j]
+        od = (b - a) * f
+        sub.append({
+            "src_start": a, "src_end": b,
+            "out_dur": od, "factor": f, "seg_index": seg_index,
+        })
+        out_total += od
+    return sub, out_total, avg
+
 
 def _apply_atempo(in_path: Path, speed: float, out_dir: Path, label: str) -> Path:
     """Change an audio clip's tempo (pitch-preserving) by `speed`×."""
@@ -4418,6 +4531,7 @@ def build_timewarp_plan(
     natural_durations: list[float],
     video_duration: float,
     max_stretch: float = DYNAMIC_MAX_VIDEO_STRETCH,
+    smooth: bool = False,
 ):
     """
     Plan a continuous, never-freezing output timeline.
@@ -4428,9 +4542,20 @@ def build_timewarp_plan(
     at `max_stretch` so the slow-down stays subtle.  Chunks whose dub already
     fits keep factor 1.0 — the picture plays exactly as-is there.
 
+    When `smooth` is True, each stretched line is emitted as several micro
+    slices whose factors follow an eased curve (≈1.0× at the edges, peaking in
+    the middle) instead of one constant factor.  This removes the abrupt
+    speed "snap" at line boundaries while keeping each line's output slot —
+    and therefore the dubbed-audio sync — exactly the same.  Because the eased
+    profile caps the PEAK factor at `max_stretch`, a stretched line's *average*
+    slow-down is a little gentler than the hard-step mode, so a few very dense
+    lines lean slightly more on the small voice speed-up; the picture never
+    freezes and never jumps.
+
     Returns (chunks, seg_plan, total):
       chunks   list[{src_start, src_end, out_dur, factor, seg_index}]
-               factor = out_dur / source_dur  (>= 1.0; 1.0 == untouched)
+               factor = out_dur / source_dur  (>= 1.0; 1.0 == untouched).
+               In smooth mode a single line maps to several consecutive chunks.
       seg_plan list[{out_start, out_dur, dub_speed, placed_dur}] per segment
                dub_speed > 1.0 only for the rare clamped (very dense) line.
       total    float  final output duration
@@ -4449,6 +4574,26 @@ def build_timewarp_plan(
     if vd is None:
         vd = (starts[-1] + nats[-1] + 1.0) if n else 1.0
 
+    # Per-line source spans (used both for planning and the slice budget).
+    spans: list[float] = []
+    for i in range(n):
+        s = starts[i]
+        e = starts[i + 1] if i + 1 < n else vd
+        if e <= s:
+            e = s + DYNAMIC_MIN_CHUNK_SECONDS
+        spans.append(max(DYNAMIC_MIN_CHUNK_SECONDS, e - s))
+
+    # Distribute the global slice budget across the lines that actually need
+    # stretching, so a long/dense video can't explode the ffmpeg filter graph.
+    per_line_max_slices = DYNAMIC_TIMEWARP_MAX_SLICES
+    if smooth:
+        stretched = sum(1 for i in range(n) if nats[i] > spans[i] + 1e-3)
+        if stretched > 0:
+            budget_each = DYNAMIC_TIMEWARP_SLICE_BUDGET // stretched
+            per_line_max_slices = max(
+                2, min(DYNAMIC_TIMEWARP_MAX_SLICES, budget_each)
+            )
+
     chunks: list[dict] = []
     seg_plan: list[dict] = []
     out_cursor = 0.0
@@ -4466,22 +4611,33 @@ def build_timewarp_plan(
         e = starts[i + 1] if i + 1 < n else vd
         if e <= s:
             e = s + DYNAMIC_MIN_CHUNK_SECONDS
-        src = max(DYNAMIC_MIN_CHUNK_SECONDS, e - s)
+        src = spans[i]
         nd = nats[i]
-        # Never shorter than the source span (slow-only), and never longer
-        # than max_stretch × source (keeps the slow-down subtle).
-        out_dur = min(max(nd, src), src * max_stretch)
-        factor = out_dur / src
+
+        if smooth and nd > src + 1e-3:
+            # Eased slow-down across several slices.  target_avg is how much we
+            # *want* to stretch (to fit the natural dub); _eased_subchunks
+            # returns what it could deliver with the peak capped at max_stretch.
+            target_avg = nd / src
+            subs, out_dur, _achieved = _eased_subchunks(
+                s, e, target_avg, max_stretch, i, per_line_max_slices,
+            )
+            chunks.extend(subs)
+        else:
+            # Hard-step mode, or a line whose dub already fits (factor 1.0).
+            out_dur = min(max(nd, src), src * max_stretch)
+            factor = out_dur / src
+            chunks.append({
+                "src_start": s, "src_end": e,
+                "out_dur": out_dur, "factor": factor, "seg_index": i,
+            })
+
         if nd > out_dur + 1e-3:
             dub_speed = nd / out_dur          # rare: very dense line
             placed = out_dur
         else:
             dub_speed = 1.0                    # voice stays natural
             placed = nd
-        chunks.append({
-            "src_start": s, "src_end": e,
-            "out_dur": out_dur, "factor": factor, "seg_index": i,
-        })
         seg_plan.append({
             "out_start": out_cursor, "out_dur": out_dur,
             "dub_speed": dub_speed, "placed_dur": placed,
@@ -5085,6 +5241,7 @@ def main():
             natural_durations = [measure_audio_seconds(p) for p in seg_audio_paths]
             chunks, seg_plan, new_total = build_timewarp_plan(
                 segments, natural_durations, video_duration,
+                smooth=DYNAMIC_SMOOTH_TIMEWARP,
             )
             dynamic_extra_seconds = max(0.0, new_total - float(video_duration))
             try:
@@ -5225,6 +5382,7 @@ def main():
                 "lipSyncApplied": lip_sync_applied,
                 "dynamicVideoLength": DYNAMIC_VIDEO_LENGTH,
                 "dynamicVideoLengthApplied": dynamic_applied,
+                "dynamicSmoothTimewarp": DYNAMIC_SMOOTH_TIMEWARP,
                 "dynamicExtraSeconds": round(dynamic_extra_seconds, 3),
                 "outputDurationSeconds": round(mux_duration, 3),
                 "translationMode": TRANSLATION_MODE,
