@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, Languages, Mic, MicOff, Play, Download, CheckCircle,
@@ -23,6 +23,69 @@ import { translatorAuthHeaders } from "@/lib/translator-client-id";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API = `${BASE}/api/translator`;
+
+// ── Lightweight Markdown renderer for the Translation Assistant ───────────────
+// Supports **bold**, *italic*, `code`, fenced ```code``` blocks, #/## headings
+// and -/* / numbered lists. Uses Tailwind utility classes (no extra CSS).
+function renderAssistantMarkdown(text: string): ReactNode {
+  const inlineFormat = (str: string, key: string): ReactNode => {
+    const parts: ReactNode[] = [];
+    const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g;
+    let last = 0; let mm: RegExpExecArray | null; let k = 0;
+    while ((mm = re.exec(str)) !== null) {
+      if (mm.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, mm.index)}</span>);
+      const tok = mm[0];
+      if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`} className="font-semibold text-white">{tok.slice(2, -2)}</strong>);
+      else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`} className="px-1 py-0.5 rounded bg-black/40 text-primary text-[12px] font-mono">{tok.slice(1, -1)}</code>);
+      else parts.push(<em key={`${key}-i${k++}`}>{tok.slice(1, -1)}</em>);
+      last = mm.index + tok.length;
+    }
+    if (last < str.length) parts.push(<span key={`${key}-e`}>{str.slice(last)}</span>);
+    return parts.length > 0 ? parts : str;
+  };
+
+  const segments: Array<{ kind: "code" | "text"; body: string }> = [];
+  const fence = /```[a-zA-Z0-9_+-]*\n([\s\S]*?)```/g;
+  let lastIndex = 0; let m: RegExpExecArray | null;
+  while ((m = fence.exec(text)) !== null) {
+    if (m.index > lastIndex) segments.push({ kind: "text", body: text.slice(lastIndex, m.index) });
+    segments.push({ kind: "code", body: m[1] });
+    lastIndex = m.index + m[0].length;
+  }
+  if (lastIndex < text.length) segments.push({ kind: "text", body: text.slice(lastIndex) });
+  if (segments.length === 0) segments.push({ kind: "text", body: text });
+
+  const out: ReactNode[] = [];
+  segments.forEach((seg, segIdx) => {
+    if (seg.kind === "code") {
+      out.push(
+        <pre key={`pre-${segIdx}`} className="my-1.5 p-2 rounded-lg bg-black/40 overflow-x-auto text-[12px] font-mono text-white/80">
+          <code>{seg.body.replace(/\n$/, "")}</code>
+        </pre>,
+      );
+      return;
+    }
+    const lines = seg.body.split("\n");
+    lines.forEach((line, li) => {
+      const key = `s${segIdx}-${li}`;
+      const heading = /^(#{1,4})\s+(.*)/.exec(line);
+      const ul = /^[-*+]\s+(.*)/.exec(line);
+      const ol = /^(\d+)\.\s+(.*)/.exec(line);
+      if (heading) {
+        out.push(<div key={key} className="font-bold text-white mt-2 mb-0.5">{inlineFormat(heading[2], `h${key}`)}</div>);
+      } else if (ul) {
+        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0">•</span><span className="flex-1">{inlineFormat(ul[1], `u${key}`)}</span></div>);
+      } else if (ol) {
+        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0">{ol[1]}.</span><span className="flex-1">{inlineFormat(ol[2], `o${key}`)}</span></div>);
+      } else if (line.trim() === "") {
+        if (li < lines.length - 1) out.push(<div key={key} className="h-1.5" />);
+      } else {
+        out.push(<div key={key}>{inlineFormat(line, `l${key}`)}</div>);
+      }
+    });
+  });
+  return <>{out}</>;
+}
 
 // â”€â”€ Language options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const LANGS = [
@@ -1842,11 +1905,13 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
               <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
                 <div
                   className={cn(
-                    "max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap break-words",
-                    m.role === "user" ? "bg-primary text-white" : "bg-white/[0.06] text-white/90",
+                    "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words",
+                    m.role === "user"
+                      ? "bg-primary text-white whitespace-pre-wrap"
+                      : "bg-white/[0.06] text-white/90 leading-relaxed",
                   )}
                 >
-                  {m.content}
+                  {m.role === "user" ? m.content : renderAssistantMarkdown(m.content)}
                 </div>
               </div>
             ))}

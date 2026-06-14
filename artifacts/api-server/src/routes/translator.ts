@@ -1904,12 +1904,30 @@ const TRANSLATOR_ASSISTANT_SYSTEM_PROMPT = [
   "keep background music, multi-speaker, dynamic video length), runtime and timestamps —",
   "plus the client-side activity log the user is currently looking at.",
   "",
-  "Answer the user's questions about status and what happened. Be concise, specific and friendly.",
-  "Use ONLY the actual data provided. When a job failed, explain the likely reason from its",
-  "error/warnings and suggest a concrete next step (retry, cancel, shorten the clip, turn off",
-  "lip-sync, etc.). Refer to jobs by filename + language (and a short job id when helpful).",
-  "If the data does not contain something, say so plainly — never invent statuses, times or logs.",
-  "Keep answers short unless the user asks for detail. Use simple formatting (short lines or bullets).",
+  "## Your job",
+  "Answer the user's questions about status and what happened. Be specific, accurate and friendly.",
+  "Use the actual job data provided as the source of truth for statuses, times and logs —",
+  "never invent statuses, times or logs that aren't there. If the data doesn't contain",
+  "something, say so plainly.",
+  "",
+  "When a job failed, diagnose it deeply: read its error + step logs, explain the most likely",
+  "root cause in plain language, and give concrete next steps (retry, cancel, shorten the clip,",
+  "turn off lip-sync, switch voice mode, etc.). You understand this pipeline well:",
+  "  - LatentSync lip-sync 'Face not detected' → the video has no clear front-facing face in",
+  "    some frames; tell the user to turn OFF lip-sync for that video (audio dub still works).",
+  "  - CosyVoice voice-clone warnings → clone fell back to a neural voice; the dub still",
+  "    completed, just not in the original speaker's timbre.",
+  "  - Gemini/translation errors, Demucs/keep-music issues, GPU timeouts, upload size limits.",
+  "If you are unsure about a technical error message, you may use web knowledge to explain it,",
+  "but always tie the advice back to the controls this app actually exposes.",
+  "",
+  "## Formatting",
+  "Reply in clean GitHub-flavored Markdown. Use **bold** for key facts, `code` for job ids,",
+  "statuses and filenames, and bullet lists for multiple jobs or steps. Use short ## headings",
+  "only when the answer has clearly separate sections.",
+  "Keep answers tight by default. When the user explicitly asks to 'dig in', go 'fully', or",
+  "wants details, give a thorough, well-structured breakdown — per job, per failed step, with",
+  "root cause and fix for each.",
 ].join("\n");
 
 function serializeJobForAssistant(item: Record<string, any>): Record<string, any> | null {
@@ -2069,17 +2087,61 @@ router.post("/assistant", async (req: Request, res: ExpressResponse) => {
     const dataBlock = buildAssistantDataBlock(jobs, focusJobId ? String(focusJobId) : undefined, safeClientLogs);
 
     const ai = createGeminiClient();
-    const response = await ai.models.generateContent({
-      model: TRANSLATOR_ASSISTANT_MODEL,
-      contents: convo,
-      config: {
-        systemInstruction: `${TRANSLATOR_ASSISTANT_SYSTEM_PROMPT}\n\n=== LIVE DATA (current snapshot) ===\n${dataBlock}`,
-        maxOutputTokens: 1400,
-        thinkingConfig: { thinkingLevel: "MEDIUM" as any },
-      },
-    });
+    const systemInstruction = `${TRANSLATOR_ASSISTANT_SYSTEM_PROMPT}\n\n=== LIVE DATA (current snapshot) ===\n${dataBlock}`;
+    // Web grounding gives the assistant "search" ability to explain unfamiliar
+    // technical errors. Toggle off with TRANSLATOR_ASSISTANT_SEARCH=0.
+    const useSearch = process.env.TRANSLATOR_ASSISTANT_SEARCH !== "0";
 
-    const reply = (response.text ?? "").trim() || "I couldn't generate a response just now — please try asking again.";
+    // Pull the answer out of a response, tolerating the case where the SDK's
+    // `.text` getter returns empty (e.g. when only thought/grounding parts are
+    // present) by manually concatenating the visible (non-thought) text parts.
+    const extractReply = (response: any): { text: string; finishReason?: string } => {
+      let text = "";
+      try { text = String(response?.text ?? "").trim(); } catch { text = ""; }
+      const cand = response?.candidates?.[0];
+      if (!text && Array.isArray(cand?.content?.parts)) {
+        text = cand.content.parts
+          .filter((p: any) => typeof p?.text === "string" && p?.thought !== true)
+          .map((p: any) => p.text)
+          .join("")
+          .trim();
+      }
+      return { text, finishReason: cand?.finishReason };
+    };
+
+    // Attempt 1: low thinking + a generous output budget so the model never
+    // exhausts the budget on thinking tokens (the old 1400 cap + MEDIUM thinking
+    // routinely produced empty replies). Optionally grounded with web search.
+    const runGenerate = (opts: { search: boolean }) =>
+      ai.models.generateContent({
+        model: TRANSLATOR_ASSISTANT_MODEL,
+        contents: convo,
+        config: {
+          systemInstruction,
+          maxOutputTokens: 8192,
+          thinkingConfig: { thinkingLevel: "LOW" as any },
+          ...(opts.search ? { tools: [{ googleSearch: {} }] } : {}),
+        },
+      });
+
+    let { text: reply, finishReason } = extractReply(await runGenerate({ search: useSearch }));
+
+    // Retry once without tools if the first pass came back empty. Grounding can
+    // occasionally return only grounding metadata with no text part.
+    if (!reply) {
+      try {
+        ({ text: reply, finishReason } = extractReply(await runGenerate({ search: false })));
+      } catch (retryErr) {
+        console.warn("[Translator] /assistant retry failed:", retryErr);
+      }
+    }
+
+    if (!reply) {
+      reply = finishReason === "SAFETY" || finishReason === "PROHIBITED_CONTENT"
+        ? "I can't answer that one — it was blocked by a safety filter. Try rephrasing your question about your jobs."
+        : "I couldn't generate a response just now — please try asking again.";
+    }
+
     return res.json({ reply, jobCount: jobs.length });
   } catch (err: any) {
     console.error("[Translator] /assistant error:", err);
