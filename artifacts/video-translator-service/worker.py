@@ -3985,10 +3985,74 @@ def _ensure_latentsync_checkpoint(ckpt_dir: Path) -> Path:
     return path
 
 
+# Wrapper that runs LatentSync's scripts/inference.py with a monkeypatch that
+# tolerates brief no-face frames. By default LatentSync raises "Face not detected"
+# on the FIRST frame without a detectable face (a quick head-turn, motion blur or
+# a short transition), which aborts the WHOLE video. The patch reuses the previous
+# frame's face transform for up to LATENTSYNC_MAX_BRIDGE_FRAMES consecutive
+# missing frames so the rest of the video still gets lip-synced. It is
+# safe-by-construction: it only changes frames that would otherwise raise (and
+# fail) today — videos with a face in every frame are completely unaffected.
+# Longer genuine no-face stretches still raise → graceful dubbed-audio fallback.
+_LATENTSYNC_WRAPPER_SRC = '''
+import os, sys, runpy
+
+MAX_BRIDGE = int(os.environ.get("LATENTSYNC_MAX_BRIDGE_FRAMES", "12"))
+
+def _apply_face_bridge():
+    try:
+        from latentsync.utils.image_processor import ImageProcessor
+    except Exception as e:
+        print("[face-bridge] ImageProcessor import failed, running unpatched:", e, flush=True)
+        return
+    orig = getattr(ImageProcessor, "affine_transform", None)
+    if orig is None or getattr(orig, "_face_bridge", False):
+        return
+    def affine_transform(self, image, *a, **k):
+        try:
+            res = orig(self, image, *a, **k)
+            self._fb_last = res
+            self._fb_miss = 0
+            return res
+        except RuntimeError as e:
+            if "face not detected" not in str(e).lower():
+                raise
+            last = getattr(self, "_fb_last", None)
+            miss = getattr(self, "_fb_miss", 0)
+            if last is None or miss >= MAX_BRIDGE:
+                raise
+            self._fb_miss = miss + 1
+            print("[face-bridge] bridging no-face frame", self._fb_miss, "/", MAX_BRIDGE, flush=True)
+            return last
+    affine_transform._face_bridge = True
+    ImageProcessor.affine_transform = affine_transform
+    print("[face-bridge] enabled (max", MAX_BRIDGE, "consecutive no-face frames)", flush=True)
+
+_apply_face_bridge()
+runpy.run_path("scripts/inference.py", run_name="__main__")
+'''
+
+
+def _gpu_total_vram_gb() -> float:
+    """Total VRAM of GPU 0 in GiB, or 0.0 if it can't be determined."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    except Exception as e:
+        log.warning("[LatentSync] Could not query GPU VRAM: %s", e)
+    return 0.0
+
+
 def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Path:
-    """LatentSync — diffusion-based lip sync.
-    Defaults to 256x256 (stage2.yaml) which fits on a T4 GPU (16 GB VRAM).
-    Set LIP_SYNC_QUALITY="latentsync_hq" for 512x512 (needs 24 GB+ VRAM).
+    """LatentSync 1.6 — diffusion-based lip sync.
+
+    Quality first: we DEFAULT to the 512x512 model (stage2_512.yaml), which is
+    what produces crisp, natural mouths — the 256x256 stage2.yaml looks blurry.
+    The big numbers in LatentSync's README are TRAINING VRAM; *inference* of the
+    512 model needs only ~18 GB and fits the 24 GB lip-sync GPU. We try the best
+    config first and transparently downgrade only if it actually OOMs at runtime;
+    if nothing works we raise so the caller falls back to a plain dubbed-audio mux.
     """
     out_path = out_dir / "latentsync_output.mp4"
     ls_dir = MODEL_CACHE_DIR / "LatentSync"
@@ -4034,15 +4098,39 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
             "Rebuild the Docker image."
         )
 
-    # Choose resolution config based on quality setting.
-    # stage2_512.yaml = 512x512 (official recommended, needs ~18-24 GB VRAM)
-    # stage2.yaml     = 256x256 (T4-compatible, 16 GB VRAM sufficient)
-    if LIP_SYNC_QUALITY in ("latentsync_hq", "hq", "512"):
-        config_file = "configs/unet/stage2_512.yaml"
-        log.info("[LatentSync] 512x512 HQ mode (requires 24 GB+ VRAM)")
-    else:
-        config_file = "configs/unet/stage2.yaml"
-        log.info("[LatentSync] 256x256 standard mode (T4 / 16 GB VRAM compatible)")
+    # ── Pick UNet config: best QUALITY that fits the GPU's *inference* VRAM ─────
+    # CRITICAL quality fix: stage2_512.yaml is 512x512 (LatentSync 1.6's crisp
+    # model) while stage2.yaml is only 256x256 — noticeably blurry. The frontend
+    # default (lipSyncQuality="latentsync") used to fall into the 256 branch, so
+    # output looked low-res / "broken". The big numbers in LatentSync's README
+    # are TRAINING VRAM; *inference* needs only ~18 GB for the 512 model, which
+    # fits the 24 GB lip-sync GPU. So we DEFAULT to 512 and try best-first,
+    # auto-downgrading only if a config actually OOMs at runtime.
+    vram_gb = _gpu_total_vram_gb()
+    log.info("[LatentSync] Detected GPU VRAM: %.1f GB", vram_gb)
+    prefer_low = LIP_SYNC_QUALITY in ("256", "low", "fast", "lite", "standard")
+
+    # (config, label, approx INFERENCE VRAM needed) — best quality first.
+    all_tiers = [
+        ("configs/unet/stage2_512.yaml",       "512x512",   20.0),
+        ("configs/unet/stage2.yaml",           "256x256",   10.0),
+        ("configs/unet/stage2_efficient.yaml", "efficient", 18.0),
+    ]
+    if prefer_low:
+        all_tiers = [all_tiers[1], all_tiers[0], all_tiers[2]]
+
+    # Keep configs that exist and plausibly fit inference VRAM (unknown VRAM=try).
+    candidates = [
+        (cfg, label) for cfg, label, need in all_tiers
+        if (ls_dir / cfg).exists() and (vram_gb <= 0 or vram_gb + 1.0 >= need)
+    ]
+    if not candidates:
+        unet_dir = ls_dir / "configs" / "unet"
+        available = sorted(p.name for p in unet_dir.glob("*.yaml")) if unet_dir.exists() else []
+        raise RuntimeError(
+            f"No LatentSync config fits this GPU ({vram_gb:.1f} GB VRAM). "
+            f"Available configs: {available}."
+        )
 
     # Per-job isolated temp dir — auto-cleaned with the job work_dir
     temp_dir = out_dir / "latentsync_temp"
@@ -4075,53 +4163,83 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
     progress_thread = threading.Thread(target=_progress_updater, daemon=True)
     progress_thread.start()
 
+    # Run inference through the face-bridging wrapper (unless disabled), so brief
+    # no-face frames don't abort the whole video.
+    if os.environ.get("LATENTSYNC_FACE_BRIDGE", "1").lower() in ("1", "true", "yes", "on"):
+        entry_script = str(temp_dir / "_latentsync_run.py")
+        Path(entry_script).write_text(_LATENTSYNC_WRAPPER_SRC, encoding="utf-8")
+    else:
+        entry_script = "scripts/inference.py"
+
+    # Quality knobs (defaults match the official inference.sh). More steps =
+    # crisper sync but slower; deepcache is ~2-3x faster with minor quality loss.
+    steps = str(_env_int("LATENTSYNC_INFERENCE_STEPS", 20))
+    guidance = os.environ.get("LATENTSYNC_GUIDANCE_SCALE", "1.5").strip() or "1.5"
+    use_deepcache = os.environ.get("LATENTSYNC_DEEPCACHE", "1").lower() in ("1", "true", "yes", "on")
+
+    def _run_inference(cfg: str):
+        cmd = [
+            sys.executable, entry_script,
+            "--unet_config_path",    cfg,
+            "--inference_ckpt_path", str(ckpt_path),
+            "--inference_steps",     steps,
+            "--guidance_scale",      guidance,
+            "--temp_dir",            str(temp_dir),
+            "--video_path",          str(video_path),
+            "--audio_path",          str(dubbed_audio),
+            "--video_out_path",      str(out_path),
+        ]
+        if use_deepcache:
+            cmd.append("--enable_deepcache")
+        return subprocess.run(
+            cmd, capture_output=True, text=True, cwd=str(ls_dir),
+            env=latentsync_env, timeout=4500,  # 75-min hard stop
+        )
+
+    # Try best-quality config first; on a genuine CUDA OOM, transparently retry
+    # with the next lighter config so we never fail just because 512 was too big.
+    result = None
     try:
-        result = subprocess.run(
-            [
-                sys.executable, "scripts/inference.py",
-                # FIXED: correct argparse argument names (--unet_config and
-                # --inference_ckpt would be silently ignored / raise errors)
-                "--unet_config_path",   config_file,
-                "--inference_ckpt_path", str(ckpt_path),
-                "--inference_steps",    "20",
-                "--guidance_scale",     "1.5",   # official inference.sh value
-                "--enable_deepcache",            # ~2-3x faster, minimal quality loss
-                "--temp_dir",           str(temp_dir),  # per-job, cleaned with work_dir
-                "--video_path",         str(video_path),
-                "--audio_path",         str(dubbed_audio),
-                "--video_out_path",     str(out_path),
-            ],
-            capture_output=True,
-            text=True,
-            cwd=str(ls_dir),
-            env=latentsync_env,
-            timeout=4500,  # 75-minute hard stop prevents hanging jobs
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            "LatentSync timed out after 75 minutes. "
-            "Consider disabling lip sync for very long videos."
-        )
+        for idx, (cfg, label) in enumerate(candidates):
+            log.info("[LatentSync] Inference: %s (%s) steps=%s guidance=%s deepcache=%s",
+                     cfg, label, steps, guidance, use_deepcache)
+            update_progress("LIPSYNC", 70, f"Lip sync running ({label})...")
+            try:
+                result = _run_inference(cfg)
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("Lip sync timed out after 75 minutes — try disabling lip sync for very long videos.")
+            if result.stderr.strip():
+                log.info(f"[LatentSync] stderr (last 3000 chars):\n{result.stderr[-3000:]}")
+            if result.returncode == 0 and out_path.exists():
+                log.info(f"[LatentSync] Done => {out_path} ({label})")
+                return out_path
+
+            err_tail = result.stderr[-4000:]
+            low = err_tail.lower()
+            is_oom = "out of memory" in low or "outofmemory" in low or ("cuda" in low and "memory" in low)
+            if is_oom and idx + 1 < len(candidates):
+                log.warning("[LatentSync] %s ran out of GPU memory — retrying with a lighter config.", label)
+                try:
+                    import torch; torch.cuda.empty_cache()
+                except Exception:
+                    pass
+                continue
+            # No more retries — classify and raise (caller falls back gracefully).
+            if "face" in low and ("not detect" in low or "no face" in low or "face detect" in low):
+                reason = ("No face detected in part of the video (e.g. a transition or the speaker "
+                          "turning away) — kept the dubbed audio without lip movement.")
+            elif is_oom:
+                reason = ("Not enough GPU memory for lip sync on this video — kept the dubbed audio "
+                          "without lip movement.")
+            elif result.returncode != 0:
+                reason = f"Lip sync failed (exit {result.returncode})."
+            else:
+                reason = "Lip sync produced no output."
+            raise RuntimeError(f"{reason}\n{err_tail}")
+        raise RuntimeError("Not enough GPU memory for lip sync — kept the dubbed audio without lip movement.")
     finally:
         stop_event.set()
         progress_thread.join(timeout=2)
-
-    # Always emit stderr to CloudWatch for post-job debugging
-    if result.stderr.strip():
-        log.info(f"[LatentSync] stderr (last 3000 chars):\n{result.stderr[-3000:]}")
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"LatentSync failed (exit {result.returncode}):\n"
-            f"{result.stderr[-4000:]}"
-        )
-    if not out_path.exists():
-        raise FileNotFoundError(
-            f"LatentSync exited 0 but produced no output at {out_path}. "
-            f"stdout: {result.stdout[-1000:]}"
-        )
-    log.info(f"[LatentSync] Done => {out_path}")
-    return out_path
 
 def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Optional[Path]:
     """
@@ -4133,14 +4251,16 @@ def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Optional
     try:
         return run_lipsync_latentsync(video_path, dubbed_audio, out_dir)
     except Exception as e:
-        warn_msg = f"LatentSync failed: {e}"
+        full = str(e).strip()
+        # The raisers above put a clean, user-friendly reason on the first line.
+        user_reason = (full.splitlines()[0] if full else "Lip sync failed.").strip()
+        log.warning("[LipSync] LatentSync failed: %s -- continuing with dubbed audio only.", full[:2000])
         if not ALLOW_LIP_SYNC_FALLBACK:
-            raise RuntimeError(warn_msg) from e
-        log.warning(f"[LipSync] {warn_msg} -- continuing with dubbed audio only.")
+            raise RuntimeError(user_reason) from e
         update_progress(
             "LIPSYNC", 82,
-            "Lip sync unavailable -- video will have dubbed audio only.",
-            {"lipsync_warning": warn_msg}
+            f"Lip sync skipped — {user_reason}",
+            {"lipsync_warning": user_reason}
         )
         return None  # Caller will mux dubbed audio into original video
 
