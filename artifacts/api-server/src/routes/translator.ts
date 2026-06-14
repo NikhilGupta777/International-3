@@ -17,6 +17,7 @@ import {
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
 import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { setupSse, sseFlush } from "../lib/sse";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import {
   DynamoDBClient,
@@ -1898,7 +1899,10 @@ router.get("/result/:jobId", async (req: Request, res: ExpressResponse) => {
 // "why did it fail?".  Uses Gemini 3.5 Flash with MEDIUM thinking — the same
 // client/model the rest of the app uses.  Non-streaming JSON for robustness.
 const TRANSLATOR_ASSISTANT_SYSTEM_PROMPT = [
-  "You are the Video Translation Assistant built into the Translation tab of this app.",
+  "You are the Video Translation Assistant built into the Translation tab of this app —",
+  "a senior debugging engineer for this dubbing pipeline. You have full read-only",
+  "visibility into the user's jobs and logs (you cannot start, cancel or change jobs;",
+  "you guide the user to the right control instead).",
   "You are given a live snapshot of ALL of the current user's video-translation jobs —",
   "their status, progress, per-step logs, warnings, errors, options (voice clone, lip-sync,",
   "keep background music, multi-speaker, dynamic video length), runtime and timestamps —",
@@ -2019,99 +2023,119 @@ function buildAssistantDataBlock(
   return lines.join("\n");
 }
 
+type AssistantContext = {
+  convo: Array<{ role: string; parts: Array<{ text: string }> }>;
+  jobs: Record<string, any>[];
+  systemInstruction: string;
+};
+
+// Gather everything the assistant needs: the trimmed conversation plus a live,
+// read-only snapshot of ALL of this user's translator jobs (status, steps,
+// errors, warnings) and the client-side activity log. Shared by the JSON and
+// streaming endpoints. Returns an error tuple instead of throwing for the
+// validation cases so callers can map them to the right transport.
+async function buildAssistantContext(
+  req: Request,
+): Promise<{ ok: true; ctx: AssistantContext } | { ok: false; status: number; error: string }> {
+  const ownerId = getRequesterId(req);
+  const { messages = [], focusJobId, clientLogs = [] } = (req.body ?? {}) as {
+    messages?: Array<{ role?: string; content?: string }>;
+    focusJobId?: string;
+    clientLogs?: Array<{ ts?: number; level?: string; msg?: string }>;
+  };
+
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return { ok: false, status: 400, error: "messages array is required" };
+  }
+
+  const convo = messages
+    .filter((m) => m && (m.role === "user" || m.role === "model" || m.role === "assistant") && typeof m.content === "string")
+    .slice(-24)
+    .map((m) => ({
+      role: m.role === "user" ? "user" : "model",
+      parts: [{ text: String(m.content).slice(0, 4000) }],
+    }));
+
+  if (!convo.length) {
+    return { ok: false, status: 400, error: "messages array has no valid messages" };
+  }
+
+  // Gather ALL of this user's translator jobs (same owner scope as /history).
+  const items: Record<string, any>[] = [];
+  let exclusiveStartKey: Record<string, any> | undefined;
+  for (let page = 0; page < 5; page += 1) {
+    const out = await ddb.send(new ScanCommand({
+      TableName: DDB_TABLE,
+      FilterExpression: "#type = :type AND #ownerId = :ownerId",
+      ExpressionAttributeNames: { "#type": "type", "#ownerId": "ownerId" },
+      ExpressionAttributeValues: { ":type": { S: "translator" }, ":ownerId": { S: ownerId } },
+      Limit: 100,
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
+    items.push(...(out.Items ?? []));
+    exclusiveStartKey = out.LastEvaluatedKey;
+    if (!exclusiveStartKey || items.length >= 120) break;
+  }
+
+  // Refresh only the jobs whose status could be stale (non-terminal), capped
+  // so we never fan out dozens of Batch DescribeJobs calls per question.
+  let syncBudget = 15;
+  const synced = await Promise.all(items.map((it) => {
+    const terminal = isTerminalTranslatorStatus(it.status?.S);
+    if (!terminal && syncBudget > 0) {
+      syncBudget -= 1;
+      return syncTerminalBatchState(it).catch(() => it);
+    }
+    return Promise.resolve(it);
+  }));
+
+  const jobs = synced
+    .map(serializeJobForAssistant)
+    .filter((j): j is Record<string, any> => Boolean(j))
+    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
+    .slice(0, 40);
+
+  const safeClientLogs = Array.isArray(clientLogs) ? clientLogs : [];
+  const dataBlock = buildAssistantDataBlock(jobs, focusJobId ? String(focusJobId) : undefined, safeClientLogs);
+  const systemInstruction = `${TRANSLATOR_ASSISTANT_SYSTEM_PROMPT}\n\n=== LIVE DATA (current snapshot) ===\n${dataBlock}`;
+
+  return { ok: true, ctx: { convo, jobs, systemInstruction } };
+}
+
+// Pull the answer out of a non-streaming response, tolerating the case where
+// the SDK's `.text` getter returns empty (e.g. only thought/grounding parts).
+function extractAssistantReply(response: any): { text: string; finishReason?: string } {
+  let text = "";
+  try { text = String(response?.text ?? "").trim(); } catch { text = ""; }
+  const cand = response?.candidates?.[0];
+  if (!text && Array.isArray(cand?.content?.parts)) {
+    text = cand.content.parts
+      .filter((p: any) => typeof p?.text === "string" && p?.thought !== true)
+      .map((p: any) => p.text)
+      .join("")
+      .trim();
+  }
+  return { text, finishReason: cand?.finishReason };
+}
+
 router.post("/assistant", async (req: Request, res: ExpressResponse) => {
   try {
     if (!isGeminiConfigured()) {
       return res.status(503).json({ error: "AI assistant is not configured on the server." });
     }
 
-    const ownerId = getRequesterId(req);
-    const { messages = [], focusJobId, clientLogs = [] } = (req.body ?? {}) as {
-      messages?: Array<{ role?: string; content?: string }>;
-      focusJobId?: string;
-      clientLogs?: Array<{ ts?: number; level?: string; msg?: string }>;
-    };
-
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res.status(400).json({ error: "messages array is required" });
-    }
-
-    const convo = messages
-      .filter((m) => m && (m.role === "user" || m.role === "model" || m.role === "assistant") && typeof m.content === "string")
-      .slice(-24)
-      .map((m) => ({
-        role: m.role === "user" ? "user" : "model",
-        parts: [{ text: String(m.content).slice(0, 4000) }],
-      }));
-
-    if (!convo.length) {
-      return res.status(400).json({ error: "messages array has no valid messages" });
-    }
-
-    // Gather ALL of this user's translator jobs (same owner scope as /history).
-    const items: Record<string, any>[] = [];
-    let exclusiveStartKey: Record<string, any> | undefined;
-    for (let page = 0; page < 5; page += 1) {
-      const out = await ddb.send(new ScanCommand({
-        TableName: DDB_TABLE,
-        FilterExpression: "#type = :type AND #ownerId = :ownerId",
-        ExpressionAttributeNames: { "#type": "type", "#ownerId": "ownerId" },
-        ExpressionAttributeValues: { ":type": { S: "translator" }, ":ownerId": { S: ownerId } },
-        Limit: 100,
-        ExclusiveStartKey: exclusiveStartKey,
-      }));
-      items.push(...(out.Items ?? []));
-      exclusiveStartKey = out.LastEvaluatedKey;
-      if (!exclusiveStartKey || items.length >= 120) break;
-    }
-
-    // Refresh only the jobs whose status could be stale (non-terminal), capped
-    // so we never fan out dozens of Batch DescribeJobs calls per question.
-    let syncBudget = 15;
-    const synced = await Promise.all(items.map((it) => {
-      const terminal = isTerminalTranslatorStatus(it.status?.S);
-      if (!terminal && syncBudget > 0) {
-        syncBudget -= 1;
-        return syncTerminalBatchState(it).catch(() => it);
-      }
-      return Promise.resolve(it);
-    }));
-
-    const jobs = synced
-      .map(serializeJobForAssistant)
-      .filter((j): j is Record<string, any> => Boolean(j))
-      .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
-      .slice(0, 40);
-
-    const safeClientLogs = Array.isArray(clientLogs) ? clientLogs : [];
-    const dataBlock = buildAssistantDataBlock(jobs, focusJobId ? String(focusJobId) : undefined, safeClientLogs);
+    const built = await buildAssistantContext(req);
+    if (!built.ok) return res.status(built.status).json({ error: built.error });
+    const { convo, jobs, systemInstruction } = built.ctx;
 
     const ai = createGeminiClient();
-    const systemInstruction = `${TRANSLATOR_ASSISTANT_SYSTEM_PROMPT}\n\n=== LIVE DATA (current snapshot) ===\n${dataBlock}`;
     // Web grounding gives the assistant "search" ability to explain unfamiliar
     // technical errors. Toggle off with TRANSLATOR_ASSISTANT_SEARCH=0.
     const useSearch = process.env.TRANSLATOR_ASSISTANT_SEARCH !== "0";
 
-    // Pull the answer out of a response, tolerating the case where the SDK's
-    // `.text` getter returns empty (e.g. when only thought/grounding parts are
-    // present) by manually concatenating the visible (non-thought) text parts.
-    const extractReply = (response: any): { text: string; finishReason?: string } => {
-      let text = "";
-      try { text = String(response?.text ?? "").trim(); } catch { text = ""; }
-      const cand = response?.candidates?.[0];
-      if (!text && Array.isArray(cand?.content?.parts)) {
-        text = cand.content.parts
-          .filter((p: any) => typeof p?.text === "string" && p?.thought !== true)
-          .map((p: any) => p.text)
-          .join("")
-          .trim();
-      }
-      return { text, finishReason: cand?.finishReason };
-    };
-
-    // Attempt 1: low thinking + a generous output budget so the model never
-    // exhausts the budget on thinking tokens (the old 1400 cap + MEDIUM thinking
-    // routinely produced empty replies). Optionally grounded with web search.
+    // Low thinking + a generous output budget so the model never exhausts the
+    // budget on thinking tokens (the old 1400 cap + MEDIUM thinking routinely
+    // produced empty replies). Optionally grounded with web search.
     const runGenerate = (opts: { search: boolean }) =>
       ai.models.generateContent({
         model: TRANSLATOR_ASSISTANT_MODEL,
@@ -2124,13 +2148,13 @@ router.post("/assistant", async (req: Request, res: ExpressResponse) => {
         },
       });
 
-    let { text: reply, finishReason } = extractReply(await runGenerate({ search: useSearch }));
+    let { text: reply, finishReason } = extractAssistantReply(await runGenerate({ search: useSearch }));
 
     // Retry once without tools if the first pass came back empty. Grounding can
     // occasionally return only grounding metadata with no text part.
     if (!reply) {
       try {
-        ({ text: reply, finishReason } = extractReply(await runGenerate({ search: false })));
+        ({ text: reply, finishReason } = extractAssistantReply(await runGenerate({ search: false })));
       } catch (retryErr) {
         console.warn("[Translator] /assistant retry failed:", retryErr);
       }
@@ -2146,6 +2170,124 @@ router.post("/assistant", async (req: Request, res: ExpressResponse) => {
   } catch (err: any) {
     console.error("[Translator] /assistant error:", err);
     return res.status(500).json({ error: err?.message || "Assistant failed." });
+  }
+});
+
+// Streaming variant: emits SSE events so the UI can show the assistant's live
+// thinking, web searches and the answer as it is written. Event types:
+//   meta     { jobCount }
+//   thought  { content }   — reasoning summary delta (Gemini thinking mode)
+//   search   { queries }   — web-search queries the model issued (grounding)
+//   text     { content }   — answer delta (Markdown)
+//   sources  { items }     — grounding citations { title, url }
+//   done     {}            — stream finished cleanly
+//   error    { message }
+router.post("/assistant/stream", async (req: Request, res: ExpressResponse) => {
+  const send = (payload: object) => {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    sseFlush(res);
+  };
+
+  if (!isGeminiConfigured()) {
+    res.status(503).json({ error: "AI assistant is not configured on the server." });
+    return;
+  }
+
+  let built;
+  try {
+    built = await buildAssistantContext(req);
+  } catch (err: any) {
+    console.error("[Translator] /assistant/stream context error:", err);
+    res.status(500).json({ error: err?.message || "Assistant failed." });
+    return;
+  }
+  if (!built.ok) {
+    res.status(built.status).json({ error: built.error });
+    return;
+  }
+  const { convo, jobs, systemInstruction } = built.ctx;
+
+  setupSse(res);
+  let connected = true;
+  res.on("close", () => { connected = false; });
+  const isConnected = () => connected && !res.writableEnded;
+
+  // Keep the connection warm across slow thinking phases (Lambda/CloudFront).
+  const heartbeat = setInterval(() => { if (isConnected()) send({ type: "ping" }); }, 8000);
+
+  try {
+    send({ type: "meta", jobCount: jobs.length });
+
+    const ai = createGeminiClient();
+    const useSearch = process.env.TRANSLATOR_ASSISTANT_SEARCH !== "0";
+
+    const runStream = (opts: { search: boolean }) =>
+      ai.models.generateContentStream({
+        model: TRANSLATOR_ASSISTANT_MODEL,
+        contents: convo,
+        config: {
+          systemInstruction,
+          maxOutputTokens: 8192,
+          thinkingConfig: { thinkingLevel: "LOW" as any, includeThoughts: true },
+          ...(opts.search ? { tools: [{ googleSearch: {} }] } : {}),
+        },
+      });
+
+    const seenQueries = new Set<string>();
+    const sources = new Map<string, { title: string; url: string }>();
+
+    const consume = async (opts: { search: boolean }): Promise<string> => {
+      let answer = "";
+      const stream = await runStream(opts);
+      for await (const chunk of stream) {
+        if (!isConnected()) break;
+        const cand = chunk.candidates?.[0];
+        for (const p of cand?.content?.parts ?? []) {
+          if (p?.thought && p?.text) {
+            send({ type: "thought", content: p.text });
+          } else if (typeof p?.text === "string" && p.text) {
+            answer += p.text;
+            send({ type: "text", content: p.text });
+          }
+        }
+        // Grounding: surface the web-search queries + citation links.
+        const gm: any = cand?.groundingMetadata;
+        if (gm) {
+          const queries: string[] = (gm.webSearchQueries ?? []).filter(
+            (q: string) => q && !seenQueries.has(q) && (seenQueries.add(q), true),
+          );
+          if (queries.length) send({ type: "search", queries });
+          for (const c of gm.groundingChunks ?? []) {
+            const web = c?.web;
+            if (web?.uri && !sources.has(web.uri)) {
+              sources.set(web.uri, { title: web.title || web.uri, url: web.uri });
+            }
+          }
+        }
+      }
+      return answer.trim();
+    };
+
+    let answer = await consume({ search: useSearch });
+    // Retry once without grounding if nothing came back (grounding can yield
+    // only metadata with no text part).
+    if (!answer && isConnected()) {
+      answer = await consume({ search: false });
+    }
+
+    if (isConnected()) {
+      if (sources.size) send({ type: "sources", items: [...sources.values()] });
+      if (!answer) {
+        send({ type: "text", content: "I couldn't generate a response just now — please try asking again." });
+      }
+      send({ type: "done" });
+    }
+  } catch (err: any) {
+    console.error("[Translator] /assistant/stream error:", err);
+    if (isConnected()) send({ type: "error", message: err?.message || "Assistant failed." });
+  } finally {
+    clearInterval(heartbeat);
+    if (!res.writableEnded) res.end();
   }
 });
 

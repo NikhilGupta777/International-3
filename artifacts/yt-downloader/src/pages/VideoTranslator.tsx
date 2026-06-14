@@ -24,19 +24,36 @@ import { translatorAuthHeaders } from "@/lib/translator-client-id";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const API = `${BASE}/api/translator`;
 
+// ── Translation Assistant message shape ──────────────────────────────────────
+type AiSource = { title: string; url: string };
+type AiMsg = {
+  role: "user" | "model";
+  content: string;
+  thoughts?: string;
+  searches?: string[];
+  sources?: AiSource[];
+  status?: "thinking" | "searching" | "answering" | "done" | "error";
+};
+
 // ── Lightweight Markdown renderer for the Translation Assistant ───────────────
-// Supports **bold**, *italic*, `code`, fenced ```code``` blocks, #/## headings
-// and -/* / numbered lists. Uses Tailwind utility classes (no extra CSS).
+// Supports **bold**, *italic*, `code`, [links](url), fenced ```code``` blocks,
+// #/## headings, -/* / numbered lists, > blockquotes and --- rules. Styled for
+// the assistant's light (white) theme with Tailwind utility classes (no CSS).
 function renderAssistantMarkdown(text: string): ReactNode {
   const inlineFormat = (str: string, key: string): ReactNode => {
     const parts: ReactNode[] = [];
-    const re = /(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g;
+    // Order matters: links first, then bold, code, italic.
+    const re = /(\[[^\]]+\]\([^)\s]+\)|\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_)/g;
     let last = 0; let mm: RegExpExecArray | null; let k = 0;
     while ((mm = re.exec(str)) !== null) {
       if (mm.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, mm.index)}</span>);
       const tok = mm[0];
-      if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`} className="font-semibold text-white">{tok.slice(2, -2)}</strong>);
-      else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`} className="px-1 py-0.5 rounded bg-black/40 text-primary text-[12px] font-mono">{tok.slice(1, -1)}</code>);
+      if (tok.startsWith("[")) {
+        const lm = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok);
+        if (lm) parts.push(<a key={`${key}-a${k++}`} href={lm[2]} target="_blank" rel="noreferrer" className="text-primary underline underline-offset-2 hover:text-orange-600 break-all">{lm[1]}</a>);
+        else parts.push(<span key={`${key}-a${k++}`}>{tok}</span>);
+      } else if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`} className="font-semibold text-slate-900">{tok.slice(2, -2)}</strong>);
+      else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`} className="px-1 py-0.5 rounded bg-slate-100 text-primary text-[12px] font-mono">{tok.slice(1, -1)}</code>);
       else parts.push(<em key={`${key}-i${k++}`}>{tok.slice(1, -1)}</em>);
       last = mm.index + tok.length;
     }
@@ -59,7 +76,7 @@ function renderAssistantMarkdown(text: string): ReactNode {
   segments.forEach((seg, segIdx) => {
     if (seg.kind === "code") {
       out.push(
-        <pre key={`pre-${segIdx}`} className="my-1.5 p-2 rounded-lg bg-black/40 overflow-x-auto text-[12px] font-mono text-white/80">
+        <pre key={`pre-${segIdx}`} className="my-1.5 p-2.5 rounded-lg bg-slate-900 overflow-x-auto text-[12px] font-mono text-slate-100">
           <code>{seg.body.replace(/\n$/, "")}</code>
         </pre>,
       );
@@ -69,14 +86,20 @@ function renderAssistantMarkdown(text: string): ReactNode {
     lines.forEach((line, li) => {
       const key = `s${segIdx}-${li}`;
       const heading = /^(#{1,4})\s+(.*)/.exec(line);
-      const ul = /^[-*+]\s+(.*)/.exec(line);
-      const ol = /^(\d+)\.\s+(.*)/.exec(line);
-      if (heading) {
-        out.push(<div key={key} className="font-bold text-white mt-2 mb-0.5">{inlineFormat(heading[2], `h${key}`)}</div>);
+      const ul = /^\s*[-*+]\s+(.*)/.exec(line);
+      const ol = /^\s*(\d+)[.)]\s+(.*)/.exec(line);
+      const quote = /^>\s?(.*)/.exec(line);
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        out.push(<hr key={key} className="my-2 border-slate-200" />);
+      } else if (heading) {
+        const big = heading[1].length <= 2;
+        out.push(<div key={key} className={cn("font-bold text-slate-900", big ? "text-[15px] mt-2.5 mb-1" : "text-[13px] mt-2 mb-0.5")}>{inlineFormat(heading[2], `h${key}`)}</div>);
+      } else if (quote) {
+        out.push(<div key={key} className="border-l-2 border-primary/40 pl-2.5 my-1 text-slate-500 italic">{inlineFormat(quote[1], `q${key}`)}</div>);
       } else if (ul) {
-        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0">•</span><span className="flex-1">{inlineFormat(ul[1], `u${key}`)}</span></div>);
+        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0 leading-relaxed">•</span><span className="flex-1">{inlineFormat(ul[1], `u${key}`)}</span></div>);
       } else if (ol) {
-        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0">{ol[1]}.</span><span className="flex-1">{inlineFormat(ol[2], `o${key}`)}</span></div>);
+        out.push(<div key={key} className="flex gap-1.5 pl-1"><span className="text-primary shrink-0 font-medium leading-relaxed">{ol[1]}.</span><span className="flex-1">{inlineFormat(ol[2], `o${key}`)}</span></div>);
       } else if (line.trim() === "") {
         if (li < lines.length - 1) out.push(<div key={key} className="h-1.5" />);
       } else {
@@ -85,6 +108,77 @@ function renderAssistantMarkdown(text: string): ReactNode {
     });
   });
   return <>{out}</>;
+}
+
+// ── Live status pill shown while the assistant is working ─────────────────────
+function AssistantStatusPill({ status }: { status?: AiMsg["status"] }) {
+  if (status === "searching") {
+    return <span className="inline-flex items-center gap-1 text-[11px] text-blue-600"><Loader2 className="w-3 h-3 animate-spin" /> Searching the web…</span>;
+  }
+  if (status === "answering") {
+    return <span className="inline-flex items-center gap-1 text-[11px] text-slate-400"><Loader2 className="w-3 h-3 animate-spin" /> Writing…</span>;
+  }
+  if (status === "thinking") {
+    return <span className="inline-flex items-center gap-1 text-[11px] text-slate-400"><Loader2 className="w-3 h-3 animate-spin" /> Thinking…</span>;
+  }
+  return null;
+}
+
+// ── A single assistant message: live thinking trace, search chips, the Markdown
+//    answer, and grounding sources. Light (white) theme. ───────────────────────
+function AssistantBubble({ m }: { m: AiMsg }) {
+  const [showThoughts, setShowThoughts] = useState(false);
+  const live = m.status === "thinking" || m.status === "searching" || m.status === "answering";
+  const hasThoughts = !!(m.thoughts && m.thoughts.trim());
+  return (
+    <div className="max-w-[88%] rounded-2xl rounded-tl-sm px-3 py-2.5 text-sm break-words bg-white border border-slate-200 text-slate-800 leading-relaxed shadow-sm">
+      {!!m.searches?.length && (
+        <div className="flex flex-wrap gap-1 mb-1.5">
+          {m.searches.map((s, idx) => (
+            <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-100 text-[11px] max-w-full truncate">
+              <Sparkles className="w-3 h-3 shrink-0" /> <span className="truncate">{s}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {hasThoughts && (
+        <div className="mb-1.5">
+          <button
+            onClick={() => setShowThoughts((v) => !v)}
+            className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600 transition-colors"
+          >
+            {(showThoughts || live) ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            {live ? "Thinking…" : "Thought process"}
+          </button>
+          {(showThoughts || live) && (
+            <div className="mt-1 pl-2 border-l-2 border-slate-200 text-[12px] text-slate-500 whitespace-pre-wrap max-h-40 overflow-y-auto">
+              {m.thoughts}
+            </div>
+          )}
+        </div>
+      )}
+
+      {m.content
+        ? renderAssistantMarkdown(m.content)
+        : (live && !hasThoughts ? <AssistantStatusPill status={m.status} /> : null)}
+
+      {live && m.content ? <div className="mt-1"><AssistantStatusPill status={m.status} /></div> : null}
+
+      {!!m.sources?.length && (
+        <div className="mt-2 pt-2 border-t border-slate-100">
+          <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Sources</p>
+          <div className="flex flex-col gap-0.5">
+            {m.sources.map((s, idx) => (
+              <a key={idx} href={s.url} target="_blank" rel="noreferrer" className="text-[12px] text-primary hover:underline truncate">
+                {idx + 1}. {s.title}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // â”€â”€ Language options â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -397,6 +491,10 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [preserveChants, setPreserveChants] = useState(true);
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<any>(null);
+  // When the user clicks "Translate another video" we show the upload form again
+  // while existing jobs keep running in the background. This flag stops the
+  // reconcile effect from auto-re-opening the running job over the fresh form.
+  const [composingNew, setComposingNew] = useState(false);
   const [transcript, setTranscript] = useState<any[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -407,7 +505,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [showDebug, setShowDebug] = useState(false);
   // ── Temporary in-tab AI status assistant ──────────────────────────────
   const [aiOpen, setAiOpen] = useState(false);
-  const [aiMessages, setAiMessages] = useState<{ role: "user" | "model"; content: string }[]>([]);
+  const [aiMessages, setAiMessages] = useState<AiMsg[]>([]);
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
@@ -437,18 +535,30 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     setHistory(loadTranslatorHistory());
   }, []);
 
-  // Ask the in-tab AI assistant. It receives the full conversation, the
-  // currently-open jobId, and the client-side activity log, and the backend
-  // adds a live snapshot of ALL the user's translation jobs + their logs.
+  // Ask the in-tab AI assistant via the streaming endpoint. The backend streams
+  // the model's live thinking, any web searches, and the answer as Markdown,
+  // backed by a read-only snapshot of ALL the user's translation jobs + logs.
   const askAi = useCallback(async (text: string) => {
     const q = text.trim();
     if (!q || aiBusy) return;
-    const history = [...aiMessages, { role: "user" as const, content: q }];
-    setAiMessages(history);
+    const history: AiMsg[] = [...aiMessages, { role: "user", content: q }];
+    // Append the user turn + an empty assistant turn we'll fill as events arrive.
+    setAiMessages([...history, { role: "model", content: "", status: "thinking", thoughts: "", searches: [], sources: [] }]);
     setAiInput("");
     setAiBusy(true);
+
+    // Mutate only the trailing (assistant) message.
+    const patchLast = (fn: (m: AiMsg) => AiMsg) =>
+      setAiMessages((prev) => {
+        if (!prev.length) return prev;
+        const next = prev.slice();
+        const i = next.length - 1;
+        if (next[i]?.role === "model") next[i] = fn(next[i]);
+        return next;
+      });
+
     try {
-      const res = await fetch(`${API}/assistant`, {
+      const res = await fetch(`${API}/assistant/stream`, {
         method: "POST",
         headers: { ...translatorAuthHeaders(), "Content-Type": "application/json" },
         cache: NO_STORE,
@@ -458,14 +568,44 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           clientLogs: debugLog.slice(-120),
         }),
       });
-      if (!res.ok) throw await responseError(res, `Assistant error (${res.status})`);
-      const data = await readJsonResponse<{ reply?: string }>(res);
-      setAiMessages((prev) => [...prev, { role: "model", content: data.reply?.trim() || "No response." }]);
+      if (!res.ok || !res.body) throw await responseError(res, `Assistant error (${res.status})`);
+
+      const handle = (e: any) => {
+        if (!e || typeof e.type !== "string") return;
+        if (e.type === "thought" && e.content) {
+          patchLast((m) => ({ ...m, thoughts: (m.thoughts ?? "") + e.content, status: m.content ? m.status : "thinking" }));
+        } else if (e.type === "search" && Array.isArray(e.queries)) {
+          patchLast((m) => ({ ...m, searches: [...(m.searches ?? []), ...e.queries], status: m.content ? m.status : "searching" }));
+        } else if (e.type === "text" && e.content) {
+          patchLast((m) => ({ ...m, content: (m.content ?? "") + e.content, status: "answering" }));
+        } else if (e.type === "sources" && Array.isArray(e.items)) {
+          patchLast((m) => ({ ...m, sources: e.items }));
+        } else if (e.type === "done") {
+          patchLast((m) => ({ ...m, status: "done" }));
+        } else if (e.type === "error") {
+          patchLast((m) => ({ ...m, content: m.content || `⚠️ ${e.message || "The assistant couldn't respond. Try again."}`, status: "error" }));
+        }
+      };
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      const drain = (chunk: string) => {
+        const raw = chunk.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n").trim();
+        if (raw) { try { handle(JSON.parse(raw)); } catch { /* ignore partial */ } }
+      };
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const frames = buf.split(/\r?\n\r?\n/);
+        buf = frames.pop() ?? "";
+        for (const frame of frames) drain(frame);
+      }
+      if (buf.trim()) drain(buf);
+      patchLast((m) => ({ ...m, status: m.status === "error" ? "error" : "done" }));
     } catch (e: any) {
-      setAiMessages((prev) => [
-        ...prev,
-        { role: "model", content: `⚠️ ${e?.message || "The assistant couldn't respond. Try again."}` },
-      ]);
+      patchLast((m) => ({ ...m, content: m.content || `⚠️ ${e?.message || "The assistant couldn't respond. Try again."}`, status: "error" }));
     } finally {
       setAiBusy(false);
     }
@@ -773,7 +913,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         }
         if (!closed) {
           refreshHistory();
-          if (!jobId) {
+          // Auto-open the newest running job on load — but NOT while the user is
+          // composing a new translation, or we'd hijack their fresh form.
+          if (!jobId && !composingNew) {
             const active = loadActiveTranslatorJobs();
             const newest = active.sort((a, b) => b.startedAt - a.startedAt)[0];
             if (newest) {
@@ -796,7 +938,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     return () => {
       closed = true;
     };
-  }, [fetchResultUrls, jobId, refreshHistory]);
+  }, [fetchResultUrls, jobId, refreshHistory, composingNew]);
 
   // Shared translator options for both the file-upload and YouTube paths.
   const buildSubmitOptions = useCallback(() => {
@@ -918,6 +1060,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         voiceClone: opts.voiceClone,
         lipSync: opts.lipSync,
       });
+      setComposingNew(false);
       setJobId(newJobId);
       refreshHistory();
     } catch (e: any) {
@@ -1034,6 +1177,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         voiceClone: isVoiceClone,
         lipSync: lipSyncAvailable && lipSync && translationMode === "full",
       });
+      setComposingNew(false);
       setJobId(newJobId);
       refreshHistory();
     } catch (e: any) {
@@ -1053,8 +1197,18 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     lastProgressRef.current = { progress: 0, status: "", ts: 0 };
   };
 
+  // Return to the upload form to start an additional translation WITHOUT
+  // cancelling the running one — it keeps processing and stays visible in the
+  // "Active translations" list. `composingNew` blocks the reconcile effect from
+  // snapping the foreground back to the running job.
+  const startAnother = () => {
+    setComposingNew(true);
+    reset();
+  };
+
   const openActiveEntry = (entry: ActiveTranslatorJob) => {
     if (pollRef.current) clearTimeout(pollRef.current);
+    setComposingNew(false);
     setFile(null);
     setError(null);
     setTranscript([]);
@@ -1100,6 +1254,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
 
   const openHistoryEntry = async (entry: TranslatorHistoryEntry) => {
     if (pollRef.current) clearTimeout(pollRef.current);
+    setComposingNew(false);
     setFile(null);
     setError(null);
     setTranscript([]);
@@ -1269,7 +1424,15 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             <div className="px-4 py-3 border-b border-white/[0.06] flex items-center gap-2">
               <Loader2 className="w-4 h-4 text-amber-300 animate-spin" />
               <span className="text-sm font-semibold text-white/85">Active translations</span>
-              <span className="text-xs text-white/35 ml-auto">{activeJobs.length}</span>
+              <span className="text-xs text-white/35">{activeJobs.length}</span>
+              {(isProcessing || (!composingNew && !preparing)) && (
+                <button
+                  onClick={startAnother}
+                  className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 transition-colors"
+                >
+                  + Translate another
+                </button>
+              )}
             </div>
             <div className="divide-y divide-white/[0.05]">
               {activeJobs.map((entry) => (
@@ -1605,8 +1768,14 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
               <>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm font-semibold text-white/88">Translating video...</span>
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <span className="text-sm font-mono text-white/50">{overallPct.toFixed(0)}%</span>
+                    <button
+                      onClick={startAnother}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 transition-colors"
+                    >
+                      + New
+                    </button>
                     <button
                       onClick={() => jobId && void cancelTranslation(jobId)}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/20 transition-colors"
@@ -1865,35 +2034,37 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       </button>
 
       {aiOpen && (
-        <div className="fixed bottom-20 right-5 z-40 w-[min(92vw,380px)] h-[min(70vh,520px)] flex flex-col rounded-2xl border border-white/10 bg-[#16161c] shadow-2xl overflow-hidden">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-white/10 bg-white/[0.03]">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shrink-0">
-              <Bot className="w-4 h-4 text-white" />
+        <div className="fixed bottom-20 right-5 z-40 w-[min(94vw,400px)] h-[min(76vh,580px)] flex flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
+          <div className="flex items-center gap-2.5 px-4 py-3 border-b border-slate-200 bg-white">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shrink-0 shadow-sm shadow-primary/30">
+              <Bot className="w-5 h-5 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-white leading-none">Translation Assistant</p>
-              <p className="text-[11px] text-white/40 mt-0.5">Sees all your jobs, status &amp; logs</p>
+              <p className="text-sm font-bold text-slate-900 leading-none">Translation Assistant</p>
+              <p className="text-[11px] text-slate-500 mt-1">Senior debugger · reads all jobs &amp; logs (read-only)</p>
             </div>
             <button
               onClick={() => setAiOpen(false)}
-              className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
               title="Close"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
-          <div ref={aiScrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+          <div ref={aiScrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-3 bg-slate-50">
             {aiMessages.length === 0 && (
-              <div className="text-center text-white/40 text-xs px-4 py-6 space-y-2">
-                <Sparkles className="w-6 h-6 mx-auto text-primary/60" />
-                <p>Ask me anything about your translations — live status, logs, and what happened.</p>
+              <div className="text-center text-slate-500 text-xs px-4 py-6 space-y-2">
+                <div className="w-10 h-10 mx-auto rounded-xl bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shadow-sm shadow-primary/30">
+                  <Sparkles className="w-5 h-5 text-white" />
+                </div>
+                <p className="text-slate-600">I'm your translation debugger. I can read every job's status, steps, warnings and errors — ask me anything.</p>
                 <div className="flex flex-wrap gap-1.5 justify-center pt-1">
-                  {["What's the status?", "What happened to my last job?", "Did anything fail?"].map((s) => (
+                  {["What's the status?", "Why did my last job fail?", "Did anything fail today?", "How do I fix the lip-sync error?"].map((s) => (
                     <button
                       key={s}
                       onClick={() => void askAi(s)}
-                      className="px-2.5 py-1 rounded-full bg-white/5 hover:bg-white/10 text-white/60 text-[11px] transition-colors"
+                      className="px-2.5 py-1 rounded-full bg-white border border-slate-200 hover:border-primary/40 hover:text-primary text-slate-600 text-[11px] transition-colors"
                     >
                       {s}
                     </button>
@@ -1903,41 +2074,31 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             )}
             {aiMessages.map((m, i) => (
               <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-                <div
-                  className={cn(
-                    "max-w-[85%] rounded-2xl px-3 py-2 text-sm break-words",
-                    m.role === "user"
-                      ? "bg-primary text-white whitespace-pre-wrap"
-                      : "bg-white/[0.06] text-white/90 leading-relaxed",
-                  )}
-                >
-                  {m.role === "user" ? m.content : renderAssistantMarkdown(m.content)}
-                </div>
+                {m.role === "user" ? (
+                  <div className="max-w-[85%] rounded-2xl rounded-tr-sm px-3 py-2 text-sm break-words whitespace-pre-wrap bg-primary text-white shadow-sm">
+                    {m.content}
+                  </div>
+                ) : (
+                  <AssistantBubble m={m} />
+                )}
               </div>
             ))}
-            {aiBusy && (
-              <div className="flex justify-start">
-                <div className="rounded-2xl px-3 py-2 bg-white/[0.06] text-white/60 text-sm flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Thinking…
-                </div>
-              </div>
-            )}
           </div>
 
           <form
             onSubmit={(e) => { e.preventDefault(); void askAi(aiInput); }}
-            className="flex items-center gap-2 p-2.5 border-t border-white/10 bg-white/[0.02]"
+            className="flex items-center gap-2 p-2.5 border-t border-slate-200 bg-white"
           >
             <input
               value={aiInput}
               onChange={(e) => setAiInput(e.target.value)}
               placeholder="Ask about status, logs, errors…"
-              className="flex-1 bg-white/5 rounded-xl px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:ring-1 focus:ring-primary/50"
+              className="flex-1 bg-slate-100 rounded-xl px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-primary/40 focus:bg-white transition-colors"
             />
             <button
               type="submit"
               disabled={aiBusy || !aiInput.trim()}
-              className="p-2 rounded-xl bg-primary text-white disabled:opacity-40 transition-opacity"
+              className="p-2 rounded-xl bg-primary text-white disabled:opacity-40 transition-opacity hover:bg-orange-500"
               title="Send"
             >
               <Send className="w-4 h-4" />
