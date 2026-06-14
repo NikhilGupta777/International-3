@@ -32,6 +32,12 @@ param(
 $ErrorActionPreference = "Stop"
 $EcrRepo = "$AccountId.dkr.ecr.$Region.amazonaws.com/$Prefix-translator"
 $InstanceProfile = "$Prefix-ecs-instance-profile"
+$GpuComputeEnvironments = @(
+  "$Prefix-gpu-fast-v2",
+  "$Prefix-gpu-spot-v2",
+  "$Prefix-gpu-fast-compute",
+  "$Prefix-gpu-compute"
+)
 
 # ── 1. Resolve translator image URI ──────────────────────────────────────────
 if (-not $ImageTag) {
@@ -115,15 +121,6 @@ for ($i = 1; $i -le $maxWait; $i++) {
 # ── 6. Create AMI from instance ───────────────────────────────────────────────
 $AmiName = "$Prefix-translator-ami-$ImageTag"
 Write-Host "[5/7] Creating AMI: $AmiName ..."
-$AmiResult = aws ec2 create-image `
-  --instance-id $InstanceId `
-  --name $AmiName `
-  --description "Translator GPU AMI — pre-pulled $ImageUri" `
-  --no-reboot `
-  --block-device-mappings file://block_devices.json `
-  --region $Region | ConvertFrom-Json 2>&1
-
-# block_devices deleted, recreate
 [System.IO.File]::WriteAllText("$PWD\block_devices.json", $blockDevices, [Text.Encoding]::ASCII)
 $AmiResult = aws ec2 create-image `
   --instance-id $InstanceId `
@@ -154,98 +151,82 @@ Write-Host "       AMI ready: $AmiId"
 if ($EnableFsr) {
   try {
     Write-Host "[6b] Enabling Fast Snapshot Restore (FSR) on the new AMI snapshot..."
-    $NewSnap = (aws ec2 describe-images --image-ids $AmiId --region $Region `
-      --query "Images[0].BlockDeviceMappings[0].Ebs.SnapshotId" --output text 2>&1).Trim()
+    $NewSnap = (& aws ec2 describe-images --image-ids $AmiId --region $Region --query "Images[0].BlockDeviceMappings[0].Ebs.SnapshotId" --output text 2>&1).Trim()
     if (-not $NewSnap -or $NewSnap -eq "None") { throw "Could not resolve snapshot id for $AmiId." }
 
-    # Resolve the AZ(s) the Batch GPU compute environments launch in (FSR is
-    # per-AZ, so it must cover wherever instances actually boot).
+    # Resolve the AZ(s) the Batch GPU compute environments launch in. FSR is per-AZ.
     $azList = @()
     if ($FsrZones) {
-      $azList = $FsrZones -split "[,\s]+" | Where-Object { $_ }
+      $azList = @($FsrZones -split "[,\s]+" | Where-Object { $_ })
     } else {
-      foreach ($Ce in @("$Prefix-gpu-fast-compute", "$Prefix-gpu-compute")) {
-        $subnets = (aws batch describe-compute-environments --compute-environments $Ce --region $Region `
-          --query "computeEnvironments[0].computeResources.subnets" --output text 2>&1)
+      foreach ($Ce in $GpuComputeEnvironments) {
+        $subnets = & aws batch describe-compute-environments --compute-environments $Ce --region $Region --query "computeEnvironments[0].computeResources.subnets" --output text 2>&1
         if ($LASTEXITCODE -eq 0 -and $subnets -and $subnets -ne "None") {
           foreach ($sn in ($subnets -split "\s+")) {
-            if ($sn) {
-              $az = (aws ec2 describe-subnets --subnet-ids $sn --region $Region `
-                --query "Subnets[0].AvailabilityZone" --output text 2>&1).Trim()
-              if ($az -and $az -ne "None") { $azList += $az }
-            }
+            if (-not $sn) { continue }
+            $az = (& aws ec2 describe-subnets --subnet-ids $sn --region $Region --query "Subnets[0].AvailabilityZone" --output text 2>&1).Trim()
+            if ($az -and $az -ne "None") { $azList += $az }
           }
         }
       }
       if ($azList.Count -eq 0) {
-        $az = (aws ec2 describe-subnets --subnet-ids $SubnetId --region $Region `
-          --query "Subnets[0].AvailabilityZone" --output text 2>&1).Trim()
+        $az = (& aws ec2 describe-subnets --subnet-ids $SubnetId --region $Region --query "Subnets[0].AvailabilityZone" --output text 2>&1).Trim()
         if ($az -and $az -ne "None") { $azList += $az }
       }
     }
-    $azList = $azList | Sort-Object -Unique
+
+    $azList = @($azList | Sort-Object -Unique)
     if ($azList.Count -eq 0) { throw "Could not resolve any Availability Zone for FSR." }
 
-    Write-Host "[6b] FSR target snapshot $NewSnap in AZ(s): $($azList -join ', ')"
-    aws ec2 enable-fast-snapshot-restores `
-      --availability-zones $azList `
-      --source-snapshot-ids $NewSnap `
-      --region $Region 2>&1 | Out-Null
+    $azLabel = $azList -join ", "
+    Write-Host ("[6b] FSR target snapshot {0} in AZ(s): {1}" -f $NewSnap, $azLabel)
+    & aws ec2 enable-fast-snapshot-restores --availability-zones $azList --source-snapshot-ids $NewSnap --region $Region 2>&1 | Out-Null
 
-    # Best-effort wait until FSR leaves the 'optimizing' phase. The speedup only
-    # applies to volumes created AFTER it reaches 'enabled'; large snapshots can
-    # take 15-60 min to optimize, so we don't block the deploy on it.
-    $fsrWait = 15  # 15 × 20s = 5 min
+    # Best-effort wait. The speedup applies only to volumes created after FSR reaches enabled.
+    $fsrWait = 15
     for ($i = 1; $i -le $fsrWait; $i++) {
       Start-Sleep -Seconds 20
-      $states = (aws ec2 describe-fast-snapshot-restores `
-        --filters "Name=snapshot-id,Values=$NewSnap" `
-        --query "FastSnapshotRestores[].State" --output text --region $Region 2>&1).Trim()
+      $states = (& aws ec2 describe-fast-snapshot-restores --filters "Name=snapshot-id,Values=$NewSnap" --query "FastSnapshotRestores[].State" --output text --region $Region 2>&1).Trim()
       Write-Host "  [FSR $i/$fsrWait] state: $states"
       if ($states -and $states -notmatch "enabling|optimizing|disabl") { break }
       if ($i -eq $fsrWait) {
-        Write-Host "  i  FSR still optimizing in the background — the speedup applies once it reaches 'enabled' (can take 15-60 min)."
+        Write-Host "  FSR still optimizing in the background. Speedup applies once it reaches enabled."
       }
     }
-    Write-Host "  FSR billing ~= 0.75 USD/hr per AZ ($($azList.Count) AZ) for the active snapshot. Old ones are disabled below."
 
-    # Cost control: keep FSR on ONLY the newest snapshot. Disable it on any
-    # other translator AMI snapshot that still has it enabled.
+    $azCount = $azList.Count
+    Write-Host ("  FSR billing ~= 0.75 USD/hr per AZ ({0} AZ) for the active snapshot. Old ones are disabled below." -f $azCount)
+
+    # Cost control: keep FSR on only the newest snapshot.
     try {
-      $ourSnaps = (aws ec2 describe-images --owners self `
-        --filters "Name=name,Values=$Prefix-translator-ami-*" `
-        --query "Images[].BlockDeviceMappings[0].Ebs.SnapshotId" --output text --region $Region 2>&1) -split "\s+"
+      $ourSnaps = (& aws ec2 describe-images --owners self --filters "Name=name,Values=$Prefix-translator-ami-*" --query "Images[].BlockDeviceMappings[0].Ebs.SnapshotId" --output text --region $Region 2>&1) -split "\s+"
       foreach ($snap in $ourSnaps) {
         if (-not $snap -or $snap -eq "None" -or $snap -eq $NewSnap) { continue }
-        $fsrAzs = ((aws ec2 describe-fast-snapshot-restores `
-          --filters "Name=snapshot-id,Values=$snap" "Name=state,Values=enabled,enabling,optimizing" `
-          --query "FastSnapshotRestores[].AvailabilityZone" --output text --region $Region 2>&1) -split "\s+") `
-          | Where-Object { $_ -and $_ -ne "None" }
+        $fsrAzs = @((& aws ec2 describe-fast-snapshot-restores --filters "Name=snapshot-id,Values=$snap" "Name=state,Values=enabled,enabling,optimizing" --query "FastSnapshotRestores[].AvailabilityZone" --output text --region $Region 2>&1) -split "\s+" | Where-Object { $_ -and $_ -ne "None" })
         if ($fsrAzs.Count -gt 0) {
-          aws ec2 disable-fast-snapshot-restores --availability-zones $fsrAzs --source-snapshot-ids $snap --region $Region 2>&1 | Out-Null
+          & aws ec2 disable-fast-snapshot-restores --availability-zones $fsrAzs --source-snapshot-ids $snap --region $Region 2>&1 | Out-Null
           Write-Host "  Disabled stale FSR on old snapshot $snap"
         }
       }
-    } catch { Write-Host "  WARN: could not audit/disable old FSR snapshots: $_" }
+    } catch {
+      Write-Host "  WARN: could not audit/disable old FSR snapshots: $_"
+    }
   } catch {
-    Write-Host "  WARN: FSR not enabled (continuing — AMI works fine, just without pre-hydration): $_"
-    Write-Host "        Needs ec2:EnableFastSnapshotRestores + FSR quota > 0 in $Region."
+    Write-Host "  WARN: FSR not enabled. AMI still works, just without pre-hydration: $_"
+    Write-Host "        Needs ec2:EnableFastSnapshotRestores and FSR quota > 0 in $Region."
   }
 }
 
 # ── 7. Update Batch compute environments ─────────────────────────────────────
 Write-Host "[6/7] Updating Batch compute environments to use AMI $AmiId ..."
-foreach ($Ce in @("$Prefix-gpu-fast-compute", "$Prefix-gpu-compute")) {
-  $updateJson = "{`"imageId`":`"$AmiId`"}"
+foreach ($Ce in $GpuComputeEnvironments) {
+  $updateJson = ('{"imageId":"{0}"}' -f $AmiId)
   [System.IO.File]::WriteAllText("$PWD\ami_update.json", $updateJson, [Text.Encoding]::ASCII)
-  $result = aws batch update-compute-environment `
-    --compute-environment $Ce `
-    --compute-resources file://ami_update.json `
-    --region $Region 2>&1
+  $result = & aws batch update-compute-environment --compute-environment $Ce --compute-resources file://ami_update.json --region $Region 2>&1
   if ($LASTEXITCODE -eq 0) {
-    Write-Host "  ✅ $Ce → $AmiId"
+    Write-Host ("  OK {0} -> {1}" -f $Ce, $AmiId)
   } else {
-    Write-Host "  ⚠️  $Ce: $result (may need launch template — AMI ID: $AmiId)"
+    Write-Host ("  WARN {0}: {1} (may need launch template - AMI ID: {2})" -f $Ce, $result, $AmiId)
   }
   Remove-Item -ErrorAction SilentlyContinue .\ami_update.json
 }

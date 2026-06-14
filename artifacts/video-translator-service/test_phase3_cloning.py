@@ -135,7 +135,7 @@ class CloneReferenceFromVocalsTests(unittest.TestCase):
 
     def test_main_uses_vocals_as_clone_reference(self):
         """
-        main() should reassign reference_audio to a Demucs vocals source when
+        The single-job pipeline should reassign reference_audio to a Demucs vocals source when
         voice cloning is on (the whole point of the clean-vocals fix), and
         record the source it used.
         """
@@ -144,7 +144,7 @@ class CloneReferenceFromVocalsTests(unittest.TestCase):
         import textwrap
         import worker
 
-        source = textwrap.dedent(inspect.getsource(worker.main))
+        source = textwrap.dedent(inspect.getsource(worker.process_single_job))
         tree = ast.parse(source)
 
         reassigned_to_vocals = False
@@ -163,7 +163,7 @@ class CloneReferenceFromVocalsTests(unittest.TestCase):
 
         self.assertTrue(
             reassigned_to_vocals,
-            "main() should use isolated vocals as the clone reference.",
+            "process_single_job() should use isolated vocals as the clone reference.",
         )
         # And the chosen source must be surfaced for diagnosability.
         self.assertIn("clone_reference_source", source)

@@ -4285,7 +4285,6 @@ def _sample_dominant_faces(video_path: Path, sample_fps: float = 3.0):
     """Sample frames and return (duration, fps, [(t, embedding|None)]) for the
     largest face in each sampled frame. Raises on import/IO problems."""
     import cv2
-    import numpy as np  # noqa: F401
     from insightface.app import FaceAnalysis
 
     app = FaceAnalysis(
