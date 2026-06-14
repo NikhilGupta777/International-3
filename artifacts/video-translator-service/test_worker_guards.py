@@ -69,7 +69,8 @@ class GeminiTranscriptionTests(unittest.TestCase):
         )
 
         self.assertIn("Do not translate", prompt)
-        self.assertIn("HeyGen-quality", prompt)
+        self.assertIn("broadcast-quality", prompt)
+        self.assertNotIn("HeyGen", prompt)
         self.assertIn("Do not split just because the text is long", prompt)
         self.assertIn("meaningful 1-2 second pause", prompt)
         self.assertIn("Output only JSON", prompt)
@@ -116,31 +117,98 @@ class GeminiTranscriptionTests(unittest.TestCase):
         # Regression: a numeric 0.0 start must be kept, not dropped as falsy.
         self.assertEqual(segments[0]["start"], 0.0)
 
-    def test_transcribe_routes_to_gemini_at_or_below_17_minutes_and_assembly_after(self):
+    def test_transcribe_routes_short_to_single_gemini_and_long_to_chunked(self):
         calls = []
-        old_gemini = getattr(self.worker, "transcribe_gemini", None)
-        old_assembly = getattr(self.worker, "transcribe_assemblyai", None)
-        old_cutoff = getattr(self.worker, "GEMINI_TRANSCRIBE_MAX_SECONDS", None)
+        old_single = self.worker.transcribe_gemini
+        old_chunked = self.worker.transcribe_gemini_chunked
+        old_window = self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS
         try:
-            self.worker.GEMINI_TRANSCRIBE_MAX_SECONDS = 1020.0
-            self.worker.transcribe_gemini = lambda path, duration: calls.append(("gemini", duration)) or [
-                {"id": 1, "start": 0.0, "end": 1.0, "text": "hi", "words": [{"word": "hi", "start": 0.0, "end": 1.0}]}
-            ]
-            self.worker.transcribe_assemblyai = lambda path: calls.append(("assemblyai", None)) or [
-                {"id": 1, "start": 0.0, "end": 1.0, "text": "long", "words": [{"word": "long", "start": 0.0, "end": 1.0}]}
-            ]
+            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = 600.0
+            seg = [{"id": 1, "start": 0.0, "end": 1.0, "text": "hi", "words": [{"word": "hi", "start": 0.0, "end": 1.0}]}]
+            self.worker.transcribe_gemini = lambda path, duration=None: calls.append(("single", duration)) or seg
+            self.worker.transcribe_gemini_chunked = lambda path, duration: calls.append(("chunked", duration)) or seg
 
-            self.worker.transcribe(Path("short.wav"), 1020.0)
-            self.worker.transcribe(Path("long.wav"), 1020.1)
+            self.worker.transcribe(Path("short.wav"), 600.0)    # at the window → single
+            self.worker.transcribe(Path("long.wav"), 600.1)     # over the window → chunked
 
-            self.assertEqual(calls, [("gemini", 1020.0), ("assemblyai", None)])
+            self.assertEqual(calls, [("single", 600.0), ("chunked", 600.1)])
         finally:
-            if old_gemini is not None:
-                self.worker.transcribe_gemini = old_gemini
-            if old_assembly is not None:
-                self.worker.transcribe_assemblyai = old_assembly
-            if old_cutoff is not None:
-                self.worker.GEMINI_TRANSCRIBE_MAX_SECONDS = old_cutoff
+            self.worker.transcribe_gemini = old_single
+            self.worker.transcribe_gemini_chunked = old_chunked
+            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = old_window
+
+    def test_transcribe_gemini_chunked_offsets_and_stitches_timestamps(self):
+        # Each chunk transcribes [0, len] in its own local time; stitching must add the
+        # chunk's start offset so the final timeline is continuous and re-ordered.
+        old_single = self.worker.transcribe_gemini
+        old_ffmpeg = self.worker.run_ffmpeg
+        old_window = self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS
+        try:
+            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = 10.0
+            self.worker.run_ffmpeg = lambda *a, **k: None  # don't actually cut audio
+            self.worker.transcribe_gemini = lambda path, length: [
+                {"id": 1, "start": 0.0, "end": min(4.0, length), "text": "a",
+                 "words": [{"word": "a", "start": 0.0, "end": min(4.0, length)}], "speaker": "SPEAKER_A"},
+            ]
+            out = self.worker.transcribe_gemini_chunked(Path("long.wav"), 25.0)
+            # 25s / 10s window → 3 chunks at offsets 0, 10, 20.
+            self.assertEqual(len(out), 3)
+            self.assertEqual([round(s["start"], 1) for s in out], [0.0, 10.0, 20.0])
+            self.assertEqual([s["id"] for s in out], [1, 2, 3])
+            self.assertTrue(all(s["words"] for s in out))
+        finally:
+            self.worker.transcribe_gemini = old_single
+            self.worker.run_ffmpeg = old_ffmpeg
+            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = old_window
+
+    def test_transcribe_gemini_chunked_skips_silent_chunk(self):
+        # A chunk that is pure silence/music raises "no usable speech" — chunked mode must
+        # skip it and keep the others, not fail the whole job.
+        old_single = self.worker.transcribe_gemini
+        old_ffmpeg = self.worker.run_ffmpeg
+        old_window = self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS
+        try:
+            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = 10.0
+            self.worker.run_ffmpeg = lambda *a, **k: None
+            state = {"n": 0}
+
+            def fake(path, length):
+                state["n"] += 1
+                if state["n"] == 2:
+                    raise RuntimeError("Gemini transcription returned no usable speech segments")
+                return [{"id": 1, "start": 0.0, "end": 3.0, "text": "x",
+                         "words": [{"word": "x", "start": 0.0, "end": 3.0}], "speaker": "SPEAKER_A"}]
+
+            self.worker.transcribe_gemini = fake
+            out = self.worker.transcribe_gemini_chunked(Path("v.wav"), 25.0)  # 3 chunks, middle silent
+            self.assertEqual(len(out), 2)
+            self.assertEqual([round(s["start"], 1) for s in out], [0.0, 20.0])
+        finally:
+            self.worker.transcribe_gemini = old_single
+            self.worker.run_ffmpeg = old_ffmpeg
+            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = old_window
+
+    def test_transcribe_gemini_retries_in_repair_mode_on_truncation(self):
+        # First call returns a truncated result (covers far less than duration); the
+        # truncation guard must retry in repair mode and keep the fuller result.
+        attempts = []
+        old_once = self.worker._transcribe_gemini_once
+
+        def fake_once(path, duration, repair=False):
+            attempts.append(repair)
+            if repair:
+                return [{"id": 1, "start": 0.0, "end": 95.0, "text": "full",
+                         "words": [{"word": "full", "start": 0.0, "end": 95.0}], "speaker": "SPEAKER_A"}]
+            return [{"id": 1, "start": 0.0, "end": 10.0, "text": "short",
+                     "words": [{"word": "short", "start": 0.0, "end": 10.0}], "speaker": "SPEAKER_A"}]
+
+        try:
+            self.worker._transcribe_gemini_once = fake_once
+            out = self.worker.transcribe_gemini(Path("a.wav"), 100.0)
+            self.assertEqual(attempts, [False, True])     # retried once in repair mode
+            self.assertEqual(out[-1]["end"], 95.0)        # kept the fuller result
+        finally:
+            self.worker._transcribe_gemini_once = old_once
 
 
 if __name__ == "__main__":

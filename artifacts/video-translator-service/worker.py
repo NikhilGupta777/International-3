@@ -152,6 +152,15 @@ GEMINI_TRANSCRIBE_MODEL = (
     or os.environ.get("GEMINI_MODEL", "").strip()
     or "gemini-3.5-flash"
 )
+# Thinking level for transcription. HIGH = best segmentation/timing accuracy.
+GEMINI_TRANSCRIBE_THINKING = (os.environ.get("GEMINI_TRANSCRIBE_THINKING", "HIGH").strip().upper() or "HIGH")
+# Audio longer than this is split into windows and transcribed by Gemini chunk-by-chunk
+# (instead of falling back to AssemblyAI), then stitched. Keep each window comfortably
+# under the single-call token budget. Default 600s (10 min).
+GEMINI_TRANSCRIBE_CHUNK_SECONDS = max(60.0, float(os.environ.get("GEMINI_TRANSCRIBE_CHUNK_SECONDS", "600")))
+# If a Gemini window covers less than this fraction of its known duration, treat it as a
+# truncated/early-stopped response and retry once in strict repair mode.
+GEMINI_TRANSCRIBE_MIN_COVERAGE = min(0.99, max(0.5, float(os.environ.get("GEMINI_TRANSCRIBE_MIN_COVERAGE", "0.9"))))
 ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK = (
     os.environ.get("ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK", "false").lower()
     in ("1", "true", "yes", "on")
@@ -595,7 +604,7 @@ Transcribe the provided audio exactly in the original spoken language. Do not tr
 
 The transcript will be translated and dubbed after this step, so timing and segmentation are critical.
 
-Top priority: create HeyGen-quality, audio-aware segments.
+Top priority: create professional, broadcast-quality, audio-aware segments.
 
 You must listen to the real audio rhythm, not just count words. Segment boundaries must follow when the speaker actually starts speaking, continues speaking, pauses, changes speaker, or finishes a connected thought.
 
@@ -670,11 +679,20 @@ Multi-speaker requested: {multi_speaker}
 """
 
 
+GEMINI_TRANSCRIPTION_REPAIR_SUFFIX = (
+    "\n\nSTRICT REPAIR MODE: A previous attempt returned invalid or incomplete JSON. "
+    "Transcribe the ENTIRE audio from the very first word to the very last word — do not stop "
+    "early and do not skip the end. Return exactly ONE complete, valid JSON object and nothing "
+    "else (no markdown, no commentary)."
+)
+
+
 def build_gemini_transcription_prompt(
     source_lang: str,
     target_lang: str,
     duration_seconds: Optional[float],
     multi_speaker: bool,
+    repair: bool = False,
 ) -> str:
     duration_hint = (
         f"{float(duration_seconds):.3f}"
@@ -682,13 +700,14 @@ def build_gemini_transcription_prompt(
         else "unknown"
     )
     source_hint = source_lang or SOURCE_LANG_CODE or "auto"
-    return (
+    prompt = (
         GEMINI_TRANSCRIPTION_PROMPT_TEMPLATE
         .replace("{source_lang}", source_hint)
         .replace("{target_lang}", target_lang or TARGET_LANG)
         .replace("{duration_seconds}", duration_hint)
         .replace("{multi_speaker}", str(bool(multi_speaker)).lower())
     )
+    return prompt + GEMINI_TRANSCRIPTION_REPAIR_SUFFIX if repair else prompt
 
 
 def _extract_json_object(text: str):
@@ -872,17 +891,24 @@ def _audio_mime_type(audio_path: Path) -> str:
     }.get(ext, "audio/wav")
 
 
-def transcribe_gemini(audio_path: Path, audio_duration_seconds: Optional[float] = None) -> list[dict]:
+def _transcribe_gemini_once(audio_path: Path, audio_duration_seconds: Optional[float], repair: bool = False) -> list[dict]:
+    """One Gemini transcription call for a single audio window. No retry/chunking."""
     global SOURCE_LANG_CODE
     prompt = build_gemini_transcription_prompt(
         source_lang=SOURCE_LANG_CODE or SOURCE_LANG or "auto",
         target_lang=TARGET_LANG,
         duration_seconds=audio_duration_seconds,
         multi_speaker=MULTI_SPEAKER,
+        repair=repair,
     )
     client = _get_gemini_client()
     mime_type = _audio_mime_type(audio_path)
-    log.info("[Gemini-ASR] Transcribing %s with %s...", audio_path.name, GEMINI_TRANSCRIBE_MODEL)
+    cfg = {
+        "temperature": 0.0,
+        "response_mime_type": "application/json",
+        "max_output_tokens": 65536,
+        "thinking_config": {"thinking_level": GEMINI_TRANSCRIBE_THINKING},
+    }
 
     if GOOGLE_GENAI_USE_VERTEXAI:
         from google.genai import types
@@ -890,15 +916,7 @@ def transcribe_gemini(audio_path: Path, audio_duration_seconds: Optional[float] 
             types.Part.from_bytes(data=audio_path.read_bytes(), mime_type=mime_type),
             prompt,
         ]
-        response = client.models.generate_content(
-            model=GEMINI_TRANSCRIBE_MODEL,
-            contents=contents,
-            config={
-                "temperature": 0.0,
-                "response_mime_type": "application/json",
-                "max_output_tokens": 65536,
-            },
-        )
+        response = client.models.generate_content(model=GEMINI_TRANSCRIBE_MODEL, contents=contents, config=cfg)
     else:
         uploaded = client.files.upload(file=str(audio_path))
         try:
@@ -912,15 +930,7 @@ def transcribe_gemini(audio_path: Path, audio_duration_seconds: Optional[float] 
                 attempts += 1
             if file_state and str(file_state).upper().endswith("FAILED"):
                 raise RuntimeError(f"Gemini file processing failed for {audio_path.name}")
-            response = client.models.generate_content(
-                model=GEMINI_TRANSCRIBE_MODEL,
-                contents=[uploaded, prompt],
-                config={
-                    "temperature": 0.0,
-                    "response_mime_type": "application/json",
-                    "max_output_tokens": 65536,
-                },
-            )
+            response = client.models.generate_content(model=GEMINI_TRANSCRIBE_MODEL, contents=[uploaded, prompt], config=cfg)
         finally:
             try:
                 file_name = getattr(uploaded, "name", None)
@@ -932,10 +942,90 @@ def transcribe_gemini(audio_path: Path, audio_duration_seconds: Optional[float] 
     payload = _extract_json_object(getattr(response, "text", "") or "")
     if isinstance(payload, dict) and payload.get("languageCode"):
         SOURCE_LANG_CODE = str(payload.get("languageCode") or SOURCE_LANG_CODE).strip() or SOURCE_LANG_CODE
-    segments = normalize_gemini_transcript_payload(payload, audio_duration_seconds)
+    return normalize_gemini_transcript_payload(payload, audio_duration_seconds)
+
+
+def _coverage_ok(segments: list[dict], duration: Optional[float]) -> bool:
+    """True when segments cover enough of a known window to not look truncated."""
+    if not duration or duration <= 30 or not segments:
+        return True
+    return float(segments[-1].get("end", 0.0)) >= duration * GEMINI_TRANSCRIBE_MIN_COVERAGE
+
+
+def transcribe_gemini(audio_path: Path, audio_duration_seconds: Optional[float] = None) -> list[dict]:
+    """Transcribe one window with Gemini, with a parse/empty retry (#3) and a
+    truncation/early-stop guard (#2): if the result stops well short of the known
+    duration, retry once in strict repair mode and keep whichever covers more."""
+    log.info("[Gemini-ASR] Transcribing %s with %s (%s thinking)...", audio_path.name, GEMINI_TRANSCRIBE_MODEL, GEMINI_TRANSCRIBE_THINKING)
+    try:
+        segments = _transcribe_gemini_once(audio_path, audio_duration_seconds)
+    except Exception as first_err:
+        log.warning("[Gemini-ASR] First attempt failed (%s); retrying once in repair mode.", first_err)
+        segments = _transcribe_gemini_once(audio_path, audio_duration_seconds, repair=True)
+
+    if not _coverage_ok(segments, audio_duration_seconds):
+        covered = float(segments[-1].get("end", 0.0)) if segments else 0.0
+        log.warning("[Gemini-ASR] Output covers only %.1fs of %.1fs; retrying in repair mode.", covered, audio_duration_seconds or 0.0)
+        try:
+            retry = _transcribe_gemini_once(audio_path, audio_duration_seconds, repair=True)
+            if retry and float(retry[-1].get("end", 0.0)) > covered:
+                segments = retry
+        except Exception as retry_err:
+            log.warning("[Gemini-ASR] Repair retry failed (%s); keeping first result.", retry_err)
+
     if not segments:
         raise RuntimeError("Gemini transcription returned no usable speech segments")
     log.info("[Gemini-ASR] Built %d natural audio-aware segments.", len(segments))
+    return segments
+
+
+def transcribe_gemini_chunked(audio_path: Path, duration: float) -> list[dict]:
+    """Long audio: split into GEMINI_TRANSCRIBE_CHUNK_SECONDS windows, transcribe each
+    with Gemini, offset timestamps, and stitch — so Gemini (not AssemblyAI) handles long
+    videos. Each window passes through transcribe_gemini (retry + truncation guard)."""
+    window = GEMINI_TRANSCRIBE_CHUNK_SECONDS
+    num_chunks = math.ceil(duration / window)
+    log.info("[Gemini-ASR] Long audio %.1fs > %.1fs window; transcribing in %d chunks.", duration, window, num_chunks)
+    combined: list[dict] = []
+    start = 0.0
+    idx = 0
+    while start < duration - 0.05:
+        length = min(window, duration - start)
+        idx += 1
+        chunk_path = audio_path.with_name(f"{audio_path.stem}.asrchunk{idx}.wav")
+        try:
+            run_ffmpeg("-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(audio_path),
+                       "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(chunk_path))
+            log.info("[Gemini-ASR] Chunk %d/%d  [%.1f-%.1fs]", idx, num_chunks, start, start + length)
+            try:
+                chunk_segs = transcribe_gemini(chunk_path, length)
+            except RuntimeError as chunk_err:
+                # A chunk that is pure silence/music returns no speech — that is valid,
+                # skip it. Real API/parse failures (other RuntimeErrors) still propagate.
+                if "no usable speech" in str(chunk_err):
+                    log.info("[Gemini-ASR] Chunk %d/%d has no speech; skipping.", idx, num_chunks)
+                    chunk_segs = []
+                else:
+                    raise
+        finally:
+            try:
+                chunk_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        for seg in chunk_segs:
+            seg["start"] = float(seg["start"]) + start
+            seg["end"] = float(seg["end"]) + start
+            for w in seg.get("words", []):
+                w["start"] = float(w["start"]) + start
+                w["end"] = float(w["end"]) + start
+        combined.extend(chunk_segs)
+        start += length
+
+    # Re-run the normalizer over the stitched timeline to fix boundary overlaps and re-id.
+    segments = normalize_gemini_transcript_payload({"segments": combined}, duration)
+    if not segments:
+        raise RuntimeError("Gemini chunked transcription produced no usable segments")
+    log.info("[Gemini-ASR] Stitched %d chunks into %d segments.", num_chunks, len(segments))
     return segments
 
 
@@ -946,17 +1036,15 @@ def transcribe(audio_path: Path, audio_duration_seconds: Optional[float] = None)
         try:
             duration = get_video_duration(audio_path)
         except Exception as probe_err:
-            log.warning("[ASR] Could not probe audio duration; defaulting to Gemini first: %s", probe_err)
+            log.warning("[ASR] Could not probe audio duration; defaulting to Gemini single-call: %s", probe_err)
     TRANSCRIPTION_SOURCE_DURATION_SECONDS = duration
-    if duration is not None and duration > GEMINI_TRANSCRIBE_MAX_SECONDS:
-        TRANSCRIPTION_PROVIDER = "assemblyai"
-        TRANSCRIPTION_MODEL = "assemblyai"
-        log.info("[ASR] Duration %.1fs exceeds Gemini cutoff %.1fs; using AssemblyAI.", duration, GEMINI_TRANSCRIBE_MAX_SECONDS)
-        return transcribe_assemblyai(audio_path)
 
     try:
         TRANSCRIPTION_PROVIDER = "gemini"
         TRANSCRIPTION_MODEL = GEMINI_TRANSCRIBE_MODEL
+        if duration is not None and duration > GEMINI_TRANSCRIBE_CHUNK_SECONDS:
+            TRANSCRIPTION_PROVIDER = "gemini-chunked"
+            return transcribe_gemini_chunked(audio_path, duration)
         return transcribe_gemini(audio_path, duration)
     except Exception:
         if not ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK:
@@ -5994,6 +6082,8 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
         "targetLangCode": TARGET_LANG_CODE,
         "transcriptionProvider": TRANSCRIPTION_PROVIDER or "unknown",
         "transcriptionModel": TRANSCRIPTION_MODEL or "unknown",
+        "transcriptionThinking": GEMINI_TRANSCRIBE_THINKING,
+        "transcriptionChunkSeconds": GEMINI_TRANSCRIBE_CHUNK_SECONDS,
         "transcriptionCutoffSeconds": GEMINI_TRANSCRIBE_MAX_SECONDS,
         "sourceDurationSeconds": TRANSCRIPTION_SOURCE_DURATION_SECONDS,
         "createdAt": datetime.now(timezone.utc).isoformat(),

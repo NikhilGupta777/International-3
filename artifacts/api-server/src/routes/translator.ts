@@ -92,6 +92,8 @@ const GEMINI_TRANSCRIBE_MAX_SECONDS = Math.max(
   Number(process.env.GEMINI_TRANSCRIBE_MAX_SECONDS ?? "1020") || 1020,
 );
 const GEMINI_TRANSCRIBE_MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || "gemini-3.5-flash";
+// Thinking level for transcription. HIGH = best segmentation/timing accuracy.
+const GEMINI_TRANSCRIBE_THINKING = (process.env.GEMINI_TRANSCRIBE_THINKING || "HIGH").toUpperCase();
 const ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK = /^(1|true|yes|on)$/i.test(
   process.env.ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK ?? "false",
 );
@@ -640,7 +642,10 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     // Defaults to gemini-3.5-flash in the worker when blank.
     { name: "TRANSLATION_MODEL", value: process.env.TRANSLATION_MODEL ?? "" },
     { name: "GEMINI_TRANSCRIBE_MAX_SECONDS", value: process.env.GEMINI_TRANSCRIBE_MAX_SECONDS ?? "1020" },
+    { name: "GEMINI_TRANSCRIBE_CHUNK_SECONDS", value: process.env.GEMINI_TRANSCRIBE_CHUNK_SECONDS ?? "600" },
+    { name: "GEMINI_TRANSCRIBE_MIN_COVERAGE", value: process.env.GEMINI_TRANSCRIBE_MIN_COVERAGE ?? "0.9" },
     { name: "GEMINI_TRANSCRIBE_MODEL", value: process.env.GEMINI_TRANSCRIBE_MODEL ?? process.env.GEMINI_MODEL ?? "" },
+    { name: "GEMINI_TRANSCRIBE_THINKING", value: process.env.GEMINI_TRANSCRIBE_THINKING ?? "HIGH" },
     { name: "ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK", value: process.env.ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK ?? "false" },
     // CosyVoice3 model ID — passed explicitly so no job uses an old baked-in default.
     { name: "COSYVOICE_MODEL_ID", value: process.env.TRANSLATOR_COSYVOICE_MODEL_ID ?? "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" },
@@ -900,16 +905,19 @@ function segmentsToSrt(segments: FastSegment[]): string {
     .join("\n\n") + "\n";
 }
 
-function buildGeminiTranscriptionPrompt(sourceLang: string, targetLang: string, durationSeconds?: number): string {
+function buildGeminiTranscriptionPrompt(sourceLang: string, targetLang: string, durationSeconds?: number, repair = false): string {
   const durationHint = Number.isFinite(durationSeconds) && durationSeconds! > 0
     ? durationSeconds!.toFixed(3)
     : "unknown";
+  const repairNote = repair
+    ? "\n\nSTRICT REPAIR MODE: A previous attempt returned invalid or incomplete JSON. Transcribe the ENTIRE audio from the first word to the last word — do not stop early. Return exactly ONE complete, valid JSON object and nothing else."
+    : "";
   return [
     "You are the transcription engine for a video translation and dubbing pipeline.",
     "",
     "Transcribe the provided audio exactly in the original spoken language. Do not translate. Do not summarize. Preserve the speaker's actual words, filler words, repetitions, false starts, names, numbers, and code-switching exactly as spoken.",
     "",
-    "Top priority: create HeyGen-quality, audio-aware segments.",
+    "Top priority: create professional, broadcast-quality, audio-aware segments.",
     "You must listen to the real audio rhythm, not just count words. Segment boundaries must follow when the speaker actually starts speaking, continues speaking, pauses, changes speaker, or finishes a connected thought.",
     "If the speaker continues talking at a consistent pace with no meaningful pause, keep the connected thought together even if the segment becomes longer and contains more text.",
     "If the speaker says a short phrase and then pauses for about 1-2 seconds, or clearly stops before the next phrase, make that phrase its own short segment.",
@@ -933,7 +941,7 @@ function buildGeminiTranscriptionPrompt(sourceLang: string, targetLang: string, 
     `Source language hint: ${sourceLang || "auto"}`,
     `Known duration seconds: ${durationHint}`,
     `Target translation language after transcription: ${targetLang}. This is only context for segmentation. Do not translate into this language.`,
-  ].join("\n");
+  ].join("\n") + repairNote;
 }
 
 function extractJsonPayload(text: string): any {
@@ -1243,9 +1251,11 @@ async function transcribeFastAudioGemini(
 ): Promise<{ segments: FastSegment[]; durationSeconds: number; provider: "gemini"; model: string }> {
   if (!isGeminiConfigured()) throw new Error("Gemini is not configured. Add Vertex Gemini env or GEMINI_API_KEY.");
   const ai = createGeminiClient();
-  const prompt = buildGeminiTranscriptionPrompt(sourceLang, targetLang, knownDurationSeconds);
 
-  const runGenerate = async (audioPart: any): Promise<FastSegment[]> => {
+  // One generateContent call for the given audio part. `repair` swaps in the strict
+  // repair prompt (#3 retry / #2 truncation guard reuse the same uploaded audio part).
+  const attempt = async (audioPart: any, repair: boolean): Promise<FastSegment[]> => {
+    const prompt = buildGeminiTranscriptionPrompt(sourceLang, targetLang, knownDurationSeconds, repair);
     const resp = await ai.models.generateContent({
       model: GEMINI_TRANSCRIBE_MODEL,
       contents: [{ role: "user", parts: [audioPart, { text: prompt }] }],
@@ -1253,24 +1263,49 @@ async function transcribeFastAudioGemini(
         responseMimeType: "application/json",
         temperature: 0,
         maxOutputTokens: 65536,
+        thinkingConfig: { thinkingLevel: GEMINI_TRANSCRIBE_THINKING as any },
       },
     } as any);
     const text = (resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim()
       || (resp as any).text
       || "";
-    const payload = extractJsonPayload(text);
-    const segs = normalizeGeminiTranscriptPayload(payload, knownDurationSeconds);
+    const segs = normalizeGeminiTranscriptPayload(extractJsonPayload(text), knownDurationSeconds);
     if (!segs.length) throw new Error("Gemini returned no usable timed speech segments");
     return segs;
+  };
+
+  const transcribeWithPart = async (audioPart: any): Promise<FastSegment[]> => {
+    let segments: FastSegment[];
+    try {
+      segments = await attempt(audioPart, false);            // (#3) first pass
+    } catch (firstErr) {
+      console.warn("[Translator] Gemini transcription attempt failed; retrying in repair mode:", firstErr);
+      segments = await attempt(audioPart, true);
+    }
+    // (#2) truncation/early-stop guard: if it stops well short of a known duration, retry once.
+    const dur = knownDurationSeconds;
+    if (dur && dur > 30 && segments.length) {
+      const covered = segments[segments.length - 1].endMs / 1000;
+      if (covered < dur * 0.9) {
+        console.warn(`[Translator] Gemini output covers only ${covered.toFixed(1)}s of ${dur.toFixed(1)}s; retrying in repair mode.`);
+        try {
+          const retry = await attempt(audioPart, true);
+          if (retry.length && retry[retry.length - 1].endMs > segments[segments.length - 1].endMs) segments = retry;
+        } catch (retryErr) {
+          console.warn("[Translator] Repair retry failed; keeping first result:", retryErr);
+        }
+      }
+    }
+    return segments;
   };
 
   let segments: FastSegment[];
   if (isVertexGeminiEnabled()) {
     // Vertex AI has no Files API — send the audio inline as base64 bytes.
     const audioBase64 = (await readFile(audioPath)).toString("base64");
-    segments = await runGenerate({ inlineData: { mimeType: "audio/wav", data: audioBase64 } });
+    segments = await transcribeWithPart({ inlineData: { mimeType: "audio/wav", data: audioBase64 } });
   } else {
-    // API-key mode: upload via the Files API, poll until ACTIVE, then reference by URI.
+    // API-key mode: upload via the Files API, poll until ACTIVE, then reuse the URI.
     const uploaded = await ai.files.upload({
       file: audioPath,
       config: { mimeType: "audio/wav", displayName: basename(audioPath) },
@@ -1285,7 +1320,7 @@ async function transcribeFastAudioGemini(
         attempts++;
       }
       if (fileInfo.state !== "ACTIVE") throw new Error("Gemini audio processing timed out");
-      segments = await runGenerate({ fileData: { fileUri: fileInfo.uri as string, mimeType: "audio/wav" } });
+      segments = await transcribeWithPart({ fileData: { fileUri: fileInfo.uri as string, mimeType: "audio/wav" } });
     } finally {
       if (fileName) {
         try { await ai.files.delete({ name: fileName }); }
@@ -1294,8 +1329,7 @@ async function transcribeFastAudioGemini(
     }
   }
 
-  // When the duration probe failed, fall back to the last segment's end so the
-  // batch-handoff check below still works for 10-17 min clips.
+  // When the duration probe failed, fall back to the last segment's end.
   const fallbackDuration = segments.length ? segments[segments.length - 1].endMs / 1000 : 0;
   return {
     segments,
@@ -1305,50 +1339,22 @@ async function transcribeFastAudioGemini(
   };
 }
 
-// Provider router for the Lambda fast subtitle path. Downloads the source ONCE,
-// probes duration from the local file, then routes:
-//   duration > 17 min            → AssemblyAI (from the signed S3 URL)
-//   duration <= 17 min / unknown → Gemini (extract local audio, Files API upload)
-// AssemblyAI is also the emergency fallback when ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK is set.
-async function transcribeFastMedia(
-  s3Key: string,
+// Transcribe a local audio file with Gemini; fall back to AssemblyAI (from the signed
+// URL) only when ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK is set. Long videos never reach
+// here — they are handed to the GPU Batch worker before transcription (see caller).
+async function transcribeFastLocalAudio(
+  audioPath: string,
   mediaUrl: string,
-  workDir: string,
   sourceLang: string,
   targetLang: string,
-): Promise<{ segments: FastSegment[]; durationSeconds: number; provider: "gemini" | "assemblyai"; model?: string; durationKnown: boolean }> {
-  const inputPath = join(workDir, `fast-input${extname(s3Key) || ".mp4"}`);
-  const audioPath = join(workDir, "fast-audio.wav");
+  durationSeconds?: number,
+): Promise<{ segments: FastSegment[]; durationSeconds: number; provider: "gemini" | "assemblyai"; model?: string }> {
   try {
-    await downloadS3ObjectToFile(s3Key, inputPath);
-
-    let duration: number | undefined;
-    try {
-      duration = await probeDurationSeconds(inputPath);
-    } catch (probeErr) {
-      console.warn("[Translator] Local duration probe failed; defaulting to Gemini first:", probeErr);
-    }
-    const durationKnown = duration != null;
-
-    // Long audio → AssemblyAI from the signed URL (no audio extraction needed).
-    if (duration != null && duration > GEMINI_TRANSCRIBE_MAX_SECONDS) {
-      const r = await transcribeFastMediaUrlAssemblyAI(mediaUrl, sourceLang);
-      return { ...r, durationKnown };
-    }
-
-    try {
-      await extractAudioForTranscription(inputPath, audioPath);
-      const r = await transcribeFastAudioGemini(audioPath, sourceLang, targetLang, duration);
-      return { ...r, durationKnown };
-    } catch (err) {
-      if (!ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK) throw err;
-      console.warn("[Translator] Gemini transcription failed; using AssemblyAI emergency fallback:", err);
-      const r = await transcribeFastMediaUrlAssemblyAI(mediaUrl, sourceLang);
-      return { ...r, durationKnown };
-    }
-  } finally {
-    await rm(inputPath, { force: true }).catch(() => {});
-    await rm(audioPath, { force: true }).catch(() => {});
+    return await transcribeFastAudioGemini(audioPath, sourceLang, targetLang, durationSeconds);
+  } catch (err) {
+    if (!ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK) throw err;
+    console.warn("[Translator] Gemini transcription failed; using AssemblyAI emergency fallback:", err);
+    return transcribeFastMediaUrlAssemblyAI(mediaUrl, sourceLang);
   }
 }
 
@@ -1406,18 +1412,55 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
     const transcriptPath = join(workDir, "transcript.json");
 
     await updateTranslatorJob(jobId, "TRANSCRIBING", 18, "Transcribing speech with Gemini...");
-    // Signed URL retained for the AssemblyAI long-audio path / emergency fallback.
+    // Download the source ONCE, probe locally, then hand long videos to the GPU Batch
+    // worker BEFORE transcribing (the GPU worker transcribes long audio with chunked
+    // Gemini). The signed URL is kept only for the AssemblyAI emergency fallback.
+    const inputPath = join(workDir, `fast-input${extname(s3Key) || ".mp4"}`);
+    const audioPath = join(workDir, "fast-audio.wav");
     const mediaUrl = await getSignedUrl(s3, new GetObjectCommand({
       Bucket: S3_BUCKET,
       Key: s3Key,
     }), { expiresIn: 3600 });
-    const { segments, durationSeconds, provider, model, durationKnown } = await transcribeFastMedia(
-      s3Key,
-      mediaUrl,
-      workDir,
-      options.sourceLang,
-      options.targetLang,
-    );
+
+    let segments: FastSegment[];
+    let durationSeconds: number;
+    let provider: "gemini" | "assemblyai";
+    let model: string | undefined;
+    let durationKnown = false;
+    try {
+      await downloadS3ObjectToFile(s3Key, inputPath);
+      let probed: number | undefined;
+      try {
+        probed = await probeDurationSeconds(inputPath);
+      } catch (probeErr) {
+        console.warn("[Translator] Local duration probe failed; proceeding with Gemini:", probeErr);
+      }
+      durationKnown = probed != null;
+
+      // Over the fast limit → GPU Batch, before any transcription work.
+      if (probed != null && probed > TRANSLATOR_LAMBDA_FAST_MAX_SECONDS) {
+        await updateTranslatorJob(jobId, "QUEUED", 0, "Video is over the fast subtitle limit; starting GPU worker...", {
+          runtime: "batch",
+          durationSeconds: Math.round(probed),
+        });
+        await submitTranslatorBatchJob(jobId, s3Key, options, false, probed);
+        handedToBatch = true;
+        return;
+      }
+
+      await extractAudioForTranscription(inputPath, audioPath);
+      const r = await transcribeFastLocalAudio(audioPath, mediaUrl, options.sourceLang, options.targetLang, probed);
+      segments = r.segments;
+      durationSeconds = r.durationSeconds;
+      provider = r.provider;
+      model = r.model;
+    } finally {
+      await rm(inputPath, { force: true }).catch(() => {});
+      await rm(audioPath, { force: true }).catch(() => {});
+    }
+
+    // Safety net for the probe-failed case: if the transcript reveals it was over the
+    // fast limit after all, hand off to Batch instead of producing a partial result.
     if (durationSeconds > TRANSLATOR_LAMBDA_FAST_MAX_SECONDS) {
       await updateTranslatorJob(jobId, "QUEUED", 0, "Video is over the fast subtitle limit; starting GPU worker...", {
         runtime: "batch",
@@ -1425,6 +1468,7 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
         transcriptionProvider: provider,
       });
       await submitTranslatorBatchJob(jobId, s3Key, options, false, durationSeconds);
+      handedToBatch = true;
       return;
     }
 
