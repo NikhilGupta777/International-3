@@ -433,20 +433,24 @@ function TranscriptPanel({ segments }: { segments: any[] }) {
 }
 
 // â”€â”€ Drop zone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: boolean }) {
+function DropZone({ onFile, onFiles, multiple, disabled }: { onFile: (f: File) => void; onFiles?: (f: File[]) => void; multiple?: boolean; disabled?: boolean }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const handle = (list: FileList | null) => {
+    if (!list || disabled) return;
+    const files = Array.from(list);
+    if (!files.length) return;
+    if (multiple && onFiles) onFiles(files);
+    else onFile(files[0]);
+  };
 
   return (
     <div
       onClick={() => !disabled && inputRef.current?.click()}
       onDragOver={e => { e.preventDefault(); if (!disabled) setDragging(true); }}
       onDragLeave={() => setDragging(false)}
-      onDrop={e => {
-        e.preventDefault(); setDragging(false);
-        const f = e.dataTransfer.files[0];
-        if (f && !disabled) onFile(f);
-      }}
+      onDrop={e => { e.preventDefault(); setDragging(false); handle(e.dataTransfer.files); }}
       className={cn(
         "relative flex flex-col items-center justify-center gap-4 rounded-2xl border-2 border-dashed",
         "cursor-pointer transition-all duration-200 py-16 px-8",
@@ -459,11 +463,11 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
         <Upload className="w-7 h-7 text-white/50" />
       </div>
       <div className="text-center">
-        <p className="text-base font-semibold text-white/80">Drop your video here</p>
-        <p className="text-sm text-white/40 mt-1">MP4, MOV, MKV, AVI, WebM · Max 2GB</p>
+        <p className="text-base font-semibold text-white/80">{multiple ? "Drop your videos here" : "Drop your video here"}</p>
+        <p className="text-sm text-white/40 mt-1">MP4, MOV, MKV, AVI, WebM · Max 2GB{multiple ? " each" : ""}</p>
       </div>
-      <input ref={inputRef} type="file" accept=".mp4,.mov,.mkv,.avi,.webm" className="hidden"
-        onChange={e => e.target.files?.[0] && onFile(e.target.files[0])} />
+      <input ref={inputRef} type="file" accept=".mp4,.mov,.mkv,.avi,.webm" className="hidden" multiple={multiple}
+        onChange={e => handle(e.target.files)} />
     </div>
   );
 }
@@ -472,6 +476,10 @@ function DropZone({ onFile, disabled }: { onFile: (f: File) => void; disabled?: 
 export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncAvailable?: boolean }) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
+  // Bulk: multiple local files translated together in one GPU session.
+  const [bulkFiles, setBulkFiles] = useState<File[]>([]);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState("");
   const [sourceMode, setSourceMode] = useState<"upload" | "youtube">("upload");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [useClip, setUseClip] = useState(false);
@@ -1187,6 +1195,72 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     }
   };
 
+  // Bulk upload: upload every selected file to S3, then submit ONE bulk job so
+  // they translate in a single shared GPU session. Each video still gets its
+  // own job record + progress in "Active translations".
+  const handleBulkUpload = async () => {
+    if (!bulkFiles.length || bulkUploading) return;
+    setError(null);
+    setBulkUploading(true);
+    try {
+      const oversize = bulkFiles.find((f) => f.size > MAX_VIDEO_SIZE_BYTES);
+      if (oversize) throw new Error(`"${oversize.name}" is larger than the 2GB upload limit.`);
+
+      const opts = buildSubmitOptions();
+      const uploaded: { jobId: string; s3Key: string; filename: string }[] = [];
+      for (let i = 0; i < bulkFiles.length; i++) {
+        const f = bulkFiles[i];
+        setBulkProgress(`Uploading ${i + 1}/${bulkFiles.length}: ${f.name}`);
+        const presignRes = await fetch(
+          `${API}/presign?filename=${encodeURIComponent(f.name)}&contentType=${encodeURIComponent(f.type || "video/mp4")}`,
+          { headers: translatorAuthHeaders() },
+        );
+        if (!presignRes.ok) throw await responseError(presignRes, `Failed to get upload URL for ${f.name}`);
+        const { jobId: newJobId, presignedUrl, s3Key } = await readJsonResponse(presignRes);
+        if (!newJobId || !presignedUrl || !s3Key) throw new Error(`Upload URL response incomplete for ${f.name}`);
+        const uploadRes = await fetch(presignedUrl, { method: "PUT", body: f, headers: { "Content-Type": f.type || "video/mp4" } });
+        if (!uploadRes.ok) throw new Error(`S3 upload failed for ${f.name}`);
+        uploaded.push({ jobId: newJobId, s3Key, filename: f.name });
+      }
+
+      setBulkProgress(`Starting bulk translation of ${uploaded.length} videos…`);
+      const submitRes = await fetch(`${API}/submit-bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...translatorAuthHeaders() },
+        body: JSON.stringify({ videos: uploaded, ...opts }),
+      });
+      if (!submitRes.ok) throw await responseError(submitRes, "Bulk submit failed");
+      await readJsonResponse(submitRes);
+
+      const now = Date.now();
+      for (const u of uploaded) {
+        upsertActiveTranslatorJob({
+          jobId: u.jobId,
+          filename: u.filename,
+          targetLang: opts.targetLang,
+          targetLangCode: opts.targetLangCode,
+          sourceLang: opts.sourceLang,
+          startedAt: now,
+          progress: 0,
+          step: "Queued in bulk batch…",
+          status: "QUEUED",
+          voiceClone: opts.voiceClone,
+          lipSync: opts.lipSync,
+        });
+      }
+      setBulkFiles([]);
+      setComposingNew(false);
+      setJobId(uploaded[0]?.jobId ?? null);
+      refreshHistory();
+      toast({ title: `Bulk translation started`, description: `${uploaded.length} videos in one GPU session.` });
+    } catch (e: any) {
+      setError(e?.message ?? "Bulk submit failed.");
+    } finally {
+      setBulkUploading(false);
+      setBulkProgress("");
+    }
+  };
+
   const reset = () => {
     if (pollRef.current) clearTimeout(pollRef.current);
     if (ytPollRef.current) { clearTimeout(ytPollRef.current); ytPollRef.current = null; }
@@ -1499,9 +1573,17 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
 
             {sourceMode === "upload" ? (
               <>
-                {/* Drop zone */}
-                <DropZone onFile={setFile} disabled={uploading} />
-                {file && (
+                {/* Drop zone — pick one video, or several to translate in one GPU session */}
+                <DropZone
+                  multiple
+                  disabled={uploading || bulkUploading}
+                  onFile={(f) => { setFile(f); setBulkFiles([]); }}
+                  onFiles={(files) => {
+                    if (files.length === 1) { setFile(files[0]); setBulkFiles([]); }
+                    else { setBulkFiles(files); setFile(null); }
+                  }}
+                />
+                {file && bulkFiles.length === 0 && (
                   <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08]">
                     <Film className="w-4 h-4 text-primary shrink-0" />
                     <span className="text-sm text-white/80 flex-1 truncate">{file.name}</span>
@@ -1509,6 +1591,42 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                     <button onClick={() => setFile(null)} className="text-white/30 hover:text-white/70 transition-colors">
                       <X className="w-4 h-4" />
                     </button>
+                  </div>
+                )}
+                {bulkFiles.length > 0 && (
+                  <div className="rounded-xl bg-primary/[0.06] border border-primary/20 overflow-hidden">
+                    <div className="flex items-center gap-2 px-4 py-2.5 border-b border-primary/15">
+                      <Sparkles className="w-4 h-4 text-primary shrink-0" />
+                      <span className="text-sm font-semibold text-white/85">Bulk · {bulkFiles.length} videos</span>
+                      <span className="text-[11px] text-white/40">one shared GPU session</span>
+                      <button onClick={() => setBulkFiles([])} disabled={bulkUploading} className="ml-auto text-xs text-white/40 hover:text-white/80 disabled:opacity-40">Clear</button>
+                    </div>
+                    <div className="max-h-44 overflow-y-auto divide-y divide-white/[0.05]">
+                      {bulkFiles.map((f, i) => (
+                        <div key={i} className="flex items-center gap-3 px-4 py-2">
+                          <Film className="w-4 h-4 text-primary/70 shrink-0" />
+                          <span className="text-sm text-white/75 flex-1 truncate">{f.name}</span>
+                          <span className="text-xs text-white/35">{(f.size / 1024 / 1024).toFixed(1)} MB</span>
+                          <button onClick={() => setBulkFiles((prev) => prev.filter((_, idx) => idx !== i))} disabled={bulkUploading} className="text-white/25 hover:text-white/70 disabled:opacity-40">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="p-3 border-t border-primary/15">
+                      <button
+                        onClick={() => void handleBulkUpload()}
+                        disabled={bulkUploading}
+                        className={cn(
+                          "w-full flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all",
+                          bulkUploading ? "bg-white/10 text-white/50 cursor-wait" : "bg-gradient-to-r from-primary to-orange-400 text-white hover:shadow-lg hover:shadow-primary/25",
+                        )}
+                      >
+                        {bulkUploading
+                          ? <><Loader2 className="w-4 h-4 animate-spin" /> {bulkProgress || "Working…"}</>
+                          : <><Sparkles className="w-4 h-4" /> Translate all {bulkFiles.length} in one GPU session <ArrowRight className="w-4 h-4" /></>}
+                      </button>
+                    </div>
                   </div>
                 )}
               </>
@@ -1737,8 +1855,8 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
               </label>
             </div>
 
-            {/* Submit */}
-            {(() => {
+            {/* Submit — hidden in bulk mode, which has its own button */}
+            {!(sourceMode === "upload" && bulkFiles.length > 0) && (() => {
               const canSubmit = sourceMode === "upload" ? !!file : youtubeUrl.trim().length > 0;
               const busy = uploading || preparing;
               return (

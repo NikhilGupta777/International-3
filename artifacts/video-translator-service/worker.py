@@ -66,10 +66,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 # â”€â”€ Environment config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-JOB_ID              = os.environ["JOB_ID"]
+JOB_ID              = os.environ.get("JOB_ID", "")        # empty in bulk mode (per-video from manifest)
 S3_BUCKET           = os.environ["S3_BUCKET"]
-S3_INPUT_KEY        = os.environ["S3_INPUT_KEY"]          # translator-jobs/{jobId}/input.mp4
+S3_INPUT_KEY        = os.environ.get("S3_INPUT_KEY", "")  # empty in bulk mode (per-video from manifest)
 S3_OUTPUT_PREFIX    = os.environ.get("S3_OUTPUT_PREFIX", f"translator-jobs/{JOB_ID}")
+# Bulk mode: when set, the worker reads a manifest of {jobId, s3InputKey} entries
+# from S3 and translates them all in ONE process so the GPU + models load once.
+BULK_MANIFEST_KEY   = os.environ.get("BULK_MANIFEST_KEY", "").strip()
 DYNAMODB_TABLE      = os.environ["DYNAMODB_TABLE"]
 DYNAMODB_REGION     = os.environ.get("DYNAMODB_REGION", "us-east-1")
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
@@ -5236,12 +5239,16 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
 # Main entrypoint
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def main():
+def process_single_job():
+    """Translate ONE video using the current global job config (JOB_ID,
+    S3_INPUT_KEY, S3_OUTPUT_PREFIX). On failure it marks the job FAILED in
+    DynamoDB and re-raises so the caller (single or bulk) can decide what to do.
+    In bulk mode the heavy models stay loaded across calls."""
     # ── Immediate DDB heartbeat ───────────────────────────────────────────────
-    # This is the FIRST thing main() does — before any imports, before work_dir,
-    # before the try block.  If Python actually started, the frontend will
-    # immediately update from "GPU instance starting..." to "Worker initialised."
-    # If this never fires, it proves the NVIDIA entrypoint exited before Python.
+    # The FIRST thing this does — before work_dir, before the try block. If
+    # Python actually started, the frontend immediately updates from "GPU
+    # instance starting..." to "Worker initialised." If this never fires, it
+    # proves the NVIDIA entrypoint exited before Python.
     update_progress("STARTING", 1, "Worker process initialised. Python running...")
 
     log.info(f"=== Translator Worker starting. JobId={JOB_ID} ===")
@@ -5747,10 +5754,90 @@ def main():
     except Exception as e:
         log.exception(f"[FATAL] Job failed: {e}")
         mark_failed(str(e))
-        sys.exit(1)
+        raise
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         log.info(f"[Cleanup] Work dir removed: {work_dir}")
+
+
+def _apply_job_overrides(job_id: str, input_key: str) -> None:
+    """Point the global job config at the next video in a bulk batch and reset
+    the per-job mutable state so each video starts clean."""
+    global JOB_ID, S3_INPUT_KEY, S3_OUTPUT_PREFIX, SOURCE_LANG_CODE
+    global _LAST_PIPELINE_STATUS, _LAST_PIPELINE_PROGRESS
+    JOB_ID = job_id
+    S3_INPUT_KEY = input_key
+    S3_OUTPUT_PREFIX = f"translator-jobs/{job_id}"
+    # Source language is auto-detected per video, so reset to the shared default.
+    SOURCE_LANG_CODE = os.environ.get("SOURCE_LANG_CODE", "")
+    _LAST_PIPELINE_STATUS = "STARTING"
+    _LAST_PIPELINE_PROGRESS = 0
+
+
+def _job_already_done(job_id: str) -> bool:
+    """Resume support: if a bulk job is retried (e.g. Spot interruption), skip
+    videos already finished so we never redo completed work."""
+    try:
+        item = table.get_item(Key={"jobId": job_id}).get("Item") or {}
+        return item.get("status") == "DONE"
+    except Exception:
+        return False
+
+
+def run_bulk(manifest_key: str) -> None:
+    """Translate every video listed in the S3 manifest in ONE process. Models
+    load once; a failure on one video is isolated and the batch continues."""
+    log.info(f"=== BULK mode: loading manifest s3://{S3_BUCKET}/{manifest_key} ===")
+    body = s3.get_object(Bucket=S3_BUCKET, Key=manifest_key)["Body"].read()
+    parsed = json.loads(body)
+    jobs = parsed.get("jobs") if isinstance(parsed, dict) else parsed
+    if not isinstance(jobs, list) or not jobs:
+        log.error("[Bulk] Manifest has no jobs.")
+        sys.exit(1)
+
+    total = len(jobs)
+    log.info(f"=== BULK mode: {total} video(s) in one GPU session ===")
+    ok = failed = skipped = 0
+    for idx, entry in enumerate(jobs, 1):
+        job_id = str(entry.get("jobId") or "").strip()
+        input_key = str(entry.get("s3InputKey") or "").strip()
+        if not job_id or not input_key:
+            log.warning(f"[Bulk {idx}/{total}] Skipping malformed manifest entry: {entry!r}")
+            continue
+        if _job_already_done(job_id):
+            log.info(f"[Bulk {idx}/{total}] {job_id} already DONE — skipping (resume).")
+            skipped += 1
+            continue
+        _apply_job_overrides(job_id, input_key)
+        log.info(f"[Bulk {idx}/{total}] Starting job {job_id} ({input_key})")
+        try:
+            process_single_job()
+            ok += 1
+        except Exception as e:
+            # process_single_job already marked this job FAILED in DynamoDB.
+            failed += 1
+            log.warning(f"[Bulk {idx}/{total}] Job {job_id} failed, continuing: {e}")
+
+    log.info(f"=== BULK complete: {ok} ok, {failed} failed, {skipped} skipped of {total} ===")
+    # Only signal Batch failure if nothing at all succeeded — otherwise the
+    # partial results are real and the per-video statuses tell the full story.
+    if ok == 0 and failed > 0:
+        sys.exit(1)
+
+
+def main():
+    if BULK_MANIFEST_KEY:
+        run_bulk(BULK_MANIFEST_KEY)
+        return
+    # Single-job mode (unchanged behaviour): config comes from env.
+    if not JOB_ID or not S3_INPUT_KEY:
+        log.error("JOB_ID and S3_INPUT_KEY are required for single-job mode.")
+        sys.exit(1)
+    try:
+        process_single_job()
+    except Exception:
+        # process_single_job already logged + marked FAILED.
+        sys.exit(1)
 
 
 if __name__ == "__main__":
