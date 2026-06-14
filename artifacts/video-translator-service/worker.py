@@ -137,6 +137,11 @@ CLONE_REFERENCE_FROM_VOCALS = os.environ.get("CLONE_REFERENCE_FROM_VOCALS", "tru
 # Length cap for the voice-clone reference.  Upstream best practice is ~5-15s;
 # a longer, clean reference captures more of the speaker's timbre.
 REFERENCE_MAX_SECONDS = max(5.0, min(30.0, float(os.environ.get("REFERENCE_MAX_SECONDS", "15"))))
+# Keep devotional content (sung bhajans/kirtan, chanting of divine names, and
+# Sanskrit/Odia shlokas/mantras/verses) in the ORIGINAL audio instead of
+# translating/dubbing it. Gemini flags those segments; the worker substitutes
+# the original audio slice for them and leaves the rest dubbed as usual.
+PRESERVE_CHANTS     = os.environ.get("PRESERVE_CHANTS", "false").lower() == "true"
 ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
 LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | latentsync_hq
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget
