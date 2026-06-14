@@ -193,6 +193,13 @@ FFPROBE_TIMEOUT_SECONDS = _env_int("FFPROBE_TIMEOUT_SECONDS", 120)
 COSYVOICE_FP16  = os.environ.get("COSYVOICE_FP16", "false").lower() in ("1", "true", "yes", "on")
 COSYVOICE_VLLM  = os.environ.get("COSYVOICE_VLLM", "false").lower() in ("1", "true", "yes", "on")
 COSYVOICE_PRELOAD = os.environ.get("COSYVOICE_PRELOAD", "true").lower() in ("1", "true", "yes", "on")
+# COSYVOICE_MMAP_LOAD: use mmap=True when loading checkpoints with torch.load.
+# Default OFF — mmap causes random page faults, which are pathologically slow
+# (~5 MB/s) on a cold S3-backed EBS volume (the AMI snapshot case).  Sequential
+# reads let EBS prefetch ahead and are 4-5x faster on cold instances.
+# Enable only when the EBS volume is pre-warmed (FSR on) or when running on
+# instance-store-backed GPUs where random I/O is fast.
+COSYVOICE_MMAP_LOAD = os.environ.get("COSYVOICE_MMAP_LOAD", "false").lower() in ("1", "true", "yes", "on")
 # Reserved for future parallel synthesis support.  Current inference remains
 # sequential, so values >1 are accepted for forward compatibility but are a
 # no-op today.
@@ -231,6 +238,11 @@ _COSYVOICE_PRELOAD_FUTURE = None
 _COSYVOICE_PRELOAD_EXECUTOR = None
 _COSYVOICE_PRELOAD_LOCK = threading.Lock()
 _COSYVOICE_PRELOAD_STARTED_AT = None
+# Set once the CUDA kernels have been pre-compiled (warmup). Done in the background
+# preload so the 1-3 min kernel JIT/cuDNN cost overlaps transcription/translation
+# instead of blocking the clone stage.
+_COSYVOICE_WARMED = False
+_COSYVOICE_WARMUP_REF = None
 
 PIPELINE_STEPS = [
     {"name": "download", "label": "Downloading video", "start": 0, "end": 3, "statuses": ["STARTING"]},
@@ -2239,17 +2251,22 @@ def _verify_onnxruntime_cuda_stack() -> None:
 
 
 def _patch_torch_load_for_fast_checkpoint_loading() -> None:
-    """Speed up + log CosyVoice checkpoint loading on cold-start GPU jobs.
+    """Log CosyVoice checkpoint load times and optionally use mmap.
 
     CosyVoice's AutoModel constructor torch.load()s several multi-hundred-MB
     to multi-GB checkpoints (LLM, flow, HiFiGAN). On a cold Batch GPU
     instance the constructor has been observed taking 15+ minutes with zero
-    log output, making it impossible to tell which file is slow. This patch:
-      1. Opportunistically passes mmap=True so PyTorch memory-maps the
-         checkpoint instead of fully deserializing it into RAM up front
-         (falls back to a normal load if the torch/file doesn't support it).
-      2. Logs the path/size/duration of every torch.load call so the
+    log output, making it impossible to tell which file is slow.
+
+    This patch:
+      1. Logs the path/size/duration of every torch.load call so the
          breakdown is visible in CloudWatch.
+      2. Controls mmap via COSYVOICE_MMAP_LOAD (default OFF).
+         - OFF (default): plain sequential read.  Lets EBS prefetch ahead,
+           which is 4-5x faster on cold S3-backed EBS volumes (~20-30 MB/s
+           vs ~5 MB/s with random mmap page faults).
+         - ON: mmap=True — useful when the EBS volume is pre-warmed (FSR)
+           or on instance-store-backed GPUs where random I/O is cheap.
     Idempotent — safe to call multiple times.
     """
     import torch
@@ -2258,6 +2275,7 @@ def _patch_torch_load_for_fast_checkpoint_loading() -> None:
         return
 
     _original_load = torch.load
+    _use_mmap = COSYVOICE_MMAP_LOAD
 
     def _instrumented_load(*args, **kwargs):
         path = args[0] if args else kwargs.get("f")
@@ -2267,7 +2285,7 @@ def _patch_torch_load_for_fast_checkpoint_loading() -> None:
             size_mb = -1
 
         t0 = time.monotonic()
-        if "mmap" not in kwargs:
+        if _use_mmap and "mmap" not in kwargs:
             try:
                 result = _original_load(*args, mmap=True, **kwargs)
                 log.info("[torch.load] %s (%.1f MB) loaded in %.1fs (mmap)", path, size_mb, time.monotonic() - t0)
@@ -2276,12 +2294,16 @@ def _patch_torch_load_for_fast_checkpoint_loading() -> None:
                 log.info("[torch.load] mmap load failed for %s (%s); retrying without mmap", path, exc)
                 t0 = time.monotonic()
         result = _original_load(*args, **kwargs)
-        log.info("[torch.load] %s (%.1f MB) loaded in %.1fs", path, size_mb, time.monotonic() - t0)
+        log.info("[torch.load] %s (%.1f MB) loaded in %.1fs (sequential)", path, size_mb, time.monotonic() - t0)
         return result
 
     _instrumented_load._vm_instrumented = True
     torch.load = _instrumented_load
-    log.info("[CosyVoice] Patched torch.load for mmap + per-file timing.")
+    log.info(
+        "[CosyVoice] Patched torch.load for per-file timing (mmap=%s — %s).",
+        _use_mmap,
+        "mmap reads" if _use_mmap else "sequential reads for cold EBS",
+    )
 
 def _resolve_cosyvoice_model_path(model_name: str) -> Optional[Path]:
     for root in [
@@ -2437,8 +2459,65 @@ def load_cosyvoice_model(*, emit_progress: bool = True, reason: str = "direct"):
     return model
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+def _get_warmup_reference() -> Path:
+    """A tiny synthetic reference clip used only to trigger CUDA kernel compilation.
+    Generated once and reused. The audio content is irrelevant — the compiled kernels
+    are identical regardless of which reference drives the warmup."""
+    global _COSYVOICE_WARMUP_REF
+    if _COSYVOICE_WARMUP_REF is not None and Path(_COSYVOICE_WARMUP_REF).exists():
+        return Path(_COSYVOICE_WARMUP_REF)
+    ref = Path(tempfile.gettempdir()) / "cosyvoice_warmup_ref_24k.wav"
+    run_ffmpeg("-f", "lavfi", "-i", "sine=frequency=220:duration=2",
+               "-ar", "24000", "-ac", "1", str(ref))
+    _COSYVOICE_WARMUP_REF = str(ref)
+    return ref
+
+
+def warmup_cosyvoice_model(model) -> None:
+    """Run one dummy inference to pre-compile CUDA kernels / cuDNN autotune / ONNX
+    sessions, so the first real clone segment doesn't pay that 1-3 min cost. Safe to
+    call from the background preload thread. Idempotent (skips if already warmed)."""
+    global _COSYVOICE_WARMED
+    if _COSYVOICE_WARMED or model is None:
+        return
+    try:
+        ref = _get_warmup_reference()
+    except Exception as ref_err:
+        log.warning("[CosyVoice] Could not build warmup reference (%s); skipping warmup.", ref_err)
+        return
+    warmup_text = "Warmup."
+    if "CosyVoice3" in type(model).__name__ and COSYVOICE3_INJECT_PROMPT_PREFIX:
+        warmup_text = "<|endofprompt|>Warmup."
+    t0 = time.monotonic()
+    try:
+        log.info("[CosyVoice] Running warmup inference (pre-compiling CUDA kernels)...")
+        done = False
+        if hasattr(model, "inference_zero_shot"):
+            for _ in model.inference_zero_shot(warmup_text, warmup_text, str(ref)):
+                done = True
+                break  # one chunk triggers all kernel compilation
+        if not done and hasattr(model, "inference_cross_lingual"):
+            for _ in model.inference_cross_lingual(warmup_text, str(ref)):
+                break
+        _COSYVOICE_WARMED = True
+        log.info("[CosyVoice] Warmup complete in %.1fs — CUDA kernels ready.", time.monotonic() - t0)
+    except Exception as warm_err:
+        log.warning("[CosyVoice] Warmup failed after %.1fs (non-fatal): %s", time.monotonic() - t0, warm_err)
+
+
+def _preload_cosyvoice_task():
+    """Background job-start task: load the model AND warm up CUDA kernels, so both
+    expensive steps overlap transcription/translation instead of the clone stage."""
+    model = load_cosyvoice_model(emit_progress=False, reason="background-preload")
+    try:
+        warmup_cosyvoice_model(model)
+    except Exception as warm_err:
+        log.warning("[CosyVoice] Background warmup skipped: %s", warm_err)
+    return model
+
+
 def start_cosyvoice_preload():
-    """Start CosyVoice model loading in a background thread for this job."""
+    """Start CosyVoice model loading + CUDA warmup in a background thread for this job."""
     global _COSYVOICE_PRELOAD_EXECUTOR, _COSYVOICE_PRELOAD_FUTURE, _COSYVOICE_PRELOAD_STARTED_AT
     if not VOICE_CLONE or not COSYVOICE_PRELOAD or _COSYVOICE_MODEL is not None:
         return None
@@ -2449,12 +2528,8 @@ def start_cosyvoice_preload():
 
         _COSYVOICE_PRELOAD_STARTED_AT = time.monotonic()
         _COSYVOICE_PRELOAD_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cosyvoice-preload")
-        _COSYVOICE_PRELOAD_FUTURE = _COSYVOICE_PRELOAD_EXECUTOR.submit(
-            load_cosyvoice_model,
-            emit_progress=False,
-            reason="background-preload",
-        )
-        log.info("[CosyVoice] Background preload started.")
+        _COSYVOICE_PRELOAD_FUTURE = _COSYVOICE_PRELOAD_EXECUTOR.submit(_preload_cosyvoice_task)
+        log.info("[CosyVoice] Background preload (load + warmup) started.")
         return _COSYVOICE_PRELOAD_FUTURE
 
 
@@ -3559,37 +3634,17 @@ def synthesize_segments_cosyvoice(
     default_ref_wav, default_ref_prompt_path = _load_ref(default_reference_audio, "default")
 
     # ── Warmup inference — pre-compile CUDA kernels / JIT graphs ────────────
-    # The first CosyVoice inference triggers CUDA kernel JIT compilation,
-    # cuDNN autotuning, and ONNX session initialization.  Without a warmup
-    # this shows up as a mysterious 1-3 min silence before the first real
-    # segment produces audio.  Running a tiny dummy inference here makes all
-    # that overhead visible and shifts it into a named pipeline phase.
-    # Uses the capped 10s reference (default_ref_prompt_path) — NOT the raw
-    # full-length video audio — to keep the warmup fast.
-    update_progress("CLONING", 52, "Warming up CUDA kernels...")
-    _warmup_t0 = time.monotonic()
-    try:
-        log.info("[CosyVoice] Running warmup inference (pre-compiling CUDA kernels)...")
-        _warmup_text = "Warmup."
-        if is_cosyvoice3 and COSYVOICE3_INJECT_PROMPT_PREFIX:
-            _warmup_text = "<|endofprompt|>Warmup."
-        _warmup_done = False
-        if hasattr(model, "inference_zero_shot"):
-            for _wchunk in model.inference_zero_shot(
-                _warmup_text, _warmup_text, default_ref_prompt_path
-            ):
-                _warmup_done = True
-                break  # one chunk is enough to trigger all kernel compilation
-        if not _warmup_done and hasattr(model, "inference_cross_lingual"):
-            for _wchunk in model.inference_cross_lingual(
-                _warmup_text, default_ref_prompt_path
-            ):
-                break
-        _warmup_dur = time.monotonic() - _warmup_t0
-        log.info("[CosyVoice] Warmup complete in %.1fs — CUDA kernels ready.", _warmup_dur)
-    except Exception as _warmup_err:
-        _warmup_dur = time.monotonic() - _warmup_t0
-        log.warning("[CosyVoice] Warmup failed after %.1fs (non-fatal): %s", _warmup_dur, _warmup_err)
+    # The first CosyVoice inference triggers CUDA kernel JIT compilation, cuDNN
+    # autotuning, and ONNX session init — a mysterious 1-3 min silence before the
+    # first real segment.  This is normally already done by the BACKGROUND PRELOAD
+    # (warmup_cosyvoice_model runs right after the model loads at job start, so it
+    # overlaps transcription/translation).  If _COSYVOICE_WARMED is already set we
+    # skip it here; otherwise (preload off/failed) we warm up synchronously now.
+    if not _COSYVOICE_WARMED:
+        update_progress("CLONING", 52, "Warming up CUDA kernels...")
+        warmup_cosyvoice_model(model)
+    else:
+        log.info("[CosyVoice] CUDA kernels already warmed during background preload.")
 
     update_progress("CLONING", 53, "CUDA kernels ready. Preparing voice synthesis...")
 
