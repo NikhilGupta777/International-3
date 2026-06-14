@@ -10,7 +10,7 @@ Pipeline:
   1. Download source video from S3
   2. Extract audio (FFmpeg)
   3. Optional: Demucs vocal/background separation
-  4. Transcribe (AssemblyAI word-level timestamps)
+  4. Transcribe (Gemini by default; AssemblyAI only for long audio)
   5. Optional: pyannote speaker diarization
   6. Translate segments (Gemini 3 Flash dubbing-aware)
   7. Voice clone (CosyVoice 3.0 â†’ edge-tts fallback â†’ gTTS emergency)
@@ -146,6 +146,19 @@ REFERENCE_MAX_SECONDS = max(5.0, min(30.0, float(os.environ.get("REFERENCE_MAX_S
 # the original audio slice for them and leaves the rest dubbed as usual.
 PRESERVE_CHANTS     = os.environ.get("PRESERVE_CHANTS", "false").lower() == "true"
 ASSEMBLYAI_API_KEY  = os.environ.get("ASSEMBLYAI_API_KEY", "")
+GEMINI_TRANSCRIBE_MAX_SECONDS = float(os.environ.get("GEMINI_TRANSCRIBE_MAX_SECONDS", "1020"))
+GEMINI_TRANSCRIBE_MODEL = (
+    os.environ.get("GEMINI_TRANSCRIBE_MODEL", "").strip()
+    or os.environ.get("GEMINI_MODEL", "").strip()
+    or "gemini-3.5-flash"
+)
+ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK = (
+    os.environ.get("ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK", "false").lower()
+    in ("1", "true", "yes", "on")
+)
+TRANSCRIPTION_PROVIDER = ""
+TRANSCRIPTION_MODEL = ""
+TRANSCRIPTION_SOURCE_DURATION_SECONDS: Optional[float] = None
 LIP_SYNC_QUALITY    = os.environ.get("LIP_SYNC_QUALITY", "latentsync")  # latentsync | latentsync_hq
 TRANSLATION_MODE    = os.environ.get("TRANSLATION_MODE", "default")   # default | budget
 
@@ -567,7 +580,7 @@ def run_demucs(audio_path: Path, out_dir: Path) -> tuple[Path, Path]:
 
 
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Stage 2: Transcription (AssemblyAI)
+# Stage 2: Transcription (Gemini first, AssemblyAI for long audio)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 ASSEMBLYAI_LANG_MAP = {
@@ -576,7 +589,385 @@ ASSEMBLYAI_LANG_MAP = {
     "zh": "zh", "ru": "ru", "tr": "tr",
 }
 
-def transcribe(audio_path: Path) -> list[dict]:
+GEMINI_TRANSCRIPTION_PROMPT_TEMPLATE = """You are the transcription engine for a video translation and dubbing pipeline.
+
+Transcribe the provided audio exactly in the original spoken language. Do not translate. Do not summarize. Do not clean up meaning. Preserve the speaker's actual words, filler words, repetitions, false starts, devotional words, names, numbers, and code-switching exactly as spoken.
+
+The transcript will be translated and dubbed after this step, so timing and segmentation are critical.
+
+Top priority: create HeyGen-quality, audio-aware segments.
+
+You must listen to the real audio rhythm, not just count words. Segment boundaries must follow when the speaker actually starts speaking, continues speaking, pauses, changes speaker, or finishes a connected thought.
+
+If the speaker continues talking at a consistent pace with no meaningful pause, keep the connected thought together even if the segment becomes longer and contains more text. A longer segment is correct when the audio has continuous speech and no real break.
+
+If the speaker says a short phrase and then pauses for about 1-2 seconds, or clearly stops before the next phrase, make that phrase its own short segment. A short segment is correct when the speaker actually spoke briefly and then took a break.
+
+Do not chop continuous speech into tiny fixed-size fragments. Do not merge across real pauses. Do not use a rigid word count as the main rule. The main rule is the audible speaking pattern.
+
+Think like a professional dubbing timeline editor:
+- continuous speech without a real pause = one connected segment;
+- short phrase followed by a real pause = one short segment;
+- speaker change = new segment;
+- new thought after a pause = new segment;
+- natural breath or comma-length hesitation can stay inside the same segment if the speaker clearly continues the same thought;
+- meaningful 1-2 second pause should usually create a boundary.
+
+Examples of desired behavior:
+- A speaker talks continuously from 00:00:00.070 to 00:00:18.429 about one connected news claim. Keep it as one long segment because there is no meaningful pause.
+- A speaker says "The current situation between Iran and America today" from 00:00:18.589 to 00:00:21.670 and then pauses. Keep it as one short segment.
+- A speaker says "This is very significant, so listen carefully" from 00:00:26.989 to 00:00:28.829 and then pauses. Keep it as one short segment.
+- A speaker continues a connected explanation from 00:00:51.640 to 00:01:03.640. Keep it as one longer segment because the speech continues naturally.
+
+Return only valid JSON matching this shape:
+{
+  "languageCode": "string",
+  "languageName": "string",
+  "durationSeconds": number,
+  "segments": [
+    {
+      "id": number,
+      "speaker": "SPEAKER_A",
+      "start": number,
+      "end": number,
+      "text": "string",
+      "words": [
+        { "word": "string", "start": number, "end": number }
+      ]
+    }
+  ]
+}
+
+Rules:
+1. Output only JSON. No markdown, no explanation, no comments.
+2. All timestamps must be in seconds from the start of the audio.
+3. Segment start must be when the speaker begins that utterance. Segment end must be when the speaker finishes that utterance.
+4. Split segments at natural speech breaks: meaningful pauses, phrase endings, sentence endings, speaker changes, or clear changes in thought.
+5. Do not split just because the text is long. If the speaker keeps talking without a meaningful pause, keep the connected speech together.
+6. Do not merge just because two segments are near each other. If the speaker clearly pauses around 1-2 seconds, stops, or begins a new thought, create a boundary.
+7. Prefer 1-6 words for naturally short utterances. Allow 7-15 words when the speaker continues without a meaningful pause. Allow more than 15 words only when the audio is genuinely continuous and splitting would break a connected thought.
+8. Avoid long paragraph segments when there are real pauses available. Use the speaker's pauses as the main segmentation signal.
+9. Do not split in the middle of a word, name, number, mantra, quote, or tightly connected phrase.
+10. If the speaker pauses, end the current segment at the last spoken word before the pause and start the next segment when speech resumes.
+11. Preserve the exact original-language text. Do not translate to the target language. Do not romanize unless the speaker actually uses romanized words.
+12. Preserve code-switching exactly. If the speaker mixes Hindi and English, keep each word in the language/script actually spoken.
+13. Preserve repeated words, stutters, fillers, and incomplete phrases when they are audible.
+14. Assign stable speaker labels as SPEAKER_A, SPEAKER_B, SPEAKER_C, etc. Use the same label for the same voice throughout.
+15. If there is only one speaker, use SPEAKER_A for every segment.
+16. Do not include "Speaker A:" or any speaker label inside the text field.
+17. Provide word-level timestamps in the words array whenever possible. Each word timestamp must be inside its parent segment.
+18. If exact word timing is uncertain, estimate word timings proportionally inside the segment, but keep segment start/end accurate to the audible speech.
+19. Avoid overlapping segments unless two speakers truly talk at the same time. For normal speech, each segment should end before the next segment starts.
+20. Mark music, silence, applause, or non-speech only by omitting it. Do not create segments for non-speech unless there are spoken words.
+21. For chants, prayers, shlokas, singing, or devotional speech, transcribe the actual words as spoken and keep natural phrase boundaries.
+22. Numbers must be transcribed as spoken, not normalized unless the speaker clearly says the normalized form.
+23. The final JSON must be parseable without repair.
+
+Source language hint: {source_lang}
+Known duration seconds: {duration_seconds}
+Target translation language after transcription: {target_lang}. This is only context for segmentation. Do not translate into this language.
+Multi-speaker requested: {multi_speaker}
+"""
+
+
+def build_gemini_transcription_prompt(
+    source_lang: str,
+    target_lang: str,
+    duration_seconds: Optional[float],
+    multi_speaker: bool,
+) -> str:
+    duration_hint = (
+        f"{float(duration_seconds):.3f}"
+        if isinstance(duration_seconds, (int, float)) and math.isfinite(float(duration_seconds))
+        else "unknown"
+    )
+    source_hint = source_lang or SOURCE_LANG_CODE or "auto"
+    return (
+        GEMINI_TRANSCRIPTION_PROMPT_TEMPLATE
+        .replace("{source_lang}", source_hint)
+        .replace("{target_lang}", target_lang or TARGET_LANG)
+        .replace("{duration_seconds}", duration_hint)
+        .replace("{multi_speaker}", str(bool(multi_speaker)).lower())
+    )
+
+
+def _extract_json_object(text: str):
+    cleaned = (text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start_obj = cleaned.find("{")
+        start_arr = cleaned.find("[")
+        starts = [i for i in (start_obj, start_arr) if i >= 0]
+        if not starts:
+            raise
+        start = min(starts)
+        end_char = "}" if cleaned[start] == "{" else "]"
+        end = cleaned.rfind(end_char)
+        if end <= start:
+            raise
+        return json.loads(cleaned[start:end + 1])
+
+
+def _finite_float(value, default: Optional[float] = None) -> Optional[float]:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _first_present(obj: dict, *keys):
+    """Return the first key whose value is not None — unlike `a or b`, this keeps
+    a legitimate 0/0.0 value instead of skipping it as falsy."""
+    for key in keys:
+        if obj.get(key) is not None:
+            return obj.get(key)
+    return None
+
+
+def _normalize_transcript_speaker(raw) -> str:
+    label = str(raw or "").strip()
+    if not label:
+        # Gemini is the diarizer here and is prompted to always emit a concrete
+        # SPEAKER_A/B/C label. If a label is missing, default to a concrete
+        # SPEAKER_A (matching the AssemblyAI path) rather than the
+        # "let diarization decide" SPEAKER_UNKNOWN sentinel.
+        return "SPEAKER_A"
+    label = re.sub(r"^speaker\s+", "", label, flags=re.IGNORECASE).strip()
+    label = label.upper().replace(" ", "_").replace("-", "_")
+    if label.startswith("SPEAKER_"):
+        suffix = label.split("SPEAKER_", 1)[1] or "A"
+    else:
+        suffix = label or "A"
+    suffix = re.sub(r"[^A-Z0-9_]", "", suffix) or "A"
+    return f"SPEAKER_{suffix}"
+
+
+def _strip_speaker_prefix(text: str) -> str:
+    return re.sub(
+        r"^\s*(?:speaker\s+[A-Za-z0-9_]+|SPEAKER_[A-Za-z0-9_]+)\s*[:\-]\s*",
+        "",
+        text or "",
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _synthesize_word_timings(text: str, start: float, end: float) -> list[dict]:
+    tokens = re.findall(r"\S+", text or "")
+    if not tokens:
+        return []
+    duration = max(0.001, float(end) - float(start))
+    step = duration / len(tokens)
+    words: list[dict] = []
+    for idx, token in enumerate(tokens):
+        w_start = float(start) + idx * step
+        w_end = float(start) + (idx + 1) * step
+        words.append({"word": token, "start": w_start, "end": min(float(end), w_end)})
+    return words
+
+
+def _normalize_gemini_words(raw_words, text: str, start: float, end: float) -> list[dict]:
+    words: list[dict] = []
+    if isinstance(raw_words, list):
+        for item in raw_words:
+            if not isinstance(item, dict):
+                continue
+            word = str(item.get("word") or item.get("text") or "").strip()
+            w_start = _finite_float(item.get("start"))
+            w_end = _finite_float(item.get("end"))
+            if not word or w_start is None or w_end is None:
+                continue
+            if w_start < start - 0.05 or w_end > end + 0.05 or w_end <= w_start:
+                continue
+            words.append({
+                "word": word,
+                "start": max(start, w_start),
+                "end": min(end, w_end),
+            })
+    words.sort(key=lambda w: (float(w["start"]), float(w["end"])))
+    return words or _synthesize_word_timings(text, start, end)
+
+
+def normalize_gemini_transcript_payload(payload, duration_seconds: Optional[float] = None) -> list[dict]:
+    raw_segments = payload.get("segments") if isinstance(payload, dict) else payload
+    if not isinstance(raw_segments, list):
+        raise RuntimeError("Gemini transcription returned invalid JSON shape: missing segments list")
+
+    duration = _finite_float(duration_seconds)
+    segments: list[dict] = []
+    for raw in raw_segments:
+        if not isinstance(raw, dict):
+            continue
+        text = _strip_speaker_prefix(str(raw.get("text") or raw.get("content") or "").strip())
+        if not text:
+            continue
+        # NOTE: use _first_present (not `a or b`) so a legitimate start of 0.0 —
+        # which every opening segment has — is not treated as falsy and dropped.
+        start = _finite_float(_first_present(raw, "start", "startSec", "start_seconds"))
+        end = _finite_float(_first_present(raw, "end", "endSec", "end_seconds"))
+        if start is None or end is None:
+            continue
+        if duration and end > max(duration * 2, 1000):
+            start /= 1000.0
+            end /= 1000.0
+        start = max(0.0, start)
+        if duration:
+            end = min(duration, end)
+        if end <= start:
+            continue
+        speaker = _normalize_transcript_speaker(raw.get("speaker"))
+        segments.append({
+            "id": len(segments) + 1,
+            "start": start,
+            "end": end,
+            "text": text,
+            "speaker": speaker,
+            "words": _normalize_gemini_words(raw.get("words"), text, start, end),
+        })
+
+    segments.sort(key=lambda seg: (float(seg["start"]), float(seg["end"])))
+
+    repaired: list[dict] = []
+    for seg in segments:
+        if repaired and float(repaired[-1]["end"]) > float(seg["start"]):
+            prev = repaired[-1]
+            overlap = float(prev["end"]) - float(seg["start"])
+            same_speaker = str(prev.get("speaker")) == str(seg.get("speaker"))
+            if same_speaker or overlap <= 0.12:
+                prev["end"] = float(seg["start"])
+                prev["words"] = [
+                    {
+                        "word": w["word"],
+                        "start": max(float(prev["start"]), float(w["start"])),
+                        "end": min(float(prev["end"]), float(w["end"])),
+                    }
+                    for w in prev.get("words", [])
+                    if float(w.get("end", 0)) > float(prev["start"]) and float(w.get("start", 0)) < float(prev["end"])
+                ] or _synthesize_word_timings(str(prev.get("text", "")), float(prev["start"]), float(prev["end"]))
+                if float(prev["end"]) <= float(prev["start"]):
+                    repaired.pop()
+        repaired.append(seg)
+
+    for idx, seg in enumerate(repaired, start=1):
+        seg["id"] = idx
+        seg["words"] = _normalize_gemini_words(seg.get("words"), str(seg.get("text", "")), float(seg["start"]), float(seg["end"]))
+    return repaired
+
+
+def _audio_mime_type(audio_path: Path) -> str:
+    ext = audio_path.suffix.lower()
+    return {
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".aac": "audio/aac",
+        ".flac": "audio/flac",
+        ".ogg": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".webm": "audio/webm",
+    }.get(ext, "audio/wav")
+
+
+def transcribe_gemini(audio_path: Path, audio_duration_seconds: Optional[float] = None) -> list[dict]:
+    global SOURCE_LANG_CODE
+    prompt = build_gemini_transcription_prompt(
+        source_lang=SOURCE_LANG_CODE or SOURCE_LANG or "auto",
+        target_lang=TARGET_LANG,
+        duration_seconds=audio_duration_seconds,
+        multi_speaker=MULTI_SPEAKER,
+    )
+    client = _get_gemini_client()
+    mime_type = _audio_mime_type(audio_path)
+    log.info("[Gemini-ASR] Transcribing %s with %s...", audio_path.name, GEMINI_TRANSCRIBE_MODEL)
+
+    if GOOGLE_GENAI_USE_VERTEXAI:
+        from google.genai import types
+        contents = [
+            types.Part.from_bytes(data=audio_path.read_bytes(), mime_type=mime_type),
+            prompt,
+        ]
+        response = client.models.generate_content(
+            model=GEMINI_TRANSCRIBE_MODEL,
+            contents=contents,
+            config={
+                "temperature": 0.0,
+                "response_mime_type": "application/json",
+                "max_output_tokens": 65536,
+            },
+        )
+    else:
+        uploaded = client.files.upload(file=str(audio_path))
+        try:
+            file_name = getattr(uploaded, "name", None)
+            file_state = getattr(uploaded, "state", None)
+            attempts = 0
+            while file_name and str(file_state).upper().endswith("PROCESSING") and attempts < 90:
+                time.sleep(2.0)
+                uploaded = client.files.get(name=file_name)
+                file_state = getattr(uploaded, "state", None)
+                attempts += 1
+            if file_state and str(file_state).upper().endswith("FAILED"):
+                raise RuntimeError(f"Gemini file processing failed for {audio_path.name}")
+            response = client.models.generate_content(
+                model=GEMINI_TRANSCRIBE_MODEL,
+                contents=[uploaded, prompt],
+                config={
+                    "temperature": 0.0,
+                    "response_mime_type": "application/json",
+                    "max_output_tokens": 65536,
+                },
+            )
+        finally:
+            try:
+                file_name = getattr(uploaded, "name", None)
+                if file_name:
+                    client.files.delete(name=file_name)
+            except Exception as cleanup_err:
+                log.debug("[Gemini-ASR] File cleanup skipped: %s", cleanup_err)
+
+    payload = _extract_json_object(getattr(response, "text", "") or "")
+    if isinstance(payload, dict) and payload.get("languageCode"):
+        SOURCE_LANG_CODE = str(payload.get("languageCode") or SOURCE_LANG_CODE).strip() or SOURCE_LANG_CODE
+    segments = normalize_gemini_transcript_payload(payload, audio_duration_seconds)
+    if not segments:
+        raise RuntimeError("Gemini transcription returned no usable speech segments")
+    log.info("[Gemini-ASR] Built %d natural audio-aware segments.", len(segments))
+    return segments
+
+
+def transcribe(audio_path: Path, audio_duration_seconds: Optional[float] = None) -> list[dict]:
+    global TRANSCRIPTION_PROVIDER, TRANSCRIPTION_MODEL, TRANSCRIPTION_SOURCE_DURATION_SECONDS
+    duration = _finite_float(audio_duration_seconds)
+    if duration is None:
+        try:
+            duration = get_video_duration(audio_path)
+        except Exception as probe_err:
+            log.warning("[ASR] Could not probe audio duration; defaulting to Gemini first: %s", probe_err)
+    TRANSCRIPTION_SOURCE_DURATION_SECONDS = duration
+    if duration is not None and duration > GEMINI_TRANSCRIBE_MAX_SECONDS:
+        TRANSCRIPTION_PROVIDER = "assemblyai"
+        TRANSCRIPTION_MODEL = "assemblyai"
+        log.info("[ASR] Duration %.1fs exceeds Gemini cutoff %.1fs; using AssemblyAI.", duration, GEMINI_TRANSCRIBE_MAX_SECONDS)
+        return transcribe_assemblyai(audio_path)
+
+    try:
+        TRANSCRIPTION_PROVIDER = "gemini"
+        TRANSCRIPTION_MODEL = GEMINI_TRANSCRIBE_MODEL
+        return transcribe_gemini(audio_path, duration)
+    except Exception:
+        if not ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK:
+            raise
+        log.warning("[ASR] Gemini failed; using AssemblyAI emergency fallback.", exc_info=True)
+        TRANSCRIPTION_PROVIDER = "assemblyai-fallback"
+        TRANSCRIPTION_MODEL = "assemblyai"
+        return transcribe_assemblyai(audio_path)
+
+
+def transcribe_assemblyai(audio_path: Path) -> list[dict]:
     """
     Transcribe audio to word-level timestamped segments using AssemblyAI.
     Groups words into sentences/segments by pauses.
@@ -1246,7 +1637,7 @@ def _segment_speech_duration(seg: dict) -> float:
     """
     Return how much *speech* (not silence) lives inside this segment.
 
-    Prefers the AssemblyAI word-level [start, end] timestamps because they
+    Prefers ASR word-level [start, end] timestamps because they
     reflect actual phonation; falls back to the segment's slot duration when
     word data is not available.
     """
@@ -5601,6 +5992,10 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
         "jobId": JOB_ID,
         "targetLang": TARGET_LANG,
         "targetLangCode": TARGET_LANG_CODE,
+        "transcriptionProvider": TRANSCRIPTION_PROVIDER or "unknown",
+        "transcriptionModel": TRANSCRIPTION_MODEL or "unknown",
+        "transcriptionCutoffSeconds": GEMINI_TRANSCRIBE_MAX_SECONDS,
+        "sourceDurationSeconds": TRANSCRIPTION_SOURCE_DURATION_SECONDS,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "segments": [
             {
@@ -5687,9 +6082,9 @@ def process_single_job():
         # Demucs-isolated vocals, captured for use as the voice-clone reference
         # (see step 5d).  None until Demucs runs.
         vocals_for_clone: Optional[Path] = None
-        # Phase 4 (P1-24): Demucs (GPU, ~30s) and AssemblyAI (HTTP, ~20-40s)
+        # Phase 4 (P1-24): Demucs (GPU, ~30s) and ASR
         # are independent when transcription runs on the original audio.
-        # We launch Demucs in a background thread and run AssemblyAI
+        # We launch Demucs in a background thread and run ASR
         # concurrently.  This saves ~30s per job on average.
         #
         # Demucs output is used ONLY for:
@@ -5716,8 +6111,8 @@ def process_single_job():
                 demucs_future: _Future_demucs = demucs_pool.submit(_run_demucs_task)
 
                 # Run transcription on original audio while Demucs processes
-                update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
-                segments = transcribe(transcription_audio)
+                update_progress("TRANSCRIBING", 18, "Transcribing speech...")
+                segments = transcribe(transcription_audio, video_duration)
 
                 # Collect Demucs result
                 try:
@@ -5745,13 +6140,13 @@ def process_single_job():
                 demucs_warning = str(e)
                 log.warning(f"[Demucs] Skipped: {e}")
 
-            update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
-            segments = transcribe(transcription_audio)
+            update_progress("TRANSCRIBING", 18, "Transcribing speech...")
+            segments = transcribe(transcription_audio, video_duration)
 
         else:
             # ── No Demucs ─────────────────────────────────────────────────
-            update_progress("TRANSCRIBING", 18, "Transcribing speech (AssemblyAI)...")
-            segments = transcribe(transcription_audio)
+            update_progress("TRANSCRIBING", 18, "Transcribing speech...")
+            segments = transcribe(transcription_audio, video_duration)
 
 
         if not segments:
