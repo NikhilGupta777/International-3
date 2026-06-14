@@ -4264,6 +4264,199 @@ def run_lipsync(video_path: Path, dubbed_audio: Path, out_dir: Path) -> Optional
         )
         return None  # Caller will mux dubbed audio into original video
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-speaker selective lip sync (opt-in, experimental).
+# Goal (production approach used by Rask/Vozo/HeyGen): only animate the mouth of
+# the person whose VOICE is currently playing. Listeners, reaction shots, profile
+# cut-aways and faceless shots are left as the original frames.
+#
+# Method (no extra ML model / no base rebuild): we already have diarization
+# (which speaker talks when). We add InsightFace (already bundled with LatentSync)
+# to identify WHO is on screen, map each voice→face by co-occurrence, then run
+# LatentSync only on the turns where the on-screen person IS the current speaker;
+# everything else is passed through unchanged, and the pieces are concatenated.
+#
+# Opt-in via TRANSLATOR_MULTISPEAKER_LIPSYNC=1. Returns None on anything unusual
+# so the caller falls back to the normal whole-video lip sync — it can never make
+# the result worse than today.
+# ─────────────────────────────────────────────────────────────────────────────
+def _sample_dominant_faces(video_path: Path, sample_fps: float = 3.0):
+    """Sample frames and return (duration, fps, [(t, embedding|None)]) for the
+    largest face in each sampled frame. Raises on import/IO problems."""
+    import cv2
+    import numpy as np  # noqa: F401
+    from insightface.app import FaceAnalysis
+
+    app = FaceAnalysis(
+        name=os.environ.get("ASD_FACE_MODEL", "buffalo_l"),
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    app.prepare(ctx_id=0, det_size=(640, 640))
+
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = (total / fps) if fps else 0.0
+    step = max(1, int(round(fps / max(0.5, sample_fps))))
+
+    samples: list = []
+    idx = 0
+    while True:
+        if not cap.grab():
+            break
+        if idx % step == 0:
+            ok, frame = cap.retrieve()
+            if ok:
+                t = idx / fps
+                faces = app.get(frame)
+                if faces:
+                    # Largest face = the framed subject.
+                    faces.sort(key=lambda f: float((f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])), reverse=True)
+                    samples.append((t, faces[0].normed_embedding))
+                else:
+                    samples.append((t, None))
+        idx += 1
+    cap.release()
+    return duration, fps, samples
+
+
+def run_lipsync_selective(video_path: Path, dubbed_audio: Path, segments: list[dict], out_dir: Path) -> Optional[Path]:
+    """Selective multi-speaker lip sync. Returns the composited video, or None to
+    tell the caller to fall back to the normal whole-video path."""
+    import numpy as np
+
+    speakers = {str(s.get("speaker")) for s in segments if s.get("speaker")}
+    if len(speakers) < 2:
+        return None  # single speaker — normal path is already correct
+
+    try:
+        duration, fps, samples = _sample_dominant_faces(video_path)
+    except Exception as e:
+        log.warning("[MultiSpeaker] Face sampling unavailable (%s) — using normal lip sync.", e)
+        return None
+    if not samples or duration <= 0:
+        return None
+
+    sim_thresh = float(os.environ.get("ASD_FACE_SIM_THRESHOLD", "0.45"))
+    centroids: list = []
+
+    def _identity(emb) -> int:
+        for i, c in enumerate(centroids):
+            if float(np.dot(emb, c)) >= sim_thresh:
+                return i
+        centroids.append(np.asarray(emb, dtype=float))
+        return len(centroids) - 1
+
+    ident_timeline = [(t, (_identity(emb) if emb is not None else None)) for t, emb in samples]
+
+    # Map each voice → the face identity it co-occurs with most.
+    from collections import Counter, defaultdict
+    votes: dict = defaultdict(Counter)
+    for seg in segments:
+        sp = str(seg.get("speaker") or "")
+        if not sp:
+            continue
+        s0, s1 = float(seg["start"]), float(seg["end"])
+        for t, ident in ident_timeline:
+            if ident is not None and s0 <= t <= s1:
+                votes[sp][ident] += 1
+    speaker_identity = {sp: c.most_common(1)[0][0] for sp, c in votes.items() if c}
+    if not speaker_identity:
+        return None
+
+    def _dominant_identity(s0: float, s1: float):
+        c = Counter(ident for t, ident in ident_timeline if ident is not None and s0 <= t <= s1)
+        return c.most_common(1)[0][0] if c else None
+
+    # Decide per diarized turn: sync only when the on-screen person IS the speaker.
+    raw: list = []  # (start, end, sync)
+    for seg in sorted(segments, key=lambda s: float(s["start"])):
+        s0, s1 = float(seg["start"]), float(seg["end"])
+        if s1 <= s0:
+            continue
+        want = speaker_identity.get(str(seg.get("speaker") or ""))
+        on_screen = _dominant_identity(s0, s1)
+        raw.append((s0, s1, bool(want is not None and on_screen == want)))
+
+    if not raw:
+        return None
+
+    # Fill gaps (silence / between turns) as pass-through, then merge neighbours.
+    spans: list = []
+    cursor = 0.0
+    for s0, s1, sync in raw:
+        if s0 > cursor + 0.05:
+            spans.append([cursor, s0, False])
+        if spans and spans[-1][2] == sync and abs(spans[-1][1] - s0) < 0.2:
+            spans[-1][1] = s1
+        else:
+            spans.append([max(s0, cursor), s1, sync])
+        cursor = max(cursor, s1)
+    if cursor < duration - 0.05:
+        spans.append([cursor, duration, False])
+
+    # Too-short sync spans can't be lip-synced reliably → make them pass-through.
+    MIN_SYNC = float(os.environ.get("ASD_MIN_SYNC_SECONDS", "0.6"))
+    for sp in spans:
+        if sp[2] and (sp[1] - sp[0]) < MIN_SYNC:
+            sp[2] = False
+
+    n_sync = sum(1 for sp in spans if sp[2])
+    if n_sync == 0:
+        log.info("[MultiSpeaker] No on-screen speaker turns to sync — using normal lip sync.")
+        return None
+    log.info("[MultiSpeaker] %d spans (%d synced, %d pass-through) across %d speakers.",
+             len(spans), n_sync, len(spans) - n_sync, len(speakers))
+
+    # Build each span as a clip (uniform encode) then concat.
+    work = out_dir / "multispeaker"
+    work.mkdir(parents=True, exist_ok=True)
+    clip_paths: list[Path] = []
+    try:
+        for i, (s0, s1, sync) in enumerate(spans):
+            dur = s1 - s0
+            if dur <= 0.04:
+                continue
+            seg_v = work / f"v_{i:04d}.mp4"
+            seg_a = work / f"a_{i:04d}.wav"
+            run_ffmpeg("-ss", f"{s0:.3f}", "-i", str(video_path), "-t", f"{dur:.3f}",
+                       "-an", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(seg_v))
+            run_ffmpeg("-ss", f"{s0:.3f}", "-i", str(dubbed_audio), "-t", f"{dur:.3f}",
+                       "-ac", "1", "-ar", "24000", str(seg_a))
+            out_clip = work / f"clip_{i:04d}.mp4"
+            if sync:
+                try:
+                    synced = run_lipsync_latentsync(seg_v, seg_a, work / f"ls_{i:04d}")
+                    run_ffmpeg("-i", str(synced), "-c:v", "libx264", "-preset", "veryfast",
+                               "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", str(out_clip))
+                except Exception as e:
+                    log.warning("[MultiSpeaker] Span %d sync failed (%s) — passing through.", i, str(e).splitlines()[0])
+                    run_ffmpeg("-i", str(seg_v), "-i", str(seg_a), "-map", "0:v", "-map", "1:a",
+                               "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                               "-c:a", "aac", "-ar", "48000", "-shortest", str(out_clip))
+            else:
+                run_ffmpeg("-i", str(seg_v), "-i", str(seg_a), "-map", "0:v", "-map", "1:a",
+                           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                           "-c:a", "aac", "-ar", "48000", "-shortest", str(out_clip))
+            clip_paths.append(out_clip)
+
+        if not clip_paths:
+            return None
+        concat_list = work / "concat.txt"
+        concat_list.write_text("".join(f"file '{p}'\n" for p in clip_paths), encoding="utf-8")
+        final = out_dir / "multispeaker_output.mp4"
+        run_ffmpeg("-f", "concat", "-safe", "0", "-i", str(concat_list),
+                   "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-ar", "48000", str(final))
+        if final.exists():
+            log.info("[MultiSpeaker] Selective lip sync complete => %s", final)
+            return final
+    except Exception as e:
+        log.warning("[MultiSpeaker] Selective pipeline failed (%s) — falling back.", e)
+        return None
+    return None
+
 # Stage 7: Assemble per-segment audio into one dubbed audio track
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -5789,7 +5982,18 @@ def process_single_job():
             update_progress("LIPSYNC", 70, f"Running lip sync ({LIP_SYNC_QUALITY})...")
             lip_dir = work_dir / "lipsync"
             lip_dir.mkdir()
-            lipsync_video = run_lipsync(mux_video, dubbed_audio, lip_dir)
+            lipsync_video = None
+            # Opt-in: only animate the on-screen speaker in multi-speaker videos.
+            # Returns None (→ normal whole-video lip sync) for single-speaker
+            # videos or on any problem, so it can never make the result worse.
+            if os.environ.get("TRANSLATOR_MULTISPEAKER_LIPSYNC", "0").lower() in ("1", "true", "yes", "on"):
+                try:
+                    lipsync_video = run_lipsync_selective(mux_video, dubbed_audio, segments, lip_dir)
+                except Exception as ms_err:
+                    log.warning("[Main] Multi-speaker lip sync errored (%s) — using normal path.", ms_err)
+                    lipsync_video = None
+            if lipsync_video is None:
+                lipsync_video = run_lipsync(mux_video, dubbed_audio, lip_dir)
             if lipsync_video is not None:
                 shutil.copy(lipsync_video, final_video_path)
                 lip_sync_applied = True
