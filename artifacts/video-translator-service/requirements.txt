@@ -71,5 +71,3 @@ x-transformers==2.11.24
 # ── TTS fallbacks ─────────────────────────────────────────────────────────────
 edge-tts==6.1.9
 gtts==2.5.0
-
-# Force rebuild of base image

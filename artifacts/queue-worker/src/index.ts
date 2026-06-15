@@ -52,6 +52,10 @@ const YTDLP_COMMAND_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(process.env.YTDLP_COMMAND_TIMEOUT_MS ?? "2700000", 10) || 2_700_000,
 );
+const YTDLP_STALL_TIMEOUT_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.YTDLP_STALL_TIMEOUT_MS ?? "120000", 10) || 120_000,
+);
 const CLIP_FORCE_KEYFRAMES = process.env.CLIP_FORCE_KEYFRAMES === "true";
 let ytdlpCookiesBase64 = process.env.YTDLP_COOKIES_BASE64 ?? "";
 const YTDLP_COOKIES_S3_KEY = process.env.YTDLP_COOKIES_S3_KEY ?? "";
@@ -407,11 +411,22 @@ function getYouTubeFallbacks(): string[][] {
   ];
 }
 
+class StallError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StallError";
+  }
+}
+
 function runYtDlp(
   jobId: string,
   args: string[],
   onProgress?: (line: string, source: "stdout" | "stderr") => void,
+  options: { timeoutMs?: number; stallTimeoutMs?: number } = {},
 ): Promise<void> {
+  const commandTimeoutMs = options.timeoutMs ?? YTDLP_COMMAND_TIMEOUT_MS;
+  const stallTimeoutMs = options.stallTimeoutMs ?? YTDLP_STALL_TIMEOUT_MS;
+
   return new Promise<void>((resolve, reject) => {
     logger.info({ jobId, args }, "Running yt-dlp command");
     const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...args], {
@@ -421,24 +436,46 @@ function runYtDlp(
 
     let stderr = "";
     let timedOut = false;
+    let stalled = false;
+
+    const killProc = () => {
+      try { proc.kill("SIGTERM"); } catch {}
+      setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch {}
+      }, 5000).unref?.();
+    };
+
     const timeout = setTimeout(() => {
       timedOut = true;
-      stderr += `\nyt-dlp command timed out after ${Math.round(YTDLP_COMMAND_TIMEOUT_MS / 1000)} seconds`;
-      try {
-        proc.kill("SIGTERM");
-      } catch {}
-      setTimeout(() => {
-        try {
-          proc.kill("SIGKILL");
-        } catch {}
-      }, 5000).unref?.();
-    }, YTDLP_COMMAND_TIMEOUT_MS);
+      stderr += `\nyt-dlp command timed out after ${Math.round(commandTimeoutMs / 1000)} seconds`;
+      killProc();
+    }, commandTimeoutMs);
     timeout.unref?.();
+
+    let stallTimer: NodeJS.Timeout | null = null;
+    const resetStallTimer = () => {
+      if (stallTimeoutMs <= 0) return;
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        timedOut = true;
+        const msg = `yt-dlp made no progress for ${Math.round(stallTimeoutMs / 1000)} seconds`;
+        logger.warn({ jobId }, msg);
+        stderr += `\n${msg}`;
+        killProc();
+      }, stallTimeoutMs);
+      stallTimer.unref?.();
+    };
+    resetStallTimer();
+
     proc.stdout?.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       for (const line of text.split(/\r?\n|\r/)) {
         const trimmed = line.trim();
-        if (trimmed) onProgress?.(trimmed, "stdout");
+        if (trimmed) {
+          resetStallTimer();
+          onProgress?.(trimmed, "stdout");
+        }
       }
     });
     proc.stderr?.on("data", (chunk: Buffer) => {
@@ -447,32 +484,34 @@ function runYtDlp(
       if (stderr.length > 12000) stderr = stderr.slice(-12000);
       for (const line of text.split(/\r?\n|\r/)) {
         const trimmed = line.trim();
-        if (trimmed) onProgress?.(trimmed, "stderr");
+        if (trimmed) {
+          resetStallTimer();
+          onProgress?.(trimmed, "stderr");
+        }
       }
     });
 
     proc.on("error", (err) => {
       clearTimeout(timeout);
+      if (stallTimer) clearTimeout(stallTimer);
       reject(new Error(`Failed to start yt-dlp: ${err.message}`));
     });
 
     proc.on("close", (code) => {
       clearTimeout(timeout);
+      if (stallTimer) clearTimeout(stallTimer);
       if (code === 0) {
         resolve();
         return;
       }
       logger.error(
-        { jobId, code, stderrTail: stderr.slice(-1200) },
+        { jobId, code, stalled, stderrTail: stderr.slice(-1200) },
         "yt-dlp exited with non-zero status",
       );
-      reject(
-        new Error(
-          `yt-dlp failed for ${jobId}: ${
-            stderr.slice(-700) || (timedOut ? "command timed out" : `exit ${String(code)}`)
-          }`,
-        ),
-      );
+      const errMsg = `yt-dlp failed for ${jobId}: ${
+        stderr.slice(-700) || (stalled ? "download stalled" : timedOut ? "command timed out" : `exit ${String(code)}`)
+      }`;
+      reject(stalled ? new StallError(errMsg) : new Error(errMsg));
     });
   });
 }
@@ -698,16 +737,26 @@ async function handleDownload(payload: WorkerPayload): Promise<void> {
     if (attempted.has(key)) continue;
     attempted.add(key);
     try {
-      await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs]);
+      await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], undefined, {
+        stallTimeoutMs: YTDLP_STALL_TIMEOUT_MS,
+      });
       lastErr = null;
       break;
     } catch (err) {
       lastErr = err instanceof Error ? err : new Error("yt-dlp download failed");
+      if (lastErr instanceof StallError) {
+        logger.warn({ jobId: payload.jobId }, "Download stalled, retrying...");
+        await updateJobState(payload.jobId, "running", "Download stalled, retrying...");
+        attempted.delete(key);
+        continue;
+      }
       if (formatId && isFormatUnavailableError(lastErr)) {
         await updateJobState(payload.jobId, "running", "Retrying with fallback format");
         const retryCmd = stripFormatArg(cmdArgs);
         retryCmd.unshift("-f", audioOnly ? "bestaudio/best" : DEFAULT_VIDEO_FORMAT_SELECTOR);
-        await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...retryCmd]);
+        await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...retryCmd], undefined, {
+          stallTimeoutMs: YTDLP_STALL_TIMEOUT_MS,
+        });
         lastErr = null;
         break;
       }
@@ -724,11 +773,17 @@ async function handleDownload(payload: WorkerPayload): Promise<void> {
         if (attempted.has(key)) continue;
         attempted.add(key);
         try {
-          await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs]);
+          await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], undefined, {
+            stallTimeoutMs: YTDLP_STALL_TIMEOUT_MS,
+          });
           lastErr = null;
           break;
         } catch (err) {
           lastErr = err instanceof Error ? err : new Error("yt-dlp fallback download failed");
+          if (lastErr instanceof StallError) {
+            logger.warn({ jobId: payload.jobId }, "Download stalled on fallback, retrying...");
+            await updateJobState(payload.jobId, "running", "Download stalled, retrying...");
+          }
         }
       }
       if (!lastErr) break;
@@ -839,16 +894,24 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
       attempted.add(key);
       attemptsUsed += 1;
       try {
-        await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], recordProgress);
+        await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], recordProgress, {
+          stallTimeoutMs: YTDLP_STALL_TIMEOUT_MS,
+        });
         lastErr = null;
         break;
       } catch (err) {
         lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut failed");
+        if (lastErr instanceof StallError) {
+          logger.warn({ jobId: payload.jobId, attempt: attemptsUsed }, "Clip download stalled, retrying...");
+          await updateJobState(payload.jobId, "running", "Download stalled, retrying...");
+          attempted.delete(key);
+          continue;
+        }
         if (!isYt || !isYouTubeBlockedError(lastErr.message)) break;
       }
     }
 
-    if (lastErr && isYt && isYouTubeBlockedError(lastErr.message) && attemptsUsed < MAX_CLIP_DOWNLOAD_ATTEMPTS) {
+    if (lastErr && isYt && (isYouTubeBlockedError(lastErr.message) || lastErr instanceof StallError) && attemptsUsed < MAX_CLIP_DOWNLOAD_ATTEMPTS) {
       await updateJobState(payload.jobId, "running", "Retrying with alternate client...");
       for (const fallback of downloadFallbacks.slice(0, MAX_CLIP_CLIENT_FALLBACKS)) {
         if (attemptsUsed >= MAX_CLIP_DOWNLOAD_ATTEMPTS) break;
@@ -860,11 +923,17 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
           attempted.add(key);
           attemptsUsed += 1;
           try {
-            await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], recordProgress);
+            await runYtDlp(payload.jobId, [...buildYtDlpBaseArgs(), ...extra, ...cmdArgs], recordProgress, {
+              stallTimeoutMs: YTDLP_STALL_TIMEOUT_MS,
+            });
             lastErr = null;
             break;
           } catch (err) {
             lastErr = err instanceof Error ? err : new Error("yt-dlp clip cut fallback failed");
+            if (lastErr instanceof StallError) {
+              logger.warn({ jobId: payload.jobId, attempt: attemptsUsed }, "Clip stalled on fallback, retrying...");
+              await updateJobState(payload.jobId, "running", "Download stalled, retrying...");
+            }
           }
         }
         if (!lastErr) break;

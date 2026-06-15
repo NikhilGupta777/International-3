@@ -87,19 +87,24 @@ RUN pip install --no-cache-dir \
     "pip<26" "setuptools<81" wheel \
     && pip install --no-cache-dir --prefer-binary -r requirements.txt -c constraints.txt
 
-# ── Pre-download Demucs htdemucs model weights (~80 MB) ──────────────────────
-# Demucs uses PyTorch Hub which downloads to TORCH_HOME at runtime if not cached.
-# Baking the weights in eliminates a 5-10 min cold-start download per job.
-# TORCH_HOME is set to /model-cache/torch so weights persist in the image layer.
-RUN python - <<'PY'
-import os
-os.environ.setdefault("TORCH_HOME", "/model-cache/torch")
-from demucs.pretrained import get_model
-print("[Demucs] Pre-downloading htdemucs model weights...")
-model = get_model("htdemucs")
-print(f"[Demucs] Model ready: {model.__class__.__name__}")
-del model
-PY
+# ── Install AWS CLI (lightweight, for S3 model downloads) ────────────────────
+RUN pip install --no-cache-dir awscli
+
+# ── Pre-download Demucs htdemucs model weights (~80 MB) from S3 ──────────────
+# Pre-uploaded to S3 via upload-model-weights.yml workflow.
+# Original source: PyTorch Hub (slow). S3 copy: ~1 second.
+# Tarball extracts torch-cache/ which maps to TORCH_HOME=/model-cache/torch.
+RUN --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_region \
+    export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
+    && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+    && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
+    && mkdir -p /model-cache/torch \
+    && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/demucs-htdemucs.tar.gz /tmp/demucs.tar.gz \
+    && tar xzf /tmp/demucs.tar.gz -C /tmp/ \
+    && cp -a /tmp/torch-cache/. /model-cache/torch/ \
+    && rm -rf /tmp/demucs.tar.gz /tmp/torch-cache
 
 # ── modelscope — required for CosyVoice model download & loading ──────────────
 # Must be its own RUN to guarantee it installs before the download step.
@@ -216,30 +221,26 @@ else:
 PY
 RUN python /tmp/smoke_test_imports.py && rm -f /tmp/smoke_test_imports.py
 
-# ── Pre-download CosyVoice3 model weights ────────────────────────────────────
-# Downloads FunAudioLLM/Fun-CosyVoice3-0.5B-2512 (the official CosyVoice3 model).
-# Uses local_dir so the path is deterministic: /model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B
-# worker.py _find_cosyvoice_model() searches this exact path.
-RUN mkdir -p /model-cache/modelscope /model-cache/huggingface
-COPY <<'PY' /tmp/download_cosyvoice.py
-import os, pathlib
-from modelscope import snapshot_download
-
-target = "/model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B"
-os.makedirs(target, exist_ok=True)
-print(f"[ModelScope] Downloading FunAudioLLM/Fun-CosyVoice3-0.5B-2512 -> {target} ...")
-p = snapshot_download(
-    "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
-    local_dir=target,
-)
-print(f"[ModelScope] CosyVoice3 downloaded to: {p}")
-print(f"[ModelScope] Weights at: {target}")
-PY
-RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
-      python /tmp/download_cosyvoice.py; \
+# ── Pre-download CosyVoice3 model weights from S3 ───────────────────────────
+# Pre-uploaded to S3 via upload-model-weights.yml workflow.
+# Original source: ModelScope China (~500 KB/s, ~35 min). S3 copy: ~15 seconds.
+# Extracts to /model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B
+# which is the exact path worker.py _find_cosyvoice_model() searches.
+RUN mkdir -p /model-cache/modelscope/hub/iic /model-cache/huggingface
+RUN --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_region \
+    if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
+      && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+      && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
+      && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/cosyvoice3-0.5b.tar.gz /tmp/cosyvoice3.tar.gz \
+      && tar xzf /tmp/cosyvoice3.tar.gz -C /tmp/ \
+      && mv /tmp/cosyvoice3 /model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B \
+      && rm -f /tmp/cosyvoice3.tar.gz; \
     else \
       echo "Skipping CosyVoice3 model download during Docker build"; \
-    fi && rm -f /tmp/download_cosyvoice.py
+    fi
 
 # Verify the weights landed at the expected path
 RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
@@ -279,59 +280,46 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ] && [ "$RUN_MODEL_SMOKE_TEST" = "
       echo "Skipping model construction smoke test (disabled or models not baked in)"; \
     fi && rm -f /tmp/smoke_test_model.py
 
-# ── Pre-download LatentSync checkpoint (~700 MB) ─────────────────────────────
-# Optional build-time cache warmup; runtime can download if this is skipped.
-# The worker checks for this file at runtime and skips the download if present.
-COPY <<'PY' /tmp/download_latentsync.py
-from huggingface_hub import hf_hub_download
-import pathlib
-import whisper
-
-ckpt_dir = pathlib.Path('/model-cache/LatentSync/checkpoints')
-ckpt_dir.mkdir(parents=True, exist_ok=True)
-print('[LatentSync] Downloading latentsync_unet.pt ...')
-path = hf_hub_download('ByteDance/LatentSync', 'latentsync_unet.pt', local_dir=str(ckpt_dir))
-print(f'[LatentSync] Checkpoint saved to {path}')
-
-dst = ckpt_dir / "whisper"
-dst.mkdir(parents=True, exist_ok=True)
-print('[LatentSync] Downloading Whisper tiny.pt ...')
-whisper.load_model("tiny", download_root=str(dst))
-assert (dst / "tiny.pt").exists(), "missing LatentSync whisper tiny.pt"
-print("LatentSync whisper tiny.pt OK")
-PY
-RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
-      python /tmp/download_latentsync.py && \
-      test -f /model-cache/LatentSync/checkpoints/whisper/tiny.pt; \
+# ── Pre-download LatentSync checkpoint + Whisper from S3 ─────────────────────
+# Pre-uploaded to S3 via upload-model-weights.yml workflow.
+# Original source: HuggingFace (~5 MB/s). S3 copy: ~10 seconds.
+RUN --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_region \
+    if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
+      && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+      && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
+      && mkdir -p /model-cache/LatentSync/checkpoints/whisper \
+      && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/latentsync_unet.pt \
+           /model-cache/LatentSync/checkpoints/latentsync_unet.pt \
+      && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/whisper-tiny.pt \
+           /model-cache/LatentSync/checkpoints/whisper/tiny.pt \
+      && test -f /model-cache/LatentSync/checkpoints/latentsync_unet.pt \
+      && test -f /model-cache/LatentSync/checkpoints/whisper/tiny.pt; \
     else \
       echo "Skipping LatentSync checkpoint download during Docker build"; \
-    fi && rm -f /tmp/download_latentsync.py
+    fi
 
-# ── Pre-download VAE used by LatentSync at inference time (~330 MB) ──────────
+# ── Pre-download VAE used by LatentSync at inference time (~330 MB) from S3 ──
 # LatentSync inference.py calls AutoencoderKL.from_pretrained("stabilityai/sd-vae-ft-mse").
-# Pre-baking it into the image means every translation job doesn't pay a 330 MB
-# HuggingFace download on cold start and avoids failures if the network is slow.
-COPY <<'PY' /tmp/download_vae.py
-import os, sys
-sys.path.insert(0, "/model-cache/CosyVoice")
-sys.path.insert(0, "/model-cache/CosyVoice/third_party/Matcha-TTS")
-os.environ.setdefault("HF_HOME", "/model-cache/huggingface")
-from diffusers import AutoencoderKL
-import torch
-print("[VAE] Downloading stabilityai/sd-vae-ft-mse ...")
-vae = AutoencoderKL.from_pretrained(
-    "stabilityai/sd-vae-ft-mse",
-    torch_dtype=torch.float32,
-    cache_dir="/model-cache/huggingface",
-)
-print(f"[VAE] Downloaded OK — config: {vae.config.scaling_factor}")
-del vae
-PY
-RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
-      python /tmp/download_vae.py; \
+# Pre-uploaded to S3 via upload-model-weights.yml workflow.
+# Tarball contains the HuggingFace cache directory structure.
+RUN --mount=type=secret,id=aws_access_key_id \
+    --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_region \
+    if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
+      export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
+      && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+      && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
+      && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/sd-vae-ft-mse.tar.gz /tmp/vae.tar.gz \
+      && tar xzf /tmp/vae.tar.gz -C /tmp/ \
+      && mkdir -p /model-cache/huggingface \
+      && cp -a /tmp/hf-vae-cache/. /model-cache/huggingface/ \
+      && rm -rf /tmp/vae.tar.gz /tmp/hf-vae-cache; \
     else \
       echo "Skipping VAE pre-download during Docker build"; \
-    fi && rm -f /tmp/download_vae.py
+    fi
 
 # Final image cleanup. The GitHub-hosted runner exports this very large base
 # image through BuildKit, so every cache directory left behind increases the

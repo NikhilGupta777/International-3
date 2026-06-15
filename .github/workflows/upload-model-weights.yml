@@ -1,0 +1,154 @@
+name: Upload Model Weights to S3
+
+# One-time workflow: downloads all model weights from original sources
+# (ModelScope, HuggingFace, PyTorch Hub) and uploads them to S3.
+# Run this once, then all future Dockerfile.base rebuilds pull from S3
+# at full speed instead of ModelScope China.
+#
+# Trigger: Actions -> Upload Model Weights to S3 -> Run workflow
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  S3_BUCKET: malikaeditorr
+  S3_PREFIX: ytgrabber-green/model-weights
+
+jobs:
+  upload-weights:
+    name: Download & Upload Model Weights
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Python 3.11 + pip
+        run: |
+          sudo apt-get update && sudo apt-get install -y python3.11 python3-pip
+          python3.11 -m pip install --upgrade pip
+
+      # 1. CosyVoice3 weights (~1.5 GB)
+      - name: Download CosyVoice3 from ModelScope
+        run: |
+          python3.11 -m pip install modelscope==1.18.1
+          python3.11 - <<'PY'
+          import os
+          from modelscope import snapshot_download
+          target = "/tmp/cosyvoice3"
+          os.makedirs(target, exist_ok=True)
+          print("Downloading FunAudioLLM/Fun-CosyVoice3-0.5B-2512 ...")
+          snapshot_download("FunAudioLLM/Fun-CosyVoice3-0.5B-2512", local_dir=target)
+          print("Done.")
+          PY
+
+      - name: Upload CosyVoice3 to S3
+        run: |
+          cd /tmp && tar czf cosyvoice3-0.5b.tar.gz -C /tmp cosyvoice3
+          ls -lh /tmp/cosyvoice3-0.5b.tar.gz
+          aws s3 cp /tmp/cosyvoice3-0.5b.tar.gz \
+            "s3://${S3_BUCKET}/${S3_PREFIX}/cosyvoice3-0.5b.tar.gz"
+          echo "CosyVoice3 uploaded OK"
+
+      # 2. LatentSync checkpoint (~700 MB)
+      - name: Download LatentSync checkpoint
+        run: |
+          python3.11 -m pip install huggingface_hub==0.24.6
+          python3.11 - <<'PY'
+          from huggingface_hub import hf_hub_download
+          import pathlib
+          ckpt_dir = pathlib.Path("/tmp/latentsync-checkpoints")
+          ckpt_dir.mkdir(parents=True, exist_ok=True)
+          print("Downloading latentsync_unet.pt ...")
+          hf_hub_download("ByteDance/LatentSync", "latentsync_unet.pt", local_dir=str(ckpt_dir))
+          print("Done.")
+          PY
+
+      - name: Upload LatentSync checkpoint to S3
+        run: |
+          ls -lh /tmp/latentsync-checkpoints/latentsync_unet.pt
+          aws s3 cp /tmp/latentsync-checkpoints/latentsync_unet.pt \
+            "s3://${S3_BUCKET}/${S3_PREFIX}/latentsync_unet.pt"
+          echo "LatentSync uploaded OK"
+
+      # 3. Whisper tiny.pt (~75 MB)
+      - name: Download Whisper tiny model
+        run: |
+          python3.11 -m pip install openai-whisper==20231117
+          python3.11 - <<'PY'
+          import pathlib
+          import whisper
+          dst = pathlib.Path("/tmp/whisper-tiny")
+          dst.mkdir(parents=True, exist_ok=True)
+          print("Downloading whisper tiny.pt ...")
+          whisper.load_model("tiny", download_root=str(dst))
+          print("Done.")
+          PY
+
+      - name: Upload Whisper tiny to S3
+        run: |
+          ls -lh /tmp/whisper-tiny/tiny.pt
+          aws s3 cp /tmp/whisper-tiny/tiny.pt \
+            "s3://${S3_BUCKET}/${S3_PREFIX}/whisper-tiny.pt"
+          echo "Whisper tiny uploaded OK"
+
+      # 4. SD VAE stabilityai/sd-vae-ft-mse (~330 MB)
+      - name: Download SD VAE
+        run: |
+          python3.11 -m pip install diffusers==0.29.2 torch==2.3.1 \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+          python3.11 - <<'PY'
+          import os
+          import torch
+          os.environ["HF_HOME"] = "/tmp/hf-vae-cache"
+          from diffusers import AutoencoderKL
+          print("Downloading stabilityai/sd-vae-ft-mse ...")
+          vae = AutoencoderKL.from_pretrained(
+              "stabilityai/sd-vae-ft-mse",
+              torch_dtype=torch.float32,
+              cache_dir="/tmp/hf-vae-cache",
+          )
+          print(f"Done. Config: {vae.config.scaling_factor}")
+          PY
+
+      - name: Upload VAE to S3
+        run: |
+          cd /tmp && tar czf sd-vae-ft-mse.tar.gz -C /tmp hf-vae-cache
+          ls -lh /tmp/sd-vae-ft-mse.tar.gz
+          aws s3 cp /tmp/sd-vae-ft-mse.tar.gz \
+            "s3://${S3_BUCKET}/${S3_PREFIX}/sd-vae-ft-mse.tar.gz"
+          echo "SD VAE uploaded OK"
+
+      # 5. Demucs htdemucs (~80 MB)
+      - name: Download Demucs htdemucs
+        run: |
+          python3.11 -m pip install demucs==4.0.1
+          TORCH_HOME=/tmp/torch-cache python3.11 - <<'PY'
+          import os
+          os.environ["TORCH_HOME"] = "/tmp/torch-cache"
+          from demucs.pretrained import get_model
+          print("Downloading htdemucs ...")
+          model = get_model("htdemucs")
+          print(f"Done: {model.__class__.__name__}")
+          PY
+
+      - name: Upload Demucs to S3
+        run: |
+          cd /tmp && tar czf demucs-htdemucs.tar.gz -C /tmp torch-cache
+          ls -lh /tmp/demucs-htdemucs.tar.gz
+          aws s3 cp /tmp/demucs-htdemucs.tar.gz \
+            "s3://${S3_BUCKET}/${S3_PREFIX}/demucs-htdemucs.tar.gz"
+          echo "Demucs uploaded OK"
+
+      # Summary
+      - name: Verify all uploads
+        run: |
+          echo "=== Model weights in S3 ==="
+          aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" --human-readable
+          echo ""
+          echo "All model weights uploaded successfully."
+          echo "Future Dockerfile.base rebuilds will pull from S3."

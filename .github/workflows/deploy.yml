@@ -378,14 +378,25 @@ jobs:
             DOWNLOAD_MODELS="true"
           fi
           BASE_URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_BASE_REPO }}:${TAG}"
+
+          # Write AWS creds to temp files for BuildKit --mount=type=secret
+          echo -n "${{ secrets.AWS_ACCESS_KEY_ID }}" > /tmp/aws_access_key_id
+          echo -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" > /tmp/aws_secret_access_key
+          echo -n "${{ env.AWS_REGION }}" > /tmp/aws_region
+
           BUILDKIT_PROGRESS=plain docker buildx build \
             --platform linux/amd64 \
             --provenance=false --sbom=false \
             -f artifacts/video-translator-service/Dockerfile.base \
             --build-arg DOWNLOAD_MODELS_AT_BUILD="$DOWNLOAD_MODELS" \
             --build-arg RUN_MODEL_SMOKE_TEST="false" \
+            --secret id=aws_access_key_id,src=/tmp/aws_access_key_id \
+            --secret id=aws_secret_access_key,src=/tmp/aws_secret_access_key \
+            --secret id=aws_region,src=/tmp/aws_region \
             -t "$BASE_URI" \
             --push artifacts/video-translator-service/
+
+          rm -f /tmp/aws_access_key_id /tmp/aws_secret_access_key /tmp/aws_region
           echo "base_uri=${BASE_URI}" >> "$GITHUB_OUTPUT"
           echo "Base image pushed: ${BASE_URI}"
 
