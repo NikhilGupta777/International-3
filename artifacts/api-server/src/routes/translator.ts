@@ -699,7 +699,7 @@ async function submitTranslatorBatchJob(
   useCpuQueue = false,
   durationSeconds?: number,
 ): Promise<string> {
-  const useFastGpuQueue = !useCpuQueue && options.lipSync && Boolean(BATCH_QUEUE_FAST);
+  const useFastGpuQueue = !useCpuQueue && (options.lipSync || options.voiceClone) && Boolean(BATCH_QUEUE_FAST);
   const queue   = useCpuQueue ? CPU_BATCH_QUEUE   : (useFastGpuQueue ? BATCH_QUEUE_FAST : BATCH_QUEUE);
   const jobDef  = useCpuQueue ? CPU_BATCH_JOB_DEF : BATCH_JOB_DEF;
   const runtime = useCpuQueue ? "batch-cpu"       : (useFastGpuQueue ? "batch-lipsync" : "batch");
@@ -808,17 +808,6 @@ function runCommand(command: string, args: string[], timeoutMs = 120_000): Promi
       else reject(new Error(`${command} exited ${code}: ${stderr.slice(-1200)}`));
     });
   });
-}
-
-async function downloadS3ObjectToFile(key: string, filePath: string, abortSignal?: AbortSignal): Promise<void> {
-  const result = await s3.send(
-    new GetObjectCommand({ Bucket: S3_BUCKET, Key: key }),
-    abortSignal ? { abortSignal } : undefined,
-  );
-  if (!result.Body) throw new Error("Input object has no body");
-  await mkdir(dirname(filePath), { recursive: true });
-  if (abortSignal?.aborted) throw new Error("S3 download aborted");
-  await pipeline(result.Body as NodeJS.ReadableStream, createWriteStream(filePath));
 }
 
 async function probeDurationSeconds(filePath: string): Promise<number> {
@@ -1488,10 +1477,9 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
     const transcriptPath = join(workDir, "transcript.json");
 
     await updateTranslatorJob(jobId, "TRANSCRIBING", 18, "Transcribing speech with Gemini...");
-    // Download the source ONCE, probe locally, then hand long videos to the GPU Batch
-    // worker BEFORE transcribing (the GPU worker transcribes long audio with chunked
-    // Gemini). The signed URL is kept only for the AssemblyAI emergency fallback.
-    const inputPath = join(workDir, `fast-input${extname(s3Key) || ".mp4"}`);
+    // Probe the signed source URL, then hand long videos to the GPU Batch worker
+    // BEFORE transcribing (the GPU worker transcribes long audio with chunked
+    // Gemini). The signed URL is reused for fast audio extraction and fallback.
     const audioPath = join(workDir, "fast-audio.wav");
     const mediaUrl = await getSignedUrl(s3, new GetObjectCommand({
       Bucket: S3_BUCKET,
@@ -1504,12 +1492,11 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
     let model: string | undefined;
     let durationKnown = false;
     try {
-      await downloadS3ObjectToFile(s3Key, inputPath);
       let probed: number | undefined;
       try {
-        probed = await probeDurationSeconds(inputPath);
+        probed = await probeDurationSeconds(mediaUrl);
       } catch (probeErr) {
-        console.warn("[Translator] Local duration probe failed; proceeding with Gemini:", probeErr);
+        console.warn("[Translator] Remote duration probe failed; proceeding with Gemini:", probeErr);
       }
       durationKnown = probed != null;
 
@@ -1524,14 +1511,13 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
         return;
       }
 
-      await extractAudioForTranscription(inputPath, audioPath);
+      await extractAudioForTranscription(mediaUrl, audioPath);
       const r = await transcribeFastLocalAudio(audioPath, mediaUrl, options.sourceLang, options.targetLang, probed);
       segments = r.segments;
       durationSeconds = r.durationSeconds;
       provider = r.provider;
       model = r.model;
     } finally {
-      await rm(inputPath, { force: true }).catch(() => {});
       await rm(audioPath, { force: true }).catch(() => {});
     }
 
@@ -1641,18 +1627,15 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
 const PROBE_S3_VIDEO_DURATION_TIMEOUT_MS = 15_000;
 
 async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> {
-  // Best-effort: download the video to a temp file, probe duration via ffprobe,
-  // then clean up. If it fails or the full download+probe workflow takes longer
-  // than 15s, return undefined so the caller falls back to the static timeout.
+  // Best-effort: probe duration from a presigned S3 URL. If it fails or takes
+  // longer than 15s, return undefined so the caller falls back to static timeout.
   // This keeps the submit endpoint responsive even for large or slow uploads.
-  const tmpPath = join(tmpdir(), `probe-${randomUUID()}.mp4`);
   let timeoutHandle: NodeJS.Timeout | undefined;
   let timedOut = false;
-  const abortController = new AbortController();
 
   const probePromise = (async (): Promise<number> => {
-    await downloadS3ObjectToFile(s3Key, tmpPath, abortController.signal);
-    return probeDurationSeconds(tmpPath);
+    const presigned = await getSignedUrl(s3, new GetObjectCommand({ Bucket: S3_BUCKET, Key: s3Key }), { expiresIn: 3600 });
+    return probeDurationSeconds(presigned);
   })();
 
   try {
@@ -1661,7 +1644,6 @@ async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> 
       new Promise<undefined>((resolve) => {
         timeoutHandle = setTimeout(() => {
           timedOut = true;
-          abortController.abort();
           resolve(undefined);
         }, PROBE_S3_VIDEO_DURATION_TIMEOUT_MS);
       }),
@@ -1688,9 +1670,6 @@ async function probeS3VideoDuration(s3Key: string): Promise<number | undefined> 
         if (timedOut) {
           console.warn("[Translator] Timed-out duration probe stopped with error:", err);
         }
-      })
-      .finally(() => {
-        rm(tmpPath, { force: true }).catch(() => {});
       });
   }
 }
