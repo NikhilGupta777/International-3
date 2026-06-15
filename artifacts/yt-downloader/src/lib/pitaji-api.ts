@@ -3,7 +3,7 @@
 //
 // All requests go to /api/pitaji/* and rely on the pitaji_auth signed cookie
 // (set on successful POST /api/pitaji/auth) — that cookie is independent from
-// the main videomaking_auth cookie.
+// the main Narayan Bhakt auth cookie.
 
 const BASE = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 

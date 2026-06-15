@@ -1,8 +1,8 @@
 # AWS Batch GPU Worker requirements
 # NOTE: PyTorch + torchaudio are installed via CUDA wheel in Dockerfile.
-# NOTE: LatentSync deps are installed lazily at first runtime.
+# NOTE: LatentSync deps are installed in Dockerfile.base.
 # NOTE: demucs is now baked into the image (model weights pre-downloaded at build time).
-# NOTE: pyannote is still optional/lazy (requires HF_TOKEN which most jobs don't have).
+# NOTE: pyannote is baked into the image.
 
 # ── Core worker runtime ───────────────────────────────────────────────────────
 boto3==1.34.162
@@ -22,6 +22,7 @@ demucs==4.0.1
 soundfile==0.12.1
 librosa==0.10.2.post1
 pydub==0.25.1
+pyannote.audio>=3.1.0
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
 numba==0.59.1

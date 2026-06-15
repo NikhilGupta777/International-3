@@ -10,7 +10,7 @@ interface Props {
 /**
  * Pita Ji workspace login screen.
  *
- * Visually distinct from the VideoMaking login: dark devotional palette
+ * Visually distinct from the Narayan Bhakt login: dark devotional palette
  * (deep saffron / gold accent on near-black), id + password only — no Google
  * sign-in. Lives in its own overlay portal so it never overlaps the main app.
  */
@@ -86,7 +86,7 @@ export default function PitajiLogin({ onAuthenticated, onSwitchWorkspace }: Prop
             onClick={onSwitchWorkspace}
             disabled={submitting}
           >
-            Back to VideoMaking Studio
+            Back to Narayan Bhakt Studio
           </button>
         </section>
       </div>

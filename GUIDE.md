@@ -1,4 +1,4 @@
-# VideoMaking Studio — Complete Project Guide
+# Narayan Bhakt Studio — Complete Project Guide
 
 > **The single document you need.** Architecture, development, deployment, debugging, and maintenance — all in one place.
 
@@ -25,7 +25,7 @@
 
 ## 1. What This Project Is
 
-**VideoMaking Studio** is a private media workspace hosted at `videomaking.in`. It provides:
+**Narayan Bhakt Studio** is a private media workspace hosted at `videomaking.in`. It provides:
 
 - **Download** — Download YouTube videos in any quality to S3
 - **Clip Cut** — Cut a precise time range from a YouTube video

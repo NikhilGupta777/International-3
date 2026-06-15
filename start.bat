@@ -1,10 +1,10 @@
 @echo off
 setlocal EnableDelayedExpansion
-title VideoMaking Studio - Local Dev
+title Narayan Bhakt Studio - Local Dev
 color 0A
 
 echo ============================================
-echo   VideoMaking Studio - Local Dev Server
+echo   Narayan Bhakt Studio - Local Dev Server
 echo ============================================
 echo.
 

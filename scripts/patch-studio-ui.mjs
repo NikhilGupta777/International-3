@@ -38,7 +38,7 @@ const OLD_LOGO = `          {/* Logo */}
               <Youtube className="w-8 h-8 text-primary" />
             </div>
             <h1 className="text-2xl sm:text-3xl md:text-5xl font-display font-bold tracking-tight text-white text-center sm:text-left">
-              VideoMaking <span className="text-primary text-glow">Studio</span>
+              Narayan Bhakt <span className="text-primary text-glow">Studio</span>
             </h1>
           </motion.div>`;
 
@@ -48,7 +48,7 @@ const NEW_LOGO = `          {/* Logo */}
               <Youtube className="w-6 h-6 text-primary" />
             </div>
             <h1 className="text-xl sm:text-2xl md:text-4xl font-semibold tracking-[-0.03em] text-white text-center sm:text-left">
-              VideoMaking <span className="text-primary text-glow">Studio</span>
+              Narayan Bhakt <span className="text-primary text-glow">Studio</span>
             </h1>
           </motion.div>`;
 

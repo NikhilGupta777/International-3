@@ -1,8 +1,6 @@
-import { Bell, BellOff, LogOut, Mail, Moon, Settings, Sun, UserCircle2 } from "lucide-react";
+import { Bell, BellOff, LogOut, Moon, Settings, Sun, UserCircle2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
 import type { AuthFeatures, AuthUser } from "@/pages/Home";
-import { cn } from "@/lib/utils";
 import {
   applyThemePreference,
   loadUserPreferences,
@@ -21,9 +19,6 @@ export function SettingsPanel({
   pushConfigured,
   pushPermission,
   pushEnabling,
-  emailFocus,
-  submittedEmail,
-  onEmailSubmitted,
 }: {
   authUser?: AuthUser | null;
   authFeatures?: AuthFeatures | null;
@@ -35,24 +30,13 @@ export function SettingsPanel({
   pushConfigured?: boolean;
   pushPermission?: NotificationPermission | "unsupported";
   pushEnabling?: boolean;
-  emailFocus?: boolean;
-  submittedEmail?: string;
-  onEmailSubmitted?: (email: string, name: string) => void;
 }) {
   const [prefs, setPrefs] = useState(loadUserPreferences);
-  const [emailValue, setEmailValue] = useState(authUser?.email ?? submittedEmail ?? "");
-  const [nameValue, setNameValue] = useState(authUser?.name ?? "");
-  const [emailSaving, setEmailSaving] = useState(false);
-  const [emailMsg, setEmailMsg] = useState<{ text: string; error: boolean }>({
-    text: submittedEmail ? `Saved: ${submittedEmail}` : "",
-    error: false,
-  });
   const displayName =
     authUser?.name?.trim() ||
     authUser?.email?.trim() ||
     (authUser?.method === "google" ? "Google user" : "Studio user");
   const isAdmin = authUser?.role === "admin";
-  const emailAlreadySubmitted = Boolean(submittedEmail);
 
   useEffect(() => {
     applyThemePreference(prefs.theme);
@@ -65,35 +49,7 @@ export function SettingsPanel({
   };
 
   const setTheme = (theme: StudioThemePreference) => updatePrefs({ theme });
-  const submitFutureAccessEmail = async (event: FormEvent) => {
-    event.preventDefault();
-    if (emailAlreadySubmitted) return;
-    setEmailSaving(true);
-    setEmailMsg({ text: "", error: false });
-    try {
-      const res = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/email-submissions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ email: emailValue, name: nameValue }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        error?: string;
-        submission?: { email?: string };
-      };
-      if (!res.ok) throw new Error(data.error || "Could not save email");
-      const savedEmail = data.submission?.email || emailValue.trim().toLowerCase();
-      onEmailSubmitted?.(savedEmail, nameValue.trim());
-      setEmailMsg({ text: "Email saved for future access.", error: false });
-    } catch (err) {
-      setEmailMsg({
-        text: err instanceof Error ? err.message : "Could not save email",
-        error: true,
-      });
-    } finally {
-      setEmailSaving(false);
-    }
-  };
+
   const notificationState =
     !pushSupported
       ? "Unsupported"
@@ -136,48 +92,6 @@ export function SettingsPanel({
             </div>
           </div>
         </section>
-
-        <form
-          id="future-access-email"
-          className={cn("settings-card settings-email-card", emailFocus && "settings-email-card--focus")}
-          onSubmit={submitFutureAccessEmail}
-        >
-          <div className="flex items-center gap-2 mb-3">
-            <Mail className="w-4 h-4 text-amber-300" />
-            <h2 className="text-sm font-semibold text-white/85">Future access email</h2>
-          </div>
-          <p className="text-sm text-white/50 leading-relaxed mb-4">
-            Username/password login will stop working on May 25, 2026. Submit the personal email you want to use for future access. All through the grace of Mahaprabhu Ji and Maa Radha Rani.
-          </p>
-          <div className="settings-email-form">
-            <input
-              type="text"
-              value={nameValue}
-              onChange={(event) => setNameValue(event.target.value)}
-              placeholder="Your name"
-              autoComplete="name"
-              disabled={emailAlreadySubmitted}
-              required
-            />
-            <input
-              type="email"
-              value={emailValue}
-              onChange={(event) => setEmailValue(event.target.value)}
-              placeholder="you@gmail.com"
-              autoComplete="email"
-              disabled={emailAlreadySubmitted}
-              required
-            />
-            <button type="submit" disabled={emailAlreadySubmitted || emailSaving || !nameValue.trim() || !emailValue.trim()}>
-              {emailAlreadySubmitted ? "Submitted" : emailSaving ? "Saving..." : "Submit name and email"}
-            </button>
-          </div>
-          {emailMsg.text ? (
-            <p className={emailMsg.error ? "settings-error" : "settings-success"}>
-              {emailMsg.text}
-            </p>
-          ) : null}
-        </form>
 
         <section className="settings-grid">
           <div className="settings-card">

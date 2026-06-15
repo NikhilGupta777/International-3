@@ -1,10 +1,10 @@
 /*
- * Pita Ji workspace theme — deliberately distinct from the cyan VideoMaking
+ * Pita Ji workspace theme — deliberately distinct from the cyan Narayan Bhakt
  * palette. Deep saffron / gold accent on near-black, devotional and clean.
  *
  * All Pita Ji classes are namespaced `pj-*` so they never collide with the
  * existing app's classes. The theme cascades through .pj-shell so the rest
- * of the document is untouched when the user is in VideoMaking mode.
+ * of the document is untouched when the user is in Narayan Bhakt mode.
  */
 
 :root {

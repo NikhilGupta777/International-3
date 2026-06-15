@@ -16,7 +16,7 @@ interface Props {
 /**
  * Outer shell for the Pita Ji workspace.
  *
- * The shell intentionally does NOT reuse the VideoMaking sidebar / chrome —
+ * The shell intentionally does NOT reuse the Narayan Bhakt sidebar / chrome —
  * the workspace is themed independently and only ever shows three tabs:
  * Live, History, Settings. New tabs (intro/outro/logo) can be added later
  * by appending to PitajiTab and PitajiSidebar.

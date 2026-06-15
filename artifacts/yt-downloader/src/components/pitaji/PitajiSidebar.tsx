@@ -55,7 +55,7 @@ export default function PitajiSidebar({ active, onChange, username, onLogout, on
             type="button"
             className="pj-sidebar-action"
             onClick={onSwitchWorkspace}
-            title="Switch to VideoMaking workspace"
+            title="Switch to Narayan Bhakt workspace"
           >
             <ArrowLeftRight size={15} strokeWidth={2} aria-hidden />
             <span>Switch workspace</span>

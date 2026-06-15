@@ -685,39 +685,33 @@ export function ClipCutter() {
     });
   };
 
-  const startClipCutBatch = async (
+  const startClipCutMultiple = async (
     url: string,
     clips: Array<{ startTime: number; endTime: number }>,
     customQuality: string,
   ) => {
-    const res = await fetch(`${BASE_URL}/api/youtube/clip-cut/batch`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, clips, quality: customQuality }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error((err as { error?: string }).error || "Failed to start clip cuts");
+    let started = 0;
+    const errors: string[] = [];
+    for (const clip of clips) {
+      try {
+        await startClipCutJob(url, clip.startTime, clip.endTime, customQuality);
+        started++;
+      } catch (err) {
+        errors.push(`${secsToLabel(clip.startTime)}→${secsToLabel(clip.endTime)}`);
+      }
     }
-
-    const data = (await res.json()) as {
-      jobs?: Array<{ jobId: string; status?: string; message?: string }>;
-    };
-    const returnedJobs = Array.isArray(data.jobs) ? data.jobs : [];
-    if (returnedJobs.length !== clips.length) {
-      throw new Error("Some clip cuts did not register. Please retry.");
+    if (errors.length > 0) {
+      setNotification({
+        type: errors.length === clips.length ? "error" : "error",
+        message: `${started}/${clips.length} clips started. Failed: ${errors.join(", ")}`,
+      });
+    } else {
+      setNotification({
+        type: "success",
+        message: `All ${started} clip cuts started successfully!`,
+      });
     }
-
-    const newJobs = returnedJobs.map((job, index) =>
-      buildActiveJob(job, url, clips[index].startTime, clips[index].endTime, customQuality),
-    );
-    setJobs((prev) => {
-      const updated = [...newJobs, ...prev];
-      persistActiveJobs(updated);
-      return updated;
-    });
-    return newJobs;
+    return started;
   };
 
   const handleCut = async (e: React.FormEvent) => {
@@ -758,7 +752,7 @@ export function ClipCutter() {
           type: "success",
           message: `🚀 Starting ${clips.length} clip cuts: ${message}`,
         });
-        await startClipCutBatch(url, clips, quality);
+        await startClipCutMultiple(url, clips, quality);
       } else if (typeof startTime === "number" && typeof endTime === "number") {
         setNotification({
           type: "success",
@@ -824,11 +818,6 @@ export function ClipCutter() {
       });
 
       await startClipCutJob(parsedUrl, startSecs, endSecs, quality);
-
-      setCommand("");
-      setManualStart("");
-      setManualEnd("");
-      setShowAdvanced(false);
     } catch (err) {
       setNotification({
         type: "error",
@@ -888,20 +877,21 @@ export function ClipCutter() {
     }
   }, [toast]);
 
-  // Attempt one automatic download when the clip becomes ready.
-  // Browser policies may still block it; Save button remains fallback.
+  // Attempt automatic download when clips become ready.
+  // Browser policies may block popups for all but the first; Save button remains fallback.
   useEffect(() => {
-    const ready = jobs.find((j) => j.status === "done" && !j.downloaded);
-    if (!ready) return;
+    const readyJobs = jobs.filter((j) => j.status === "done" && !j.downloaded);
+    if (readyJobs.length === 0) return;
 
-    // Mark as downloaded immediately to prevent duplicate triggers from re-renders
     setJobs((prev) =>
       prev.map((j) =>
-        j.jobId === ready.jobId ? { ...j, downloaded: true } : j,
+        readyJobs.some((r) => r.jobId === j.jobId) ? { ...j, downloaded: true } : j,
       ),
     );
 
-    void downloadClip(ready);
+    for (const job of readyJobs) {
+      void downloadClip(job);
+    }
   }, [downloadClip, jobs]);
 
   const downloadHistoryClip = useCallback((entry: ClipHistoryEntry) => {
@@ -1062,7 +1052,8 @@ export function ClipCutter() {
                   onChange={(e) => setCommand(e.target.value)}
                   disabled={submitting}
                   placeholder="Paste YouTube URL and describe the clip you want..."
-                  className="min-h-[20px] flex-1 resize-none bg-transparent pt-[2px] pb-0 text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+                  rows={1}
+                  className="h-5 min-h-0 flex-1 resize-none bg-transparent py-0 text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
@@ -1142,108 +1133,94 @@ export function ClipCutter() {
 
 
         
-        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-2">
-          <Button
-            type="submit"
-            disabled={submitting || !command.trim()}
-            variant="outline"
-            className="flex h-11 w-full max-w-[200px] items-center justify-center gap-2 rounded-full bg-white text-[14px] font-semibold text-black hover:bg-white/90 sm:w-auto disabled:opacity-50 shadow-none border-none"
+        <div className="w-full mt-1">
+          <button
+            type="button"
+            onClick={() => setShowAdvanced(!showAdvanced)}
+            className={cn(
+              "flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all",
+              showAdvanced
+                ? "bg-zinc-800 text-white border border-zinc-700"
+                : "bg-zinc-900/60 text-zinc-300 border border-zinc-800 hover:bg-zinc-800/80 hover:text-white hover:border-zinc-700"
+            )}
           >
-            <Scissors className="h-4 w-4" />
-            Cut Clip
-          </Button>
-
-          <div className="w-full max-w-[520px]">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className={cn(
-                "flex h-11 w-full max-w-[200px] items-center justify-center gap-2 rounded-full border border-zinc-800 text-[14px] font-semibold text-white hover:bg-zinc-800/85 sm:w-auto shadow-none transition-all",
-                showAdvanced ? "bg-zinc-800/85 border-zinc-700" : "bg-[#0d0d0d]"
-              )}
+            <SlidersHorizontal className="h-4 w-4" />
+            Advanced Options
+            <svg
+              className={cn("h-3.5 w-3.5 transition-transform duration-200", showAdvanced && "rotate-180")}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
             >
-              <SlidersHorizontal className="h-4 w-4" />
-              Advanced
-            </Button>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
 
-            {/* Advanced Popover Card */}
-            <AnimatePresence>
-              {showAdvanced && (
-                <>
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                    animate={{ opacity: 1, scale: 1, y: 0 }}
-                    exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                    transition={{ duration: 0.2 }}
-                    className="mt-3 w-full rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 shadow-[0_12px_40px_rgba(0,0,0,0.45)] flex flex-col gap-3.5"
-                  >
-                    <div className="flex items-center justify-between border-b border-zinc-800/40 pb-2">
-                      <div className="flex items-center gap-2">
-                        <SlidersHorizontal className="h-4 w-4 text-orange-400" />
-                        <span className="text-sm font-bold text-white">Manual Trim Options</span>
-                      </div>
-                      <span className="text-[10px] text-zinc-500 font-medium">Skip AI parsing</span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="flex flex-col gap-1.5 text-left">
-                        <label className="text-[11px] font-semibold text-zinc-400">Start Time</label>
-                        <input
-                          type="text"
-                          value={manualStart}
-                          onChange={(e) => setManualStart(e.target.value)}
-                          disabled={submitting}
-                          placeholder="e.g. 0:30 or 30"
-                          className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50 transition-colors"
-                        />
-                      </div>
-                      <div className="flex flex-col gap-1.5 text-left">
-                        <label className="text-[11px] font-semibold text-zinc-400">End Time</label>
-                        <input
-                          type="text"
-                          value={manualEnd}
-                          onChange={(e) => setManualEnd(e.target.value)}
-                          disabled={submitting}
-                          placeholder="e.g. 2:15 or 135"
-                          className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50 transition-colors"
-                        />
-                      </div>
-                    </div>
-
+          <AnimatePresence>
+            {showAdvanced && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2, ease: "easeInOut" }}
+                className="overflow-hidden"
+              >
+                <div className="mt-3 w-full rounded-2xl border border-zinc-800 bg-[#0d0d0d] p-4 flex flex-col gap-3.5">
+                  <div className="grid grid-cols-[1fr_1fr_auto] gap-3 items-end">
                     <div className="flex flex-col gap-1.5 text-left">
-                      <label className="text-[11px] font-semibold text-zinc-400">Video Quality</label>
-                      <select
-                        value={quality}
-                        onChange={(e) => setQuality(e.target.value)}
+                      <label className="text-[11px] font-semibold text-zinc-400">Start Time</label>
+                      <input
+                        type="text"
+                        value={manualStart}
+                        onChange={(e) => setManualStart(e.target.value)}
                         disabled={submitting}
-                        className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white outline-none focus:border-zinc-700 disabled:opacity-50 transition-colors"
-                      >
-                        {QUALITY_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
+                        placeholder="e.g. 0:30"
+                        className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50 transition-colors"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); void handleManualCut(); }
+                        }}
+                      />
                     </div>
+                    <div className="flex flex-col gap-1.5 text-left">
+                      <label className="text-[11px] font-semibold text-zinc-400">End Time</label>
+                      <input
+                        type="text"
+                        value={manualEnd}
+                        onChange={(e) => setManualEnd(e.target.value)}
+                        disabled={submitting}
+                        placeholder="e.g. 2:15"
+                        className="h-9 w-full rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white placeholder:text-zinc-600 outline-none focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 disabled:opacity-50 transition-colors"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { e.preventDefault(); void handleManualCut(); }
+                        }}
+                      />
+                    </div>
+                    <select
+                      value={quality}
+                      onChange={(e) => setQuality(e.target.value)}
+                      disabled={submitting}
+                      className="h-9 rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 text-xs text-white outline-none focus:border-zinc-700 disabled:opacity-50 transition-colors"
+                    >
+                      {QUALITY_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                    <div className="flex justify-end gap-2 pt-1 border-t border-zinc-800/40">
-                      <Button
-                        type="button"
-                        onClick={handleManualCut}
-                        disabled={submitting || !command.trim() || !manualStart.trim() || !manualEnd.trim()}
-                        variant="outline"
-                        className="flex h-8.5 w-full items-center justify-center gap-1.5 rounded-xl bg-white text-xs font-semibold text-black hover:bg-zinc-100 disabled:opacity-50 shadow-none border-none active:scale-[0.98] transition-transform"
-                      >
-                        <Scissors className="h-3.5 w-3.5" />
-                        Cut Manually
-                      </Button>
-                    </div>
-                  </motion.div>
-                </>
-              )}
-            </AnimatePresence>
-          </div>
+                  <Button
+                    type="button"
+                    onClick={handleManualCut}
+                    disabled={submitting || !command.trim() || !manualStart.trim() || !manualEnd.trim()}
+                    variant="outline"
+                    className="flex h-9 w-full items-center justify-center gap-1.5 rounded-xl bg-white text-xs font-semibold text-black hover:bg-zinc-100 disabled:opacity-50 shadow-none border-none active:scale-[0.98] transition-transform"
+                  >
+                    {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Scissors className="h-3.5 w-3.5" />}
+                    Cut
+                  </Button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </form>
 
@@ -1419,8 +1396,8 @@ function ClipJobCard({
     <div className="relative w-full">
       {/* Background glow shadow behind card */}
       {isProcessing && (
-        <div 
-          className="absolute -inset-2.5 rounded-2xl blur-[24px] pointer-events-none z-0"
+        <div
+          className="absolute -inset-2 rounded-2xl blur-[20px] pointer-events-none z-0"
           style={{
             opacity: 0.52,
             background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
@@ -1437,13 +1414,13 @@ function ClipJobCard({
         exit={{ opacity: 0, y: -10, height: 0 }}
         transition={{ duration: 0.25 }}
         className={cn(
-          "relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border px-4.5 py-3.5 flex flex-col gap-3 group transition-all duration-300",
+          "relative z-10 w-full rounded-2xl bg-[#0c0c0e] hover:bg-[#121215] border px-4 py-3 flex flex-col gap-2 group transition-all duration-300",
           isError ? "border-red-900/40" : isCancelled ? "border-zinc-800/40" : "border-zinc-900 hover:border-zinc-800/80"
         )}
       >
-        <div className="flex items-center gap-4 w-full">
+        <div className="flex items-center gap-3.5 w-full">
           {/* Thumbnail Preview */}
-          <div className="relative h-16 w-28 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
+          <div className="relative h-14 w-24 shrink-0 overflow-hidden rounded-lg bg-zinc-800 border border-white/5 shadow-md">
             {videoId ? (
               <img
                 src={`https://img.youtube.com/vi/${videoId}/mqdefault.jpg`}
@@ -1529,7 +1506,7 @@ function ClipJobCard({
 
         {/* Progress bar and details */}
         {isProcessing && (
-          <div className="relative z-10 flex flex-col gap-1.5 px-0.5 mt-1.5">
+          <div className="relative z-10 flex flex-col gap-1 px-0.5">
             {progressView.determinate && (
               <div className="h-[3px] w-full bg-zinc-950/90 rounded-full relative overflow-visible shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
                 <div

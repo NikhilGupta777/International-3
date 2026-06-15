@@ -47,8 +47,6 @@ os.environ.setdefault("ORT_TENSORRT_ENGINE_CACHE_ENABLE", "0")
 
 import boto3
 
-from runtime_deps import pip_install_command, write_runtime_requirements
-
 # â”€â”€ Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 logging.basicConfig(
     level=logging.INFO,
@@ -1357,23 +1355,13 @@ def diarize(audio_path: Path, segments: list[dict], override_existing: bool = Fa
     Requires HF_TOKEN env var for gated model access.
     """
     try:
-        # Check HF_TOKEN FIRST before any pip install — pyannote.audio is a heavy
-        # package (~1 GB of deps) and takes 30-60 s to install.  Every voice-clone
-        # job wasted that time before because the token check came AFTER the install.
+        # Check HF_TOKEN before importing pyannote; pyannote.audio is baked into
+        # the image but should only load when diarization can actually run.
         hf_token = os.environ.get("HF_TOKEN", "")
         if not hf_token:
             log.info("[Diarize] HF_TOKEN not set — skipping pyannote diarization "
                      "(AssemblyAI utterances already provide speaker labels).")
             return segments
-
-        # Only reach here if HF_TOKEN is set — install pyannote lazily
-        if (
-            importlib.util.find_spec("pyannote") is None
-            or importlib.util.find_spec("pyannote.audio") is None
-        ):
-            import subprocess as _spp, sys as _sysp
-            _spp.run([_sysp.executable, '-m', 'pip', 'install',
-                      '--quiet', '--prefer-binary', 'pyannote.audio>=3.1.0'], check=True)
 
         import torch
         from pyannote.audio import Pipeline
@@ -2130,20 +2118,6 @@ def _ensure_cosyvoice() -> Path:
     return cv_dir
 
 
-def _install_runtime_package(package: str) -> None:
-    log.info(f"[RuntimeDeps] Installing {package}...")
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "--quiet", "--prefer-binary", package],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"Runtime install failed for {package}. pip stderr:\n{result.stderr[-2000:]}"
-        )
-
-
 def _import_cosyvoice_class():
     """Return the best available CosyVoice constructor.
     Priority: AutoModel (v3) → CosyVoice2 → CosyVoice (legacy).
@@ -2167,10 +2141,7 @@ def _import_cosyvoice_class():
     try:
         return _try_import()
     except ModuleNotFoundError as exc:
-        if exc.name != "whisper":
-            raise
-        _install_runtime_package("openai-whisper==20231117")
-        return _try_import()
+        raise
 
 
 def _ensure_cosyvoice_yaml_compatibility() -> None:
@@ -2212,49 +2183,17 @@ def _ensure_cosyvoice_yaml_compatibility() -> None:
     ):
         return
 
-    log.warning(
-        "[CosyVoice] Incompatible deps detected; ruamel.yaml=%s einops=%s hydra=%s lightning=%s pyarrow=%s pyworld=%s rich=%s x_transformers=%s. Installing compatible pins.",
-        version or "missing",
-        "present" if einops_available else "missing",
-        "present" if hydra_available else "missing",
-        "present" if lightning_available else "missing",
-        "present" if pyarrow_available else "missing",
-        "present" if pyworld_available else "missing",
-        "present" if rich_available else "missing",
-        "present" if x_transformers_available else "missing",
+    raise RuntimeError(
+        f"[CosyVoice] Incompatible deps detected; ruamel.yaml={version or 'missing'} "
+        f"einops={'present' if einops_available else 'missing'} "
+        f"hydra={'present' if hydra_available else 'missing'} "
+        f"lightning={'present' if lightning_available else 'missing'} "
+        f"pyarrow={'present' if pyarrow_available else 'missing'} "
+        f"pyworld={'present' if pyworld_available else 'missing'} "
+        f"rich={'present' if rich_available else 'missing'} "
+        f"x_transformers={'present' if x_transformers_available else 'missing'}. "
+        "Missing dependencies must be baked into Dockerfile/requirements.txt."
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--quiet",
-            "--prefer-binary",
-            "einops==0.8.0",
-            "gdown==5.1.0",
-            "hydra-core==1.3.2",
-            "hyperpyyaml==1.2.3",
-            "lightning==2.2.4",
-            "matplotlib==3.7.5",
-            "phonemizer==3.3.0",
-            "pyarrow==18.1.0",
-            "pyworld==0.3.4",
-            "rich==13.7.1",
-            "ruamel.yaml>=0.17.28,<0.18.0",
-            "Unidecode==1.3.8",
-            "wget==3.2",
-            "x-transformers==2.11.24",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "Could not install CosyVoice-compatible dependencies. "
-            f"pip stderr:\n{result.stderr[-2000:]}"
-        )
 
 
 def _verify_onnxruntime_cuda_stack() -> None:
@@ -4742,26 +4681,6 @@ def run_lipsync_latentsync(video_path: Path, dubbed_audio: Path, out_dir: Path) 
             "Translator image is missing preloaded model dependencies."
         )
 
-    # Install LatentSync runtime deps on first job (lazily, not in CI build)
-    _latentsync_deps_flag = ls_dir / ".deps_installed"
-    if not _latentsync_deps_flag.exists():
-        log.info("[LatentSync] Installing runtime deps (first run only)...")
-        runtime_requirements = ls_dir / "requirements.runtime.txt"
-        write_runtime_requirements(ls_dir / "requirements.txt", runtime_requirements)
-        constraints = Path("/app/constraints.txt")
-        result = subprocess.run(
-            pip_install_command(runtime_requirements, constraints),
-            check=False,
-            capture_output=True,
-            text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "LatentSync runtime dependency install failed. "
-                f"pip stderr:\n{result.stderr[-3000:]}"
-            )
-        _latentsync_deps_flag.touch()
-
     # Verify checkpoint files
     ckpt_dir  = ls_dir / "checkpoints"
     ckpt_path = _ensure_latentsync_checkpoint(ckpt_dir)
@@ -6279,10 +6198,6 @@ def process_single_job():
     log.info(f"Working directory: {work_dir}")
 
     try:
-        try:
-            start_cosyvoice_preload()
-        except Exception as exc:
-            log.warning("[CosyVoice] Could not start background preload; clone stage will load synchronously: %s", exc)
 
         # â”€â”€ 1. Download video from S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("STARTING", 3, "Downloading video from cloud...")
@@ -6295,9 +6210,22 @@ def process_single_job():
 
         # â”€â”€ 2. Extract audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         update_progress("EXTRACTING", 8, "Extracting high-quality audio...")
-        full_audio_hq = extract_audio(video_path, work_dir, sample_rate=44100, mono=True, label="audio_full")
-        transcription_audio = resample_audio(full_audio_hq, work_dir / "audio_full_16k.wav", 16000, mono=True)
+        if not video_has_audio_stream(video_path):
+            raise RuntimeError("Input video has no audio stream; video translation requires spoken audio.")
+        full_audio_hq = work_dir / "audio_full_44100hz.wav"
+        transcription_audio = work_dir / "audio_full_16k.wav"
+        run_ffmpeg(
+            "-i", str(video_path),
+            "-map", "0:a:0", "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "1", str(full_audio_hq),
+            "-map", "0:a:0", "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(transcription_audio),
+        )
         reference_audio = full_audio_hq
+
+        def _start_cosyvoice_preload_safe():
+            try:
+                start_cosyvoice_preload()
+            except Exception as exc:
+                log.warning("[CosyVoice] Could not start background preload; clone stage will load synchronously: %s", exc)
 
         # â”€â”€ 3. Optional Demucs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         background_audio = None
@@ -6349,6 +6277,7 @@ def process_single_job():
                 except Exception as e:
                     demucs_warning = str(e)
                     log.warning(f"[Demucs+ASR] Demucs failed (ASR still succeeded): {e}")
+                _start_cosyvoice_preload_safe()
 
         elif USE_DEMUCS and _demucs_before_asr:
             # ── Sequential path: Demucs first, then ASR on vocals ─────────
@@ -6365,14 +6294,15 @@ def process_single_job():
                 demucs_warning = str(e)
                 log.warning(f"[Demucs] Skipped: {e}")
 
+            _start_cosyvoice_preload_safe()
             update_progress("TRANSCRIBING", 18, "Transcribing speech...")
             segments = transcribe(transcription_audio, video_duration)
 
         else:
             # ── No Demucs ─────────────────────────────────────────────────
+            _start_cosyvoice_preload_safe()
             update_progress("TRANSCRIBING", 18, "Transcribing speech...")
             segments = transcribe(transcription_audio, video_duration)
-
 
         if not segments:
             raise RuntimeError("No speech detected in the video.")

@@ -342,7 +342,7 @@ function App() {
   };
 
   // ── Pita Ji workspace session probe ────────────────────────────────────────
-  // Independent from the VideoMaking auth flow. Only runs when the user is
+  // Independent from the Narayan Bhakt auth flow. Only runs when the user is
   // currently in the Pita Ji workspace; otherwise the probe is skipped to avoid
   // an extra request on every cold load of the main app.
   useEffect(() => {
@@ -424,7 +424,7 @@ function App() {
           ) : !authChecked ? (
             <AuthOverlay
               eyebrow="Secure Access"
-              title="Loading VideoMaking Studio"
+              title="Loading Narayan Bhakt Studio"
               subtitle="Verifying session..."
               compact
             />

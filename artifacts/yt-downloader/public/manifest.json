@@ -1,6 +1,6 @@
 {
-  "name": "VideoMaking Studio",
-  "short_name": "VM Studio",
+  "name": "Narayan Bhakt Studio",
+  "short_name": "NB Studio",
   "description": "Smart media workspace for YouTube workflows: downloads, AI clips, subtitles & clip cutting.",
   "start_url": "/",
   "display": "standalone",

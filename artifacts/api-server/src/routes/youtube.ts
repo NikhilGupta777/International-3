@@ -550,9 +550,9 @@ function pickFirst(value: string | string[] | undefined): string | undefined {
 
 type RateWindow = { count: number; resetAt: number };
 const rateWindows = new Map<string, RateWindow>();
-const RATE_LIMIT_WINDOW_MS = 90 * 1000;
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const RATE_LIMITS: Record<string, number> = {
-  "POST /youtube/clip-cut": 5,
+  "POST /youtube/clip-cut": 8,
   "POST /youtube/download-clip": 5,
   "POST /youtube/download": 5,
   "POST /youtube/clips": 5,

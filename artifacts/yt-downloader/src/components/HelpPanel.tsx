@@ -41,7 +41,7 @@ export function HelpPanel({
               Welcome Guide
             </p>
             <h2 className="text-xl sm:text-2xl font-display font-bold text-white mt-1">
-              How VideoMaking Studio Works
+              How Narayan Bhakt Studio Works
             </h2>
             <p className="text-sm text-white/55 mt-1">
               Quick walkthrough of each tab so new users can start confidently.

@@ -18,14 +18,14 @@ export function InstallBanner() {
           <div className="install-banner-info">
             <img
               src="/app-logo.png"
-              alt="VideoMaking Studio"
+              alt="Narayan Bhakt Studio"
               className="install-banner-icon"
               draggable={false}
             />
             <div className="install-banner-text">
               <span className="install-banner-title">Add to Home Screen</span>
               <span className="install-banner-subtitle">
-                Install VideoMaking Studio for quick access
+                Install Narayan Bhakt Studio for quick access
               </span>
             </div>
           </div>

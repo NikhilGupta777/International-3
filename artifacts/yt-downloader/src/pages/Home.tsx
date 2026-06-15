@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  Youtube, Search, ArrowRight, Play, Clock, Eye, Film, Music,
-  Download, Loader2, Sparkles, Captions, Scissors, BellRing, Shield, ExternalLink, Send, ListVideo, AlarmClock, UploadCloud, Bot,
+  Search, ArrowRight, Play, Clock, Eye, Film, Music,
+  Download, Loader2, Sparkles, Captions, Shield, ExternalLink, Send,
 } from "lucide-react";
 import { useGetVideoInfo, useDownloadVideo } from "@workspace/api-client-react";
 import type { VideoFormat } from "@workspace/api-client-react";
@@ -57,12 +57,6 @@ import {
   loadUserPreferences,
   subscribeToPreferenceChanges,
 } from "@/lib/user-preferences";
-import {
-  loadStoredEmailSubmission,
-  markDailyEmailPromptShown,
-  saveStoredEmailSubmission,
-  shouldShowDailyEmailPrompt,
-} from "@/lib/email-submission";
 
 type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "settings";
 
@@ -294,9 +288,6 @@ export default function Home({
   const [telegramUrl, setTelegramUrl] = useState("https://t.me/c/2852263933/3");
   const [helpInitialMode, setHelpInitialMode] = useState<GuideMode>("download");
   const [preferences, setPreferences] = useState(loadUserPreferences);
-  const [storedEmail, setStoredEmail] = useState(() => loadStoredEmailSubmission());
-  const [showEmailPrompt, setShowEmailPrompt] = useState(false);
-  const [settingsEmailFocus, setSettingsEmailFocus] = useState(false);
   const seenCompletionRef = useRef<Set<string>>(new Set());
   const initializedCompletionsRef = useRef(false);
   const { toast } = useToast();
@@ -476,7 +467,6 @@ export default function Home({
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
   const canUseTranslator = authFeatures?.translatorAllowed !== false;
   const canUseSuperAgent = authFeatures?.superAgentAllowed !== false;
-  const needsFutureEmail = !storedEmail && !authUser?.email;
 
 
   const buttonPlaceholder = "Start";
@@ -485,8 +475,8 @@ export default function Home({
   const isDownloadInputBlocked = false;
 
   useEffect(() => {
-    const appName = "VideoMaking Studio";
-    const modeLabel = MODE_LABELS[mode] ?? "VideoMaking";
+    const appName = "Narayan Bhakt Studio";
+    const modeLabel = MODE_LABELS[mode] ?? "Narayan Bhakt";
     const contentLabel = video?.title?.trim() || submittedUrl.trim();
     document.title = contentLabel
       ? `${modeLabel}: ${contentLabel} | ${appName}`
@@ -716,64 +706,8 @@ export default function Home({
     if (el) el.scrollTop = 0;
   };
 
-  useEffect(() => {
-    if (!needsFutureEmail) return;
-    if (!shouldShowDailyEmailPrompt()) return;
-    const timer = window.setTimeout(() => {
-      setShowEmailPrompt(true);
-      markDailyEmailPromptShown();
-    }, 900);
-    return () => window.clearTimeout(timer);
-  }, [needsFutureEmail]);
-
-  const openEmailSettings = () => {
-    setShowEmailPrompt(false);
-    setSettingsEmailFocus(true);
-    switchMode("settings");
-    window.setTimeout(() => {
-      document.getElementById("future-access-email")?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-    }, 80);
-  };
-
-  const handleEmailSubmitted = (email: string, name: string) => {
-    saveStoredEmailSubmission({ email, name: name || authUser?.name });
-    setStoredEmail(loadStoredEmailSubmission());
-    setSettingsEmailFocus(false);
-    setShowEmailPrompt(false);
-  };
-
   return (
     <div className="studio-workspace">
-      <AnimatePresence>
-        {showEmailPrompt && needsFutureEmail ? (
-          <motion.div
-            className="future-email-modal-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <motion.div
-              className="future-email-modal"
-              initial={{ opacity: 0, y: 24, scale: 0.96 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 12, scale: 0.98 }}
-            >
-              <p className="future-email-eyebrow">Important access notice</p>
-              <h2>Submit your name and personal email</h2>
-              <p>
-                Username/password login will no longer work from May 25, 2026. Please submit your name and the email address through which you want access to this website. All through the grace of Mahaprabhu Ji and Maa Radha Rani.
-              </p>
-              <div className="future-email-modal-actions">
-                <button type="button" onClick={openEmailSettings}>Submit name and email</button>
-                <button type="button" onClick={() => setShowEmailPrompt(false)}>Remind me later</button>
-              </div>
-            </motion.div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
 
       {/* Floating Help / Activity panel — pinned to top-right since the
           old topbar is removed in the new sidebar-based layout */}
@@ -791,7 +725,6 @@ export default function Home({
           showAdmin={canUseAdmin}
           superAgentEnabled={canUseSuperAgent}
           translatorEnabled={canUseTranslator}
-          emailMissing={needsFutureEmail}
           onNewChat={() => {
             if (!canUseSuperAgent) return;
             setPendingCopilotPrompt(null);
@@ -803,16 +736,6 @@ export default function Home({
         {/* Main scrollable content */}
         <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "overflow-hidden")} id="studio-content">
           <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
-            {needsFutureEmail ? (
-              <div className="future-email-top-notice">
-                <div>
-                  <strong>Future login email needed</strong>
-                  <span>Username/password login ends on May 25, 2026. Submit your name and personal email for future access.</span>
-                </div>
-                <button type="button" onClick={openEmailSettings}>Submit name and email</button>
-              </div>
-            ) : null}
-
             {/* Translator tab - full screen */}
             {mode === "translator" && (
               canUseTranslator
@@ -847,60 +770,93 @@ export default function Home({
                 pushPermission={pushPermission}
                 pushEnabling={pushEnabling}
                 onTestSound={playSoftCompletionChime}
-                emailFocus={settingsEmailFocus}
-                submittedEmail={storedEmail?.email}
-                onEmailSubmitted={handleEmailSubmitted}
               />
             )}
 
             {showAdmin && canUseAdmin && <AdminPanel />}
 
-            {/* Search bar - only for download + clips modes */}
+            {/* Download tab — title, glowing input, blocked banner */}
             {showSearch && (
-              <div className="studio-search-wrap">
-                <form onSubmit={handleSearch}>
+              <div className="flex flex-col gap-5 relative max-w-[720px] mx-auto w-full pt-8 sm:pt-14">
+                <div className="mb-5 max-w-none sm:mb-6">
+                  <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-[38px]">Download</h1>
+                  <p className="mt-3 text-sm leading-relaxed text-zinc-400 sm:text-base lg:text-[15px]">
+                    Download any YouTube video in <strong className="font-semibold text-white/90">MP4, Audio, or 4K</strong> — just paste a link.
+                  </p>
+                </div>
+
+                <form onSubmit={handleSearch} className="relative group w-full">
+                  <style>{`
+                    @keyframes downloadGlow {
+                      0% { background-position: 0% 50%; }
+                      15% { background-position: 20% 50%; }
+                      35% { background-position: 80% 50%; }
+                      50% { background-position: 100% 50%; }
+                      65% { background-position: 80% 50%; }
+                      85% { background-position: 20% 50%; }
+                      100% { background-position: 0% 50%; }
+                    }
+                  `}</style>
                   <div
-                    className="relative rounded-xl flex p-1.5 items-center transition-all"
-                    style={{ background: "#1a1a1a", border: "1px solid #2e2e2e", boxShadow: "0 2px 20px rgba(0,0,0,0.4)" }}
-                  >
-                    <Search className="w-5 h-5 text-white/40 ml-3 hidden sm:block shrink-0" />
-                    <input
-                      type="url"
-                      name="youtube_url"
-                      inputMode="url"
-                      autoComplete="off"
-                      spellCheck={false}
-                      aria-label="YouTube URL"
-                      value={url}
-                      onChange={(e) => setUrl(e.target.value)}
-                      placeholder={isDownloadInputBlocked ? "Download input is disabled" : "Paste YouTube URL..."}
-                      disabled={isDownloadInputBlocked}
-                      className="bg-transparent flex-1 outline-none px-3 sm:px-4 py-2.5 text-white placeholder:text-white/25 text-sm min-w-0 font-medium"
+                    className="absolute -inset-[5.5px] rounded-[12px] opacity-50 blur-[12px] transition-all duration-500 group-hover:opacity-70 group-focus-within:opacity-90"
+                    style={{
+                      background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                      backgroundSize: '300% 300%',
+                      animation: 'downloadGlow 10s ease-in-out infinite',
+                    }}
+                  />
+                  <div className="relative w-full rounded-[12px] p-[1.2px] overflow-hidden bg-zinc-800">
+                    <div
+                      className="absolute inset-0"
+                      style={{
+                        background: 'linear-gradient(to right, #ffffff 0%, #ff3b30 14%, #ff9500 28%, #4cd964 42%, #007aff 56%, #af52de 70%, #ff2d55 84%, #ffffff 100%)',
+                        backgroundSize: '300% 300%',
+                        animation: 'downloadGlow 10s ease-in-out infinite',
+                      }}
                     />
-                    <Button
-                      type="submit"
-                      size="lg"
-                      disabled={isSearchPending || !url.trim() || isDownloadInputBlocked}
-                      className="h-10 px-4 sm:px-6 rounded-xl shrink-0 text-sm min-w-[90px]"
-                    >
-                      {isSearchPending ? (
-                        <span className="flex items-center gap-2">
-                          <span className="animate-spin w-4 h-4 border-2 border-white/30 border-t-white rounded-full" />
-                          <span className="hidden sm:inline">Fetching</span>
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-1.5">
-                          {buttonPlaceholder}
-                          <ArrowRight className="w-4 h-4" />
-                        </span>
-                      )}
-                    </Button>
+                    <div className="relative rounded-[11px] bg-[#09090b] py-3.5 px-5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+                      <div className="flex items-center gap-3">
+                        <Search className="h-4.5 w-4.5 text-zinc-500 shrink-0" />
+                        <input
+                          type="url"
+                          name="youtube_url"
+                          inputMode="url"
+                          autoComplete="off"
+                          spellCheck={false}
+                          aria-label="YouTube URL"
+                          value={url}
+                          onChange={(e) => setUrl(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (url.trim() && !isSearchPending && !isDownloadInputBlocked) {
+                                handleSearch(e as unknown as React.FormEvent);
+                              }
+                            }
+                          }}
+                          placeholder={isDownloadInputBlocked ? "Download input is disabled" : "Paste YouTube URL..."}
+                          disabled={isDownloadInputBlocked}
+                          className="flex-1 bg-transparent text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isSearchPending || !url.trim() || isDownloadInputBlocked}
+                          className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/10 hover:bg-white/20 text-white disabled:opacity-50 transition"
+                        >
+                          {isSearchPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <ArrowRight className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </form>
 
                 {/* Download blocked banner */}
-                {mode === "download" && isDownloadInputBlocked && (
-                  <div className="mt-4 glass-panel rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-4">
+                {isDownloadInputBlocked && (
+                  <div className="mt-6 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-4 py-4">
                     <div className="flex items-start gap-3">
                       <div className="mt-0.5 bg-amber-500/20 p-2 rounded-lg border border-amber-400/40">
                         <Shield className="w-4 h-4 text-amber-300" />
@@ -927,67 +883,6 @@ export default function Home({
                   </div>
                 )}
               </div>
-            )}
-
-
-            {/* ═══════════════════════════════════════════════════════════════
-               Genspark-style Studio Homepage — shown on fresh load
-               ═══════════════════════════════════════════════════════════════ */}
-            {mode === "download" && !video && !jobId && !isSearchPending && (
-              <motion.div
-                key="studio-home"
-                initial={{ opacity: 0, y: 24 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -12 }}
-                transition={{ duration: 0.35 }}
-                className="studio-home-hero"
-              >
-                {/* Brand header */}
-                <div className="studio-home-brand">
-                  <div className="studio-home-orb">
-                    <Youtube className="w-7 h-7 text-primary" />
-                  </div>
-                  <h1 className="studio-home-title">
-                    <span className="studio-home-gradient">VideoMaking</span>
-                    <span className="text-white"> Studio</span>
-                  </h1>
-                  <p className="studio-home-sub">
-                    AI-powered video tools — Download, Clip, Subtitle, Translate, and more.
-                  </p>
-                </div>
-
-                {/* Tool bubbles — like Genspark AI workspace */}
-                <div className="studio-home-grid">
-                  {([
-                    { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
-                    { icon: <Scissors className="w-5 h-5" />, label: "Clip Cutter", desc: "Trim any range", mode: "clipcutter", color: "text-orange-400" },
-                    { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },
-                    { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
-                    { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
-                    { icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" },
-                    { icon: <Search className="w-5 h-5" />, label: "Find Video", desc: "Ask NotebookLM", mode: "findvideo", color: "text-sky-400" },
-                    { icon: <UploadCloud className="w-5 h-5" />, label: "Upload", desc: "Share files", mode: "upload", color: "text-cyan-400" },
-                    { icon: <Bot className="w-5 h-5" />, label: "AI Agent", desc: "Ask anything", mode: "copilot", color: "text-emerald-400" },
-                  ] as Array<{ icon: React.ReactNode; label: string; desc: string; mode: string; color: string }>).map((tool) => (
-                    <button
-                      key={tool.mode}
-                      onClick={() => switchMode(tool.mode as Mode)}
-                      className="studio-home-tool"
-                    >
-                      <span className={tool.color}>{tool.icon}</span>
-                      <div className="studio-home-tool-text">
-                        <span className="studio-home-tool-label">{tool.label}</span>
-                        <span className="studio-home-tool-desc">{tool.desc}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                {/* Quick tip */}
-                <p className="studio-home-tip">
-                  💡 Paste a YouTube URL above to get started, or click <button onClick={() => switchMode("copilot")} className="text-primary hover:underline font-semibold">AI Agent</button> to chat.
-                </p>
-              </motion.div>
             )}
 
             {/* Content panels */}

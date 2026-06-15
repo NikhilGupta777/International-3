@@ -14,6 +14,7 @@ type Mode =
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
   | "upload" | "translator" | "findvideo" | "videostudio" | "help" | "activity";
 const ULTRA_KEY = "studio-ultra-mode";
+const REASONING_KEY = "studio-reasoning-mode";
 
 // ── Animated typing placeholder ───────────────────────────────────────────────
 const PLACEHOLDER_SUGGESTIONS = [
@@ -97,8 +98,18 @@ export function StudioHome({
     !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
   useEffect(() => {
-    try { localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0"); } catch { }
+    try {
+      localStorage.setItem(ULTRA_KEY, ultra ? "1" : "0");
+    } catch { }
   }, [ultra]);
+
+  const setUltraMode = (next: boolean) => {
+    setUltra(next);
+    try {
+      localStorage.setItem(ULTRA_KEY, next ? "1" : "0");
+      localStorage.setItem(REASONING_KEY, next ? "advanced" : "flash");
+    } catch { }
+  };
 
   // Stop recognition if the component unmounts mid-listen.
   useEffect(() => () => {
@@ -229,12 +240,109 @@ export function StudioHome({
     await uploadFile(named);
   };
 
+  /* ── Animated background orbs (canvas) ──────────────────────── */
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cvs = canvasRef.current;
+    if (!cvs) return;
+    const ctx = cvs.getContext("2d")!;
+    let raf = 0;
+
+    const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
+    const randSign = () => (Math.random() < 0.5 ? -1 : 1);
+    const makeTarget = () => ({
+      x: rand(-0.08, 1.08),
+      y: rand(-0.08, 0.92),
+    });
+
+    const orbs = Array.from({ length: 8 }, () => {
+      const baseHue = rand(0, 360);
+      const target = makeTarget();
+      return {
+        x: rand(-0.04, 1.04),
+        y: rand(-0.04, 0.88),
+        targetX: target.x,
+        targetY: target.y,
+        r: rand(170, 340),
+        speed: rand(0.018, 0.09),
+        retargetAt: rand(900, 5200),
+        wobbleX: randSign() * rand(0.006, 0.025),
+        wobbleY: randSign() * rand(0.006, 0.025),
+        wobbleSpeed: rand(0.16, 0.58),
+        wobblePhase: rand(0, Math.PI * 2),
+        hue: baseHue,
+        hueSpeed: randSign() * rand(8, 35),
+        sat: rand(55, 85),
+        alpha: rand(0.14, 0.34),
+        alphaSpeed: rand(0.22, 1.15),
+        alphaPhase: rand(0, Math.PI * 2),
+        scaleSpeed: rand(0.12, 0.62),
+        scalePhase: rand(0, Math.PI * 2),
+      };
+    });
+
+    const resize = () => {
+      cvs.width = cvs.offsetWidth * devicePixelRatio;
+      cvs.height = cvs.offsetHeight * devicePixelRatio;
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    let last = 0;
+    const draw = (t: number) => {
+      const dt = Math.min(last ? (t - last) / 1000 : 0.016, 0.05);
+      last = t;
+      const w = cvs.width, h = cvs.height;
+      ctx.clearRect(0, 0, w, h);
+
+      for (const o of orbs) {
+        const dx = o.targetX - o.x;
+        const dy = o.targetY - o.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        if (t >= o.retargetAt || dist < 0.035) {
+          const target = makeTarget();
+          o.targetX = target.x;
+          o.targetY = target.y;
+          o.speed = rand(0.018, 0.09);
+          o.retargetAt = t + rand(1300, 6800);
+          o.wobbleX = randSign() * rand(0.006, 0.025);
+          o.wobbleY = randSign() * rand(0.006, 0.025);
+          o.wobbleSpeed = rand(0.16, 0.58);
+        }
+
+        const wobble = Math.sin(t * 0.001 * o.wobbleSpeed + o.wobblePhase);
+        o.x += (dx / dist) * o.speed * dt + wobble * o.wobbleX * dt;
+        o.y += (dy / dist) * o.speed * dt + Math.cos(t * 0.001 * o.wobbleSpeed + o.wobblePhase) * o.wobbleY * dt;
+
+        o.hue = (o.hue + o.hueSpeed * dt) % 360;
+        const pulse = Math.sin(t * 0.001 * o.alphaSpeed + o.alphaPhase);
+        const alpha = Math.max(0.05, o.alpha + pulse * 0.11);
+        const scale = 1 + Math.sin(t * 0.001 * o.scaleSpeed + o.scalePhase) * 0.18;
+        const px = o.x * w, py = o.y * h, pr = o.r * scale * devicePixelRatio;
+
+        const g = ctx.createRadialGradient(px, py, 0, px, py, pr);
+        g.addColorStop(0, `hsla(${o.hue}, ${o.sat}%, 55%, ${alpha})`);
+        g.addColorStop(0.45, `hsla(${o.hue + 30}, ${o.sat - 10}%, 40%, ${alpha * 0.4})`);
+        g.addColorStop(1, `hsla(${o.hue + 60}, ${o.sat}%, 30%, 0)`);
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(px, py, pr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      raf = requestAnimationFrame(draw);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+  }, []);
+
   return (
     <div className="gs-home">
+      <canvas ref={canvasRef} className="gs-home-orbs-canvas" style={{ filter: "blur(80px)" }} />
       <div className="gs-home-center">
         {/* Title */}
         <h1 className="gs-home-title">
-          <span className="gs-home-title-text">VideoMaking Studio Workspace 2.0</span>
+          <span className="gs-home-title-text gs-home-title-full">Narayan Bhakt Studio Workspace</span>
+          <span className="gs-home-title-text gs-home-title-mobile">Narayan Bhakt Workspace</span>
         </h1>
 
         {/* Big input box */}
@@ -346,7 +454,7 @@ export function StudioHome({
                 className={cn("gs-pill-ultra", ultra && "gs-pill-ultra-active")}
                 title={ultra ? "Ultra mode ON — uses Pro model" : "Ultra mode OFF — uses default model"}
                 aria-pressed={ultra}
-                onClick={() => setUltra(u => !u)}
+                onClick={() => setUltraMode(!ultra)}
               >
                 <span className="gs-pill-ultra-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5">
@@ -393,15 +501,15 @@ export function StudioHome({
         {/* Tool bubbles — grid layout */}
         <div className="studio-home-grid mt-4">
           {([
-            { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },
-            { icon: <Clapperboard className="w-5 h-5" />, label: "AI Studio", desc: "Finish videos", mode: "videostudio", color: "text-emerald-400" },
             { icon: <Scissors className="w-5 h-5" />, label: "Clip Cutter", desc: "Trim any range", mode: "clipcutter", color: "text-orange-400" },
+            { icon: <Clapperboard className="w-5 h-5" />, label: "AI Studio", desc: "Finish videos", mode: "videostudio", color: "text-emerald-400" },
             { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
-            { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
             { icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" },
-            { icon: <Search className="w-5 h-5" />, label: "Find Video", desc: "Ask NotebookLM", mode: "findvideo", color: "text-sky-400" },
-            { icon: <ListVideo className="w-5 h-5" />, label: "Find Sabha", desc: "Search within videos", mode: "scenefinder", color: "text-sky-400" },
             { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
+            { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
+            // { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },
+            { icon: <Search className="w-5 h-5" />, label: "Find Video", desc: "Ask NotebookLM", mode: "findvideo", color: "text-sky-400" },
+            // { icon: <ListVideo className="w-5 h-5" />, label: "Find Sabha", desc: "Search within videos", mode: "scenefinder", color: "text-sky-400" },
             { icon: <UploadCloud className="w-5 h-5" />, label: "Share", desc: "Share files", mode: "upload", color: "text-cyan-400" },
           ] as Array<{ icon: React.ReactNode; label: string; desc: string; mode: string; color: string }>).map((tool) => (
             <button

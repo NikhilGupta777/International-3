@@ -36,12 +36,12 @@ const NAV_ITEMS: NavItem[] = [
   { mode: "clips",       icon: <Sparkles className="gs-icon" />,        label: "Best Clips" },
   { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
   { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },
-  { mode: "thumbnail",   icon: <ImageIcon className="gs-icon" />,       label: "Thumbnail" },
+  // { mode: "thumbnail",   icon: <ImageIcon className="gs-icon" />,       label: "Thumbnail" },
   { mode: "translator",  icon: <Languages className="gs-icon" />,       label: "Translator" },
   { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video" },
   { mode: "timestamps",  icon: <AlarmClock className="gs-icon" />,      label: "Timestamps" },
   { mode: "download",    icon: <Download className="gs-icon" />,        label: "Download" },
-  { mode: "scenefinder", icon: <ListVideo className="gs-icon" />,       label: "Find Sabha" },
+  // { mode: "scenefinder", icon: <ListVideo className="gs-icon" />,       label: "Find Sabha" },
   { mode: "bhagwat",     icon: <Shield className="gs-icon" />,          label: "Bhagwat" },
   { mode: "upload",      icon: <UploadCloud className="gs-icon" />,     label: "Share" },
 ];
@@ -95,7 +95,6 @@ function NavList({
   showAdmin,
   superAgentEnabled = true,
   translatorEnabled = true,
-  emailMissing = false,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
@@ -105,7 +104,6 @@ function NavList({
   showAdmin?: boolean;
   superAgentEnabled?: boolean;
   translatorEnabled?: boolean;
-  emailMissing?: boolean;
 }) {
   const handle = (m: Mode) => () => { onModeChange(m); onClose?.(); };
   const handleNew = () => { onNewChat?.(); onClose?.(); };
@@ -113,7 +111,6 @@ function NavList({
     mode: "settings",
     icon: <Settings className="gs-icon" />,
     label: "Settings",
-    badge: emailMissing ? "!" : undefined,
   };
   const utilityItems = showAdmin
     ? [
@@ -164,7 +161,6 @@ export function Sidebar({
   showAdmin = false,
   superAgentEnabled = true,
   translatorEnabled = true,
-  emailMissing = false,
 }: {
   mode: Mode;
   onModeChange: (m: Mode) => void;
@@ -172,7 +168,6 @@ export function Sidebar({
   showAdmin?: boolean;
   superAgentEnabled?: boolean;
   translatorEnabled?: boolean;
-  emailMissing?: boolean;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -187,8 +182,8 @@ export function Sidebar({
         <div className="gs-rail-top">
           <div
             className="gs-app-tile"
-            title="VideoMaking Studio"
-            aria-label="VideoMaking Studio"
+            title="Narayan Bhakt Studio"
+            aria-label="Narayan Bhakt Studio"
           >
             <img src="/app-logo.png" alt="App Logo" className="w-6 h-6 object-contain" />
           </div>
@@ -203,7 +198,7 @@ export function Sidebar({
             showAdmin={showAdmin}
             superAgentEnabled={superAgentEnabled}
             translatorEnabled={translatorEnabled}
-            emailMissing={emailMissing}
+
           />
         </div>
 
@@ -213,11 +208,11 @@ export function Sidebar({
             ? [
                 { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
                 { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings", badge: emailMissing ? "!" : undefined },
+                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
               ]
             : [
                 { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings", badge: emailMissing ? "!" : undefined },
+                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
               ]
           ).map((item) => (
             <GsItem
@@ -250,7 +245,7 @@ export function Sidebar({
               <img src="/app-logo.png" alt="App Logo" className="w-5 h-5 object-contain" />
             </div>
             <span className="text-sm font-semibold text-white/90">
-              VideoMaking <span className="text-primary">Studio</span>
+              Narayan Bhakt <span className="text-primary">Studio</span>
             </span>
           </div>
           <button
@@ -272,7 +267,7 @@ export function Sidebar({
             showAdmin={showAdmin}
             superAgentEnabled={superAgentEnabled}
             translatorEnabled={translatorEnabled}
-            emailMissing={emailMissing}
+
           />
         </div>
 
@@ -281,11 +276,11 @@ export function Sidebar({
             ? [
                 { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
                 { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings", badge: emailMissing ? "!" : undefined },
+                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
               ]
             : [
                 { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings", badge: emailMissing ? "!" : undefined },
+                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
               ]
           ).map((item) => (
             <GsItem

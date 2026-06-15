@@ -1,5 +1,5 @@
-/* VideoMaking Studio — PWA Service Worker */
-const CACHE_NAME = "vmstudio-v2";
+/* Narayan Bhakt Studio — PWA Service Worker */
+const CACHE_NAME = "nbstudio-v2";
 const PRECACHE = ["/", "/index.html", "/app-logo.png", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -51,10 +51,10 @@ self.addEventListener("fetch", (event) => {
 // ── Push notifications (re-use existing push-sw.js logic) ───────────────────
 self.addEventListener("push", (event) => {
   let payload = {
-    title: "VideoMaking Studio",
+    title: "Narayan Bhakt Studio",
     body: "A background job has finished.",
     url: "/",
-    tag: "vmstudio",
+    tag: "nbstudio",
     silent: false,
   };
   try {

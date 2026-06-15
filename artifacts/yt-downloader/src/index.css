@@ -3240,7 +3240,17 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   justify-content: center;
   padding: 24px 16px 80px;
   background: #0a0a0c;
-  overflow-y: auto;
+  overflow: hidden;
+  position: relative;
+}
+.gs-home > * { position: relative; z-index: 2; }
+.gs-home-orbs-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
 }
 .gs-home-center {
   width: 100%;
@@ -3266,7 +3276,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 
 .gs-home-title {
-  font-size: clamp(1.6rem, 2.8vw, 2.1rem);
+  font-size: clamp(2.1rem, 3.6vw, 2.75rem);
   font-weight: 800;
   letter-spacing: -0.02em;
   text-align: center;
@@ -3290,13 +3300,34 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   padding: 4px 10px;
 }
 
+.gs-home-title-mobile {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .gs-home-title-full {
+    display: none;
+  }
+
+  .gs-home-title-mobile {
+    display: inline-block;
+  }
+}
+
 /* ── Big input card (used on home + chat) ─────────────────── */
+@keyframes inputCardGlow {
+  0%   { background-position: 0% 50%;   opacity: 0.45; }
+  25%  { background-position: 50% 100%; opacity: 0.55; }
+  50%  { background-position: 100% 50%; opacity: 0.45; }
+  75%  { background-position: 50% 0%;   opacity: 0.55; }
+  100% { background-position: 0% 50%;   opacity: 0.45; }
+}
 .gs-input-card {
   position: relative;
   width: 100%;
   max-width: 740px;
-  background: #2b2c2f;
-  border: 1px solid rgba(255,255,255,0.08);
+  background: #18191b;
+  border: 1px solid rgba(255,255,255,0.06);
   border-radius: 12px;
   padding: 16px 20px 14px;
   display: flex;
@@ -3305,10 +3336,32 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   box-shadow: 0 16px 40px rgba(0,0,0,0.5);
   transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
   margin: 0 auto;
+  z-index: 1;
+}
+.gs-input-card::before {
+  content: '';
+  position: absolute;
+  inset: -20px -24px;
+  border-radius: 24px;
+  background: radial-gradient(ellipse at 30% 50%, rgba(139,92,246,0.35), transparent 60%),
+              radial-gradient(ellipse at 70% 50%, rgba(59,130,246,0.30), transparent 60%),
+              radial-gradient(ellipse at 50% 80%, rgba(236,72,153,0.25), transparent 60%),
+              radial-gradient(ellipse at 20% 20%, rgba(34,211,238,0.20), transparent 55%),
+              radial-gradient(ellipse at 80% 30%, rgba(251,146,60,0.18), transparent 55%);
+  background-size: 200% 200%;
+  animation: inputCardGlow 8s ease-in-out infinite;
+  filter: blur(40px);
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.45;
+  transition: opacity 0.4s;
 }
 .gs-input-card:focus-within {
-  border-color: rgba(255,255,255,0.15);
-  box-shadow: 0 0 12px rgba(255,255,255,0.04), 0 16px 40px rgba(0,0,0,0.5);
+  border-color: rgba(255,255,255,0.12);
+  box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+}
+.gs-input-card:focus-within::before {
+  opacity: 0.7;
 }
 
 .gs-input-textarea {
@@ -4433,7 +4486,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
     gap: 22px;
   }
   .gs-home-title {
-    font-size: 1.35rem;
+    font-size: 1.55rem;
   }
 
   /* Download-tab landing hero: tighten and clear the hamburger */
@@ -4531,7 +4584,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
     padding: 56px 12px 80px;
   }
   .gs-home-title {
-    font-size: 1.2rem;
+    font-size: 1.4rem;
   }
   .studio-home-grid {
     gap: 6px;
@@ -7207,7 +7260,7 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
 
 /* ── Thumbnail Studio (standalone agent) ─────────────────────────
    Self-contained .thumb-* namespace. ChatGPT-style dark surface with a
-   professional BLUE accent (VideoMaking brand). */
+   professional BLUE accent (Narayan Bhakt brand). */
 .thumb-wrap {
   --thumb-bg: #0a0a0a;
   --thumb-surface: #1e1e1e;
