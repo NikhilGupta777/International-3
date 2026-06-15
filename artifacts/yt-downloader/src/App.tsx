@@ -108,10 +108,11 @@ function AuthOverlay({
   children?: ReactNode;
   compact?: boolean;
 }) {
+  const isLoadingOverlay = compact && !children;
   const overlay = (
-    <div className="auth-overlay">
+    <div className={`auth-overlay${isLoadingOverlay ? " auth-overlay--loading" : ""}`}>
       <div className="auth-overlay-inner">
-        <section className={`auth-card${compact ? " auth-card--compact" : ""}`}>
+        <section className={`auth-card${compact ? " auth-card--compact" : ""}${isLoadingOverlay ? " auth-card--loading" : ""}`}>
           <p className="auth-eyebrow">{eyebrow}</p>
           <h1 className="auth-title">{title}</h1>
           <p className="auth-subtitle">{subtitle}</p>

@@ -1406,12 +1406,49 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   inset: 0;
   z-index: 1000;
   background:
-    radial-gradient(1200px 700px at 50% 12%, rgba(220, 38, 38, 0.20), transparent 62%),
-    radial-gradient(850px 520px at 50% 88%, rgba(180, 80, 20, 0.14), transparent 70%),
-    rgba(10, 10, 10, 0.62);
+    radial-gradient(900px 560px at 18% 16%, rgba(20, 184, 166, 0.22), transparent 62%),
+    radial-gradient(780px 520px at 78% 24%, rgba(99, 102, 241, 0.20), transparent 62%),
+    radial-gradient(760px 540px at 52% 92%, rgba(245, 158, 11, 0.13), transparent 68%),
+    rgba(6, 8, 13, 0.72);
   backdrop-filter: blur(7px);
   box-sizing: border-box;
   overflow: hidden;
+}
+
+.auth-overlay--loading::before,
+.auth-overlay--loading::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.auth-overlay--loading::before {
+  inset: -22%;
+  background:
+    conic-gradient(from 90deg at 50% 50%,
+      rgba(20, 184, 166, 0.0),
+      rgba(20, 184, 166, 0.20),
+      rgba(99, 102, 241, 0.18),
+      rgba(236, 72, 153, 0.14),
+      rgba(245, 158, 11, 0.15),
+      rgba(20, 184, 166, 0.0));
+  filter: blur(54px) saturate(1.28);
+  opacity: 0.68;
+  animation: auth-aurora-spin 9s linear infinite;
+}
+
+.auth-overlay--loading::after {
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(circle at 50% 45%, black, transparent 72%);
+  opacity: 0.38;
+}
+
+@keyframes auth-aurora-spin {
+  to { transform: rotate(360deg) scale(1.04); }
 }
 
 .auth-overlay-inner {
@@ -1440,8 +1477,8 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   padding: clamp(28px, 3.2vw, 52px);
   border: 1px solid rgba(255, 255, 255, 0.10);
   background:
-    linear-gradient(180deg, rgba(24, 10, 12, 0.94), rgba(14, 10, 16, 0.96)),
-    linear-gradient(120deg, rgba(220, 38, 38, 0.18), rgba(180, 80, 20, 0.14));
+    linear-gradient(180deg, rgba(8, 13, 22, 0.94), rgba(8, 9, 18, 0.96)),
+    linear-gradient(120deg, rgba(20, 184, 166, 0.16), rgba(99, 102, 241, 0.14));
   box-shadow:
     0 36px 120px rgba(0, 0, 0, 0.70),
     inset 0 1px 0 rgba(255, 255, 255, 0.10);
@@ -1455,6 +1492,90 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   max-width: 520px;
   min-height: auto;
   justify-content: flex-start;
+}
+
+.auth-card--loading {
+  position: relative;
+  width: min(88vw, 420px);
+  min-height: 300px;
+  padding: 34px 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  border-radius: 22px;
+  border-color: rgba(255, 255, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(8, 12, 24, 0.76), rgba(7, 8, 18, 0.86)),
+    radial-gradient(circle at 28% 20%, rgba(20, 184, 166, 0.28), transparent 44%),
+    radial-gradient(circle at 78% 78%, rgba(168, 85, 247, 0.24), transparent 46%);
+  box-shadow:
+    0 42px 120px rgba(0, 0, 0, 0.62),
+    0 0 90px rgba(20, 184, 166, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+
+.auth-card--loading::before {
+  content: "";
+  width: 78px;
+  height: 78px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, rgba(255, 255, 255, 0.95) 0 12%, transparent 13%),
+    conic-gradient(from 180deg, #14b8a6, #60a5fa, #a78bfa, #f0abfc, #fbbf24, #14b8a6);
+  box-shadow:
+    0 0 34px rgba(20, 184, 166, 0.45),
+    0 0 72px rgba(167, 139, 250, 0.22);
+  animation: auth-loader-orbit 1.35s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  mask-image: radial-gradient(circle, transparent 0 42%, black 44%);
+}
+
+.auth-card--loading::after {
+  content: "";
+  position: absolute;
+  inset: auto 26px 20px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, #22d3ee, #a78bfa, #fbbf24, transparent);
+  background-size: 220% 100%;
+  opacity: 0.78;
+  animation: auth-loader-line 1.8s ease-in-out infinite;
+}
+
+.auth-card--loading .auth-eyebrow,
+.auth-card--loading .auth-subtitle {
+  display: none;
+}
+
+.auth-card--loading .auth-title {
+  max-width: 10ch;
+  font-size: clamp(1.85rem, 5.8vw, 3rem);
+  line-height: 0.98;
+  letter-spacing: -0.045em;
+  background: linear-gradient(110deg, #f8fafc, #67e8f9 32%, #c4b5fd 62%, #fde68a);
+  background-size: 220% 100%;
+  color: transparent;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: auth-title-glow 2.6s ease-in-out infinite alternate;
+}
+
+@keyframes auth-loader-orbit {
+  0% { transform: rotate(0deg) scale(0.94); filter: hue-rotate(0deg); }
+  50% { transform: rotate(190deg) scale(1.05); }
+  100% { transform: rotate(360deg) scale(0.94); filter: hue-rotate(55deg); }
+}
+
+@keyframes auth-loader-line {
+  0%, 100% { background-position: 0% 50%; transform: scaleX(0.72); opacity: 0.45; }
+  50% { background-position: 100% 50%; transform: scaleX(1); opacity: 0.92; }
+}
+
+@keyframes auth-title-glow {
+  from { background-position: 0% 50%; text-shadow: 0 0 24px rgba(34, 211, 238, 0.18); }
+  to { background-position: 100% 50%; text-shadow: 0 0 32px rgba(196, 181, 253, 0.24); }
 }
 
 .auth-eyebrow {
@@ -1513,8 +1634,8 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .auth-input::placeholder { color: rgba(255, 255, 255, 0.35); }
 
 .auth-input:focus {
-  border-color: rgba(220, 38, 38, 0.70);
-  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
+  border-color: rgba(20, 184, 166, 0.70);
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.15);
   background: rgba(16, 12, 18, 0.90);
 }
 
@@ -1534,8 +1655,8 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   font-weight: 600;
   letter-spacing: -0.01em;
   color: #fff;
-  background: linear-gradient(135deg, #b91c1c, #dc2626);
-  box-shadow: 0 12px 32px rgba(185, 28, 28, 0.36);
+  background: linear-gradient(135deg, #0f766e, #2563eb);
+  box-shadow: 0 12px 32px rgba(37, 99, 235, 0.30);
   transition: transform 0.14s ease, filter 0.2s ease, box-shadow 0.2s ease;
   cursor: pointer;
 }
@@ -1543,7 +1664,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .auth-button:hover {
   filter: brightness(1.08);
   transform: translateY(-1px);
-  box-shadow: 0 16px 36px rgba(185, 28, 28, 0.46);
+  box-shadow: 0 16px 36px rgba(20, 184, 166, 0.32);
 }
 
 .auth-button:disabled {
