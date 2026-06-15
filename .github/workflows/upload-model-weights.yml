@@ -27,16 +27,19 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install Python 3.11 + pip
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Upgrade pip
         run: |
-          sudo apt-get update && sudo apt-get install -y python3.11 python3-pip
-          python3.11 -m pip install --upgrade pip
+          python -m pip install --upgrade pip
 
       # 1. CosyVoice3 weights (~1.5 GB)
       - name: Download CosyVoice3 from ModelScope
         run: |
-          python3.11 -m pip install modelscope==1.18.1
-          python3.11 - <<'PY'
+          python -m pip install modelscope==1.18.1
+          python - <<'PY'
           import os
           from modelscope import snapshot_download
           target = "/tmp/cosyvoice3"
@@ -57,8 +60,8 @@ jobs:
       # 2. LatentSync checkpoint (~700 MB)
       - name: Download LatentSync checkpoint
         run: |
-          python3.11 -m pip install huggingface_hub==0.24.6
-          python3.11 - <<'PY'
+          python -m pip install huggingface_hub==0.24.6
+          python - <<'PY'
           from huggingface_hub import hf_hub_download
           import pathlib
           ckpt_dir = pathlib.Path("/tmp/latentsync-checkpoints")
@@ -78,8 +81,8 @@ jobs:
       # 3. Whisper tiny.pt (~75 MB)
       - name: Download Whisper tiny model
         run: |
-          python3.11 -m pip install openai-whisper==20231117
-          python3.11 - <<'PY'
+          python -m pip install openai-whisper==20231117
+          python - <<'PY'
           import pathlib
           import whisper
           dst = pathlib.Path("/tmp/whisper-tiny")
@@ -99,9 +102,9 @@ jobs:
       # 4. SD VAE stabilityai/sd-vae-ft-mse (~330 MB)
       - name: Download SD VAE
         run: |
-          python3.11 -m pip install diffusers==0.29.2 torch==2.3.1 \
+          python -m pip install diffusers==0.29.2 torch==2.3.1 \
             --extra-index-url https://download.pytorch.org/whl/cpu
-          python3.11 - <<'PY'
+          python - <<'PY'
           import os
           import torch
           os.environ["HF_HOME"] = "/tmp/hf-vae-cache"
@@ -126,8 +129,8 @@ jobs:
       # 5. Demucs htdemucs (~80 MB)
       - name: Download Demucs htdemucs
         run: |
-          python3.11 -m pip install demucs==4.0.1
-          TORCH_HOME=/tmp/torch-cache python3.11 - <<'PY'
+          python -m pip install demucs==4.0.1
+          TORCH_HOME=/tmp/torch-cache python - <<'PY'
           import os
           os.environ["TORCH_HOME"] = "/tmp/torch-cache"
           from demucs.pretrained import get_model
