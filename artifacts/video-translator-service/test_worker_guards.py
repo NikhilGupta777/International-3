@@ -211,5 +211,47 @@ class GeminiTranscriptionTests(unittest.TestCase):
             self.worker._transcribe_gemini_once = old_once
 
 
+class CosyVoiceWarmupTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.worker = import_worker()
+
+    def test_warmup_runs_once_and_sets_flag(self):
+        # The CUDA warmup must run exactly one dummy inference and be idempotent, so the
+        # background preload can warm kernels and the clone stage then skips it.
+        old_flag = self.worker._COSYVOICE_WARMED
+        old_ref = self.worker._get_warmup_reference
+        calls = []
+
+        class FakeModel:
+            def inference_zero_shot(self, tts_text, prompt_text, ref):
+                calls.append(ref)
+                yield {"tts_speech": None}
+
+        try:
+            self.worker._COSYVOICE_WARMED = False
+            self.worker._get_warmup_reference = lambda: Path("warmup.wav")
+
+            self.worker.warmup_cosyvoice_model(FakeModel())
+            self.assertTrue(self.worker._COSYVOICE_WARMED)
+            self.assertEqual(len(calls), 1)
+
+            # Already warmed → no-op (no second inference).
+            self.worker.warmup_cosyvoice_model(FakeModel())
+            self.assertEqual(len(calls), 1)
+        finally:
+            self.worker._COSYVOICE_WARMED = old_flag
+            self.worker._get_warmup_reference = old_ref
+
+    def test_warmup_with_no_model_is_safe_noop(self):
+        old_flag = self.worker._COSYVOICE_WARMED
+        try:
+            self.worker._COSYVOICE_WARMED = False
+            self.worker.warmup_cosyvoice_model(None)   # must not raise
+            self.assertFalse(self.worker._COSYVOICE_WARMED)
+        finally:
+            self.worker._COSYVOICE_WARMED = old_flag
+
+
 if __name__ == "__main__":
     unittest.main()
