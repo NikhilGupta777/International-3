@@ -137,7 +137,18 @@ function formatDurationLabel(sec: number): string {
   return `${s}s`;
 }
 
-export function Timestamps() {
+function replaceTimestampsPath(jobId?: string | null) {
+  if (typeof window === "undefined") return;
+  try {
+    window.history.replaceState(
+      null,
+      "",
+      jobId ? `/timestamps/job/${encodeURIComponent(jobId)}` : "/timestamps",
+    );
+  } catch { /* ignore */ }
+}
+
+export function Timestamps({ initialJobId = null }: { initialJobId?: string | null }) {
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
   const { toast } = useToast();
   const { copied, copy } = useClipboard();
@@ -570,6 +581,7 @@ export function Timestamps() {
   };
 
   const handleSelectHistoryEntry = (entry: TimestampHistoryEntry) => {
+    replaceTimestampsPath(entry.id);
     if (entry.timestamps && entry.timestamps.length > 0) {
       setViewingJob({
         jobId: entry.id,
@@ -611,6 +623,20 @@ export function Timestamps() {
       });
     }
   };
+
+  useEffect(() => {
+    if (!initialJobId) {
+      setViewingJob(null);
+      return;
+    }
+    const active = jobsRef.current.find((job) => job.jobId === initialJobId);
+    if (active) {
+      setViewingJob(active);
+      return;
+    }
+    const entry = loadTimestampHistory().find((item) => item.id === initialJobId);
+    if (entry) handleSelectHistoryEntry(entry);
+  }, [initialJobId]);
 
 
 
@@ -789,7 +815,10 @@ export function Timestamps() {
                 <TimestampJobCard
                   key={job.jobId}
                   job={job}
-                  onView={() => setViewingJob(job)}
+                  onView={() => {
+                    setViewingJob(job);
+                    replaceTimestampsPath(job.jobId);
+                  }}
                   onCancel={() => handleCancelJob(job.jobId)}
                   onDismiss={() => handleDismissJob(job.jobId)}
                 />
@@ -957,7 +986,10 @@ export function Timestamps() {
             <div className="flex justify-center w-full">
               <Button
                 variant="ghost"
-                onClick={() => setViewingJob(null)}
+                onClick={() => {
+                  setViewingJob(null);
+                  replaceTimestampsPath(null);
+                }}
                 className="text-xs text-zinc-400 hover:text-white hover:bg-white/5 gap-1.5 px-4 py-2 rounded-xl transition"
               >
                 <X className="w-3.5 h-3.5" />

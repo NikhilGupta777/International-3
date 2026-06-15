@@ -318,6 +318,17 @@ function translatorShareUrl(jobId: string): string {
   return `${window.location.origin}${path}`;
 }
 
+function replaceTranslatorPath(jobId?: string | null) {
+  if (typeof window === "undefined") return;
+  try {
+    window.history.replaceState(
+      null,
+      "",
+      jobId ? `/translator/job/${encodeURIComponent(jobId)}` : "/translator",
+    );
+  } catch { /* ignore */ }
+}
+
 // Build a descriptive download filename: "my_video_translated_hi.mp4"
 // Falls back to "translated_video.mp4" when filename is missing.
 function translatedVideoFilename(filename?: string, langCode?: string): string {
@@ -532,7 +543,13 @@ function DropZone({ onFile, onFiles, multiple, disabled }: { onFile: (f: File) =
 }
 
 // â”€â”€ Main component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncAvailable?: boolean }) {
+export default function VideoTranslator({
+  lipSyncAvailable = false,
+  initialJobId = null,
+}: {
+  lipSyncAvailable?: boolean;
+  initialJobId?: string | null;
+}) {
   const { toast } = useToast();
   const [file, setFile] = useState<File | null>(null);
   // Bulk: multiple local files translated together in one GPU session.
@@ -606,6 +623,23 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     setActiveJobs(loadActiveTranslatorJobs());
     setHistory(loadTranslatorHistory());
   }, []);
+
+  useEffect(() => {
+    if (!initialJobId) {
+      setJobId(null);
+      setJob(null);
+      return;
+    }
+    const active = loadActiveTranslatorJobs().find((entry) => entry.jobId === initialJobId);
+    if (active) {
+      openActiveEntry(active);
+      return;
+    }
+    const completed = loadTranslatorHistory().find((entry) => entry.jobId === initialJobId);
+    if (completed) {
+      void openHistoryEntry(completed);
+    }
+  }, [initialJobId]);
 
   // Ask the in-tab AI assistant via the streaming endpoint. The backend streams
   // the model's live thinking and the answer as Markdown, backed by a focused
@@ -1159,6 +1193,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       });
       setComposingNew(false);
       setJobId(newJobId);
+      replaceTranslatorPath(newJobId);
       refreshHistory();
     } catch (e: any) {
       setError(e?.message ?? "YouTube translation failed.");
@@ -1276,6 +1311,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       });
       setComposingNew(false);
       setJobId(newJobId);
+      replaceTranslatorPath(newJobId);
       refreshHistory();
     } catch (e: any) {
       setError(e?.message);
@@ -1340,6 +1376,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
       setBulkFiles([]);
       setComposingNew(false);
       setJobId(uploaded[0]?.jobId ?? null);
+      replaceTranslatorPath(uploaded[0]?.jobId ?? null);
       refreshHistory();
       toast({ title: `Bulk translation started`, description: `${uploaded.length} videos in one GPU session.` });
     } catch (e: any) {
@@ -1354,6 +1391,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     if (pollRef.current) clearTimeout(pollRef.current);
     if (ytPollRef.current) { clearTimeout(ytPollRef.current); ytPollRef.current = null; }
     setFile(null); setJobId(null); setJob(null);
+    replaceTranslatorPath(null);
     setTranscript([]); setError(null); setShowTranscript(false);
     setStuckWarning(null);
     setPreparing(false); setPrepareMsg("");
@@ -1376,6 +1414,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     setError(null);
     setTranscript([]);
     setJobId(entry.jobId);
+    replaceTranslatorPath(entry.jobId);
     setJob({
       jobId: entry.jobId,
       status: entry.status,
@@ -1422,6 +1461,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
     setError(null);
     setTranscript([]);
     setJobId(entry.jobId);
+    replaceTranslatorPath(entry.jobId);
     setJob({
       jobId: entry.jobId,
       status: "DONE",

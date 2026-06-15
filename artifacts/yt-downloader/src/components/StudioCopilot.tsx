@@ -613,6 +613,24 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
   const lastNonEmptyIdx = lines.length - 1 - [...lines].reverse().findIndex(l => l.trim() !== "");
   const tableInline = (str: string, key: string): React.ReactNode => inlineAnimated(str, key, false);
 
+  let cursorRendered = false;
+  const inlineAnimatedWithCursor = (str: string, key: string, isLast: boolean) => {
+    const parts = inlineAnimated(str, key, isLast);
+    if (isLast) {
+      cursorRendered = true;
+      if (Array.isArray(parts)) {
+        return [...parts, <span key="cursor" className="stream-cursor" />];
+      }
+      return (
+        <>
+          {parts}
+          <span key="cursor" className="stream-cursor" />
+        </>
+      );
+    }
+    return parts;
+  };
+
   let li = 0;
   while (li < lines.length) {
     const line = lines[li];
@@ -657,16 +675,16 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     const quoteMatch = /^>\s?(.*)/.exec(line);
     const olMatch = /^(\s*)(\d+)\.\s+(.*)/.exec(line);
     const ulMatch = /^(\s*)[-*+]\s+(.*)/.exec(line);
-    const lineInline = (str: string, key: string) => inlineAnimated(str, key, isLastLine);
+    const lineInline = (str: string, key: string) => inlineAnimatedWithCursor(str, key, isLastLine);
 
     if (headingMatch) {
       const level = headingMatch[1].length;
       const cls = level <= 2 ? "text-[15px] font-bold mt-2 mb-1" : "text-sm font-semibold mt-1.5 mb-0.5";
-      result.push(<div key={li} className={cls}>{inlineAnimated(headingMatch[2], `h${li}`, isLastLine)}</div>);
+      result.push(<div key={li} className={cls}>{inlineAnimatedWithCursor(headingMatch[2], `h${li}`, isLastLine)}</div>);
     } else if (hrMatch) {
       result.push(<hr key={li} className="my-2 border-white/10" />);
     } else if (quoteMatch) {
-      result.push(<div key={li} className="border-l-2 border-white/20 pl-2 ml-1 text-white/70">{inlineAnimated(quoteMatch[1], `q${li}`, isLastLine)}</div>);
+      result.push(<div key={li} className="border-l-2 border-white/20 pl-2 ml-1 text-white/70">{inlineAnimatedWithCursor(quoteMatch[1], `q${li}`, isLastLine)}</div>);
     } else if (olMatch) {
       result.push(renderOlItem(li, olMatch[1], olMatch[2], olMatch[3], lineInline, `ol${li}`));
     } else if (ulMatch) {
@@ -674,14 +692,16 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     } else if (line.trim() === "") {
       if (li < lines.length - 1) result.push(<div key={li} className="h-5" />);
     } else {
-      result.push(<div key={li}>{inlineAnimated(line, `ln${li}`, isLastLine)}</div>);
+      result.push(<div key={li}>{inlineAnimatedWithCursor(line, `ln${li}`, isLastLine)}</div>);
     }
 
     li++;
   }
 
   // Blinking cursor at the end
-  result.push(<span key="cursor" className="stream-cursor" />);
+  if (!cursorRendered) {
+    result.push(<span key="cursor" className="stream-cursor" />);
+  }
 
   return result;
 }

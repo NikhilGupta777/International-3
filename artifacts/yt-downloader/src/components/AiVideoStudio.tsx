@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, type KeyboardEvent, type DragEvent } from "react";
+import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle, type KeyboardEvent, type DragEvent } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   videoEditorApi,
@@ -17,6 +17,7 @@ import {
   removeActiveVideoStudioRender,
   saveVideoStudioRenderHistory,
 } from "@/lib/video-studio-history";
+import { VisualTimelineEditor } from "./VisualTimelineEditor";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ViewState = "landing" | "chat" | "artifact";
@@ -183,6 +184,40 @@ function IconSplit() {
     <line x1="14" y1="8" x2="20" y2="8" /><line x1="14" y1="12" x2="20" y2="12" /><line x1="14" y1="16" x2="20" y2="16" />
   </svg>);
 }
+function IconHistory() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M12 7v5l4 2" />
+    </svg>
+  );
+}
+function IconClapperboard() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-sky-500" aria-hidden="true">
+      <path d="M20.2 6 3 11l-.9-2.4 17.2-5.1L20.2 6Z" />
+      <path d="M4 8.5V19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8.5" />
+      <path d="M8 8.5V11" />
+      <path d="M16 8.5V11" />
+      <path d="M12 8.5V11" />
+      <path d="M4 12h16" />
+      <path d="M4 16h16" />
+    </svg>
+  );
+}
+function IconTrash() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    </svg>
+  );
+}
 
 /** Cloud-up icon for the Choose Assets modal's dropzone. */
 function IconCloudUp() {
@@ -284,12 +319,40 @@ function ChooseAssetsModal({
           </button>
         ) : (
           <div className="ai-video-studio__modal-asset-list">
-            {loading && <div className="ai-video-studio__modal-empty">Loading…</div>}
-            {error && !loading && (
-              <div className="ai-video-studio__modal-empty">Could not load assets — {error}</div>
+            {loading && (
+              <div className="ai-video-studio__modal-empty">
+                <svg className="ai-video-studio__history-spinner" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ margin: "0 auto 12px" }}>
+                  <line x1="12" y1="2" x2="12" y2="6"></line>
+                  <line x1="12" y1="18" x2="12" y2="22"></line>
+                  <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line>
+                  <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line>
+                  <line x1="2" y1="12" x2="6" y2="12"></line>
+                  <line x1="18" y1="12" x2="22" y2="12"></line>
+                  <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line>
+                  <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>
+                </svg>
+                Loading assets...
+              </div>
+            )}
+            {!loading && error && (
+              <div className="ai-video-studio__modal-empty" style={{ color: "#ef4444" }}>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ margin: "0 auto 12px", opacity: 0.8 }}>
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                </svg>
+                Could not load assets — {error}
+              </div>
             )}
             {!loading && !error && assets.length === 0 && (
-              <div className="ai-video-studio__modal-empty">No prior assets yet. Upload one to get started.</div>
+              <div className="ai-video-studio__modal-empty">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ margin: "0 auto 12px", opacity: 0.4 }}>
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                  <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                  <polyline points="21 15 16 10 5 21"></polyline>
+                </svg>
+                No prior assets yet. Upload one to get started.
+              </div>
             )}
             {!loading && !error && assets.map((a) => {
               const name = a.path.split("/").pop() || a.path;
@@ -437,7 +500,30 @@ function computeTimelineDuration(timeline: Timeline): number {
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
-export function AiVideoStudio() {
+function replaceAiStudioPath(path: string) {
+  if (typeof window === "undefined") return;
+  try { window.history.replaceState(null, "", path); } catch { /* ignore */ }
+}
+
+function pushAiStudioPath(path: string) {
+  if (typeof window === "undefined") return;
+  try { window.history.pushState(null, "", path); } catch { /* ignore */ }
+}
+
+export interface AiVideoStudioHandle {
+  openHistory: (replace?: boolean) => void;
+  openProject: (id: string, replace?: boolean) => void;
+  closeHistory: (replace?: boolean) => void;
+  clearProject: () => void;
+}
+
+export const AiVideoStudio = forwardRef(function AiVideoStudio({
+  initialProjectId = null,
+  initialHistoryOpen = false,
+}: {
+  initialProjectId?: string | null;
+  initialHistoryOpen?: boolean;
+}, ref: React.ForwardedRef<AiVideoStudioHandle>) {
   const [view, setView] = useState<ViewState>("landing");
   const [projectId, setProjectId] = useState<string | null>(null);
   const [project, setProject] = useState<EditorProject | null>(null);
@@ -456,13 +542,15 @@ export function AiVideoStudio() {
   const [artifactPreviewUrl, setArtifactPreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [activeCapabilities, setActiveCapabilities] = useState<Set<string>>(new Set());
-  const [showHistory, setShowHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState(initialHistoryOpen);
   const [historyProjects, setHistoryProjects] = useState<EditorProjectSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   // Choose Assets modal — Upload / Assets tabs. Selecting an existing
   // workspace asset attaches it to the prompt without uploading again.
   const [showAssetsModal, setShowAssetsModal] = useState(false);
   const [assetsModalTab, setAssetsModalTab] = useState<"upload" | "assets">("upload");
+  const [showEditor, setShowEditor] = useState(true);
+  const [historySearch, setHistorySearch] = useState("");
   // Per-artifact thumb feedback, stored in localStorage so it survives
   // refresh. Map<jobId, "up" | "down" | undefined>.
   const [artifactFeedback, setArtifactFeedback] = useState<Record<string, "up" | "down" | undefined>>(() => {
@@ -565,28 +653,48 @@ export function AiVideoStudio() {
     return () => { cancelled = true; };
   }, [showHistory]);
 
+  // Load a project from history
+  const startRenderPollingRef = useRef<(pid: string, job?: EditorJobSummary) => void>(() => {});
+  const closeHistoryPanel = useCallback((replace: any = false) => {
+    setShowHistory(false);
+    const path = projectId ? `/ai-studio/project/${encodeURIComponent(projectId)}` : "/ai-studio";
+    if (replace === true) {
+      replaceAiStudioPath(path);
+    } else {
+      pushAiStudioPath(path);
+    }
+  }, [projectId]);
+
+  const openHistoryPanel = useCallback((replace: any = false) => {
+    setShowHistory(true);
+    const path = "/ai-studio/history";
+    if (replace === true) {
+      replaceAiStudioPath(path);
+    } else {
+      pushAiStudioPath(path);
+    }
+  }, []);
+
   // Allow Esc to close the history modal even if focus isn't on the panel.
   useEffect(() => {
     if (!showHistory) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        setShowHistory(false);
+        closeHistoryPanel();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showHistory]);
+  }, [showHistory, closeHistoryPanel]);
 
-  // Load a project from history
-  const startRenderPollingRef = useRef<(pid: string, job?: EditorJobSummary) => void>(() => {});
   const resumePollingIfRunning = useCallback((loaded: EditorProject) => {
     const active = loaded.renders?.find((r) => r.status === "pending" || r.status === "running");
     if (!active) return;
     startRenderPollingRef.current(loaded.projectId, active);
   }, []);
 
-  const loadProject = useCallback(async (pid: string) => {
+  const loadProject = useCallback(async (pid: string, replace = false) => {
     try {
       // Cancel any in-flight stream / poll for the previous project before
       // replacing state. Stops a phantom progress bubble from another project.
@@ -600,6 +708,12 @@ export function AiVideoStudio() {
       // can detect the project switch and bail.
       renderPollSessionRef.current += 1;
       const { project: loaded } = await videoEditorApi.getProject(pid);
+      const path = `/ai-studio/project/${encodeURIComponent(pid)}`;
+      if (replace) {
+        replaceAiStudioPath(path);
+      } else {
+        pushAiStudioPath(path);
+      }
       setProjectId(loaded.projectId);
       setProject(loaded);
       setBubbles([]);
@@ -618,6 +732,45 @@ export function AiVideoStudio() {
       console.error("Failed to load project:", err);
     }
   }, [resumePollingIfRunning]);
+
+  const clearProject = useCallback(() => {
+    cancelActiveStream();
+    if (renderPollRef.current) {
+      clearInterval(renderPollRef.current);
+      renderPollRef.current = null;
+    }
+    renderPollSessionRef.current += 1;
+    setView("landing");
+    setProjectId(null);
+    setProject(null);
+    setBubbles([]);
+    setApplyingProposalId(null);
+    setArtifactView(null);
+    setArtifactPreviewUrl(null);
+    try { window.localStorage.removeItem(LAST_VIDEO_STUDIO_PROJECT_KEY); } catch { /* ignore */ }
+  }, []);
+
+  useImperativeHandle(ref, () => ({
+    openHistory: (replace = false) => { openHistoryPanel(replace); },
+    openProject: (id: string, replace = false) => { void loadProject(id, replace); },
+    closeHistory: (replace = false) => { closeHistoryPanel(replace); },
+    clearProject,
+  }), [openHistoryPanel, loadProject, closeHistoryPanel, clearProject]);
+
+  useEffect(() => {
+    if (initialHistoryOpen) {
+      setShowHistory(true);
+      replaceAiStudioPath("/ai-studio/history");
+    }
+  }, [initialHistoryOpen]);
+
+  useEffect(() => {
+    if (!initialProjectId) {
+      clearProject();
+      return;
+    }
+    void loadProject(initialProjectId, true);
+  }, [initialProjectId, loadProject, clearProject]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -638,6 +791,7 @@ export function AiVideoStudio() {
           setProjectId(loaded.projectId);
           setProject(loaded);
           setView("chat");
+          replaceAiStudioPath(`/ai-studio/project/${encodeURIComponent(loaded.projectId)}`);
           return videoEditorApi.getChat(loaded.projectId);
         })
         .then((chat) => {
@@ -677,6 +831,7 @@ export function AiVideoStudio() {
       await videoEditorApi.deleteProject(pid);
       setHistoryProjects((prev) => prev.filter((p) => p.projectId !== pid));
       if (projectId === pid) {
+        replaceAiStudioPath("/ai-studio");
         setView("landing");
         setProjectId(null);
         setProject(null);
@@ -905,8 +1060,8 @@ export function AiVideoStudio() {
       // resurface inside iteration-2's thinking bubble. Same goes for the
       // assistant bubble — each `text` run produces its own bubble unless
       // it's contiguous chunks of the same iteration.
-      let thinkingId: string | null = null;
-      let thinkingSteps: string[] = [];
+      let thinkingId: string | null = safeUuid();
+      let thinkingSteps: string[] = ["Thinking..."];
       let assistantId: string | null = null;
       let assistantText = "";
       // Track the start of this run so the completed-summary bubble can
@@ -915,6 +1070,9 @@ export function AiVideoStudio() {
       // can list them as bullet points in the summary card.
       const runStartedAt = Date.now();
       const completedLabels = new Set<string>();
+
+      // Optimistically push the thinking bubble immediately so the user gets instant visual feedback
+      setBubbles((prev) => [...prev, { kind: "thinking", id: thinkingId!, steps: [...thinkingSteps] }]);
 
       const dropThinkingBubble = () => {
         if (thinkingId) {
@@ -1530,6 +1688,30 @@ export function AiVideoStudio() {
     }
   }, [projectId]);
 
+  const handleTriggerPreview = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const { project: updatedProject, job } = await videoEditorApi.startPreview(projectId);
+      setProject(updatedProject);
+      startRenderPollingRef.current(projectId, job);
+    } catch (err) {
+      console.error("Preview failed:", err);
+      alert(`Preview failed: ${(err as Error).message}`);
+    }
+  }, [projectId]);
+
+  const handleTriggerFinalRender = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const { project: updatedProject, job } = await videoEditorApi.startRender(projectId);
+      setProject(updatedProject);
+      startRenderPollingRef.current(projectId, job);
+    } catch (err) {
+      console.error("Render failed:", err);
+      alert(`Render failed: ${(err as Error).message}`);
+    }
+  }, [projectId]);
+
   // ─── Key Handling ──────────────────────────────────────────────────────────
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1565,82 +1747,148 @@ export function AiVideoStudio() {
   // ─── Shared History Panel ──────────────────────────────────────────────────
   // Extracted because it was duplicated verbatim in landing+chat views, with
   // subtly inconsistent accessibility/active-state behaviour.
-  const renderHistoryPanel = () => (
-    <AnimatePresence>
-      {showHistory && (
-        <>
-          <motion.div
-            className="ai-video-studio__history-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setShowHistory(false)}
-            aria-hidden="true"
-          />
-          <motion.div
-            className="ai-video-studio__history-panel"
-            initial={{ x: -320 }}
-            animate={{ x: 0 }}
-            exit={{ x: -320 }}
-            transition={{ type: "spring", damping: 28, stiffness: 300 }}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Recent Projects"
-          >
-            <div className="ai-video-studio__history-header">
-              <span className="ai-video-studio__history-title">Recent Projects</span>
-              <button
-                type="button"
-                className="ai-video-studio__history-close"
-                aria-label="Close history"
-                onClick={() => setShowHistory(false)}
-              >×</button>
-            </div>
-            <div className="ai-video-studio__history-list">
-              {historyLoading ? (
-                <div className="ai-video-studio__history-empty">Loading...</div>
-              ) : historyProjects.length === 0 ? (
-                <div className="ai-video-studio__history-empty">No projects yet</div>
-              ) : (
-                historyProjects.map((p) => (
-                  <div
-                    key={p.projectId}
-                    className={`ai-video-studio__history-item ${p.projectId === projectId ? "ai-video-studio__history-item--active" : ""}`}
-                    onClick={() => loadProject(p.projectId)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        loadProject(p.projectId);
-                      }
-                    }}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <div className="ai-video-studio__history-item-icon" aria-hidden="true">🎬</div>
-                    <div className="ai-video-studio__history-item-info">
-                      <div className="ai-video-studio__history-item-title">{p.title || "Untitled"}</div>
-                      <div className="ai-video-studio__history-item-date">
-                        {new Date(p.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                      </div>
+  const renderHistoryPanel = () => {
+    const filteredProjects = historyProjects.filter((p) =>
+      (p.title || "Untitled").toLowerCase().includes(historySearch.toLowerCase())
+    );
+
+    return (
+      <AnimatePresence>
+        {showHistory && (
+          <>
+            <motion.div
+              className="ai-video-studio__history-backdrop"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={closeHistoryPanel}
+              aria-hidden="true"
+            />
+            <motion.div
+              className="ai-video-studio__history-panel"
+              initial={{ x: -320 }}
+              animate={{ x: 0 }}
+              exit={{ x: -320 }}
+              transition={{ type: "spring", damping: 28, stiffness: 300 }}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Recent Projects"
+            >
+              <div className="ai-video-studio__history-header">
+                <span className="ai-video-studio__history-title">Recent Projects</span>
+                <button
+                  type="button"
+                  className="ai-video-studio__history-close"
+                  aria-label="Close history"
+                  onClick={closeHistoryPanel}
+                >
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+
+              {/* Search input field */}
+              <div className="ai-video-studio__history-search-container">
+                <div className="ai-video-studio__history-search-wrapper">
+                  <svg className="ai-video-studio__history-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                  </svg>
+                  <input
+                    type="text"
+                    value={historySearch}
+                    onChange={(e) => setHistorySearch(e.target.value)}
+                    placeholder="Search projects..."
+                    className="ai-video-studio__history-search-input"
+                  />
+                </div>
+              </div>
+
+              <div className="ai-video-studio__history-list">
+                {historyLoading ? (
+                  <div className="ai-video-studio__history-loading">
+                    <svg className="ai-video-studio__history-spinner" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="2" x2="12" y2="6"></line>
+                      <line x1="12" y1="18" x2="12" y2="22"></line>
+                      <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line>
+                      <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line>
+                      <line x1="2" y1="12" x2="6" y2="12"></line>
+                      <line x1="18" y1="12" x2="22" y2="12"></line>
+                      <line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line>
+                      <line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line>
+                    </svg>
+                    <div className="ai-video-studio__history-loading-text">Loading projects...</div>
+                    <div className="ai-video-studio__history-skeletons">
+                      {[1, 2, 3].map((i) => (
+                        <div key={i} className="ai-video-studio__history-skeleton-item">
+                          <div className="ai-video-studio__history-skeleton-icon"></div>
+                          <div className="ai-video-studio__history-skeleton-text">
+                            <div className="ai-video-studio__history-skeleton-title"></div>
+                            <div className="ai-video-studio__history-skeleton-date"></div>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                    <button
-                      type="button"
-                      className="ai-video-studio__history-item-delete"
-                      title="Delete project"
-                      aria-label={`Delete project ${p.title || "Untitled"}`}
-                      onClick={(e) => handleDeleteProject(p.projectId, e)}
-                    >
-                      🗑
-                    </button>
                   </div>
-                ))
-              )}
-            </div>
-          </motion.div>
-        </>
-      )}
-    </AnimatePresence>
-  );
+                ) : filteredProjects.length === 0 ? (
+                  <div className="ai-video-studio__history-empty">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="opacity-40 mb-3">
+                      <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect>
+                      <line x1="7" y1="2" x2="7" y2="22"></line>
+                      <line x1="17" y1="2" x2="17" y2="22"></line>
+                      <line x1="2" y1="12" x2="22" y2="12"></line>
+                      <line x1="2" y1="7" x2="7" y2="7"></line>
+                      <line x1="2" y1="17" x2="7" y2="17"></line>
+                      <line x1="17" y1="17" x2="22" y2="17"></line>
+                      <line x1="17" y1="7" x2="22" y2="7"></line>
+                    </svg>
+                    {historySearch ? "No matching projects" : "No recent projects"}
+                  </div>
+                ) : (
+                  filteredProjects.map((p) => (
+                    <div
+                      key={p.projectId}
+                      className={`ai-video-studio__history-item ${p.projectId === projectId ? "ai-video-studio__history-item--active" : ""}`}
+                      onClick={() => loadProject(p.projectId)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          loadProject(p.projectId);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                    >
+                      <div className="ai-video-studio__history-item-icon-wrapper">
+                        <IconClapperboard />
+                      </div>
+                      <div className="ai-video-studio__history-item-info">
+                        <div className="ai-video-studio__history-item-title">{p.title || "Untitled"}</div>
+                        <div className="ai-video-studio__history-item-date">
+                          {new Date(p.updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="ai-video-studio__history-item-delete"
+                        title="Delete project"
+                        aria-label={`Delete project ${p.title || "Untitled"}`}
+                        onClick={(e) => handleDeleteProject(p.projectId, e)}
+                      >
+                        <IconTrash />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+    );
+  };
 
   // ─── Artifact View ─────────────────────────────────────────────────────────
   if (view === "artifact" && artifactView) {
@@ -1830,14 +2078,25 @@ export function AiVideoStudio() {
             >
               <IconShare />
             </button>
+            {project && (
+              <button
+                type="button"
+                className={`ai-video-studio__action-circle ${showEditor ? "ai-video-studio__action-circle--active" : ""}`}
+                title={showEditor ? "Hide Visual Editor" : "Show Visual Editor"}
+                aria-label={showEditor ? "Hide Visual Editor" : "Show Visual Editor"}
+                onClick={() => setShowEditor(!showEditor)}
+              >
+                <IconSplit />
+              </button>
+            )}
             <button
               type="button"
               className="ai-video-studio__action-circle"
               title="History"
               aria-label="Open project history"
-              onClick={() => setShowHistory(true)}
+              onClick={openHistoryPanel}
             >
-              <IconSplit />
+              <IconHistory />
             </button>
             <button
               className="ai-video-studio__action-circle"
@@ -1852,6 +2111,7 @@ export function AiVideoStudio() {
                 // Drop any in-flight render polling callback so it doesn't
                 // resurrect a progress bubble in the new (empty) chat.
                 renderPollSessionRef.current += 1;
+                pushAiStudioPath("/ai-studio");
                 setView("landing");
                 setProjectId(null);
                 setProject(null);
@@ -1886,158 +2146,187 @@ export function AiVideoStudio() {
           }
         />
 
-        {/* Messages */}
-        <div
-          className="ai-video-studio__messages"
-          ref={messagesScrollRef}
-          onScroll={handleMessagesScroll}
-        >
-          <AnimatePresence initial={false}>
-            {bubbles.map((bubble) => (
-              <motion.div
-                key={bubble.id}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.25 }}
-                className={`ai-video-studio__bubble ai-video-studio__bubble--${bubble.kind}`}
-              >
-                {renderBubble(bubble)}
-              </motion.div>
-            ))}
-          </AnimatePresence>
-
-          {/* Streaming indicator */}
-          {isStreaming && bubbles.every((b) => b.kind !== "thinking") && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="ai-video-studio__bubble ai-video-studio__bubble--thinking"
+        <div className={`ai-video-studio__workspace ${project && showEditor ? "ai-video-studio__workspace--has-project" : ""}`}>
+          {/* Left Column: Chat Assistant */}
+          <div className="ai-video-studio__chat-column">
+            {/* Messages */}
+            <div
+              className="ai-video-studio__messages"
+              ref={messagesScrollRef}
+              onScroll={handleMessagesScroll}
             >
-              <div className="ai-video-studio__thinking">
-                <span className="ai-video-studio__thinking-dots">
-                  <span>●</span><span>●</span><span>●</span>
-                </span>
-              </div>
-            </motion.div>
-          )}
-
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Quick actions — hide while a render is in progress so users
-            don't tap "Looks great!" while the previous one is still
-            cooking, and hide while the agent is mid-stream. */}
-        {!isStreaming
-          && bubbles.length > 0
-          && bubbles[bubbles.length - 1]?.kind !== "user"
-          && !bubbles.some((b) => b.kind === "render-progress" && b.status !== "done" && b.status !== "error" && b.status !== "cancelled")
-          && (
-          <div className="ai-video-studio__quick-actions">
-            {bubbles.some((b) => b.kind === "artifact") && (
-              <>
-                <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Looks amazing!")}>
-                  Looks amazing!
-                </button>
-                <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Can we edit something?")}>
-                  Can we edit something?
-                </button>
-                <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Make another version")}>
-                  Make another version
-                </button>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Input bar */}
-        <div className="ai-video-studio__input-bar">
-          {/* Attached assets */}
-          {attachedAssets.length > 0 && (
-            <div className="ai-video-studio__input-assets">
-              {attachedAssets.map((a) => (
-                <div key={a.id} className="ai-video-studio__asset-chip">
-                  <span className="ai-video-studio__asset-chip-icon">
-                    {a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "🖼"}
-                  </span>
-                  <span className="ai-video-studio__asset-chip-name">{a.name}</span>
-                  <button className="ai-video-studio__asset-chip-remove" onClick={() => removeAsset(a.id)}>
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className={`ai-video-studio__input-row ${isStreaming ? "ai-video-studio__input-row--streaming" : ""}`}>
-            <div className="ai-video-studio__attach-wrap">
-              <button
-                className={`ai-video-studio__attach-btn ${showAttachPopover ? "ai-video-studio__attach-btn--open" : ""}`}
-                onClick={() => setShowAttachPopover(!showAttachPopover)}
-                aria-expanded={showAttachPopover}
-                aria-label="Add asset or knowledge"
-              >
-                ＋
-              </button>
-              <AnimatePresence>
-                {showAttachPopover && (
+              <AnimatePresence initial={false}>
+                {bubbles.map((bubble) => (
                   <motion.div
-                    className="ai-video-studio__attach-popover"
-                    initial={{ opacity: 0, y: 8 }}
+                    key={bubble.id}
+                    initial={{ opacity: 0, y: 12 }}
                     animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 8 }}
+                    transition={{ duration: 0.25 }}
+                    className={`ai-video-studio__bubble ai-video-studio__bubble--${bubble.kind}`}
                   >
-                    <button
-                      onClick={() => {
-                        setAssetsModalTab("upload");
-                        setShowAssetsModal(true);
-                        setShowAttachPopover(false);
-                      }}
-                    >
-                      🖼 Assets
-                    </button>
-                    <button
-                      onClick={() => {
-                        setInputText("YouTube URL: ");
-                        inputRef.current?.focus();
-                        setShowAttachPopover(false);
-                      }}
-                    >
-                      📖 Knowledge
-                    </button>
+                    {renderBubble(bubble)}
                   </motion.div>
-                )}
+                ))}
               </AnimatePresence>
+
+              {/* Streaming indicator */}
+              {isStreaming && bubbles.every((b) => b.kind !== "thinking") && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="ai-video-studio__bubble ai-video-studio__bubble--thinking"
+                >
+                  <div className="ai-video-studio__thinking">
+                    <span className="ai-video-studio__thinking-dots">
+                      <span>●</span><span>●</span><span>●</span>
+                    </span>
+                  </div>
+                </motion.div>
+              )}
+
+              <div ref={messagesEndRef} />
             </div>
-            <textarea
-              ref={inputRef}
-              className="ai-video-studio__input-textarea"
-              placeholder={isStreaming ? "Type while the agent is working — pressing Enter will wait for it to finish…" : "Enter your next prompt..."}
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={handleKeyDown}
-              rows={1}
-            />
-            {isStreaming ? (
-              <button
-                type="button"
-                className="ai-video-studio__send-btn ai-video-studio__send-btn--stop"
-                onClick={cancelActiveStream}
-                title="Stop generating"
-                aria-label="Stop generating"
-              >
-                ■
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="ai-video-studio__send-btn"
-                onClick={handleSubmit}
-                disabled={!inputText.trim() && attachedAssets.length === 0}
-                aria-label="Send message"
-              >
-                ↑
-              </button>
+
+            {/* Quick actions — hide while a render is in progress so users
+                don't tap "Looks great!" while the previous one is still
+                cooking, and hide while the agent is mid-stream. */}
+            {!isStreaming
+              && bubbles.length > 0
+              && bubbles[bubbles.length - 1]?.kind !== "user"
+              && !bubbles.some((b) => b.kind === "render-progress" && b.status !== "done" && b.status !== "error" && b.status !== "cancelled")
+              && (
+              <div className="ai-video-studio__quick-actions">
+                {bubbles.some((b) => b.kind === "artifact") && (
+                  <>
+                    <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Looks amazing!")}>
+                      Looks amazing!
+                    </button>
+                    <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Can we edit something?")}>
+                      Can we edit something?
+                    </button>
+                    <button className="ai-video-studio__quick-btn" onClick={() => handleQuickAction("Make another version")}>
+                      Make another version
+                    </button>
+                  </>
+                )}
+              </div>
             )}
+
+            {/* Input bar */}
+            <div className="ai-video-studio__input-bar">
+              {/* Attached assets */}
+              {attachedAssets.length > 0 && (
+                <div className="ai-video-studio__input-assets">
+                  {attachedAssets.map((a) => (
+                    <div key={a.id} className="ai-video-studio__asset-chip">
+                      <span className="ai-video-studio__asset-chip-icon">
+                        {a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "🖼"}
+                      </span>
+                      <span className="ai-video-studio__asset-chip-name">{a.name}</span>
+                      <button className="ai-video-studio__asset-chip-remove" onClick={() => removeAsset(a.id)}>
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className={`ai-video-studio__input-row ${isStreaming ? "ai-video-studio__input-row--streaming" : ""}`}>
+                <div className="ai-video-studio__attach-wrap">
+                  <button
+                    className={`ai-video-studio__attach-btn ${showAttachPopover ? "ai-video-studio__attach-btn--open" : ""}`}
+                    onClick={() => setShowAttachPopover(!showAttachPopover)}
+                    aria-expanded={showAttachPopover}
+                    aria-label="Add asset or knowledge"
+                  >
+                    ＋
+                  </button>
+                  <AnimatePresence>
+                    {showAttachPopover && (
+                      <motion.div
+                        className="ai-video-studio__attach-popover"
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 8 }}
+                      >
+                        <button
+                          onClick={() => {
+                            setAssetsModalTab("upload");
+                            setShowAssetsModal(true);
+                            setShowAttachPopover(false);
+                          }}
+                        >
+                          🖼 Assets
+                        </button>
+                        <button
+                          onClick={() => {
+                            setInputText("YouTube URL: ");
+                            inputRef.current?.focus();
+                            setShowAttachPopover(false);
+                          }}
+                        >
+                          📖 Knowledge
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+                <textarea
+                  ref={inputRef}
+                  className="ai-video-studio__input-textarea"
+                  placeholder={isStreaming ? "Type while the agent is working — pressing Enter will wait for it to finish…" : "Enter your next prompt..."}
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  rows={1}
+                />
+                {isStreaming ? (
+                  <button
+                    type="button"
+                    className="ai-video-studio__send-btn ai-video-studio__send-btn--stop"
+                    onClick={cancelActiveStream}
+                    title="Stop generating"
+                    aria-label="Stop generating"
+                  >
+                    ■
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="ai-video-studio__send-btn"
+                    onClick={handleSubmit}
+                    disabled={!inputText.trim() && attachedAssets.length === 0}
+                    aria-label="Send message"
+                  >
+                    ↑
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
+
+          {/* Right Column: Visual Timeline Editor */}
+          {project && showEditor && (() => {
+            const pendingProposal = [...bubbles].reverse().find(
+              (b) => b.kind === "proposal" && (!b.status || b.status === "pending")
+            ) as any;
+            const activeTimeline = project.timeline?.tracks?.video?.length
+              ? project.timeline
+              : pendingProposal?.proposal?.timeline;
+            const projectForEditor = {
+              ...project,
+              timeline: activeTimeline || project.timeline,
+            };
+            return (
+              <div className="ai-video-studio__editor-column">
+                <VisualTimelineEditor
+                  project={projectForEditor}
+                  onUpdateProject={setProject}
+                  onTriggerPreview={handleTriggerPreview}
+                  onTriggerFinalRender={handleTriggerFinalRender}
+                />
+              </div>
+            );
+          })()}
         </div>
 
         <input
@@ -2113,7 +2402,7 @@ export function AiVideoStudio() {
           </p>
           <button
             className="ai-video-studio__history-toggle"
-            onClick={() => setShowHistory(true)}
+            onClick={openHistoryPanel}
           >
             📋 Recent Projects
           </button>
@@ -2224,7 +2513,7 @@ export function AiVideoStudio() {
                 className="ai-video-studio__slider-btn"
                 aria-label="Open advanced settings"
                 title="Advanced settings"
-                onClick={() => setShowHistory(true)}
+                onClick={openHistoryPanel}
               >
                 <SliderIcon />
               </button>
@@ -2607,7 +2896,7 @@ export function AiVideoStudio() {
         return null;
     }
   }
-}
+}); // end forwardRef(AiVideoStudio)
 
 // ─── Simple markdown renderer for agent messages ────────────────────────────
 function renderAgentMarkdown(text: string): React.ReactNode {

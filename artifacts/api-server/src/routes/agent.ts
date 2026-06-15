@@ -32,7 +32,7 @@ const ALLOWED_MODELS = new Set([
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
-const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "24", 10) || 24;
+const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "60", 10) || 60;
 const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
 const E2B_SANDBOX_TIMEOUT_MS = Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) || 3600000;
 const E2B_COMMAND_TIMEOUT_MS = Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
@@ -3392,6 +3392,14 @@ router.post("/agent/chat", async (req, res) => {
             continue;
           }
           const isEmptyOutputErr = /model output must contain|both be empty/i.test(e?.message ?? "");
+          const isResourceExhausted = /resource.?exhausted|quota.*exceeded|429/i.test(e?.message ?? "") || e?.status === 429 || e?.code === 429;
+          if (isResourceExhausted && attempt < 2) {
+            // Silently back off — user should never see a quota error
+            const backoffMs = (attempt + 1) * 8000; // 8s, 16s
+            console.warn(`[agent] Resource exhausted (429), retrying in ${backoffMs}ms (attempt ${attempt + 1}/3)`);
+            await new Promise(r => setTimeout(r, backoffMs));
+            continue;
+          }
           if (!isEmptyOutputErr || attempt === 2) break; // non-retryable or max attempts
         }
       }

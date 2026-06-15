@@ -27,7 +27,7 @@ import { GUIDE_TABS, type GuideMode } from "@/lib/guide-tabs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
 import { StudioHome } from "@/components/StudioHome";
-import { AiVideoStudio } from "@/components/AiVideoStudio";
+import { AiVideoStudio, type AiVideoStudioHandle } from "@/components/AiVideoStudio";
 import { FindVideo } from "@/components/FindVideo";
 import { Thumbnail } from "@/components/Thumbnail";
 import VideoTranslator from "./VideoTranslator";
@@ -110,29 +110,67 @@ const MODE_LABELS: Record<Mode, string> = {
 };
 
 const VALID_MODES = new Set<Mode>(Object.keys(MODE_LABELS) as Mode[]);
+const MODE_PATHS: Record<Mode, string> = {
+  home: "/",
+  download: "/download",
+  clips: "/best-clips",
+  subtitles: "/subtitles",
+  clipcutter: "/clip-cut",
+  bhagwat: "/bhagwat",
+  scenefinder: "/find-sabha",
+  timestamps: "/timestamps",
+  upload: "/share",
+  copilot: "/super-agent",
+  translator: "/translator",
+  findvideo: "/find-video",
+  thumbnail: "/thumbnail",
+  videostudio: "/ai-studio",
+  help: "/help",
+  activity: "/activity",
+  admin: "/admin",
+  settings: "/settings",
+};
+const PATH_MODES = new Map<string, Mode>(
+  Object.entries(MODE_PATHS).map(([mode, path]) => [path, mode as Mode]),
+);
+type RouteState = { mode: Mode; subKind?: string; subId?: string };
 
 function normalizeMode(value: string | null | undefined): Mode | null {
   const clean = String(value || "").trim().toLowerCase();
   return VALID_MODES.has(clean as Mode) ? clean as Mode : null;
 }
 
-function readModeFromUrl(): Mode | null {
-  if (typeof window === "undefined") return null;
+function readRouteFromUrl(): RouteState {
+  if (typeof window === "undefined") return { mode: "home" };
+  const cleanPath = window.location.pathname.replace(/\/+$/, "") || "/";
+  const modeFromPath = PATH_MODES.get(cleanPath);
+  if (modeFromPath) return { mode: modeFromPath };
+  const pathParts = cleanPath.split("/").filter(Boolean);
+  const firstPath = pathParts.length ? `/${pathParts[0]}` : "/";
+  const baseMode = PATH_MODES.get(firstPath);
+  if (baseMode) {
+    return {
+      mode: baseMode,
+      subKind: pathParts[1] ? decodeURIComponent(pathParts[1]) : undefined,
+      subId: pathParts[2] ? decodeURIComponent(pathParts[2]) : undefined,
+    };
+  }
   const params = new URLSearchParams(window.location.search);
-  return normalizeMode(params.get("tab") || params.get("mode"));
+  const legacyMode = normalizeMode(params.get("tab") || params.get("mode"));
+  return { mode: legacyMode ?? "home" };
 }
 
-function readStoredMode(): Mode | null {
-  if (typeof window === "undefined") return null;
-  try { return normalizeMode(window.localStorage.getItem(ACTIVE_MODE_KEY)); } catch { return null; }
+function readModeFromUrl(): Mode | null {
+  return readRouteFromUrl().mode;
 }
 
 function readInitialMode(): Mode {
-  return readModeFromUrl() ?? readStoredMode() ?? "home";
+  return readRouteFromUrl().mode;
 }
 
 function hasModeRestoreHint(): boolean {
-  return Boolean(readModeFromUrl() ?? readStoredMode());
+  if (typeof window === "undefined") return false;
+  return window.location.pathname !== "/" || window.location.search.includes("tab=") || window.location.search.includes("mode=");
 }
 
 function persistMode(mode: Mode) {
@@ -140,10 +178,38 @@ function persistMode(mode: Mode) {
   try { window.localStorage.setItem(ACTIVE_MODE_KEY, mode); } catch { /* ignore */ }
   try {
     const url = new URL(window.location.href);
-    if (url.searchParams.get("tab") === mode) return;
-    url.searchParams.set("tab", mode);
+    const nextPath = MODE_PATHS[mode] ?? "/";
+    const isExactPath = url.pathname === nextPath;
+    const isNestedPath = nextPath !== "/" && url.pathname.startsWith(`${nextPath}/`);
+    if ((isExactPath || isNestedPath) && !url.searchParams.has("tab") && !url.searchParams.has("mode")) return;
+    url.pathname = nextPath;
+    url.searchParams.delete("tab");
     url.searchParams.delete("mode");
     window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch { /* ignore */ }
+}
+
+function replaceCurrentPath(path: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (url.pathname === path && !url.searchParams.has("tab") && !url.searchParams.has("mode")) return;
+    url.pathname = path;
+    url.searchParams.delete("tab");
+    url.searchParams.delete("mode");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  } catch { /* ignore */ }
+}
+
+function pushCurrentPath(path: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    if (url.pathname === path && !url.searchParams.has("tab") && !url.searchParams.has("mode")) return;
+    url.pathname = path;
+    url.searchParams.delete("tab");
+    url.searchParams.delete("mode");
+    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
   } catch { /* ignore */ }
 }
 
@@ -273,9 +339,15 @@ export default function Home({
   const [url, setUrl] = useState("");
   const [submittedUrl, setSubmittedUrl] = useState("");
   const bestClipsRef = useRef<BestClipsHandle>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const studioRef = useRef<AiVideoStudioHandle>(null);
+  const initialRouteRef = useRef<RouteState>(readRouteFromUrl());
+  const [jobId, setJobId] = useState<string | null>(
+    initialRouteRef.current.mode === "download" && initialRouteRef.current.subKind === "job"
+      ? initialRouteRef.current.subId ?? null
+      : null,
+  );
   const [activeFormatId, setActiveFormatId] = useState<string | null>(null);
-  const [mode, setMode] = useState<Mode>(() => readInitialMode());
+  const [mode, setMode] = useState<Mode>(() => initialRouteRef.current.mode);
   const hadInitialModeRestoreHintRef = useRef(hasModeRestoreHint());
   const [pendingCopilotPrompt, setPendingCopilotPrompt] = useState<string | null>(null);
   const [copilotResetKey, setCopilotResetKey] = useState(0);
@@ -298,8 +370,24 @@ export default function Home({
 
   useEffect(() => {
     const onPopState = () => {
-      const next = readModeFromUrl() ?? readStoredMode() ?? "home";
-      setMode(next);
+      const next = readRouteFromUrl();
+      initialRouteRef.current = next;
+      setMode(next.mode);
+      if (next.mode === "download" && next.subKind === "job") {
+        setJobId(next.subId ?? null);
+      }
+      if (next.mode === "videostudio") {
+        if (next.subKind === "history") {
+          studioRef.current?.openHistory(true);
+        } else {
+          studioRef.current?.closeHistory(true);
+          if (next.subKind === "project" && next.subId) {
+            studioRef.current?.openProject(next.subId, true);
+          } else {
+            studioRef.current?.clearProject();
+          }
+        }
+      }
     };
     window.addEventListener("popstate", onPopState);
     window.addEventListener("hashchange", onPopState);
@@ -308,6 +396,15 @@ export default function Home({
       window.removeEventListener("hashchange", onPopState);
     };
   }, []);
+
+  useEffect(() => {
+    if (mode !== "download") return;
+    if (jobId) {
+      replaceCurrentPath(`/download/job/${encodeURIComponent(jobId)}`);
+    } else {
+      replaceCurrentPath("/download");
+    }
+  }, [mode, jobId]);
 
   // Restore an active download job from localStorage on page load
   useEffect(() => {
@@ -701,6 +798,8 @@ export default function Home({
   }, []);
 
   const switchMode = (m: Mode) => {
+    initialRouteRef.current = { mode: m };
+    pushCurrentPath(MODE_PATHS[m] ?? "/");
     setMode(m);
     const el = document.querySelector('.studio-content');
     if (el) el.scrollTop = 0;
@@ -739,7 +838,16 @@ export default function Home({
             {/* Translator tab - full screen */}
             {mode === "translator" && (
               canUseTranslator
-                ? <VideoTranslator lipSyncAvailable={Boolean(authFeatures?.translatorLipSyncAllowed)} />
+                ? (
+                  <VideoTranslator
+                    lipSyncAvailable={Boolean(authFeatures?.translatorLipSyncAllowed)}
+                    initialJobId={
+                      initialRouteRef.current.mode === "translator" && initialRouteRef.current.subKind === "job"
+                        ? initialRouteRef.current.subId ?? null
+                        : null
+                    }
+                  />
+                )
                 : <FeatureUnavailable title="Translator is restricted" detail="Your account is not allowed to use video translation right now." />
             )}
 
@@ -1061,7 +1169,13 @@ export default function Home({
               {/* Timestamps */}
               {showTimestamps && (
                 <motion.div key="timestamps-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full">
-                  <Timestamps />
+                  <Timestamps
+                    initialJobId={
+                      initialRouteRef.current.mode === "timestamps" && initialRouteRef.current.subKind === "job"
+                        ? initialRouteRef.current.subId ?? null
+                        : null
+                    }
+                  />
                 </motion.div>
               )}
 
@@ -1127,7 +1241,17 @@ export default function Home({
 
               {showVideoStudio && (
                 <motion.div key="video-studio-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
-                  <AiVideoStudio />
+                  <AiVideoStudio
+                    ref={studioRef}
+                    initialHistoryOpen={
+                      initialRouteRef.current.mode === "videostudio" && initialRouteRef.current.subKind === "history"
+                    }
+                    initialProjectId={
+                      initialRouteRef.current.mode === "videostudio" && initialRouteRef.current.subKind === "project"
+                        ? initialRouteRef.current.subId ?? null
+                        : null
+                    }
+                  />
                 </motion.div>
               )}
 

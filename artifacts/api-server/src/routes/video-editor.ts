@@ -1675,6 +1675,22 @@ router.patch("/projects/:projectId/recipe", async (req: Request, res: Response) 
   }
 });
 
+router.patch("/projects/:projectId/timeline", async (req: Request, res: Response) => {
+  try {
+    const ws = getWorkspace(req);
+    const projectId = routeParam(req.params.projectId, "projectId");
+    const project = await readProjectFromWorkspace(ws, projectId);
+    
+    // Accept either { timeline: {...} } or the timeline directly.
+    const timeline = req.body && typeof req.body.timeline === "object" ? req.body.timeline : req.body;
+    
+    const next = await writeProjectToWorkspace(ws, { ...project, timeline } as any);
+    return res.json({ project: next });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
 router.get("/projects", async (req: Request, res: Response) => {
   try {
     const ws = getWorkspace(req);

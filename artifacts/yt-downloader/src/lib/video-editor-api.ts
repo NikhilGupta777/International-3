@@ -207,6 +207,12 @@ export const videoEditorApi = {
       body: JSON.stringify({ recipe }),
     }),
 
+  patchTimeline: (projectId: string, timeline: Timeline) =>
+    req<{ project: EditorProject }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/timeline`, {
+      method: "PATCH",
+      body: JSON.stringify({ timeline }),
+    }),
+
   getChat: (projectId: string) =>
     req<{ messages: EditorChatMessage[] }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/chat`),
 

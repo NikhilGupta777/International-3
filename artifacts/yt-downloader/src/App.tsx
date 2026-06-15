@@ -90,6 +90,9 @@ function Router({
       <Route path="/">
         <Home authUser={authUser} authFeatures={authFeatures} onLogout={onLogout} />
       </Route>
+      <Route path="/*">
+        <Home authUser={authUser} authFeatures={authFeatures} onLogout={onLogout} />
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );
