@@ -150,10 +150,11 @@ GEMINI_TRANSCRIBE_MAX_SECONDS = float(os.environ.get("GEMINI_TRANSCRIBE_MAX_SECO
 GEMINI_TRANSCRIBE_MODEL = (
     os.environ.get("GEMINI_TRANSCRIBE_MODEL", "").strip()
     or os.environ.get("GEMINI_MODEL", "").strip()
-    or "gemini-3.5-flash"
+    or "gemini-3.1-pro-preview"
 )
-# Thinking level for transcription. HIGH = best segmentation/timing accuracy.
-GEMINI_TRANSCRIBE_THINKING = (os.environ.get("GEMINI_TRANSCRIBE_THINKING", "HIGH").strip().upper() or "HIGH")
+# Thinking level for transcription. MEDIUM keeps Pro quality while avoiding the
+# latency/cost of maximum reasoning on every ASR call.
+GEMINI_TRANSCRIBE_THINKING = (os.environ.get("GEMINI_TRANSCRIBE_THINKING", "MEDIUM").strip().upper() or "MEDIUM")
 # Audio longer than this is split into windows and transcribed by Gemini chunk-by-chunk
 # (instead of falling back to AssemblyAI), then stitched. Keep each window comfortably
 # under the single-call token budget. Default 600s (10 min).
@@ -161,6 +162,10 @@ GEMINI_TRANSCRIBE_CHUNK_SECONDS = max(60.0, float(os.environ.get("GEMINI_TRANSCR
 # If a Gemini window covers less than this fraction of its known duration, treat it as a
 # truncated/early-stopped response and retry once in strict repair mode.
 GEMINI_TRANSCRIBE_MIN_COVERAGE = min(0.99, max(0.5, float(os.environ.get("GEMINI_TRANSCRIBE_MIN_COVERAGE", "0.9"))))
+GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS = max(
+    6.0,
+    float(os.environ.get("GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS", "15")),
+)
 ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK = (
     os.environ.get("ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK", "false").lower()
     in ("1", "true", "yes", "on")
@@ -616,11 +621,15 @@ Transcribe the provided audio exactly in the original spoken language. Do not tr
 
 The transcript will be translated and dubbed after this step, so timing and segmentation are critical.
 
+Source language hint may be wrong. First detect the actual spoken language from the audio. Use the detected language and script for transcription even when the hint says something else.
+
+For Indic and other non-Latin languages, native script is required. Do not romanize Hindi, Odia/Oriya, Bengali, Punjabi, Gujarati, Marathi, Sanskrit, Nepali, Tamil, Telugu, Kannada, Malayalam, Urdu, Arabic, Chinese, Japanese, Korean, Russian, or any other native-script language unless the speaker literally says a Latin-script word or name.
+
 Top priority: create professional, broadcast-quality, audio-aware segments.
 
 You must listen to the real audio rhythm, not just count words. Segment boundaries must follow when the speaker actually starts speaking, continues speaking, pauses, changes speaker, or finishes a connected thought.
 
-If the speaker continues talking at a consistent pace with no meaningful pause, keep the connected thought together even if the segment becomes longer and contains more text. A longer segment is correct when the audio has continuous speech and no real break.
+If the speaker continues talking at a consistent pace with no meaningful pause, keep the connected thought together only up to a practical dubbing unit. A longer segment is correct when the audio has continuous speech and no real break, but avoid paragraph-sized segments.
 
 If the speaker says a short phrase and then pauses for about 1-2 seconds, or clearly stops before the next phrase, make that phrase its own short segment. A short segment is correct when the speaker actually spoke briefly and then took a break.
 
@@ -664,13 +673,13 @@ Rules:
 2. All timestamps must be in seconds from the start of the audio.
 3. Segment start must be when the speaker begins that utterance. Segment end must be when the speaker finishes that utterance.
 4. Split segments at natural speech breaks: meaningful pauses, phrase endings, sentence endings, speaker changes, or clear changes in thought.
-5. Do not split just because the text is long. If the speaker keeps talking without a meaningful pause, keep the connected speech together.
+5. Do not split just because the text is long. If the speaker keeps talking without a meaningful pause, keep the connected speech together, but still prefer natural phrase-sized dubbing units over paragraph-sized blocks.
 6. Do not merge just because two segments are near each other. If the speaker clearly pauses around 1-2 seconds, stops, or begins a new thought, create a boundary.
-7. Prefer 1-6 words for naturally short utterances. Allow 7-15 words when the speaker continues without a meaningful pause. Allow more than 15 words only when the audio is genuinely continuous and splitting would break a connected thought.
+7. Prefer 1-6 words for naturally short utterances. Allow 7-15 words when the speaker continues without a meaningful pause. Allow more than 15 words only when the audio is genuinely continuous and splitting would break a connected thought. Even then, avoid segments longer than about 12-15 seconds; split at the nearest phrase or sentence boundary.
 8. Avoid long paragraph segments when there are real pauses available. Use the speaker's pauses as the main segmentation signal.
 9. Do not split in the middle of a word, name, number, mantra, quote, or tightly connected phrase.
 10. If the speaker pauses, end the current segment at the last spoken word before the pause and start the next segment when speech resumes.
-11. Preserve the exact original-language text. Do not translate to the target language. Do not romanize unless the speaker actually uses romanized words.
+11. Preserve the exact original-language text in native script. Do not translate to the target language. Do not romanize unless the speaker actually uses romanized words.
 12. Preserve code-switching exactly. If the speaker mixes Hindi and English, keep each word in the language/script actually spoken.
 13. Preserve repeated words, stutters, fillers, and incomplete phrases when they are audible.
 14. Assign stable speaker labels as SPEAKER_A, SPEAKER_B, SPEAKER_C, etc. Use the same label for the same voice throughout.
@@ -822,6 +831,70 @@ def _normalize_gemini_words(raw_words, text: str, start: float, end: float) -> l
     return words or _synthesize_word_timings(text, start, end)
 
 
+def _word_ends_phrase(word: str) -> bool:
+    return bool(re.search(r"[।॥.!?;:,\u0964\u0965]$", str(word or "").strip()))
+
+
+def _split_overlong_gemini_segment(seg: dict) -> list[dict]:
+    start = float(seg["start"])
+    end = float(seg["end"])
+    max_seconds = float(GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS)
+    if end - start <= max_seconds + 0.05:
+        return [seg]
+
+    words = _normalize_gemini_words(seg.get("words"), str(seg.get("text", "")), start, end)
+    if len(words) <= 1:
+        return [seg]
+
+    pieces: list[dict] = []
+    cursor = 0
+    min_piece_seconds = min(4.0, max_seconds * 0.45)
+    while cursor < len(words):
+        piece_start = max(start, float(words[cursor]["start"]))
+        hard_end = min(end, piece_start + max_seconds)
+        last_allowed = cursor
+        phrase_candidate = None
+        idx = cursor
+        while idx < len(words) and float(words[idx]["end"]) <= hard_end + 0.001:
+            last_allowed = idx
+            if (
+                float(words[idx]["end"]) - piece_start >= min_piece_seconds
+                and _word_ends_phrase(str(words[idx].get("word", "")))
+            ):
+                phrase_candidate = idx
+            idx += 1
+
+        if last_allowed <= cursor and cursor + 1 < len(words):
+            last_allowed = cursor + 1
+        split_at = phrase_candidate if phrase_candidate is not None else last_allowed
+        if split_at < cursor:
+            split_at = cursor
+
+        chunk_words = words[cursor:split_at + 1]
+        piece_end = min(end, max(float(chunk_words[-1]["end"]), piece_start + 0.001))
+        pieces.append({
+            "id": 0,
+            "start": piece_start,
+            "end": piece_end,
+            "text": " ".join(str(w["word"]).strip() for w in chunk_words if str(w.get("word", "")).strip()).strip(),
+            "speaker": seg.get("speaker") or DEFAULT_SPEAKER_LABEL,
+            "words": chunk_words,
+        })
+        cursor = split_at + 1
+
+    return [p for p in pieces if p.get("text") and float(p["end"]) > float(p["start"])] or [seg]
+
+
+def split_overlong_gemini_segments(segments: list[dict]) -> list[dict]:
+    split: list[dict] = []
+    for seg in segments:
+        split.extend(_split_overlong_gemini_segment(seg))
+    for idx, seg in enumerate(split, start=1):
+        seg["id"] = idx
+        seg["words"] = _normalize_gemini_words(seg.get("words"), str(seg.get("text", "")), float(seg["start"]), float(seg["end"]))
+    return split
+
+
 def normalize_gemini_transcript_payload(payload, duration_seconds: Optional[float] = None) -> list[dict]:
     raw_segments = payload.get("segments") if isinstance(payload, dict) else payload
     if not isinstance(raw_segments, list):
@@ -885,7 +958,7 @@ def normalize_gemini_transcript_payload(payload, duration_seconds: Optional[floa
     for idx, seg in enumerate(repaired, start=1):
         seg["id"] = idx
         seg["words"] = _normalize_gemini_words(seg.get("words"), str(seg.get("text", "")), float(seg["start"]), float(seg["end"]))
-    return repaired
+    return split_overlong_gemini_segments(repaired)
 
 
 def _audio_mime_type(audio_path: Path) -> str:
@@ -1054,9 +1127,15 @@ def transcribe(audio_path: Path, audio_duration_seconds: Optional[float] = None)
     try:
         TRANSCRIPTION_PROVIDER = "gemini"
         TRANSCRIPTION_MODEL = GEMINI_TRANSCRIBE_MODEL
-        if duration is not None and duration > GEMINI_TRANSCRIBE_CHUNK_SECONDS:
-            TRANSCRIPTION_PROVIDER = "gemini-chunked"
-            return transcribe_gemini_chunked(audio_path, duration)
+        if duration is not None and duration > GEMINI_TRANSCRIBE_MAX_SECONDS:
+            TRANSCRIPTION_PROVIDER = "assemblyai"
+            TRANSCRIPTION_MODEL = "assemblyai"
+            log.info(
+                "[ASR] Audio %.1fs is over Gemini cutoff %.1fs; using AssemblyAI.",
+                duration,
+                GEMINI_TRANSCRIBE_MAX_SECONDS,
+            )
+            return transcribe_assemblyai(audio_path)
         return transcribe_gemini(audio_path, duration)
     except Exception:
         if not ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK:
@@ -6140,6 +6219,7 @@ def generate_transcript_json(segments: list[dict], out_path: Path):
         "transcriptionThinking": GEMINI_TRANSCRIBE_THINKING,
         "transcriptionChunkSeconds": GEMINI_TRANSCRIBE_CHUNK_SECONDS,
         "transcriptionCutoffSeconds": GEMINI_TRANSCRIBE_MAX_SECONDS,
+        "transcriptionMaxSegmentSeconds": GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS,
         "sourceDurationSeconds": TRANSCRIPTION_SOURCE_DURATION_SECONDS,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "segments": [
@@ -6683,6 +6763,11 @@ def process_single_job():
             "transcriptKey": json_key,
             "segmentCount": len(segments),
             "targetLang": TARGET_LANG,
+            "transcriptionProvider": TRANSCRIPTION_PROVIDER or "unknown",
+            "transcriptionModel": TRANSCRIPTION_MODEL or "unknown",
+            "transcriptionThinking": GEMINI_TRANSCRIBE_THINKING,
+            "transcriptionCutoffSeconds": GEMINI_TRANSCRIBE_MAX_SECONDS,
+            "transcriptionMaxSegmentSeconds": GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS,
             "voiceClone": VOICE_CLONE,
             "voiceCloneApplied": voice_was_cloned,
             "cloneReferenceSource": clone_reference_source,

@@ -26,12 +26,21 @@ const API = `${BASE}/api/translator`;
 
 // ── Translation Assistant message shape ──────────────────────────────────────
 type AiSource = { title: string; url: string };
+type AiToolEvent = {
+  name: string;
+  status: "start" | "running" | "done" | "error";
+  command?: string;
+  exitCode?: number;
+  error?: string;
+  args?: Record<string, unknown>;
+};
 type AiMsg = {
   role: "user" | "model";
   content: string;
   thoughts?: string;
   searches?: string[];
   sources?: AiSource[];
+  tools?: AiToolEvent[];
   status?: "thinking" | "searching" | "answering" | "done" | "error";
 };
 
@@ -124,6 +133,54 @@ function AssistantStatusPill({ status }: { status?: AiMsg["status"] }) {
   return null;
 }
 
+function toolLabel(name: string): string {
+  if (name === "run_sandbox_command") return "Sandbox command";
+  if (name === "sandbox_status") return "Sandbox status";
+  if (name === "reset_sandbox") return "Reset sandbox";
+  return name.replace(/_/g, " ");
+}
+
+function toolDetail(t: AiToolEvent): string {
+  if (t.command) return t.command;
+  if (t.error) return t.error;
+  const args = t.args ? JSON.stringify(t.args) : "";
+  return args.length > 180 ? `${args.slice(0, 177)}...` : args;
+}
+
+function AssistantToolTimeline({ tools }: { tools?: AiToolEvent[] }) {
+  if (!tools?.length) return null;
+  return (
+    <div className="mb-2 space-y-1.5">
+      {tools.map((t, idx) => {
+        const running = t.status === "start" || t.status === "running";
+        const failed = t.status === "error";
+        return (
+          <div
+            key={`${t.name}-${idx}`}
+            className={cn(
+              "rounded-lg border px-2.5 py-2 text-[12px]",
+              failed ? "border-red-200 bg-red-50 text-red-800" : "border-emerald-200 bg-emerald-50 text-emerald-800"
+            )}
+          >
+            <div className="flex items-center gap-1.5 font-medium">
+              {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <Terminal className="w-3 h-3" />}
+              <span>{toolLabel(t.name)}</span>
+              <span className="ml-auto text-[10px] uppercase tracking-wide opacity-70">
+                {failed ? "error" : running ? "running" : t.exitCode != null ? `exit ${t.exitCode}` : "done"}
+              </span>
+            </div>
+            {toolDetail(t) ? (
+              <div className="mt-1 font-mono text-[11px] leading-snug break-words text-slate-700">
+                {toolDetail(t)}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── A single assistant message: live thinking trace, search chips, the Markdown
 //    answer, and grounding sources. Light (white) theme. ───────────────────────
 function AssistantBubble({ m }: { m: AiMsg }) {
@@ -132,6 +189,8 @@ function AssistantBubble({ m }: { m: AiMsg }) {
   const hasThoughts = !!(m.thoughts && m.thoughts.trim());
   return (
     <div className="max-w-[88%] rounded-2xl rounded-tl-sm px-3 py-2.5 text-sm break-words bg-white border border-slate-200 text-slate-800 leading-relaxed shadow-sm">
+      <AssistantToolTimeline tools={m.tools} />
+
       {!!m.searches?.length && (
         <div className="flex flex-wrap gap-1 mb-1.5">
           {m.searches.map((s, idx) => (
@@ -517,6 +576,11 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   const [aiInput, setAiInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
+  const aiSessionIdRef = useRef<string>(
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `translator-ai-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
   const [stuckWarning, setStuckWarning] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ytPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -544,14 +608,14 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
   }, []);
 
   // Ask the in-tab AI assistant via the streaming endpoint. The backend streams
-  // the model's live thinking, any web searches, and the answer as Markdown,
-  // backed by a read-only snapshot of ALL the user's translation jobs + logs.
+  // the model's live thinking and the answer as Markdown, backed by a focused
+  // read-only snapshot of live/recent translation jobs, logs and pipeline context.
   const askAi = useCallback(async (text: string) => {
     const q = text.trim();
     if (!q || aiBusy) return;
     const history: AiMsg[] = [...aiMessages, { role: "user", content: q }];
     // Append the user turn + an empty assistant turn we'll fill as events arrive.
-    setAiMessages([...history, { role: "model", content: "", status: "thinking", thoughts: "", searches: [], sources: [] }]);
+    setAiMessages([...history, { role: "model", content: "", status: "thinking", thoughts: "", searches: [], sources: [], tools: [] }]);
     setAiInput("");
     setAiBusy(true);
 
@@ -573,6 +637,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
         body: JSON.stringify({
           messages: history,
           focusJobId: jobId ?? undefined,
+          sessionId: aiSessionIdRef.current,
           clientLogs: debugLog.slice(-120),
         }),
       });
@@ -588,6 +653,30 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
           patchLast((m) => ({ ...m, content: (m.content ?? "") + e.content, status: "answering" }));
         } else if (e.type === "sources" && Array.isArray(e.items)) {
           patchLast((m) => ({ ...m, sources: e.items }));
+        } else if (e.type === "tool" && e.name) {
+          patchLast((m) => {
+            const nextTool: AiToolEvent = {
+              name: String(e.name),
+              status: e.status === "error" ? "error" : e.status === "done" ? "done" : e.status === "running" ? "running" : "start",
+              command: typeof e.command === "string" ? e.command : undefined,
+              exitCode: typeof e.exitCode === "number" ? e.exitCode : undefined,
+              error: typeof e.error === "string" ? e.error : undefined,
+              args: e.args && typeof e.args === "object" ? e.args : undefined,
+            };
+            const tools = [...(m.tools ?? [])];
+            const lastIdx = tools.length - 1;
+            const canMerge =
+              lastIdx >= 0 &&
+              tools[lastIdx].name === nextTool.name &&
+              tools[lastIdx].status !== "done" &&
+              tools[lastIdx].status !== "error";
+            if (canMerge) {
+              tools[lastIdx] = { ...tools[lastIdx], ...nextTool };
+            } else {
+              tools.push(nextTool);
+            }
+            return { ...m, tools, status: m.content ? m.status : "thinking" };
+          });
         } else if (e.type === "done") {
           patchLast((m) => ({ ...m, status: "done" }));
         } else if (e.type === "error") {
@@ -2159,7 +2248,7 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-bold text-slate-900 leading-none">Translation Assistant</p>
-              <p className="text-[11px] text-slate-500 mt-1">Senior debugger · reads all jobs &amp; logs (read-only)</p>
+              <p className="text-[11px] text-slate-500 mt-1">Senior debugger · live/recent jobs, logs &amp; code context</p>
             </div>
             <button
               onClick={() => setAiOpen(false)}
@@ -2176,9 +2265,9 @@ export default function VideoTranslator({ lipSyncAvailable = false }: { lipSyncA
                 <div className="w-10 h-10 mx-auto rounded-xl bg-gradient-to-br from-primary to-orange-400 flex items-center justify-center shadow-sm shadow-primary/30">
                   <Sparkles className="w-5 h-5 text-white" />
                 </div>
-                <p className="text-slate-600">I'm your translation debugger. I can read every job's status, steps, warnings and errors — ask me anything.</p>
+                <p className="text-slate-600">I'm your translation debugger. I focus on the open job, live jobs, recent completions, logs and pipeline context.</p>
                 <div className="flex flex-wrap gap-1.5 justify-center pt-1">
-                  {["What's the status?", "Why did my last job fail?", "Did anything fail today?", "How do I fix the lip-sync error?"].map((s) => (
+                  {["What's the status?", "What's happening now?", "Why did my last job fail?", "Audit recent failures"].map((s) => (
                     <button
                       key={s}
                       onClick={() => void askAi(s)}

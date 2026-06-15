@@ -49,6 +49,21 @@ WORKDIR ${LAMBDA_TASK_ROOT}
 
 COPY artifacts/api-server/dist ./artifacts/api-server/dist
 COPY artifacts/api-server/scripts ./artifacts/api-server/scripts
+COPY artifacts/api-server/src/routes/translator.ts ./code-context/artifacts/api-server/src/routes/translator.ts
+COPY artifacts/api-server/src/lib/gemini-client.ts ./code-context/artifacts/api-server/src/lib/gemini-client.ts
+COPY artifacts/api-server/package.json ./code-context/artifacts/api-server/package.json
+COPY artifacts/yt-downloader/src/pages/VideoTranslator.tsx ./code-context/artifacts/yt-downloader/src/pages/VideoTranslator.tsx
+COPY artifacts/yt-downloader/src/lib/translator-history.ts ./code-context/artifacts/yt-downloader/src/lib/translator-history.ts
+COPY artifacts/yt-downloader/src/lib/translator-client-id.ts ./code-context/artifacts/yt-downloader/src/lib/translator-client-id.ts
+COPY artifacts/yt-downloader/package.json ./code-context/artifacts/yt-downloader/package.json
+COPY artifacts/video-translator-service ./code-context/artifacts/video-translator-service
+COPY artifacts/api-server/src ./code-context-main/artifacts/api-server/src
+COPY artifacts/api-server/package.json ./code-context-main/artifacts/api-server/package.json
+COPY artifacts/yt-downloader/src ./code-context-main/artifacts/yt-downloader/src
+COPY artifacts/yt-downloader/package.json ./code-context-main/artifacts/yt-downloader/package.json
+COPY artifacts/queue-worker/src ./code-context-main/artifacts/queue-worker/src
+COPY artifacts/queue-worker/package.json ./code-context-main/artifacts/queue-worker/package.json
+COPY lib ./code-context-main/lib
 
 ENV NODE_ENV=production
 ENV PORT=8080

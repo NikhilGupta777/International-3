@@ -9,6 +9,8 @@
  */
 
 import { Router, Request, Response as ExpressResponse } from "express";
+import { Type } from "@google/genai";
+import { Sandbox } from "e2b";
 import {
   S3Client,
   PutObjectCommand,
@@ -33,7 +35,7 @@ import {
   TerminateJobCommand,
 } from "@aws-sdk/client-batch";
 import { randomUUID, createHash } from "crypto";
-import { createReadStream, createWriteStream } from "fs";
+import { createReadStream, createWriteStream, existsSync } from "fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { basename, dirname, extname, join } from "path";
@@ -91,16 +93,43 @@ const GEMINI_TRANSCRIBE_MAX_SECONDS = Math.max(
   60,
   Number(process.env.GEMINI_TRANSCRIBE_MAX_SECONDS ?? "1020") || 1020,
 );
-const GEMINI_TRANSCRIBE_MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || "gemini-3.5-flash";
-// Thinking level for transcription. HIGH = best segmentation/timing accuracy.
-const GEMINI_TRANSCRIBE_THINKING = (process.env.GEMINI_TRANSCRIBE_THINKING || "HIGH").toUpperCase();
+const GEMINI_TRANSCRIBE_MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || "gemini-3.1-pro-preview";
+// Thinking level for transcription. MEDIUM keeps Pro quality while avoiding max-latency ASR calls.
+const GEMINI_TRANSCRIBE_THINKING = (process.env.GEMINI_TRANSCRIBE_THINKING || "MEDIUM").toUpperCase();
+const GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS = Math.max(
+  6,
+  Number(process.env.GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS ?? "15") || 15,
+);
 const ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK = /^(1|true|yes|on)$/i.test(
   process.env.ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK ?? "false",
 );
-// Model for the in-tab AI status assistant. "Gemini 3.5 medium" = gemini-3.5-flash
-// with MEDIUM thinking (the codebase has no separate "medium" model id — flash +
-// thinkingLevel MEDIUM is the canonical default the agent route uses).
-const TRANSLATOR_ASSISTANT_MODEL = process.env.TRANSLATOR_ASSISTANT_MODEL || "gemini-3.5-flash";
+// Model for the in-tab Translation Assistant debugger.
+const TRANSLATOR_ASSISTANT_MODEL = process.env.TRANSLATOR_ASSISTANT_MODEL || "gemini-3.1-pro-preview";
+const TRANSLATOR_ASSISTANT_SEARCH_ENABLED = /^(1|true|yes|on)$/i.test(
+  process.env.TRANSLATOR_ASSISTANT_SEARCH ?? "false",
+);
+const TRANSLATOR_ASSISTANT_CODE_CONTEXT_ENABLED = !/^(0|false|no|off)$/i.test(
+  process.env.TRANSLATOR_ASSISTANT_CODE_CONTEXT ?? "true",
+);
+const TRANSLATOR_ASSISTANT_CODE_CONTEXT_MAX_CHARS = Math.max(
+  100000,
+  Math.min(1500000, Number(process.env.TRANSLATOR_ASSISTANT_CODE_CONTEXT_MAX_CHARS ?? "900000") || 900000),
+);
+const TRANSLATOR_ASSISTANT_CODE_CONTEXT_MAX_FILE_CHARS = Math.max(
+  50000,
+  Math.min(500000, Number(process.env.TRANSLATOR_ASSISTANT_CODE_CONTEXT_MAX_FILE_CHARS ?? "400000") || 400000),
+);
+const TRANSLATOR_ASSISTANT_SANDBOX_ENABLED = !/^(0|false|no|off)$/i.test(
+  process.env.TRANSLATOR_ASSISTANT_SANDBOX ?? "true",
+);
+const TRANSLATOR_ASSISTANT_MAX_TOOL_ITERATIONS = Math.max(
+  1,
+  Math.min(10, Number(process.env.TRANSLATOR_ASSISTANT_MAX_TOOL_ITERATIONS ?? "6") || 6),
+);
+const TRANSLATOR_ASSISTANT_E2B_TIMEOUT_MS = Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) || 3600000;
+const TRANSLATOR_ASSISTANT_E2B_COMMAND_TIMEOUT_MS = Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
+const TRANSLATOR_ASSISTANT_E2B_MAX_OUTPUT_CHARS = Number.parseInt(process.env.E2B_MAX_OUTPUT_CHARS ?? "24000", 10) || 24000;
+const TRANSLATOR_ASSISTANT_E2B_MAX_FILE_CHARS = Number.parseInt(process.env.E2B_MAX_FILE_CHARS ?? "120000", 10) || 120000;
 const TRANSLATOR_URL_FETCH_TIMEOUT_MS = Math.max(
   5000,
   Math.min(120000, Number(process.env.TRANSLATOR_URL_FETCH_TIMEOUT_MS ?? "45000") || 45000),
@@ -644,8 +673,9 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "GEMINI_TRANSCRIBE_MAX_SECONDS", value: process.env.GEMINI_TRANSCRIBE_MAX_SECONDS ?? "1020" },
     { name: "GEMINI_TRANSCRIBE_CHUNK_SECONDS", value: process.env.GEMINI_TRANSCRIBE_CHUNK_SECONDS ?? "600" },
     { name: "GEMINI_TRANSCRIBE_MIN_COVERAGE", value: process.env.GEMINI_TRANSCRIBE_MIN_COVERAGE ?? "0.9" },
-    { name: "GEMINI_TRANSCRIBE_MODEL", value: process.env.GEMINI_TRANSCRIBE_MODEL ?? process.env.GEMINI_MODEL ?? "" },
-    { name: "GEMINI_TRANSCRIBE_THINKING", value: process.env.GEMINI_TRANSCRIBE_THINKING ?? "HIGH" },
+    { name: "GEMINI_TRANSCRIBE_MODEL", value: process.env.GEMINI_TRANSCRIBE_MODEL ?? process.env.GEMINI_MODEL ?? "gemini-3.1-pro-preview" },
+    { name: "GEMINI_TRANSCRIBE_THINKING", value: process.env.GEMINI_TRANSCRIBE_THINKING ?? "MEDIUM" },
+    { name: "GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS", value: process.env.GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS ?? "15" },
     { name: "ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK", value: process.env.ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK ?? "false" },
     // CosyVoice3 model ID — passed explicitly so no job uses an old baked-in default.
     { name: "COSYVOICE_MODEL_ID", value: process.env.TRANSLATOR_COSYVOICE_MODEL_ID ?? "FunAudioLLM/Fun-CosyVoice3-0.5B-2512" },
@@ -917,9 +947,12 @@ function buildGeminiTranscriptionPrompt(sourceLang: string, targetLang: string, 
     "",
     "Transcribe the provided audio exactly in the original spoken language. Do not translate. Do not summarize. Preserve the speaker's actual words, filler words, repetitions, false starts, names, numbers, and code-switching exactly as spoken.",
     "",
+    "Source language hint may be wrong. First detect the actual spoken language from the audio. Use the detected language and script for transcription even when the hint says something else.",
+    "For Indic and other non-Latin languages, native script is required. Do not romanize Hindi, Odia/Oriya, Bengali, Punjabi, Gujarati, Marathi, Sanskrit, Nepali, Tamil, Telugu, Kannada, Malayalam, Urdu, Arabic, Chinese, Japanese, Korean, Russian, or any other native-script language unless the speaker literally says a Latin-script word or name.",
+    "",
     "Top priority: create professional, broadcast-quality, audio-aware segments.",
     "You must listen to the real audio rhythm, not just count words. Segment boundaries must follow when the speaker actually starts speaking, continues speaking, pauses, changes speaker, or finishes a connected thought.",
-    "If the speaker continues talking at a consistent pace with no meaningful pause, keep the connected thought together even if the segment becomes longer and contains more text.",
+    "If the speaker continues talking at a consistent pace with no meaningful pause, keep the connected thought together only up to a practical dubbing unit. Avoid paragraph-sized segments.",
     "If the speaker says a short phrase and then pauses for about 1-2 seconds, or clearly stops before the next phrase, make that phrase its own short segment.",
     "Do not chop continuous speech into tiny fixed-size fragments. Do not merge across real pauses. Do not use a rigid word count as the main rule.",
     "",
@@ -930,10 +963,10 @@ function buildGeminiTranscriptionPrompt(sourceLang: string, targetLang: string, 
     "1. Output only JSON. No markdown, no explanation, no comments.",
     "2. All timestamps must be in seconds from the start of the audio.",
     "3. Segment start must be when the speaker begins that utterance. Segment end must be when the speaker finishes that utterance.",
-    "4. Do not split just because the text is long. If the speaker keeps talking without a meaningful pause, keep the connected speech together.",
+    "4. Do not split just because the text is long. If the speaker keeps talking without a meaningful pause, keep the connected speech together, but still prefer natural phrase-sized dubbing units over paragraph-sized blocks.",
     "5. If the speaker clearly pauses around 1-2 seconds, stops, or begins a new thought, create a boundary.",
-    "6. Prefer 1-6 words for naturally short utterances. Allow 7-15 words when the speaker continues without a meaningful pause. Allow more than 15 words only when the audio is genuinely continuous.",
-    "7. Preserve the exact original-language text. Do not translate to the target language.",
+    "6. Prefer 1-6 words for naturally short utterances. Allow 7-15 words when the speaker continues without a meaningful pause. Allow more than 15 words only when the audio is genuinely continuous. Even then, avoid segments longer than about 12-15 seconds; split at the nearest phrase or sentence boundary.",
+    "7. Preserve the exact original-language text in native script. Do not translate to the target language.",
     "8. Preserve code-switching exactly.",
     "9. Assign stable speaker labels as SPEAKER_A, SPEAKER_B, SPEAKER_C, etc.",
     "10. Do not include speaker labels inside the text field.",
@@ -975,6 +1008,49 @@ function stripSpeakerPrefix(text: string): string {
   return String(text ?? "").replace(/^\s*(?:speaker\s+[a-z0-9_]+|SPEAKER_[a-z0-9_]+)\s*[:-]\s*/i, "").trim();
 }
 
+function splitOverlongFastSegment(seg: FastSegment): FastSegment[] {
+  const durationMs = seg.endMs - seg.startMs;
+  const maxMs = GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS * 1000;
+  if (durationMs <= maxMs + 50) return [seg];
+
+  const words = seg.text.trim().split(/\s+/).filter(Boolean);
+  if (words.length <= 1) return [seg];
+
+  const pieces: FastSegment[] = [];
+  const msPerWord = durationMs / words.length;
+  let index = 0;
+  while (index < words.length) {
+    const pieceStartMs = Math.round(seg.startMs + index * msPerWord);
+    const remainingWords = words.length - index;
+    const maxWords = Math.max(1, Math.floor(maxMs / Math.max(1, msPerWord)));
+    let take = Math.min(remainingWords, maxWords);
+
+    const minWords = Math.max(1, Math.floor(take * 0.45));
+    for (let i = take - 1; i >= minWords; i--) {
+      if (/[।॥.!?;:,]$/u.test(words[index + i - 1] ?? "")) {
+        take = i;
+        break;
+      }
+    }
+
+    const pieceEndMs = index + take >= words.length
+      ? seg.endMs
+      : Math.min(seg.endMs, Math.round(seg.startMs + (index + take) * msPerWord));
+    pieces.push({
+      startMs: pieceStartMs,
+      endMs: Math.max(pieceStartMs + 1, pieceEndMs),
+      text: words.slice(index, index + take).join(" "),
+    });
+    index += take;
+  }
+
+  return pieces;
+}
+
+function splitOverlongFastSegments(segments: FastSegment[]): FastSegment[] {
+  return segments.flatMap(splitOverlongFastSegment);
+}
+
 function normalizeGeminiTranscriptPayload(payload: unknown, durationSeconds?: number): FastSegment[] {
   const rawSegments = Array.isArray(payload)
     ? payload
@@ -1010,7 +1086,7 @@ function normalizeGeminiTranscriptPayload(payload: unknown, durationSeconds?: nu
     }
     repaired.push(seg);
   }
-  return repaired;
+  return splitOverlongFastSegments(repaired);
 }
 
 function targetScriptInstruction(targetLang: string): string {
@@ -1500,6 +1576,7 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
       transcriptionProvider: provider,
       transcriptionModel: model ?? provider,
       transcriptionCutoffSeconds: GEMINI_TRANSCRIBE_MAX_SECONDS,
+      transcriptionMaxSegmentSeconds: GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS,
       durationProbe: durationKnown ? "ok" : "failed",
       segments: canonicalSegments,
     }, null, 2), "utf8");
@@ -1537,6 +1614,8 @@ async function processLambdaFastTranslation(jobId: string, s3Key: string, option
       runtime: "lambda-fast",
       transcriptionProvider: provider,
       ...(model ? { transcriptionModel: model } : {}),
+      transcriptionThinking: GEMINI_TRANSCRIBE_THINKING,
+      transcriptionMaxSegmentSeconds: GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS,
     });
   } catch (error) {
     console.error(`[Translator] Lambda fast path failed for ${jobId}:`, error);
@@ -2416,9 +2495,17 @@ router.get("/result/:jobId", async (req: Request, res: ExpressResponse) => {
 const TRANSLATOR_ASSISTANT_SYSTEM_PROMPT = [
   "You are the Video Translation Assistant built into the Translation tab of this app —",
   "a senior debugging engineer for this dubbing pipeline. You have full read-only",
-  "visibility into the user's jobs and logs (you cannot start, cancel or change jobs;",
-  "you guide the user to the right control instead).",
-  "You are given a live snapshot of ALL of the current user's video-translation jobs —",
+  "visibility into the focused job snapshot, recent job records, step logs and warnings.",
+  "You cannot start, cancel, retry, edit production files, deploy, or access the production shell;",
+  "guide the user to the right control instead.",
+  "You may receive an allowlisted read-only backend/frontend/worker code context for this pipeline.",
+  "Use that code context to debug translation issues, but do not claim broader filesystem or sandbox access.",
+  "When sandbox tools are available, you may run deep code search, scripts, package installs, and public",
+  "internet fetches inside the isolated E2B sandbox only. The sandbox is separate from production.",
+  "Before code-searching in sandbox, inspect /home/user/translation-code; if files are missing, explain",
+  "that the sandbox lacks that file and use public fetches only when the user provided a URL or the source",
+  "is clearly public.",
+  "You are given a live snapshot of the current user's active video-translation jobs and most recent completed jobs -",
   "their status, progress, per-step logs, warnings, errors, options (voice clone, lip-sync,",
   "keep background music, multi-speaker, dynamic video length), runtime and timestamps —",
   "plus the client-side activity log the user is currently looking at.",
@@ -2428,6 +2515,14 @@ const TRANSLATOR_ASSISTANT_SYSTEM_PROMPT = [
   "Use the actual job data provided as the source of truth for statuses, times and logs —",
   "never invent statuses, times or logs that aren't there. If the data doesn't contain",
   "something, say so plainly.",
+  "For generic questions like 'status', 'what is happening', or 'what now', focus first on:",
+  "  1. the job currently open in the UI,",
+  "  2. other live/running jobs,",
+  "  3. the most recent completed job.",
+  "Do not bring up old failed jobs unless the user explicitly asks about history, older jobs,",
+  "failures, audits, or a specific job id.",
+  "Do not use internet knowledge or citations unless the user explicitly asks to search the web",
+  "and the server has web search enabled. Prefer the live job data and code context.",
   "",
   "When a job failed, diagnose it deeply: read its error + step logs, explain the most likely",
   "root cause in plain language, and give concrete next steps (retry, cancel, shorten the clip,",
@@ -2437,8 +2532,6 @@ const TRANSLATOR_ASSISTANT_SYSTEM_PROMPT = [
   "  - CosyVoice voice-clone warnings → clone fell back to a neural voice; the dub still",
   "    completed, just not in the original speaker's timbre.",
   "  - Gemini/translation errors, Demucs/keep-music issues, GPU timeouts, upload size limits.",
-  "If you are unsure about a technical error message, you may use web knowledge to explain it,",
-  "but always tie the advice back to the controls this app actually exposes.",
   "",
   "## Formatting",
   "Reply in clean GitHub-flavored Markdown. Use **bold** for key facts, `code` for job ids,",
@@ -2538,10 +2631,420 @@ function buildAssistantDataBlock(
   return lines.join("\n");
 }
 
+function latestUserText(messages: Array<{ role?: string; content?: string }>): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg?.role === "user" && typeof msg.content === "string") return msg.content;
+  }
+  return "";
+}
+
+function userAskedForHistory(text: string): boolean {
+  return /\b(all|older|old|history|past|previous|failed|failures|audit|deep|dig|last\s+\d+|recent\s+\d+|today|yesterday)\b/i.test(text);
+}
+
+function userAskedForWebSearch(text: string): boolean {
+  return /\b(web|internet|google|search|look\s*up|external|source|citation)\b/i.test(text);
+}
+
+const TRANSLATOR_SANDBOX_TOOLS = [
+  {
+    name: "run_sandbox_command",
+    description: [
+      "Run a Linux shell command inside this Translation Assistant chat's isolated E2B sandbox.",
+      "Use this for deep code search, grep/rg, scripts, package installs, filesystem work, public internet fetches, and analysis.",
+      "Translation source files are preloaded under /home/user/translation-code when available.",
+      "This cannot access or mutate the production server filesystem.",
+    ].join(" "),
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        command: { type: Type.STRING, description: "Shell command to execute, e.g. rg \"sidechaincompress\" /home/user/translation-code or python3 audit.py." },
+        cwd: { type: Type.STRING, description: "Working directory inside sandbox. Default: /home/user/translation-code." },
+        timeoutMs: { type: Type.NUMBER, description: "Timeout in milliseconds. Default server configured; max 10 minutes." },
+        writeFiles: {
+          type: Type.ARRAY,
+          description: "Optional files to write before running the command.",
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              path: { type: Type.STRING, description: "Absolute sandbox path, e.g. /home/user/audit.py." },
+              content: { type: Type.STRING, description: "Text content to write." },
+            },
+            required: ["path", "content"],
+          },
+        },
+        readFiles: {
+          type: Type.ARRAY,
+          description: "Optional absolute sandbox text file paths to read after the command finishes.",
+          items: { type: Type.STRING },
+        },
+      },
+      required: ["command"],
+    },
+  },
+  {
+    name: "sandbox_status",
+    description: "Report whether E2B is configured and whether this Translation Assistant chat has a connected sandbox.",
+    parameters: { type: Type.OBJECT, properties: {}, required: [] },
+  },
+  {
+    name: "reset_sandbox",
+    description: "Destroy this Translation Assistant chat's current E2B sandbox and start fresh on the next sandbox command.",
+    parameters: { type: Type.OBJECT, properties: {}, required: [] },
+  },
+];
+
+function selectAssistantJobs(
+  jobs: Record<string, any>[],
+  focusJobId: string | undefined,
+  includeHistory: boolean,
+): Record<string, any>[] {
+  const sorted = [...jobs].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+  if (includeHistory) return sorted.slice(0, 30);
+
+  const picked = new Map<string, Record<string, any>>();
+  const add = (job: Record<string, any> | undefined) => {
+    if (job?.jobId && !picked.has(job.jobId)) picked.set(job.jobId, job);
+  };
+
+  add(sorted.find((j) => focusJobId && j.jobId === focusJobId));
+  for (const job of sorted) {
+    if (!isTerminalTranslatorStatus(String(job.status))) add(job);
+  }
+  for (const job of sorted.filter((j) => isTerminalTranslatorStatus(String(j.status)))) {
+    if (picked.size >= 8) break;
+    add(job);
+  }
+  return [...picked.values()].sort((a, b) => {
+    if (focusJobId && a.jobId === focusJobId) return -1;
+    if (focusJobId && b.jobId === focusJobId) return 1;
+    const aLive = !isTerminalTranslatorStatus(String(a.status));
+    const bLive = !isTerminalTranslatorStatus(String(b.status));
+    if (aLive !== bLive) return aLive ? -1 : 1;
+    return (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
+  });
+}
+
+async function buildAssistantCodeContext(): Promise<string> {
+  if (!TRANSLATOR_ASSISTANT_CODE_CONTEXT_ENABLED) return "";
+  const roots = [
+    process.cwd(),
+    join(process.cwd(), "code-context"),
+    join(process.cwd(), "..", ".."),
+  ];
+  const files = [
+    "artifacts/api-server/src/routes/translator.ts",
+    "artifacts/api-server/src/lib/gemini-client.ts",
+    "artifacts/api-server/package.json",
+    "artifacts/yt-downloader/src/pages/VideoTranslator.tsx",
+    "artifacts/yt-downloader/src/lib/translator-history.ts",
+    "artifacts/yt-downloader/src/lib/translator-client-id.ts",
+    "artifacts/yt-downloader/package.json",
+    "artifacts/video-translator-service/worker.py",
+    "artifacts/video-translator-service/runtime_deps.py",
+    "artifacts/video-translator-service/test_worker_guards.py",
+    "artifacts/video-translator-service/test_runtime_deps.py",
+    "artifacts/video-translator-service/test_phase1_pacing.py",
+    "artifacts/video-translator-service/test_phase2_translation.py",
+    "artifacts/video-translator-service/test_phase3_cloning.py",
+    "artifacts/video-translator-service/test_phase4_5_mixing.py",
+    "artifacts/video-translator-service/requirements.txt",
+    "artifacts/video-translator-service/requirements.cpu.txt",
+    "artifacts/video-translator-service/constraints.txt",
+    "artifacts/video-translator-service/Dockerfile",
+    "artifacts/video-translator-service/Dockerfile.cpu",
+    "artifacts/video-translator-service/Dockerfile.base",
+  ];
+  const sections: string[] = [];
+  let used = 0;
+  for (const rel of files) {
+    let found = "";
+    for (const root of roots) {
+      const full = join(root, rel);
+      if (existsSync(full)) {
+        found = full;
+        break;
+      }
+    }
+    if (!found) continue;
+    try {
+      const text = await readFile(found, "utf8");
+      const remaining = TRANSLATOR_ASSISTANT_CODE_CONTEXT_MAX_CHARS - used;
+      if (remaining <= 0) break;
+      const maxForFile = Math.min(TRANSLATOR_ASSISTANT_CODE_CONTEXT_MAX_FILE_CHARS, remaining);
+      const body = text.length > maxForFile
+        ? `${text.slice(0, maxForFile)}\n\n/* TRUNCATED: file is ${text.length} chars; ask the user for a deeper audit if more context is needed. */`
+        : text;
+      const section = `--- ${rel} (${found}) ---\n${body}`;
+      sections.push(section);
+      used += section.length;
+    } catch {
+      // Code context is optional; job/log data remains the source of truth.
+    }
+  }
+  if (!sections.length) return "";
+  return [
+    "=== READ-ONLY TRANSLATION CODE CONTEXT (allowlisted backend/frontend/worker files) ===",
+    "The assistant can inspect these bundled files for debugging, but cannot edit files, run commands, deploy, or access an interactive sandbox.",
+    `Context budget: ${used}/${TRANSLATOR_ASSISTANT_CODE_CONTEXT_MAX_CHARS} chars. Large files may be truncated.`,
+    ...sections,
+  ].join("\n");
+}
+
+const translatorSandboxBySession = new Map<string, { sandboxId: string; lastUsed: number; preloaded: boolean }>();
+
+function translatorE2BConfigured(): boolean {
+  return Boolean(process.env.E2B_API_KEY?.trim());
+}
+
+function pruneTranslatorSandboxEntries(): void {
+  const cutoff = Date.now() - TRANSLATOR_ASSISTANT_E2B_TIMEOUT_MS;
+  for (const [key, entry] of translatorSandboxBySession) {
+    if (entry.lastUsed < cutoff) translatorSandboxBySession.delete(key);
+  }
+}
+
+function translatorSandboxSessionKey(req: Request): string {
+  const ownerId = getRequesterId(req);
+  const body = (req.body ?? {}) as { sessionId?: string; focusJobId?: string };
+  const raw = `${ownerId}:${String(body.sessionId || body.focusJobId || "translator-assistant")}`;
+  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+}
+
+function normalizeTranslatorSandboxPath(value: unknown, fallback = "/home/user/translation-code"): string {
+  const path = String(value ?? fallback).trim() || fallback;
+  if (!path.startsWith("/")) throw new Error(`Sandbox paths must be absolute: ${path}`);
+  return path.replace(/\0/g, "");
+}
+
+function truncateTranslatorToolText(value: string, limit = TRANSLATOR_ASSISTANT_E2B_MAX_OUTPUT_CHARS): string {
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit)}\n\n[truncated ${value.length - limit} chars]`;
+}
+
+function translationCodeFiles(): string[] {
+  return [
+    "artifacts/api-server/src/routes/translator.ts",
+    "artifacts/api-server/src/lib/gemini-client.ts",
+    "artifacts/api-server/package.json",
+    "artifacts/yt-downloader/src/pages/VideoTranslator.tsx",
+    "artifacts/yt-downloader/src/lib/translator-history.ts",
+    "artifacts/yt-downloader/src/lib/translator-client-id.ts",
+    "artifacts/yt-downloader/package.json",
+    "artifacts/video-translator-service/worker.py",
+    "artifacts/video-translator-service/runtime_deps.py",
+    "artifacts/video-translator-service/test_worker_guards.py",
+    "artifacts/video-translator-service/test_runtime_deps.py",
+    "artifacts/video-translator-service/test_phase1_pacing.py",
+    "artifacts/video-translator-service/test_phase2_translation.py",
+    "artifacts/video-translator-service/test_phase3_cloning.py",
+    "artifacts/video-translator-service/test_phase4_5_mixing.py",
+    "artifacts/video-translator-service/requirements.txt",
+    "artifacts/video-translator-service/requirements.cpu.txt",
+    "artifacts/video-translator-service/constraints.txt",
+    "artifacts/video-translator-service/Dockerfile",
+    "artifacts/video-translator-service/Dockerfile.cpu",
+    "artifacts/video-translator-service/Dockerfile.base",
+  ];
+}
+
+function findTranslationCodeFile(rel: string): string | null {
+  const roots = [
+    process.cwd(),
+    join(process.cwd(), "code-context"),
+    join(process.cwd(), "..", ".."),
+  ];
+  for (const root of roots) {
+    const full = join(root, rel);
+    if (existsSync(full)) return full;
+  }
+  return null;
+}
+
+async function preloadTranslationCodeIntoSandbox(sandbox: any, sessionKey: string): Promise<void> {
+  const entry = translatorSandboxBySession.get(sessionKey);
+  if (entry?.preloaded) return;
+  await sandbox.files.makeDir("/home/user/translation-code").catch(() => {});
+  for (const rel of translationCodeFiles()) {
+    const found = findTranslationCodeFile(rel);
+    if (!found) continue;
+    try {
+      const text = await readFile(found, "utf8");
+      const target = `/home/user/translation-code/${rel}`;
+      await sandbox.files.makeDir(dirname(target)).catch(() => {});
+      await sandbox.files.write(target, text);
+    } catch {
+      // Sandbox preload is best-effort. The model can still use prompt context.
+    }
+  }
+  await sandbox.files.write(
+    "/home/user/translation-code/README.md",
+    [
+      "# Translation Assistant Sandbox",
+      "",
+      "This sandbox is isolated from production.",
+      "Bundled translation source files are under `/home/user/translation-code/artifacts/...`.",
+      "Use `find`, `grep`, `rg` if installed, `python3`, package installs, or public fetches as needed.",
+      "The sandbox cannot edit production code or deploy changes.",
+    ].join("\n"),
+  ).catch(() => {});
+  const current = translatorSandboxBySession.get(sessionKey);
+  if (current) translatorSandboxBySession.set(sessionKey, { ...current, preloaded: true, lastUsed: Date.now() });
+}
+
+async function getTranslatorSandbox(req: Request): Promise<any> {
+  if (!TRANSLATOR_ASSISTANT_SANDBOX_ENABLED) {
+    throw new Error("Translation Assistant sandbox is disabled.");
+  }
+  if (!translatorE2BConfigured()) {
+    throw new Error("E2B sandbox is not configured. Set E2B_API_KEY on the API server.");
+  }
+  pruneTranslatorSandboxEntries();
+  const sessionKey = translatorSandboxSessionKey(req);
+  const existing = translatorSandboxBySession.get(sessionKey);
+  if (existing) {
+    try {
+      const connected = await Sandbox.connect(existing.sandboxId, { timeoutMs: TRANSLATOR_ASSISTANT_E2B_TIMEOUT_MS });
+      await connected.setTimeout(TRANSLATOR_ASSISTANT_E2B_TIMEOUT_MS).catch(() => {});
+      translatorSandboxBySession.set(sessionKey, { ...existing, lastUsed: Date.now() });
+      await preloadTranslationCodeIntoSandbox(connected, sessionKey);
+      return connected;
+    } catch {
+      translatorSandboxBySession.delete(sessionKey);
+    }
+  }
+  const sandbox = await Sandbox.create({
+    timeoutMs: TRANSLATOR_ASSISTANT_E2B_TIMEOUT_MS,
+    metadata: { app: "videomaking-translator-assistant", sessionId: sessionKey },
+  });
+  translatorSandboxBySession.set(sessionKey, { sandboxId: sandbox.sandboxId, lastUsed: Date.now(), preloaded: false });
+  await preloadTranslationCodeIntoSandbox(sandbox, sessionKey);
+  return sandbox;
+}
+
+async function resetTranslatorSandbox(req: Request): Promise<{ reset: boolean; sandboxId?: string }> {
+  const sessionKey = translatorSandboxSessionKey(req);
+  const entry = translatorSandboxBySession.get(sessionKey);
+  translatorSandboxBySession.delete(sessionKey);
+  if (entry?.sandboxId && translatorE2BConfigured()) {
+    await Sandbox.kill(entry.sandboxId).catch(() => {});
+  }
+  return { reset: true, sandboxId: entry?.sandboxId };
+}
+
+async function translatorSandboxStatus(req: Request): Promise<Record<string, any>> {
+  const configured = translatorE2BConfigured();
+  const enabled = TRANSLATOR_ASSISTANT_SANDBOX_ENABLED;
+  const sessionKey = translatorSandboxSessionKey(req);
+  const entry = translatorSandboxBySession.get(sessionKey);
+  let running: boolean | undefined;
+  if (configured && enabled && entry?.sandboxId) {
+    try {
+      const sandbox = await Sandbox.connect(entry.sandboxId, { timeoutMs: TRANSLATOR_ASSISTANT_E2B_TIMEOUT_MS });
+      running = await sandbox.isRunning();
+    } catch {
+      running = false;
+      translatorSandboxBySession.delete(sessionKey);
+    }
+  }
+  return {
+    enabled,
+    configured,
+    sessionKey,
+    sandboxId: entry?.sandboxId,
+    running,
+    codePath: "/home/user/translation-code",
+    timeoutMs: TRANSLATOR_ASSISTANT_E2B_TIMEOUT_MS,
+  };
+}
+
+async function runTranslatorSandboxCommand(
+  req: Request,
+  args: Record<string, any>,
+  send?: (payload: object) => void,
+): Promise<Record<string, any>> {
+  const command = String(args.command ?? "").trim();
+  if (!command) throw new Error("command is required.");
+  const sandbox = await getTranslatorSandbox(req);
+  const cwd = normalizeTranslatorSandboxPath(args.cwd, "/home/user/translation-code");
+  const timeoutMsRaw = Number(args.timeoutMs ?? TRANSLATOR_ASSISTANT_E2B_COMMAND_TIMEOUT_MS);
+  const timeoutMs = Math.max(1000, Math.min(Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : TRANSLATOR_ASSISTANT_E2B_COMMAND_TIMEOUT_MS, 10 * 60 * 1000));
+  await sandbox.files.makeDir(cwd).catch(() => {});
+
+  const writeFiles = Array.isArray(args.writeFiles) ? args.writeFiles : [];
+  for (const file of writeFiles.slice(0, 20)) {
+    const path = normalizeTranslatorSandboxPath(file?.path, "/home/user");
+    const content = String(file?.content ?? "");
+    if (content.length > TRANSLATOR_ASSISTANT_E2B_MAX_FILE_CHARS) throw new Error(`Sandbox file too large: ${path}`);
+    await sandbox.files.makeDir(dirname(path)).catch(() => {});
+    await sandbox.files.write(path, content);
+  }
+
+  send?.({ type: "tool", name: "run_sandbox_command", status: "running", command: command.slice(0, 180) });
+  let liveOut = "";
+  let liveErr = "";
+  const result = await sandbox.commands.run(command, {
+    cwd,
+    timeoutMs,
+    onStdout: (data: string) => { liveOut += data; },
+    onStderr: (data: string) => { liveErr += data; },
+  });
+
+  const readFiles = Array.isArray(args.readFiles) ? args.readFiles : [];
+  const files: Array<{ path: string; content: string }> = [];
+  for (const rawPath of readFiles.slice(0, 10)) {
+    const path = normalizeTranslatorSandboxPath(rawPath, "/home/user");
+    try {
+      const content = await sandbox.files.read(path, { format: "text" });
+      files.push({ path, content: truncateTranslatorToolText(String(content), TRANSLATOR_ASSISTANT_E2B_MAX_FILE_CHARS) });
+    } catch (err: any) {
+      files.push({ path, content: `[could not read file: ${String(err?.message ?? err)}]` });
+    }
+  }
+
+  const stdout = truncateTranslatorToolText(String(result.stdout || liveOut || ""));
+  const stderr = truncateTranslatorToolText(String(result.stderr || liveErr || ""));
+  send?.({ type: "tool", name: "run_sandbox_command", status: "done", exitCode: result.exitCode });
+  return {
+    sandbox: "e2b",
+    sandboxId: sandbox.sandboxId,
+    cwd,
+    exitCode: result.exitCode,
+    error: result.error,
+    stdout,
+    stderr,
+    files,
+  };
+}
+
+async function runTranslatorAssistantTool(
+  req: Request,
+  name: string,
+  args: Record<string, any>,
+  send?: (payload: object) => void,
+): Promise<Record<string, any>> {
+  if (name === "run_sandbox_command") return runTranslatorSandboxCommand(req, args, send);
+  if (name === "sandbox_status") {
+    send?.({ type: "tool", name, status: "running" });
+    const result = await translatorSandboxStatus(req);
+    send?.({ type: "tool", name, status: "done" });
+    return result;
+  }
+  if (name === "reset_sandbox") {
+    send?.({ type: "tool", name, status: "running" });
+    const result = await resetTranslatorSandbox(req);
+    send?.({ type: "tool", name, status: "done" });
+    return result;
+  }
+  return { error: `Unknown tool: ${name}` };
+}
+
 type AssistantContext = {
   convo: Array<{ role: string; parts: Array<{ text: string }> }>;
   jobs: Record<string, any>[];
   systemInstruction: string;
+  allowWebSearch: boolean;
 };
 
 // Gather everything the assistant needs: the trimmed conversation plus a live,
@@ -2556,8 +3059,10 @@ async function buildAssistantContext(
   const { messages = [], focusJobId, clientLogs = [] } = (req.body ?? {}) as {
     messages?: Array<{ role?: string; content?: string }>;
     focusJobId?: string;
+    sessionId?: string;
     clientLogs?: Array<{ ts?: number; level?: string; msg?: string }>;
   };
+  const lastUser = latestUserText(messages);
 
   if (!Array.isArray(messages) || messages.length === 0) {
     return { ok: false, status: 400, error: "messages array is required" };
@@ -2575,7 +3080,8 @@ async function buildAssistantContext(
     return { ok: false, status: 400, error: "messages array has no valid messages" };
   }
 
-  // Gather ALL of this user's translator jobs (same owner scope as /history).
+  // Gather this user's translator jobs (same owner scope as /history). The
+  // assistant only receives a focused subset unless the user asks for history.
   const items: Record<string, any>[] = [];
   let exclusiveStartKey: Record<string, any> | undefined;
   for (let page = 0; page < 5; page += 1) {
@@ -2604,17 +3110,25 @@ async function buildAssistantContext(
     return Promise.resolve(it);
   }));
 
-  const jobs = synced
+  const allJobs = synced
     .map(serializeJobForAssistant)
     .filter((j): j is Record<string, any> => Boolean(j))
-    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0))
-    .slice(0, 40);
+    .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+
+  const jobs = selectAssistantJobs(allJobs, focusJobId ? String(focusJobId) : undefined, userAskedForHistory(lastUser));
 
   const safeClientLogs = Array.isArray(clientLogs) ? clientLogs : [];
   const dataBlock = buildAssistantDataBlock(jobs, focusJobId ? String(focusJobId) : undefined, safeClientLogs);
-  const systemInstruction = `${TRANSLATOR_ASSISTANT_SYSTEM_PROMPT}\n\n=== LIVE DATA (current snapshot) ===\n${dataBlock}`;
+  const codeContext = await buildAssistantCodeContext();
+  const systemInstruction = [
+    TRANSLATOR_ASSISTANT_SYSTEM_PROMPT,
+    "=== LIVE DATA (current focused snapshot) ===",
+    dataBlock,
+    codeContext,
+  ].filter(Boolean).join("\n\n");
+  const allowWebSearch = TRANSLATOR_ASSISTANT_SEARCH_ENABLED && userAskedForWebSearch(lastUser);
 
-  return { ok: true, ctx: { convo, jobs, systemInstruction } };
+  return { ok: true, ctx: { convo, jobs, systemInstruction, allowWebSearch } };
 }
 
 // Pull the answer out of a non-streaming response, tolerating the case where
@@ -2641,35 +3155,67 @@ router.post("/assistant", async (req: Request, res: ExpressResponse) => {
 
     const built = await buildAssistantContext(req);
     if (!built.ok) return res.status(built.status).json({ error: built.error });
-    const { convo, jobs, systemInstruction } = built.ctx;
+    const { convo, jobs, systemInstruction, allowWebSearch } = built.ctx;
 
     const ai = createGeminiClient();
-    // Web grounding gives the assistant "search" ability to explain unfamiliar
-    // technical errors. Toggle off with TRANSLATOR_ASSISTANT_SEARCH=0.
-    const useSearch = process.env.TRANSLATOR_ASSISTANT_SEARCH !== "0";
+    // Web grounding is opt-in: enabled by env and only used when the user asks
+    // for web/external search. Job data and code context are the default source.
+    const useSearch = allowWebSearch;
 
-    // Low thinking + a generous output budget so the model never exhausts the
-    // budget on thinking tokens (the old 1400 cap + MEDIUM thinking routinely
-    // produced empty replies). Optionally grounded with web search.
-    const runGenerate = (opts: { search: boolean }) =>
+    const buildTools = (search: boolean) => [
+      ...(TRANSLATOR_ASSISTANT_SANDBOX_ENABLED ? [{ functionDeclarations: TRANSLATOR_SANDBOX_TOOLS as any }] : []),
+      ...(search ? [{ googleSearch: {} }] : []),
+    ];
+
+    const runGenerate = (contents: any[], opts: { search: boolean }) =>
       ai.models.generateContent({
         model: TRANSLATOR_ASSISTANT_MODEL,
-        contents: convo,
+        contents,
         config: {
           systemInstruction,
           maxOutputTokens: 8192,
           thinkingConfig: { thinkingLevel: "LOW" as any },
-          ...(opts.search ? { tools: [{ googleSearch: {} }] } : {}),
+          ...(buildTools(opts.search).length ? {
+            tools: buildTools(opts.search),
+            toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
+          } : {}),
         },
       });
 
-    let { text: reply, finishReason } = extractAssistantReply(await runGenerate({ search: useSearch }));
+    let contents: any[] = [...convo];
+    let reply = "";
+    let finishReason: string | undefined;
+    for (let iter = 0; iter < TRANSLATOR_ASSISTANT_MAX_TOOL_ITERATIONS; iter += 1) {
+      const response = await runGenerate(contents, { search: useSearch });
+      const cand = response?.candidates?.[0];
+      finishReason = cand?.finishReason;
+      const parts = Array.isArray(cand?.content?.parts) ? cand.content.parts : [];
+      const functionCalls = parts
+        .filter((p: any) => p?.functionCall)
+        .map((p: any) => p.functionCall);
+      const extracted = extractAssistantReply(response).text;
+      if (!functionCalls.length) {
+        reply = extracted;
+        break;
+      }
+      contents.push({ role: "model", parts });
+      const toolParts = [];
+      for (const fc of functionCalls.slice(0, 4)) {
+        const name = String(fc.name || "");
+        const args = (fc.args ?? {}) as Record<string, any>;
+        try {
+          const result = await runTranslatorAssistantTool(req, name, args);
+          toolParts.push({ functionResponse: { id: fc.id, name, response: { result } } });
+        } catch (err: any) {
+          toolParts.push({ functionResponse: { id: fc.id, name, response: { result: { error: String(err?.message ?? err) } } } });
+        }
+      }
+      contents.push({ role: "user", parts: toolParts });
+    }
 
-    // Retry once without tools if the first pass came back empty. Grounding can
-    // occasionally return only grounding metadata with no text part.
     if (!reply) {
       try {
-        ({ text: reply, finishReason } = extractAssistantReply(await runGenerate({ search: false })));
+        ({ text: reply, finishReason } = extractAssistantReply(await runGenerate(contents, { search: false })));
       } catch (retryErr) {
         console.warn("[Translator] /assistant retry failed:", retryErr);
       }
@@ -2720,7 +3266,7 @@ router.post("/assistant/stream", async (req: Request, res: ExpressResponse) => {
     res.status(built.status).json({ error: built.error });
     return;
   }
-  const { convo, jobs, systemInstruction } = built.ctx;
+  const { convo, jobs, systemInstruction, allowWebSearch } = built.ctx;
 
   setupSse(res);
   let connected = true;
@@ -2734,32 +3280,45 @@ router.post("/assistant/stream", async (req: Request, res: ExpressResponse) => {
     send({ type: "meta", jobCount: jobs.length });
 
     const ai = createGeminiClient();
-    const useSearch = process.env.TRANSLATOR_ASSISTANT_SEARCH !== "0";
+    const useSearch = allowWebSearch;
 
-    const runStream = (opts: { search: boolean }) =>
+    const buildTools = (search: boolean) => [
+      ...(TRANSLATOR_ASSISTANT_SANDBOX_ENABLED ? [{ functionDeclarations: TRANSLATOR_SANDBOX_TOOLS as any }] : []),
+      ...(search ? [{ googleSearch: {} }] : []),
+    ];
+
+    const runStream = (contents: any[], opts: { search: boolean }) =>
       ai.models.generateContentStream({
         model: TRANSLATOR_ASSISTANT_MODEL,
-        contents: convo,
+        contents,
         config: {
           systemInstruction,
           maxOutputTokens: 8192,
           thinkingConfig: { thinkingLevel: "LOW" as any, includeThoughts: true },
-          ...(opts.search ? { tools: [{ googleSearch: {} }] } : {}),
+          ...(buildTools(opts.search).length ? {
+            tools: buildTools(opts.search),
+            toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
+          } : {}),
         },
       });
 
     const seenQueries = new Set<string>();
     const sources = new Map<string, { title: string; url: string }>();
 
-    const consume = async (opts: { search: boolean }): Promise<string> => {
+    const consume = async (contents: any[], opts: { search: boolean }): Promise<{ answer: string; parts: any[]; functionCalls: any[] }> => {
       let answer = "";
-      const stream = await runStream(opts);
+      const parts: any[] = [];
+      const functionCalls: any[] = [];
+      const stream = await runStream(contents, opts);
       for await (const chunk of stream) {
         if (!isConnected()) break;
         const cand = chunk.candidates?.[0];
         for (const p of cand?.content?.parts ?? []) {
+          parts.push(p);
           if (p?.thought && p?.text) {
             send({ type: "thought", content: p.text });
+          } else if (p?.functionCall) {
+            functionCalls.push(p.functionCall);
           } else if (typeof p?.text === "string" && p.text) {
             answer += p.text;
             send({ type: "text", content: p.text });
@@ -2780,14 +3339,38 @@ router.post("/assistant/stream", async (req: Request, res: ExpressResponse) => {
           }
         }
       }
-      return answer.trim();
+      return { answer: answer.trim(), parts, functionCalls };
     };
 
-    let answer = await consume({ search: useSearch });
-    // Retry once without grounding if nothing came back (grounding can yield
-    // only metadata with no text part).
+    let contents: any[] = [...convo];
+    let answer = "";
+    for (let iter = 0; iter < TRANSLATOR_ASSISTANT_MAX_TOOL_ITERATIONS && isConnected(); iter += 1) {
+      const result = await consume(contents, { search: useSearch });
+      answer += result.answer ? `${answer ? "\n" : ""}${result.answer}` : "";
+      if (!result.functionCalls.length) break;
+
+      contents.push({ role: "model", parts: result.parts });
+      const toolParts = [];
+      for (const fc of result.functionCalls.slice(0, 4)) {
+        const name = String(fc.name || "");
+        const args = (fc.args ?? {}) as Record<string, any>;
+        send({ type: "tool", name, status: "start", args });
+        try {
+          const toolResult = await runTranslatorAssistantTool(req, name, args, send);
+          toolParts.push({ functionResponse: { id: fc.id, name, response: { result: toolResult } } });
+          send({ type: "tool", name, status: "done" });
+        } catch (err: any) {
+          const message = String(err?.message ?? err);
+          toolParts.push({ functionResponse: { id: fc.id, name, response: { result: { error: message } } } });
+          send({ type: "tool", name, status: "error", error: message });
+        }
+      }
+      contents.push({ role: "user", parts: toolParts });
+    }
+
     if (!answer && isConnected()) {
-      answer = await consume({ search: false });
+      const retry = await consume(contents, { search: false });
+      answer = retry.answer;
     }
 
     if (isConnected()) {

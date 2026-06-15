@@ -8,6 +8,9 @@
 import { Router, type Request, type Response } from "express";
 import { Modality, Type } from "@google/genai";
 import { createHash, randomUUID } from "crypto";
+import { existsSync } from "fs";
+import { readdir, readFile, stat } from "fs/promises";
+import { dirname, join, relative, sep } from "path";
 import { Sandbox } from "e2b";
 import { setupSse } from "../lib/sse";
 import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3, readTextFromS3 } from "../lib/s3-storage";
@@ -35,6 +38,16 @@ const E2B_SANDBOX_TIMEOUT_MS = Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_M
 const E2B_COMMAND_TIMEOUT_MS = Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
 const E2B_MAX_OUTPUT_CHARS = Number.parseInt(process.env.E2B_MAX_OUTPUT_CHARS ?? "24000", 10) || 24000;
 const E2B_MAX_FILE_CHARS = Number.parseInt(process.env.E2B_MAX_FILE_CHARS ?? "120000", 10) || 120000;
+const E2B_BOOTSTRAP_MEDIA_TOOLS = !/^(0|false|no|off)$/i.test(
+  String(process.env.E2B_BOOTSTRAP_MEDIA_TOOLS ?? "true").trim(),
+);
+const E2B_BOOTSTRAP_TIMEOUT_MS = Number.parseInt(process.env.E2B_BOOTSTRAP_TIMEOUT_MS ?? "240000", 10) || 240000;
+const E2B_PRELOAD_APP_CODE = !/^(0|false|no|off)$/i.test(
+  String(process.env.E2B_PRELOAD_APP_CODE ?? "true").trim(),
+);
+const E2B_APP_CODE_MAX_FILES = Math.max(50, Math.min(3000, Number(process.env.E2B_APP_CODE_MAX_FILES ?? "900") || 900));
+const E2B_APP_CODE_MAX_FILE_CHARS = Math.max(2000, Math.min(400000, Number(process.env.E2B_APP_CODE_MAX_FILE_CHARS ?? "160000") || 160000));
+const E2B_APP_CODE_MAX_TOTAL_CHARS = Math.max(100000, Math.min(5000000, Number(process.env.E2B_APP_CODE_MAX_TOTAL_CHARS ?? "2500000") || 2500000));
 const ENABLE_NATIVE_AGENT_SEARCH = !/^(0|false|no|off)$/i.test(
   String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "true").trim(),
 );
@@ -940,6 +953,10 @@ When canvas is NOT appropriate (short explanatory snippet):
 - Use run_code_analysis for supplied data calculations/statistics. For exact calculations, include task-specific pythonCode instead of relying on generic inspection.
 - Use run_sandbox_command when the user wants a ChatGPT-like sandbox: execute code, install packages, create/read files, inspect outputs, fetch public internet resources, or run shell commands in an isolated Linux environment.
 - The sandbox is persistent per chat session and isolated from the production server. You may be broad inside the sandbox, but never claim it can access local app files unless the user uploaded/provided them.
+- The sandbox is bootstrapped with media/debugging tools when possible: yt-dlp, ffmpeg, ffprobe, and ripgrep. If a tool is missing, install or download it inside the sandbox and continue.
+- For media debugging, use sandbox commands to inspect files/URLs with yt-dlp, ffmpeg, ffprobe, Python, Node, and small scripts. Do not claim the sandbox exactly matches production.
+- Main website/app code is preloaded into /home/user/app-code when available. Use it for debugging UI/API/Super Agent/workspace/editor/youtube/subtitle issues.
+- Translation-tab and video-translator worker files are intentionally excluded from /home/user/app-code; those belong to the Translation Assistant debugger.
 - Sandbox working directory convention: use /home/user. If you create files, mention filenames in the final answer and use readFiles when the file content matters.
 - Do not place app/server secrets into the sandbox. User-provided secrets may be used only for the user's requested task.
 - If the user asks to export, download, save, or create a file, call export_text_file with the same complete artifact content.
@@ -1181,7 +1198,7 @@ function buildInternalHeaders(req: any): Record<string, string> {
 // We track lastUsed time and prune entries that haven't been touched for
 // longer than the sandbox's own timeout — without this, the map grew
 // unboundedly across the lifetime of the API process.
-const e2bSandboxBySession = new Map<string, { sandboxId: string; lastUsed: number }>();
+const e2bSandboxBySession = new Map<string, { sandboxId: string; lastUsed: number; mediaToolsReady?: boolean; appCodeReady?: boolean }>();
 
 function pruneExpiredSandboxEntries(): void {
   const cutoff = Date.now() - E2B_SANDBOX_TIMEOUT_MS;
@@ -1190,12 +1207,188 @@ function pruneExpiredSandboxEntries(): void {
   }
 }
 
-function rememberSandbox(sessionKey: string, sandboxId: string): void {
-  e2bSandboxBySession.set(sessionKey, { sandboxId, lastUsed: Date.now() });
+function rememberSandbox(sessionKey: string, sandboxId: string, updates: Partial<{ mediaToolsReady: boolean; appCodeReady: boolean }> = {}): void {
+  const existing = e2bSandboxBySession.get(sessionKey);
+  e2bSandboxBySession.set(sessionKey, {
+    sandboxId,
+    lastUsed: Date.now(),
+    mediaToolsReady: existing?.mediaToolsReady ?? false,
+    appCodeReady: existing?.appCodeReady ?? false,
+    ...updates,
+  });
 }
 
 function e2bConfigured(): boolean {
   return Boolean(process.env.E2B_API_KEY?.trim());
+}
+
+async function bootstrapSandboxMediaTools(sandbox: any, sessionKey: string): Promise<void> {
+  if (!E2B_BOOTSTRAP_MEDIA_TOOLS) return;
+  const entry = e2bSandboxBySession.get(sessionKey);
+  if (entry?.mediaToolsReady) return;
+
+  const script = String.raw`
+set -u
+mkdir -p /home/user/bin
+export PATH="/home/user/bin:/home/user/.local/bin:$PATH"
+
+need_ffmpeg=0
+command -v ffmpeg >/dev/null 2>&1 || need_ffmpeg=1
+command -v ffprobe >/dev/null 2>&1 || need_ffmpeg=1
+if [ "$need_ffmpeg" = "1" ] && command -v apt-get >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
+  $SUDO apt-get update -y >/tmp/e2b-apt-update.log 2>&1 && \
+  $SUDO apt-get install -y ffmpeg ripgrep >/tmp/e2b-apt-install.log 2>&1 || true
+fi
+
+if ! command -v rg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+  if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
+  $SUDO apt-get install -y ripgrep >/tmp/e2b-rg-install.log 2>&1 || true
+fi
+
+python3 -m pip install --user -q --disable-pip-version-check yt-dlp >/tmp/e2b-pip-ytdlp.log 2>&1 || true
+if [ -x /home/user/.local/bin/yt-dlp ]; then
+  ln -sf /home/user/.local/bin/yt-dlp /home/user/bin/yt-dlp
+elif ! command -v yt-dlp >/dev/null 2>&1; then
+  cat > /home/user/bin/yt-dlp <<'SH'
+#!/usr/bin/env sh
+exec python3 -m yt_dlp "$@"
+SH
+  chmod +x /home/user/bin/yt-dlp
+fi
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  python3 -m pip install --user -q --disable-pip-version-check imageio-ffmpeg >/tmp/e2b-pip-ffmpeg.log 2>&1 || true
+  cat > /home/user/bin/ffmpeg <<'SH'
+#!/usr/bin/env sh
+exec python3 - "$@" <<'PY'
+import os, sys
+import imageio_ffmpeg
+exe = imageio_ffmpeg.get_ffmpeg_exe()
+os.execv(exe, [exe] + sys.argv[1:])
+PY
+SH
+  chmod +x /home/user/bin/ffmpeg
+fi
+
+{
+  echo "PATH=/home/user/bin:/home/user/.local/bin:$PATH"
+  echo "yt-dlp=$(command -v yt-dlp || true)"
+  echo "ffmpeg=$(command -v ffmpeg || true)"
+  echo "ffprobe=$(command -v ffprobe || true)"
+  echo "rg=$(command -v rg || true)"
+} > /home/user/.sandbox-media-tools
+cat /home/user/.sandbox-media-tools
+`;
+
+  try {
+    await sandbox.files.makeDir("/home/user/bin").catch(() => {});
+    await sandbox.commands.run(script, {
+      cwd: "/home/user",
+      timeoutMs: Math.max(30000, Math.min(E2B_BOOTSTRAP_TIMEOUT_MS, 10 * 60 * 1000)),
+    });
+    rememberSandbox(sessionKey, sandbox.sandboxId, { mediaToolsReady: true });
+  } catch (err) {
+    logger.warn({ err, sessionKey }, "Could not bootstrap E2B media tools");
+  }
+}
+
+const APP_CODE_EXTENSIONS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".json", ".yaml", ".yml", ".css", ".html",
+  ".md", ".txt", ".toml", ".sql",
+]);
+
+function shouldPreloadAppCode(relPath: string): boolean {
+  const normalized = relPath.replace(/\\/g, "/");
+  const lower = normalized.toLowerCase();
+  if (!normalized || normalized.startsWith("../")) return false;
+  if (/(^|\/)(node_modules|dist|build|coverage|\.git|\.vite|\.cache|\.pytest_cache|__pycache__)(\/|$)/i.test(normalized)) return false;
+  if (/(^|\/)(translator|video-translator-service)(\/|$)/i.test(lower)) return false;
+  if (/translator/i.test(normalized)) return false;
+  if (/(^|\/)(\.env|storage-state|.*cookies.*|.*credential.*|.*secret.*)(\.|$|\/)/i.test(normalized)) return false;
+  if (/\.(mp4|mov|mkv|avi|webm|mp3|wav|m4a|aac|flac|jpg|jpeg|png|webp|gif|pdf|zip|tar|gz|7z|exe|dll|so|bin)$/i.test(normalized)) return false;
+  const dot = normalized.lastIndexOf(".");
+  const ext = dot >= 0 ? normalized.slice(dot).toLowerCase() : "";
+  return APP_CODE_EXTENSIONS.has(ext);
+}
+
+async function collectAppCodeFiles(root: string): Promise<Array<{ full: string; rel: string; size: number }>> {
+  const out: Array<{ full: string; rel: string; size: number }> = [];
+  const walk = async (dir: string) => {
+    if (out.length >= E2B_APP_CODE_MAX_FILES) return;
+    let entries: any[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (out.length >= E2B_APP_CODE_MAX_FILES) break;
+      const name = String(entry.name);
+      const full = join(dir, name);
+      const rel = relative(root, full).split(sep).join("/");
+      if (entry.isDirectory()) {
+        if (shouldPreloadAppCode(`${rel}/placeholder.ts`)) await walk(full);
+      } else if (entry.isFile() && shouldPreloadAppCode(rel)) {
+        const size = Number((await stat(full)).size || 0);
+        if (size <= E2B_APP_CODE_MAX_FILE_CHARS * 2) out.push({ full, rel, size });
+      }
+    }
+  };
+  await walk(root);
+  return out;
+}
+
+async function preloadAppCodeIntoSandbox(sandbox: any, sessionKey: string): Promise<void> {
+  if (!E2B_PRELOAD_APP_CODE) return;
+  const entry = e2bSandboxBySession.get(sessionKey);
+  if (entry?.appCodeReady) return;
+  const sourceRoots = [
+    join(process.cwd(), "code-context-main"),
+    join(process.cwd(), "..", "..", "code-context-main"),
+    process.cwd(),
+  ].filter((p, idx, arr) => arr.indexOf(p) === idx && existsSync(p));
+  if (!sourceRoots.length) return;
+
+  let written = 0;
+  let totalChars = 0;
+  await sandbox.files.makeDir("/home/user/app-code").catch(() => {});
+  for (const root of sourceRoots) {
+    const files = await collectAppCodeFiles(root);
+    for (const file of files) {
+      if (written >= E2B_APP_CODE_MAX_FILES || totalChars >= E2B_APP_CODE_MAX_TOTAL_CHARS) break;
+      try {
+        let text = await readFile(file.full, "utf8");
+        if (text.length > E2B_APP_CODE_MAX_FILE_CHARS) {
+          text = `${text.slice(0, E2B_APP_CODE_MAX_FILE_CHARS)}\n\n/* TRUNCATED: ${file.rel} */`;
+        }
+        if (totalChars + text.length > E2B_APP_CODE_MAX_TOTAL_CHARS) break;
+        const target = `/home/user/app-code/${file.rel}`;
+        await sandbox.files.makeDir(dirname(target)).catch(() => {});
+        await sandbox.files.write(target, text);
+        written += 1;
+        totalChars += text.length;
+      } catch {
+        // Best-effort preload; sandbox command still works without a file.
+      }
+    }
+    if (written >= E2B_APP_CODE_MAX_FILES || totalChars >= E2B_APP_CODE_MAX_TOTAL_CHARS) break;
+  }
+
+  await sandbox.files.write(
+    "/home/user/app-code/README.md",
+    [
+      "# Super Agent App Code Sandbox",
+      "",
+      "This folder contains a filtered snapshot of the main website/app code for debugging.",
+      "Translation-tab and video-translator worker files are intentionally excluded.",
+      "Use `/home/user/translation-code` only in the Translation Assistant, not here.",
+      `Files copied: ${written}`,
+      `Approx chars copied: ${totalChars}`,
+    ].join("\n"),
+  ).catch(() => {});
+  rememberSandbox(sessionKey, sandbox.sandboxId, { appCodeReady: true });
 }
 
 function sandboxSessionKey(req: any): string {
@@ -1220,6 +1413,8 @@ async function getChatSandbox(req: any): Promise<any> {
       const connected = await Sandbox.connect(existing.sandboxId, { timeoutMs: E2B_SANDBOX_TIMEOUT_MS });
       await connected.setTimeout(E2B_SANDBOX_TIMEOUT_MS).catch(() => {});
       rememberSandbox(sessionKey, existing.sandboxId);
+      await bootstrapSandboxMediaTools(connected, sessionKey);
+      await preloadAppCodeIntoSandbox(connected, sessionKey);
       return connected;
     } catch (err) {
       logger.warn({ err, sessionKey, existingId: existing.sandboxId }, "Could not reconnect E2B sandbox; creating a new one");
@@ -1235,6 +1430,8 @@ async function getChatSandbox(req: any): Promise<any> {
     },
   });
   rememberSandbox(sessionKey, sandbox.sandboxId);
+  await bootstrapSandboxMediaTools(sandbox, sessionKey);
+  await preloadAppCodeIntoSandbox(sandbox, sessionKey);
   return sandbox;
 }
 
@@ -1298,8 +1495,9 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
 
   let liveOut = "";
   let liveErr = "";
+  const commandWithPath = `export PATH="/home/user/bin:/home/user/.local/bin:$PATH"\n${command}`;
   sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Running in sandbox: ${command.slice(0, 120)}` });
-  const result = await sandbox.commands.run(command, {
+  const result = await sandbox.commands.run(commandWithPath, {
     cwd,
     timeoutMs,
     onStdout: (data: string) => { liveOut += data; },

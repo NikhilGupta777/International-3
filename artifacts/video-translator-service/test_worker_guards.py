@@ -73,6 +73,8 @@ class GeminiTranscriptionTests(unittest.TestCase):
         self.assertNotIn("HeyGen", prompt)
         self.assertIn("Do not split just because the text is long", prompt)
         self.assertIn("meaningful 1-2 second pause", prompt)
+        self.assertIn("Source language hint may be wrong", prompt)
+        self.assertIn("native script", prompt)
         self.assertIn("Output only JSON", prompt)
 
     def test_normalize_gemini_transcript_payload_repairs_segments_for_worker_contract(self):
@@ -117,25 +119,56 @@ class GeminiTranscriptionTests(unittest.TestCase):
         # Regression: a numeric 0.0 start must be kept, not dropped as falsy.
         self.assertEqual(segments[0]["start"], 0.0)
 
-    def test_transcribe_routes_short_to_single_gemini_and_long_to_chunked(self):
+    def test_normalize_splits_overlong_gemini_segments_for_dubbing_contract(self):
+        payload = {
+            "segments": [
+                {
+                    "speaker": "A",
+                    "start": 0.0,
+                    "end": 46.0,
+                    "text": " ".join(f"word{i}" for i in range(46)),
+                    "words": [
+                        {"word": f"word{i}", "start": float(i), "end": float(i + 0.8)}
+                        for i in range(46)
+                    ],
+                }
+            ]
+        }
+
+        old_max = self.worker.GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS
+        try:
+            self.worker.GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS = 15.0
+            segments = self.worker.normalize_gemini_transcript_payload(payload, duration_seconds=46.0)
+        finally:
+            self.worker.GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS = old_max
+
+        self.assertGreater(len(segments), 1)
+        self.assertTrue(all((s["end"] - s["start"]) <= 15.05 for s in segments))
+        self.assertEqual([s["id"] for s in segments], list(range(1, len(segments) + 1)))
+        self.assertEqual(
+            " ".join(w["word"] for s in segments for w in s["words"]),
+            " ".join(f"word{i}" for i in range(46)),
+        )
+
+    def test_transcribe_routes_short_to_gemini_and_over_17_minutes_to_assemblyai(self):
         calls = []
         old_single = self.worker.transcribe_gemini
-        old_chunked = self.worker.transcribe_gemini_chunked
-        old_window = self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS
+        old_assembly = self.worker.transcribe_assemblyai
+        old_cutoff = self.worker.GEMINI_TRANSCRIBE_MAX_SECONDS
         try:
-            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = 600.0
+            self.worker.GEMINI_TRANSCRIBE_MAX_SECONDS = 1020.0
             seg = [{"id": 1, "start": 0.0, "end": 1.0, "text": "hi", "words": [{"word": "hi", "start": 0.0, "end": 1.0}]}]
             self.worker.transcribe_gemini = lambda path, duration=None: calls.append(("single", duration)) or seg
-            self.worker.transcribe_gemini_chunked = lambda path, duration: calls.append(("chunked", duration)) or seg
+            self.worker.transcribe_assemblyai = lambda path: calls.append(("assemblyai", None)) or seg
 
-            self.worker.transcribe(Path("short.wav"), 600.0)    # at the window → single
-            self.worker.transcribe(Path("long.wav"), 600.1)     # over the window → chunked
+            self.worker.transcribe(Path("short.wav"), 1020.0)
+            self.worker.transcribe(Path("long.wav"), 1020.1)
 
-            self.assertEqual(calls, [("single", 600.0), ("chunked", 600.1)])
+            self.assertEqual(calls, [("single", 1020.0), ("assemblyai", None)])
         finally:
             self.worker.transcribe_gemini = old_single
-            self.worker.transcribe_gemini_chunked = old_chunked
-            self.worker.GEMINI_TRANSCRIBE_CHUNK_SECONDS = old_window
+            self.worker.transcribe_assemblyai = old_assembly
+            self.worker.GEMINI_TRANSCRIBE_MAX_SECONDS = old_cutoff
 
     def test_transcribe_gemini_chunked_offsets_and_stitches_timestamps(self):
         # Each chunk transcribes [0, len] in its own local time; stitching must add the
