@@ -245,6 +245,7 @@ _COSYVOICE_PRELOAD_STARTED_AT = None
 # preload so the 1-3 min kernel JIT/cuDNN cost overlaps transcription/translation
 # instead of blocking the clone stage.
 _COSYVOICE_WARMED = False
+_COSYVOICE_WARMUP_LOCK = threading.Lock()  # prevents concurrent warmup from background + clone stage
 _COSYVOICE_WARMUP_REF = None
 
 PIPELINE_STEPS = [
@@ -2494,33 +2495,41 @@ def _get_warmup_reference() -> Path:
 def warmup_cosyvoice_model(model) -> None:
     """Run one dummy inference to pre-compile CUDA kernels / cuDNN autotune / ONNX
     sessions, so the first real clone segment doesn't pay that 1-3 min cost. Safe to
-    call from the background preload thread. Idempotent (skips if already warmed)."""
+    call from the background preload thread or the clone stage. Idempotent and
+    thread-safe — only one warmup runs at a time via _COSYVOICE_WARMUP_LOCK."""
     global _COSYVOICE_WARMED
     if _COSYVOICE_WARMED or model is None:
         return
-    try:
-        ref = _get_warmup_reference()
-    except Exception as ref_err:
-        log.warning("[CosyVoice] Could not build warmup reference (%s); skipping warmup.", ref_err)
-        return
-    warmup_text = "Warmup."
-    if "CosyVoice3" in type(model).__name__ and COSYVOICE3_INJECT_PROMPT_PREFIX:
-        warmup_text = "<|endofprompt|>Warmup."
-    t0 = time.monotonic()
-    try:
-        log.info("[CosyVoice] Running warmup inference (pre-compiling CUDA kernels)...")
-        done = False
-        if hasattr(model, "inference_zero_shot"):
-            for _ in model.inference_zero_shot(warmup_text, warmup_text, str(ref)):
-                done = True
-                break  # one chunk triggers all kernel compilation
-        if not done and hasattr(model, "inference_cross_lingual"):
-            for _ in model.inference_cross_lingual(warmup_text, str(ref)):
-                break
-        _COSYVOICE_WARMED = True
-        log.info("[CosyVoice] Warmup complete in %.1fs — CUDA kernels ready.", time.monotonic() - t0)
-    except Exception as warm_err:
-        log.warning("[CosyVoice] Warmup failed after %.1fs (non-fatal): %s", time.monotonic() - t0, warm_err)
+    # Double-checked lock: prevents background preload and clone stage from running
+    # warmup concurrently if wait_for_cosyvoice_preload() returns early (model loaded
+    # but warmup still in-flight). The second caller blocks here, then returns
+    # immediately after the first caller sets _COSYVOICE_WARMED = True.
+    with _COSYVOICE_WARMUP_LOCK:
+        if _COSYVOICE_WARMED:
+            return
+        try:
+            ref = _get_warmup_reference()
+        except Exception as ref_err:
+            log.warning("[CosyVoice] Could not build warmup reference (%s); skipping warmup.", ref_err)
+            return
+        warmup_text = "Warmup."
+        if "CosyVoice3" in type(model).__name__ and COSYVOICE3_INJECT_PROMPT_PREFIX:
+            warmup_text = "<|endofprompt|>Warmup."
+        t0 = time.monotonic()
+        try:
+            log.info("[CosyVoice] Running warmup inference (pre-compiling CUDA kernels)...")
+            done = False
+            if hasattr(model, "inference_zero_shot"):
+                for _ in model.inference_zero_shot(warmup_text, warmup_text, str(ref)):
+                    done = True
+                    break  # one chunk triggers all kernel compilation
+            if not done and hasattr(model, "inference_cross_lingual"):
+                for _ in model.inference_cross_lingual(warmup_text, str(ref)):
+                    break
+            _COSYVOICE_WARMED = True
+            log.info("[CosyVoice] Warmup complete in %.1fs — CUDA kernels ready.", time.monotonic() - t0)
+        except Exception as warm_err:
+            log.warning("[CosyVoice] Warmup failed after %.1fs (non-fatal): %s", time.monotonic() - t0, warm_err)
 
 
 def _preload_cosyvoice_task():
@@ -2552,15 +2561,27 @@ def start_cosyvoice_preload():
 
 
 def wait_for_cosyvoice_preload():
-    """Return the background-loaded model, or load synchronously if needed."""
+    """Return the background-loaded model, or load synchronously if needed.
+
+    Returns as soon as the model weights are loaded — does NOT wait for CUDA
+    warmup to complete. Warmup continues in the background preload thread;
+    the clone stage's existing `if not _COSYVOICE_WARMED` check handles it
+    (safely serialised via _COSYVOICE_WARMUP_LOCK).
+    """
     global _COSYVOICE_MODEL, _COSYVOICE_PRELOAD_FUTURE
+    # Fast path: model already loaded by the background thread (load_cosyvoice_model
+    # sets _COSYVOICE_MODEL before returning). Warmup may still be running but the
+    # clone stage warmup check + lock will handle it correctly.
+    if _COSYVOICE_MODEL is not None:
+        log.info("[CosyVoice] Model already loaded by background preload; clone stage proceeds immediately.")
+        return _COSYVOICE_MODEL
     future = _COSYVOICE_PRELOAD_FUTURE
     if future is None:
         return load_cosyvoice_model(emit_progress=True, reason="clone-stage")
     wait_t0 = time.monotonic()
     if not future.done():
-        update_progress("CLONING", 52, "Waiting for voice model preload to finish...")
-        log.info("[CosyVoice] Waiting for background preload to finish at clone stage.")
+        update_progress("CLONING", 52, "Waiting for voice model to load...")
+        log.info("[CosyVoice] Waiting for background model load at clone stage.")
     try:
         model = future.result()
     except Exception as exc:
@@ -2569,7 +2590,7 @@ def wait_for_cosyvoice_preload():
         return load_cosyvoice_model(emit_progress=True, reason="preload-retry")
     waited = time.monotonic() - wait_t0
     _COSYVOICE_MODEL = model
-    log.info("[CosyVoice] Background preload ready; clone stage waited %.1fs.", waited)
+    log.info("[CosyVoice] Background model load ready; clone stage waited %.1fs.", waited)
     return model
 
 
@@ -6194,13 +6215,24 @@ def process_single_job():
         COSYVOICE_PRELOAD,
     )
 
-    work_dir = Path(tempfile.mkdtemp(prefix=f"translator_{JOB_ID}_"))
-    log.info(f"Working directory: {work_dir}")
+    work_dir = Path(tempfile.mkdtemp(prefix=f”translator_{JOB_ID}_”))
+    log.info(f”Working directory: {work_dir}”)
+
+    # Start CosyVoice background preload immediately — before download — to maximise
+    # the overlap window. Download (1-3 min) + extraction + transcription + translation
+    # all run while model weights load and CUDA kernels warm up in the background.
+    def _start_cosyvoice_preload_safe():
+        try:
+            start_cosyvoice_preload()
+        except Exception as exc:
+            log.warning(“[CosyVoice] Could not start background preload; clone stage will load synchronously: %s”, exc)
+
+    _start_cosyvoice_preload_safe()
 
     try:
 
         # â”€â”€ 1. Download video from S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        update_progress("STARTING", 3, "Downloading video from cloud...")
+        update_progress(“STARTING”, 3, “Downloading video from cloud...”)
         input_ext = Path(S3_INPUT_KEY).suffix or ".mp4"
         video_path = work_dir / f"input{input_ext}"
         download_from_s3(S3_INPUT_KEY, video_path)
@@ -6220,12 +6252,6 @@ def process_single_job():
             "-map", "0:a:0", "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(transcription_audio),
         )
         reference_audio = full_audio_hq
-
-        def _start_cosyvoice_preload_safe():
-            try:
-                start_cosyvoice_preload()
-            except Exception as exc:
-                log.warning("[CosyVoice] Could not start background preload; clone stage will load synchronously: %s", exc)
 
         # â”€â”€ 3. Optional Demucs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         background_audio = None
@@ -6277,7 +6303,6 @@ def process_single_job():
                 except Exception as e:
                     demucs_warning = str(e)
                     log.warning(f"[Demucs+ASR] Demucs failed (ASR still succeeded): {e}")
-                _start_cosyvoice_preload_safe()
 
         elif USE_DEMUCS and _demucs_before_asr:
             # ── Sequential path: Demucs first, then ASR on vocals ─────────
@@ -6294,13 +6319,11 @@ def process_single_job():
                 demucs_warning = str(e)
                 log.warning(f"[Demucs] Skipped: {e}")
 
-            _start_cosyvoice_preload_safe()
             update_progress("TRANSCRIBING", 18, "Transcribing speech...")
             segments = transcribe(transcription_audio, video_duration)
 
         else:
             # ── No Demucs ─────────────────────────────────────────────────
-            _start_cosyvoice_preload_safe()
             update_progress("TRANSCRIBING", 18, "Transcribing speech...")
             segments = transcribe(transcription_audio, video_duration)
 
