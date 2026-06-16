@@ -24,10 +24,12 @@ const queryClient = new QueryClient({
 
 const AUTH_HINT_KEY = "videomaking.authenticated";
 const WORKSPACE_KEY = "vm.workspace";
+const PITAJI_WORKSPACE_ENABLED = false;
 type Workspace = "videomaking" | "pitaji";
 
 function readInitialWorkspace(): Workspace {
   if (typeof window === "undefined") return "videomaking";
+  if (!PITAJI_WORKSPACE_ENABLED) return "videomaking";
   // 1. URL hash takes precedence so deep links work: e.g. /#pitaji
   if (window.location.hash.replace(/^#/, "").trim().toLowerCase() === "pitaji") {
     return "pitaji";
@@ -40,6 +42,9 @@ function readInitialWorkspace(): Workspace {
 
 function setStoredWorkspace(ws: Workspace): void {
   if (typeof window === "undefined") return;
+  if (!PITAJI_WORKSPACE_ENABLED && ws === "pitaji") {
+    ws = "videomaking";
+  }
   window.localStorage.setItem(WORKSPACE_KEY, ws);
   // Keep the hash in sync so a refresh stays on the same workspace.
   if (ws === "pitaji") {
@@ -149,6 +154,7 @@ function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authFeatures, setAuthFeatures] = useState<AuthFeatures | null>(null);
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
+  const [authConfigLoaded, setAuthConfigLoaded] = useState(false);
   const [googleReady, setGoogleReady] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const base = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -223,6 +229,8 @@ function App() {
         if (mounted) setAuthConfig(data);
       } catch {
         // Google sign-in stays hidden if config cannot be loaded.
+      } finally {
+        if (mounted) setAuthConfigLoaded(true);
       }
     };
     void loadConfig();
@@ -472,13 +480,21 @@ function App() {
                 </button>
               </form>
 
-              {authConfig?.googleAuthEnabled && authConfig.googleClientId ? (
-                <div className="auth-google-wrap">
+              <div className="auth-google-wrap">
+                {authConfig?.googleAuthEnabled && authConfig.googleClientId ? (
                   <div id="google-signin-button" className={cn("auth-google-button", googleSubmitting && "opacity-60 pointer-events-none")} />
-                  {googleSubmitting ? <p className="auth-help">Checking Google approval...</p> : null}
-                </div>
-              ) : null}
+                ) : (
+                  <button className="auth-google-fallback" type="button" disabled>
+                    Continue with Google
+                  </button>
+                )}
+                {googleSubmitting ? <p className="auth-help">Checking Google approval...</p> : null}
+                {!authConfig?.googleAuthEnabled && authConfigLoaded ? (
+                  <p className="auth-help">Google sign-in is temporarily unavailable.</p>
+                ) : null}
+              </div>
 
+              {PITAJI_WORKSPACE_ENABLED ? (
               <button
                 type="button"
                 className="pj-workspace-switcher"
@@ -486,6 +502,7 @@ function App() {
               >
                 Open Pita Ji Live workspace →
               </button>
+              ) : null}
             </AuthOverlay>
           )}
         </div>

@@ -17,6 +17,8 @@ import {
   GetObjectCommand,
   CopyObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
+  DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import { setupSse, sseFlush } from "../lib/sse";
@@ -151,6 +153,46 @@ const VERTEX_ENV_NAMES = [
 const s3    = new S3Client({ region: REGION });
 const ddb   = new DynamoDBClient({ region: REGION });
 const batch = new BatchClient({ region: REGION });
+
+// ── Translator S3 cleanup ─────────────────────────────────────────────────────
+const TRANSLATOR_S3_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+async function cleanupOldTranslatorJobs(): Promise<void> {
+  if (!S3_BUCKET) return;
+  try {
+    const cutoff = Date.now() - TRANSLATOR_S3_MAX_AGE_MS;
+    let token: string | undefined;
+    const toDelete: { Key: string }[] = [];
+    do {
+      const result = await s3.send(new ListObjectsV2Command({
+        Bucket: S3_BUCKET,
+        Prefix: "translator-jobs/",
+        ContinuationToken: token,
+        MaxKeys: 1000,
+      }));
+      for (const obj of result.Contents ?? []) {
+        if (obj.Key && obj.LastModified && obj.LastModified.getTime() < cutoff) {
+          toDelete.push({ Key: obj.Key });
+        }
+      }
+      token = result.NextContinuationToken;
+    } while (token);
+    for (let i = 0; i < toDelete.length; i += 1000) {
+      await s3.send(new DeleteObjectsCommand({
+        Bucket: S3_BUCKET,
+        Delete: { Objects: toDelete.slice(i, i + 1000), Quiet: true },
+      }));
+    }
+    if (toDelete.length > 0) console.log(`[translator] Cleaned up ${toDelete.length} S3 objects older than 7 days`);
+  } catch (err) {
+    console.error("[translator] S3 cleanup error:", (err as Error).message);
+  }
+}
+
+if (S3_BUCKET) {
+  cleanupOldTranslatorJobs().catch(() => {});
+  setInterval(() => { cleanupOldTranslatorJobs().catch(() => {}); }, 6 * 60 * 60 * 1000);
+}
 
 router.use((_req, res, next) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");

@@ -48,8 +48,8 @@ const WORKER_FUNCTION_NAME =
   "";
 const lambdaClient = WORKER_FUNCTION_NAME ? new LambdaClient({ region: AWS_REGION }) : null;
 
-// S3 cleanup for subtitle files (6h TTL, runs every 30 min)
-const SUBTITLE_S3_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+// S3 cleanup for subtitle files (7d TTL, runs every 30 min)
+const SUBTITLE_S3_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 if (isS3StorageEnabled()) {
   const runSubtitleS3Cleanup = () => {
     void cleanupOldS3Objects({ namespace: "subtitles", maxAgeMs: SUBTITLE_S3_MAX_AGE_MS })

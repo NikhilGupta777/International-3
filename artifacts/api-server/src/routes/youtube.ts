@@ -272,8 +272,8 @@ if (!existsSync(DOWNLOAD_DIR)) {
   mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }
 
-// Clean up files older than 3 hours every 30 minutes (auto-delete fires at 2h, this is a safety net)
-const MAX_FILE_AGE_MS = 3 * 60 * 60 * 1000;
+// Clean up files older than 7 days every 30 minutes (auto-delete is the primary cleanup path)
+const MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 function cleanupOldFiles() {
   try {
     const now = Date.now();
@@ -324,8 +324,8 @@ if (isS3StorageEnabled()) {
   }, 30 * 60 * 1000);
 }
 
-// Auto-delete a job's file 2 hours after it's ready
-const AUTO_DELETE_MS = 2 * 60 * 60 * 1000;
+// Auto-delete a job's file 7 days after it's ready
+const AUTO_DELETE_MS = 7 * 24 * 60 * 60 * 1000;
 function scheduleAutoDelete(
   jobId: string,
   jobRef: DownloadJob,

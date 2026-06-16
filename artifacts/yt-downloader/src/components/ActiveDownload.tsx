@@ -7,7 +7,7 @@ import { Download, Loader2, CheckCircle2, AlertCircle, Clock, TimerOff } from "l
 import { cn, formatBytes } from "@/lib/utils";
 import { loadActiveDownload, saveCompletedDownload } from "@/lib/download-history";
 
-const EXPIRY_SECONDS = 2 * 60 * 60; // 2 hours
+const EXPIRY_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 interface ActiveDownloadProps {
   jobId: string;
@@ -203,14 +203,16 @@ export function ActiveDownload({ jobId, onReset, onExpired }: ActiveDownloadProp
   };
 
   const formatCountdown = (secs: number) => {
-    const h = Math.floor(secs / 3600);
+    const d = Math.floor(secs / 86400);
+    const h = Math.floor((secs % 86400) / 3600);
     const m = Math.floor((secs % 3600) / 60);
     const s = secs % 60;
+    if (d > 0) return `${d}d ${h}h`;
     if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  const countdownUrgent = secondsLeft !== null && secondsLeft < 300; // last 5 minutes
+  const countdownUrgent = secondsLeft !== null && secondsLeft < 60 * 60; // last 1 hour
 
   return (
     <motion.div
@@ -272,7 +274,7 @@ export function ActiveDownload({ jobId, onReset, onExpired }: ActiveDownloadProp
 
         <p className="text-white/60 mb-6 max-w-md break-all text-sm sm:text-base">
           {isExpired
-            ? "The 2-hour window has passed. Start a new download to get the file."
+            ? "The 7-day window has passed. Start a new download to get the file."
             : currentProgress?.filename || "Preparing your file, please wait..."}
         </p>
 
@@ -290,11 +292,15 @@ export function ActiveDownload({ jobId, onReset, onExpired }: ActiveDownloadProp
           >
             <Clock className={cn("w-4 h-4 sm:w-5 sm:h-5 shrink-0", countdownUrgent ? "text-orange-400 animate-pulse" : "text-white/40")} />
             <span className="text-xs sm:text-sm font-medium">
-              File deletes in{" "}
-              <span className={cn("font-bold tabular-nums", countdownUrgent ? "text-orange-300" : "text-white")}>
-                {formatCountdown(secondsLeft)}
-              </span>
-              {" "}— save now
+              {secondsLeft > 24 * 60 * 60 ? (
+                <>Available for <span className="font-bold text-white">{formatCountdown(secondsLeft)}</span></>
+              ) : (
+                <>File deletes in{" "}
+                  <span className={cn("font-bold tabular-nums", countdownUrgent ? "text-orange-300" : "text-white")}>
+                    {formatCountdown(secondsLeft)}
+                  </span>
+                  {" "}— save now</>
+              )}
             </span>
           </motion.div>
         )}

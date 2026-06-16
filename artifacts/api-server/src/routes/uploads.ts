@@ -38,8 +38,8 @@ const UPLOADS_TABLE_KEY = process.env.UPLOADS_TABLE_KEY ?? "jobId";
 const MAX_BYTES = 3 * 1024 * 1024 * 1024; // 3 GB
 const PART_SIZE = 10 * 1024 * 1024;        // 10 MB per part
 const SINGLE_LIMIT = 50 * 1024 * 1024;        // use single PUT for < 50 MB
-const TTL_UPLOAD = 7_200;                   // 2h presigned upload URL
-const TTL_DOWNLOAD = 86_400;                  // 24h presigned download URL
+const TTL_UPLOAD = 7_200;                        // 2h presigned upload URL
+const TTL_DOWNLOAD = 7 * 24 * 60 * 60;          // 7d presigned download URL
 
 const s3 = new S3Client({ region: REGION });
 const ddb = UPLOADS_TABLE ? new DynamoDBClient({ region: REGION }) : null;
@@ -195,7 +195,7 @@ router.post("/presign", async (req: Request, res: Response) => {
       fileId, s3Key, filename: safeName, originalFilename: String(filename).slice(0, 500),
       title: String(title).slice(0, 200), description: String(description).slice(0, 1000),
       size, mimeType: contentType, visibility: vis,
-      uploadedAt, expiresAt: Math.floor(uploadedAt / 1000) + 7 * 24 * 60 * 60,
+      uploadedAt, expiresAt: Math.floor(uploadedAt / 1000) + TTL_DOWNLOAD,
       status: "pending", downloadCount: 0,
     });
 

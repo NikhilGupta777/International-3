@@ -936,8 +936,9 @@ jobs:
           SPOT_OPTIONS='{"MarketType":"spot"}'
 
           INSTANCE_ID=""
-          # g6/g4ad added for broader capacity pool; ordered cheapest-first.
-          INSTANCE_TYPES="g4dn.xlarge g6.xlarge g4ad.xlarge g5.xlarge g4dn.2xlarge g5.2xlarge g6.2xlarge"
+          # g4ad excluded — AMD GPU, no CUDA/NVIDIA runtime, warmup would silently fail.
+          # g6 uses NVIDIA L4, g4dn uses NVIDIA T4, g5 uses NVIDIA A10G — all CUDA-capable.
+          INSTANCE_TYPES="g4dn.xlarge g6.xlarge g5.xlarge g4dn.2xlarge g5.2xlarge g6.2xlarge"
           SUBNETS="subnet-0ffbf739e0c562b95 subnet-0fcc8baaf7eb3719f subnet-0e0a4fe35fcae2aa1 subnet-0930bd3f2ca841aae subnet-0c256313b9fe90d51 subnet-0e39d7f64d803f4d6"
 
           _try_launch() {

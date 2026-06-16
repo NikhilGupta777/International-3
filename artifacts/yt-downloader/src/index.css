@@ -55,6 +55,17 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   min-height: 44px;
 }
 
+.auth-google-fallback {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .admin-panel {
   width: min(1180px, calc(100vw - 72px));
   max-width: 100%;

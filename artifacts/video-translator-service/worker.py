@@ -6215,8 +6215,8 @@ def process_single_job():
         COSYVOICE_PRELOAD,
     )
 
-    work_dir = Path(tempfile.mkdtemp(prefix=f”translator_{JOB_ID}_”))
-    log.info(f”Working directory: {work_dir}”)
+    work_dir = Path(tempfile.mkdtemp(prefix=f"translator_{JOB_ID}_"))
+    log.info(f"Working directory: {work_dir}")
 
     # Start CosyVoice background preload immediately — before download — to maximise
     # the overlap window. Download (1-3 min) + extraction + transcription + translation
@@ -6225,14 +6225,14 @@ def process_single_job():
         try:
             start_cosyvoice_preload()
         except Exception as exc:
-            log.warning(“[CosyVoice] Could not start background preload; clone stage will load synchronously: %s”, exc)
+            log.warning("[CosyVoice] Could not start background preload; clone stage will load synchronously: %s", exc)
 
     _start_cosyvoice_preload_safe()
 
     try:
 
         # â”€â”€ 1. Download video from S3 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        update_progress(“STARTING”, 3, “Downloading video from cloud...”)
+        update_progress("STARTING", 3, "Downloading video from cloud...")
         input_ext = Path(S3_INPUT_KEY).suffix or ".mp4"
         video_path = work_dir / f"input{input_ext}"
         download_from_s3(S3_INPUT_KEY, video_path)
