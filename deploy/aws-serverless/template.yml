@@ -514,14 +514,6 @@ Resources:
       Principal: "*"
       FunctionUrlAuthType: NONE
 
-  ApiFunctionUrlPermissionPublicV2:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunctionUrl
-      FunctionName: !Ref ApiFunction
-      Principal: "*"
-      FunctionUrlAuthType: NONE
-
   ApiFunctionUrlInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
