@@ -810,27 +810,27 @@ jobs:
           echo "| **Live** | https://videomaking.in |" >> $GITHUB_STEP_SUMMARY
 
   # ─── Job 5: Refresh custom GPU AMI with pre-pulled translator image ───────────
-  # Runs only when translator image was rebuilt OR manually triggered.
+  # Runs when the GPU translator image tag changes OR when manually triggered.
   # Pre-pulling the image into an AMI eliminates the ~10-20 min cold-start pull.
   # Skipped on normal code pushes (API/worker only changes) to save CI time.
   refresh-gpu-ami:
     name: Refresh GPU AMI (pre-pull translator image)
     runs-on: ubuntu-latest
     needs: [build-translator, deploy]
-    # AMI refresh only runs when the BASE image changed (models/deps) — not on
-    # every worker.py code push.  Because the slim image is tiny (~50 MB), a
-    # code-only change causes Docker to pull only the new slim layer (~10 sec)
-    # on first cold start even without an AMI refresh.  This saves ~35 min of
-    # AMI build time on every routine code fix.
+    # AMI refresh runs whenever the GPU translator image is rebuilt. Even a
+    # code-only slim image changes the top-level image digest/tag, so Batch
+    # cold-starts must pull/verify that image unless the current tag is already
+    # baked into the AMI. Skipping this caused 5+ minute STARTING delays after
+    # slim-only deploys.
     #
     # Triggers:
-    #   - base_changed=true  : Dockerfile.base / requirements.txt etc changed
+    #   - build-translator success: current commit has a new GPU translator tag
     #   - rebuild_gpu_ami=true: manual workflow_dispatch override
     if: >
       always() &&
       needs.deploy.result == 'success' &&
       (
-        (needs.build-translator.result == 'success' && needs.build-translator.outputs.base_changed == 'true') ||
+        needs.build-translator.result == 'success' ||
         github.event.inputs.rebuild_gpu_ami == 'true'
       )
     steps:
