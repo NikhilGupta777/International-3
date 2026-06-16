@@ -935,21 +935,45 @@ jobs:
           # Use Spot instance to avoid the 4 vCPU On-Demand G-instance limit.
           SPOT_OPTIONS='{"MarketType":"spot"}'
 
-          INSTANCE_ID=$(aws ec2 run-instances \
-            --image-id "${BASE_AMI}" \
-            --instance-type g4dn.xlarge \
-            --instance-market-options "${SPOT_OPTIONS}" \
-            --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
-            --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
-            --subnet-id subnet-0e39d7f64d803f4d6 \
-            --associate-public-ip-address \
-            --user-data "file://${SCRIPT_FILE}" \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ami-builder-translator},{Key=ami-build-status,Value=building}]" \
-            --query "Instances[0].InstanceId" \
-            --output text \
-            --region ${{ env.AWS_REGION }})
+          INSTANCE_ID=""
+          INSTANCE_TYPES="g4dn.xlarge g5.xlarge g4dn.2xlarge g5.2xlarge"
+          SUBNETS="subnet-0ffbf739e0c562b95 subnet-0fcc8baaf7eb3719f subnet-0e0a4fe35fcae2aa1 subnet-0930bd3f2ca841aae subnet-0c256313b9fe90d51 subnet-0e39d7f64d803f4d6"
+
+          for INSTANCE_TYPE in $INSTANCE_TYPES; do
+            for SUBNET_ID in $SUBNETS; do
+              echo "Trying AMI builder launch: type=${INSTANCE_TYPE} subnet=${SUBNET_ID}"
+              set +e
+              INSTANCE_ID=$(aws ec2 run-instances \
+                --image-id "${BASE_AMI}" \
+                --instance-type "${INSTANCE_TYPE}" \
+                --instance-market-options "${SPOT_OPTIONS}" \
+                --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
+                --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+                --subnet-id "${SUBNET_ID}" \
+                --associate-public-ip-address \
+                --user-data "file://${SCRIPT_FILE}" \
+                --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ami-builder-translator},{Key=ami-build-status,Value=building}]" \
+                --query "Instances[0].InstanceId" \
+                --output text \
+                --region ${{ env.AWS_REGION }} 2>/tmp/ami-builder-launch-error.log)
+              RC=$?
+              set -e
+              if [ "$RC" -eq 0 ] && [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+                echo "Launched AMI builder with ${INSTANCE_TYPE} in ${SUBNET_ID}: ${INSTANCE_ID}"
+                break 2
+              fi
+              echo "Launch failed for ${INSTANCE_TYPE} in ${SUBNET_ID}:"
+              cat /tmp/ami-builder-launch-error.log || true
+            done
+          done
+
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "::error::Could not launch AMI builder in any configured subnet/instance type."
+            exit 1
+          fi
+
           echo "instance_id=${INSTANCE_ID}" >> "$GITHUB_OUTPUT"
-          echo "✅ Launched AMI builder: ${INSTANCE_ID}"
+          echo "Launched AMI builder: ${INSTANCE_ID}"
 
       - name: Wait for image pull to complete (max 60 min)
         run: |
