@@ -25,6 +25,7 @@ const queryClient = new QueryClient({
 const AUTH_HINT_KEY = "videomaking.authenticated";
 const WORKSPACE_KEY = "vm.workspace";
 const PITAJI_WORKSPACE_ENABLED = false;
+const FALLBACK_GOOGLE_CLIENT_ID = "1088677655752-cfi64ufbpjd70j4junovqvau5fajbd2p.apps.googleusercontent.com";
 type Workspace = "videomaking" | "pitaji";
 
 function readInitialWorkspace(): Workspace {
@@ -224,11 +225,23 @@ function App() {
           credentials: "include",
           cache: "no-store",
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (mounted) {
+            setAuthConfig({ googleAuthEnabled: true, googleClientId: FALLBACK_GOOGLE_CLIENT_ID });
+          }
+          return;
+        }
         const data = (await res.json()) as AuthConfig;
-        if (mounted) setAuthConfig(data);
+        if (mounted) {
+          setAuthConfig({
+            googleAuthEnabled: data.googleAuthEnabled || Boolean(FALLBACK_GOOGLE_CLIENT_ID),
+            googleClientId: data.googleClientId || FALLBACK_GOOGLE_CLIENT_ID,
+          });
+        }
       } catch {
-        // Google sign-in stays hidden if config cannot be loaded.
+        if (mounted) {
+          setAuthConfig({ googleAuthEnabled: true, googleClientId: FALLBACK_GOOGLE_CLIENT_ID });
+        }
       } finally {
         if (mounted) setAuthConfigLoaded(true);
       }
