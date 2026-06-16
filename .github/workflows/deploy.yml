@@ -773,6 +773,32 @@ jobs:
                 ConvertTo-Json -Depth 4 -Compress |
                 Set-Content -Path "/tmp/lambda-env.json" -Encoding utf8
               Write-Host "Prepared $($vars.Count) Lambda env vars."
+              $permissionSuffix = Get-Date -Format "yyyyMMddHHmmss"
+
+              aws lambda update-function-url-config `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --auth-type NONE `
+                --invoke-mode RESPONSE_STREAM | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Warning "lambda update-function-url-config failed; continuing to permission repair" }
+
+              aws lambda add-permission `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --statement-id "public-function-url-invoke-$permissionSuffix" `
+                --action lambda:InvokeFunctionUrl `
+                --principal "*" `
+                --function-url-auth-type NONE | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "InvokeFunctionUrl permission repair failed" }
+
+              aws lambda add-permission `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --statement-id "public-function-url-invoke-function-$permissionSuffix" `
+                --action lambda:InvokeFunction `
+                --principal "*" `
+                --invoked-via-function-url | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "InvokeFunction via URL permission repair failed" }
 
               aws lambda update-function-configuration `
                 --region "${{ env.AWS_REGION }}" `
@@ -781,48 +807,27 @@ jobs:
                 --timeout 900 `
                 --memory-size 1536 `
                 --ephemeral-storage '{"Size":5120}' | Out-Null
-              if ($LASTEXITCODE -ne 0) { throw "lambda update-function-configuration failed" }
-
-              aws lambda wait function-updated `
-                --region "${{ env.AWS_REGION }}" `
-                --function-name "${{ env.CF_STACK_PREFIX }}-api"
-              if ($LASTEXITCODE -ne 0) { throw "lambda wait after configuration failed" }
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "lambda update-function-configuration failed; public API permission repair already attempted"
+              } else {
+                aws lambda wait function-updated `
+                  --region "${{ env.AWS_REGION }}" `
+                  --function-name "${{ env.CF_STACK_PREFIX }}-api"
+                if ($LASTEXITCODE -ne 0) { throw "lambda wait after configuration failed" }
+              }
 
               aws lambda update-function-code `
                 --region "${{ env.AWS_REGION }}" `
                 --function-name "${{ env.CF_STACK_PREFIX }}-api" `
                 --image-uri "${{ needs.build-api.outputs.image_uri }}" | Out-Null
-              if ($LASTEXITCODE -ne 0) { throw "lambda update-function-code failed" }
-
-              aws lambda wait function-updated `
-                --region "${{ env.AWS_REGION }}" `
-                --function-name "${{ env.CF_STACK_PREFIX }}-api"
-              if ($LASTEXITCODE -ne 0) { throw "lambda wait after code update failed" }
-
-              aws lambda update-function-url-config `
-                --region "${{ env.AWS_REGION }}" `
-                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
-                --auth-type NONE `
-                --invoke-mode RESPONSE_STREAM | Out-Null
-              if ($LASTEXITCODE -ne 0) { Write-Warning "lambda update-function-url-config failed; continuing to permissions" }
-
-              aws lambda add-permission `
-                --region "${{ env.AWS_REGION }}" `
-                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
-                --statement-id "public-function-url-invoke-20260616" `
-                --action lambda:InvokeFunctionUrl `
-                --principal "*" `
-                --function-url-auth-type NONE 2>$null | Out-Null
-              if ($LASTEXITCODE -ne 0) { Write-Warning "InvokeFunctionUrl permission may already exist or may be managed by CloudFormation." }
-
-              aws lambda add-permission `
-                --region "${{ env.AWS_REGION }}" `
-                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
-                --statement-id "public-function-url-invoke-function-20260616" `
-                --action lambda:InvokeFunction `
-                --principal "*" `
-                --invoked-via-function-url 2>$null | Out-Null
-              if ($LASTEXITCODE -ne 0) { Write-Warning "InvokeFunction via URL permission may already exist or may be managed by CloudFormation." }
+              if ($LASTEXITCODE -ne 0) {
+                Write-Warning "lambda update-function-code failed; continuing after permission repair"
+              } else {
+                aws lambda wait function-updated `
+                  --region "${{ env.AWS_REGION }}" `
+                  --function-name "${{ env.CF_STACK_PREFIX }}-api"
+                if ($LASTEXITCODE -ne 0) { throw "lambda wait after code update failed" }
+              }
 
               $stack = aws cloudformation describe-stacks `
                 --region "${{ env.AWS_REGION }}" `
