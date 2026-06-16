@@ -749,6 +749,124 @@ jobs:
         shell: pwsh
         run: |
           try {
+            if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+              Write-Host "Manual deploy: repairing API Lambda directly and syncing frontend."
+
+              node - <<'NODE'
+              const fs = require('fs');
+              const envText = fs.readFileSync('/tmp/.env.green', 'utf8');
+              const vars = {};
+              for (const rawLine of envText.split(/\r?\n/)) {
+                const line = rawLine.trim();
+                if (!line || line.startsWith('#')) continue;
+                const eq = line.indexOf('=');
+                if (eq <= 0) continue;
+                const key = line.slice(0, eq).trim();
+                let value = line.slice(eq + 1);
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+                if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                  value = value.slice(1, -1);
+                }
+                vars[key] = value;
+              }
+              fs.writeFileSync('/tmp/lambda-env.json', JSON.stringify({ Variables: vars }));
+              console.log(`Prepared ${Object.keys(vars).length} Lambda env vars.`);
+              NODE
+
+              aws lambda update-function-configuration `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --environment file:///tmp/lambda-env.json `
+                --timeout 900 `
+                --memory-size 1536 `
+                --ephemeral-storage '{"Size":5120}' | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "lambda update-function-configuration failed" }
+
+              aws lambda wait function-updated `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api"
+              if ($LASTEXITCODE -ne 0) { throw "lambda wait after configuration failed" }
+
+              aws lambda update-function-code `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --image-uri "${{ needs.build-api.outputs.image_uri }}" | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "lambda update-function-code failed" }
+
+              aws lambda wait function-updated `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api"
+              if ($LASTEXITCODE -ne 0) { throw "lambda wait after code update failed" }
+
+              aws lambda update-function-url-config `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --auth-type NONE `
+                --invoke-mode RESPONSE_STREAM | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Warning "lambda update-function-url-config failed; continuing to permissions" }
+
+              aws lambda add-permission `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --statement-id "public-function-url-invoke-20260616" `
+                --action lambda:InvokeFunctionUrl `
+                --principal "*" `
+                --function-url-auth-type NONE 2>$null | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Warning "InvokeFunctionUrl permission may already exist or may be managed by CloudFormation." }
+
+              aws lambda add-permission `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name "${{ env.CF_STACK_PREFIX }}-api" `
+                --statement-id "public-function-url-invoke-function-20260616" `
+                --action lambda:InvokeFunction `
+                --principal "*" `
+                --invoked-via-function-url 2>$null | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Warning "InvokeFunction via URL permission may already exist or may be managed by CloudFormation." }
+
+              $stack = aws cloudformation describe-stacks `
+                --region "${{ env.AWS_REGION }}" `
+                --stack-name "${{ env.CF_STACK_PREFIX }}-serverless" | ConvertFrom-Json
+              $outputs = @{}
+              foreach ($output in $stack.Stacks[0].Outputs) {
+                $outputs[$output.OutputKey] = $output.OutputValue
+              }
+              $siteBucket = $outputs["StaticSiteBucketName"]
+              $distributionId = $outputs["CloudFrontDistributionId"]
+              if (-not $siteBucket -or -not $distributionId) {
+                throw "Failed to resolve frontend deploy outputs"
+              }
+
+              pnpm --filter @workspace/yt-downloader run build
+              if ($LASTEXITCODE -ne 0) { throw "yt-downloader build failed" }
+
+              aws s3 sync `
+                "artifacts/yt-downloader/dist/public" `
+                "s3://$siteBucket/" `
+                --region "${{ env.AWS_REGION }}" `
+                --delete `
+                --exclude "*.html" `
+                --cache-control "public, max-age=31536000, immutable"
+              if ($LASTEXITCODE -ne 0) { throw "frontend asset sync failed" }
+
+              aws s3 sync `
+                "artifacts/yt-downloader/dist/public" `
+                "s3://$siteBucket/" `
+                --region "${{ env.AWS_REGION }}" `
+                --delete `
+                --exclude "*" --include "*.html" `
+                --cache-control "no-cache, no-store, must-revalidate" `
+                --content-type "text/html; charset=utf-8"
+              if ($LASTEXITCODE -ne 0) { throw "frontend html sync failed" }
+
+              aws cloudfront create-invalidation `
+                --distribution-id $distributionId `
+                --paths "/*" | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "cloudfront invalidation failed" }
+
+              Write-Host "Manual direct production deploy complete."
+              exit 0
+            }
+
             if ("${{ github.event_name }}" -eq "push") {
               $before = "${{ github.event.before }}"
               if ([string]::IsNullOrWhiteSpace($before) -or $before -eq "0000000000000000000000000000000000000000") {
