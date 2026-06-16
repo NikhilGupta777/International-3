@@ -1210,22 +1210,9 @@ export default function Home({
                 </motion.div>
               )}
 
-              {/* AI Copilot */}
-              {showCopilot && (
-                <motion.div key="copilot-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
-                  {canUseSuperAgent ? (
-                    <StudioCopilot
-                      key={copilotResetKey}
-                      onNavigate={(tab) => switchMode(tab as any)}
-                      pendingPrompt={pendingCopilotPrompt}
-                      onPromptConsumed={() => setPendingCopilotPrompt(null)}
-                      onBackToHome={() => switchMode("home")}
-                    />
-                  ) : (
-                    <FeatureUnavailable title="Super Agent is restricted" detail="Your account is not allowed to use Super Agent right now." />
-                  )}
-                </motion.div>
-              )}
+              {/* AI Copilot slot inside AnimatePresence removed — component is always
+                  mounted below (outside AnimatePresence) so the SSE stream survives
+                  tab navigation without being killed by React unmounting. */}
 
               {showFindVideo && (
                 <motion.div key="findvideo-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
@@ -1256,6 +1243,23 @@ export default function Home({
               )}
 
             </AnimatePresence>
+
+            {/* Always-mounted copilot — lives outside AnimatePresence so it is never
+                unmounted when the user navigates to another tab. The SSE stream keeps
+                running in the background; display:none hides it without destroying it. */}
+            <div style={{ display: showCopilot ? undefined : "none" }} className="w-full h-full flex-1 flex flex-col">
+              {canUseSuperAgent ? (
+                <StudioCopilot
+                  key={copilotResetKey}
+                  onNavigate={(tab) => switchMode(tab as any)}
+                  pendingPrompt={pendingCopilotPrompt}
+                  onPromptConsumed={() => setPendingCopilotPrompt(null)}
+                  onBackToHome={() => switchMode("home")}
+                />
+              ) : (
+                <FeatureUnavailable title="Super Agent is restricted" detail="Your account is not allowed to use Super Agent right now." />
+              )}
+            </div>
 
           </div>
         </main>

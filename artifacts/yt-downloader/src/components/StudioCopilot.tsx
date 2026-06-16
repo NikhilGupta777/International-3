@@ -2158,6 +2158,7 @@ export function StudioCopilot({
   }, []);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [reconnectBanner, setReconnectBanner] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
@@ -2461,11 +2462,20 @@ export function StudioCopilot({
   const lastUserAttachmentsRef = useRef<Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>>([]);
 
 
-  // Load sessions on mount
+  // Load sessions on mount; also restore reconnect banner if a stream was
+  // interrupted by a page refresh (sessionStorage survives refresh but not tab close).
   useEffect(() => {
     const loaded = loadSessions();
     setSessions(loaded);
     if (loaded.length > 0) { setCurrentSessionId(loaded[0].id); sessionIdRef.current = loaded[0].id; }
+    try {
+      const stale = sessionStorage.getItem("vm-agent-last-send");
+      if (stale) {
+        sessionStorage.removeItem("vm-agent-last-send");
+        const parsed = JSON.parse(stale) as { text?: string };
+        if (parsed?.text) setReconnectBanner(parsed.text);
+      }
+    } catch { /* ignore storage errors */ }
   }, []);
 
   const currentMessages = sessions.find(s => s.id === currentSessionId)?.messages ?? [];
@@ -2581,6 +2591,7 @@ export function StudioCopilot({
 
     upsertMsg(sessionId, assistantMsgId, m => m);
     setStreaming(true);
+    setReconnectBanner(null);
     setThinking(true);
     setAgentStage("planning");
     setThoughtText("");
@@ -2590,6 +2601,7 @@ export function StudioCopilot({
     setPasteUrl(null); // dismiss paste pill when message is sent
     lastUserTextRef.current = messageText; // track for retry
     lastUserAttachmentsRef.current = snapshotAttachments;
+    try { sessionStorage.setItem("vm-agent-last-send", JSON.stringify({ text: messageText })); } catch { /* ignore */ }
     streamingAssistantIdRef.current = assistantMsgId; // track for Stop
     abortRef.current = new AbortController();
 
@@ -3015,7 +3027,7 @@ export function StudioCopilot({
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `Error: ${cleanMsg}` }] }));
         return;
       }
-      if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); }
+      if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ } }
       if (evt.type === "suggestions") { setSuggestions((evt as any).items ?? []); }
     };
 
@@ -3043,17 +3055,20 @@ export function StudioCopilot({
       parseSseFrame(buf, true);
     } catch (err: any) {
       if (err?.name !== "AbortError") {
-        // Distinguish common failure modes for better user feedback
-        let msg = "Error: Connection interrupted. The job may still be running - try asking again.";
         if (err?.message?.includes("401") || err?.message?.includes("403")) {
-          msg = "Error: Authentication error - please refresh the page and try again.";
+          patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "Authentication error — please refresh the page and try again." }] }));
         } else if (err?.message?.includes("503") || err?.message?.includes("502")) {
-          msg = "Error: Server is starting up - please wait a moment and try again.";
+          patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "Server is starting up — please wait a moment and try again." }] }));
         } else if (err?.message?.includes("Server error:")) {
-          msg = `Error: ${err.message}`;
+          patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `Error: ${err.message}` }] }));
+        } else {
+          // Generic connection drop (network, mobile OS suspend, etc.).
+          // The server cancels all jobs on disconnect, so "job may still be running"
+          // is wrong. Show a retry banner above the input instead of cluttering the chat.
+          setReconnectBanner(lastUserTextRef.current);
         }
-        patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: msg }] }));
       }
+      try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ }
     } finally {
       setStreaming(false);
       setThinking(false);
@@ -3076,6 +3091,7 @@ export function StudioCopilot({
 
   const handleStop = () => {
     abortRef.current?.abort();
+    try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ }
     // Mark any in-flight tool cards as cancelled so they don't spin forever (and persist a dead spinner)
     const aId = streamingAssistantIdRef.current;
     const sId = sessionIdRef.current;
@@ -3409,6 +3425,28 @@ export function StudioCopilot({
 
             <div ref={bottomRef} />
           </div>
+        </div>
+      )}
+
+      {/* ── Reconnect banner — shown after involuntary connection drop ── */}
+      {reconnectBanner !== null && !streaming && (
+        <div className="flex items-center gap-3 px-4 py-2.5 border-t border-amber-400/20 bg-amber-500/8">
+          <span className="text-[13px] text-amber-200/80 flex-1 min-w-0 truncate">Connection dropped — retry your last message?</span>
+          <button
+            type="button"
+            onClick={() => { void sendMessage(reconnectBanner, lastUserAttachmentsRef.current); }}
+            className="shrink-0 text-[12px] font-semibold text-amber-100 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 transition-colors"
+          >
+            Retry
+          </button>
+          <button
+            type="button"
+            onClick={() => setReconnectBanner(null)}
+            className="shrink-0 text-white/35 hover:text-white/70 transition-colors"
+            aria-label="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
