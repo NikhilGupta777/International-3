@@ -157,6 +157,7 @@ function App() {
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const [authConfigLoaded, setAuthConfigLoaded] = useState(false);
   const [googleReady, setGoogleReady] = useState(false);
+  const [googleButtonRendered, setGoogleButtonRendered] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const base = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -278,7 +279,8 @@ function App() {
     if (!googleReady || !authConfig?.googleAuthEnabled || !authConfig.googleClientId || authenticated) return;
     const target = document.getElementById("google-signin-button");
     const googleId = window.google?.accounts?.id;
-    if (!target || !googleId || target.childElementCount > 0) return;
+    if (!target || !googleId || googleButtonRendered) return;
+    target.replaceChildren();
 
     googleId.initialize({
       client_id: authConfig.googleClientId,
@@ -294,7 +296,8 @@ function App() {
       width: "100%",
       text: "continue_with",
     });
-  }, [googleReady, authConfig, authenticated]);
+    setGoogleButtonRendered(true);
+  }, [googleReady, authConfig, authenticated, googleButtonRendered]);
 
   const submitLogin = async (e: FormEvent) => {
     e.preventDefault();
@@ -495,7 +498,13 @@ function App() {
 
               <div className="auth-google-wrap">
                 {authConfig?.googleAuthEnabled && authConfig.googleClientId ? (
-                  <div id="google-signin-button" className={cn("auth-google-button", googleSubmitting && "opacity-60 pointer-events-none")} />
+                  <div id="google-signin-button" className={cn("auth-google-button", googleSubmitting && "opacity-60 pointer-events-none")}>
+                    {!googleButtonRendered ? (
+                      <button className="auth-google-fallback" type="button" disabled>
+                        Continue with Google
+                      </button>
+                    ) : null}
+                  </div>
                 ) : (
                   <button className="auth-google-fallback" type="button" disabled>
                     Continue with Google
