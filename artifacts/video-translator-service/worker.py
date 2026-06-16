@@ -2140,7 +2140,7 @@ def _import_cosyvoice_class():
 
     try:
         return _try_import()
-    except ModuleNotFoundError as exc:
+    except ModuleNotFoundError:
         raise
 
 
