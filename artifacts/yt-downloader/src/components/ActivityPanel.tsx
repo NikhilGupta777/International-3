@@ -8,7 +8,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { formatFilesize } from "@/lib/clip-history";
-import { isDownloadExpired } from "@/lib/download-history";
+import { isDownloadExpired, FILE_TTL_MS } from "@/lib/download-history";
 import {
   useActivityFeed,
   shortActivityUrl,
@@ -210,6 +210,7 @@ export function ActivityPanel({
 
                       if (entry.kind === "clip") {
                         const d = entry.data;
+                        const clipExpired = Date.now() - d.createdAt > FILE_TTL_MS;
                         return (
                           <div key={key} className="activity-row-card">
                             <div className="activity-row">
@@ -217,7 +218,9 @@ export function ActivityPanel({
                               <div className="flex-1 min-w-0">
                                 <p className="text-sm font-medium text-white/85 truncate">{d.label}</p>
                                 <div className="activity-row-meta">
-                                  <span className="text-orange-400/70 font-medium">Clip Cut</span>
+                                  <span className={clipExpired ? "text-orange-300/70 font-medium" : "text-orange-400/70 font-medium"}>
+                                    {clipExpired ? "Expired" : "Clip Cut"}
+                                  </span>
                                   <span>·</span>
                                   <span className="uppercase">{d.quality}</span>
                                   {d.filesize && <><span>·</span><span>{formatFilesize(d.filesize)}</span></>}
@@ -226,9 +229,11 @@ export function ActivityPanel({
                                 </div>
                               </div>
                               <div className="activity-row-actions">
-                                <a href={`${BASE}/api/youtube/file/${d.jobId}`} className="activity-icon-btn" title="Download clip">
-                                  <Download className="w-3.5 h-3.5" />
-                                </a>
+                                {!clipExpired && (
+                                  <a href={`${BASE}/api/youtube/file/${d.jobId}`} className="activity-icon-btn" title="Download clip">
+                                    <Download className="w-3.5 h-3.5" />
+                                  </a>
+                                )}
                                 <button onClick={() => handleDelete(entry)} className="activity-icon-btn activity-icon-btn-danger">
                                   <X className="w-3.5 h-3.5" />
                                 </button>

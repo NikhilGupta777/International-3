@@ -21,7 +21,7 @@ const S3_SIGNED_URL_TTL_SEC = Math.max(
   60,
   Math.min(
     7 * 24 * 60 * 60,
-    Number.parseInt(process.env.S3_SIGNED_URL_TTL_SEC ?? "7200", 10) || 7200,
+    Number.parseInt(process.env.S3_SIGNED_URL_TTL_SEC ?? "604800", 10) || 604800,
   ),
 );
 

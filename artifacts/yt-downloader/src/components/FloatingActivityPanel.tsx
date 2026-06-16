@@ -9,7 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { formatFilesize } from "@/lib/clip-history";
-import { isDownloadExpired } from "@/lib/download-history";
+import { isDownloadExpired, FILE_TTL_MS } from "@/lib/download-history";
 import {
   useActivityFeed,
   shortActivityUrl,
@@ -322,13 +322,16 @@ export function FloatingActivityPanel({
 
                         if (entry.kind === "clip") {
                           const d = entry.data;
+                          const clipExpired = Date.now() - d.createdAt > FILE_TTL_MS;
                           return (
                             <div key={key} className="rounded-xl border border-white/5 bg-white/3 flex items-center gap-2.5 px-3 py-2.5">
                               <Scissors className="w-3.5 h-3.5 text-orange-400 shrink-0" />
                               <div className="flex-1 min-w-0">
                                 <p className="text-xs font-medium text-white/85 truncate">{d.label}</p>
                                 <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-white/35">
-                                  <span className="text-orange-400/70 font-medium">Clip Cut</span>
+                                  <span className={clipExpired ? "text-orange-300/70 font-medium" : "text-orange-400/70 font-medium"}>
+                                    {clipExpired ? "Expired" : "Clip Cut"}
+                                  </span>
                                   <span>·</span>
                                   <span className="uppercase">{d.quality}</span>
                                   {d.filesize && <><span>·</span><span>{formatFilesize(d.filesize)}</span></>}
@@ -337,13 +340,15 @@ export function FloatingActivityPanel({
                                 </div>
                               </div>
                               <div className="flex items-center gap-0.5 shrink-0">
-                                <a
-                                  href={`${BASE}/api/youtube/file/${d.jobId}`}
-                                  className="p-1.5 rounded-lg text-white/30 hover:text-white hover:bg-white/10 transition-colors"
-                                  title="Download clip"
-                                >
-                                  <Download className="w-3 h-3" />
-                                </a>
+                                {!clipExpired && (
+                                  <a
+                                    href={`${BASE}/api/youtube/file/${d.jobId}`}
+                                    className="p-1.5 rounded-lg text-white/30 hover:text-white hover:bg-white/10 transition-colors"
+                                    title="Download clip"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                  </a>
+                                )}
                                 <button
                                   onClick={() => handleDelete(entry)}
                                   className="p-1.5 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-colors"

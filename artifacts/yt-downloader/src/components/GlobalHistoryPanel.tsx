@@ -28,6 +28,7 @@ import {
   deleteCompletedDownload,
   clearCompletedDownloads,
   isDownloadExpired,
+  FILE_TTL_MS,
   type ActiveDownloadRecord,
   type CompletedDownloadRecord,
 } from "@/lib/download-history";
@@ -292,6 +293,7 @@ function ClipRow({
   onDelete: (id: string) => void;
 }) {
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+  const expired = Date.now() - entry.createdAt > FILE_TTL_MS;
 
   return (
     <div className="glass-panel rounded-xl border border-white/5 p-3 flex items-center gap-3">
@@ -301,8 +303,8 @@ function ClipRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-semibold text-white/90">{entry.label}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-500/15 text-purple-300 border border-purple-500/20 font-medium">
-            Clip Cut
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border ${expired ? "bg-orange-500/10 text-orange-300 border-orange-500/20" : "bg-purple-500/15 text-purple-300 border-purple-500/20"}`}>
+            {expired ? "Expired" : "Clip Cut"}
           </span>
           <span className="text-[10px] text-white/40 font-medium uppercase">{entry.quality}</span>
           {entry.filesize && (
@@ -317,10 +319,12 @@ function ClipRow({
         </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
-        <a href={`${BASE}/api/youtube/file/${entry.jobId}`} title="Re-download"
-          className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
-          <Download className="w-3.5 h-3.5" />
-        </a>
+        {!expired && (
+          <a href={`${BASE}/api/youtube/file/${entry.jobId}`} title="Re-download"
+            className="p-1.5 rounded-lg text-white/40 hover:text-white hover:bg-white/10 transition-colors">
+            <Download className="w-3.5 h-3.5" />
+          </a>
+        )}
         <button onClick={() => onDelete(entry.jobId)} title="Delete"
           className="p-1.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-500/10 transition-colors">
           <X className="w-3.5 h-3.5" />

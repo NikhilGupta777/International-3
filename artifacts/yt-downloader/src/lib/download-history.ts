@@ -2,7 +2,8 @@ const ACTIVE_KEY = "ytgrabber_active_download";
 const COMPLETED_KEY = "ytgrabber_completed_downloads";
 const MAX_COMPLETED = 20;
 
-const TTL_MS = 2 * 60 * 60 * 1000; // 2 hours — matches server file retention
+export const FILE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days — matches server file retention
+const TTL_MS = FILE_TTL_MS;
 
 // ── Active download (in-progress) ────────────────────────────────────────────
 
