@@ -210,25 +210,10 @@ jobs:
             --query 'sort_by(jobDefinitions, &revision)[-1]' \
             --output json)
 
-          API_ENV=$(aws lambda get-function-configuration \
-            --function-name ${{ env.CF_STACK_PREFIX }}-api \
-            --query 'Environment.Variables' \
-            --output json)
-          get_api_env() {
-            echo "$API_ENV" | jq -r --arg name "$1" '.[$name] // ""'
-          }
-
           # Use del() to strip ONLY the read-only fields; preserves everything
           # else including platformCapabilities:["FARGATE"], propagateTags, etc.
           NEW_JSON=$(echo "$CURRENT" | jq \
             --arg img "$WORKER_URI" \
-            --arg gemini1 "$(get_api_env GEMINI_API_KEY)" \
-            --arg gemini2 "$(get_api_env GEMINI_API_KEY_2)" \
-            --arg gemini3 "$(get_api_env GEMINI_API_KEY_3)" \
-            --arg googleUseVertex "$(get_api_env GOOGLE_GENAI_USE_VERTEXAI)" \
-            --arg googleProject "$(get_api_env GOOGLE_CLOUD_PROJECT)" \
-            --arg googleLocation "$(get_api_env GOOGLE_CLOUD_LOCATION)" \
-            --arg googleCredsS3 "$(get_api_env GOOGLE_APPLICATION_CREDENTIALS_S3_KEY)" \
             'del(.jobDefinitionArn, .revision, .status, .jobDefinitionName, .containerOrchestrationType) |
              .containerProperties.image = $img |
              .timeout = {"attemptDurationSeconds": 2700} |
@@ -237,29 +222,12 @@ jobs:
                | map(select(
                    .name != "SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS" and
                    .name != "SUBTITLES_YTDLP_PROBE_TIMEOUT_MS" and
-                   .name != "SUBTITLES_MAX_YTDLP_ATTEMPTS" and
-                   .name != "GEMINI_API_KEY" and
-                   .name != "GEMINI_API_KEY_2" and
-                   .name != "GEMINI_API_KEY_3" and
-                   .name != "GEMINI_API_KEY_4" and
-                   .name != "GEMINI_API_KEY_5" and
-                   .name != "GEMINI_API_KEY_6" and
-                   .name != "GOOGLE_GENAI_USE_VERTEXAI" and
-                   .name != "GOOGLE_CLOUD_PROJECT" and
-                   .name != "GOOGLE_CLOUD_LOCATION" and
-                   .name != "GOOGLE_APPLICATION_CREDENTIALS_S3_KEY"
+                   .name != "SUBTITLES_MAX_YTDLP_ATTEMPTS"
                  ))
                + [
                  {"name":"SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS","value":"600000"},
                  {"name":"SUBTITLES_YTDLP_PROBE_TIMEOUT_MS","value":"45000"},
-                 {"name":"SUBTITLES_MAX_YTDLP_ATTEMPTS","value":"5"},
-                 {"name":"GEMINI_API_KEY","value":$gemini1},
-                 {"name":"GEMINI_API_KEY_2","value":$gemini2},
-                 {"name":"GEMINI_API_KEY_3","value":$gemini3},
-                 {"name":"GOOGLE_GENAI_USE_VERTEXAI","value":$googleUseVertex},
-                 {"name":"GOOGLE_CLOUD_PROJECT","value":$googleProject},
-                 {"name":"GOOGLE_CLOUD_LOCATION","value":$googleLocation},
-                 {"name":"GOOGLE_APPLICATION_CREDENTIALS_S3_KEY","value":$googleCredsS3}
+                 {"name":"SUBTITLES_MAX_YTDLP_ATTEMPTS","value":"5"}
                ]
              )')
           # Register it
