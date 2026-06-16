@@ -752,26 +752,27 @@ jobs:
             if ("${{ github.event_name }}" -eq "workflow_dispatch") {
               Write-Host "Manual deploy: repairing API Lambda directly and syncing frontend."
 
-              node - <<'NODE'
-              const fs = require('fs');
-              const envText = fs.readFileSync('/tmp/.env.green', 'utf8');
-              const vars = {};
-              for (const rawLine of envText.split(/\r?\n/)) {
-                const line = rawLine.trim();
-                if (!line || line.startsWith('#')) continue;
-                const eq = line.indexOf('=');
-                if (eq <= 0) continue;
-                const key = line.slice(0, eq).trim();
-                let value = line.slice(eq + 1);
-                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
-                if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-                  value = value.slice(1, -1);
+              $vars = @{}
+              foreach ($rawLine in Get-Content -Path "/tmp/.env.green") {
+                $line = $rawLine.Trim()
+                if ([string]::IsNullOrWhiteSpace($line) -or $line.StartsWith("#")) { continue }
+                $eq = $line.IndexOf("=")
+                if ($eq -le 0) { continue }
+                $key = $line.Substring(0, $eq).Trim()
+                if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
+                $value = $line.Substring($eq + 1)
+                if (
+                  ($value.StartsWith('"') -and $value.EndsWith('"')) -or
+                  ($value.StartsWith("'") -and $value.EndsWith("'"))
+                ) {
+                  $value = $value.Substring(1, $value.Length - 2)
                 }
-                vars[key] = value;
+                $vars[$key] = $value
               }
-              fs.writeFileSync('/tmp/lambda-env.json', JSON.stringify({ Variables: vars }));
-              console.log(`Prepared ${Object.keys(vars).length} Lambda env vars.`);
-              NODE
+              @{ Variables = $vars } |
+                ConvertTo-Json -Depth 4 -Compress |
+                Set-Content -Path "/tmp/lambda-env.json" -Encoding utf8
+              Write-Host "Prepared $($vars.Count) Lambda env vars."
 
               aws lambda update-function-configuration `
                 --region "${{ env.AWS_REGION }}" `
