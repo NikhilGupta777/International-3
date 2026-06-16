@@ -1029,7 +1029,7 @@ jobs:
           # Use a custom poll loop instead of aws ec2 wait image-available.
           # The built-in waiter only retries ~40 times x 15s = ~10 min which is
           # not enough for a 200 GB snapshot of a 20 GB image.
-          MAX_WAIT=3600
+          MAX_WAIT=7200
           INTERVAL=30
           ELAPSED=0
 
