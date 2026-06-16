@@ -89,7 +89,7 @@ docker image inspect "$IMAGE" >/dev/null
 # The AMI builder is a GPU instance. Running warmup here bakes the compiled
 # CUDA kernel caches (~/.cache/torch, ~/.cache/onnxruntime) into the image
 # layer via docker commit+push. Every subsequent Batch job finds the cache
-# already present — zero CUDA JIT cost at job start.
+# already present - zero CUDA JIT cost at job start.
 log "Running GPU warmup to pre-compile CUDA kernels (takes 5-10 min)..."
 WARMUP_CID=$(docker run --gpus all -d --name "cosyvoice-warmup" "$IMAGE" \
   python -c "
@@ -116,7 +116,7 @@ if [ "$WARMUP_EXIT" = "0" ]; then
   docker push "$IMAGE"
   log "Warmed image pushed: $IMAGE"
 else
-  log "WARN: GPU warmup exited with code $WARMUP_EXIT — CUDA kernels will compile at job start (non-fatal)."
+  log "WARN: GPU warmup exited with code $WARMUP_EXIT - CUDA kernels will compile at job start (non-fatal)."
 fi
 docker rm "$WARMUP_CID" 2>/dev/null || true
 
