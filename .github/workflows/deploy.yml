@@ -115,6 +115,27 @@ jobs:
       - name: Build & push API Lambda image
         id: push
         run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BEFORE="${{ github.event.before }}"
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              BEFORE="HEAD~1"
+            fi
+            if ! git diff --name-only "$BEFORE" "$GITHUB_SHA" | grep -E '^(artifacts/api-server/|Dockerfile\.api-lambda|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)'; then
+              EXISTING_URI=$(aws cloudformation describe-stacks \
+                --stack-name "${{ env.CF_STACK_PREFIX }}-serverless" \
+                --region "${{ env.AWS_REGION }}" \
+                --query "Stacks[0].Parameters[?ParameterKey=='ImageUri'].ParameterValue | [0]" \
+                --output text)
+              if [ -z "$EXISTING_URI" ] || [ "$EXISTING_URI" = "None" ]; then
+                echo "Could not resolve existing API image URI"
+                exit 1
+              fi
+              echo "No API image inputs changed; reusing ${EXISTING_URI}"
+              echo "image_uri=${EXISTING_URI}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
           TAG="${GITHUB_SHA::8}"
           URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_API_REPO }}:${TAG}"
           # Pass pinned yt-dlp version so Dockerfile layer cache is stable
