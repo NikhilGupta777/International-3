@@ -1,0 +1,34 @@
+FROM node:22-bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m pip install --break-system-packages --no-cache-dir notebooklm-py==0.3.4
+
+ARG YTDLP_VERSION=2026.03.17
+RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp \
+    && /usr/local/bin/yt-dlp --version
+
+WORKDIR /app
+
+COPY artifacts/api-server/dist ./artifacts/api-server/dist
+COPY artifacts/api-server/scripts ./artifacts/api-server/scripts
+COPY artifacts/api-server/package.json ./artifacts/api-server/package.json
+COPY artifacts/api-server/src ./code-context-main/artifacts/api-server/src
+COPY artifacts/yt-downloader/src ./code-context-main/artifacts/yt-downloader/src
+COPY artifacts/yt-downloader/package.json ./code-context-main/artifacts/yt-downloader/package.json
+COPY artifacts/queue-worker/src ./code-context-main/artifacts/queue-worker/src
+COPY artifacts/queue-worker/package.json ./code-context-main/artifacts/queue-worker/package.json
+COPY lib ./code-context-main/lib
+
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV YTDLP_BIN=/usr/local/bin/yt-dlp
+ENV FFMPEG_BIN=/usr/bin/ffmpeg
+ENV FFPROBE_BIN=/usr/bin/ffprobe
+ENV NOTEBOOKLM_PYTHON_BIN=python3
+
+EXPOSE 8080
+
+CMD ["node", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"]
