@@ -6,6 +6,7 @@ import {
   registerPushServiceWorker,
 } from "@/lib/push-notifications";
 import "./index.css";
+import "katex/dist/katex.min.css";
 
 installNotifyClientHeader();
 void registerPushServiceWorker();

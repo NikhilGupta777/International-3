@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import katex from "katex";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bot, Loader2, CheckCircle, ChevronRight, ChevronDown,
@@ -384,14 +385,41 @@ function renderCodeBlock(code: string, language: string | undefined, key: string
   );
 }
 
+// ── KaTeX math rendering ──────────────────────────────────────────────────────
+function renderKatexNode(latex: string, displayMode: boolean, key: string): React.ReactNode {
+  try {
+    const html = katex.renderToString(latex.trim(), {
+      displayMode,
+      throwOnError: false,
+      strict: "ignore",
+      trust: false,
+    });
+    return displayMode
+      ? <div key={key} className="katex-block my-3 overflow-x-auto text-center"
+             dangerouslySetInnerHTML={{ __html: html }} />
+      : <span key={key} dangerouslySetInnerHTML={{ __html: html }} />;
+  } catch {
+    return <code key={key} className="text-orange-300 text-sm">{latex}</code>;
+  }
+}
+
+const HTML_TAG_RE = /^<(sup|sub|ins|kbd|mark|s)>([^<]*)<\/(?:sup|sub|ins|kbd|mark|s)>$/;
+const HEADING_SIZES: Record<number, string> = {
+  1: "text-[18px] font-bold mt-3 mb-1.5 text-white",
+  2: "text-[16px] font-bold mt-2.5 mb-1 text-white",
+  3: "text-[14px] font-semibold mt-2 mb-1 text-white/95",
+  4: "text-[13px] font-semibold mt-1.5 mb-0.5 text-white/90",
+  5: "text-[12px] font-medium mt-1 mb-0.5 text-white/80",
+  6: "text-[11px] font-medium mt-1 mb-0.5 text-white/70",
+};
+
 // ── Markdown renderer ──────────────────────────────────────────────────────────
 function renderMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
   const inline = (str: string, key: string): React.ReactNode => {
     const parts: React.ReactNode[] = [];
-    // Match bold, strikethrough, code, markdown links [text](url), citation [N], and italic patterns
-    const re = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\[\d+\]|\*[^*\n]+\*|_[^_\n]+_)/g;
+    const re = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\[\d+\]|\*[^*\n]+\*|_[^_\n]+_|\$[^$\n]+\$|<(?:sup|sub|ins|kbd|mark|s)>[^<]*<\/(?:sup|sub|ins|kbd|mark|s)>)/g;
     let last = 0; let m; let k = 0;
     while ((m = re.exec(str)) !== null) {
       if (m.index > last) parts.push(<span key={`${key}-t${k++}`}>{str.slice(last, m.index)}</span>);
@@ -399,6 +427,18 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
       if (tok.startsWith("**")) parts.push(<strong key={`${key}-b${k++}`}>{tok.slice(2, -2)}</strong>);
       else if (tok.startsWith("~~")) parts.push(<del key={`${key}-s${k++}`}>{tok.slice(2, -2)}</del>);
       else if (tok.startsWith("`")) parts.push(<code key={`${key}-c${k++}`}>{tok.slice(1, -1)}</code>);
+      else if (tok.startsWith("$")) parts.push(renderKatexNode(tok.slice(1, -1), false, `${key}-m${k++}`));
+      else if (tok.startsWith("<")) {
+        const hm = HTML_TAG_RE.exec(tok);
+        if (hm) {
+          const Tag = hm[1] as keyof React.JSX.IntrinsicElements;
+          const cls = hm[1] === "kbd" ? "font-mono text-[0.8em] bg-white/10 border border-white/20 rounded px-1 py-0.5"
+            : hm[1] === "ins" ? "underline decoration-white/60"
+            : hm[1] === "mark" ? "bg-yellow-400/30 text-yellow-100 px-0.5 rounded"
+            : undefined;
+          parts.push(React.createElement(Tag, { key: `${key}-h${k++}`, className: cls }, hm[2]));
+        } else parts.push(<span key={`${key}-h${k++}`}>{tok}</span>);
+      }
       else if (tok.startsWith("*") || tok.startsWith("_")) parts.push(<em key={`${key}-i${k++}`}>{tok.slice(1, -1)}</em>);
       else {
         const linkMatch = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(tok);
@@ -410,7 +450,6 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
             : <span key={`${key}-a${k++}`}>{linkMatch[1]}</span>
           );
         } else {
-          // Citation [N]
           const idx = parseInt(tok.slice(1, -1), 10) - 1;
           const src = sources?.[idx];
           parts.push(src
@@ -444,6 +483,25 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
       continue;
     }
 
+    // Block math: $$ ... $$ (single or multi-line)
+    const trimmed = line.trim();
+    if (trimmed === "$$" || /^\$\$[^\s]/.test(trimmed)) {
+      let mathContent: string;
+      if (trimmed === "$$") {
+        const mathLines: string[] = [];
+        let bi = li + 1;
+        while (bi < lines.length && lines[bi].trim() !== "$$") { mathLines.push(lines[bi]); bi++; }
+        mathContent = mathLines.join("\n");
+        li = bi < lines.length ? bi + 1 : bi;
+      } else {
+        const m = /^\$\$(.+)\$\$$/.exec(trimmed);
+        mathContent = m ? m[1] : trimmed.slice(2);
+        li++;
+      }
+      result.push(renderKatexNode(mathContent, true, `math${li}`));
+      continue;
+    }
+
     // Table block: header row + separator row + body rows
     if (
       isTableRowLine(line) &&
@@ -467,17 +525,25 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
 
     const headingMatch = /^(#{1,6})\s+(.*)/.exec(line);
     const hrMatch = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.exec(line);
-    const quoteMatch = /^>\s?(.*)/.exec(line);
+    const quoteMatch = /^(>+)\s?(.*)/.exec(line);
     const olMatch = /^(\s*)(\d+)\.\s+(.*)/.exec(line);
     const ulMatch = /^(\s*)[-*+]\s+(.*)/.exec(line);
 
     if (headingMatch) {
       const level = headingMatch[1].length;
-      const cls = level <= 2 ? "text-[15px] font-bold mt-2 mb-1" : "text-sm font-semibold mt-1.5 mb-0.5";
+      const cls = HEADING_SIZES[level] ?? HEADING_SIZES[3];
       result.push(<div key={li} className={cls}>{inline(headingMatch[2], `h${li}`)}</div>);
     }
     else if (hrMatch) result.push(<hr key={li} className="my-2 border-white/10" />);
-    else if (quoteMatch) result.push(<div key={li} className="border-l-2 border-white/20 pl-2 ml-1 text-white/70">{inline(quoteMatch[1], `q${li}`)}</div>);
+    else if (quoteMatch) {
+      const ql = quoteMatch[1].length;
+      result.push(
+        <div key={li} style={{ marginLeft: (ql - 1) * 12 }}
+             className="border-l-2 border-white/20 pl-2 ml-1 text-white/70 my-0.5">
+          {inline(quoteMatch[2], `q${li}`)}
+        </div>
+      );
+    }
     else if (olMatch) result.push(renderOlItem(li, olMatch[1], olMatch[2], olMatch[3], inline, `ol${li}`));
     else if (ulMatch) result.push(renderUlItem(li, ulMatch[1], ulMatch[2], inline, `ul${li}`));
     else if (line.trim() === "") { if (li < lines.length - 1) result.push(<div key={li} className="h-5" />); }
@@ -508,10 +574,10 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
   // Inline parser that can optionally animate trailing tokens
   const inlineAnimated = (str: string, key: string, animateTrailing: boolean): React.ReactNode => {
     const parts: React.ReactNode[] = [];
-    const re = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\[\d+\]|\*[^*\n]+\*|_[^_\n]+_)/g;
+    const re = /(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\[[^\]]+\]\([^)\s]+\)|\[\d+\]|\*[^*\n]+\*|_[^_\n]+_|\$[^$\n]+\$|<(?:sup|sub|ins|kbd|mark|s)>[^<]*<\/(?:sup|sub|ins|kbd|mark|s)>)/g;
     let last = 0; let m; let k = 0;
     // First pass: parse markdown into segments
-    const segments: Array<{ text: string; type: "plain" | "bold" | "italic" | "strike" | "code" | "cite" | "link"; href?: string }> = [];
+    const segments: Array<{ text: string; type: "plain" | "bold" | "italic" | "strike" | "code" | "cite" | "link" | "math" | "html"; href?: string }> = [];
     while ((m = re.exec(str)) !== null) {
       if (m.index > last) segments.push({ text: str.slice(last, m.index), type: "plain" });
       const tok = m[0];
@@ -519,6 +585,8 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
       if (tok.startsWith("**")) segments.push({ text: tok.slice(2, -2), type: "bold" });
       else if (tok.startsWith("~~")) segments.push({ text: tok.slice(2, -2), type: "strike" });
       else if (tok.startsWith("`")) segments.push({ text: tok.slice(1, -1), type: "code" });
+      else if (tok.startsWith("$")) segments.push({ text: tok.slice(1, -1), type: "math" });
+      else if (tok.startsWith("<")) segments.push({ text: tok, type: "html" });
       else if (linkMatch) segments.push({ text: linkMatch[1], type: "link", href: linkMatch[2] });
       else if (tok.startsWith("[")) segments.push({ text: tok, type: "cite" });
       else segments.push({ text: tok.slice(1, -1), type: "italic" });
@@ -533,6 +601,18 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
         else if (seg.type === "italic") parts.push(<em key={`${key}-i${k++}`}>{seg.text}</em>);
         else if (seg.type === "strike") parts.push(<del key={`${key}-s${k++}`}>{seg.text}</del>);
         else if (seg.type === "code") parts.push(<code key={`${key}-c${k++}`}>{seg.text}</code>);
+        else if (seg.type === "math") parts.push(renderKatexNode(seg.text, false, `${key}-m${k++}`));
+        else if (seg.type === "html") {
+          const hm = HTML_TAG_RE.exec(seg.text);
+          if (hm) {
+            const Tag = hm[1] as keyof React.JSX.IntrinsicElements;
+            const cls = hm[1] === "kbd" ? "font-mono text-[0.8em] bg-white/10 border border-white/20 rounded px-1 py-0.5"
+              : hm[1] === "ins" ? "underline decoration-white/60"
+              : hm[1] === "mark" ? "bg-yellow-400/30 text-yellow-100 px-0.5 rounded"
+              : undefined;
+            parts.push(React.createElement(Tag, { key: `${key}-h${k++}`, className: cls }, hm[2]));
+          } else parts.push(<span key={`${key}-h${k++}`}>{seg.text}</span>);
+        }
         else if (seg.type === "link") {
           const href = safeExternalHref(seg.href);
           parts.push(href
@@ -556,11 +636,10 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     }
 
     // Animated render — split all text into graphemes for a smoother typewriter feel.
-    // cite/link segments are rendered as static nodes inline with the animated chars.
+    // cite/link/math/html segments are rendered as static nodes inline with the animated chars.
     const allChars: Array<{ char: string; type: "plain" | "bold" | "italic" | "strike" | "code" | "static_node"; node?: React.ReactNode }> = [];
     for (const seg of segments) {
       if (seg.type === "cite") {
-        // Render citation as a single non-animated node entry
         const idx = parseInt(seg.text.slice(1, -1), 10) - 1;
         const src = sources?.[idx];
         const node = src
@@ -577,6 +656,26 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
           ? <a key={`link-${k++}`} href={href} target="_blank" rel="noopener noreferrer"
               className="text-sky-400 hover:text-sky-300 underline underline-offset-2">{seg.text}</a>
           : <span key={`link-${k++}`}>{seg.text}</span>;
+        allChars.push({ char: "", type: "static_node", node });
+        continue;
+      }
+      if (seg.type === "math") {
+        allChars.push({ char: "", type: "static_node", node: renderKatexNode(seg.text, false, `math-${k++}`) });
+        continue;
+      }
+      if (seg.type === "html") {
+        const hm = HTML_TAG_RE.exec(seg.text);
+        let node: React.ReactNode;
+        if (hm) {
+          const Tag = hm[1] as keyof React.JSX.IntrinsicElements;
+          const cls = hm[1] === "kbd" ? "font-mono text-[0.8em] bg-white/10 border border-white/20 rounded px-1 py-0.5"
+            : hm[1] === "ins" ? "underline decoration-white/60"
+            : hm[1] === "mark" ? "bg-yellow-400/30 text-yellow-100 px-0.5 rounded"
+            : undefined;
+          node = React.createElement(Tag, { key: `html-${k++}`, className: cls }, hm[2]);
+        } else {
+          node = <span key={`html-${k++}`}>{seg.text}</span>;
+        }
         allChars.push({ char: "", type: "static_node", node });
         continue;
       }
@@ -648,6 +747,25 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
       continue;
     }
 
+    // Block math: $$ ... $$ (rendered statically — no animation inside formulas)
+    const trimmedLine = line.trim();
+    if (trimmedLine === "$$" || /^\$\$[^\s]/.test(trimmedLine)) {
+      let mathContent: string;
+      if (trimmedLine === "$$") {
+        const mathLines: string[] = [];
+        let bi = li + 1;
+        while (bi < lines.length && lines[bi].trim() !== "$$") { mathLines.push(lines[bi]); bi++; }
+        mathContent = mathLines.join("\n");
+        li = bi < lines.length ? bi + 1 : bi;
+      } else {
+        const mm = /^\$\$(.+)\$\$$/.exec(trimmedLine);
+        mathContent = mm ? mm[1] : trimmedLine.slice(2);
+        li++;
+      }
+      result.push(renderKatexNode(mathContent, true, `math${li}`));
+      continue;
+    }
+
     // Table block: header row + separator row + body rows (rendered statically, no animation)
     if (
       isTableRowLine(line) &&
@@ -672,19 +790,25 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     const isLastLine = li === lastNonEmptyIdx;
     const headingMatch = /^(#{1,6})\s+(.*)/.exec(line);
     const hrMatch = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.exec(line);
-    const quoteMatch = /^>\s?(.*)/.exec(line);
+    const quoteMatch = /^(>+)\s?(.*)/.exec(line);
     const olMatch = /^(\s*)(\d+)\.\s+(.*)/.exec(line);
     const ulMatch = /^(\s*)[-*+]\s+(.*)/.exec(line);
     const lineInline = (str: string, key: string) => inlineAnimatedWithCursor(str, key, isLastLine);
 
     if (headingMatch) {
       const level = headingMatch[1].length;
-      const cls = level <= 2 ? "text-[15px] font-bold mt-2 mb-1" : "text-sm font-semibold mt-1.5 mb-0.5";
+      const cls = HEADING_SIZES[level] ?? HEADING_SIZES[3];
       result.push(<div key={li} className={cls}>{inlineAnimatedWithCursor(headingMatch[2], `h${li}`, isLastLine)}</div>);
     } else if (hrMatch) {
       result.push(<hr key={li} className="my-2 border-white/10" />);
     } else if (quoteMatch) {
-      result.push(<div key={li} className="border-l-2 border-white/20 pl-2 ml-1 text-white/70">{inlineAnimatedWithCursor(quoteMatch[1], `q${li}`, isLastLine)}</div>);
+      const ql = quoteMatch[1].length;
+      result.push(
+        <div key={li} style={{ marginLeft: (ql - 1) * 12 }}
+             className="border-l-2 border-white/20 pl-2 ml-1 text-white/70 my-0.5">
+          {inlineAnimatedWithCursor(quoteMatch[2], `q${li}`, isLastLine)}
+        </div>
+      );
     } else if (olMatch) {
       result.push(renderOlItem(li, olMatch[1], olMatch[2], olMatch[3], lineInline, `ol${li}`));
     } else if (ulMatch) {

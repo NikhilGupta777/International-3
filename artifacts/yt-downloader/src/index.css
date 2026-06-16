@@ -2143,6 +2143,11 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   letter-spacing: 0.01em;
 }
 
+/* KaTeX dark theme overrides */
+.katex { color: rgba(255,255,255,0.92); font-size: 1em; }
+.katex-block { padding: 10px 0; }
+.katex-display { overflow-x: auto; overflow-y: hidden; }
+
 /* Genspark markdown in chat */
 .copilot-md strong { font-weight: 700; color: rgba(255,255,255,0.95); }
 .copilot-md em { font-style: italic; color: rgba(255,255,255,0.80); }
