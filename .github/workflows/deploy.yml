@@ -749,6 +749,60 @@ jobs:
         shell: pwsh
         run: |
           try {
+            if ("${{ github.event_name }}" -eq "push") {
+              $before = "${{ github.event.before }}"
+              if ([string]::IsNullOrWhiteSpace($before) -or $before -eq "0000000000000000000000000000000000000000") {
+                $before = "HEAD~1"
+              }
+              $changed = git diff --name-only $before "${{ github.sha }}"
+              $requiresServerless = $changed | Select-String -Pattern '^(artifacts/api-server/|deploy/aws-serverless/|Dockerfile\.api-lambda|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)'
+              if (-not $requiresServerless) {
+                Write-Host "No API/serverless inputs changed; deploying static frontend only."
+                $stack = aws cloudformation describe-stacks `
+                  --region "${{ env.AWS_REGION }}" `
+                  --stack-name "${{ env.CF_STACK_PREFIX }}-serverless" | ConvertFrom-Json
+                $outputs = @{}
+                foreach ($output in $stack.Stacks[0].Outputs) {
+                  $outputs[$output.OutputKey] = $output.OutputValue
+                }
+                $siteBucket = $outputs["StaticSiteBucketName"]
+                $distributionId = $outputs["CloudFrontDistributionId"]
+                if (-not $siteBucket -or -not $distributionId) {
+                  throw "Failed to resolve frontend deploy outputs"
+                }
+
+                pnpm --filter @workspace/yt-downloader run build
+                if ($LASTEXITCODE -ne 0) { throw "yt-downloader build failed" }
+
+                aws s3 sync `
+                  "artifacts/yt-downloader/dist/public" `
+                  "s3://$siteBucket/" `
+                  --region "${{ env.AWS_REGION }}" `
+                  --delete `
+                  --exclude "*.html" `
+                  --cache-control "public, max-age=31536000, immutable"
+                if ($LASTEXITCODE -ne 0) { throw "frontend asset sync failed" }
+
+                aws s3 sync `
+                  "artifacts/yt-downloader/dist/public" `
+                  "s3://$siteBucket/" `
+                  --region "${{ env.AWS_REGION }}" `
+                  --delete `
+                  --exclude "*" --include "*.html" `
+                  --cache-control "no-cache, no-store, must-revalidate" `
+                  --content-type "text/html; charset=utf-8"
+                if ($LASTEXITCODE -ne 0) { throw "frontend html sync failed" }
+
+                aws cloudfront create-invalidation `
+                  --distribution-id $distributionId `
+                  --paths "/*" | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "cloudfront invalidation failed" }
+
+                Write-Host "Frontend-only deploy complete."
+                exit 0
+              }
+            }
+
             ./deploy/aws-serverless/deploy-serverless.ps1 `
               -Region "${{ env.AWS_REGION }}" `
               -Prefix "${{ env.CF_STACK_PREFIX }}" `
