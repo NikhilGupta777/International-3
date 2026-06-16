@@ -936,36 +936,53 @@ jobs:
           SPOT_OPTIONS='{"MarketType":"spot"}'
 
           INSTANCE_ID=""
-          INSTANCE_TYPES="g4dn.xlarge g5.xlarge g4dn.2xlarge g5.2xlarge"
+          # g6/g4ad added for broader capacity pool; ordered cheapest-first.
+          INSTANCE_TYPES="g4dn.xlarge g6.xlarge g4ad.xlarge g5.xlarge g4dn.2xlarge g5.2xlarge g6.2xlarge"
           SUBNETS="subnet-0ffbf739e0c562b95 subnet-0fcc8baaf7eb3719f subnet-0e0a4fe35fcae2aa1 subnet-0930bd3f2ca841aae subnet-0c256313b9fe90d51 subnet-0e39d7f64d803f4d6"
 
+          _try_launch() {
+            local ITYPE="$1" SUBNET_ARG="$2" SUBNET_LABEL="$3"
+            set +e
+            INSTANCE_ID=$(aws ec2 run-instances \
+              --image-id "${BASE_AMI}" \
+              --instance-type "${ITYPE}" \
+              --instance-market-options "${SPOT_OPTIONS}" \
+              --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
+              --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
+              $SUBNET_ARG \
+              --associate-public-ip-address \
+              --user-data "file://${SCRIPT_FILE}" \
+              --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ami-builder-translator},{Key=ami-build-status,Value=building}]" \
+              --query "Instances[0].InstanceId" \
+              --output text \
+              --region ${{ env.AWS_REGION }} 2>/tmp/ami-builder-launch-error.log)
+            RC=$?
+            set -e
+            if [ "$RC" -eq 0 ] && [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
+              echo "Launched AMI builder with ${ITYPE} ${SUBNET_LABEL}: ${INSTANCE_ID}"
+              return 0
+            fi
+            echo "Launch failed for ${ITYPE} ${SUBNET_LABEL}:"
+            cat /tmp/ami-builder-launch-error.log || true
+            INSTANCE_ID=""
+            return 1
+          }
+
+          # Pass 1: try each type across all explicit subnets (AZ-specific).
           for INSTANCE_TYPE in $INSTANCE_TYPES; do
             for SUBNET_ID in $SUBNETS; do
-              echo "Trying AMI builder launch: type=${INSTANCE_TYPE} subnet=${SUBNET_ID}"
-              set +e
-              INSTANCE_ID=$(aws ec2 run-instances \
-                --image-id "${BASE_AMI}" \
-                --instance-type "${INSTANCE_TYPE}" \
-                --instance-market-options "${SPOT_OPTIONS}" \
-                --iam-instance-profile "Name=${{ env.CF_STACK_PREFIX }}-ecs-instance-profile" \
-                --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":200,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
-                --subnet-id "${SUBNET_ID}" \
-                --associate-public-ip-address \
-                --user-data "file://${SCRIPT_FILE}" \
-                --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=ami-builder-translator},{Key=ami-build-status,Value=building}]" \
-                --query "Instances[0].InstanceId" \
-                --output text \
-                --region ${{ env.AWS_REGION }} 2>/tmp/ami-builder-launch-error.log)
-              RC=$?
-              set -e
-              if [ "$RC" -eq 0 ] && [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ]; then
-                echo "Launched AMI builder with ${INSTANCE_TYPE} in ${SUBNET_ID}: ${INSTANCE_ID}"
-                break 2
-              fi
-              echo "Launch failed for ${INSTANCE_TYPE} in ${SUBNET_ID}:"
-              cat /tmp/ami-builder-launch-error.log || true
+              _try_launch "$INSTANCE_TYPE" "--subnet-id ${SUBNET_ID}" "in ${SUBNET_ID}" && break 2 || true
             done
           done
+
+          # Pass 2: if all AZ-specific attempts failed, let AWS auto-select the AZ.
+          # AWS itself recommends omitting the AZ when capacity is tight.
+          if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
+            echo "All AZ-specific attempts exhausted. Retrying without subnet (auto-AZ)..."
+            for INSTANCE_TYPE in $INSTANCE_TYPES; do
+              _try_launch "$INSTANCE_TYPE" "" "in auto-AZ" && break || true
+            done
+          fi
 
           if [ -z "$INSTANCE_ID" ] || [ "$INSTANCE_ID" = "None" ]; then
             echo "::error::Could not launch AMI builder in any configured subnet/instance type."
