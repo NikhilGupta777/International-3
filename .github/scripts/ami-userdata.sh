@@ -90,35 +90,51 @@ docker image inspect "$IMAGE" >/dev/null
 # CUDA kernel caches (~/.cache/torch, ~/.cache/onnxruntime) into the image
 # layer via docker commit+push. Every subsequent Batch job finds the cache
 # already present - zero CUDA JIT cost at job start.
-log "Running GPU warmup to pre-compile CUDA kernels (takes 5-10 min)..."
-WARMUP_CID=$(docker run --gpus all -d --name "cosyvoice-warmup" "$IMAGE" \
-  python -c "
+# The entire block runs in a subshell with set +e so any failure is non-fatal
+# and the AMI is still created (just without pre-warmed kernels).
+_do_gpu_warmup() {
+  set +e
+  log "Running GPU warmup to pre-compile CUDA kernels (takes 5-10 min)..."
+  docker rm -f cosyvoice-warmup 2>/dev/null || true
+  docker run --gpus all -d --name cosyvoice-warmup "$IMAGE" \
+    python -c "
 import sys, subprocess, inspect
 sys.path.insert(0, '/model-cache/CosyVoice')
 sys.path.insert(0, '/model-cache/CosyVoice/third_party/Matcha-TTS')
 subprocess.run([
   'ffmpeg', '-y', '-f', 'lavfi', '-i', 'sine=frequency=220:duration=2',
   '-ar', '24000', '-ac', '1', '/tmp/warmup.wav'
-], capture_output=True, check=True)
+], check=True)
 from cosyvoice.cli.cosyvoice import AutoModel
-sig = inspect.signature(AutoModel)
+import inspect as _i
+sig = _i.signature(AutoModel)
 kw = {k: False for k in ['load_jit', 'load_trt'] if k in sig.parameters}
 m = AutoModel(model_dir='/model-cache/modelscope/hub/iic/Fun-CosyVoice3-0.5B', **kw)
 t = '<|endofprompt|>Warmup.' if 'CosyVoice3' in type(m).__name__ else 'Warmup.'
 for _ in m.inference_zero_shot(t, t, '/tmp/warmup.wav'): break
 print('[AMI-WARMUP] CUDA kernels pre-compiled. Done.')
-")
-docker logs -f "$WARMUP_CID" || true
-WARMUP_EXIT=$(docker wait "$WARMUP_CID")
-if [ "$WARMUP_EXIT" = "0" ]; then
-  log "Warmup succeeded. Committing kernel cache into image and pushing to ECR..."
-  docker commit --message "CUDA kernels pre-compiled by AMI builder" "$WARMUP_CID" "$IMAGE"
-  docker push "$IMAGE"
-  log "Warmed image pushed: $IMAGE"
-else
-  log "WARN: GPU warmup exited with code $WARMUP_EXIT - CUDA kernels will compile at job start (non-fatal)."
-fi
-docker rm "$WARMUP_CID" 2>/dev/null || true
+"
+  RUN_RC=$?
+  if [ "$RUN_RC" != "0" ]; then
+    log "WARN: GPU warmup container failed to start (rc=$RUN_RC). AMI still usable."
+    docker rm -f cosyvoice-warmup 2>/dev/null || true
+    return 0
+  fi
+  docker logs -f cosyvoice-warmup 2>&1 || true
+  WARMUP_EXIT=$(docker wait cosyvoice-warmup 2>/dev/null || echo "1")
+  if [ "$WARMUP_EXIT" = "0" ]; then
+    log "Warmup succeeded. Committing kernel cache into image and pushing to ECR..."
+    docker commit --message "CUDA kernels pre-compiled by AMI builder" cosyvoice-warmup "$IMAGE" && \
+    docker push "$IMAGE" && \
+    log "Warmed image pushed: $IMAGE" || \
+    log "WARN: commit/push failed - AMI still usable without pre-warmed kernels."
+  else
+    log "WARN: GPU warmup exited with code $WARMUP_EXIT - CUDA kernels will compile at job start."
+  fi
+  docker rm -f cosyvoice-warmup 2>/dev/null || true
+  set -e
+}
+_do_gpu_warmup || log "WARN: GPU warmup step failed (non-fatal)."
 
 # -- ECS agent config - idempotent writes -------------------------------------
 log "Configuring ECS agent..."
