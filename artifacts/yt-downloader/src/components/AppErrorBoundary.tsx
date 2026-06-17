@@ -8,21 +8,64 @@ interface Props {
 
 interface State {
   hasError: boolean;
+  errorMessage: string;
+  componentStack: string;
 }
 
 export class AppErrorBoundary extends React.Component<Props, State> {
-  state: State = { hasError: false };
+  state: State = { hasError: false, errorMessage: "", componentStack: "" };
 
-  static getDerivedStateFromError(): State {
-    return { hasError: true };
+  static getDerivedStateFromError(error: unknown): Partial<State> {
+    return {
+      hasError: true,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
   }
 
-  componentDidCatch(error: unknown) {
-    console.error("Unhandled app render error", error);
+  componentDidCatch(error: unknown, info: React.ErrorInfo) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const componentStack = info.componentStack?.trim() ?? "";
+    console.error("Unhandled app render error", error, info);
+    try {
+      window.localStorage.setItem(
+        "videomaking.lastRenderCrash",
+        JSON.stringify({
+          errorMessage,
+          componentStack,
+          url: window.location.href,
+          at: new Date().toISOString(),
+        }),
+      );
+    } catch {
+      // Ignore storage failures; the visible crash card still shows the error.
+    }
+    this.setState({ errorMessage, componentStack });
   }
 
   private handleReload = () => {
     window.location.reload();
+  };
+
+  private handleResetAndReload = async () => {
+    try {
+      const registrations = await navigator.serviceWorker?.getRegistrations?.();
+      await Promise.all((registrations ?? []).map((registration) => registration.unregister()));
+    } catch {
+      // Best-effort recovery.
+    }
+    try {
+      const cacheKeys = await caches?.keys?.();
+      await Promise.all((cacheKeys ?? []).map((key) => caches.delete(key)));
+    } catch {
+      // Best-effort recovery.
+    }
+    try {
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+    } catch {
+      // Best-effort recovery.
+    }
+    window.location.href = "/";
   };
 
   render() {
@@ -42,12 +85,35 @@ export class AppErrorBoundary extends React.Component<Props, State> {
               The page crashed unexpectedly. Reload to continue.
             </p>
           </div>
+          {this.state.errorMessage ? (
+            <div className="rounded-xl border border-red-400/20 bg-black/30 p-3 text-left">
+              <p className="text-xs font-semibold uppercase tracking-wide text-red-200">
+                Error
+              </p>
+              <pre className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-words text-xs text-red-100">
+                {this.state.errorMessage}
+              </pre>
+              {this.state.componentStack ? (
+                <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words text-[11px] text-white/45">
+                  {this.state.componentStack}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
           <Button
             onClick={this.handleReload}
             className="w-full rounded-xl h-10 text-sm font-semibold"
           >
             <RefreshCw className="w-4 h-4 mr-2" />
             Reload App
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={this.handleResetAndReload}
+            className="w-full rounded-xl h-10 text-sm font-semibold border-red-400/30 bg-transparent text-red-100 hover:bg-red-500/10"
+          >
+            Reset Browser Data
           </Button>
         </div>
       </div>

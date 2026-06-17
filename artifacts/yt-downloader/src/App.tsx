@@ -289,7 +289,11 @@ function App() {
     const target = document.getElementById("google-signin-button");
     const googleId = window.google?.accounts?.id;
     if (!target || !googleId || googleButtonRendered) return;
-    target.replaceChildren();
+    target.textContent = "";
+    const buttonWidth = Math.max(
+      240,
+      Math.min(400, Math.round(target.getBoundingClientRect().width || 360)),
+    );
 
     googleId.initialize({
       client_id: authConfig.googleClientId,
@@ -302,7 +306,7 @@ function App() {
     googleId.renderButton(target, {
       theme: "filled_black",
       size: "large",
-      width: "100%",
+      width: buttonWidth,
       text: "continue_with",
     });
     setGoogleButtonRendered(true);
@@ -511,13 +515,17 @@ function App() {
 
               <div className="auth-google-wrap">
                 {authConfig?.googleAuthEnabled && authConfig.googleClientId ? (
-                  <div id="google-signin-button" className={cn("auth-google-button", googleSubmitting && "opacity-60 pointer-events-none")}>
+                  <>
+                    <div
+                      id="google-signin-button"
+                      className={cn("auth-google-button", googleSubmitting && "opacity-60 pointer-events-none")}
+                    />
                     {!googleButtonRendered ? (
                       <button className="auth-google-fallback" type="button" disabled>
                         Continue with Google
                       </button>
                     ) : null}
-                  </div>
+                  </>
                 ) : (
                   <button className="auth-google-fallback" type="button" disabled>
                     Continue with Google
