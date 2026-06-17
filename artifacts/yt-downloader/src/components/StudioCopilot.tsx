@@ -449,15 +449,29 @@ function normalizeMarkdownForRender(input: string): string {
       // Model output often writes block math inline after labels or before the
       // next bullet; put $$ delimiters on their own lines so remark-math can
       // recover the block instead of swallowing following markdown as math.
-      line = line
-        .replace(/([^\s])\$\$/g, (_match, prefix: string) => `${prefix}\n$$`)
-        .replace(/\$\$([^\s])/g, (_match, suffix: string) => `$$\n${suffix}`);
+      if (line.includes("$$")) {
+        line = line
+          .replace(/^(.+?\S)\s+\$\$/g, "$1\n\n$$")
+          .replace(/\$\$\s+(\S)/g, "$$\n$1")
+          .replace(/\$\$(?=\S)/g, "$$\n")
+          .replace(/(\S)\s*\$\$/g, "$1\n$$");
+      }
     }
 
     out.push(line);
   }
 
   return out.join("\n");
+}
+
+function reactNodePlainText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reactNodePlainText).join("");
+  if (React.isValidElement(node)) {
+    return reactNodePlainText((node.props as { children?: React.ReactNode }).children);
+  }
+  return "";
 }
 
 function MarkdownContent({
@@ -499,6 +513,10 @@ function MarkdownContent({
           className="my-2 max-h-80 max-w-full rounded-lg border border-white/10 object-contain"
         />
       );
+    },
+    blockquote({ children }: any) {
+      if (!reactNodePlainText(children).trim()) return null;
+      return <blockquote>{children}</blockquote>;
     },
     pre({ children }: any) {
       const child = React.Children.count(children) === 1 ? React.Children.only(children) : null;

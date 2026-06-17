@@ -1010,6 +1010,7 @@ export default function Home({
               )}
             </AnimatePresence>
 
+            {!showCopilot && (
             <AnimatePresence mode="wait">
 
               {/* Download video info */}
@@ -1244,6 +1245,7 @@ export default function Home({
               )}
 
             </AnimatePresence>
+            )}
 
             {/* Always-mounted copilot — lives outside AnimatePresence so it is never
                 unmounted when the user navigates to another tab. The SSE stream keeps
