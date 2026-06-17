@@ -339,6 +339,7 @@ Resources:
           - Effect: Allow
             Principal:
               Service:
+                - tasks.apprunner.amazonaws.com
                 - lambda.amazonaws.com
                 - ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
@@ -398,6 +399,28 @@ Resources:
                   - ecr:BatchGetImage
                 Resource:
                   - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${Prefix}-translator"
+        - PolicyName: !Sub "${Prefix}-self-invoke"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prefix}-api"
+        - PolicyName: !Sub "${Prefix}-access-allowlist"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !If
+                    - UseAccessTable
+                    - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${AccessTable}"
+                    - !Ref AWS::NoValue
 
   ApiFunction:
     Type: AWS::Lambda::Function
