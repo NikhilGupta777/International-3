@@ -3,7 +3,9 @@ param(
   [string]$Prefix = "ytgrabber-green",
   [string]$ImageTag = "latest",
   [int]$MaxVcpus = 6,
-  [string]$EnvFile = ""
+  [string]$EnvFile = "",
+  [string]$SubnetId = "",
+  [string]$SecurityGroupId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,52 +91,84 @@ $jobQueueName = "$Prefix-job-queue"
 $jobDefName = "$Prefix-worker-job"
 $repoName = "$Prefix-worker"
 $jobTable = "$Prefix-jobs"
-$queueUrl = "https://queue.amazonaws.com/596596146505/$Prefix-jobs"
+$accountId = aws sts get-caller-identity --query Account --output text
+Assert-LastExit "Resolve AWS account id"
+$queueUrl = "https://queue.amazonaws.com/$accountId/$Prefix-jobs"
 $logGroup = "/aws/batch/job/$Prefix-worker"
 
 $repoUri = aws ecr describe-repositories --repository-names $repoName --region $Region --query "repositories[0].repositoryUri" --output text
 Assert-LastExit "Resolve ECR repository"
 $image = "$repoUri`:$ImageTag"
 
-$subnetId = ""
-$securityGroupId = ""
-
-$greenInstanceId = aws ec2 describe-instances `
-  --region $Region `
-  --filters Name=tag:Name,Values=$Prefix Name=instance-state-name,Values=running `
-  --query "Reservations[0].Instances[0].InstanceId" `
-  --output text
-Assert-LastExit "Find green instance"
-
-if ($greenInstanceId -and $greenInstanceId -ne "None") {
-  $subnetId = aws ec2 describe-instances `
+if ([string]::IsNullOrWhiteSpace($SubnetId) -or [string]::IsNullOrWhiteSpace($SecurityGroupId)) {
+  $greenInstanceId = aws ec2 describe-instances `
     --region $Region `
-    --instance-ids $greenInstanceId `
-    --query "Reservations[0].Instances[0].SubnetId" `
+    --filters Name=tag:Name,Values=$Prefix Name=instance-state-name,Values=running `
+    --query "Reservations[0].Instances[0].InstanceId" `
     --output text
-  Assert-LastExit "Resolve subnet id"
 
-  $securityGroupId = aws ec2 describe-instances `
-    --region $Region `
-    --instance-ids $greenInstanceId `
-    --query "Reservations[0].Instances[0].SecurityGroups[0].GroupId" `
-    --output text
-  Assert-LastExit "Resolve security group id"
-} else {
-  $subnetId = aws batch describe-compute-environments `
+  if ($LASTEXITCODE -eq 0 -and $greenInstanceId -and $greenInstanceId -ne "None") {
+    if ([string]::IsNullOrWhiteSpace($SubnetId)) {
+      $SubnetId = aws ec2 describe-instances `
+        --region $Region `
+        --instance-ids $greenInstanceId `
+        --query "Reservations[0].Instances[0].SubnetId" `
+        --output text
+      Assert-LastExit "Resolve subnet id"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($SecurityGroupId)) {
+      $SecurityGroupId = aws ec2 describe-instances `
+        --region $Region `
+        --instance-ids $greenInstanceId `
+        --query "Reservations[0].Instances[0].SecurityGroups[0].GroupId" `
+        --output text
+      Assert-LastExit "Resolve security group id"
+    }
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($SubnetId) -or [string]::IsNullOrWhiteSpace($SecurityGroupId)) {
+  $existingSubnetId = aws batch describe-compute-environments `
     --region $Region `
     --compute-environments $computeEnvName `
     --query "computeEnvironments[0].computeResources.subnets[0]" `
     --output text 2>$null
-  $securityGroupId = aws batch describe-compute-environments `
+  $existingSecurityGroupId = aws batch describe-compute-environments `
     --region $Region `
     --compute-environments $computeEnvName `
     --query "computeEnvironments[0].computeResources.securityGroupIds[0]" `
     --output text 2>$null
 
-  if (-not $subnetId -or $subnetId -eq "None" -or -not $securityGroupId -or $securityGroupId -eq "None") {
-    throw "Could not resolve networking. No running instance tagged Name=$Prefix and compute env $computeEnvName has no subnet/security group."
+  if ([string]::IsNullOrWhiteSpace($SubnetId) -and $existingSubnetId -and $existingSubnetId -ne "None") {
+    $SubnetId = $existingSubnetId
   }
+  if ([string]::IsNullOrWhiteSpace($SecurityGroupId) -and $existingSecurityGroupId -and $existingSecurityGroupId -ne "None") {
+    $SecurityGroupId = $existingSecurityGroupId
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($SubnetId) -or [string]::IsNullOrWhiteSpace($SecurityGroupId)) {
+  $SubnetId = aws ec2 describe-subnets `
+    --region $Region `
+    --filters Name=default-for-az,Values=true `
+    --query "Subnets[?MapPublicIpOnLaunch==`true`].SubnetId | [0]" `
+    --output text
+  Assert-LastExit "Resolve default subnet id"
+
+  $vpcId = aws ec2 describe-subnets `
+    --region $Region `
+    --subnet-ids $SubnetId `
+    --query "Subnets[0].VpcId" `
+    --output text
+  Assert-LastExit "Resolve default subnet VPC"
+
+  $SecurityGroupId = aws ec2 describe-security-groups `
+    --region $Region `
+    --filters Name=vpc-id,Values=$vpcId Name=group-name,Values=default `
+    --query "SecurityGroups[0].GroupId" `
+    --output text
+  Assert-LastExit "Resolve default security group"
 }
 
 $batchServiceRoleArn = Ensure-IamRole -RoleName $batchServiceRoleName -TrustPolicyJson @'
@@ -191,7 +225,7 @@ if (-not $existingCompute -or $existingCompute -eq "None") {
     --type MANAGED `
     --state ENABLED `
     --service-role $batchServiceRoleArn `
-    --compute-resources "type=FARGATE,maxvCpus=$MaxVcpus,subnets=[$subnetId],securityGroupIds=[$securityGroupId]" | Out-Null
+    --compute-resources "type=FARGATE,maxvCpus=$MaxVcpus,subnets=[$SubnetId],securityGroupIds=[$SecurityGroupId]" | Out-Null
   Assert-LastExit "Create Batch compute environment"
 }
 
@@ -309,5 +343,5 @@ Write-Host "  Compute Env:   $computeArn"
 Write-Host "  Job Queue:     $jobQueueArn"
 Write-Host "  Job Def:       $jobDefArn"
 Write-Host "  Worker Image:  $image"
-Write-Host "  Subnet:        $subnetId"
-Write-Host "  SecurityGroup: $securityGroupId"
+Write-Host "  Subnet:        $SubnetId"
+Write-Host "  SecurityGroup: $SecurityGroupId"

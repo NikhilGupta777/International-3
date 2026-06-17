@@ -21,7 +21,6 @@ const PLACEHOLDER_SUGGESTIONS = [
   "Cut a clip from any YouTube video...",
   "Make music for my documentary...",
   "Generate timestamps for this video...",
-  "Translate this video to Hindi...",
   "Write a YouTube script about...",
   "Find the best clips from this video...",
   "Generate subtitles and translate...",
@@ -78,9 +77,11 @@ function readUltraInitial(): boolean {
 export function StudioHome({
   onSwitchMode,
   onLaunchAgent,
+  translatorEnabled = true,
 }: {
   onSwitchMode: (m: Mode) => void;
   onLaunchAgent: (prompt: string) => void;
+  translatorEnabled?: boolean;
 }) {
   const { toast } = useToast();
   const [text, setText] = useState("");
@@ -504,7 +505,7 @@ export function StudioHome({
             { icon: <Scissors className="w-5 h-5" />, label: "Clip Cutter", desc: "Trim any range", mode: "clipcutter", color: "text-orange-400" },
             { icon: <Clapperboard className="w-5 h-5" />, label: "AI Studio", desc: "Finish videos", mode: "videostudio", color: "text-emerald-400" },
             { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
-            { icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" },
+            ...(translatorEnabled ? [{ icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" }] : []),
             { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
             { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
             // { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },

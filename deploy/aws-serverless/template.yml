@@ -42,6 +42,12 @@ Parameters:
   AdminPanelEnabled:
     Type: String
     Default: "false"
+  TranslatorEnabled:
+    Type: String
+    Default: "true"
+  SuperAgentEnabled:
+    Type: String
+    Default: "true"
   PitajiFeatureEnabled:
     Type: String
     Default: "false"
@@ -418,6 +424,8 @@ Resources:
           APPROVED_ADMIN_EMAILS: !Ref ApprovedAdminEmails
           ACCESS_TABLE: !Ref AccessTable
           ADMIN_PANEL_ENABLED: !Ref AdminPanelEnabled
+          TRANSLATOR_ENABLED: !Ref TranslatorEnabled
+          SUPER_AGENT_ENABLED: !Ref SuperAgentEnabled
           PITAJI_FEATURE_ENABLED: !Ref PitajiFeatureEnabled
           PITAJI_USERNAME: !Ref PitajiUsername
           PITAJI_PASSWORD: !Ref PitajiPassword

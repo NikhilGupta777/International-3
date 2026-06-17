@@ -126,12 +126,15 @@ function NavList({
   return (
     <>
       {/* Main nav */}
-      {NAV_ITEMS.map((item) => (
+      {NAV_ITEMS.filter((item) => {
+        if (item.mode === "copilot" && !superAgentEnabled) return false;
+        if (item.mode === "translator" && !translatorEnabled) return false;
+        return true;
+      }).map((item) => (
         <GsItem
           key={item.mode}
           item={item}
           active={mode === item.mode}
-          className={((item.mode === "copilot" && !superAgentEnabled) || (item.mode === "translator" && !translatorEnabled)) ? "opacity-45" : undefined}
           onClick={handle(item.mode)}
         />
       ))}
