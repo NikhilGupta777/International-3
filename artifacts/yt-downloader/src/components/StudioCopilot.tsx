@@ -2282,6 +2282,7 @@ export function StudioCopilot({
   }, []);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const streamingRef = useRef(false);
   const [reconnectBanner, setReconnectBanner] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -2668,7 +2669,7 @@ export function StudioCopilot({
     const parsedCommand = consumeLeadingSkillCommand(text);
     const messageText = parsedCommand.text;
     const snapshotSkills = parsedCommand.skills;
-    if (streaming) return;
+    if (streamingRef.current) return;
     if (!messageText.trim() && snapshotAttachments.length === 0) {
       if (parsedCommand.consumed) {
         activeSkillsRef.current = snapshotSkills;
@@ -2714,6 +2715,7 @@ export function StudioCopilot({
     }]);
 
     upsertMsg(sessionId, assistantMsgId, m => m);
+    streamingRef.current = true;
     setStreaming(true);
     setReconnectBanner(null);
     setThinking(true);
@@ -3006,11 +3008,22 @@ export function StudioCopilot({
       }
       if (evt.type === "tool_done") {
         setActiveToolLabel(null);
-        patchAssistant(m => ({
-          ...m, parts: m.parts.map(p =>
-            p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done))
-              ? { ...p, done: true, result: evt.result, progress: 100 } : p),
-        }));
+        patchAssistant(m => {
+          if (evt.toolId) {
+            return { ...m, parts: m.parts.map(p =>
+              p.kind === "tool_start" && (p as any).toolId === evt.toolId
+                ? { ...p, done: true, result: evt.result, progress: 100 } : p) };
+          }
+          // No toolId: match only the FIRST undone tool with this name
+          let matched = false;
+          return { ...m, parts: m.parts.map(p => {
+            if (!matched && p.kind === "tool_start" && (p as any).name === evt.name && !(p as any).done) {
+              matched = true;
+              return { ...p, done: true, result: evt.result, progress: 100 };
+            }
+            return p;
+          }) };
+        });
 
         // Sync to Activity History
         if (evt.name === "cut_video_clip" && evt.result?.jobId) {
@@ -3194,6 +3207,7 @@ export function StudioCopilot({
       }
       try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ }
     } finally {
+      streamingRef.current = false;
       setStreaming(false);
       setThinking(false);
       setAgentStage("idle");
@@ -3229,6 +3243,7 @@ export function StudioCopilot({
       }));
     }
     streamingAssistantIdRef.current = null;
+    streamingRef.current = false;
     setStreaming(false); setThinking(false); setAgentStage("idle"); setAgentIteration(0);
   };
 
@@ -3489,9 +3504,12 @@ export function StudioCopilot({
             <AnimatePresence initial={false}>
               {currentMessages.map((msg, idx) => {
                 const isLastAssistant = msg.role === "assistant" && idx === currentMessages.length - 1;
-                const handleRetry = isLastAssistant && lastUserTextRef.current
-                  ? () => void sendMessage(lastUserTextRef.current, lastUserAttachmentsRef.current.length > 0 ? lastUserAttachmentsRef.current : undefined)
-                  : undefined;
+                const handleRetry = isLastAssistant ? () => {
+                  const precedingUser = currentMessages.slice(0, idx).reverse().find(m => m.role === "user");
+                  const retryText = precedingUser?.parts.find(p => p.kind === "text")?.content?.trim();
+                  const retryAttachments = precedingUser?.parts.filter(p => p.kind === "attachment").map(p => p as any);
+                  if (retryText) void sendMessage(retryText, retryAttachments?.length ? retryAttachments : undefined);
+                } : undefined;
                 const hasThoughts = thoughtText.trim().length > 0;
                 const showThinkingForMessage = isLastAssistant && (thinking || hasThoughts);
                 const stageLabel: Record<string, string> = {

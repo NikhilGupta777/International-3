@@ -1938,6 +1938,11 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
       },
     });
     if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
+    // SSRF: re-check the final URL after redirects to block redirect-based bypass
+    if (r.url) {
+      const finalParsed = new URL(r.url);
+      if (isInternalHost(finalParsed.hostname)) throw new Error("Redirect to internal/private network URL blocked.");
+    }
     const contentType = r.headers.get("content-type") ?? "";
     const raw = await r.text();
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
@@ -3095,7 +3100,22 @@ except Exception as exc:
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "follow" });
+      // SSRF protection: block internal/private network URLs
+      const parsedSaveUrl = new URL(resolvedUrl);
+      if (!["http:", "https:"].includes(parsedSaveUrl.protocol)) throw new Error("Only http/https URLs can be saved.");
+      if (!resolvedUrl.startsWith(apiBase.replace(/\/api$/, "")) && isInternalHost(parsedSaveUrl.hostname)) {
+        throw new Error("Cannot fetch from internal/private network URLs.");
+      }
+
+      const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "manual" });
+      if (r.status >= 300 && r.status < 400) {
+        const location = r.headers.get("location");
+        if (location) {
+          const redirectUrl = new URL(location, resolvedUrl);
+          if (isInternalHost(redirectUrl.hostname)) throw new Error("Redirect to internal host blocked.");
+        }
+        throw new Error(`Redirect not followed for safety (${r.status})`);
+      }
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
