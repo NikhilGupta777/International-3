@@ -562,8 +562,8 @@ export default function Home({
   const showAdmin = mode === "admin";
   const showSettings = mode === "settings";
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
-  const canUseTranslator = authFeatures?.translatorAllowed !== false;
-  const canUseSuperAgent = authFeatures?.superAgentAllowed !== false;
+  const canUseTranslator = authFeatures?.translatorAllowed === true;
+  const canUseSuperAgent = authFeatures?.superAgentAllowed === true;
 
 
   const buttonPlaceholder = "Start";

@@ -1,10 +1,10 @@
-/* Narayan Bhakt Studio — PWA Service Worker */
-const CACHE_NAME = "nbstudio-v2";
-const PRECACHE = ["/", "/index.html", "/app-logo.png", "/favicon.svg"];
+/* Narayan Bhakt Studio service worker */
+const CACHE_NAME = "nbstudio-v3";
+const PRECACHE = ["/app-logo.png", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE)),
   );
   self.skipWaiting();
 });
@@ -14,21 +14,22 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((k) => k !== CACHE_NAME)
-          .map((k) => caches.delete(k))
-      )
-    )
+          .filter((key) => key !== CACHE_NAME)
+          .map((key) => caches.delete(key)),
+      ),
+    ),
   );
   self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
-  // Only handle GET requests and same-origin / CDN assets.
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
 
-  // Never intercept API calls — always hit the network.
+  // Always hit the network for API calls and app-shell navigations. The HTML
+  // references hashed bundles, so a stale cached shell can crash after deploys.
   if (url.pathname.startsWith("/api/")) return;
+  if (event.request.mode === "navigate" || url.pathname === "/" || url.pathname === "/index.html") return;
 
   event.respondWith(
     fetch(event.request)
@@ -36,19 +37,17 @@ self.addEventListener("fetch", (event) => {
         if (
           response &&
           response.status === 200 &&
-          (event.request.mode === "navigate" ||
-            url.pathname.match(/\.(js|css|png|jpg|jpeg|svg|woff2?)$/))
+          url.pathname.match(/\.(js|css|png|jpg|jpeg|svg|woff2?)$/)
         ) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
         return response;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() => caches.match(event.request)),
   );
 });
 
-// ── Push notifications (re-use existing push-sw.js logic) ───────────────────
 self.addEventListener("push", (event) => {
   let payload = {
     title: "Narayan Bhakt Studio",
@@ -70,7 +69,7 @@ self.addEventListener("push", (event) => {
       silent: payload.silent === true,
       renotify: false,
       requireInteraction: false,
-    })
+    }),
   );
 });
 
@@ -89,6 +88,6 @@ self.addEventListener("notificationclick", (event) => {
           }
         }
         return self.clients.openWindow(targetUrl);
-      })
+      }),
   );
 });

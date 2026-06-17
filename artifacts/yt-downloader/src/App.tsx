@@ -161,6 +161,15 @@ function App() {
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
   const base = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+  const refreshAuthSession = async (): Promise<AuthSessionResponse> => {
+    const res = await fetch(`${base}/api/auth/session`, {
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error("Could not refresh auth session");
+    return (await res.json()) as AuthSessionResponse;
+  };
+
   useEffect(() => {
     let mounted = true;
     const hadAuthHint =
@@ -315,8 +324,10 @@ function App() {
         setLoginError("Invalid username or password");
         return;
       }
+      const session = await refreshAuthSession();
       window.localStorage.setItem(AUTH_HINT_KEY, "1");
-      setAuthUser({ method: "password", role: "user" });
+      setAuthUser(session.user ?? { method: "password", role: "user" });
+      setAuthFeatures(session.features ?? null);
       setAuthenticated(true);
       setAuthChecked(true);
     } catch {
@@ -341,8 +352,10 @@ function App() {
         setLoginError(data?.error || "Google sign-in failed");
         return;
       }
+      const session = await refreshAuthSession();
       window.localStorage.setItem(AUTH_HINT_KEY, "1");
-      setAuthUser(data?.user ?? { method: "google", role: "user" });
+      setAuthUser(session.user ?? data?.user ?? { method: "google", role: "user" });
+      setAuthFeatures(session.features ?? null);
       setAuthenticated(true);
       setAuthChecked(true);
     } catch {
