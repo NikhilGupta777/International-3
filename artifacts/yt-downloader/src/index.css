@@ -52,7 +52,10 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 
 .auth-google-button {
+  width: 100%;
   min-height: 44px;
+  display: flex;
+  justify-content: center;
 }
 
 .auth-google-fallback {
@@ -2162,6 +2165,27 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 /* Genspark markdown in chat */
 .copilot-md strong { font-weight: 700; color: rgba(255,255,255,0.95); }
 .copilot-md em { font-style: italic; color: rgba(255,255,255,0.80); }
+.copilot-md > *:first-child { margin-top: 0; }
+.copilot-md > *:last-child { margin-bottom: 0; }
+.copilot-md h1,
+.copilot-md h2,
+.copilot-md h3,
+.copilot-md h4,
+.copilot-md h5,
+.copilot-md h6 {
+  color: rgba(255,255,255,0.95);
+  line-height: 1.25;
+  margin: 18px 0 8px;
+  font-weight: 700;
+}
+.copilot-md h1 { font-size: 1.5rem; }
+.copilot-md h2 { font-size: 1.28rem; }
+.copilot-md h3 { font-size: 1.08rem; }
+.copilot-md h4 { font-size: 0.98rem; }
+.copilot-md h5 { font-size: 0.9rem; color: rgba(255,255,255,0.82); }
+.copilot-md h6 { font-size: 0.82rem; color: rgba(255,255,255,0.72); }
+.copilot-md p { margin: 10px 0; }
+.copilot-md del { color: rgba(255,255,255,0.58); }
 .copilot-md code {
   font-family: var(--font-mono);
   font-size: 0.8em;
@@ -2173,11 +2197,83 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 .copilot-md a { color: #f87171; text-decoration: underline; text-underline-offset: 2px; }
 .copilot-md ul, .copilot-md ol {
-  padding-left: 18px;
-  display: flex; flex-direction: column; gap: 3px;
-  margin-top: 4px;
+  padding-left: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
 }
-.copilot-md li { line-height: 1.55; }
+.copilot-md ul { list-style: disc; }
+.copilot-md ol { list-style: decimal; }
+.copilot-md li { line-height: 1.58; padding-left: 2px; }
+.copilot-md li > ul,
+.copilot-md li > ol { margin: 4px 0 2px; }
+.copilot-md blockquote {
+  margin: 12px 0;
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid rgba(255,255,255,0.20);
+  color: rgba(255,255,255,0.72);
+}
+.copilot-md blockquote > p { margin: 4px 0; }
+.copilot-md hr {
+  border: 0;
+  border-top: 1px solid rgba(255,255,255,0.10);
+  margin: 18px 0;
+}
+.copilot-md table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 8px;
+  font-size: 0.86rem;
+}
+.copilot-md th,
+.copilot-md td {
+  border: 1px solid rgba(255,255,255,0.10);
+  padding: 7px 9px;
+  vertical-align: top;
+}
+.copilot-md th {
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.92);
+  font-weight: 700;
+}
+.copilot-md pre code {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.copilot-md input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+}
+.copilot-md .contains-task-list {
+  list-style: none;
+  padding-left: 0.25rem;
+}
+.copilot-md .task-list-item {
+  list-style: none;
+}
+.copilot-md img {
+  display: block;
+}
+.copilot-md .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 8px 0;
+}
+.copilot-md .footnotes {
+  margin-top: 18px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.70);
+  font-size: 0.86rem;
+}
 
 /* Streaming text animation — smooth fade-in with subtle lift */
 @keyframes streamIn {
@@ -10817,3 +10913,41 @@ html.studio-light-mode .ai-video-studio__action-circle--active {
 }
 
 /* ─── End History Panel light mode overrides ────────────────────────────── */
+
+.copilot-md .katex-error {
+  color: rgba(255,210,150,0.88) !important;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 6px;
+  padding: 2px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+}
+
+.agent-canvas-markdown {
+  color: rgba(255,255,255,0.86);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(34,211,238,0.12), transparent 34%),
+    radial-gradient(circle at 95% 10%, rgba(16,185,129,0.10), transparent 26%),
+    linear-gradient(180deg, rgba(255,255,255,0.035), rgba(0,0,0,0.18));
+}
+
+.agent-canvas-markdown-full {
+  padding-left: clamp(18px, 4vw, 48px);
+  padding-right: clamp(18px, 4vw, 48px);
+}
+
+.agent-canvas-markdown-full > * {
+  max-width: 920px;
+}
+
+.agent-canvas-markdown table {
+  background: rgba(0,0,0,0.22);
+}
+
+.agent-canvas-markdown blockquote {
+  border-left-color: rgba(34,211,238,0.42);
+  background: rgba(34,211,238,0.055);
+  border-radius: 0 8px 8px 0;
+  padding: 8px 12px;
+}

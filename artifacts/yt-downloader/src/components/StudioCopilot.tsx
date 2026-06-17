@@ -1,5 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import katex from "katex";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import rehypeSanitize from "rehype-sanitize";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Bot, Loader2, CheckCircle, ChevronRight, ChevronDown,
@@ -414,7 +419,131 @@ const HEADING_SIZES: Record<number, string> = {
 };
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
+function normalizeMarkdownForRender(input: string): string {
+  const lines = input.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  let inFence = false;
+
+  for (const originalLine of lines) {
+    let line = originalLine;
+    const trimmed = line.trim();
+
+    if (/^```/.test(trimmed)) {
+      inFence = !inFence;
+      out.push(line);
+      continue;
+    }
+
+    if (!inFence) {
+      line = line
+        .replace(/^(\s*)•\s+/, "$1- ")
+        .replace(/(^|[^\\])\$([0-9]+(?:\.[0-9]{1,2})?)/g, (_match, prefix: string, amount: string) => `${prefix}\\$${amount}`);
+
+      const callout = /^>\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i.exec(line);
+      if (callout) {
+        const label = callout[1].toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+        const rest = callout[2]?.trim();
+        line = `> **${label}:**${rest ? ` ${rest}` : ""}`;
+      }
+
+      // Model output often writes block math inline after labels or before the
+      // next bullet; put $$ delimiters on their own lines so remark-math can
+      // recover the block instead of swallowing following markdown as math.
+      line = line
+        .replace(/([^\s])\$\$/g, (_match, prefix: string) => `${prefix}\n$$`)
+        .replace(/\$\$([^\s])/g, (_match, suffix: string) => `$$\n${suffix}`);
+    }
+
+    out.push(line);
+  }
+
+  return out.join("\n");
+}
+
+function MarkdownContent({
+  text,
+  sources,
+  streaming = false,
+}: {
+  text: string;
+  sources?: Array<{ title: string; uri: string }>;
+  streaming?: boolean;
+}) {
+  const normalizedText = useMemo(() => normalizeMarkdownForRender(text), [text]);
+  const components = useMemo(() => ({
+    a({ href, children, ...props }: any) {
+      const safeHref = safeExternalHref(href);
+      if (!safeHref) return <span>{children}</span>;
+      const local = safeHref.startsWith("#") || safeHref.startsWith("/");
+      return (
+        <a
+          {...props}
+          href={safeHref}
+          target={local ? undefined : "_blank"}
+          rel={local ? undefined : "noopener noreferrer"}
+          className="text-sky-400 hover:text-sky-300 underline underline-offset-2"
+        >
+          {children}
+        </a>
+      );
+    },
+    img({ src, alt, title }: any) {
+      const safeSrc = safeExternalHref(src);
+      if (!safeSrc) return <span>{alt || "Image"}</span>;
+      return (
+        <img
+          src={safeSrc}
+          alt={alt || ""}
+          title={title}
+          loading="lazy"
+          className="my-2 max-h-80 max-w-full rounded-lg border border-white/10 object-contain"
+        />
+      );
+    },
+    pre({ children }: any) {
+      const child = React.Children.count(children) === 1 ? React.Children.only(children) : null;
+      if (React.isValidElement(child) && child.type === "code") {
+        const props = child.props as { className?: string; children?: React.ReactNode };
+        const language = /language-([a-zA-Z0-9+#.-]+)/.exec(props.className || "")?.[1];
+        return renderCodeBlock(String(props.children ?? "").replace(/\n$/, ""), language, "md-code");
+      }
+      return <pre className="my-2 max-h-80 overflow-auto rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap">{children}</pre>;
+    },
+    code({ className, children }: any) {
+      return <code className={className}>{children}</code>;
+    },
+    input({ type, checked, disabled, ...props }: any) {
+      if (type === "checkbox") {
+        return <input {...props} type="checkbox" checked={checked} readOnly disabled={disabled ?? true} className="mr-2 align-middle accent-sky-400" />;
+      }
+      return <input {...props} type={type} disabled={disabled} />;
+    },
+  }), []);
+
+  return (
+    <>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[
+          rehypeSanitize,
+          [rehypeKatex, { throwOnError: false, strict: "ignore", trust: false }],
+        ]}
+        components={components}
+      >
+        {normalizedText}
+      </ReactMarkdown>
+      {sources && sources.length > 0 ? (
+        <span className="sr-only">
+          {sources.map((source, index) => ` Source ${index + 1}: ${source.title || source.uri}.`).join("")}
+        </span>
+      ) : null}
+      {streaming ? <span className="stream-cursor" /> : null}
+    </>
+  );
+}
+
 function renderMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
+  return <MarkdownContent text={text} sources={sources} />;
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
   const inline = (str: string, key: string): React.ReactNode => {
@@ -478,7 +607,7 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
         codeLines.push(lines[bi]);
         bi++;
       }
-      result.push(renderCodeBlock(codeLines.join("\n"), codeFenceMatch[1], `code${li}`));
+      result.push(renderCodeBlock(codeLines.join("\n"), codeFenceMatch?.[1], `code${li}`));
       li = bi < lines.length ? bi + 1 : bi;
       continue;
     }
@@ -495,7 +624,7 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
         li = bi < lines.length ? bi + 1 : bi;
       } else {
         const m = /^\$\$(.+)\$\$$/.exec(trimmed);
-        mathContent = m ? m[1] : trimmed.slice(2);
+        mathContent = m?.[1] ?? trimmed.slice(2);
         li++;
       }
       result.push(renderKatexNode(mathContent, true, `math${li}`));
@@ -530,22 +659,22 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
     const ulMatch = /^(\s*)[-*+]\s+(.*)/.exec(line);
 
     if (headingMatch) {
-      const level = headingMatch[1].length;
+      const level = headingMatch?.[1]?.length ?? 3;
       const cls = HEADING_SIZES[level] ?? HEADING_SIZES[3];
-      result.push(<div key={li} className={cls}>{inline(headingMatch[2], `h${li}`)}</div>);
+      result.push(<div key={li} className={cls}>{inline(headingMatch?.[2] ?? "", `h${li}`)}</div>);
     }
     else if (hrMatch) result.push(<hr key={li} className="my-2 border-white/10" />);
     else if (quoteMatch) {
-      const ql = quoteMatch[1].length;
+      const ql = quoteMatch?.[1]?.length ?? 1;
       result.push(
         <div key={li} style={{ marginLeft: (ql - 1) * 12 }}
              className="border-l-2 border-white/20 pl-2 ml-1 text-white/70 my-0.5">
-          {inline(quoteMatch[2], `q${li}`)}
+          {inline(quoteMatch?.[2] ?? "", `q${li}`)}
         </div>
       );
     }
-    else if (olMatch) result.push(renderOlItem(li, olMatch[1], olMatch[2], olMatch[3], inline, `ol${li}`));
-    else if (ulMatch) result.push(renderUlItem(li, ulMatch[1], ulMatch[2], inline, `ul${li}`));
+    else if (olMatch) result.push(renderOlItem(li, olMatch?.[1] ?? "", olMatch?.[2] ?? "1", olMatch?.[3] ?? "", inline, `ol${li}`));
+    else if (ulMatch) result.push(renderUlItem(li, ulMatch?.[1] ?? "", ulMatch?.[2] ?? "", inline, `ul${li}`));
     else if (line.trim() === "") { if (li < lines.length - 1) result.push(<div key={li} className="h-5" />); }
     else result.push(<div key={li}>{inline(line, `ln${li}`)}</div>);
 
@@ -556,6 +685,7 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
 
 // ── Streaming markdown renderer — keeps markdown formatting, animates trailing words ──
 function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
+  return <MarkdownContent text={text} sources={sources} streaming />;
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
   const ANIMATE_WINDOW = 80; // animate last N graphemes of the final line
@@ -742,7 +872,7 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
         codeLines.push(lines[bi]);
         bi++;
       }
-      result.push(renderCodeBlock(codeLines.join("\n"), codeFenceMatch[1], `code${li}`));
+      result.push(renderCodeBlock(codeLines.join("\n"), codeFenceMatch?.[1], `code${li}`));
       li = bi < lines.length ? bi + 1 : bi;
       continue;
     }
@@ -759,7 +889,7 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
         li = bi < lines.length ? bi + 1 : bi;
       } else {
         const mm = /^\$\$(.+)\$\$$/.exec(trimmedLine);
-        mathContent = mm ? mm[1] : trimmedLine.slice(2);
+        mathContent = mm?.[1] ?? trimmedLine.slice(2);
         li++;
       }
       result.push(renderKatexNode(mathContent, true, `math${li}`));
@@ -796,23 +926,23 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     const lineInline = (str: string, key: string) => inlineAnimatedWithCursor(str, key, isLastLine);
 
     if (headingMatch) {
-      const level = headingMatch[1].length;
+      const level = headingMatch?.[1]?.length ?? 3;
       const cls = HEADING_SIZES[level] ?? HEADING_SIZES[3];
-      result.push(<div key={li} className={cls}>{inlineAnimatedWithCursor(headingMatch[2], `h${li}`, isLastLine)}</div>);
+      result.push(<div key={li} className={cls}>{inlineAnimatedWithCursor(headingMatch?.[2] ?? "", `h${li}`, isLastLine)}</div>);
     } else if (hrMatch) {
       result.push(<hr key={li} className="my-2 border-white/10" />);
     } else if (quoteMatch) {
-      const ql = quoteMatch[1].length;
+      const ql = quoteMatch?.[1]?.length ?? 1;
       result.push(
         <div key={li} style={{ marginLeft: (ql - 1) * 12 }}
              className="border-l-2 border-white/20 pl-2 ml-1 text-white/70 my-0.5">
-          {inlineAnimatedWithCursor(quoteMatch[2], `q${li}`, isLastLine)}
+          {inlineAnimatedWithCursor(quoteMatch?.[2] ?? "", `q${li}`, isLastLine)}
         </div>
       );
     } else if (olMatch) {
-      result.push(renderOlItem(li, olMatch[1], olMatch[2], olMatch[3], lineInline, `ol${li}`));
+      result.push(renderOlItem(li, olMatch?.[1] ?? "", olMatch?.[2] ?? "1", olMatch?.[3] ?? "", lineInline, `ol${li}`));
     } else if (ulMatch) {
-      result.push(renderUlItem(li, ulMatch[1], ulMatch[2], lineInline, `ul${li}`));
+      result.push(renderUlItem(li, ulMatch?.[1] ?? "", ulMatch?.[2] ?? "", lineInline, `ul${li}`));
     } else if (line.trim() === "") {
       if (li < lines.length - 1) result.push(<div key={li} className="h-5" />);
     } else {
@@ -872,6 +1002,14 @@ function canvasFilename(language: string): string {
   return `agent-canvas.${ext}`;
 }
 
+function isMarkdownArtifact(language?: string, label?: string, contentType?: string): boolean {
+  const lang = normalizeCanvasLanguage(language);
+  return lang === "md"
+    || lang === "markdown"
+    || /\.(md|markdown)$/i.test(label || "")
+    || /\b(markdown|x-markdown)\b/i.test(contentType || "");
+}
+
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, value));
@@ -919,7 +1057,7 @@ function extractCanvasCandidate(text: string): CanvasCandidate | null {
 
   if (!match) return null;
   const content = (match[2] || "").trim();
-  if (content.length < 40 && !isHtmlCanvas(match[1] || "", content)) return null;
+  if (!isHtmlCanvas(match[1] || "", content) || content.length < 80) return null;
   const language = normalizeCanvasLanguage(match[1], content);
   const displayText = text
     .replace(match[0], live ? "\n\nWriting in canvas..." : "\n\nCanvas created below.")
@@ -1249,6 +1387,7 @@ function PlanCard({ part }: { part: MessagePart & { kind: "plan" } }) {
 function CompactTextArtifact({ label, content, downloadUrl }: { label: string; content: string; downloadUrl?: string }) {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
+  const canRenderMarkdown = isMarkdownArtifact(undefined, label);
   const copyText = async () => {
     try { await navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
   };
@@ -1266,7 +1405,13 @@ function CompactTextArtifact({ label, content, downloadUrl }: { label: string; c
         </>
       }
     >
-      <pre className="text-[12px] text-white/75 font-mono px-4 py-3 whitespace-pre-wrap break-words">{content}</pre>
+      {canRenderMarkdown ? (
+        <div className="agent-canvas-markdown copilot-md px-4 py-3 max-h-72 overflow-auto">
+          <MarkdownContent text={content} />
+        </div>
+      ) : (
+        <pre className="text-[12px] text-white/75 font-mono px-4 py-3 whitespace-pre-wrap break-words">{content}</pre>
+      )}
     </ArtifactShell>
   );
 }
@@ -1274,9 +1419,10 @@ function CompactTextArtifact({ label, content, downloadUrl }: { label: string; c
 function TextArtifact({ label, content, downloadUrl, language, live }: { label: string; content: string; downloadUrl?: string; language?: string; live?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<"code" | "preview">("code");
+  const [view, setView] = useState<"code" | "preview">("preview");
   const normalizedLanguage = normalizeCanvasLanguage(language, content);
   const canPreview = isHtmlCanvas(normalizedLanguage, content);
+  const canRenderMarkdown = isMarkdownArtifact(normalizedLanguage, label);
   // For short non-live, non-previewable content, drop the heavy "canvas" UI and
   // show a tight inline card. Canvas is for real artifacts the user will edit/download.
   if (!live && !canPreview && content.length <= 500) {
@@ -1309,7 +1455,13 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
           </>
         }
       >
-        <pre className="text-[12px] text-white/72 font-mono p-3 overflow-x-auto max-h-72 whitespace-pre-wrap bg-black/20">{preview}</pre>
+        {canRenderMarkdown ? (
+          <div className="agent-canvas-markdown copilot-md p-3 max-h-72 overflow-auto">
+            <MarkdownContent text={preview} />
+          </div>
+        ) : (
+          <pre className="text-[12px] text-white/72 font-mono p-3 overflow-x-auto max-h-72 whitespace-pre-wrap bg-black/20">{preview}</pre>
+        )}
       </ArtifactShell>
       {/* HIDDEN — old card body retained below replaced by ArtifactShell above */}
       <div className="hidden">
@@ -1354,10 +1506,10 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
                   <p className="text-sm font-bold text-white truncate">{label}</p>
                   <p className="text-[11px] text-white/40">Agent canvas - {live ? "live writing, " : ""}preview, copy, download</p>
                 </div>
-                {canPreview && (
+                {(canPreview || canRenderMarkdown) && (
                   <div className="hidden sm:flex items-center gap-1 p-1 rounded-xl bg-white/6 border border-white/8">
                     <button onClick={() => setView("code")} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "code" ? "bg-cyan-400/18 text-cyan-100" : "text-white/55 hover:text-white")}>
-                      <Terminal className="w-3.5 h-3.5" /> Code
+                      <Terminal className="w-3.5 h-3.5" /> Raw
                     </button>
                     <button onClick={() => setView("preview")} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "preview" ? "bg-emerald-500/18 text-emerald-100" : "text-white/55 hover:text-white")}>
                       <Eye className="w-3.5 h-3.5" /> Preview
@@ -1382,14 +1534,18 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
                   srcDoc={content}
                   className="flex-1 w-full bg-white"
                 />
+              ) : canRenderMarkdown && view === "preview" ? (
+                <div className="agent-canvas-markdown agent-canvas-markdown-full copilot-md flex-1 min-h-0 overflow-auto p-4 sm:p-6">
+                  <MarkdownContent text={content} />
+                </div>
               ) : (
                 <pre className="flex-1 min-h-0 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{content}</pre>
               )}
               <div className="relative z-10 sm:hidden grid grid-cols-2 gap-2 p-3 border-t border-white/10 bg-white/[0.035] shrink-0">
-                {canPreview && (
+                {(canPreview || canRenderMarkdown) && (
                   <>
                     <button onClick={() => setView("code")} className={cn("flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold", view === "code" ? "bg-cyan-400/18 text-cyan-100" : "bg-white/8 text-white/75")}>
-                      <Terminal className="w-3.5 h-3.5" /> Code
+                      <Terminal className="w-3.5 h-3.5" /> Raw
                     </button>
                     <button onClick={() => setView("preview")} className={cn("flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold", view === "preview" ? "bg-emerald-500/20 text-emerald-100" : "bg-white/8 text-white/75")}>
                       <Eye className="w-3.5 h-3.5" /> Preview
@@ -1762,6 +1918,7 @@ function WorkspaceListingCard({ part, onOpenWorkspace }: { part: MessagePart & {
 function WorkspaceFileCard({ part }: { part: MessagePart & { kind: "artifact" } }) {
   const { toast } = useToast();
   const content = part.content ?? "";
+  const canRenderMarkdown = isMarkdownArtifact(undefined, part.label, part.contentType);
   const copyContent = async () => {
     try { await navigator.clipboard.writeText(content); toast({ title: "Copied to clipboard" }); } catch { /* ignore */ }
   };
@@ -1782,7 +1939,13 @@ function WorkspaceFileCard({ part }: { part: MessagePart & { kind: "artifact" } 
         </>
       }
     >
-      <pre className="text-[11.5px] text-white/75 font-mono p-3 overflow-x-auto max-h-72 whitespace-pre-wrap bg-black/20">{content}</pre>
+      {canRenderMarkdown ? (
+        <div className="agent-canvas-markdown copilot-md p-3 max-h-72 overflow-auto">
+          <MarkdownContent text={content} />
+        </div>
+      ) : (
+        <pre className="text-[11.5px] text-white/75 font-mono p-3 overflow-x-auto max-h-72 whitespace-pre-wrap bg-black/20">{content}</pre>
+      )}
     </ArtifactShell>
   );
 }
