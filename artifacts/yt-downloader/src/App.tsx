@@ -369,7 +369,7 @@ function App() {
     }
   };
 
-  // ── Pita Ji workspace session probe ────────────────────────────────────────
+  // Pita Ji workspace session probe.
   // Independent from the Narayan Bhakt auth flow. Only runs when the user is
   // currently in the Pita Ji workspace; otherwise the probe is skipped to avoid
   // an extra request on every cold load of the main app.
@@ -516,15 +516,6 @@ function App() {
                 ) : null}
               </div>
 
-              {PITAJI_WORKSPACE_ENABLED ? (
-              <button
-                type="button"
-                className="pj-workspace-switcher"
-                onClick={() => switchWorkspace("pitaji")}
-              >
-                Open Pita Ji Live workspace →
-              </button>
-              ) : null}
             </AuthOverlay>
           )}
         </div>

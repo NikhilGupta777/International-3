@@ -12,6 +12,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
 
 function Assert-LastExitCode {
   param([string]$Step)
@@ -80,11 +81,18 @@ function Remove-RollbackCompleteStackIfNeeded {
     [string]$StackName
   )
 
-  $describeOutput = aws cloudformation describe-stacks `
-    --region $Region `
-    --stack-name $StackName 2>$null
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $describeOutput = aws cloudformation describe-stacks `
+      --region $Region `
+      --stack-name $StackName 2>$null
+    $describeExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
 
-  if ($LASTEXITCODE -ne 0 -or -not $describeOutput) {
+  if ($describeExitCode -ne 0 -or -not $describeOutput) {
     return
   }
 
