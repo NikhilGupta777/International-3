@@ -10,6 +10,7 @@ import {
   ShieldAlert,
   Loader2,
   CircleDot,
+  BookOpen,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,7 +67,7 @@ function fmtDate(ms: number | null): string {
   }
 }
 
-export function DeveloperPanel() {
+export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -340,7 +341,19 @@ export function DeveloperPanel() {
 
       {/* Quick start */}
       <section>
-        <h2 className="mb-3 font-sans text-sm font-semibold text-slate-200">Quick start</h2>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-sans text-sm font-semibold text-slate-200">Quick start</h2>
+          {onOpenDocs && (
+            <button
+              type="button"
+              onClick={onOpenDocs}
+              className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 px-2.5 py-1.5 font-sans text-xs font-medium text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/10 hover:text-emerald-200"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              Read full documentation
+            </button>
+          )}
+        </div>
         <p className="mb-2 text-xs text-slate-500">
           Send your key as a bearer token. It works from anywhere - scripts, servers, automations.
         </p>

@@ -23,6 +23,7 @@ import { HelpPanel } from "@/components/HelpPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AdminPanel } from "@/components/AdminPanel";
 import { DeveloperPanel } from "@/components/DeveloperPanel";
+import { ApiDocumentationPage } from "@/components/ApiDocumentationPage";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { GUIDE_TABS, type GuideMode } from "@/lib/guide-tabs";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -59,7 +60,7 @@ import {
   subscribeToPreferenceChanges,
 } from "@/lib/user-preferences";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "settings";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -109,6 +110,7 @@ const MODE_LABELS: Record<Mode, string> = {
   activity: "Activity",
   admin: "Admin",
   developer: "Developer",
+  "api-docs": "API Docs",
   settings: "Settings",
 };
 
@@ -132,6 +134,7 @@ const MODE_PATHS: Record<Mode, string> = {
   activity: "/activity",
   admin: "/admin",
   developer: "/developer",
+  "api-docs": "/developer/docs",
   settings: "/settings",
 };
 const PATH_MODES = new Map<string, Mode>(
@@ -565,6 +568,7 @@ export default function Home({
   const showVideoStudio = mode === "videostudio";
   const showAdmin = mode === "admin";
   const showDeveloper = mode === "developer";
+  const showApiDocs = mode === "api-docs";
   const showSettings = mode === "settings";
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
   const canUseDeveloper = authFeatures?.apiAccessAllowed === true;
@@ -840,8 +844,8 @@ export default function Home({
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "settings") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
             {/* Translator tab - full screen */}
             {mode === "translator" && (
               canUseTranslator
@@ -890,7 +894,9 @@ export default function Home({
 
             {showAdmin && canUseAdmin && <AdminPanel />}
 
-            {showDeveloper && canUseDeveloper && <DeveloperPanel />}
+            {showDeveloper && canUseDeveloper && <DeveloperPanel onOpenDocs={() => switchMode("api-docs")} />}
+
+            {showApiDocs && canUseDeveloper && <ApiDocumentationPage onBack={() => switchMode("developer")} />}
 
             {/* Download tab — title, glowing input, blocked banner */}
             {showSearch && (
