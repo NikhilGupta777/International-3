@@ -6,9 +6,17 @@ import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import {
   registerPublicJob,
   getPublicJob,
+  isPublicJobStoreEnabled,
   type PublicJobResultKind,
 } from "../lib/public-jobs";
 import { sendApiError, apiErrorBody, isApiErrorBody } from "../lib/api-error";
+import {
+  getIdempotentRecord,
+  saveIdempotentRecord,
+  isIdempotencyStoreEnabled,
+  requestHash as idemRequestHash,
+} from "../lib/idempotency";
+import { isApiKeyStoreEnabled } from "../lib/api-key-auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API v1 — a clean, stable, documented surface over the studio services.
@@ -321,6 +329,23 @@ router.get("/", (req: Request, res: Response) => {
   });
 });
 
+// ── Health / key check ───────────────────────────────────────────────────────
+// A lightweight, key-authenticated probe. Doubles as a "does my key work?"
+// check for clients and dashboards.
+router.get("/health", (_req: Request, res: Response) => {
+  res.json({
+    ok: true,
+    service: "videomaking-studio-api",
+    version: "v1",
+    time: new Date().toISOString(),
+    components: {
+      apiKeyStore: isApiKeyStoreEnabled(),
+      jobRegistry: isPublicJobStoreEnabled(),
+      idempotency: isIdempotencyStoreEnabled(),
+    },
+  });
+});
+
 // ── OpenAPI document (self-contained; independent of the internal orval spec) ──
 
 // Proper JSON-schema types for known optional fields (so the spec isn't
@@ -376,6 +401,15 @@ router.get("/openapi.json", (req: Request, res: Response) => {
         summary: o.summary,
         tags: ["operations"],
         security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: "Idempotency-Key",
+            in: "header",
+            required: false,
+            schema: { type: "string" },
+            description: "Optional. Retrying with the same key + body replays the original job instead of creating a duplicate.",
+          },
+        ],
         requestBody: {
           required: true,
           content: {
@@ -413,6 +447,15 @@ router.get("/openapi.json", (req: Request, res: Response) => {
     };
   }
 
+  paths["/api/v1/health"] = {
+    get: {
+      operationId: "v1_health",
+      summary: "Lightweight health / key check.",
+      tags: ["jobs"],
+      security: [{ bearerAuth: [] }],
+      responses: { "200": { description: "Service healthy" } },
+    },
+  };
   paths["/api/v1/jobs/{jobId}"] = {
     get: {
       operationId: "v1_job_status",
@@ -751,7 +794,7 @@ router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
 
 // ── POST aliases: forward in-process to the canonical handler ────────────────
 function registerAlias(o: Operation) {
-  router.post(`/${o.op}`, (req: Request, res: Response) => {
+  router.post(`/${o.op}`, async (req: Request, res: Response) => {
     // Normalize the v1 body: accept `url` and map it to the canonical field.
     const body = (req.body && typeof req.body === "object" ? { ...req.body } : {}) as Record<string, unknown>;
     if (typeof body.url === "string" && o.urlKey !== "url") {
@@ -765,6 +808,30 @@ function registerAlias(o: Operation) {
 
     const keyId = requestingKeyId(res);
     const origin = publicOrigin(req);
+
+    // Idempotency: replay the stored response when the same key + body is
+    // retried; reject the same key with a different body.
+    const idemKey = String(
+      req.headers["idempotency-key"] ?? req.headers["x-idempotency-key"] ?? "",
+    ).trim();
+    const reqHash = idemKey ? idemRequestHash(o.op, keyId, body) : "";
+    if (idemKey) {
+      const existing = await getIdempotentRecord(keyId, idemKey);
+      if (existing) {
+        if (existing.requestHash && existing.requestHash !== reqHash) {
+          sendApiError(
+            res,
+            409,
+            "IDEMPOTENCY_KEY_REUSED",
+            "This Idempotency-Key was already used with a different request body.",
+          );
+          return;
+        }
+        res.setHeader("Idempotent-Replayed", "true");
+        res.status(200).json(existing.response);
+        return;
+      }
+    }
 
     // Build the v1-only envelope (absolute URLs; never leaks internal paths).
     const envelope = (jobId: string, status: string, webhookRegistered: boolean) => ({
@@ -805,8 +872,17 @@ function registerAlias(o: Operation) {
             } catch {
               /* never let bookkeeping break the response */
             }
+            const body = envelope(jobId, p.status as string, webhookRegistered);
+            if (idemKey) {
+              await saveIdempotentRecord(keyId, idemKey, {
+                requestHash: reqHash,
+                response: body,
+                jobId,
+                createdAt: Date.now(),
+              });
+            }
             if (!res.headersSent) {
-              originalJson(envelope(jobId, p.status as string, webhookRegistered));
+              originalJson(body);
             }
           })();
           return res as Response;

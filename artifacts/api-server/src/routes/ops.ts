@@ -5,8 +5,46 @@ import {
 } from "../lib/ops-metrics";
 import { getSubtitlesOpsSnapshot } from "./subtitles";
 import { getYoutubeOpsSnapshot } from "./youtube";
+import { isApiKeyStoreEnabled } from "../lib/api-key-auth";
+import { isGeminiConfigured } from "../lib/gemini-client";
+import { INTERNAL_AGENT_SECRET_FROM_ENV } from "../lib/internal-agent";
 
 const router: IRouter = Router();
+
+const hasEnv = (key: string): boolean => Boolean((process.env[key] ?? "").trim());
+
+// ── GET /ops/readiness — admin config/worker readiness probe ─────────────────
+// Surfaces whether the core dependencies the public API relies on are
+// configured, so a bad deploy (missing table, queue, or model config) is
+// visible immediately instead of failing deep inside a job.
+router.get("/ops/readiness", (_req, res) => {
+  const youtube = getYoutubeOpsSnapshot();
+  const subtitles = getSubtitlesOpsSnapshot();
+
+  const checks: Record<string, boolean> = {
+    apiKeyStore: isApiKeyStoreEnabled(),
+    accessTable: hasEnv("ACCESS_TABLE") || hasEnv("API_KEYS_TABLE"),
+    s3Bucket: hasEnv("S3_BUCKET"),
+    gemini: isGeminiConfigured(),
+    internalAgentSecretFromEnv: INTERNAL_AGENT_SECRET_FROM_ENV,
+    sessionSecret: hasEnv("SESSION_SECRET") || hasEnv("AUTH_COOKIE_SECRET"),
+  };
+
+  // Core dependencies that must be present for the public API to function.
+  const required = ["apiKeyStore", "s3Bucket", "gemini"];
+  const missing = required.filter((k) => !checks[k]);
+
+  res.status(missing.length === 0 ? 200 : 503).json({
+    ts: Date.now(),
+    ok: missing.length === 0,
+    missing,
+    checks,
+    queues: {
+      youtube: youtube.queue,
+      subtitles: subtitles.queue,
+    },
+  });
+});
 
 router.get("/ops/metrics", (_req, res) => {
   const http = getHttpMetricsSnapshot();

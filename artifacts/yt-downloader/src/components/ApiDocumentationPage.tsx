@@ -179,6 +179,12 @@ export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
   const cancelExample = `curl -X POST ${API_BASE}/api/v1/jobs/JOB_ID/cancel \\
   -H "Authorization: Bearer vms_live_YOUR_KEY"`;
 
+  const idempotencyExample = `curl -X POST ${API_BASE}/api/v1/clips \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Idempotency-Key: 7e3f-client-generated-id" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
+
   const nodeExample = `const BASE = "${API_BASE}";
 const KEY = process.env.VMS_API_KEY;
 const headers = { Authorization: \`Bearer \${KEY}\`, "Content-Type": "application/json" };
@@ -364,6 +370,16 @@ app.post("/vms-webhook", express.raw({ type: "*/*" }), (req, res) => {
           <code> NOT_CANCELLABLE</code>. The create response includes <code>cancelUrl</code> (null when unsupported).
         </p>
         <CodeBlock value={cancelExample} />
+      </section>
+
+      <section className="mb-10">
+        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Idempotency</h2>
+        <p className="mb-3 text-sm text-slate-400">
+          Add an <code className="text-slate-200">Idempotency-Key</code> header to any create request to make retries
+          safe. The same key + body replays the original job (<code>Idempotent-Replayed: true</code>); the same key with a
+          different body returns <code>409 IDEMPOTENCY_KEY_REUSED</code>. Keys are retained for 24 hours.
+        </p>
+        <CodeBlock value={idempotencyExample} />
       </section>
 
       <section className="mb-10 grid gap-5 lg:grid-cols-2">

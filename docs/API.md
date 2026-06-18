@@ -172,6 +172,37 @@ Routes to the correct backend. Operations that do not support cancellation
 (e.g. timestamps) return `400 NOT_CANCELLABLE`. The create response advertises
 `cancelUrl` (null when unsupported).
 
+## Idempotency
+
+Send an `Idempotency-Key` header on any create request to make retries safe:
+
+```bash
+curl -X POST https://videomaking.in/api/v1/clips \
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \
+  -H "Idempotency-Key: 7e3f...client-generated" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://youtu.be/VIDEO_ID"}'
+```
+
+- Retrying with the **same key and body** replays the original job envelope
+  (response header `Idempotent-Replayed: true`) instead of creating a duplicate.
+- Reusing the **same key with a different body** returns `409 IDEMPOTENCY_KEY_REUSED`.
+- Keys are scoped per API key and retained for 24 hours.
+
+## Health
+
+`GET /api/v1/health` is a lightweight, key-authenticated probe (also a quick way
+to confirm a key works):
+
+```json
+{
+  "ok": true,
+  "service": "videomaking-studio-api",
+  "version": "v1",
+  "components": { "apiKeyStore": true, "jobRegistry": true, "idempotency": true }
+}
+```
+
 ## Best clips
 
 Find AI-selected clip ideas from a YouTube video.
