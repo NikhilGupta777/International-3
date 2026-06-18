@@ -140,7 +140,12 @@ async function publicWebhookUrl(raw: string): Promise<string | null> {
   }
 }
 
-export async function registerJobWebhook(jobId: string, url: string, keyId?: string): Promise<boolean> {
+export async function registerJobWebhook(
+  jobId: string,
+  url: string,
+  keyId?: string,
+  secret?: string,
+): Promise<boolean> {
   if (!isWebhooksEnabled() || !ddb || !jobId) return false;
   const safeUrl = await publicWebhookUrl(url);
   if (!safeUrl) return false;
@@ -155,7 +160,10 @@ export async function registerJobWebhook(jobId: string, url: string, keyId?: str
           jobId: { S: jobId },
           url: { S: safeUrl },
           keyId: keyId ? { S: keyId } : { NULL: true },
+          // Per-key signing secret (falls back to the global secret when absent).
+          secret: secret ? { S: secret } : { NULL: true },
           fired: { BOOL: false },
+          attempts: { N: "0" },
           createdAt: { N: String(Date.now()) },
           // Auto-expire registrations after 7 days (DynamoDB TTL, if enabled).
           expiresAt: { N: String(Math.floor(Date.now() / 1000) + 7 * 86400) },
@@ -169,14 +177,52 @@ export async function registerJobWebhook(jobId: string, url: string, keyId?: str
   }
 }
 
-function signBody(body: string): string {
-  return "sha256=" + crypto.createHmac("sha256", SIGNING_SECRET).update(body, "utf8").digest("hex");
+/** Owner-scoped delivery status for a job's webhook (for the v1 status endpoint). */
+export async function getJobWebhookStatus(jobId: string): Promise<{
+  registered: boolean;
+  url?: string;
+  fired?: boolean;
+  attempts?: number;
+  lastDeliveryStatus?: string;
+  lastDeliveryCode?: number | null;
+  lastDeliveryAt?: number;
+  ownerKeyId?: string;
+} | null> {
+  if (!ddb || !jobId) return null;
+  try {
+    const out = await ddb.send(
+      new GetItemCommand({ TableName: TABLE, Key: { pk: { S: pkForJob(jobId) }, sk: { S: SK } } }),
+    );
+    const item = out.Item;
+    if (!item) return { registered: false };
+    return {
+      registered: true,
+      url: item.url?.S,
+      fired: item.fired?.BOOL === true,
+      attempts: item.attempts?.N ? Number(item.attempts.N) : 0,
+      lastDeliveryStatus: item.lastDeliveryStatus?.S,
+      lastDeliveryCode: item.lastDeliveryCode?.N ? Number(item.lastDeliveryCode.N) : null,
+      lastDeliveryAt: item.lastDeliveryAt?.N ? Number(item.lastDeliveryAt.N) : undefined,
+      ownerKeyId: item.keyId?.S,
+    };
+  } catch {
+    return null;
+  }
 }
 
-async function postWebhook(url: string, event: string, payload: Record<string, unknown>): Promise<boolean> {
+function signBody(body: string, secret?: string): string {
+  return "sha256=" + crypto.createHmac("sha256", secret || SIGNING_SECRET).update(body, "utf8").digest("hex");
+}
+
+async function postWebhook(
+  url: string,
+  event: string,
+  payload: Record<string, unknown>,
+  secret?: string,
+): Promise<{ ok: boolean; statusCode: number | null }> {
   const body = JSON.stringify(payload);
-  const signature = signBody(body);
-  const attempt = async (): Promise<boolean> => {
+  const signature = signBody(body, secret);
+  const attempt = async (): Promise<{ ok: boolean; statusCode: number | null }> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     try {
@@ -190,16 +236,17 @@ async function postWebhook(url: string, event: string, payload: Record<string, u
         body,
         signal: controller.signal,
       });
-      return res.ok;
+      return { ok: res.ok, statusCode: res.status };
     } catch {
-      return false;
+      return { ok: false, statusCode: null };
     } finally {
       clearTimeout(timer);
     }
   };
 
   // One retry with a short backoff.
-  if (await attempt()) return true;
+  const first = await attempt();
+  if (first.ok) return first;
   await new Promise((r) => setTimeout(r, 1500));
   return attempt();
 }
@@ -225,6 +272,7 @@ export async function maybeFireJobWebhook(
     if (!url) return;
     const safeUrl = await publicWebhookUrl(url);
     if (!safeUrl) return;
+    const secret = item.secret?.S || undefined;
 
     // Claim delivery atomically so concurrent callers don't double-send.
     try {
@@ -242,13 +290,38 @@ export async function maybeFireJobWebhook(
     }
 
     const failed = ["error", "failed", "FAILED", "cancelled", "CANCELLED"].includes(status);
-    await postWebhook(safeUrl, failed ? "job.failed" : "job.completed", {
-      jobId,
-      status,
-      message: extra?.message ?? null,
-      ready: true,
-      timestamp: Date.now(),
-    });
+    const result = await postWebhook(
+      safeUrl,
+      failed ? "job.failed" : "job.completed",
+      {
+        jobId,
+        status,
+        message: extra?.message ?? null,
+        ready: true,
+        timestamp: Date.now(),
+      },
+      secret,
+    );
+
+    // Record a small delivery log on the registration row (best-effort).
+    try {
+      await ddb.send(
+        new UpdateItemCommand({
+          TableName: TABLE,
+          Key: { pk: { S: pkForJob(jobId) }, sk: { S: SK } },
+          UpdateExpression:
+            "SET lastDeliveryStatus = :s, lastDeliveryCode = :c, lastDeliveryAt = :t ADD attempts :one",
+          ExpressionAttributeValues: {
+            ":s": { S: result.ok ? "delivered" : "failed" },
+            ":c": { N: String(result.statusCode ?? 0) },
+            ":t": { N: String(Date.now()) },
+            ":one": { N: "1" },
+          },
+        }),
+      );
+    } catch {
+      /* best-effort logging */
+    }
   } catch (err) {
     console.warn("[webhooks] fire failed:", err);
   }

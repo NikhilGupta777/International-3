@@ -4,6 +4,8 @@ import {
   listApiKeys,
   revokeApiKey,
   isApiKeyStoreEnabled,
+  validateScopes,
+  API_KEY_SCOPE_CATALOG,
   type ApiKeyRecord,
 } from "../lib/api-key-auth";
 import { isApiAccessAllowed } from "../lib/auth-access";
@@ -83,6 +85,11 @@ router.use((_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// ── GET /keys/scopes — the assignable scope catalog (for the UI selector) ─────
+router.get("/scopes", (_req: Request, res: Response) => {
+  res.json({ scopes: API_KEY_SCOPE_CATALOG });
+});
+
 // ── GET /keys ─────────────────────────────────────────────────────────────────
 router.get("/", async (_req: Request, res: Response) => {
   try {
@@ -113,11 +120,10 @@ router.post("/", async (req: Request, res: Response) => {
 
     let scopes: string[] | undefined;
     if (Array.isArray(body.scopes)) {
-      const cleaned = body.scopes
-        .filter((x): x is string => typeof x === "string")
-        .map((x) => x.trim())
-        .filter(Boolean);
-      if (cleaned.length > 0) scopes = cleaned;
+      const requested = body.scopes.filter((x): x is string => typeof x === "string");
+      // Throws (→ 400) on any unknown scope so keys can't target internal services.
+      const validated = validateScopes(requested);
+      if (validated.length > 0) scopes = validated;
     }
 
     let expiresAt: number | undefined;
@@ -133,7 +139,7 @@ router.post("/", async (req: Request, res: Response) => {
     const ownerEmail = s.email ?? "admin";
     const createdBy = s.email ?? "admin";
 
-    const { record, rawKey } = await createApiKey({
+    const { record, rawKey, webhookSecret } = await createApiKey({
       name,
       ownerEmail,
       createdBy,
@@ -145,8 +151,9 @@ router.post("/", async (req: Request, res: Response) => {
 
     res.json({
       ok: true,
-      // The secret is returned exactly once — it is never retrievable again.
+      // The secret + webhook secret are returned exactly once — never retrievable again.
       key: rawKey,
+      webhookSecret,
       keyInfo: publicKey(record),
     });
   } catch (err) {

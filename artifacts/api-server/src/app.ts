@@ -18,6 +18,7 @@ import {
   enforceApiKeyLimits,
 } from "./lib/api-key-auth";
 import { INTERNAL_AGENT_SECRET } from "./lib/internal-agent";
+import { sendApiError } from "./lib/api-error";
 import { saveEmailSubmission } from "./lib/email-submissions";
 import { canUseSuperAgent, canUseTranslator, canUseTranslatorLipSync } from "./lib/admin-features";
 import {
@@ -553,11 +554,16 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
   if (presentedKey && looksLikeApiKey(presentedKey)) {
     const keyRecord = await verifyApiKey(presentedKey);
     if (!keyRecord) {
-      res.status(401).json({ error: "Invalid or revoked API key" });
+      sendApiError(res, 401, "INVALID_API_KEY", "Invalid or revoked API key.");
       return;
     }
     if (!apiKeyAllowsPath(keyRecord, req.path)) {
-      res.status(403).json({ error: "API key is not permitted to access this resource" });
+      sendApiError(
+        res,
+        403,
+        "FORBIDDEN_SCOPE",
+        "This API key is not permitted to access this resource.",
+      );
       return;
     }
     res.locals.apiKey = keyRecord;
@@ -571,9 +577,15 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
     if (!metered._apiKeyMetered) {
       metered._apiKeyMetered = true;
       const decision = enforceApiKeyLimits(keyRecord);
+      // Standard rate-limit headers on every key-authenticated request.
+      res.setHeader("X-RateLimit-Limit", String(decision.limit));
+      res.setHeader("X-RateLimit-Remaining", String(decision.remaining));
+      res.setHeader("X-RateLimit-Reset", String(decision.resetEpochSec));
       if (!decision.allowed) {
-        if (decision.retryAfterSec) res.setHeader("Retry-After", String(decision.retryAfterSec));
-        res.status(decision.status ?? 429).json({ error: decision.error ?? "Rate limit exceeded" });
+        sendApiError(res, decision.status ?? 429, decision.code ?? "RATE_LIMIT_EXCEEDED", decision.error ?? "Rate limit exceeded.", {
+          retryable: true,
+          retryAfterSec: decision.retryAfterSec,
+        });
         return;
       }
     }

@@ -46,6 +46,8 @@ export interface ApiKeyRecord {
   monthlyQuota?: number; // 0/undefined → unlimited
   usageMonth?: number; // requests counted in the current calendar month
   usageTotal?: number; // lifetime request count
+  /** Per-key HMAC secret for signing this key's webhooks. Shown once at creation. */
+  webhookSecret?: string;
   /** Internal: the DynamoDB partition key this row was read from. Not serialized to clients. */
   _pk?: string;
 }
@@ -54,6 +56,8 @@ export interface CreatedApiKey {
   record: ApiKeyRecord;
   /** The full secret. Returned ONCE — never stored or retrievable again. */
   rawKey: string;
+  /** Per-key webhook signing secret. Returned ONCE alongside the key. */
+  webhookSecret: string;
 }
 
 const KEY_PREFIX = "vms_live_";
@@ -139,6 +143,7 @@ function recordFromItem(item: Record<string, any> | undefined): ApiKeyRecord | n
     monthlyQuota: item.monthlyQuota?.N ? Number(item.monthlyQuota.N) : undefined,
     usageMonth: item[usageAttrName()]?.N ? Number(item[usageAttrName()].N) : 0,
     usageTotal: item.usageTotal?.N ? Number(item.usageTotal.N) : 0,
+    webhookSecret: item.webhookSecret?.S || undefined,
     _pk: item.pk?.S,
   };
 }
@@ -183,26 +188,114 @@ export async function verifyApiKey(rawKey: string): Promise<ApiKeyRecord | null>
   }
 }
 
-// ── Scopes ─────────────────────────────────────────────────────────────────
+// ── Scopes & route allowlist ─────────────────────────────────────────────────
+//
+// SECURITY MODEL
+//   API keys are confined to an explicit allowlist of *public* service segments.
+//   Any path outside the allowlist (workspace, video-editor, ops, notebook,
+//   pitaji, notifications, admin, keys, …) is denied for EVERY key — including
+//   wildcard ("*") keys. This is a hard boundary, independent of scopes.
+//
+//   Within the public surface, scopes provide least-privilege control:
+//     - "*"                → every public service
+//     - "<service>"        → the whole service (e.g. "youtube")
+//     - "<service>:<op>"   → a single operation (e.g. "youtube:clips")
+//
+//   YouTube create-operations are individually scopable; shared operations
+//   (cancel / file / stream / status) are granted to any youtube scope so a
+//   narrowly-scoped key can still manage and download its own jobs.
 
-/** First path segment after /api maps to a coarse service scope. */
+/** Public service segments an API key may reach. Everything else is blocked. */
+export const PUBLIC_API_SEGMENTS: ReadonlySet<string> = new Set([
+  "youtube",
+  "subtitles",
+  "translator",
+  "uploads",
+  "thumbnail",
+  "agent",
+  "bhagwat",
+]);
+
+/** Canonical, assignable scopes. POST /keys rejects anything not in this set. */
+export const API_KEY_SCOPE_CATALOG: readonly string[] = [
+  "*",
+  "youtube",
+  "youtube:download",
+  "youtube:clip-cut",
+  "youtube:clips",
+  "youtube:timestamps",
+  "youtube:info",
+  "subtitles",
+  "subtitles:create",
+  "translator",
+  "translator:create",
+  "uploads",
+  "uploads:create",
+  "thumbnail",
+  "agent",
+  "bhagwat",
+];
+
+const SCOPE_SET: ReadonlySet<string> = new Set(API_KEY_SCOPE_CATALOG);
+
+/** First path segment after /api (the coarse service). */
 export function requiredScopeForPath(path: string): string | null {
   const seg = path.replace(/^\/+/, "").split("/")[0];
   return seg || null;
 }
 
-/** Paths an API key may NEVER reach, regardless of scopes. */
-const API_KEY_FORBIDDEN_SEGMENTS = new Set(["admin", "keys"]);
+/**
+ * Validate & de-duplicate a requested scope list. Throws on any unknown scope
+ * so keys can never be minted for internal or non-existent services. Returns
+ * the cleaned list (may be empty — the caller decides the default).
+ */
+export function validateScopes(requested: string[]): string[] {
+  const cleaned = Array.from(
+    new Set(requested.map((s) => s.trim()).filter(Boolean)),
+  );
+  const invalid = cleaned.filter((s) => !SCOPE_SET.has(s));
+  if (invalid.length > 0) {
+    throw new Error(
+      `Unknown scope(s): ${invalid.join(", ")}. Allowed: ${API_KEY_SCOPE_CATALOG.join(", ")}`,
+    );
+  }
+  return cleaned;
+}
+
+/** The specific create-scope a youtube path maps to, or null for shared ops. */
+function youtubeOperationScope(path: string): string | null {
+  const rest = path.replace(/^\/+/, "").replace(/^youtube\/?/, "");
+  if (rest.startsWith("clip-cut")) return "youtube:clip-cut";
+  if (rest.startsWith("clips")) return "youtube:clips";
+  if (rest.startsWith("download")) return "youtube:download";
+  if (rest.startsWith("timestamps")) return "youtube:timestamps";
+  if (rest.startsWith("info")) return "youtube:info";
+  return null; // cancel / file / stream / best-clips status / subtitles-dl …
+}
 
 export function apiKeyAllowsPath(record: ApiKeyRecord, path: string): boolean {
   const seg = requiredScopeForPath(path);
-  if (seg && API_KEY_FORBIDDEN_SEGMENTS.has(seg)) return false;
+  if (!seg) return true; // root
   // The /v1 facade forwards in-process to a canonical service path where the
   // real per-service scope is enforced — treat the v1 entrypoint as transparent.
   if (seg === "v1") return true;
-  if (record.scopes.includes("*")) return true;
-  if (!seg) return true;
-  return record.scopes.some((s) => s === seg || s.startsWith(seg + ":"));
+  // Hard boundary: never allow non-public segments, even for "*" keys.
+  if (!PUBLIC_API_SEGMENTS.has(seg)) return false;
+
+  const scopes = record.scopes;
+  if (scopes.includes("*")) return true;
+  // Service-level scope grants the whole service.
+  if (scopes.includes(seg)) return true;
+
+  if (seg === "youtube") {
+    const op = youtubeOperationScope(path);
+    if (op) return scopes.includes(op);
+    // Shared op (cancel/file/stream/status): any youtube sub-scope grants it.
+    return scopes.some((s) => s === "youtube" || s.startsWith("youtube:"));
+  }
+
+  // Other services: the service-level scope or its ":<op>" sub-scope.
+  return scopes.some((s) => s.startsWith(seg + ":"));
 }
 
 // ── lastUsedAt touch (throttled, fire-and-forget) ────────────────────────────
@@ -285,12 +378,17 @@ export async function createApiKey(input: {
     createdAt: { N: String(record.createdAt) },
     createdBy: { S: record.createdBy },
   };
+  // Per-key webhook signing secret (used to sign this key's webhooks; the client
+  // verifies with it). Generated here and returned exactly once.
+  const webhookSecret = "whsec_" + crypto.randomBytes(24).toString("base64url");
+  record.webhookSecret = webhookSecret;
+  item.webhookSecret = { S: webhookSecret };
   if (record.expiresAt) item.expiresAt = { N: String(record.expiresAt) };
   if (record.rateLimitPerMin) item.rateLimitPerMin = { N: String(record.rateLimitPerMin) };
   if (record.monthlyQuota) item.monthlyQuota = { N: String(record.monthlyQuota) };
 
   await ddb.send(new PutItemCommand({ TableName: TABLE, Item: item }));
-  return { record, rawKey };
+  return { record, rawKey, webhookSecret };
 }
 
 /** List all issued keys (metadata only — never the secret). Admin volume. */
@@ -376,13 +474,22 @@ export interface LimitDecision {
   allowed: boolean;
   status?: number;
   error?: string;
+  code?: string; // machine-readable: RATE_LIMIT_EXCEEDED | MONTHLY_QUOTA_EXCEEDED
   retryAfterSec?: number;
+  /** requests/min ceiling for this key */
+  limit: number;
+  /** requests remaining in the current window */
+  remaining: number;
+  /** epoch seconds when the current rate window resets */
+  resetEpochSec: number;
 }
 
 /**
  * Enforce per-key rate limit + monthly quota and record one unit of usage.
  * Call exactly once per externally-initiated request (skip on in-process
  * re-dispatch). Synchronous decision; persistence is flushed asynchronously.
+ * Always returns limit/remaining/resetEpochSec so the caller can emit
+ * X-RateLimit-* headers regardless of the outcome.
  */
 export function enforceApiKeyLimits(record: ApiKeyRecord): LimitDecision {
   const keyId = record.keyId;
@@ -391,19 +498,28 @@ export function enforceApiKeyLimits(record: ApiKeyRecord): LimitDecision {
   // 1) Rate limit (requests per minute)
   const max = record.rateLimitPerMin && record.rateLimitPerMin > 0 ? record.rateLimitPerMin : DEFAULT_RATE_LIMIT_PER_MIN;
   const now = Date.now();
-  const win = keyRateWindows.get(keyId);
+  let win = keyRateWindows.get(keyId);
   if (!win || now >= win.resetAt) {
-    keyRateWindows.set(keyId, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    win = { count: 1, resetAt: now + RATE_WINDOW_MS };
+    keyRateWindows.set(keyId, win);
   } else if (win.count >= max) {
+    const retryAfterSec = Math.max(1, Math.ceil((win.resetAt - now) / 1000));
     return {
       allowed: false,
       status: 429,
+      code: "RATE_LIMIT_EXCEEDED",
       error: "Rate limit exceeded for this API key.",
-      retryAfterSec: Math.max(1, Math.ceil((win.resetAt - now) / 1000)),
+      retryAfterSec,
+      limit: max,
+      remaining: 0,
+      resetEpochSec: Math.ceil(win.resetAt / 1000),
     };
   } else {
     win.count += 1;
   }
+
+  const remaining = Math.max(0, max - win.count);
+  const resetEpochSec = Math.ceil(win.resetAt / 1000);
 
   // 2) Monthly quota
   if (record.monthlyQuota && record.monthlyQuota > 0) {
@@ -412,14 +528,18 @@ export function enforceApiKeyLimits(record: ApiKeyRecord): LimitDecision {
       return {
         allowed: false,
         status: 429,
+        code: "MONTHLY_QUOTA_EXCEEDED",
         error: "Monthly quota exceeded for this API key.",
+        limit: max,
+        remaining,
+        resetEpochSec,
       };
     }
   }
 
   // 3) Record usage (deferred persistence)
   pendingUsage.set(keyId, (pendingUsage.get(keyId) ?? 0) + 1);
-  return { allowed: true };
+  return { allowed: true, limit: max, remaining, resetEpochSec };
 }
 
 async function flushUsage(): Promise<void> {

@@ -1,6 +1,9 @@
 import { ArrowLeft, BookOpen, Copy, ExternalLink } from "lucide-react";
 
-const API_BASE = "https://videomaking.in";
+// Use the live origin so copy-paste examples target whatever host the panel is
+// served from (falls back to the production domain during SSR/build).
+const API_BASE =
+  typeof window !== "undefined" ? window.location.origin : "https://videomaking.in";
 
 type EndpointDoc = {
   name: string;
@@ -20,7 +23,7 @@ const endpointDocs: EndpointDoc[] = [
     path: "/api/v1/clips",
     purpose: "Analyze a YouTube video and return AI-selected clip ideas.",
     input: "{ url, durations?, auto?, instructions?, webhookUrl? }",
-    output: "Job envelope with jobId, statusUrl, streamUrl, and eventsUrl.",
+    output: "Job envelope with jobId, status, statusUrl, eventsUrl, and cancelUrl.",
     notes: [
       "Use this for AI discovery, not manual cutting.",
       "durations is an array of target lengths in seconds, for example [30, 60].",
@@ -37,7 +40,7 @@ const endpointDocs: EndpointDoc[] = [
     path: "/api/v1/clip-cut",
     purpose: "Cut one exact time range from a YouTube video.",
     input: "{ url, startTime, endTime, quality?, webhookUrl? }",
-    output: "Job envelope. Poll until done, then download from resultUrl or returned file URL.",
+    output: "Job envelope. Poll until done, then download from result.url.",
     notes: [
       "startTime and endTime are seconds.",
       "endTime must be greater than startTime.",
@@ -117,14 +120,26 @@ const endpointDocs: EndpointDoc[] = [
   },
 ];
 
-const statuses = [
+const statuses: [string, string][] = [
   ["pending", "Accepted but not started."],
   ["queued", "Submitted to a queue or worker."],
-  ["running / downloading / generating / translating", "Work is in progress."],
-  ["done / DONE", "Completed successfully."],
-  ["error / failed / FAILED", "Terminal failure."],
-  ["cancelled / CANCELLED", "Stopped by a user or worker."],
-  ["expired / EXPIRED", "Terminal state after queue or output expiry."],
+  ["running", "Work is in progress (downloading / generating / translating)."],
+  ["done", "Completed successfully (succeeded=true). `result` is populated."],
+  ["error", "Terminal failure (failed=true)."],
+  ["cancelled", "Stopped by a user or worker."],
+  ["expired", "Terminal state after queue or output expiry."],
+];
+
+const errorCodes: [string, string][] = [
+  ["INVALID_API_KEY", "Missing, malformed, or revoked key (401)."],
+  ["FORBIDDEN_SCOPE", "Key lacks the scope for this route (403)."],
+  ["RATE_LIMIT_EXCEEDED", "Per-minute rate limit hit; see Retry-After (429, retryable)."],
+  ["MONTHLY_QUOTA_EXCEEDED", "Monthly request quota reached (429)."],
+  ["INVALID_REQUEST", "Bad parameters (400)."],
+  ["JOB_NOT_FOUND", "Unknown jobId, or not owned by this key (404)."],
+  ["NOT_CANCELLABLE", "The operation does not support cancellation (400)."],
+  ["UPSTREAM_VALIDATION", "The underlying service rejected the input (400)."],
+  ["UPSTREAM_ERROR / INTERNAL_ERROR", "Server-side failure (5xx, retryable)."],
 ];
 
 function copy(text: string) {
@@ -160,6 +175,90 @@ export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
 
   const sseExample = `curl -N ${API_BASE}/api/v1/jobs/JOB_ID/events \\
   -H "Authorization: Bearer vms_live_YOUR_KEY"`;
+
+  const cancelExample = `curl -X POST ${API_BASE}/api/v1/jobs/JOB_ID/cancel \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
+
+  const idempotencyExample = `curl -X POST ${API_BASE}/api/v1/clips \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Idempotency-Key: 7e3f-client-generated-id" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
+
+  const uploadsExample = `# 1) presign  2) upload to the returned URL  3) complete  4) use the file URL
+curl -X POST ${API_BASE}/api/v1/uploads/presign \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"filename":"clip.mp4","size":1048576,"mimeType":"video/mp4"}'
+# then POST /api/v1/uploads/complete { fileId } and pass the file URL to /subtitles or /translate`;
+
+  const nodeExample = `const BASE = "${API_BASE}";
+const KEY = process.env.VMS_API_KEY;
+const headers = { Authorization: \`Bearer \${KEY}\`, "Content-Type": "application/json" };
+
+// 1) Start a job
+const r = await fetch(\`\${BASE}/api/v1/clips\`, {
+  method: "POST", headers,
+  body: JSON.stringify({ url: "https://youtu.be/VIDEO_ID", durations: [30, 60] }),
+});
+const { jobId, statusUrl } = await r.json();
+
+// 2) Poll until terminal
+for (;;) {
+  const job = await (await fetch(statusUrl, { headers })).json();
+  if (job.terminal) {
+    if (job.succeeded) console.log("result:", job.result);
+    else console.error("failed:", job.message);
+    break;
+  }
+  await new Promise((s) => setTimeout(s, 5000));
+}`;
+
+  const pythonExample = `import os, time, requests
+
+BASE = "${API_BASE}"
+headers = {"Authorization": f"Bearer {os.environ['VMS_API_KEY']}"}
+
+# 1) Start a job
+r = requests.post(f"{BASE}/api/v1/subtitles",
+                  headers=headers,
+                  json={"url": "https://example.com/video.mp4", "language": "auto"})
+job = r.json()
+status_url = job["statusUrl"]
+
+# 2) Poll until terminal
+while True:
+    job = requests.get(status_url, headers=headers).json()
+    if job["terminal"]:
+        print("result" if job["succeeded"] else "error", job.get("result") or job.get("message"))
+        break
+    time.sleep(5)`;
+
+  const verifyExample = `import crypto from "crypto";
+
+// Express handler for your webhook endpoint.
+// WEBHOOK_SECRET = the per-key webhook secret shown once when the key was made.
+app.post("/vms-webhook", express.raw({ type: "*/*" }), (req, res) => {
+  const sig = req.header("X-VMS-Signature") || "";              // "sha256=<hex>"
+  const expected = "sha256=" + crypto
+    .createHmac("sha256", process.env.WEBHOOK_SECRET)
+    .update(req.body)                                            // raw bytes
+    .digest("hex");
+  const ok = sig.length === expected.length &&
+    crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+  if (!ok) return res.status(401).end();
+  const event = JSON.parse(req.body.toString());                // { jobId, status, ready, ... }
+  res.sendStatus(200);
+});`;
+
+  const errorExample = `{
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "Rate limit exceeded for this API key.",
+    "retryable": true,
+    "retryAfterSec": 42
+  }
+}`;
 
   const webhookExample = `{
   "url": "https://youtu.be/VIDEO_ID",
@@ -253,13 +352,62 @@ export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
       <section className="mb-10 grid gap-5 lg:grid-cols-2">
         <div>
           <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Polling</h2>
-          <p className="mb-3 text-sm text-slate-400">Poll every 5-10 seconds. Stop on a terminal status.</p>
+          <p className="mb-3 text-sm text-slate-400">
+            The unified <code className="text-slate-200">GET /api/v1/jobs/&#123;id&#125;</code> works for every operation.
+            It returns a normalized status (<code>pending/queued/running/done/error/cancelled/expired</code>) plus
+            <code> terminal</code>, <code>succeeded</code>, and <code>failed</code> booleans. Poll every 5-10 seconds and
+            stop once <code>terminal</code> is true.
+          </p>
           <CodeBlock value={pollExample} />
         </div>
         <div>
           <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Server-Sent Events</h2>
-          <p className="mb-3 text-sm text-slate-400">Use SSE when you want live progress without writing a polling loop.</p>
+          <p className="mb-3 text-sm text-slate-400">
+            Subscribe to <code className="text-slate-200">eventsUrl</code> for live progress without a polling loop. It
+            emits <code>status</code> events and a final <code>done</code> event for any operation.
+          </p>
           <CodeBlock value={sseExample} />
+        </div>
+      </section>
+
+      <section className="mb-10">
+        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Cancel a job</h2>
+        <p className="mb-3 text-sm text-slate-400">
+          <code className="text-slate-200">POST /api/v1/jobs/&#123;id&#125;/cancel</code> stops a running job and routes
+          to the correct backend. Operations that cannot be cancelled (e.g. timestamps) return
+          <code> NOT_CANCELLABLE</code>. The create response includes <code>cancelUrl</code> (null when unsupported).
+        </p>
+        <CodeBlock value={cancelExample} />
+      </section>
+
+      <section className="mb-10">
+        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Idempotency</h2>
+        <p className="mb-3 text-sm text-slate-400">
+          Add an <code className="text-slate-200">Idempotency-Key</code> header to any create request to make retries
+          safe. The same key + body replays the original job (<code>Idempotent-Replayed: true</code>); the same key with a
+          different body returns <code>409 IDEMPOTENCY_KEY_REUSED</code>. Keys are retained for 24 hours.
+        </p>
+        <CodeBlock value={idempotencyExample} />
+      </section>
+
+      <section className="mb-10">
+        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Uploads</h2>
+        <p className="mb-3 text-sm text-slate-400">
+          To subtitle or translate your own media, upload it first (scope <code>uploads</code>), then pass the returned
+          public URL: <code>POST /api/v1/uploads/presign</code> &rarr; upload &rarr;{" "}
+          <code>POST /api/v1/uploads/complete</code> &rarr; <code>GET/DELETE /api/v1/uploads/&#123;fileId&#125;</code>.
+        </p>
+        <CodeBlock value={uploadsExample} />
+      </section>
+
+      <section className="mb-10 grid gap-5 lg:grid-cols-2">
+        <div>
+          <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Node (fetch)</h2>
+          <CodeBlock value={nodeExample} />
+        </div>
+        <div>
+          <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Python (requests)</h2>
+          <CodeBlock value={pythonExample} />
         </div>
       </section>
 
@@ -276,13 +424,61 @@ export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
       </section>
 
       <section className="mb-10">
+        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Errors</h2>
+        <p className="mb-3 text-sm text-slate-400">
+          Every v1 error uses one shape with a stable machine-readable <code>code</code> and a <code>retryable</code> flag.
+        </p>
+        <CodeBlock value={errorExample} />
+        <div className="mt-4 overflow-hidden rounded-lg border border-slate-800">
+          {errorCodes.map(([code, meaning], index) => (
+            <div key={code} className={`grid gap-3 px-4 py-3 text-sm md:grid-cols-[260px_1fr] ${index ? "border-t border-slate-800" : ""}`}>
+              <code className="text-emerald-300">{code}</code>
+              <span className="text-slate-400">{meaning}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="mb-10">
+        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Rate limits</h2>
+        <p className="mb-3 text-sm text-slate-400">
+          Every key-authenticated response carries rate-limit headers. On <code>429</code> a <code>Retry-After</code>
+          {" "}header (seconds) is included.
+        </p>
+        <div className="overflow-hidden rounded-lg border border-slate-800">
+          {[
+            ["X-RateLimit-Limit", "Requests allowed per minute for this key."],
+            ["X-RateLimit-Remaining", "Requests left in the current window."],
+            ["X-RateLimit-Reset", "Epoch seconds when the window resets."],
+            ["Retry-After", "Seconds to wait before retrying (on 429)."],
+          ].map(([h, meaning], index) => (
+            <div key={h} className={`grid gap-3 px-4 py-3 text-sm md:grid-cols-[260px_1fr] ${index ? "border-t border-slate-800" : ""}`}>
+              <code className="text-emerald-300">{h}</code>
+              <span className="text-slate-400">{meaning}</span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-slate-500">
+          Note: limits are enforced per server instance (best-effort), so brief bursts may exceed the nominal limit
+          under high concurrency.
+        </p>
+      </section>
+
+      <section className="mb-10">
         <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Webhooks</h2>
         <p className="mb-3 text-sm text-slate-400">
           Include <code>webhookUrl</code> in a create request. The URL must be public HTTPS and cannot point to localhost,
-          private IP ranges, or internal hostnames. Completion callbacks include <code>X-VMS-Event</code> and
-          <code> X-VMS-Signature</code>.
+          private IP ranges, or internal hostnames. On completion we POST a JSON body
+          (<code>&#123; jobId, status, message, ready, timestamp &#125;</code>) with headers
+          <code> X-VMS-Event</code> (<code>job.completed</code> | <code>job.failed</code>) and
+          <code> X-VMS-Signature</code> (<code>sha256=&lt;hex hmac of the raw body&gt;</code>). Always verify the signature
+          using the <strong>per-key webhook secret</strong> shown once when the key was created. Check delivery status at
+          <code> GET /api/v1/jobs/&#123;id&#125;/webhook</code>.
         </p>
-        <CodeBlock value={webhookExample} />
+        <div className="grid gap-4 lg:grid-cols-2">
+          <CodeBlock value={webhookExample} />
+          <CodeBlock value={verifyExample} />
+        </div>
       </section>
 
       <section className="mb-10">
