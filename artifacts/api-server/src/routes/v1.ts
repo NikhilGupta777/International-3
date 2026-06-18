@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { getJobStatusFromDdb } from "../lib/youtube-queue";
 import { setupSse, sseFlush } from "../lib/sse";
-import { registerJobWebhook, isValidWebhookUrl, getJobWebhookStatus } from "../lib/webhooks";
+import { registerJobWebhook, isValidWebhookUrl, getJobWebhookStatus, maybeFireJobWebhook } from "../lib/webhooks";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import {
   registerPublicJob,
@@ -630,7 +630,13 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
       }
       const op = OP_BY_NAME.get(reg.op);
       const { json } = await internalCall(req, reg.statusPath, "GET", ownerClientId(reg.ownerKeyId));
-      res.json(normalizeStatus(op, jobId, json, origin));
+      const normalized = normalizeStatus(op, jobId, json, origin);
+      // Non-youtube ops don't flow through the queue chokepoint, so deliver any
+      // registered webhook here when we observe a terminal state (idempotent).
+      if (normalized.terminal) {
+        void maybeFireJobWebhook(jobId, normalized.status, { message: normalized.message });
+      }
+      res.json(normalized);
       return;
     }
 
@@ -776,6 +782,9 @@ router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
         send("status", normalized);
       }
       if (normalized.terminal) {
+        // Deliver any registered webhook (idempotent) — covers ops that don't
+        // flow through the youtube-queue chokepoint.
+        void maybeFireJobWebhook(jobId, normalized.status, { message: normalized.message });
         send("done", {
           jobId,
           status: normalized.status,

@@ -528,6 +528,13 @@ registered and its last delivery outcome:
 }
 ```
 
+Delivery timing: YouTube download/clip-cut jobs deliver the moment they reach a
+terminal state. Other operations (best-clips, timestamps, subtitles, translate)
+deliver when the job is first observed terminal via the unified status or SSE
+endpoint (delivery is at-most-once). If you rely solely on webhooks for those
+operations, poll `GET /api/v1/jobs/{jobId}` (or open the SSE stream) at least
+once after the work finishes.
+
 ## Errors
 
 Every v1 error uses one structured shape with a stable machine-readable `code`
