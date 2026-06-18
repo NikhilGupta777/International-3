@@ -321,8 +321,13 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
                   {k.scopes.includes("*") ? "full access" : k.scopes.join(", ")}
                 </span>
                 <span className="ml-auto text-[11px] text-slate-600">
-                  {(k.usageMonth ?? 0) > 0 ? `${k.usageMonth} reqs/mo - ` : ""}
+                  {k.monthlyQuota
+                    ? `${k.usageMonth ?? 0}/${k.monthlyQuota} reqs/mo - `
+                    : (k.usageMonth ?? 0) > 0
+                      ? `${k.usageMonth} reqs/mo - `
+                      : ""}
                   created {fmtDate(k.createdAt)} - used {fmtDate(k.lastUsedAt)}
+                  {k.expiresAt ? ` - expires ${fmtDate(k.expiresAt * 1000)}` : ""}
                 </span>
                 {k.status === "active" && (
                   <button

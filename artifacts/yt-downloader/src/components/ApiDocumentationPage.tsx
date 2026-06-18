@@ -1,6 +1,9 @@
 import { ArrowLeft, BookOpen, Copy, ExternalLink } from "lucide-react";
 
-const API_BASE = "https://videomaking.in";
+// Use the live origin so copy-paste examples target whatever host the panel is
+// served from (falls back to the production domain during SSR/build).
+const API_BASE =
+  typeof window !== "undefined" ? window.location.origin : "https://videomaking.in";
 
 type EndpointDoc = {
   name: string;
@@ -253,12 +256,21 @@ export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
       <section className="mb-10 grid gap-5 lg:grid-cols-2">
         <div>
           <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Polling</h2>
-          <p className="mb-3 text-sm text-slate-400">Poll every 5-10 seconds. Stop on a terminal status.</p>
+          <p className="mb-3 text-sm text-slate-400">
+            Always poll the <code className="text-slate-200">statusUrl</code> returned when the job was created &mdash; it
+            is correct for every operation. The unified <code className="text-slate-200">/api/v1/jobs/&#123;id&#125;</code>{" "}
+            shortcut currently resolves download and clip-cut jobs; other services expose status on their own
+            <code className="text-slate-200"> statusUrl</code>. Poll every 5-10 seconds and stop on a terminal status.
+          </p>
           <CodeBlock value={pollExample} />
         </div>
         <div>
           <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Server-Sent Events</h2>
-          <p className="mb-3 text-sm text-slate-400">Use SSE when you want live progress without writing a polling loop.</p>
+          <p className="mb-3 text-sm text-slate-400">
+            Use SSE for live progress without a polling loop. The unified events stream below covers download and
+            clip-cut; for other services subscribe to the <code className="text-slate-200">streamUrl</code> returned at
+            creation.
+          </p>
           <CodeBlock value={sseExample} />
         </div>
       </section>
