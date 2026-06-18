@@ -46,6 +46,8 @@ export interface ApiKeyRecord {
   monthlyQuota?: number; // 0/undefined → unlimited
   usageMonth?: number; // requests counted in the current calendar month
   usageTotal?: number; // lifetime request count
+  /** Per-key HMAC secret for signing this key's webhooks. Shown once at creation. */
+  webhookSecret?: string;
   /** Internal: the DynamoDB partition key this row was read from. Not serialized to clients. */
   _pk?: string;
 }
@@ -54,6 +56,8 @@ export interface CreatedApiKey {
   record: ApiKeyRecord;
   /** The full secret. Returned ONCE — never stored or retrievable again. */
   rawKey: string;
+  /** Per-key webhook signing secret. Returned ONCE alongside the key. */
+  webhookSecret: string;
 }
 
 const KEY_PREFIX = "vms_live_";
@@ -139,6 +143,7 @@ function recordFromItem(item: Record<string, any> | undefined): ApiKeyRecord | n
     monthlyQuota: item.monthlyQuota?.N ? Number(item.monthlyQuota.N) : undefined,
     usageMonth: item[usageAttrName()]?.N ? Number(item[usageAttrName()].N) : 0,
     usageTotal: item.usageTotal?.N ? Number(item.usageTotal.N) : 0,
+    webhookSecret: item.webhookSecret?.S || undefined,
     _pk: item.pk?.S,
   };
 }
@@ -373,12 +378,17 @@ export async function createApiKey(input: {
     createdAt: { N: String(record.createdAt) },
     createdBy: { S: record.createdBy },
   };
+  // Per-key webhook signing secret (used to sign this key's webhooks; the client
+  // verifies with it). Generated here and returned exactly once.
+  const webhookSecret = "whsec_" + crypto.randomBytes(24).toString("base64url");
+  record.webhookSecret = webhookSecret;
+  item.webhookSecret = { S: webhookSecret };
   if (record.expiresAt) item.expiresAt = { N: String(record.expiresAt) };
   if (record.rateLimitPerMin) item.rateLimitPerMin = { N: String(record.rateLimitPerMin) };
   if (record.monthlyQuota) item.monthlyQuota = { N: String(record.monthlyQuota) };
 
   await ddb.send(new PutItemCommand({ TableName: TABLE, Item: item }));
-  return { record, rawKey };
+  return { record, rawKey, webhookSecret };
 }
 
 /** List all issued keys (metadata only — never the secret). Admin volume. */

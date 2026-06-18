@@ -185,6 +185,13 @@ export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
   -H "Content-Type: application/json" \\
   -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
 
+  const uploadsExample = `# 1) presign  2) upload to the returned URL  3) complete  4) use the file URL
+curl -X POST ${API_BASE}/api/v1/uploads/presign \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"filename":"clip.mp4","size":1048576,"mimeType":"video/mp4"}'
+# then POST /api/v1/uploads/complete { fileId } and pass the file URL to /subtitles or /translate`;
+
   const nodeExample = `const BASE = "${API_BASE}";
 const KEY = process.env.VMS_API_KEY;
 const headers = { Authorization: \`Bearer \${KEY}\`, "Content-Type": "application/json" };
@@ -230,10 +237,11 @@ while True:
   const verifyExample = `import crypto from "crypto";
 
 // Express handler for your webhook endpoint.
+// WEBHOOK_SECRET = the per-key webhook secret shown once when the key was made.
 app.post("/vms-webhook", express.raw({ type: "*/*" }), (req, res) => {
   const sig = req.header("X-VMS-Signature") || "";              // "sha256=<hex>"
   const expected = "sha256=" + crypto
-    .createHmac("sha256", process.env.WEBHOOK_SIGNING_SECRET)
+    .createHmac("sha256", process.env.WEBHOOK_SECRET)
     .update(req.body)                                            // raw bytes
     .digest("hex");
   const ok = sig.length === expected.length &&
@@ -382,6 +390,16 @@ app.post("/vms-webhook", express.raw({ type: "*/*" }), (req, res) => {
         <CodeBlock value={idempotencyExample} />
       </section>
 
+      <section className="mb-10">
+        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Uploads</h2>
+        <p className="mb-3 text-sm text-slate-400">
+          To subtitle or translate your own media, upload it first (scope <code>uploads</code>), then pass the returned
+          public URL: <code>POST /api/v1/uploads/presign</code> &rarr; upload &rarr;{" "}
+          <code>POST /api/v1/uploads/complete</code> &rarr; <code>GET/DELETE /api/v1/uploads/&#123;fileId&#125;</code>.
+        </p>
+        <CodeBlock value={uploadsExample} />
+      </section>
+
       <section className="mb-10 grid gap-5 lg:grid-cols-2">
         <div>
           <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Node (fetch)</h2>
@@ -453,7 +471,9 @@ app.post("/vms-webhook", express.raw({ type: "*/*" }), (req, res) => {
           private IP ranges, or internal hostnames. On completion we POST a JSON body
           (<code>&#123; jobId, status, message, ready, timestamp &#125;</code>) with headers
           <code> X-VMS-Event</code> (<code>job.completed</code> | <code>job.failed</code>) and
-          <code> X-VMS-Signature</code> (<code>sha256=&lt;hex hmac of the raw body&gt;</code>). Always verify the signature:
+          <code> X-VMS-Signature</code> (<code>sha256=&lt;hex hmac of the raw body&gt;</code>). Always verify the signature
+          using the <strong>per-key webhook secret</strong> shown once when the key was created. Check delivery status at
+          <code> GET /api/v1/jobs/&#123;id&#125;/webhook</code>.
         </p>
         <div className="grid gap-4 lg:grid-cols-2">
           <CodeBlock value={webhookExample} />

@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { getJobStatusFromDdb } from "../lib/youtube-queue";
 import { setupSse, sseFlush } from "../lib/sse";
-import { registerJobWebhook, isValidWebhookUrl } from "../lib/webhooks";
+import { registerJobWebhook, isValidWebhookUrl, getJobWebhookStatus } from "../lib/webhooks";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import {
   registerPublicJob,
@@ -792,6 +792,64 @@ router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
   if (!closed) res.end();
 });
 
+// ── Webhook delivery status for a job (owner-scoped) ─────────────────────────
+router.get("/jobs/:jobId/webhook", async (req: Request, res: Response) => {
+  const jobId = String(req.params.jobId ?? "").trim();
+  if (!jobId) {
+    sendApiError(res, 400, "INVALID_REQUEST", "jobId is required.");
+    return;
+  }
+  try {
+    const reg = await getPublicJob(jobId);
+    const keyId = requestingKeyId(res);
+    if (reg && reg.ownerKeyId && keyId && reg.ownerKeyId !== keyId) {
+      sendApiError(res, 404, "JOB_NOT_FOUND", "Job not found.");
+      return;
+    }
+    const wh = await getJobWebhookStatus(jobId);
+    if (!wh) {
+      res.json({ jobId, registered: false });
+      return;
+    }
+    // Owner check against the webhook row's keyId too (covers legacy jobs).
+    if (wh.ownerKeyId && keyId && wh.ownerKeyId !== keyId) {
+      sendApiError(res, 404, "JOB_NOT_FOUND", "Job not found.");
+      return;
+    }
+    res.json({
+      jobId,
+      registered: wh.registered,
+      url: wh.url ?? null,
+      delivered: wh.fired ?? false,
+      attempts: wh.attempts ?? 0,
+      lastDeliveryStatus: wh.lastDeliveryStatus ?? null,
+      lastDeliveryCode: wh.lastDeliveryCode ?? null,
+      lastDeliveryAt: wh.lastDeliveryAt ?? null,
+    });
+  } catch (err) {
+    sendApiError(res, 500, "INTERNAL_ERROR", err instanceof Error ? err.message : "Failed to read webhook status", { retryable: true });
+  }
+});
+
+// ── v1 uploads: thin passthrough to the canonical uploads service ────────────
+// Uploads are not job-based; forward the request in-process to the canonical
+// handler (auth + scope re-enforced) without transforming the response.
+function forwardUpload(method: "GET" | "POST" | "DELETE", v1Path: string, target: (req: Request) => string) {
+  const handler = (req: Request, res: Response) => {
+    req.url = target(req);
+    (req as Request & { originalUrl: string }).originalUrl = req.url;
+    (req.app as unknown as { handle: (rq: Request, rs: Response) => void }).handle(req, res);
+  };
+  if (method === "GET") router.get(v1Path, handler);
+  else if (method === "POST") router.post(v1Path, handler);
+  else router.delete(v1Path, handler);
+}
+
+forwardUpload("POST", "/uploads/presign", () => "/api/uploads/presign");
+forwardUpload("POST", "/uploads/complete", () => "/api/uploads/complete");
+forwardUpload("GET", "/uploads/:fileId", (req) => `/api/uploads/file/${encodeURIComponent(String(req.params.fileId))}`);
+forwardUpload("DELETE", "/uploads/:fileId", (req) => `/api/uploads/file/${encodeURIComponent(String(req.params.fileId))}`);
+
 // ── POST aliases: forward in-process to the canonical handler ────────────────
 function registerAlias(o: Operation) {
   router.post(`/${o.op}`, async (req: Request, res: Response) => {
@@ -867,7 +925,12 @@ function registerAlias(o: Operation) {
               });
               webhookRegistered =
                 webhookUrl && isValidWebhookUrl(webhookUrl)
-                  ? await registerJobWebhook(jobId, webhookUrl, keyId)
+                  ? await registerJobWebhook(
+                      jobId,
+                      webhookUrl,
+                      keyId,
+                      (res.locals.apiKey as { webhookSecret?: string } | undefined)?.webhookSecret,
+                    )
                   : false;
             } catch {
               /* never let bookkeeping break the response */

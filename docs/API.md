@@ -203,6 +203,21 @@ to confirm a key works):
 }
 ```
 
+## Uploads
+
+To subtitle or translate your own media, upload it first, then pass the returned
+public URL. Requires the `uploads` (or `*`) scope.
+
+```http
+POST /api/v1/uploads/presign      { filename, size, mimeType }  -> presigned URL(s) + fileId
+POST /api/v1/uploads/complete     { fileId, parts? }            -> finalizes the upload
+GET  /api/v1/uploads/{fileId}                                    -> file metadata / URL
+DELETE /api/v1/uploads/{fileId}                                  -> remove the file
+```
+
+Then call subtitles/translate with the file's public URL. Limits: max 3 GB,
+single PUT under 50 MB, 10 MB multipart parts, presigned download ~7 days.
+
 ## Best clips
 
 Find AI-selected clip ideas from a YouTube video.
@@ -491,10 +506,27 @@ Body:
 Verify the signature by computing:
 
 ```text
-HMAC_SHA256(raw_request_body, WEBHOOK_SIGNING_SECRET)
+HMAC_SHA256(raw_request_body, secret)
 ```
 
-and comparing it to the value after `sha256=`.
+and comparing it to the value after `sha256=`. The `secret` is the **per-key
+webhook secret** returned once when the key was created (falls back to the
+server's global `WEBHOOK_SIGNING_SECRET` for keys created before this feature).
+
+Delivery status: `GET /api/v1/jobs/{jobId}/webhook` returns whether a webhook is
+registered and its last delivery outcome:
+
+```json
+{
+  "jobId": "JOB_ID",
+  "registered": true,
+  "delivered": true,
+  "attempts": 1,
+  "lastDeliveryStatus": "delivered",
+  "lastDeliveryCode": 200,
+  "lastDeliveryAt": 1780000000000
+}
+```
 
 ## Errors
 

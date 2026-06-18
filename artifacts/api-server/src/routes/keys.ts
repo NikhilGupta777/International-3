@@ -139,7 +139,7 @@ router.post("/", async (req: Request, res: Response) => {
     const ownerEmail = s.email ?? "admin";
     const createdBy = s.email ?? "admin";
 
-    const { record, rawKey } = await createApiKey({
+    const { record, rawKey, webhookSecret } = await createApiKey({
       name,
       ownerEmail,
       createdBy,
@@ -151,8 +151,9 @@ router.post("/", async (req: Request, res: Response) => {
 
     res.json({
       ok: true,
-      // The secret is returned exactly once — it is never retrievable again.
+      // The secret + webhook secret are returned exactly once — never retrievable again.
       key: rawKey,
+      webhookSecret,
       keyInfo: publicKey(record),
     });
   } catch (err) {

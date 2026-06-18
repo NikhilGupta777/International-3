@@ -82,7 +82,19 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
 
   // one-time secret reveal
   const [freshKey, setFreshKey] = useState<string | null>(null);
+  const [freshWebhookSecret, setFreshWebhookSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // key detail expansion
+  const [expandedKeyId, setExpandedKeyId] = useState<string | null>(null);
+
+  // test-a-key tool
+  const [testKey, setTestKey] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<
+    | { ok: boolean; status: number; rate: { limit: string | null; remaining: string | null }; body: unknown }
+    | null
+  >(null);
 
   const loadKeys = useCallback(async () => {
     setLoading(true);
@@ -130,6 +142,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `Failed (${res.status})`);
       setFreshKey(data.key as string);
+      setFreshWebhookSecret((data.webhookSecret as string) ?? null);
       setName("");
       setScopesText("");
       setExpiresInDays("");
@@ -166,6 +179,37 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
       setTimeout(() => setCopied(false), 1800);
     });
   }, [freshKey]);
+
+  const runTest = useCallback(async () => {
+    const k = testKey.trim();
+    if (!k) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`${origin}/api/v1/health`, {
+        headers: { Authorization: `Bearer ${k}` },
+      });
+      const body = await res.json().catch(() => ({}));
+      setTestResult({
+        ok: res.ok,
+        status: res.status,
+        rate: {
+          limit: res.headers.get("X-RateLimit-Limit"),
+          remaining: res.headers.get("X-RateLimit-Remaining"),
+        },
+        body,
+      });
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        status: 0,
+        rate: { limit: null, remaining: null },
+        body: { error: err instanceof Error ? err.message : "Request failed" },
+      });
+    } finally {
+      setTesting(false);
+    }
+  }, [testKey]);
 
   const curlExample = useMemo(() => {
     const k = freshKey || "vms_live_YOUR_KEY";
@@ -232,6 +276,23 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
+          {freshWebhookSecret && (
+            <div className="mt-3">
+              <p className="mb-1 text-[11px] text-slate-400">
+                Webhook signing secret (verify <code className="text-slate-300">X-VMS-Signature</code>) - also shown once:
+              </p>
+              <code className="block overflow-x-auto whitespace-nowrap rounded-md bg-slate-950/70 px-3 py-2 text-amber-300 ring-1 ring-inset ring-amber-500/20">
+                {freshWebhookSecret}
+              </code>
+            </div>
+          )}
+          <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300/90">
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              Treat this like a password. Never embed it in browser/client code, public repos, or screenshots. If it
+              leaks (chat, logs, a ticket), revoke it immediately and generate a new one.
+            </span>
+          </div>
         </div>
       )}
 
@@ -271,12 +332,18 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
             Full access (all services) - recommended
           </label>
           {!fullAccess && (
-            <input
-              value={scopesText}
-              onChange={(e) => setScopesText(e.target.value)}
-              placeholder="youtube, subtitles, translator"
-              className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-200 outline-none transition-colors focus:border-emerald-500/60"
-            />
+            <>
+              <input
+                value={scopesText}
+                onChange={(e) => setScopesText(e.target.value)}
+                placeholder="youtube, subtitles, translator"
+                className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-200 outline-none transition-colors focus:border-emerald-500/60"
+              />
+              <p className="mt-1.5 text-[11px] text-slate-600">
+                Valid: youtube, youtube:download, youtube:clip-cut, youtube:clips, youtube:timestamps, youtube:info,
+                subtitles, translator, uploads, thumbnail, agent, bhagwat. Unknown scopes are rejected.
+              </p>
+            </>
           )}
         </div>
 
@@ -304,42 +371,114 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
         ) : (
           <div className="overflow-hidden rounded-lg border border-slate-700/60">
             {keys.map((k, i) => (
-              <div
-                key={k.keyId}
-                className={
-                  "flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 " +
-                  (i > 0 ? "border-t border-slate-800/80 " : "") +
-                  (k.status === "revoked" ? "opacity-50" : "")
-                }
-              >
-                <CircleDot
-                  className={"h-3 w-3 shrink-0 " + (k.status === "active" ? "text-emerald-400" : "text-slate-600")}
-                />
-                <code className="text-slate-300">{k.prefix}...</code>
-                <span className="font-sans text-slate-200">{k.name}</span>
-                <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
-                  {k.scopes.includes("*") ? "full access" : k.scopes.join(", ")}
-                </span>
-                <span className="ml-auto text-[11px] text-slate-600">
-                  {k.monthlyQuota
-                    ? `${k.usageMonth ?? 0}/${k.monthlyQuota} reqs/mo - `
-                    : (k.usageMonth ?? 0) > 0
-                      ? `${k.usageMonth} reqs/mo - `
-                      : ""}
-                  created {fmtDate(k.createdAt)} - used {fmtDate(k.lastUsedAt)}
-                  {k.expiresAt ? ` - expires ${fmtDate(k.expiresAt * 1000)}` : ""}
-                </span>
-                {k.status === "active" && (
+              <div key={k.keyId} className={(i > 0 ? "border-t border-slate-800/80 " : "") + (k.status === "revoked" ? "opacity-50" : "")}>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3">
                   <button
-                    onClick={() => void revokeKey(k.keyId)}
-                    title="Revoke"
-                    className="rounded p-1 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                    type="button"
+                    onClick={() => setExpandedKeyId((cur) => (cur === k.keyId ? null : k.keyId))}
+                    title="Details"
+                    className="shrink-0 text-slate-500 transition-colors hover:text-slate-300"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <CircleDot
+                      className={"h-3 w-3 " + (k.status === "active" ? "text-emerald-400" : "text-slate-600")}
+                    />
                   </button>
+                  <code className="text-slate-300">{k.prefix}...</code>
+                  <span className="font-sans text-slate-200">{k.name}</span>
+                  <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
+                    {k.scopes.includes("*") ? "full access" : k.scopes.join(", ")}
+                  </span>
+                  <span className="ml-auto text-[11px] text-slate-600">
+                    {k.monthlyQuota
+                      ? `${k.usageMonth ?? 0}/${k.monthlyQuota} reqs/mo - `
+                      : (k.usageMonth ?? 0) > 0
+                        ? `${k.usageMonth} reqs/mo - `
+                        : ""}
+                    created {fmtDate(k.createdAt)} - used {fmtDate(k.lastUsedAt)}
+                    {k.expiresAt ? ` - expires ${fmtDate(k.expiresAt * 1000)}` : ""}
+                  </span>
+                  {k.status === "active" && (
+                    <button
+                      onClick={() => void revokeKey(k.keyId)}
+                      title="Revoke"
+                      className="rounded p-1 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                {expandedKeyId === k.keyId && (
+                  <dl className="grid gap-x-6 gap-y-1.5 border-t border-slate-800/60 bg-slate-950/40 px-4 py-3 text-[11px] sm:grid-cols-2">
+                    {[
+                      ["Key ID", k.keyId],
+                      ["Status", k.status],
+                      ["Scopes", k.scopes.join(", ")],
+                      ["Owner", k.ownerEmail || "-"],
+                      ["Created", fmtDate(k.createdAt)],
+                      ["Last used", fmtDate(k.lastUsedAt)],
+                      ["Usage this month", String(k.usageMonth ?? 0)],
+                      ["Lifetime requests", String(k.usageTotal ?? 0)],
+                      ["Rate limit", k.rateLimitPerMin ? `${k.rateLimitPerMin}/min` : "default"],
+                      ["Monthly quota", k.monthlyQuota ? String(k.monthlyQuota) : "unlimited"],
+                      ["Expires", k.expiresAt ? fmtDate(k.expiresAt * 1000) : "never"],
+                    ].map(([label, value]) => (
+                      <div key={label} className="flex gap-2">
+                        <dt className="w-32 shrink-0 text-slate-600">{label}</dt>
+                        <dd className="min-w-0 break-words text-slate-300">{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </section>
+
+      {/* Test a key */}
+      <section className="mb-8 rounded-lg border border-slate-700/60 bg-slate-900/40 p-5">
+        <h2 className="mb-1 font-sans text-sm font-semibold text-slate-200">Test a key</h2>
+        <p className="mb-3 text-xs text-slate-500">
+          Verify a key works by calling <code className="text-slate-400">GET /api/v1/health</code> with it. Paste a key
+          you just generated (it is never stored here).
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={testKey}
+            onChange={(e) => setTestKey(e.target.value)}
+            placeholder="vms_live_..."
+            className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-200 outline-none transition-colors focus:border-emerald-500/60"
+          />
+          <button
+            onClick={() => void runTest()}
+            disabled={testing || !testKey.trim()}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-emerald-500/40 px-3 py-2 font-sans text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CircleDot className="h-3.5 w-3.5" />}
+            Test
+          </button>
+        </div>
+        {testResult && (
+          <div className="mt-3 rounded-md border border-slate-700/60 bg-slate-950/60 p-3 text-[11px]">
+            <div className="mb-1.5 flex items-center gap-2">
+              {testResult.ok ? (
+                <span className="inline-flex items-center gap-1 text-emerald-400">
+                  <Check className="h-3.5 w-3.5" /> Key works (HTTP {testResult.status})
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-red-400">
+                  <ShieldAlert className="h-3.5 w-3.5" /> Failed (HTTP {testResult.status || "network"})
+                </span>
+              )}
+              {testResult.rate.limit && (
+                <span className="text-slate-500">
+                  rate {testResult.rate.remaining}/{testResult.rate.limit} per min
+                </span>
+              )}
+            </div>
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-slate-400">
+{JSON.stringify(testResult.body, null, 2)}
+            </pre>
           </div>
         )}
       </section>
