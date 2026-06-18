@@ -22,6 +22,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import { setupSse, sseFlush } from "../lib/sse";
+import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import {
   DynamoDBClient,
@@ -600,7 +601,7 @@ function resolveRequestedLipSync(req: Request, res: ExpressResponse, value: unkn
   const requested = boolValue(value, false);
   if (!requested) return { enabled: false };
   if (canUseTranslatorLipSync(authEmailFromResponse(res))) return { enabled: true };
-  const isInternal = req.headers["x-internal-agent"] === (process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key");
+  const isInternal = req.headers["x-internal-agent"] === INTERNAL_AGENT_SECRET;
   return {
     enabled: false,
     warning: isInternal

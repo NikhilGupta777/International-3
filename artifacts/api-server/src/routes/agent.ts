@@ -18,6 +18,7 @@ import { getWorkspace, WORKSPACE_LIMITS } from "../lib/workspace";
 import { isDriveConfigured, driveListFolder, driveGetFileMeta, driveDownload } from "../lib/google-drive";
 import { createGeminiClient, isGeminiConfigured, ensureVertexCredentials } from "../lib/gemini-client";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
+import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { logger } from "../lib/logger";
 
 const router = Router();
@@ -1178,7 +1179,7 @@ Do not include suggestions. Never output the [SUGGESTIONS: ...] marker.`;
 
 // ── Build internal headers from request ───────────────────────────────────
 function buildInternalHeaders(req: any): Record<string, string> {
-  const INTERNAL_SECRET = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const INTERNAL_SECRET = INTERNAL_AGENT_SECRET;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Cookie: req.headers.cookie ?? "",

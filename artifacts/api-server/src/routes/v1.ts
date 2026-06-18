@@ -314,18 +314,32 @@ function registerAlias(o: Operation) {
         const jobId = (p.jobId ?? p.id) as string | undefined;
         if (jobId) {
           void (async () => {
-            const webhookRegistered =
-              webhookUrl && isValidWebhookUrl(webhookUrl)
-                ? await registerJobWebhook(jobId, webhookUrl, keyId)
-                : false;
-            originalJson({
-              jobId,
-              status: (p.status as string) ?? "queued",
-              statusUrl: o.statusUrl(jobId),
-              streamUrl: o.streamUrl ? o.streamUrl(jobId) : null,
-              eventsUrl: `/api/v1/jobs/${jobId}/events`,
-              webhookRegistered,
-            });
+            try {
+              const webhookRegistered =
+                webhookUrl && isValidWebhookUrl(webhookUrl)
+                  ? await registerJobWebhook(jobId, webhookUrl, keyId)
+                  : false;
+              originalJson({
+                jobId,
+                status: (p.status as string) ?? "queued",
+                statusUrl: o.statusUrl(jobId),
+                streamUrl: o.streamUrl ? o.streamUrl(jobId) : null,
+                eventsUrl: `/api/v1/jobs/${jobId}/events`,
+                webhookRegistered,
+              });
+            } catch {
+              // Never let webhook/registration failures break the response.
+              if (!res.headersSent) {
+                originalJson({
+                  jobId,
+                  status: (p.status as string) ?? "queued",
+                  statusUrl: o.statusUrl(jobId),
+                  streamUrl: o.streamUrl ? o.streamUrl(jobId) : null,
+                  eventsUrl: `/api/v1/jobs/${jobId}/events`,
+                  webhookRegistered: false,
+                });
+              }
+            }
           })();
           return res as Response;
         }
