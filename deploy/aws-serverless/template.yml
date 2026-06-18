@@ -56,6 +56,11 @@ Parameters:
     NoEcho: true
     Default: ""
     Description: "HMAC secret for signing webhook callbacks. Falls back to SessionSecret when empty."
+  InternalAgentSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: "Shared secret for internal server-to-server calls. Empty uses a built-in default."
   AdminPanelEnabled:
     Type: String
     Default: "false"
@@ -472,6 +477,7 @@ Resources:
           API_ACCESS_EMAILS: !Ref ApiAccessEmails
           API_KEY_RATE_LIMIT_PER_MIN: !Ref ApiKeyRateLimitPerMin
           WEBHOOK_SIGNING_SECRET: !Ref WebhookSigningSecret
+          INTERNAL_AGENT_SECRET: !Ref InternalAgentSecret
           ADMIN_PANEL_ENABLED: !Ref AdminPanelEnabled
           TRANSLATOR_ENABLED: !Ref TranslatorEnabled
           SUPER_AGENT_ENABLED: !Ref SuperAgentEnabled

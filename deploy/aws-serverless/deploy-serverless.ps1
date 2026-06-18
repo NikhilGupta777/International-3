@@ -275,6 +275,7 @@ $parameterOverrides = @(
   "ApiAccessEmails=$(Get-OptionalEnv $envMap 'API_ACCESS_EMAILS')"
   "ApiKeyRateLimitPerMin=$(Get-OptionalEnv $envMap 'API_KEY_RATE_LIMIT_PER_MIN' '120')"
   "WebhookSigningSecret=$(Get-OptionalEnv $envMap 'WEBHOOK_SIGNING_SECRET')"
+  "InternalAgentSecret=$(Get-OptionalEnv $envMap 'INTERNAL_AGENT_SECRET')"
   "AdminPanelEnabled=$(Get-OptionalEnv $envMap 'ADMIN_PANEL_ENABLED' 'false')"
   "TranslatorEnabled=$(Get-OptionalEnv $envMap 'TRANSLATOR_ENABLED' 'true')"
   "SuperAgentEnabled=$(Get-OptionalEnv $envMap 'SUPER_AGENT_ENABLED' 'true')"

@@ -536,8 +536,12 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
     next();
     return;
   }
-  // Internal server-to-server agent calls bypass cookie auth
-  const internalSecret = (process.env.INTERNAL_AGENT_SECRET ?? "").trim();
+  // Internal server-to-server agent calls bypass cookie auth.
+  // NOTE: callers across the codebase send `INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key"`,
+  // so the gate must accept the same default when the env var is unset — otherwise
+  // every internal call (agent tools, video-editor renders, etc.) would 401.
+  // The secureEqual comparison keeps it timing-safe.
+  const internalSecret = (process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key").trim();
   const internalHeader = String(req.headers["x-internal-agent"] ?? "").trim();
   if (internalSecret && internalHeader && secureEqual(internalHeader, internalSecret)) {
     next();

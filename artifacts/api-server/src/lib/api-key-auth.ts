@@ -74,7 +74,10 @@ const REGION =
 
 const ddb = TABLE ? new DynamoDBClient({ region: REGION }) : null;
 
-const DEFAULT_RATE_LIMIT_PER_MIN = Number(process.env.API_KEY_RATE_LIMIT_PER_MIN ?? 120);
+const DEFAULT_RATE_LIMIT_PER_MIN = (() => {
+  const parsed = Number(process.env.API_KEY_RATE_LIMIT_PER_MIN);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 120;
+})();
 
 function currentMonthKey(): string {
   return new Date().toISOString().slice(0, 7).replace("-", "_"); // e.g. "2026_06"
