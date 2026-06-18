@@ -3,7 +3,9 @@ import json
 import time
 import os
 
-API_KEY = "AIzaSyDkboQNcUg3fPJ5JmSRF8Mu8-nyBoTMo3o"
+API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+if not API_KEY:
+    raise SystemExit("Set GEMINI_API_KEY (or GOOGLE_API_KEY) in the environment before running this script.")
 AUDIO_PATH = r"C:\Users\g_n-n\Downloads\Telegram Desktop\Manish Bhaiya-2606010916.mp3"
 MODEL = "gemini-3.5-flash"
 
