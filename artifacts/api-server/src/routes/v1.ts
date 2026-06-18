@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { getJobStatusFromDdb } from "../lib/youtube-queue";
 import { setupSse, sseFlush } from "../lib/sse";
-import { registerJobWebhook, isValidWebhookUrl, isTerminalStatus } from "../lib/webhooks";
+import { registerJobWebhook, isValidWebhookUrl } from "../lib/webhooks";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import {
   registerPublicJob,
@@ -174,20 +174,56 @@ function ownerClientId(ownerKeyId: string): string | undefined {
 }
 
 // ── Status normalization (shape-tolerant across heterogeneous services) ──────
-function normalizeStatus(op: Operation | undefined, jobId: string, raw: any) {
+type PublicStatus =
+  | "pending"
+  | "queued"
+  | "running"
+  | "done"
+  | "error"
+  | "cancelled"
+  | "expired";
+
+const DONE_WORDS = new Set(["done", "completed", "complete", "success", "succeeded", "finished", "ready"]);
+const ERROR_WORDS = new Set(["error", "failed", "failure", "errored"]);
+const CANCELLED_WORDS = new Set(["cancelled", "canceled", "cancel", "aborted"]);
+const EXPIRED_WORDS = new Set(["expired", "gone"]);
+const QUEUED_WORDS = new Set(["queued", "pending", "waiting", "submitted", "accepted", "created"]);
+const RUNNING_WORDS = new Set([
+  "running", "processing", "in_progress", "inprogress", "working", "started",
+  "downloading", "transcribing", "translating", "analyzing", "rendering", "uploading",
+]);
+
+/** Map any service-specific status string to the stable public lowercase enum. */
+function canonicalStatus(raw: string): PublicStatus {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (DONE_WORDS.has(s)) return "done";
+  if (ERROR_WORDS.has(s)) return "error";
+  if (CANCELLED_WORDS.has(s)) return "cancelled";
+  if (EXPIRED_WORDS.has(s)) return "expired";
+  if (QUEUED_WORDS.has(s)) return "queued";
+  if (RUNNING_WORDS.has(s)) return "running";
+  if (!s || s === "unknown") return "pending";
+  return "running"; // unknown-but-present states are treated as in-flight
+}
+
+const TERMINAL_STATUSES = new Set<PublicStatus>(["done", "error", "cancelled", "expired"]);
+
+function normalizeStatus(op: Operation | undefined, jobId: string, raw: any, origin: string) {
   const r = raw && typeof raw === "object" ? raw : {};
   const rawStatus =
-    String(r.status ?? r.state ?? (r.done ? "done" : r.error ? "error" : "")).trim() ||
-    "unknown";
+    String(r.status ?? r.state ?? (r.done ? "done" : r.error ? "error" : "")).trim() || "unknown";
+  const status = canonicalStatus(rawStatus);
+  const terminal = TERMINAL_STATUSES.has(status);
+  const succeeded = status === "done";
+  const failed = status === "error";
   const message = (r.message ?? r.error ?? r.detail ?? null) as string | null;
   const progressPct = (r.progressPct ?? r.progress ?? r.percent ?? null) as number | null;
-  const ready = isTerminalStatus(rawStatus);
 
   let result: Record<string, unknown> | null = null;
-  if (ready) {
+  if (succeeded) {
     switch (op?.resultKind) {
       case "file":
-        result = { type: "file", url: `/api/youtube/file/${jobId}` };
+        result = { type: "file", url: `${origin}/api/youtube/file/${jobId}` };
         break;
       case "clips":
         result = { type: "clips", clips: r.clips ?? r.result?.clips ?? r.result ?? null };
@@ -219,13 +255,29 @@ function normalizeStatus(op: Operation | undefined, jobId: string, raw: any) {
   return {
     jobId,
     op: op?.op ?? null,
-    status: rawStatus,
+    status,
+    rawStatus,
+    terminal,
+    succeeded,
+    failed,
+    ready: terminal, // back-compat alias
     message,
     progressPct,
-    ready,
     result,
+    statusUrl: `${origin}/api/v1/jobs/${jobId}`,
+    eventsUrl: `${origin}/api/v1/jobs/${jobId}/events`,
+    cancelUrl: op?.cancelUrl ? `${origin}/api/v1/jobs/${jobId}/cancel` : null,
     raw: r,
   };
+}
+
+/** Public-facing origin for building absolute URLs (prefers PUBLIC_SITE_URL). */
+function publicOrigin(req: Request): string {
+  const env = (process.env.PUBLIC_SITE_URL ?? "").trim();
+  if (env) return env.replace(/\/+$/, "");
+  const proto = String(req.headers["x-forwarded-proto"] ?? req.protocol ?? "https").split(",")[0].trim();
+  const host = String(req.headers["x-forwarded-host"] ?? req.get("host") ?? "").split(",")[0].trim();
+  return host ? `${proto}://${host}` : "";
 }
 
 function requestingKeyId(res: Response): string {
@@ -359,6 +411,7 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
     return;
   }
   try {
+    const origin = publicOrigin(req);
     const reg = await getPublicJob(jobId);
     if (reg && reg.op) {
       // Ownership: a key may only read its own jobs (don't leak others' jobIds).
@@ -369,7 +422,7 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
       }
       const op = OP_BY_NAME.get(reg.op);
       const { json } = await internalCall(req, reg.statusPath, "GET", ownerClientId(reg.ownerKeyId));
-      res.json(normalizeStatus(op, jobId, json));
+      res.json(normalizeStatus(op, jobId, json, origin));
       return;
     }
 
@@ -379,14 +432,26 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
       res.status(404).json({ error: "Job not found." });
       return;
     }
+    const canonical = canonicalStatus(status.status);
+    const terminal = TERMINAL_STATUSES.has(canonical);
     res.json({
       jobId,
       op: null,
-      status: status.status,
+      status: canonical,
+      rawStatus: status.status,
+      terminal,
+      succeeded: canonical === "done",
+      failed: canonical === "error",
+      ready: terminal,
       message: status.message || null,
-      progressPct: status.progressPct,
-      ready: isTerminalStatus(status.status),
-      result: status.s3Key ? { type: "file", url: `/api/youtube/file/${jobId}` } : null,
+      progressPct: status.progressPct ?? null,
+      result:
+        canonical === "done" && status.s3Key
+          ? { type: "file", url: `${origin}/api/youtube/file/${jobId}` }
+          : null,
+      statusUrl: `${origin}/api/v1/jobs/${jobId}`,
+      eventsUrl: `${origin}/api/v1/jobs/${jobId}/events`,
+      cancelUrl: `${origin}/api/v1/jobs/${jobId}/cancel`,
     });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : "Failed to fetch job status" });
@@ -446,6 +511,7 @@ router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
   }
 
   setupSse(res);
+  const origin = publicOrigin(req);
   let closed = false;
   req.on("close", () => {
     closed = true;
@@ -463,18 +529,30 @@ router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
     try {
       if (reg && reg.statusPath) {
         const { json } = await internalCall(req, reg.statusPath, "GET", ownerClientId(reg.ownerKeyId));
-        normalized = normalizeStatus(op, jobId, json);
+        normalized = normalizeStatus(op, jobId, json, origin);
       } else {
         const status = await getJobStatusFromDdb(jobId);
         if (status) {
+          const canonical = canonicalStatus(status.status);
+          const terminal = TERMINAL_STATUSES.has(canonical);
           normalized = {
             jobId,
             op: null,
-            status: status.status,
+            status: canonical,
+            rawStatus: status.status,
+            terminal,
+            succeeded: canonical === "done",
+            failed: canonical === "error",
+            ready: terminal,
             message: status.message || null,
             progressPct: status.progressPct ?? null,
-            ready: isTerminalStatus(status.status),
-            result: status.s3Key ? { type: "file", url: `/api/youtube/file/${jobId}` } : null,
+            result:
+              canonical === "done" && status.s3Key
+                ? { type: "file", url: `${origin}/api/youtube/file/${jobId}` }
+                : null,
+            statusUrl: `${origin}/api/v1/jobs/${jobId}`,
+            eventsUrl: `${origin}/api/v1/jobs/${jobId}/events`,
+            cancelUrl: `${origin}/api/v1/jobs/${jobId}/cancel`,
             raw: status as unknown as Record<string, unknown>,
           };
         }
@@ -489,8 +567,14 @@ router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
         lastKey = key;
         send("status", normalized);
       }
-      if (normalized.ready) {
-        send("done", { jobId, status: normalized.status, result: normalized.result });
+      if (normalized.terminal) {
+        send("done", {
+          jobId,
+          status: normalized.status,
+          succeeded: normalized.succeeded,
+          failed: normalized.failed,
+          result: normalized.result,
+        });
         break;
       }
     }
@@ -515,14 +599,16 @@ function registerAlias(o: Operation) {
     req.body = body;
 
     const keyId = requestingKeyId(res);
+    const origin = publicOrigin(req);
 
-    // Build the v1-only envelope (never leaks internal /api/<service> paths).
+    // Build the v1-only envelope (absolute URLs; never leaks internal paths).
     const envelope = (jobId: string, status: string, webhookRegistered: boolean) => ({
       jobId,
-      status: status || "queued",
-      statusUrl: `/api/v1/jobs/${jobId}`,
-      eventsUrl: `/api/v1/jobs/${jobId}/events`,
-      cancelUrl: o.cancelUrl ? `/api/v1/jobs/${jobId}/cancel` : null,
+      status: canonicalStatus(status),
+      rawStatus: status || "queued",
+      statusUrl: `${origin}/api/v1/jobs/${jobId}`,
+      eventsUrl: `${origin}/api/v1/jobs/${jobId}/events`,
+      cancelUrl: o.cancelUrl ? `${origin}/api/v1/jobs/${jobId}/cancel` : null,
       webhookRegistered,
     });
 
