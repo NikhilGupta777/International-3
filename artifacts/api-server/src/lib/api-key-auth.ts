@@ -183,26 +183,114 @@ export async function verifyApiKey(rawKey: string): Promise<ApiKeyRecord | null>
   }
 }
 
-// ── Scopes ─────────────────────────────────────────────────────────────────
+// ── Scopes & route allowlist ─────────────────────────────────────────────────
+//
+// SECURITY MODEL
+//   API keys are confined to an explicit allowlist of *public* service segments.
+//   Any path outside the allowlist (workspace, video-editor, ops, notebook,
+//   pitaji, notifications, admin, keys, …) is denied for EVERY key — including
+//   wildcard ("*") keys. This is a hard boundary, independent of scopes.
+//
+//   Within the public surface, scopes provide least-privilege control:
+//     - "*"                → every public service
+//     - "<service>"        → the whole service (e.g. "youtube")
+//     - "<service>:<op>"   → a single operation (e.g. "youtube:clips")
+//
+//   YouTube create-operations are individually scopable; shared operations
+//   (cancel / file / stream / status) are granted to any youtube scope so a
+//   narrowly-scoped key can still manage and download its own jobs.
 
-/** First path segment after /api maps to a coarse service scope. */
+/** Public service segments an API key may reach. Everything else is blocked. */
+export const PUBLIC_API_SEGMENTS: ReadonlySet<string> = new Set([
+  "youtube",
+  "subtitles",
+  "translator",
+  "uploads",
+  "thumbnail",
+  "agent",
+  "bhagwat",
+]);
+
+/** Canonical, assignable scopes. POST /keys rejects anything not in this set. */
+export const API_KEY_SCOPE_CATALOG: readonly string[] = [
+  "*",
+  "youtube",
+  "youtube:download",
+  "youtube:clip-cut",
+  "youtube:clips",
+  "youtube:timestamps",
+  "youtube:info",
+  "subtitles",
+  "subtitles:create",
+  "translator",
+  "translator:create",
+  "uploads",
+  "uploads:create",
+  "thumbnail",
+  "agent",
+  "bhagwat",
+];
+
+const SCOPE_SET: ReadonlySet<string> = new Set(API_KEY_SCOPE_CATALOG);
+
+/** First path segment after /api (the coarse service). */
 export function requiredScopeForPath(path: string): string | null {
   const seg = path.replace(/^\/+/, "").split("/")[0];
   return seg || null;
 }
 
-/** Paths an API key may NEVER reach, regardless of scopes. */
-const API_KEY_FORBIDDEN_SEGMENTS = new Set(["admin", "keys"]);
+/**
+ * Validate & de-duplicate a requested scope list. Throws on any unknown scope
+ * so keys can never be minted for internal or non-existent services. Returns
+ * the cleaned list (may be empty — the caller decides the default).
+ */
+export function validateScopes(requested: string[]): string[] {
+  const cleaned = Array.from(
+    new Set(requested.map((s) => s.trim()).filter(Boolean)),
+  );
+  const invalid = cleaned.filter((s) => !SCOPE_SET.has(s));
+  if (invalid.length > 0) {
+    throw new Error(
+      `Unknown scope(s): ${invalid.join(", ")}. Allowed: ${API_KEY_SCOPE_CATALOG.join(", ")}`,
+    );
+  }
+  return cleaned;
+}
+
+/** The specific create-scope a youtube path maps to, or null for shared ops. */
+function youtubeOperationScope(path: string): string | null {
+  const rest = path.replace(/^\/+/, "").replace(/^youtube\/?/, "");
+  if (rest.startsWith("clip-cut")) return "youtube:clip-cut";
+  if (rest.startsWith("clips")) return "youtube:clips";
+  if (rest.startsWith("download")) return "youtube:download";
+  if (rest.startsWith("timestamps")) return "youtube:timestamps";
+  if (rest.startsWith("info")) return "youtube:info";
+  return null; // cancel / file / stream / best-clips status / subtitles-dl …
+}
 
 export function apiKeyAllowsPath(record: ApiKeyRecord, path: string): boolean {
   const seg = requiredScopeForPath(path);
-  if (seg && API_KEY_FORBIDDEN_SEGMENTS.has(seg)) return false;
+  if (!seg) return true; // root
   // The /v1 facade forwards in-process to a canonical service path where the
   // real per-service scope is enforced — treat the v1 entrypoint as transparent.
   if (seg === "v1") return true;
-  if (record.scopes.includes("*")) return true;
-  if (!seg) return true;
-  return record.scopes.some((s) => s === seg || s.startsWith(seg + ":"));
+  // Hard boundary: never allow non-public segments, even for "*" keys.
+  if (!PUBLIC_API_SEGMENTS.has(seg)) return false;
+
+  const scopes = record.scopes;
+  if (scopes.includes("*")) return true;
+  // Service-level scope grants the whole service.
+  if (scopes.includes(seg)) return true;
+
+  if (seg === "youtube") {
+    const op = youtubeOperationScope(path);
+    if (op) return scopes.includes(op);
+    // Shared op (cancel/file/stream/status): any youtube sub-scope grants it.
+    return scopes.some((s) => s === "youtube" || s.startsWith("youtube:"));
+  }
+
+  // Other services: the service-level scope or its ":<op>" sub-scope.
+  return scopes.some((s) => s.startsWith(seg + ":"));
 }
 
 // ── lastUsedAt touch (throttled, fire-and-forget) ────────────────────────────

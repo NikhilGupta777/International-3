@@ -44,7 +44,7 @@ type ApiKey = {
 const SERVICES = [
   { scope: "youtube", label: "YouTube - download / clip-cut / best-clips" },
   { scope: "subtitles", label: "Subtitle generation" },
-  { scope: "timestamps", label: "Chapters / timestamps" },
+  { scope: "youtube:timestamps", label: "Chapters / timestamps" },
   { scope: "translator", label: "Video translation & dubbing" },
   { scope: "bhagwat", label: "Bhagwat AI editor" },
   { scope: "thumbnail", label: "Thumbnail studio" },
