@@ -22,7 +22,7 @@ import { FileUpload } from "@/components/FileUpload";
 import { HelpPanel } from "@/components/HelpPanel";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AdminPanel } from "@/components/AdminPanel";
-import { SettingsPanel } from "@/components/SettingsPanel";
+import { DeveloperPanel } from "@/components/DeveloperPanel";import { SettingsPanel } from "@/components/SettingsPanel";
 import { GUIDE_TABS, type GuideMode } from "@/lib/guide-tabs";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { StudioCopilot } from "@/components/StudioCopilot";
@@ -58,7 +58,7 @@ import {
   subscribeToPreferenceChanges,
 } from "@/lib/user-preferences";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "settings";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "settings";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -74,6 +74,7 @@ export type AuthFeatures = {
   translatorAllowed?: boolean;
   translatorLipSyncAllowed?: boolean;
   superAgentAllowed?: boolean;
+  apiAccessAllowed?: boolean;
 };
 
 type ClientAccessConfig = {
@@ -106,6 +107,7 @@ const MODE_LABELS: Record<Mode, string> = {
   help: "Help",
   activity: "Activity",
   admin: "Admin",
+  developer: "Developer",
   settings: "Settings",
 };
 
@@ -128,6 +130,7 @@ const MODE_PATHS: Record<Mode, string> = {
   help: "/help",
   activity: "/activity",
   admin: "/admin",
+  developer: "/developer",
   settings: "/settings",
 };
 const PATH_MODES = new Map<string, Mode>(
@@ -560,8 +563,10 @@ export default function Home({
   const showThumbnail = mode === "thumbnail";
   const showVideoStudio = mode === "videostudio";
   const showAdmin = mode === "admin";
+  const showDeveloper = mode === "developer";
   const showSettings = mode === "settings";
   const canUseAdmin = Boolean(authFeatures?.adminPanelEnabled && authUser?.role === "admin");
+  const canUseDeveloper = authFeatures?.apiAccessAllowed === true;
   const canUseTranslator = authFeatures?.translatorAllowed === true;
   const canUseSuperAgent = authFeatures?.superAgentAllowed === true;
 
@@ -822,6 +827,7 @@ export default function Home({
           mode={mode}
           onModeChange={switchMode}
           showAdmin={canUseAdmin}
+          showDeveloper={canUseDeveloper}
           superAgentEnabled={canUseSuperAgent}
           translatorEnabled={canUseTranslator}
           onNewChat={() => {
@@ -833,8 +839,8 @@ export default function Home({
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "settings") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
             {/* Translator tab - full screen */}
             {mode === "translator" && (
               canUseTranslator
@@ -882,6 +888,8 @@ export default function Home({
             )}
 
             {showAdmin && canUseAdmin && <AdminPanel />}
+
+            {showDeveloper && canUseDeveloper && <DeveloperPanel />}
 
             {/* Download tab — title, glowing input, blocked banner */}
             {showSearch && (

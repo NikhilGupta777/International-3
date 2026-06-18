@@ -15,6 +15,8 @@ import notebookRouter from "./notebook";
 import pitajiRouter from "./pitaji";
 import workspaceRouter from "./workspace";
 import videoEditorRouter from "./video-editor";
+import keysRouter from "./keys";
+import v1Router from "./v1";
 
 const router: IRouter = Router();
 
@@ -34,5 +36,7 @@ router.use(notebookRouter);
 router.use(pitajiRouter);
 router.use("/workspace", workspaceRouter);
 router.use("/video-editor", videoEditorRouter);
+router.use("/keys", keysRouter);
+router.use("/v1", v1Router);
 
 export default router;

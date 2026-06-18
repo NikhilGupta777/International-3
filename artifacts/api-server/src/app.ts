@@ -8,7 +8,15 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { isEmailApproved, hydrateAllowlistFromDdb, type AuthRole } from "./lib/auth-access";
+import { isEmailApproved, hydrateAllowlistFromDdb, isApiAccessAllowed, type AuthRole } from "./lib/auth-access";
+import {
+  extractApiKey,
+  looksLikeApiKey,
+  verifyApiKey,
+  apiKeyAllowsPath,
+  touchApiKeyUsage,
+  enforceApiKeyLimits,
+} from "./lib/api-key-auth";
 import { saveEmailSubmission } from "./lib/email-submissions";
 import { canUseSuperAgent, canUseTranslator, canUseTranslatorLipSync } from "./lib/admin-features";
 import {
@@ -301,6 +309,13 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 app.use((req: Request, res: Response, next: NextFunction) => {
+  // Guard against double-counting when a request is re-dispatched in-process
+  // (e.g. the /api/v1 facade forwards to a canonical handler via app.handle).
+  if ((req as Request & { _metricsHooked?: boolean })._metricsHooked) {
+    next();
+    return;
+  }
+  (req as Request & { _metricsHooked?: boolean })._metricsHooked = true;
   const started = Date.now();
   res.on("finish", () => {
     const durationMs = Date.now() - started;
@@ -331,6 +346,10 @@ app.get("/api/auth/session", (req: Request, res: Response) => {
       translatorAllowed: canUseTranslator(session.email),
       translatorLipSyncAllowed: canUseTranslatorLipSync(session.email),
       superAgentAllowed: canUseSuperAgent(session.email),
+      // Developer/API tab visibility: admins always, plus admin-granted emails.
+      apiAccessAllowed:
+        session.authenticated &&
+        (session.role === "admin" || isApiAccessAllowed(session.email)),
     },
   });
 });
@@ -477,7 +496,7 @@ app.post("/api/email-submissions", async (req: Request, res: Response) => {
   }
 });
 
-app.use("/api", (req: Request, res: Response, next: NextFunction) => {
+app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
   res.locals.authSession = getAuthSession(req);
   if (req.path === "/healthz") {
     next();
@@ -520,6 +539,41 @@ app.use("/api", (req: Request, res: Response, next: NextFunction) => {
   // Internal server-to-server agent calls bypass cookie auth
   const internalSecret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
   if (req.headers["x-internal-agent"] === internalSecret) {
+    next();
+    return;
+  }
+  // Programmatic access via API key (Authorization: Bearer vms_live_... or X-API-Key).
+  // Keys grant access to service routes but never to /admin or key management
+  // (those segments are rejected inside apiKeyAllowsPath).
+  const presentedKey = extractApiKey(req.headers as Record<string, unknown>);
+  if (presentedKey && looksLikeApiKey(presentedKey)) {
+    const keyRecord = await verifyApiKey(presentedKey);
+    if (!keyRecord) {
+      res.status(401).json({ error: "Invalid or revoked API key" });
+      return;
+    }
+    if (!apiKeyAllowsPath(keyRecord, req.path)) {
+      res.status(403).json({ error: "API key is not permitted to access this resource" });
+      return;
+    }
+    res.locals.apiKey = keyRecord;
+    res.locals.authVia = "apikey";
+    // Scope the request to this key so existing owner-isolation (x-client-id)
+    // partitions all resources per key, exactly like a logged-in browser user.
+    req.headers["x-client-id"] = `key:${keyRecord.keyId}`;
+    // Enforce rate limit + monthly quota exactly once per external request
+    // (skip on the in-process /v1 re-dispatch, which re-enters this gate).
+    const metered = req as Request & { _apiKeyMetered?: boolean };
+    if (!metered._apiKeyMetered) {
+      metered._apiKeyMetered = true;
+      const decision = enforceApiKeyLimits(keyRecord);
+      if (!decision.allowed) {
+        if (decision.retryAfterSec) res.setHeader("Retry-After", String(decision.retryAfterSec));
+        res.status(decision.status ?? 429).json({ error: decision.error ?? "Rate limit exceeded" });
+        return;
+      }
+    }
+    void touchApiKeyUsage(keyRecord);
     next();
     return;
   }

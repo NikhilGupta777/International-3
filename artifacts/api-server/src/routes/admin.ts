@@ -8,6 +8,8 @@ import {
   listApprovedAccess,
   removeApprovedEmail,
   setApprovedEmail,
+  setApiAccessEmail,
+  removeApiAccessEmail,
   type AuthRole,
 } from "../lib/auth-access";
 import { listEmailSubmissions } from "../lib/email-submissions";
@@ -399,6 +401,8 @@ router.get("/overview", async (_req, res) => {
       approvedAdminCount: access.admins.length,
       approvedUsers: access.users,
       approvedAdmins: access.admins,
+      apiAccessEmails: access.apiAccess,
+      apiAccessCount: access.apiAccess.length,
     },
     runtime,
     userMessages: {
@@ -534,6 +538,34 @@ router.delete("/approved-emails/:email", async (req, res) => {
     res
       .status(500)
       .json({ error: err instanceof Error ? err.message : "Failed to remove approved email" });
+  }
+});
+
+// ── POST /api-access ──────────────────────────────────────────────────────────
+// Grant an email Developer/API access (visibility of the Developer tab + the
+// ability to mint API keys). Admins always have access implicitly.
+router.post("/api-access", async (req, res) => {
+  try {
+    const body = req.body as { email?: unknown };
+    const email = typeof body.email === "string" ? body.email : "";
+    const result = await setApiAccessEmail(email);
+    res.json({ ok: true, ...result, access: listApprovedAccess() });
+  } catch (err) {
+    res
+      .status(400)
+      .json({ error: err instanceof Error ? err.message : "Failed to grant API access" });
+  }
+});
+
+// ── DELETE /api-access/:email ─────────────────────────────────────────────────
+router.delete("/api-access/:email", async (req, res) => {
+  try {
+    const result = await removeApiAccessEmail(String(req.params.email ?? ""));
+    res.json({ ok: true, ...result, access: listApprovedAccess() });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : "Failed to revoke API access" });
   }
 });
 

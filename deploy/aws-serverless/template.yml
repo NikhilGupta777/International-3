@@ -39,6 +39,23 @@ Parameters:
   AccessTable:
     Type: String
     Default: ""
+  ApiKeysTable:
+    Type: String
+    Default: ""
+    Description: "Optional dedicated DynamoDB table for API keys/webhooks. Leave empty to reuse AccessTable."
+  ApiAccessEmails:
+    Type: String
+    Default: ""
+    Description: "Comma-separated emails granted Developer/API-key access (admins always qualify)."
+  ApiKeyRateLimitPerMin:
+    Type: String
+    Default: "120"
+    Description: "Default per-API-key request rate limit (requests/minute)."
+  WebhookSigningSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: "HMAC secret for signing webhook callbacks. Falls back to SessionSecret when empty."
   AdminPanelEnabled:
     Type: String
     Default: "false"
@@ -270,6 +287,7 @@ Parameters:
 
 Conditions:
   UseAccessTable: !Not [!Equals [!Ref AccessTable, ""]]
+  UseApiKeysTable: !Not [!Equals [!Ref ApiKeysTable, ""]]
   UseCustomSiteBucket: !Not [!Equals [!Ref SiteBucketName, ""]]
   UseCustomDomain: !And
     - !Not [!Equals [!Ref SiteDomainName, ""]]
@@ -363,6 +381,10 @@ Resources:
                     - UseAccessTable
                     - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${AccessTable}"
                     - !Ref AWS::NoValue
+                  - !If
+                    - UseApiKeysTable
+                    - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${ApiKeysTable}"
+                    - !Ref AWS::NoValue
               - Effect: Allow
                 Action:
                   - batch:SubmitJob
@@ -446,6 +468,10 @@ Resources:
           APPROVED_USER_EMAILS: !Ref ApprovedUserEmails
           APPROVED_ADMIN_EMAILS: !Ref ApprovedAdminEmails
           ACCESS_TABLE: !Ref AccessTable
+          API_KEYS_TABLE: !Ref ApiKeysTable
+          API_ACCESS_EMAILS: !Ref ApiAccessEmails
+          API_KEY_RATE_LIMIT_PER_MIN: !Ref ApiKeyRateLimitPerMin
+          WEBHOOK_SIGNING_SECRET: !Ref WebhookSigningSecret
           ADMIN_PANEL_ENABLED: !Ref AdminPanelEnabled
           TRANSLATOR_ENABLED: !Ref TranslatorEnabled
           SUPER_AGENT_ENABLED: !Ref SuperAgentEnabled

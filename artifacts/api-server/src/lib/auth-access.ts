@@ -11,6 +11,9 @@ export type AuthRole = "admin" | "user";
 // backing store so that emails added via the admin panel survive Lambda restarts.
 const approvedUsers = parseCsvSet(process.env.APPROVED_USER_EMAILS);
 const approvedAdmins = parseCsvSet(process.env.APPROVED_ADMIN_EMAILS);
+// Emails (beyond admins) that an admin has granted Developer/API access to.
+// These users can see the Developer tab and mint API keys.
+const apiAccessEmails = parseCsvSet(process.env.API_ACCESS_EMAILS);
 
 function configured(value: string | undefined): string {
   return value?.trim() ?? "";
@@ -57,12 +60,14 @@ export function hydrateAllowlistFromDdb(): Promise<void> {
 
       const ddbUsers = parseSsList(item.users?.SS);
       const ddbAdmins = parseSsList(item.admins?.SS);
+      const ddbApiAccess = parseSsList(item.apiAccess?.SS);
 
       for (const e of ddbUsers) approvedUsers.add(e);
       for (const e of ddbAdmins) {
         approvedAdmins.add(e);
         approvedUsers.delete(e); // ensure no duplicates
       }
+      for (const e of ddbApiAccess) apiAccessEmails.add(e);
     } catch (err) {
       console.warn("[auth-access] Could not hydrate allowlist from DynamoDB:", err);
     }
@@ -77,6 +82,7 @@ async function persistAllowlistToDdb(): Promise<void> {
   try {
     const users = [...approvedUsers].sort();
     const admins = [...approvedAdmins].sort();
+    const apiAccess = [...apiAccessEmails].sort();
     await ddbClient.send(
       new PutItemCommand({
         TableName: ACCESS_TABLE,
@@ -85,6 +91,7 @@ async function persistAllowlistToDdb(): Promise<void> {
           sk: { S: ALLOWLIST_SK },
           users: users.length > 0 ? { SS: users } : { NULL: true },
           admins: admins.length > 0 ? { SS: admins } : { NULL: true },
+          apiAccess: apiAccess.length > 0 ? { SS: apiAccess } : { NULL: true },
           updatedAt: { N: String(Date.now()) },
         },
       }),
@@ -116,7 +123,39 @@ export function listApprovedAccess() {
   return {
     users: [...approvedUsers].sort(),
     admins: [...approvedAdmins].sort(),
+    apiAccess: [...apiAccessEmails].sort(),
   };
+}
+
+/**
+ * Whether an email may access the Developer tab and mint API keys.
+ * Admins always qualify; other emails must be explicitly granted by an admin.
+ */
+export function isApiAccessAllowed(email: string | undefined): boolean {
+  const normalized = normalizeEmail(email ?? "");
+  if (!normalized) return false;
+  if (approvedAdmins.has(normalized)) return true;
+  return apiAccessEmails.has(normalized);
+}
+
+export async function setApiAccessEmail(email: string): Promise<{ email: string }> {
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    throw new Error("Email is required");
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    throw new Error("Invalid email address");
+  }
+  apiAccessEmails.add(normalized);
+  await persistAllowlistToDdb();
+  return { email: normalized };
+}
+
+export async function removeApiAccessEmail(email: string): Promise<{ email: string; removed: boolean }> {
+  const normalized = normalizeEmail(email);
+  const removed = apiAccessEmails.delete(normalized);
+  await persistAllowlistToDdb();
+  return { email: normalized, removed };
 }
 
 export function isEmailApproved(email: string): { approved: boolean; role: AuthRole } {

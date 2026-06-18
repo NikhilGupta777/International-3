@@ -12,6 +12,7 @@ import {
   UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { logger } from "./logger";
+import { maybeFireJobWebhook, isTerminalStatus } from "./webhooks";
 
 type QueueJobType =
   | "download"
@@ -491,6 +492,10 @@ export async function updateYoutubeQueueLocalJob(
       ExpressionAttributeValues: values,
     }),
   );
+  // Fire a completion webhook if one is registered and this write is terminal.
+  if (fields.status && isTerminalStatus(fields.status)) {
+    void maybeFireJobWebhook(jobId, fields.status, { message: fields.message ?? null });
+  }
   return true;
 }
 

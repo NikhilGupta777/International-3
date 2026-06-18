@@ -3,13 +3,14 @@ import {
   Download, Sparkles, Captions, Scissors, Shield,
   ListVideo, AlarmClock, UploadCloud, Languages, Search, Menu, X,
   Home as HomeIcon, Activity, Settings, Image as ImageIcon, Clapperboard,
+  Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "settings";
+  | "upload" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "settings";
 
 interface NavItem {
   mode: Mode;
@@ -17,6 +18,21 @@ interface NavItem {
   label: string;
   badge?: string;
   tone?: "default" | "accent";
+}
+
+// Footer (utility) items shared by the rail, drawer, and NavList. Built from the
+// caller's permissions so Admin / Developer only appear when granted.
+function buildFootItems(opts: { showAdmin?: boolean; showDeveloper?: boolean }): NavItem[] {
+  const items: NavItem[] = [];
+  if (opts.showAdmin) {
+    items.push({ mode: "admin", icon: <Settings className="gs-icon" />, label: "Admin" });
+  }
+  if (opts.showDeveloper) {
+    items.push({ mode: "developer", icon: <Terminal className="gs-icon" />, label: "Developer" });
+  }
+  items.push({ mode: "activity", icon: <Activity className="gs-icon" />, label: "Activity" });
+  items.push({ mode: "settings", icon: <Settings className="gs-icon" />, label: "Settings" });
+  return items;
 }
 
 // Top "Super Agent" item — special, always pinned above the main list
@@ -93,6 +109,7 @@ function NavList({
   onNewChat,
   hideUtility,
   showAdmin,
+  showDeveloper,
   superAgentEnabled = true,
   translatorEnabled = true,
 }: {
@@ -102,26 +119,13 @@ function NavList({
   onNewChat?: () => void;
   hideUtility?: boolean;
   showAdmin?: boolean;
+  showDeveloper?: boolean;
   superAgentEnabled?: boolean;
   translatorEnabled?: boolean;
 }) {
   const handle = (m: Mode) => () => { onModeChange(m); onClose?.(); };
   const handleNew = () => { onNewChat?.(); onClose?.(); };
-  const settingsItem: NavItem = {
-    mode: "settings",
-    icon: <Settings className="gs-icon" />,
-    label: "Settings",
-  };
-  const utilityItems = showAdmin
-    ? [
-        { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
-        { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-        settingsItem,
-      ]
-    : [
-        { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-        settingsItem,
-      ];
+  const utilityItems = buildFootItems({ showAdmin, showDeveloper });
 
   return (
     <>
@@ -162,6 +166,7 @@ export function Sidebar({
   onModeChange,
   onNewChat,
   showAdmin = false,
+  showDeveloper = false,
   superAgentEnabled = true,
   translatorEnabled = true,
 }: {
@@ -169,6 +174,7 @@ export function Sidebar({
   onModeChange: (m: Mode) => void;
   onNewChat?: () => void;
   showAdmin?: boolean;
+  showDeveloper?: boolean;
   superAgentEnabled?: boolean;
   translatorEnabled?: boolean;
 }) {
@@ -199,6 +205,7 @@ export function Sidebar({
             onNewChat={onNewChat}
             hideUtility={true}
             showAdmin={showAdmin}
+            showDeveloper={showDeveloper}
             superAgentEnabled={superAgentEnabled}
             translatorEnabled={translatorEnabled}
 
@@ -207,17 +214,7 @@ export function Sidebar({
 
         {/* Bottom pinned utility items */}
         <div className="gs-rail-foot">
-          {(showAdmin
-            ? [
-                { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
-                { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
-              ]
-            : [
-                { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
-              ]
-          ).map((item) => (
+          {buildFootItems({ showAdmin, showDeveloper }).map((item) => (
             <GsItem
               key={item.mode}
               item={item}
@@ -268,6 +265,7 @@ export function Sidebar({
             onNewChat={onNewChat}
             hideUtility={true}
             showAdmin={showAdmin}
+            showDeveloper={showDeveloper}
             superAgentEnabled={superAgentEnabled}
             translatorEnabled={translatorEnabled}
 
@@ -275,17 +273,7 @@ export function Sidebar({
         </div>
 
         <div className="gs-drawer-foot">
-          {(showAdmin
-            ? [
-                { mode: "admin" as const, icon: <Settings className="gs-icon" />, label: "Admin" },
-                { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
-              ]
-            : [
-                { mode: "activity" as const, icon: <Activity className="gs-icon" />, label: "Activity" },
-                { mode: "settings" as const, icon: <Settings className="gs-icon" />, label: "Settings" },
-              ]
-          ).map((item) => (
+          {buildFootItems({ showAdmin, showDeveloper }).map((item) => (
             <GsItem
               key={item.mode}
               item={item}
