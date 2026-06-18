@@ -17,6 +17,7 @@ import {
   touchApiKeyUsage,
   enforceApiKeyLimits,
 } from "./lib/api-key-auth";
+import { INTERNAL_AGENT_SECRET } from "./lib/internal-agent";
 import { saveEmailSubmission } from "./lib/email-submissions";
 import { canUseSuperAgent, canUseTranslator, canUseTranslatorLipSync } from "./lib/admin-features";
 import {
@@ -536,10 +537,12 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
     next();
     return;
   }
-  // Internal server-to-server agent calls bypass cookie auth
-  const internalSecret = (process.env.INTERNAL_AGENT_SECRET ?? "").trim();
+  // Internal server-to-server agent calls bypass cookie auth. The secret is
+  // resolved once per process (env value, else a strong random) so it is always
+  // non-empty and never a publicly-known constant — see lib/internal-agent.ts.
+  const internalSecret = INTERNAL_AGENT_SECRET;
   const internalHeader = String(req.headers["x-internal-agent"] ?? "").trim();
-  if (internalSecret && internalHeader && secureEqual(internalHeader, internalSecret)) {
+  if (internalHeader && secureEqual(internalHeader, internalSecret)) {
     next();
     return;
   }

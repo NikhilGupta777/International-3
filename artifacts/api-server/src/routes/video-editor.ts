@@ -14,6 +14,7 @@ import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
 import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb } from "../lib/youtube-queue";
+import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 
 const VIDEO_EDITOR_QUEUE_ENABLED =
   (process.env.VIDEO_EDITOR_BATCH_ENABLED || "").toLowerCase() === "true";
@@ -2660,7 +2661,7 @@ function getVideoEditorApiBase(req: Request): string {
 }
 
 function buildVideoEditorInternalHeaders(req: Request): Record<string, string> {
-  const secret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const secret = INTERNAL_AGENT_SECRET;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Cookie: (req.headers.cookie as string) ?? "",

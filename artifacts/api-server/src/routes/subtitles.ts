@@ -15,6 +15,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
+import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
@@ -969,7 +970,7 @@ function getClientIp(req: Request): string {
 }
 
 function isInternalAgentRequest(req: Request): boolean {
-  const internalSecret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const internalSecret = INTERNAL_AGENT_SECRET;
   return req.headers["x-internal-agent"] === internalSecret;
 }
 
