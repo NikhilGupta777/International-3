@@ -7,6 +7,7 @@
 
 import crypto from "crypto";
 import type { Request, Response, NextFunction } from "express";
+import { INTERNAL_AGENT_SECRET } from "./internal-agent";
 
 export const PITAJI_COOKIE_NAME = "pitaji_auth";
 const PITAJI_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
@@ -114,8 +115,7 @@ export function verifyPitajiCredentials(username: string, password: string): boo
  * shared X-Internal-Agent header used elsewhere in the codebase.
  */
 export function requirePitajiAuth(req: Request, res: Response, next: NextFunction): void {
-  const internalSecret =
-    process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const internalSecret = INTERNAL_AGENT_SECRET;
   if (req.headers["x-internal-agent"] === internalSecret) {
     next();
     return;

@@ -15,6 +15,7 @@
 // Phase 2+ will append more endpoints to the same router.
 
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
+import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import {
   PITAJI_COOKIE_NAME,
   clearPitajiAuthCookie,
@@ -236,8 +237,7 @@ interface VideoMeta {
 async function fetchVideoMeta(youtubeUrl: string): Promise<VideoMeta> {
   const apiBase =
     (process.env.INTERNAL_API_BASE ?? "").replace(/\/+$/, "") + "/api";
-  const internalSecret =
-    process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const internalSecret = INTERNAL_AGENT_SECRET;
   const videoId = extractYoutubeVideoId(youtubeUrl) ?? "";
 
   if (!apiBase.startsWith("http")) {

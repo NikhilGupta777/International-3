@@ -599,7 +599,7 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `COPILOT_MAX_ITERATIONS` | | `24` | Max agent tool calls per turn |
 | `COPILOT_MAX_OUTPUT_TOKENS` | | `16384` | Max agent response tokens |
 | `INTERNAL_API_BASE` | | auto-detected | Base URL for agent's internal API calls (set by lambda-stream.ts) |
-| `INTERNAL_AGENT_SECRET` | | `internal-agent-bypass-key` | Header secret for server-to-server auth bypass |
+| `INTERNAL_AGENT_SECRET` | | auto-generated | Header secret for server-to-server auth bypass. Random per-process when unset (never a known default); set explicitly to share across processes |
 | `NOTEBOOKLM_ENABLED` | | `false` | Enable NotebookLM / Find Video feature |
 | `NOTEBOOKLM_NOTEBOOK_ID` | ✅ (notebook) | — | Target NotebookLM notebook ID |
 | `NOTEBOOKLM_AUTH_S3_KEY` | | — | S3 path to NotebookLM storage_state.json |

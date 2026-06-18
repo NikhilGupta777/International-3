@@ -6,6 +6,7 @@ import {
   type NextFunction,
 } from "express";
 import { setupSse } from "../lib/sse";
+import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
 import {
@@ -590,7 +591,7 @@ function getClientIp(req: Request): string {
 }
 
 function isInternalAgentRequest(req: Request): boolean {
-  const internalSecret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
+  const internalSecret = INTERNAL_AGENT_SECRET;
   return req.headers["x-internal-agent"] === internalSecret;
 }
 
