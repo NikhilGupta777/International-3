@@ -117,6 +117,71 @@ function Remove-RollbackCompleteStackIfNeeded {
   Assert-LastExitCode "cloudformation wait stack-delete-complete"
 }
 
+function Get-ExistingStackParameterMap {
+  param(
+    [string]$Region,
+    [string]$StackName
+  )
+
+  $map = @{}
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = "Continue"
+  try {
+    $describeOutput = aws cloudformation describe-stacks `
+      --region $Region `
+      --stack-name $StackName 2>$null
+    $describeExitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+
+  if ($describeExitCode -ne 0 -or -not $describeOutput) {
+    return $map
+  }
+
+  $describeJson = $describeOutput | ConvertFrom-Json
+  if (-not $describeJson -or -not $describeJson.Stacks -or $describeJson.Stacks.Count -eq 0) {
+    return $map
+  }
+
+  foreach ($parameter in $describeJson.Stacks[0].Parameters) {
+    $map[[string]$parameter.ParameterKey] = [string]$parameter.ParameterValue
+  }
+
+  return $map
+}
+
+function Remove-BlankExistingStackOverrides {
+  param(
+    [string[]]$Overrides,
+    [hashtable]$ExistingParams
+  )
+
+  if (-not $ExistingParams -or $ExistingParams.Count -eq 0) {
+    return $Overrides
+  }
+
+  $filtered = @()
+  foreach ($override in $Overrides) {
+    $parts = [string]$override -split "=", 2
+    if ($parts.Count -ne 2) {
+      $filtered += $override
+      continue
+    }
+
+    $key = $parts[0]
+    $value = $parts[1]
+    if ([string]::IsNullOrWhiteSpace($value) -and $ExistingParams.ContainsKey($key)) {
+      Write-Output "Preserving existing CloudFormation parameter because local override is blank: $key"
+      continue
+    }
+
+    $filtered += $override
+  }
+
+  return $filtered
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $templatePath = Join-Path $PSScriptRoot "template.yml"
 $envMap = Get-EnvMap -Path $EnvFilePath
@@ -128,6 +193,8 @@ if (-not $ImageTag) {
 if (-not $StackName) {
   $StackName = "$Prefix-serverless"
 }
+
+$existingStackParams = Get-ExistingStackParameterMap -Region $Region -StackName $StackName
 
 $resolvedImageUri = $ImageUri
 if (-not $SkipImageBuild) {
@@ -282,6 +349,10 @@ $parameterOverrides = @(
   "VapidPrivateKey=$(Get-OptionalEnv $envMap 'VAPID_PRIVATE_KEY')"
   "VapidSubject=$(Get-OptionalEnv $envMap 'VAPID_SUBJECT' 'mailto:ops@videomaking.in')"
 )
+
+$parameterOverrides = Remove-BlankExistingStackOverrides `
+  -Overrides $parameterOverrides `
+  -ExistingParams $existingStackParams
 
 Remove-RollbackCompleteStackIfNeeded -Region $Region -StackName $StackName
 
