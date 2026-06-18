@@ -1923,6 +1923,7 @@ function isInternalHost(hostname: string): boolean {
 }
 
 async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ title?: string; finalUrl: string; contentType: string; text: string }> {
+  const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB hard cap before text conversion
   const parsed = new URL(url);
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http/https URLs can be read.");
   if (isInternalHost(parsed.hostname)) throw new Error("Cannot read internal/private network URLs.");
@@ -1930,21 +1931,55 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
     const r = await fetch(parsed.toString(), {
-      redirect: "follow",
+      redirect: "manual",
       signal: controller.signal,
       headers: {
         "user-agent": "VideoMakingStudioAgent/1.0 (+https://videomaking.in)",
         accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
       },
     });
-    if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
-    const contentType = r.headers.get("content-type") ?? "";
-    const raw = await r.text();
+    let finalResponse = r;
+    let finalUrl = parsed.toString();
+    let hops = 0;
+    while (finalResponse.status >= 300 && finalResponse.status < 400 && hops < 5) {
+      const loc = finalResponse.headers.get("location");
+      if (!loc) break;
+      const nextUrl = new URL(loc, finalUrl);
+      if (!["http:", "https:"].includes(nextUrl.protocol)) throw new Error("Redirect to non-http(s) URL blocked.");
+      if (isInternalHost(nextUrl.hostname)) throw new Error("Redirect to internal/private network URL blocked.");
+      finalUrl = nextUrl.toString();
+      finalResponse = await fetch(finalUrl, {
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          "user-agent": "VideoMakingStudioAgent/1.0 (+https://videomaking.in)",
+          accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
+        },
+      });
+      hops++;
+    }
+    if (!finalResponse.ok && finalResponse.status >= 300) throw new Error(`Too many redirects or unresolved redirect (${finalResponse.status})`);
+    if (!finalResponse.ok) throw new Error(`Page fetch failed: HTTP ${finalResponse.status}`);
+    const contentType = finalResponse.headers.get("content-type") ?? "";
+
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    for await (const chunk of finalResponse.body as any) {
+      const c = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      totalBytes += c.byteLength;
+      if (totalBytes > MAX_BODY_BYTES) {
+        controller.abort();
+        break;
+      }
+      chunks.push(c);
+    }
+    const raw = Buffer.concat(chunks).toString("utf-8");
+
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
     const text = contentType.includes("html") ? htmlToReadableText(raw) : raw.trim();
     return {
       title,
-      finalUrl: r.url || parsed.toString(),
+      finalUrl: finalResponse.url || finalUrl,
       contentType,
       text: text.slice(0, Math.max(1000, Math.min(60000, maxChars))),
     };
@@ -3091,11 +3126,29 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isInternal = sourceUrl.startsWith("/");
+      const resolvedUrl = isInternal
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "follow" });
+      if (!isInternal) {
+        const parsedSource = new URL(resolvedUrl);
+        if (!["http:", "https:"].includes(parsedSource.protocol)) throw new Error("Only http/https URLs can be imported.");
+        if (isInternalHost(parsedSource.hostname)) throw new Error("Cannot import from internal/private network URLs.");
+      }
+
+      const r = await fetch(resolvedUrl, {
+        headers: isInternal ? { Cookie: req.headers.cookie ?? "" } : {},
+        redirect: isInternal ? "follow" : "manual",
+      });
+      if (!isInternal && r.status >= 300 && r.status < 400) {
+        const loc = r.headers.get("location");
+        if (loc) {
+          const redirHost = new URL(loc, resolvedUrl).hostname;
+          if (isInternalHost(redirHost)) throw new Error("Redirect to internal/private network URL blocked.");
+        }
+        throw new Error(`Redirect not followed for external URL (${r.status})`);
+      }
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
@@ -3104,11 +3157,18 @@ except Exception as exc:
         throw new Error(`source too large (${size} bytes)`);
       }
 
-      // Stream into a presigned PUT so we never buffer huge files through Lambda heap.
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.byteLength > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
-        throw new Error(`source too large (${buf.byteLength} bytes)`);
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      const maxBytes = WORKSPACE_LIMITS.MAX_FILE_BYTES;
+      for await (const chunk of r.body as any) {
+        const c = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        totalBytes += c.byteLength;
+        if (totalBytes > maxBytes) {
+          throw new Error(`source too large (exceeded ${maxBytes} bytes during download)`);
+        }
+        chunks.push(c);
       }
+      const buf = Buffer.concat(chunks, totalBytes);
       const presign = await ws.s3.presignPut(path, { size: buf.byteLength, contentType });
       const putRes = await fetch(presign.uploadUrl, {
         method: "PUT",
@@ -3165,6 +3225,9 @@ except Exception as exc:
 
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Downloading "${meta.name}" from Drive…` } as any);
       const { body, mimeType, size } = await driveDownload(driveFileId);
+      if (size && size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
+        throw new Error(`Drive file too large (${size} bytes, max ${WORKSPACE_LIMITS.MAX_FILE_BYTES})`);
+      }
 
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Saving to workspace at ${path}…` } as any);
       const presign = await ws.s3.presignPut(path, { size, contentType: mimeType });
