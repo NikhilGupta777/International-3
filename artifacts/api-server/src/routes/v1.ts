@@ -8,6 +8,7 @@ import {
   getPublicJob,
   type PublicJobResultKind,
 } from "../lib/public-jobs";
+import { sendApiError, apiErrorBody, isApiErrorBody } from "../lib/api-error";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API v1 — a clean, stable, documented surface over the studio services.
@@ -321,25 +322,66 @@ router.get("/", (req: Request, res: Response) => {
 });
 
 // ── OpenAPI document (self-contained; independent of the internal orval spec) ──
+
+// Proper JSON-schema types for known optional fields (so the spec isn't
+// all-strings). Anything not listed defaults to string.
+const FIELD_SCHEMA: Record<string, { type: string; items?: { type: string } }> = {
+  durations: { type: "array", items: { type: "number" } },
+  auto: { type: "boolean" },
+  audioOnly: { type: "boolean" },
+  voiceClone: { type: "boolean" },
+  lipSync: { type: "boolean" },
+};
+
+function exampleBodyFor(o: Operation): Record<string, unknown> {
+  const ex: Record<string, unknown> = {
+    url: o.input === "youtube" ? "https://www.youtube.com/watch?v=dQw4w9WgXcQ" : "https://example.com/video.mp4",
+  };
+  if (o.op === "clips") ex.durations = [30, 60];
+  if (o.op === "translate") {
+    ex.targetLang = "Hindi";
+    ex.targetLangCode = "hi";
+  }
+  if (o.op === "subtitles") ex.language = "auto";
+  ex.webhookUrl = "https://your-server.example.com/hooks/vms";
+  return ex;
+}
+
 router.get("/openapi.json", (req: Request, res: Response) => {
   const origin = `${req.protocol}://${req.get("host")}`;
   const paths: Record<string, unknown> = {};
+
+  const errorResponse = (description: string) => ({
+    description,
+    content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
+  });
+  const commonErrorResponses = {
+    "400": errorResponse("Invalid request"),
+    "401": errorResponse("Missing/invalid API key"),
+    "403": errorResponse("API key not permitted (scope)"),
+    "429": errorResponse("Rate limit or monthly quota exceeded"),
+  };
+
   for (const o of OPERATIONS) {
     const props: Record<string, unknown> = {
       url: { type: "string", description: o.input === "youtube" ? "YouTube URL" : "Public media URL" },
     };
-    for (const [k, v] of Object.entries(o.fields ?? {})) props[k] = { type: "string", description: v };
+    for (const [k, v] of Object.entries(o.fields ?? {})) {
+      props[k] = { ...(FIELD_SCHEMA[k] ?? { type: "string" }), description: v };
+    }
     props.webhookUrl = { type: "string", description: "Optional https URL for an HMAC-signed completion callback" };
     paths[`/api/v1/${o.op}`] = {
       post: {
         operationId: `v1_${o.op.replace(/-/g, "_")}`,
         summary: o.summary,
+        tags: ["operations"],
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
           content: {
             "application/json": {
               schema: { type: "object", required: ["url"], properties: props },
+              examples: { default: { value: exampleBodyFor(o) } },
             },
           },
         },
@@ -348,54 +390,177 @@ router.get("/openapi.json", (req: Request, res: Response) => {
             description: "Job accepted",
             content: {
               "application/json": {
-                schema: {
-                  type: "object",
-                  properties: {
-                    jobId: { type: "string" },
-                    status: { type: "string" },
-                    statusUrl: { type: "string" },
-                    eventsUrl: { type: "string" },
-                    cancelUrl: { type: "string", nullable: true },
-                    webhookRegistered: { type: "boolean" },
+                schema: { $ref: "#/components/schemas/JobAccepted" },
+                examples: {
+                  default: {
+                    value: {
+                      jobId: "a1b2c3d4",
+                      status: "queued",
+                      rawStatus: "queued",
+                      statusUrl: `${origin}/api/v1/jobs/a1b2c3d4`,
+                      eventsUrl: `${origin}/api/v1/jobs/a1b2c3d4/events`,
+                      cancelUrl: o.cancelUrl ? `${origin}/api/v1/jobs/a1b2c3d4/cancel` : null,
+                      webhookRegistered: false,
+                    },
                   },
                 },
               },
             },
           },
+          ...commonErrorResponses,
         },
       },
     };
   }
+
   paths["/api/v1/jobs/{jobId}"] = {
     get: {
       operationId: "v1_job_status",
       summary: "Get the status of a job.",
+      tags: ["jobs"],
       security: [{ bearerAuth: [] }],
       parameters: [{ name: "jobId", in: "path", required: true, schema: { type: "string" } }],
-      responses: { "200": { description: "Job status" }, "404": { description: "Not found" } },
+      responses: {
+        "200": {
+          description: "Job status",
+          content: { "application/json": { schema: { $ref: "#/components/schemas/JobStatus" } } },
+        },
+        "404": errorResponse("Job not found"),
+      },
+    },
+  };
+  paths["/api/v1/jobs/{jobId}/events"] = {
+    get: {
+      operationId: "v1_job_events",
+      summary: "Server-Sent Events stream of job progress (emits 'status' then 'done').",
+      tags: ["jobs"],
+      security: [{ bearerAuth: [] }],
+      parameters: [{ name: "jobId", in: "path", required: true, schema: { type: "string" } }],
+      responses: {
+        "200": { description: "text/event-stream of status/done events", content: { "text/event-stream": {} } },
+        "404": errorResponse("Job not found"),
+      },
     },
   };
   paths["/api/v1/jobs/{jobId}/cancel"] = {
     post: {
       operationId: "v1_job_cancel",
       summary: "Cancel a running job (when the operation supports it).",
+      tags: ["jobs"],
       security: [{ bearerAuth: [] }],
       parameters: [{ name: "jobId", in: "path", required: true, schema: { type: "string" } }],
       responses: {
-        "200": { description: "Cancellation requested" },
-        "400": { description: "Operation not cancellable" },
-        "404": { description: "Not found" },
+        "200": {
+          description: "Cancellation requested",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  jobId: { type: "string" },
+                  op: { type: "string" },
+                  cancelled: { type: "boolean" },
+                  detail: { type: "object", nullable: true, additionalProperties: true },
+                },
+              },
+            },
+          },
+        },
+        "400": errorResponse("Operation not cancellable"),
+        "404": errorResponse("Job not found"),
       },
     },
   };
 
+  const statusEnum = ["pending", "queued", "running", "done", "error", "cancelled", "expired"];
+
   res.json({
     openapi: "3.1.0",
-    info: { title: "VideoMaking Studio API", version: "1.0.0", description: "Programmatic access to all studio services via a single API key." },
+    info: {
+      title: "VideoMaking Studio API",
+      version: "1.0.0",
+      description:
+        "Programmatic access to all studio services via a single API key. " +
+        "Every operation is asynchronous: POST to start a job, then poll the statusUrl, " +
+        "subscribe to the eventsUrl (SSE), or register a webhook.",
+    },
     servers: [{ url: origin }],
+    tags: [
+      { name: "operations", description: "Start jobs" },
+      { name: "jobs", description: "Track, stream, and cancel jobs" },
+    ],
     components: {
       securitySchemes: {
         bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "vms_live_*" },
+      },
+      schemas: {
+        Error: {
+          type: "object",
+          required: ["error"],
+          properties: {
+            error: {
+              type: "object",
+              required: ["code", "message", "retryable"],
+              properties: {
+                code: { type: "string", description: "Stable machine-readable error code", example: "RATE_LIMIT_EXCEEDED" },
+                message: { type: "string" },
+                retryable: { type: "boolean" },
+                retryAfterSec: { type: "integer", nullable: true },
+                details: { type: "object", nullable: true, additionalProperties: true },
+              },
+            },
+          },
+        },
+        JobAccepted: {
+          type: "object",
+          required: ["jobId", "status", "statusUrl", "eventsUrl"],
+          properties: {
+            jobId: { type: "string" },
+            status: { type: "string", enum: statusEnum },
+            rawStatus: { type: "string", description: "Original service status before normalization" },
+            statusUrl: { type: "string" },
+            eventsUrl: { type: "string" },
+            cancelUrl: { type: "string", nullable: true },
+            webhookRegistered: { type: "boolean" },
+          },
+        },
+        JobStatus: {
+          type: "object",
+          required: ["jobId", "status", "terminal", "succeeded", "failed"],
+          properties: {
+            jobId: { type: "string" },
+            op: { type: "string", nullable: true },
+            status: { type: "string", enum: statusEnum },
+            rawStatus: { type: "string" },
+            terminal: { type: "boolean" },
+            succeeded: { type: "boolean" },
+            failed: { type: "boolean" },
+            ready: { type: "boolean", description: "Alias of `terminal` (back-compat)" },
+            message: { type: "string", nullable: true },
+            progressPct: { type: "number", nullable: true },
+            result: {
+              type: "object",
+              nullable: true,
+              description: "Present only on success; shape depends on the operation.",
+              properties: { type: { type: "string", enum: ["file", "clips", "chapters", "subtitles", "translation"] } },
+              additionalProperties: true,
+            },
+            statusUrl: { type: "string" },
+            eventsUrl: { type: "string" },
+            cancelUrl: { type: "string", nullable: true },
+          },
+        },
+        WebhookEvent: {
+          type: "object",
+          description: "POSTed to your webhookUrl on completion; signed via X-VMS-Signature.",
+          properties: {
+            jobId: { type: "string" },
+            status: { type: "string", enum: statusEnum },
+            message: { type: "string", nullable: true },
+            ready: { type: "boolean" },
+            timestamp: { type: "integer", description: "epoch ms" },
+          },
+        },
       },
     },
     security: [{ bearerAuth: [] }],
@@ -407,7 +572,7 @@ router.get("/openapi.json", (req: Request, res: Response) => {
 router.get("/jobs/:jobId", async (req: Request, res: Response) => {
   const jobId = String(req.params.jobId ?? "").trim();
   if (!jobId) {
-    res.status(400).json({ error: "jobId is required" });
+    sendApiError(res, 400, "INVALID_REQUEST", "jobId is required.");
     return;
   }
   try {
@@ -417,7 +582,7 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
       // Ownership: a key may only read its own jobs (don't leak others' jobIds).
       const keyId = requestingKeyId(res);
       if (reg.ownerKeyId && keyId && reg.ownerKeyId !== keyId) {
-        res.status(404).json({ error: "Job not found" });
+        sendApiError(res, 404, "JOB_NOT_FOUND", "Job not found.");
         return;
       }
       const op = OP_BY_NAME.get(reg.op);
@@ -429,7 +594,7 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
     // Fallback: shared YouTube job table (jobs created outside the v1 surface).
     const status = await getJobStatusFromDdb(jobId);
     if (!status) {
-      res.status(404).json({ error: "Job not found." });
+      sendApiError(res, 404, "JOB_NOT_FOUND", "Job not found.");
       return;
     }
     const canonical = canonicalStatus(status.status);
@@ -454,7 +619,7 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
       cancelUrl: `${origin}/api/v1/jobs/${jobId}/cancel`,
     });
   } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to fetch job status" });
+    sendApiError(res, 500, "INTERNAL_ERROR", err instanceof Error ? err.message : "Failed to fetch job status", { retryable: true });
   }
 });
 
@@ -462,22 +627,22 @@ router.get("/jobs/:jobId", async (req: Request, res: Response) => {
 router.post("/jobs/:jobId/cancel", async (req: Request, res: Response) => {
   const jobId = String(req.params.jobId ?? "").trim();
   if (!jobId) {
-    res.status(400).json({ error: "jobId is required" });
+    sendApiError(res, 400, "INVALID_REQUEST", "jobId is required.");
     return;
   }
   try {
     const reg = await getPublicJob(jobId);
     if (!reg) {
-      res.status(404).json({ error: "Job not found" });
+      sendApiError(res, 404, "JOB_NOT_FOUND", "Job not found.");
       return;
     }
     const keyId = requestingKeyId(res);
     if (reg.ownerKeyId && keyId && reg.ownerKeyId !== keyId) {
-      res.status(404).json({ error: "Job not found" });
+      sendApiError(res, 404, "JOB_NOT_FOUND", "Job not found.");
       return;
     }
     if (!reg.cancelPath) {
-      res.status(400).json({ error: `Operation '${reg.op}' does not support cancellation` });
+      sendApiError(res, 400, "NOT_CANCELLABLE", `Operation '${reg.op}' does not support cancellation.`);
       return;
     }
     const { ok, status, json } = await internalCall(req, reg.cancelPath, "POST", ownerClientId(reg.ownerKeyId));
@@ -488,7 +653,7 @@ router.post("/jobs/:jobId/cancel", async (req: Request, res: Response) => {
       detail: json ?? null,
     });
   } catch (err) {
-    res.status(500).json({ error: err instanceof Error ? err.message : "Failed to cancel job" });
+    sendApiError(res, 500, "INTERNAL_ERROR", err instanceof Error ? err.message : "Failed to cancel job", { retryable: true });
   }
 });
 
@@ -496,7 +661,7 @@ router.post("/jobs/:jobId/cancel", async (req: Request, res: Response) => {
 router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
   const jobId = String(req.params.jobId ?? "").trim();
   if (!jobId) {
-    res.status(400).json({ error: "jobId is required" });
+    sendApiError(res, 400, "INVALID_REQUEST", "jobId is required.");
     return;
   }
 
@@ -505,7 +670,7 @@ router.get("/jobs/:jobId/events", async (req: Request, res: Response) => {
   if (reg && reg.ownerKeyId) {
     const keyId = requestingKeyId(res);
     if (keyId && reg.ownerKeyId !== keyId) {
-      res.status(404).json({ error: "Job not found" });
+      sendApiError(res, 404, "JOB_NOT_FOUND", "Job not found.");
       return;
     }
   }
@@ -646,6 +811,28 @@ function registerAlias(o: Operation) {
           })();
           return res as Response;
         }
+      }
+      // Wrap upstream (canonical handler) error responses in the structured
+      // envelope so clients see one consistent error shape across v1.
+      if (res.statusCode >= 400 && payload && typeof payload === "object" && !isApiErrorBody(payload)) {
+        const p = payload as Record<string, unknown>;
+        const message =
+          (typeof p.error === "string" && p.error) ||
+          (typeof p.message === "string" && p.message) ||
+          "Request failed.";
+        const code =
+          res.statusCode === 400
+            ? "UPSTREAM_VALIDATION"
+            : res.statusCode === 404
+              ? "NOT_FOUND"
+              : res.statusCode === 429
+                ? "RATE_LIMIT_EXCEEDED"
+                : res.statusCode >= 500
+                  ? "UPSTREAM_ERROR"
+                  : "REQUEST_FAILED";
+        return originalJson(
+          apiErrorBody(code, String(message), { retryable: res.statusCode >= 500 || res.statusCode === 429 }),
+        );
       }
       return originalJson(payload as any);
     }) as Response["json"];

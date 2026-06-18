@@ -44,7 +44,10 @@ Security behavior:
 - The server stores only a SHA-256 hash and a short display prefix.
 - Revoked or expired keys stop working after the verification cache refreshes
   (about 60 seconds).
-- API keys cannot access `/api/admin` or `/api/keys`.
+- API keys are confined to public services only. Internal routes
+  (`/api/admin`, `/api/keys`, `/api/workspace`, `/api/video-editor`,
+  `/api/ops`, `/api/notebook`, `/api/pitaji`, `/api/notifications`) are blocked
+  for every key, including `*`.
 - A key scopes requests to its own client identity, so jobs and outputs are
   isolated per key.
 
@@ -97,15 +100,16 @@ normalized job envelope.
 
 Most operations are asynchronous.
 
-Create response:
+Create response (only stable v1 URLs are returned):
 
 ```json
 {
   "jobId": "04406909-8820-4cb6-8c7e-547ac51b6938",
   "status": "queued",
-  "statusUrl": "/api/youtube/progress/04406909-8820-4cb6-8c7e-547ac51b6938",
-  "streamUrl": "/api/youtube/progress/stream/04406909-8820-4cb6-8c7e-547ac51b6938",
-  "eventsUrl": "/api/v1/jobs/04406909-8820-4cb6-8c7e-547ac51b6938/events",
+  "rawStatus": "queued",
+  "statusUrl": "https://videomaking.in/api/v1/jobs/04406909-8820-4cb6-8c7e-547ac51b6938",
+  "eventsUrl": "https://videomaking.in/api/v1/jobs/04406909-8820-4cb6-8c7e-547ac51b6938/events",
+  "cancelUrl": "https://videomaking.in/api/v1/jobs/04406909-8820-4cb6-8c7e-547ac51b6938/cancel",
   "webhookRegistered": false
 }
 ```
@@ -113,42 +117,60 @@ Create response:
 Recommended client behavior:
 
 1. Create a job.
-2. Store `jobId`.
+2. Store `jobId` (or the returned `statusUrl`).
 3. Poll `GET /api/v1/jobs/{jobId}` every 5-10 seconds, or listen to
-   `GET /api/v1/jobs/{jobId}/events`.
-4. Stop when status is terminal.
-5. If successful, download the result from the returned file/result URL.
+   `GET /api/v1/jobs/{jobId}/events` (SSE). Both work for every operation.
+4. Stop when `terminal` is true.
+5. If `succeeded`, read the `result` object.
 
-Observed statuses:
+Public status enum (the raw worker status is preserved under `rawStatus`):
 
 | Status | Meaning |
 | --- | --- |
 | `pending` | Accepted but not started. |
 | `queued` | Submitted to a queue or worker. |
-| `running` | Worker is active. |
-| `downloading` | YouTube/media download or clip extraction is active. |
-| `generating` | AI or subtitle generation is active. |
-| `translating` | Translation or dubbing is active. |
-| `done` / `DONE` | Completed successfully. |
-| `error` / `failed` / `FAILED` | Terminal failure. |
-| `cancelled` / `CANCELLED` | Cancelled by user or worker. |
-| `expired` / `EXPIRED` | Terminal expiry state. |
+| `running` | Work is in progress (download / generate / translate). |
+| `done` | Completed successfully (`succeeded: true`). |
+| `error` | Terminal failure (`failed: true`). |
+| `cancelled` | Cancelled by a user or worker. |
+| `expired` | Terminal expiry state. |
 
 Status response:
 
 ```json
 {
   "jobId": "JOB_ID",
-  "status": "downloading",
+  "op": "clip-cut",
+  "status": "running",
+  "rawStatus": "downloading",
+  "terminal": false,
+  "succeeded": false,
+  "failed": false,
+  "ready": false,
   "message": "Cutting selected section...",
   "progressPct": 5,
-  "ready": false,
-  "resultUrl": null
+  "result": null,
+  "statusUrl": "https://videomaking.in/api/v1/jobs/JOB_ID",
+  "eventsUrl": "https://videomaking.in/api/v1/jobs/JOB_ID/events",
+  "cancelUrl": "https://videomaking.in/api/v1/jobs/JOB_ID/cancel"
 }
 ```
 
-Note: the current implementation uses `ready` to mean terminal in the unified
-`/api/v1/jobs/{jobId}` response. Check `status` before assuming success.
+`result` is populated only when `succeeded` is true. Its shape depends on the
+operation: `{ type: "file", url }` for download/clip-cut, or
+`clips` / `chapters` / `subtitles` / `translation` payloads for the others.
+`ready` is kept as a back-compat alias of `terminal`.
+
+## Cancel a job
+
+```http
+POST /api/v1/jobs/{jobId}/cancel
+Authorization: Bearer vms_live_YOUR_KEY
+```
+
+Routes to the correct backend. Operations that do not support cancellation
+(e.g. timestamps) return `400 NOT_CANCELLABLE`. The create response advertises
+`cancelUrl` (null when unsupported).
 
 ## Best clips
 
@@ -388,8 +410,9 @@ Events:
 - `status`: progress update.
 - `done`: terminal status reached.
 
-The SSE endpoint polls the shared job table and has a 15-minute connection cap.
-Reconnect or fall back to polling for longer jobs.
+The SSE endpoint resolves the job's backend and polls its status (works for
+every operation) with a 15-minute connection cap. Reconnect or fall back to
+polling for longer jobs.
 
 ## Webhooks
 
@@ -444,30 +467,50 @@ and comparing it to the value after `sha256=`.
 
 ## Errors
 
-Typical error responses:
+Every v1 error uses one structured shape with a stable machine-readable `code`
+and a `retryable` flag:
 
 ```json
-{ "error": "Invalid or revoked API key" }
+{
+  "error": {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "Rate limit exceeded for this API key.",
+    "retryable": true,
+    "retryAfterSec": 42
+  }
+}
 ```
 
-```json
-{ "error": "API key is not permitted to access this resource" }
-```
-
-```json
-{ "error": "url is required" }
-```
+A failed job is not an HTTP error — poll/SSE returns `status: "error"` with
+`failed: true`:
 
 ```json
 {
   "jobId": "JOB_ID",
   "status": "error",
-  "message": "Clip cut failed after 3 attempts: YouTube is not sending video data to our server right now.",
-  "progressPct": 0,
+  "rawStatus": "failed",
+  "terminal": true,
+  "succeeded": false,
+  "failed": true,
   "ready": true,
-  "resultUrl": null
+  "message": "Clip cut failed: YouTube is not sending video data right now.",
+  "result": null
 }
 ```
+
+Error codes:
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_API_KEY` | Missing, malformed, or revoked key (401). |
+| `FORBIDDEN_SCOPE` | Key lacks the scope for this route (403). |
+| `RATE_LIMIT_EXCEEDED` | Per-minute limit hit; see `Retry-After` (429, retryable). |
+| `MONTHLY_QUOTA_EXCEEDED` | Monthly request quota reached (429). |
+| `INVALID_REQUEST` | Bad parameters (400). |
+| `JOB_NOT_FOUND` | Unknown jobId, or not owned by this key (404). |
+| `NOT_CANCELLABLE` | The operation does not support cancellation (400). |
+| `UPSTREAM_VALIDATION` | The underlying service rejected the input (400). |
+| `UPSTREAM_ERROR` / `INTERNAL_ERROR` | Server-side failure (5xx, retryable). |
 
 HTTP status codes:
 
@@ -478,14 +521,21 @@ HTTP status codes:
 | `401` | Missing, invalid, revoked, or expired key. |
 | `403` | Key scope does not allow the service. |
 | `404` | Job or output not found. |
-| `409` | Duplicate/conflicting job ID in service-specific flows. |
-| `413` | Upload too large in upload flows. |
 | `429` | Rate limit or quota exceeded. |
 | `500` | Server-side failure. |
 | `502` | Upstream worker, AI, queue, or media-processing failure. |
 | `503` | Required service configuration missing. |
 
 ## Limits and quotas
+
+Every key-authenticated response carries rate-limit headers:
+
+| Header | Meaning |
+| --- | --- |
+| `X-RateLimit-Limit` | Requests allowed per minute for this key. |
+| `X-RateLimit-Remaining` | Requests left in the current window. |
+| `X-RateLimit-Reset` | Epoch seconds when the window resets. |
+| `Retry-After` | Seconds to wait before retrying (sent on 429). |
 
 Defaults are configured by deployment:
 
@@ -494,7 +544,8 @@ Defaults are configured by deployment:
 - A key may have a custom `rateLimitPerMin`.
 - A key may have a monthly quota.
 - Usage is tracked per calendar month and lifetime total.
-- On rate-limit failure, the server may return `Retry-After`.
+- Limits are enforced per server instance (best-effort), so brief bursts may
+  exceed the nominal limit under high concurrency.
 
 YouTube clip-cut constraints:
 
@@ -517,23 +568,37 @@ Full-access keys use:
 ["*"]
 ```
 
-Service scopes are matched by the first path segment after `/api`.
-
-Examples:
+`*` grants every **public** service segment. Scopes are validated at key
+creation — unknown scopes are rejected. The assignable catalog
+(`GET /api/keys/scopes`):
 
 | Scope | Allows |
 | --- | --- |
-| `youtube` | `/api/youtube/...` and v1 operations forwarded to YouTube routes |
-| `subtitles` | `/api/subtitles/...` |
-| `translator` | `/api/translator/...` |
-| `timestamps` | `/api/youtube/timestamps...` via canonical YouTube path |
-| `uploads` | `/api/uploads/...` |
-| `agent` | `/api/agent/...` |
+| `youtube` | All YouTube operations |
+| `youtube:download` | `/api/youtube/download` only |
+| `youtube:clip-cut` | `/api/youtube/clip-cut` only |
+| `youtube:clips` | best-clips only |
+| `youtube:timestamps` | chapter/timestamp generation only |
+| `youtube:info` | metadata only |
+| `subtitles` / `subtitles:create` | `/api/subtitles/...` |
+| `translator` / `translator:create` | `/api/translator/...` |
+| `uploads` / `uploads:create` | `/api/uploads/...` |
 | `thumbnail` | `/api/thumbnail/...` |
+| `agent` | `/api/agent/...` |
 | `bhagwat` | `/api/bhagwat/...` |
 
-Forbidden regardless of scope:
+Granular YouTube create-scopes are enforced individually; shared operations
+(cancel / file / stream / status) are available to any `youtube` scope so a
+narrow key can still manage and download its own jobs.
 
+Blocked for **every** key, including `*` (hard allowlist boundary):
+
+- `/api/workspace/...`
+- `/api/video-editor/...`
+- `/api/ops/...`
+- `/api/notebook/...`
+- `/api/pitaji/...`
+- `/api/notifications/...`
 - `/api/admin/...`
 - `/api/keys/...`
 
@@ -563,8 +628,9 @@ POST /api/uploads/complete
 GET  /api/uploads/file/{fileId}
 ```
 
-Current gap: there is no stable `/api/v1/jobs/{jobId}/cancel` endpoint. Cancel
-exists on canonical service routes for YouTube, subtitles, and translator jobs.
+Cancellation: `POST /api/v1/jobs/{jobId}/cancel` routes to the correct backend
+(returns `400 NOT_CANCELLABLE` for operations that don't support it, e.g.
+timestamps).
 
 ## Node.js example
 
@@ -587,24 +653,23 @@ async function createClipCut() {
   });
 
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  return res.json(); // { jobId, statusUrl, ... }
 }
 
-async function pollJob(jobId) {
+async function pollJob(statusUrl) {
   while (true) {
-    const res = await fetch(`https://videomaking.in/api/v1/jobs/${jobId}`, {
+    const res = await fetch(statusUrl, {
       headers: { Authorization: `Bearer ${API_KEY}` },
     });
     const job = await res.json();
-    if (["done", "DONE", "error", "failed", "FAILED", "cancelled", "CANCELLED", "expired", "EXPIRED"].includes(job.status)) {
-      return job;
-    }
+    if (job.terminal) return job; // succeeded / failed are set
     await new Promise((resolve) => setTimeout(resolve, 8000));
   }
 }
 
 const created = await createClipCut();
-console.log(await pollJob(created.jobId));
+const job = await pollJob(created.statusUrl);
+console.log(job.succeeded ? job.result : job.message);
 ```
 
 ## Python example
@@ -634,18 +699,14 @@ created = requests.post(
     timeout=60,
 )
 created.raise_for_status()
-job_id = created.json()["jobId"]
+status_url = created.json()["statusUrl"]
 
 while True:
-    status = requests.get(
-        f"{BASE}/api/v1/jobs/{job_id}",
-        headers={"Authorization": f"Bearer {API_KEY}"},
-        timeout=30,
-    )
+    status = requests.get(status_url, headers={"Authorization": f"Bearer {API_KEY}"}, timeout=30)
     status.raise_for_status()
     job = status.json()
-    print(job)
-    if job["status"] in {"done", "DONE", "error", "failed", "FAILED", "cancelled", "CANCELLED", "expired", "EXPIRED"}:
+    if job["terminal"]:
+        print(job["result"] if job["succeeded"] else job["message"])
         break
     time.sleep(8)
 ```
@@ -655,12 +716,14 @@ while True:
 - YouTube routes depend on reliable server-side YouTube access. Some videos may
   fail when YouTube does not provide video data to the server. Production should
   keep cookies, PO-token provider, or proxy configuration healthy.
-- `/api/v1/jobs/{jobId}` reads from the shared job table. Some inline/in-memory
-  jobs may only be visible through the operation-specific `statusUrl` returned
-  at creation.
-- `statusUrl` and `streamUrl` currently may point to canonical service routes
-  such as `/api/youtube/progress/{jobId}`. `eventsUrl` stays under `/api/v1`.
-- `ready: true` does not always mean success. Always check `status`.
+- `/api/v1/jobs/{jobId}` and `/events` work for every operation via the public
+  job registry; older jobs created outside `/api/v1` fall back to the shared
+  job table.
+- The create envelope and status responses return absolute `/api/v1` URLs only
+  (`statusUrl`, `eventsUrl`, `cancelUrl`) — internal service routes are never
+  exposed.
+- Prefer the `terminal` / `succeeded` / `failed` booleans. `ready` is a
+  back-compat alias of `terminal`.
 - API-key rate limiting is in-memory per running server instance, while usage
   counters are flushed to DynamoDB periodically.
 

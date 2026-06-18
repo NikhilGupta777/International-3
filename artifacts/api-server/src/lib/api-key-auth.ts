@@ -464,13 +464,22 @@ export interface LimitDecision {
   allowed: boolean;
   status?: number;
   error?: string;
+  code?: string; // machine-readable: RATE_LIMIT_EXCEEDED | MONTHLY_QUOTA_EXCEEDED
   retryAfterSec?: number;
+  /** requests/min ceiling for this key */
+  limit: number;
+  /** requests remaining in the current window */
+  remaining: number;
+  /** epoch seconds when the current rate window resets */
+  resetEpochSec: number;
 }
 
 /**
  * Enforce per-key rate limit + monthly quota and record one unit of usage.
  * Call exactly once per externally-initiated request (skip on in-process
  * re-dispatch). Synchronous decision; persistence is flushed asynchronously.
+ * Always returns limit/remaining/resetEpochSec so the caller can emit
+ * X-RateLimit-* headers regardless of the outcome.
  */
 export function enforceApiKeyLimits(record: ApiKeyRecord): LimitDecision {
   const keyId = record.keyId;
@@ -479,19 +488,28 @@ export function enforceApiKeyLimits(record: ApiKeyRecord): LimitDecision {
   // 1) Rate limit (requests per minute)
   const max = record.rateLimitPerMin && record.rateLimitPerMin > 0 ? record.rateLimitPerMin : DEFAULT_RATE_LIMIT_PER_MIN;
   const now = Date.now();
-  const win = keyRateWindows.get(keyId);
+  let win = keyRateWindows.get(keyId);
   if (!win || now >= win.resetAt) {
-    keyRateWindows.set(keyId, { count: 1, resetAt: now + RATE_WINDOW_MS });
+    win = { count: 1, resetAt: now + RATE_WINDOW_MS };
+    keyRateWindows.set(keyId, win);
   } else if (win.count >= max) {
+    const retryAfterSec = Math.max(1, Math.ceil((win.resetAt - now) / 1000));
     return {
       allowed: false,
       status: 429,
+      code: "RATE_LIMIT_EXCEEDED",
       error: "Rate limit exceeded for this API key.",
-      retryAfterSec: Math.max(1, Math.ceil((win.resetAt - now) / 1000)),
+      retryAfterSec,
+      limit: max,
+      remaining: 0,
+      resetEpochSec: Math.ceil(win.resetAt / 1000),
     };
   } else {
     win.count += 1;
   }
+
+  const remaining = Math.max(0, max - win.count);
+  const resetEpochSec = Math.ceil(win.resetAt / 1000);
 
   // 2) Monthly quota
   if (record.monthlyQuota && record.monthlyQuota > 0) {
@@ -500,14 +518,18 @@ export function enforceApiKeyLimits(record: ApiKeyRecord): LimitDecision {
       return {
         allowed: false,
         status: 429,
+        code: "MONTHLY_QUOTA_EXCEEDED",
         error: "Monthly quota exceeded for this API key.",
+        limit: max,
+        remaining,
+        resetEpochSec,
       };
     }
   }
 
   // 3) Record usage (deferred persistence)
   pendingUsage.set(keyId, (pendingUsage.get(keyId) ?? 0) + 1);
-  return { allowed: true };
+  return { allowed: true, limit: max, remaining, resetEpochSec };
 }
 
 async function flushUsage(): Promise<void> {
