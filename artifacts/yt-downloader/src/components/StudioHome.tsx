@@ -184,7 +184,7 @@ export function StudioHome({
     return () => document.removeEventListener("mousedown", handler);
   }, [showPlusMenu]);
 
-  const uploadFile = async (file: File) => {
+  const uploadFileInternal = async (file: File) => {
     // Client-side guard: single-part upload limit is 50 MB
     const MAX_SINGLE_MB = 50;
     if (file.size > MAX_SINGLE_MB * 1024 * 1024) {
@@ -196,7 +196,6 @@ export function StudioHome({
       return;
     }
     try {
-      setActiveUploads(count => count + 1);
       const res = await fetch(`${BASE}/api/uploads/presign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -215,8 +214,24 @@ export function StudioHome({
       toast({ title: "File attached ✓", description: `${file.name} added to your message.` });
     } catch (err: any) {
       toast({ title: "Attachment failed", description: err.message, variant: "destructive" });
+    }
+  };
+
+  const uploadFiles = async (files: File[]) => {
+    if (!files.length) return;
+    setActiveUploads(count => count + files.length);
+    try {
+      for (const file of files) {
+        try {
+          await uploadFileInternal(file);
+        } catch (err: any) {
+          toast({ title: "Attachment failed", description: err.message, variant: "destructive" });
+        } finally {
+          setActiveUploads(count => Math.max(0, count - 1));
+        }
+      }
     } finally {
-      setActiveUploads(count => Math.max(0, count - 1));
+      resizeTextarea();
     }
   };
 
@@ -224,7 +239,7 @@ export function StudioHome({
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
     try {
-      for (const file of files) await uploadFile(file);
+      await uploadFiles(files);
     } finally {
       // Always reset the input — without this, picking the same file twice
       // in a row silently no-ops because `change` doesn't fire on identical values.
@@ -252,7 +267,7 @@ export function StudioHome({
     const named = rawFile.name && rawFile.name !== "image.png"
       ? rawFile
       : new File([rawFile], `pasted-image-${Date.now()}.${ext}`, { type: imageItem.type });
-    await uploadFile(named);
+    await uploadFiles([named]);
   };
 
   /* ── Animated background orbs (canvas) ──────────────────────── */
