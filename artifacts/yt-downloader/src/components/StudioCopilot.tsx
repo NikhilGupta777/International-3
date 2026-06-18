@@ -703,7 +703,6 @@ function renderMd(text: string, sources?: Array<{ title: string; uri: string }>)
 
 // ── Streaming markdown renderer — keeps markdown formatting, animates trailing words ──
 function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
-  return <MarkdownContent text={text} sources={sources} streaming />;
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
   const ANIMATE_WINDOW = 80; // animate last N graphemes of the final line
@@ -860,11 +859,9 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
   const lastNonEmptyIdx = lines.length - 1 - [...lines].reverse().findIndex(l => l.trim() !== "");
   const tableInline = (str: string, key: string): React.ReactNode => inlineAnimated(str, key, false);
 
-  let cursorRendered = false;
   const inlineAnimatedWithCursor = (str: string, key: string, isLast: boolean) => {
     const parts = inlineAnimated(str, key, isLast);
     if (isLast) {
-      cursorRendered = true;
       if (Array.isArray(parts)) {
         return [...parts, <span key="cursor" className="stream-cursor" />];
       }
@@ -970,10 +967,8 @@ function renderStreamingMd(text: string, sources?: Array<{ title: string; uri: s
     li++;
   }
 
-  // Blinking cursor at the end
-  if (!cursorRendered) {
-    result.push(<span key="cursor" className="stream-cursor" />);
-  }
+  // If the stream ends in a block-only element, avoid rendering a standalone
+  // cursor row. Text lines already attach the cursor inline after the last char.
 
   return result;
 }
@@ -1063,14 +1058,12 @@ function extractCanvasCandidate(text: string): CanvasCandidate | null {
   let match: RegExpMatchArray | null = null;
   let live = false;
 
-  if (closed.length > 0) {
+  const open = text.match(/```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*)$/);
+  if (open && isHtmlCanvas(open[1] || "", open[2] || "")) {
+    match = open;
+    live = true;
+  } else if (closed.length > 0) {
     match = closed.reduce((best, item) => (item[2].length > best[2].length ? item : best), closed[0]);
-  } else {
-    const open = text.match(/```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*)$/);
-    if (open) {
-      match = open;
-      live = true;
-    }
   }
 
   if (!match) return null;
@@ -1481,25 +1474,6 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
           <pre className="text-[12px] text-white/72 font-mono p-3 overflow-x-auto max-h-72 whitespace-pre-wrap bg-black/20">{preview}</pre>
         )}
       </ArtifactShell>
-      {/* HIDDEN — old card body retained below replaced by ArtifactShell above */}
-      <div className="hidden">
-        <div className="flex items-start gap-3 px-3 py-3 border-b border-white/8">
-          <div className="mt-0.5 p-2 rounded-xl bg-cyan-400/12 border border-cyan-300/15">
-            <SquarePen className="w-4 h-4 text-cyan-200" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-bold text-cyan-100 truncate">{label}</p>
-            <p className="text-[11px] text-white/40 mt-0.5">{content.length.toLocaleString()} chars - {live ? "writing live" : "canvas ready"}{canPreview ? " - preview supported" : ""}</p>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <a href={artifactUrl} download={downloadName} title="Download" className="p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white">
-              <Download className="w-3.5 h-3.5" />
-            </a>
-            <SaveTextToWorkspaceBtn content={content} suggestedName={downloadName} />
-          </div>
-        </div>
-        <pre className="text-xs text-white/70 font-mono p-3 overflow-x-auto max-h-56 whitespace-pre-wrap bg-black/20">{preview}</pre>
-      </div>
       <AnimatePresence>
         {open && (
           <motion.div
@@ -2057,6 +2031,11 @@ function CopyBubble({ text }: { text: string }) {
 
 function ReadAloudButton({ text }: { text: string }) {
   const [speaking, setSpeaking] = useState(false);
+  useEffect(() => {
+    return () => {
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    };
+  }, []);
   const read = () => {
     if (!("speechSynthesis" in window)) return;
     if (speaking) {
@@ -2650,6 +2629,7 @@ export function StudioCopilot({
   }>>([]);
   const pendingAttachmentsRef = useRef(pendingAttachments);
   pendingAttachmentsRef.current = pendingAttachments;
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2844,6 +2824,17 @@ export function StudioCopilot({
     });
   }, [updateSession]);
 
+  const resetComposerInput = useCallback(() => {
+    setInput("");
+    setPasteUrl(null);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.style.height = "auto";
+      el.style.overflowY = "hidden";
+    });
+  }, []);
+
   const sendMessage = useCallback(async (text: string, attachmentsArg?: Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>) => {
     const snapshotAttachments = attachmentsArg ?? pendingAttachmentsRef.current;
     const parsedCommand = consumeLeadingSkillCommand(text);
@@ -2854,14 +2845,14 @@ export function StudioCopilot({
       if (parsedCommand.consumed) {
         activeSkillsRef.current = snapshotSkills;
         setActiveSkills(snapshotSkills);
-        setInput("");
+        resetComposerInput();
         setShowSlashMenu(false);
         setSlashQuery("");
       }
       return;
     }
     const sessionId = ensureSession();
-    setInput("");
+    resetComposerInput();
     activeSkillsRef.current = snapshotSkills;
     setActiveSkills(snapshotSkills);
     setShowSlashMenu(false);
@@ -2884,7 +2875,6 @@ export function StudioCopilot({
         type: att.type,
         name: att.name,
         mimeType: att.mimeType,
-        data: att.data,
         url: att.url,
       });
     }
@@ -3187,10 +3177,17 @@ export function StudioCopilot({
       }
       if (evt.type === "tool_done") {
         setActiveToolLabel(null);
+        let matchedFallbackTool = false;
         patchAssistant(m => ({
-          ...m, parts: m.parts.map(p =>
-            p.kind === "tool_start" && ((evt.toolId && (p as any).toolId === evt.toolId) || (!evt.toolId && (p as any).name === evt.name && !(p as any).done))
-              ? { ...p, done: true, result: evt.result, progress: 100 } : p),
+          ...m, parts: m.parts.map(p => {
+            if (p.kind !== "tool_start") return p;
+            const toolPart = p as any;
+            const exactMatch = Boolean(evt.toolId && toolPart.toolId === evt.toolId);
+            const fallbackMatch = !evt.toolId && !matchedFallbackTool && toolPart.name === evt.name && !toolPart.done;
+            if (!exactMatch && !fallbackMatch) return p;
+            if (fallbackMatch) matchedFallbackTool = true;
+            return { ...p, done: true, result: evt.result, progress: 100 };
+          }),
         }));
 
         // Sync to Activity History
@@ -3380,7 +3377,7 @@ export function StudioCopilot({
       setAgentStage("idle");
       streamingAssistantIdRef.current = null;
     }
-  }, [streaming, reasoningMode, BASE, onNavigate, updateSession, ensureSession, upsertMsg, consumeLeadingSkillCommand]);
+  }, [streaming, reasoningMode, BASE, onNavigate, updateSession, ensureSession, upsertMsg, consumeLeadingSkillCommand, resetComposerInput]);
 
   // Consume incoming pendingPrompt (sent from home screen)
   const consumedPromptRef = useRef<string | null>(null);
@@ -3418,6 +3415,9 @@ export function StudioCopilot({
     return () => {
       abortRef.current?.abort();
       recognitionRef.current?.stop();
+      pendingAttachmentsRef.current.forEach(attachment => {
+        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
+      });
       sessionsRef.current.forEach(session => revokeMessagePreviewUrls(session.messages));
     };
   }, []);
@@ -3860,6 +3860,7 @@ export function StudioCopilot({
               </span>
             )}
           <textarea
+            ref={textareaRef}
             className="gs-input-textarea gs-input-textarea-inline"
             value={input}
             onChange={e => {
@@ -3869,13 +3870,14 @@ export function StudioCopilot({
               // Surface the quick-action pill when the whole input is just a pasted/typed link
               const trimmed = val.trim();
               setPasteUrl(/^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null);
-              const maxH = getInputMaxHeight();
-              e.target.style.height = "auto";
-              const desired = e.target.scrollHeight;
-              e.target.style.height = Math.min(desired, maxH) + "px";
-              // Once the content exceeds the cap, allow scrolling — without this the
-              // textarea was silently clipping long messages with no scrollbar.
-              e.target.style.overflowY = desired > maxH ? "auto" : "hidden";
+              const target = e.currentTarget;
+              requestAnimationFrame(() => {
+                const maxH = getInputMaxHeight();
+                target.style.height = "auto";
+                const desired = target.scrollHeight;
+                target.style.height = Math.min(desired, maxH) + "px";
+                target.style.overflowY = desired > maxH ? "auto" : "hidden";
+              });
             }}
             onKeyDown={e => {
               if (showSlashMenu && slashFilteredSkills.length > 0) {

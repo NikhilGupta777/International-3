@@ -221,17 +221,17 @@ async function pollJobUntilDone(
     const data = await r.json() as any;
     const { status, percent, message, filename } = data;
     const elapsedSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+    const baseMessage = message && message !== status ? message : "Cutting selected section";
     let liveMessage = message ?? status;
     if (toolName === "cut_video_clip" && !["done", "error", "cancelled", "expired", "not_found"].includes(status)) {
-      const base = message && message !== status ? message : "Cutting selected section";
-      liveMessage = `${base}... ${elapsedSeconds}s`;
+      liveMessage = `${baseMessage}... ${elapsedSeconds}s`;
     }
     sseEvent(res, { type: "tool_progress", runId, toolId, name: toolName, status, percent: percent ?? null, message: liveMessage, jobId });
     // Only push to the Activity log when the message actually changed —
     // otherwise we spam the timeline with N identical "Cutting selected section… 5s" lines.
-    if (toolName === "cut_video_clip" && liveMessage !== lastLogMsg) {
+    if (toolName === "cut_video_clip" && baseMessage !== lastLogMsg) {
       sseEvent(res, { type: "tool_log", runId, toolId, name: toolName, message: liveMessage, level: "info" });
-      lastLogMsg = liveMessage;
+      lastLogMsg = baseMessage;
     }
     if (status === "done") return { status, filename };
     if (["error", "cancelled", "expired", "not_found"].includes(status))
@@ -1199,6 +1199,7 @@ function buildInternalHeaders(req: any): Record<string, string> {
 // longer than the sandbox's own timeout — without this, the map grew
 // unboundedly across the lifetime of the API process.
 const e2bSandboxBySession = new Map<string, { sandboxId: string; lastUsed: number; mediaToolsReady?: boolean; appCodeReady?: boolean }>();
+const pendingSandboxCreations = new Map<string, Promise<any>>();
 
 function pruneExpiredSandboxEntries(): void {
   const cutoff = Date.now() - E2B_SANDBOX_TIMEOUT_MS;
@@ -1407,6 +1408,9 @@ async function getChatSandbox(req: any): Promise<any> {
 
   pruneExpiredSandboxEntries();
   const sessionKey = sandboxSessionKey(req);
+  const pending = pendingSandboxCreations.get(sessionKey);
+  if (pending) return pending;
+
   const existing = e2bSandboxBySession.get(sessionKey);
   if (existing) {
     try {
@@ -1422,17 +1426,26 @@ async function getChatSandbox(req: any): Promise<any> {
     }
   }
 
-  const sandbox = await Sandbox.create({
-    timeoutMs: E2B_SANDBOX_TIMEOUT_MS,
-    metadata: {
-      app: "videomaking-superagent",
-      sessionId: sessionKey,
-    },
-  });
-  rememberSandbox(sessionKey, sandbox.sandboxId);
-  await bootstrapSandboxMediaTools(sandbox, sessionKey);
-  await preloadAppCodeIntoSandbox(sandbox, sessionKey);
-  return sandbox;
+  const createPromise = (async () => {
+    try {
+      const sandbox = await Sandbox.create({
+        timeoutMs: E2B_SANDBOX_TIMEOUT_MS,
+        metadata: {
+          app: "videomaking-superagent",
+          sessionId: sessionKey,
+        },
+      });
+      rememberSandbox(sessionKey, sandbox.sandboxId);
+      await bootstrapSandboxMediaTools(sandbox, sessionKey);
+      await preloadAppCodeIntoSandbox(sandbox, sessionKey);
+      return sandbox;
+    } finally {
+      pendingSandboxCreations.delete(sessionKey);
+    }
+  })();
+
+  pendingSandboxCreations.set(sessionKey, createPromise);
+  return createPromise;
 }
 
 async function resetChatSandbox(req: any): Promise<{ reset: boolean; sandboxId?: string }> {
@@ -1497,11 +1510,16 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
   let liveErr = "";
   const commandWithPath = `export PATH="/home/user/bin:/home/user/.local/bin:$PATH"\n${command}`;
   sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Running in sandbox: ${command.slice(0, 120)}` });
+  const maxLiveOutputChars = 500 * 1024;
   const result = await sandbox.commands.run(commandWithPath, {
     cwd,
     timeoutMs,
-    onStdout: (data: string) => { liveOut += data; },
-    onStderr: (data: string) => { liveErr += data; },
+    onStdout: (data: string) => {
+      if (liveOut.length < maxLiveOutputChars) liveOut += data.slice(0, maxLiveOutputChars - liveOut.length);
+    },
+    onStderr: (data: string) => {
+      if (liveErr.length < maxLiveOutputChars) liveErr += data.slice(0, maxLiveOutputChars - liveErr.length);
+    },
   });
 
   const readFiles = Array.isArray(args.readFiles) ? args.readFiles : [];
@@ -1725,6 +1743,31 @@ function conversationText(req: any): string {
     .join("\n\n");
 }
 
+async function readResponseTextWithLimit(response: globalThis.Response, limitBytes: number, abort?: AbortController): Promise<string> {
+  const sizeHeader = response.headers.get("content-length");
+  if (sizeHeader && Number(sizeHeader) > limitBytes) {
+    throw new Error(`Response too large (${sizeHeader} bytes, limit ${limitBytes} bytes).`);
+  }
+  if (!response.body) throw new Error("Response body is empty.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > limitBytes) {
+      abort?.abort();
+      throw new Error(`Response exceeds size limit of ${limitBytes} bytes.`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  return text;
+}
+
 async function readAttachmentText(req: any): Promise<{ content: string; name: string; mimeType: string } | null> {
   const attachment = latestNonImageAttachment(req);
   if (!attachment) return null;
@@ -1749,7 +1792,7 @@ async function readAttachmentText(req: any): Promise<{ content: string; name: st
     if (contentType.includes("pdf")) {
       return { content: `[PDF attachment: ${url}]`, name: attachment.name, mimeType: contentType };
     }
-    return { content: await r.text(), name: attachment.name, mimeType: contentType };
+    return { content: await readResponseTextWithLimit(r, 5 * 1024 * 1024, ac), name: attachment.name, mimeType: contentType };
   }
   return null;
 }
@@ -1831,9 +1874,13 @@ async function downloadableTextArtifact(filename: string, content: string): Prom
 
 function scanKnownJobIds(req: any): string[] {
   const ids = new Set<string>();
+  const addId = (id: string) => {
+    ids.delete(id);
+    ids.add(id);
+  };
   const text = conversationText(req);
-  for (const match of text.matchAll(/\bjob(?:Id)?:?\s*([a-f0-9-]{8,})\b/gi)) ids.add(match[1]);
-  for (const match of text.matchAll(/\/api\/(?:youtube\/file|subtitles\/status|translator\/status|translator\/result)\/([a-f0-9-]{8,})/gi)) ids.add(match[1]);
+  for (const match of text.matchAll(/\bjob(?:Id)?:?\s*([a-f0-9-]{8,})\b/gi)) addId(match[1]);
+  for (const match of text.matchAll(/\/api\/(?:youtube\/file|subtitles\/status|translator\/status|translator\/result)\/([a-f0-9-]{8,})/gi)) addId(match[1]);
   return [...ids].slice(-20);
 }
 
@@ -1939,7 +1986,7 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
     });
     if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
     const contentType = r.headers.get("content-type") ?? "";
-    const raw = await r.text();
+    const raw = await readResponseTextWithLimit(r, 5 * 1024 * 1024, controller);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
     const text = contentType.includes("html") ? htmlToReadableText(raw) : raw.trim();
     return {
@@ -3100,30 +3147,34 @@ except Exception as exc:
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
       const size = sizeHeader ? Number(sizeHeader) : null;
-      if (size && size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
+      if (!size || !Number.isFinite(size)) {
+        throw new Error("source size is unknown; cannot stream artifact safely");
+      }
+      if (size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
         throw new Error(`source too large (${size} bytes)`);
       }
 
       // Stream into a presigned PUT so we never buffer huge files through Lambda heap.
-      const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.byteLength > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
-        throw new Error(`source too large (${buf.byteLength} bytes)`);
-      }
-      const presign = await ws.s3.presignPut(path, { size: buf.byteLength, contentType });
+      if (!r.body) throw new Error("source response body is empty");
+      const presign = await ws.s3.presignPut(path, { size, contentType });
       const putRes = await fetch(presign.uploadUrl, {
         method: "PUT",
-        body: buf,
-        headers: contentType ? { "Content-Type": contentType } : undefined,
-      });
+        body: r.body,
+        duplex: "half",
+        headers: {
+          ...(contentType ? { "Content-Type": contentType } : {}),
+          "Content-Length": String(size),
+        },
+      } as any);
       if (!putRes.ok) throw new Error(`workspace upload failed: ${putRes.status}`);
       const { url: downloadUrl } = await ws.s3.presignGet(path, { disposition: "attachment" });
       return {
-        result: { path, size: buf.byteLength, contentType, downloadUrl },
+        result: { path, size, contentType, downloadUrl },
         artifact: {
           artifactType: "workspace_file",
           label: path,
           contentType,
-          size: buf.byteLength,
+          size,
           downloadUrl,
         } as any,
       };
@@ -3171,8 +3222,9 @@ except Exception as exc:
       const putRes = await fetch(presign.uploadUrl, {
         method: "PUT",
         body,
+        duplex: "half",
         headers: { "Content-Type": mimeType },
-      });
+      } as any);
       if (!putRes.ok) throw new Error(`workspace upload failed: ${putRes.status}`);
 
       const { url: downloadUrl } = await ws.s3.presignGet(path, { disposition: "attachment" });
@@ -3446,8 +3498,12 @@ router.post("/agent/chat", async (req, res) => {
             return `<canvas language="${norm}" title="code.${ext}">\n`;
           },
         );
-        // Convert bare closing fence that follows converted canvas content
-        canvasRouteBuf = canvasRouteBuf.replace(/\n```[ \t]*(\r?\n|$)/g, "\n</canvas>\n");
+        // Convert bare closing fence only when it follows converted canvas content.
+        // Otherwise normal markdown code fences (bash, mermaid, etc.) get corrupted
+        // into stray </canvas> tags in the chat stream.
+        if (activeCanvas || /<canvas\b[^>]*>(?:(?!<\/canvas>)[\s\S])*$/i.test(canvasRouteBuf)) {
+          canvasRouteBuf = canvasRouteBuf.replace(/\n```[ \t]*(\r?\n|$)/g, "\n</canvas>\n");
+        }
         const openRe = /<canvas\b([^>]*)>/i;
         const closeTag = "</canvas>";
         while (canvasRouteBuf) {

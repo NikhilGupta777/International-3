@@ -10955,7 +10955,21 @@ html.studio-light-mode .ai-video-studio__action-circle--active {
 /* Super Agent stability pass — keep these late because this file has legacy
    duplicated chat rules above. */
 .studio-content-inner.is-copilot {
+  position: relative;
   min-height: 0;
+}
+
+.copilot-mounted-panel {
+  min-height: 0;
+  will-change: opacity, transform;
+}
+
+.copilot-mounted-panel-hidden {
+  position: absolute !important;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 .copilot-wrap {

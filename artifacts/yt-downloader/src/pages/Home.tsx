@@ -1248,9 +1248,14 @@ export default function Home({
             )}
 
             {/* Always-mounted copilot — lives outside AnimatePresence so it is never
-                unmounted when the user navigates to another tab. The SSE stream keeps
-                running in the background; display:none hides it without destroying it. */}
-            <div style={{ display: showCopilot ? undefined : "none" }} className="w-full h-full flex-1 flex flex-col">
+                unmounted when the user navigates to another tab. Hidden state uses
+                visibility/position instead of display:none so entry animation still runs. */}
+            <motion.div
+              aria-hidden={!showCopilot}
+              animate={showCopilot ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className={cn("w-full h-full flex-1 flex flex-col copilot-mounted-panel", !showCopilot && "copilot-mounted-panel-hidden")}
+            >
               {canUseSuperAgent ? (
                 <StudioCopilot
                   key={copilotResetKey}
@@ -1262,7 +1267,7 @@ export default function Home({
               ) : (
                 <FeatureUnavailable title="Super Agent is restricted" detail="Your account is not allowed to use Super Agent right now." />
               )}
-            </div>
+            </motion.div>
 
           </div>
         </main>

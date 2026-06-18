@@ -89,6 +89,14 @@ export function StudioHome({
   const [ultra, setUltra] = useState<boolean>(readUltraInitial);
   const [listening, setListening] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const resizeTextarea = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 160) + "px";
+    });
+  }, []);
   const placeholderActive = !text && !textareaFocused;
   const { displayText: placeholderText, cursorVisible: placeholderCursor } = useTypingPlaceholder(placeholderActive);
   const recognitionRef = useRef<any>(null);
@@ -118,13 +126,16 @@ export function StudioHome({
     recognitionRef.current = null;
   }, []);
 
+  const [activeUploads, setActiveUploads] = useState(0);
+  const uploading = activeUploads > 0;
+
   const submit = () => {
     const t = text.trim();
-    if (!t) return;
+    if (!t || uploading) return;
     onLaunchAgent(t);
     setText("");
     setShowPlusMenu(false);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    resizeTextarea();
   };
 
   const toggleVoice = () => {
@@ -142,16 +153,11 @@ export function StudioHome({
     rec.continuous = false;
     rec.interimResults = true;
     rec.lang = navigator.language || "en-US";
-    let baseline = text;
     rec.onresult = (e: any) => {
       let chunk = "";
       for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript;
-      const next = (baseline + (baseline && !baseline.endsWith(" ") ? " " : "") + chunk).trimStart();
-      setText(next);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = "auto";
-        textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 160) + "px";
-      }
+      setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + chunk).trimStart());
+      resizeTextarea();
     };
     rec.onend = () => { setListening(false); recognitionRef.current = null; };
     rec.onerror = () => { setListening(false); recognitionRef.current = null; };
@@ -161,7 +167,6 @@ export function StudioHome({
   };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
 
   const canSend = text.trim().length > 0 && !uploading;
   const [showPlusMenu, setShowPlusMenu] = useState(false);
@@ -191,7 +196,7 @@ export function StudioHome({
       return;
     }
     try {
-      setUploading(true);
+      setActiveUploads(count => count + 1);
       const res = await fetch(`${BASE}/api/uploads/presign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -206,11 +211,12 @@ export function StudioHome({
       if (!compRes.ok) throw new Error("Could not finalize upload");
       const comp = await compRes.json();
       setText(prev => prev ? prev + "\n" + comp.shareUrl : comp.shareUrl);
+      resizeTextarea();
       toast({ title: "File attached ✓", description: `${file.name} added to your message.` });
     } catch (err: any) {
       toast({ title: "Attachment failed", description: err.message, variant: "destructive" });
     } finally {
-      setUploading(false);
+      setActiveUploads(count => Math.max(0, count - 1));
     }
   };
 
@@ -230,7 +236,15 @@ export function StudioHome({
     const items = Array.from(e.clipboardData.items);
     const imageItem = items.find(i => i.type.startsWith("image/"));
     if (!imageItem) return; // let normal text paste through
+    const pastedText = e.clipboardData.getData("text/plain");
     e.preventDefault();
+    if (pastedText) {
+      const target = e.currentTarget;
+      const start = target.selectionStart ?? text.length;
+      const end = target.selectionEnd ?? start;
+      setText(prev => prev.slice(0, start) + pastedText + prev.slice(end));
+      resizeTextarea();
+    }
     const rawFile = imageItem.getAsFile();
     if (!rawFile) return;
     // Clipboard images often have an empty or generic name — give them a timestamped one
@@ -358,7 +372,8 @@ export function StudioHome({
                 style={{
                   position: "absolute", top: 0, left: 0, right: 0,
                   color: "rgba(255,255,255,0.3)", pointerEvents: "none",
-                  whiteSpace: "pre-wrap", zIndex: 1, background: "transparent",
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  zIndex: 1, background: "transparent",
                   border: "none", boxShadow: "none",
                 }}
               >
@@ -374,11 +389,10 @@ export function StudioHome({
               onBlur={() => setTextareaFocused(false)}
               onChange={e => {
                 setText(e.target.value);
-                e.target.style.height = "auto";
-                e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+                resizeTextarea();
               }}
               onKeyDown={e => {
-                if (e.key === "Enter" && !e.shiftKey) {
+                if (e.key === "Enter" && !e.shiftKey && !(e.nativeEvent as any).isComposing) {
                   e.preventDefault();
                   submit();
                 }
