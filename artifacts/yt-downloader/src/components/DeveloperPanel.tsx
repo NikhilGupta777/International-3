@@ -41,7 +41,7 @@ type ApiKey = {
 };
 
 const SERVICES = [
-  { scope: "youtube", label: "YouTube · download / clip-cut / best-clips" },
+  { scope: "youtube", label: "YouTube - download / clip-cut / best-clips" },
   { scope: "subtitles", label: "Subtitle generation" },
   { scope: "timestamps", label: "Chapters / timestamps" },
   { scope: "translator", label: "Video translation & dubbing" },
@@ -52,7 +52,7 @@ const SERVICES = [
 ];
 
 function fmtDate(ms: number | null): string {
-  if (!ms) return "—";
+  if (!ms) return "-";
   try {
     return new Date(ms).toLocaleString(undefined, {
       month: "short",
@@ -62,7 +62,7 @@ function fmtDate(ms: number | null): string {
       minute: "2-digit",
     });
   } catch {
-    return "—";
+    return "-";
   }
 }
 
@@ -217,7 +217,7 @@ export function DeveloperPanel() {
         <div className="mb-7 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4">
           <div className="mb-2 flex items-center gap-2 text-emerald-300">
             <KeyRound className="h-4 w-4" />
-            <span className="font-sans text-sm font-semibold">Copy your key now — it won't be shown again</span>
+            <span className="font-sans text-sm font-semibold">Copy your key now - it won't be shown again</span>
           </div>
           <div className="flex items-center gap-2">
             <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-md bg-slate-950/70 px-3 py-2.5 text-emerald-300 ring-1 ring-inset ring-emerald-500/20">
@@ -267,7 +267,7 @@ export function DeveloperPanel() {
               onChange={(e) => setFullAccess(e.target.checked)}
               className="h-3.5 w-3.5 accent-emerald-500"
             />
-            Full access (all services) — recommended
+            Full access (all services) - recommended
           </label>
           {!fullAccess && (
             <input
@@ -294,7 +294,7 @@ export function DeveloperPanel() {
         <h2 className="mb-3 font-sans text-sm font-semibold text-slate-200">Your keys</h2>
         {loading ? (
           <div className="flex items-center gap-2 py-6 text-xs text-slate-500">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading...
           </div>
         ) : keys.length === 0 ? (
           <p className="rounded-md border border-dashed border-slate-700/70 px-4 py-6 text-center text-xs text-slate-600">
@@ -314,14 +314,14 @@ export function DeveloperPanel() {
                 <CircleDot
                   className={"h-3 w-3 shrink-0 " + (k.status === "active" ? "text-emerald-400" : "text-slate-600")}
                 />
-                <code className="text-slate-300">{k.prefix}…</code>
+                <code className="text-slate-300">{k.prefix}...</code>
                 <span className="font-sans text-slate-200">{k.name}</span>
                 <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
                   {k.scopes.includes("*") ? "full access" : k.scopes.join(", ")}
                 </span>
                 <span className="ml-auto text-[11px] text-slate-600">
-                  {(k.usageMonth ?? 0) > 0 ? `${k.usageMonth} reqs/mo · ` : ""}
-                  created {fmtDate(k.createdAt)} · used {fmtDate(k.lastUsedAt)}
+                  {(k.usageMonth ?? 0) > 0 ? `${k.usageMonth} reqs/mo - ` : ""}
+                  created {fmtDate(k.createdAt)} - used {fmtDate(k.lastUsedAt)}
                 </span>
                 {k.status === "active" && (
                   <button
@@ -342,7 +342,7 @@ export function DeveloperPanel() {
       <section>
         <h2 className="mb-3 font-sans text-sm font-semibold text-slate-200">Quick start</h2>
         <p className="mb-2 text-xs text-slate-500">
-          Send your key as a bearer token. It works from anywhere — scripts, servers, automations.
+          Send your key as a bearer token. It works from anywhere - scripts, servers, automations.
         </p>
         <pre className="overflow-x-auto rounded-lg border border-slate-700/60 bg-slate-950/70 p-4 text-[12px] text-emerald-300">
 {curlExample}
@@ -351,7 +351,7 @@ export function DeveloperPanel() {
         <ul className="grid gap-1.5 sm:grid-cols-2">
           {SERVICES.map((s) => (
             <li key={s.scope} className="flex items-center gap-2 text-xs text-slate-400">
-              <span className="text-emerald-500/70">▸</span>
+              <span className="text-emerald-500/70">&gt;</span>
               <code className="text-slate-300">{s.scope}</code>
               <span className="truncate text-slate-600">{s.label}</span>
             </li>

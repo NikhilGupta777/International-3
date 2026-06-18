@@ -144,7 +144,7 @@ router.get("/openapi.json", (req: Request, res: Response) => {
       url: { type: "string", description: o.input === "youtube" ? "YouTube URL" : "Public media URL" },
     };
     for (const [k, v] of Object.entries(o.fields ?? {})) props[k] = { type: "string", description: v };
-    paths[`/v1/${o.op}`] = {
+    paths[`/api/v1/${o.op}`] = {
       post: {
         operationId: `v1_${o.op.replace(/-/g, "_")}`,
         summary: o.summary,
@@ -178,7 +178,7 @@ router.get("/openapi.json", (req: Request, res: Response) => {
       },
     };
   }
-  paths["/v1/jobs/{jobId}"] = {
+  paths["/api/v1/jobs/{jobId}"] = {
     get: {
       operationId: "v1_job_status",
       summary: "Get the status of a job.",
@@ -313,17 +313,21 @@ function registerAlias(o: Operation) {
         const p = payload as Record<string, unknown>;
         const jobId = (p.jobId ?? p.id) as string | undefined;
         if (jobId) {
-          if (webhookUrl && isValidWebhookUrl(webhookUrl)) {
-            void registerJobWebhook(jobId, webhookUrl, keyId);
-          }
-          return originalJson({
-            jobId,
-            status: (p.status as string) ?? "queued",
-            statusUrl: o.statusUrl(jobId),
-            streamUrl: o.streamUrl ? o.streamUrl(jobId) : null,
-            eventsUrl: `/api/v1/jobs/${jobId}/events`,
-            webhookRegistered: Boolean(webhookUrl && isValidWebhookUrl(webhookUrl)),
-          });
+          void (async () => {
+            const webhookRegistered =
+              webhookUrl && isValidWebhookUrl(webhookUrl)
+                ? await registerJobWebhook(jobId, webhookUrl, keyId)
+                : false;
+            originalJson({
+              jobId,
+              status: (p.status as string) ?? "queued",
+              statusUrl: o.statusUrl(jobId),
+              streamUrl: o.streamUrl ? o.streamUrl(jobId) : null,
+              eventsUrl: `/api/v1/jobs/${jobId}/events`,
+              webhookRegistered,
+            });
+          })();
+          return res as Response;
         }
       }
       return originalJson(payload as any);

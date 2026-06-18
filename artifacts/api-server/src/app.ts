@@ -537,8 +537,9 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
     return;
   }
   // Internal server-to-server agent calls bypass cookie auth
-  const internalSecret = process.env.INTERNAL_AGENT_SECRET ?? "internal-agent-bypass-key";
-  if (req.headers["x-internal-agent"] === internalSecret) {
+  const internalSecret = (process.env.INTERNAL_AGENT_SECRET ?? "").trim();
+  const internalHeader = String(req.headers["x-internal-agent"] ?? "").trim();
+  if (internalSecret && internalHeader && secureEqual(internalHeader, internalSecret)) {
     next();
     return;
   }

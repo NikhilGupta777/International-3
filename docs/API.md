@@ -6,7 +6,7 @@ Programmatic access to every studio service through a single API key.
 
 API keys are **admin-issued**. An admin (or an email an admin has granted via the
 **Developer** tab) opens the Developer tab in the app and clicks **Generate key**.
-The secret (`vms_live_…`) is shown **once** — copy it immediately.
+The secret (`vms_live_...`) is shown **once** - copy it immediately.
 
 Granting access:
 - Admins always have the Developer tab.
@@ -21,8 +21,8 @@ Send the key as a bearer token on every request:
 Authorization: Bearer vms_live_xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-`X-API-Key: vms_live_…` is also accepted. A key works from anywhere — scripts,
-servers, automations — and can reach any service it is scoped for (default: all).
+`X-API-Key: vms_live_...` is also accepted. A key works from anywhere - scripts,
+servers, automations - and can reach any service it is scoped for (default: all).
 
 ## 3. Job model
 
@@ -30,11 +30,11 @@ Most operations are asynchronous. You `POST` to start a job and get back:
 
 ```json
 {
-  "jobId": "…",
+  "jobId": "...",
   "status": "queued",
-  "statusUrl": "/api/youtube/clips/status/…",
-  "streamUrl": "/api/youtube/clips/stream/…",
-  "eventsUrl": "/api/v1/jobs/…/events",
+  "statusUrl": "/api/youtube/clips/status/...",
+  "streamUrl": "/api/youtube/clips/stream/...",
+  "eventsUrl": "/api/v1/jobs/.../events",
   "webhookRegistered": false
 }
 ```
@@ -57,10 +57,10 @@ Track progress in any of three ways: poll `statusUrl`, subscribe to the SSE
 - `subtitles`, `translate` take a **publicly-accessible media URL**.
 
 Other endpoints:
-- `GET /api/v1` — machine-readable discovery catalog.
-- `GET /api/v1/openapi.json` — full OpenAPI 3.1 spec (import into Postman/codegen).
-- `GET /api/v1/jobs/{jobId}` — unified job status.
-- `GET /api/v1/jobs/{jobId}/events` — unified SSE progress stream.
+- `GET /api/v1` - machine-readable discovery catalog.
+- `GET /api/v1/openapi.json` - full OpenAPI 3.1 spec (import into Postman/codegen).
+- `GET /api/v1/jobs/{jobId}` - unified job status.
+- `GET /api/v1/jobs/{jobId}/events` - unified SSE progress stream.
 
 > The full set of canonical service endpoints (e.g. `/api/youtube/clips`) also
 > accepts the same API key directly; `/api/v1` is the stable, documented surface.
@@ -84,7 +84,7 @@ POST <your webhookUrl>
 X-VMS-Event: job.completed | job.failed
 X-VMS-Signature: sha256=<hex hmac of the raw body>
 
-{ "jobId": "…", "status": "done", "ready": true, "timestamp": 1750000000000 }
+{ "jobId": "...", "status": "done", "ready": true, "timestamp": 1750000000000 }
 ```
 
 Verify by computing `HMAC_SHA256(rawBody, WEBHOOK_SIGNING_SECRET)` and comparing
@@ -97,7 +97,7 @@ to the `X-VMS-Signature` value.
 - Optional per-key monthly quota (`monthlyQuota` at creation). Exceeding it
   returns `429`.
 - Optional expiry (`expiresInDays` at creation).
-- Revoke a key any time from the Developer tab — it stops working within ~60s.
+- Revoke a key any time from the Developer tab - it stops working within ~60s.
 
 ## 7. Server configuration
 

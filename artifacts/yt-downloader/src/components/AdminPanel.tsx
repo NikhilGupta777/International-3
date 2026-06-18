@@ -119,8 +119,10 @@ type AdminOverview = {
     persistence: string;
     approvedUserCount: number;
     approvedAdminCount: number;
+    apiAccessCount: number;
     approvedUsers: string[];
     approvedAdmins: string[];
+    apiAccessEmails: string[];
   };
   runtime?: {
     features: {
@@ -394,6 +396,10 @@ export function AdminPanel() {
   const [savingEmail, setSavingEmail] = useState(false);
   const [removingEmails, setRemovingEmails] = useState<Set<string>>(new Set());
   const [accessMsg, setAccessMsg] = useState({ text: "", error: false });
+  const [apiAccessEmail, setApiAccessEmail] = useState("");
+  const [savingApiAccess, setSavingApiAccess] = useState(false);
+  const [removingApiAccess, setRemovingApiAccess] = useState<Set<string>>(new Set());
+  const [apiAccessMsg, setApiAccessMsg] = useState({ text: "", error: false });
 
   // ── Tools tab permission form state ───────────────────────────────────────
   const [lipSyncEmail, setLipSyncEmail] = useState("");
@@ -421,6 +427,10 @@ export function AdminPanel() {
       ...(overview?.auth.approvedAdmins ?? []).map((value) => ({ email: value, badge: "admin" })),
       ...(overview?.auth.approvedUsers ?? []).map((value) => ({ email: value, badge: "user" })),
     ],
+    [overview],
+  );
+  const developerAccessEmails = useMemo(
+    () => (overview?.auth.apiAccessEmails ?? []).map((value) => ({ email: value, badge: "api" })),
     [overview],
   );
 
@@ -523,6 +533,52 @@ export function AdminPanel() {
   };
 
   // ── Tools: toggle runtime feature flag ────────────────────────────────────
+  const saveApiAccessEmail = async (event: FormEvent) => {
+    event.preventDefault();
+    const value = apiAccessEmail.trim();
+    if (!value) return;
+    setSavingApiAccess(true);
+    setApiAccessMsg({ text: "", error: false });
+    try {
+      const res = await fetch(`${base}/api/admin/api-access`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: value }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Could not grant Developer access");
+      setApiAccessEmail("");
+      setApiAccessMsg({ text: `${data.email} can now use Developer/API keys`, error: false });
+      await loadOverview();
+    } catch (err) {
+      setApiAccessMsg({ text: err instanceof Error ? err.message : "Could not grant Developer access", error: true });
+    } finally {
+      setSavingApiAccess(false);
+    }
+  };
+
+  const removeApiAccessEmail = async (value: string) => {
+    setRemovingApiAccess((prev) => new Set([...prev, value]));
+    setApiAccessMsg({ text: "", error: false });
+    try {
+      const res = await fetch(`${base}/api/admin/api-access/${encodeURIComponent(value)}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Could not revoke Developer access");
+      }
+      setApiAccessMsg({ text: `${value} Developer/API access revoked`, error: false });
+      await loadOverview();
+    } catch (err) {
+      setApiAccessMsg({ text: err instanceof Error ? err.message : "Could not revoke Developer access", error: true });
+    } finally {
+      setRemovingApiAccess((prev) => { const next = new Set(prev); next.delete(value); return next; });
+    }
+  };
+
   const setRuntimeFeatureFlag = async (key: string, enabled: boolean) => {
     setSavingRuntime(true);
     setToolsMsg({ text: "", error: false });
@@ -868,6 +924,7 @@ export function AdminPanel() {
           <div className="admin-stats">
             <Stat icon={<Users className="w-4 h-4" />} label="Approved users" value={overview?.auth.approvedUserCount ?? 0} />
             <Stat icon={<ShieldCheck className="w-4 h-4" />} label="Approved admins" value={overview?.auth.approvedAdminCount ?? 0} />
+            <Stat icon={<KeyRound className="w-4 h-4" />} label="Developer access" value={overview?.auth.apiAccessCount ?? 0} />
             <Stat
               icon={<KeyRound className="w-4 h-4" />}
               label="Google client"
@@ -911,6 +968,29 @@ export function AdminPanel() {
             onRemove={(v) => void removeEmail(v)}
             removingSet={removingEmails}
           />
+
+          <div className="admin-perm-group">
+            <div className="admin-perm-group-label">Developer/API access</div>
+            <form className="admin-email-form admin-email-form--2col" onSubmit={saveApiAccessEmail}>
+              <input
+                value={apiAccessEmail}
+                onChange={(event) => setApiAccessEmail(event.target.value)}
+                placeholder="developer@gmail.com"
+                type="email"
+                aria-label="Developer API access email"
+                required
+              />
+              <button type="submit" disabled={savingApiAccess || !apiAccessEmail.trim()}>
+                {savingApiAccess ? "Saving..." : "Grant API access"}
+              </button>
+            </form>
+            <ResultMsg msg={apiAccessMsg.text} isError={apiAccessMsg.error} />
+            <EmailPillList
+              items={developerAccessEmails}
+              onRemove={(v) => void removeApiAccessEmail(v)}
+              removingSet={removingApiAccess}
+            />
+          </div>
 
           <p className="admin-note">
             {isPersisted
