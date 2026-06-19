@@ -172,7 +172,7 @@ function Remove-BlankExistingStackOverrides {
     $key = $parts[0]
     $value = $parts[1]
     if ([string]::IsNullOrWhiteSpace($value) -and $ExistingParams.ContainsKey($key)) {
-      Write-Output "Preserving existing CloudFormation parameter because local override is blank: $key"
+      Write-Host "Preserving existing CloudFormation parameter because local override is blank: $key"
       continue
     }
 
