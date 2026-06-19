@@ -102,28 +102,48 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${base}/api/keys`, { 
-        credentials: "include",
-        headers: { "Accept": "application/json" }
-      });
-      if (res.status === 503) {
-        setStoreDisabled(true);
-        setKeys([]);
-        return;
+      let lastErr: Error | null = null;
+      let successData: any = null;
+      
+      // Retry up to 2 times for transient infrastructure errors
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await fetch(`${base}/api/keys`, { 
+            credentials: "include",
+            headers: { "Accept": "application/json", "Cache-Control": "no-cache" }
+          });
+          if (res.status === 503) {
+            setStoreDisabled(true);
+            setKeys([]);
+            return;
+          }
+          const text = await res.text();
+          let data: any;
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch (err) {
+            throw new Error(`Invalid JSON response: ${text.slice(0, 80)}...`);
+          }
+          if (!res.ok) {
+            throw new Error(data?.error || `Failed (${res.status})`);
+          }
+          if (!("keys" in data)) {
+            throw new Error(`Server returned 200 OK but no 'keys' array. Body: ${JSON.stringify(data).slice(0, 100)}`);
+          }
+          successData = data;
+          break; // Success!
+        } catch (err) {
+          lastErr = err instanceof Error ? err : new Error(String(err));
+          if (attempt < 2) await new Promise(r => setTimeout(r, 800)); // wait before retry
+        }
       }
-      const text = await res.text();
-      let data: any;
-      try {
-        data = text ? JSON.parse(text) : {};
-      } catch (err) {
-        throw new Error(`Invalid JSON response: ${text.slice(0, 80)}...`);
+      
+      if (!successData) {
+        throw lastErr || new Error("Failed to load keys after retries");
       }
-      if (!res.ok) {
-        throw new Error(data?.error || `Failed (${res.status})`);
-      }
-      if (!data.keys) throw new Error("Invalid response from server (missing 'keys' array)");
+      
       setStoreDisabled(false);
-      setKeys(Array.isArray(data.keys) ? data.keys : []);
+      setKeys(Array.isArray(successData.keys) ? successData.keys : []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load keys");
     } finally {
