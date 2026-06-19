@@ -76,7 +76,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
   // create form
   const [name, setName] = useState("");
   const [fullAccess, setFullAccess] = useState(true);
-  const [scopesText, setScopesText] = useState("");
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([]);
   const [expiresInDays, setExpiresInDays] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -106,8 +106,12 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
         setKeys([]);
         return;
       }
-      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || `Failed (${res.status})`);
-      const data = (await res.json()) as { keys: ApiKey[] };
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => ({}));
+        throw new Error(errorBody?.error || `Failed (${res.status})`);
+      }
+      const data = (await res.json().catch(() => ({}))) as { keys: ApiKey[] };
+      if (!data.keys) throw new Error("Invalid response from server (empty or malformed JSON)");
       setStoreDisabled(false);
       setKeys(Array.isArray(data.keys) ? data.keys : []);
     } catch (err) {
@@ -128,7 +132,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
     try {
       const scopes = fullAccess
         ? ["*"]
-        : scopesText.split(",").map((s) => s.trim()).filter(Boolean);
+        : selectedScopes.length > 0 ? selectedScopes : ["*"];
       const body: Record<string, unknown> = { name: name.trim() || "Untitled key", scopes };
       const days = Number(expiresInDays);
       if (Number.isFinite(days) && days > 0) body.expiresInDays = days;
@@ -144,7 +148,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
       setFreshKey(data.key as string);
       setFreshWebhookSecret((data.webhookSecret as string) ?? null);
       setName("");
-      setScopesText("");
+      setSelectedScopes([]);
       setExpiresInDays("");
       setFullAccess(true);
       await loadKeys();
@@ -374,22 +378,35 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
               
               {!fullAccess && (
                 <div className="mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
-                  <input
-                    value={scopesText}
-                    onChange={(e) => setScopesText(e.target.value)}
-                    placeholder="youtube, subtitles, translator"
-                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-slate-200 outline-none transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
-                  />
-                  <p className="mt-2 text-xs leading-relaxed text-slate-500">
-                    Valid scopes: <code className="text-slate-400">youtube, youtube:download, youtube:clip-cut, subtitles, translator, uploads, thumbnail, agent, bhagwat</code>.
-                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {SERVICES.map((srv) => (
+                      <label key={srv.scope} className="flex cursor-pointer items-start gap-3 rounded-lg border border-white/5 bg-black/40 p-3 transition-colors hover:border-cyan-500/30 hover:bg-black/60">
+                        <div className="relative mt-0.5 flex items-center justify-center">
+                          <input
+                            type="checkbox"
+                            checked={selectedScopes.includes(srv.scope)}
+                            onChange={(e) => {
+                              if (e.target.checked) setSelectedScopes(prev => [...prev, srv.scope]);
+                              else setSelectedScopes(prev => prev.filter(s => s !== srv.scope));
+                            }}
+                            className="peer h-4 w-4 cursor-pointer appearance-none rounded border border-slate-600 bg-slate-800 transition-all checked:border-cyan-500 checked:bg-cyan-500 hover:border-cyan-400"
+                          />
+                          <Check className="pointer-events-none absolute h-3 w-3 text-slate-900 opacity-0 transition-opacity peer-checked:opacity-100" />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium text-slate-200">{srv.scope}</span>
+                          <span className="text-xs text-slate-500">{srv.label}</span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
 
             <button
               onClick={() => void createKey()}
-              disabled={creating || storeDisabled || (!fullAccess && !scopesText.trim())}
+              disabled={creating || storeDisabled || (!fullAccess && selectedScopes.length === 0)}
               className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-3 font-semibold text-slate-950 transition-all hover:opacity-90 hover:shadow-[0_0_20px_rgba(16,185,129,0.3)] active:scale-95 disabled:pointer-events-none disabled:opacity-50"
             >
               {creating ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
