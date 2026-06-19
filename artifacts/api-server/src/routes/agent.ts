@@ -1986,6 +1986,13 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
       },
     });
     if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
+    const finalUrl = r.url || parsed.toString();
+    try {
+      const finalHostname = new URL(finalUrl).hostname;
+      if (isInternalHost(finalHostname)) throw new Error("Redirect to internal/private network URL blocked.");
+    } catch (e: any) {
+      if (e.message.includes("blocked")) throw e;
+    }
     const contentType = r.headers.get("content-type") ?? "";
     const raw = await readResponseTextWithLimit(r, 5 * 1024 * 1024, controller);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
@@ -3139,11 +3146,14 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isInternal = sourceUrl.startsWith("/");
+      const resolvedUrl = isInternal
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "follow" });
+      const fetchHeaders: Record<string, string> = {};
+      if (isInternal) fetchHeaders.Cookie = req.headers.cookie ?? "";
+      const r = await fetch(resolvedUrl, { headers: fetchHeaders, redirect: "follow" });
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
@@ -3828,6 +3838,19 @@ router.post("/agent/chat", async (req, res) => {
         { role: "model" as const, parts: modelParts },
         { role: "user" as const, parts: orderedToolResults },
       ];
+
+      // Cap context window: keep the original user messages (first entries from
+      // normalizedMessages) plus only the last N iteration pairs to prevent
+      // unbounded memory/token growth across 60 iterations.
+      const MAX_LOOP_PAIRS = 12;
+      const originalCount = normalizedMessages.length;
+      const iterationEntries = loopContents.length - originalCount;
+      if (iterationEntries > MAX_LOOP_PAIRS * 2) {
+        const trimmed = loopContents.slice(0, originalCount);
+        trimmed.push({ role: "user" as const, parts: [{ text: "[Earlier tool iterations were trimmed to stay within context limits.]" }] });
+        trimmed.push(...loopContents.slice(loopContents.length - MAX_LOOP_PAIRS * 2));
+        loopContents = trimmed;
+      }
 
       if (!isConnected()) break;
     }

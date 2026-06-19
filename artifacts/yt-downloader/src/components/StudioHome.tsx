@@ -100,6 +100,7 @@ export function StudioHome({
   const placeholderActive = !text && !textareaFocused;
   const { displayText: placeholderText, cursorVisible: placeholderCursor } = useTypingPlaceholder(placeholderActive);
   const recognitionRef = useRef<any>(null);
+  const preVoiceTextRef = useRef("");
 
   // Speech recognition is available in Chrome/Edge/Safari on HTTPS or localhost.
   // Firefox and non-secure origins do NOT support the Web Speech API.
@@ -153,10 +154,12 @@ export function StudioHome({
     rec.continuous = false;
     rec.interimResults = true;
     rec.lang = navigator.language || "en-US";
+    preVoiceTextRef.current = text;
     rec.onresult = (e: any) => {
-      let chunk = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript;
-      setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + chunk).trimStart());
+      let transcript = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) transcript += e.results[i][0].transcript;
+      const base = preVoiceTextRef.current;
+      setText((base + (base && !base.endsWith(" ") ? " " : "") + transcript).trimStart());
       resizeTextarea();
     };
     rec.onend = () => { setListening(false); recognitionRef.current = null; };

@@ -1036,7 +1036,7 @@ function isHtmlCanvas(language: string, content: string): boolean {
 function sanitizeSearchEntryPoint(html: string): string {
   const template = document.createElement("template");
   template.innerHTML = html;
-  template.content.querySelectorAll("script, iframe, object, embed, form, input, button").forEach(el => el.remove());
+  template.content.querySelectorAll("script, iframe, object, embed, form, input, button, style, link, base, meta").forEach(el => el.remove());
   template.content.querySelectorAll("*").forEach(el => {
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name.toLowerCase();
