@@ -1,0 +1,15 @@
+﻿{
+    "start_time":  0,
+    "video":  {
+                  "type":  "url",
+                  "url":  "https://resource2.heygen.ai/video/506ed084877049289f85a848ee3b5ff8/original.mp4"
+              },
+    "title":  "API-only 3s rYabjNbC5n0 English 20260619202702",
+    "end_time":  3,
+    "output_languages":  [
+                             "English"
+                         ],
+    "mode":  "speed",
+    "enable_caption":  false,
+    "keep_the_same_format":  true
+}

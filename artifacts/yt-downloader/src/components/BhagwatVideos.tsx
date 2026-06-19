@@ -739,14 +739,14 @@ function BhagwatEditor({
   const [analyzeJobId, setAnalyzeJobId] = useState<string | null>(null);
   const [renderJobId, setRenderJobId] = useState<string | null>(null);
 
-  const isProcessing = phase === "analyzing" || phase === "rendering" || reviewing || uploading;
-
   const [transcriptText, setTranscriptText] = useState("");
   const [reviewing, setReviewing] = useState(false);
   const [reviewText, setReviewText] = useState("");
   const [autoImprovedCount, setAutoImprovedCount] = useState<number | null>(null);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const hasAutoReviewedRef = useRef(false);
+
+  const isProcessing = phase === "analyzing" || phase === "rendering" || reviewing || uploading;
   const reviewScrollRef = useRef<HTMLDivElement | null>(null);
   const sessionHydratedRef = useRef(false);
   // Always tracks the latest timeline so SSE handlers don't use stale closures
@@ -1441,28 +1441,46 @@ function BhagwatEditor({
 
         // Use timelineRef.current so any edits the user made during review are preserved
         const base = timelineRef.current ?? [];
-        // Apply prompt improvements to existing segments
-        const improved = base.map((seg, i) => {
-          const match = improvements.find(s => s.segIdx === i);
-          return match ? { ...seg, imagePrompt: match.improvedPrompt } : seg;
-        });
-        // Merge new segments (avoid overlapping existing ones)
-        const existingRanges = improved.map(s => [s.startSec, s.endSec]);
-        const validNewSegs = newSegs.filter(ns =>
-          !existingRanges.some(([a, b]) => ns.startSec < b && ns.endSec > a)
-        );
-        const merged = [...improved, ...validNewSegs].sort((a, b) => a.startSec - b.startSec);
 
-        const totalAdded = improvements.length + validNewSegs.length;
-        setTimeline(merged);
-        if (totalAdded > 0) setAutoImprovedCount(totalAdded);
-        setSuggestions([]);
-        setReviewing(false);
-        es.close();
-        // In autonomous mode: auto-render immediately with the improved timeline.
-        // In manual mode: stay on the review screen so user can inspect and render manually.
         if (autonomousMode) {
+          // Apply prompt improvements to existing segments
+          const improved = base.map((seg, i) => {
+            const match = improvements.find(s => s.segIdx === i);
+            return match ? { ...seg, imagePrompt: match.improvedPrompt } : seg;
+          });
+          // Merge new segments (avoid overlapping existing ones)
+          const existingRanges = improved.map(s => [s.startSec, s.endSec]);
+          const validNewSegs = newSegs.filter(ns =>
+            !existingRanges.some(([a, b]) => ns.startSec < b && ns.endSec > a)
+          );
+          const merged = [...improved, ...validNewSegs].sort((a, b) => a.startSec - b.startSec);
+
+          const totalAdded = improvements.length + validNewSegs.length;
+          setTimeline(merged);
+          if (totalAdded > 0) setAutoImprovedCount(totalAdded);
+          setSuggestions([]);
+          setReviewing(false);
+          es.close();
           handleRender(merged);
+        } else {
+          // Manual mode: DO NOT auto-apply improvements. Put them in setSuggestions.
+          const existingRanges = base.map(s => [s.startSec, s.endSec]);
+          const validNewSegs = newSegs.filter(ns =>
+            !existingRanges.some(([a, b]) => ns.startSec < b && ns.endSec > a)
+          );
+          const merged = [...base, ...validNewSegs].sort((a, b) => a.startSec - b.startSec);
+          
+          // Re-map the suggestions to point to the new indices of their target segments
+          const remappedImprovements = improvements.map(s => {
+            const targetSeg = base[s.segIdx];
+            const newIdx = merged.indexOf(targetSeg);
+            return { ...s, segIdx: newIdx };
+          }).filter(s => s.segIdx !== -1);
+
+          setTimeline(merged);
+          setSuggestions(remappedImprovements);
+          setReviewing(false);
+          es.close();
         }
       });
       es.addEventListener("jobError", e => {
@@ -1722,6 +1740,7 @@ function BhagwatEditor({
                         onChange={e => {
                           setUrl(e.target.value);
                           if (phase !== "idle") { setPhase("idle"); setTimeline(null); }
+                          if (clipRange && onClearClip) onClearClip();
                         }}
                         disabled={isProcessing}
                         placeholder="Paste YouTube URL of Bhagwat Katha…"
@@ -1732,6 +1751,7 @@ function BhagwatEditor({
                           onClick={() => {
                             setUrl("");
                             if (phase !== "idle") { setPhase("idle"); setTimeline(null); }
+                            if (clipRange && onClearClip) onClearClip();
                           }}
                           className="text-white/30 hover:text-white/60 transition-colors shrink-0"
                         >
