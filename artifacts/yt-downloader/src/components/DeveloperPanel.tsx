@@ -157,7 +157,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
     } finally {
       setCreating(false);
     }
-  }, [name, fullAccess, scopesText, expiresInDays, loadKeys]);
+  }, [name, fullAccess, selectedScopes, expiresInDays, loadKeys]);
 
   const revokeKey = useCallback(
     async (keyId: string) => {
