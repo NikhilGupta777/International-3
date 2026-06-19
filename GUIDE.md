@@ -5,7 +5,7 @@
 ---
 
 ## Table of Contents
-
+ 
 1. [What This Project Is](#1-what-this-project-is)
 2. [Architecture Overview](#2-architecture-overview)
 3. [Repository Structure](#3-repository-structure)
