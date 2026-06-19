@@ -607,6 +607,21 @@ curl -X POST ${API_BASE}/api/v1/uploads/presign \\
               </div>
             </div>
           </section>
+          {/* Footer Actions */}
+          <div className="mb-8 flex flex-col items-center justify-center gap-4 rounded-2xl border border-white/10 bg-white/[0.02] p-8 shadow-xl backdrop-blur-md">
+            <h3 className="text-lg font-bold text-slate-100">Ready to build with AI?</h3>
+            <p className="text-center text-sm text-slate-400">
+              Copy the full documentation page as a prompt to give your AI agent complete context.
+            </p>
+            <button
+              type="button"
+              onClick={handleCopyPrompt}
+              className="mt-2 inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-500 to-fuchsia-500 px-6 py-3 font-semibold text-white shadow-[0_0_30px_rgba(168,85,247,0.3)] transition-all hover:opacity-90 active:scale-95 hover:shadow-[0_0_40px_rgba(168,85,247,0.5)]"
+            >
+              {copiedPrompt ? <Check className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
+              {copiedPrompt ? "Prompt Copied!" : "Copy Page for AI Agent"}
+            </button>
+          </div>
           
           {/* Footer Info */}
           <div className="flex items-center justify-center gap-2 text-sm text-slate-500">
