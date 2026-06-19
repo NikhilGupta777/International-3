@@ -4271,6 +4271,13 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     return;
   }
 
+  // Local sync mode fallback
+  const audio = getBhagwatUploadedAudioState(audioId);
+  if (!audio) {
+    res.status(400).json({ error: "Local processing requires local upload map" });
+    return;
+  }
+
   const MAX_CONCURRENT_RENDERS = 3;
   const activeRenders = [...renderJobs.values()].filter(
     j => j.status === "pending" || j.status === "running",

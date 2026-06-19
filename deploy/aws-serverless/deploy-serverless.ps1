@@ -186,6 +186,15 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $templatePath = Join-Path $PSScriptRoot "template.yml"
 $envMap = Get-EnvMap -Path $EnvFilePath
 
+# Preflight validation to fail fast on missing environment variables
+$null = Get-RequiredEnv $envMap 'SESSION_SECRET'
+$null = Get-RequiredEnv $envMap 'WEBSITE_AUTH_PASSWORD'
+$null = Get-RequiredEnv $envMap 'S3_BUCKET'
+$null = Get-RequiredEnv $envMap 'YOUTUBE_QUEUE_REGION'
+$null = Get-RequiredEnv $envMap 'YOUTUBE_QUEUE_JOB_TABLE'
+$null = Get-RequiredEnv $envMap 'YOUTUBE_BATCH_JOB_QUEUE'
+$null = Get-RequiredEnv $envMap 'YOUTUBE_BATCH_JOB_DEFINITION'
+
 if (-not $ImageTag) {
   $ImageTag = (Get-Date -Format "yyyyMMdd-HHmmss")
 }
@@ -363,9 +372,21 @@ $deployOutput = aws cloudformation deploy `
   --capabilities CAPABILITY_NAMED_IAM `
   --parameter-overrides $parameterOverrides `
   --no-fail-on-empty-changeset 2>&1
+
 if ($LASTEXITCODE -ne 0) {
-  Write-Error ("cloudformation deploy output: " + ($deployOutput -join " "))
-  Assert-LastExitCode "cloudformation deploy"
+  Write-Host "::error::cloudformation deploy failed"
+  Write-Host ("::error::cloudformation deploy output: " + ($deployOutput -join " "))
+
+  Write-Host "::group::CloudFormation failure events ($StackName)"
+  aws cloudformation describe-stack-events `
+    --region $Region `
+    --stack-name $StackName `
+    --max-items 80 `
+    --query "StackEvents[?contains(ResourceStatus,'FAILED') || contains(ResourceStatus,'ROLLBACK')].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" `
+    --output table
+  Write-Host "::endgroup::"
+
+  throw "CloudFormation deploy failed for stack $StackName"
 }
 
 $stackJson = aws cloudformation describe-stacks `
