@@ -10,6 +10,7 @@ import {
   rmdirSync,
   statSync,
 } from "fs";
+import { promises as fsPromises } from "fs";
 import { join, basename, dirname } from "path";
 import { tmpdir } from "os";
 import { spawn } from "child_process";
@@ -107,49 +108,61 @@ for (const d of [BHAGWAT_RENDERED_DIR, BHAGWAT_TMP_DIR, BHAGWAT_UPLOADS_DIR]) {
   if (!existsSync(d)) mkdirSync(d, { recursive: true });
 }
 
-// Disk-based cleanup: delete files/dirs older than 2 hours regardless of
+// Disk-based cleanup: delete files/dirs older than 12 hours regardless of
 // in-memory state. This handles orphaned files left after server restarts.
-const DISK_CLEANUP_AGE_MS = 2 * 60 * 60 * 1000;
-function cleanupBhagwatDirs() {
+const DISK_CLEANUP_AGE_MS = 12 * 60 * 60 * 1000;
+async function cleanupBhagwatDirs() {
   const cutoff = Date.now() - DISK_CLEANUP_AGE_MS;
   for (const dir of [BHAGWAT_RENDERED_DIR, BHAGWAT_UPLOADS_DIR]) {
     try {
-      for (const entry of readdirSync(dir)) {
+      if (!existsSync(dir)) continue;
+      const entries = await fsPromises.readdir(dir);
+      for (const entry of entries) {
+        if (entry === ".gitkeep") continue;
         const p = join(dir, entry);
         try {
-          if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
+          const st = await fsPromises.stat(p);
+          if (st.mtimeMs < cutoff) await fsPromises.unlink(p);
         } catch {}
       }
     } catch {}
   }
   // bhagwat_tmp can contain subdirectories — delete any that are old
   try {
-    for (const entry of readdirSync(BHAGWAT_TMP_DIR)) {
+    if (!existsSync(BHAGWAT_TMP_DIR)) return;
+    const entries = await fsPromises.readdir(BHAGWAT_TMP_DIR);
+    for (const entry of entries) {
+      if (entry === ".gitkeep" || entry === "_analysis_meta") continue;
       const p = join(BHAGWAT_TMP_DIR, entry);
       try {
-        const st = statSync(p);
-        if (st.mtimeMs < cutoff) {
-          if (st.isDirectory()) {
-            for (const f of readdirSync(p)) {
-              try {
-                unlinkSync(join(p, f));
-              } catch {}
+        const st = await fsPromises.stat(p);
+        if (st.isDirectory()) {
+          let isOld = true;
+          try {
+            const children = await fsPromises.readdir(p);
+            for (const child of children) {
+              const childStat = await fsPromises.stat(join(p, child));
+              if (childStat.mtimeMs >= cutoff) {
+                isOld = false;
+                break;
+              }
             }
-            try {
-              rmdirSync(p);
-            } catch {}
-          } else {
-            unlinkSync(p);
+          } catch {}
+          
+          if (isOld && st.mtimeMs < cutoff) {
+            await fsPromises.rm(p, { recursive: true, force: true });
           }
+        } else {
+          if (st.mtimeMs < cutoff) await fsPromises.unlink(p);
         }
       } catch {}
     }
   } catch {}
 }
 // Run on startup to clear any orphans left by a previous crashed/restarted server
-cleanupBhagwatDirs();
+cleanupBhagwatDirs().catch(() => {});
 // Then run every 30 minutes
-setInterval(cleanupBhagwatDirs, 30 * 60 * 1000);
+setInterval(() => { cleanupBhagwatDirs().catch(() => {}); }, 30 * 60 * 1000);
 
 // ── Multer — audio file uploads ───────────────────────────────────────────────
 const audioUploadStorage = multer.diskStorage({
@@ -186,6 +199,18 @@ export interface UploadedAudio {
   createdAt: number;
 }
 const uploadedAudios = new Map<string, UploadedAudio>();
+const pendingS3Uploads = new Map<string, { status: "uploading" | "error"; error?: string; createdAt: number }>();
+
+// Sweep pending S3 uploads older than 4 hours
+setInterval(
+  () => {
+    const cutoff = Date.now() - 4 * 60 * 60 * 1000;
+    for (const [id, upload] of pendingS3Uploads.entries()) {
+      if (upload.createdAt < cutoff) pendingS3Uploads.delete(id);
+    }
+  },
+  30 * 60 * 1000,
+);
 
 export function createBhagwatUploadedAudioState(
   audioId: string,
@@ -264,10 +289,10 @@ function safeFsArg(p: string): string {
   return p;
 }
 
-// Sweep old uploads after 2 hours
+// Sweep old uploads after 12 hours
 setInterval(
   () => {
-    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+    const cutoff = Date.now() - 12 * 60 * 60 * 1000;
     for (const [id, audio] of uploadedAudios.entries()) {
       if (audio.createdAt < cutoff) {
         try {
@@ -1157,8 +1182,12 @@ function runYtDlpOnce(baseArgs: string[], extraArgs: string[], callArgs: string[
       ? [...baseArgs, ...extraArgs, ...callArgs]
       : ["-m", "yt_dlp", ...baseArgs, ...extraArgs, ...callArgs];
     const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
-    proc.stdout.on("data", (d) => { out += d.toString(); });
-    proc.stderr.on("data", (d) => { err += d.toString(); });
+    proc.stdout.on("data", (d) => {
+      if (out.length < 50 * 1024 * 1024) out += d.toString();
+    });
+    proc.stderr.on("data", (d) => {
+      if (err.length < 10 * 1024 * 1024) err += d.toString();
+    });
     proc.on("close", (code) =>
       code === 0 ? resolve(out.trim()) : reject(new Error(err.slice(-1000) || `yt-dlp exited ${code}`)),
     );
@@ -1382,7 +1411,7 @@ function pickBestSubtitleUrl(
 // ── Analysis job store ────────────────────────────────────────────────────────
 export interface AnalysisJob {
   emitter: EventEmitter;
-  status: "pending" | "running" | "done" | "error";
+  status: "pending" | "running" | "done" | "error" | "expired";
   result?: {
     timeline: TimelineSegment[];
     videoDuration: number;
@@ -1474,7 +1503,9 @@ setInterval(
   () => {
     const cutoff = Date.now() - 60 * 60 * 1000;
     for (const [id, job] of analysisJobs.entries()) {
-      if (job.createdAt < cutoff) analysisJobs.delete(id);
+      if (job.createdAt < cutoff && (job.status === "done" || job.status === "error" || job.status === "expired")) {
+        analysisJobs.delete(id);
+      }
     }
   },
   30 * 60 * 1000,
@@ -1604,6 +1635,38 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
   if (!job) {
     if (!isBhagwatAnalyzeQueueEnabled()) {
       res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    const s3Upload = pendingS3Uploads.get(jobId);
+    if (s3Upload) {
+      setupSse(res);
+      const send = (event: string, data: object) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (s3Upload.status === "error") {
+        send("jobError", { message: s3Upload.error ?? "Failed to upload audio to cloud" });
+        pendingS3Uploads.delete(jobId);
+        res.end();
+        return;
+      }
+      let closed = false;
+      req.on("close", () => { closed = true; });
+      const timer = setInterval(() => {
+        if (closed) { clearInterval(timer); return; }
+        const current = pendingS3Uploads.get(jobId);
+        if (!current) {
+          send("step", { step: "metadata", status: "running", message: "Audio uploaded. Starting analysis..." });
+          clearInterval(timer);
+          // Let client reconnect to pick up normal queue polling
+          res.end();
+        } else if (current.status === "error") {
+          send("jobError", { message: current.error ?? "Failed to upload audio to cloud" });
+          clearInterval(timer);
+          pendingS3Uploads.delete(jobId);
+          res.end();
+        } else {
+          send("step", { step: "metadata", status: "running", message: "Uploading audio to cloud processing server..." });
+        }
+      }, 2000);
       return;
     }
 
@@ -1758,7 +1821,7 @@ router.post("/bhagwat/cancel-analyze/:jobId", (req: Request, res: Response) => {
 // ── Plan review ───────────────────────────────────────────────────────────────
 interface ReviewJob {
   emitter: EventEmitter;
-  status: "pending" | "running" | "done" | "error";
+  status: "pending" | "running" | "done" | "error" | "expired";
   createdAt: number;
 }
 const reviewJobs = new Map<string, ReviewJob>();
@@ -1806,7 +1869,9 @@ setInterval(
   () => {
     const cutoff = Date.now() - 60 * 60 * 1000;
     for (const [id, job] of reviewJobs.entries()) {
-      if (job.createdAt < cutoff) reviewJobs.delete(id);
+      if (job.createdAt < cutoff && (job.status === "done" || job.status === "error" || job.status === "expired")) {
+        reviewJobs.delete(id);
+      }
     }
   },
   30 * 60 * 1000,
@@ -2201,6 +2266,37 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
       return;
     }
 
+    const s3Upload = pendingS3Uploads.get(jobId);
+    if (s3Upload) {
+      setupSse(res);
+      const send = (event: string, data: object) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (s3Upload.status === "error") {
+        send("jobError", { message: s3Upload.error ?? "Failed to upload audio to cloud" });
+        pendingS3Uploads.delete(jobId);
+        res.end();
+        return;
+      }
+      let closed = false;
+      req.on("close", () => { closed = true; });
+      const timer = setInterval(() => {
+        if (closed) { clearInterval(timer); return; }
+        const current = pendingS3Uploads.get(jobId);
+        if (!current) {
+          send("status", { state: "Running", message: "Audio uploaded. Starting render..." });
+          clearInterval(timer);
+          res.end();
+        } else if (current.status === "error") {
+          send("jobError", { message: current.error ?? "Failed to upload audio to cloud" });
+          clearInterval(timer);
+          pendingS3Uploads.delete(jobId);
+          res.end();
+        } else {
+          send("status", { state: "Running", message: "Uploading audio to cloud processing server..." });
+        }
+      }, 2000);
+      return;
+    }
+
     setupSse(res);
     const send = (event: string, data: object) =>
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
@@ -2523,7 +2619,7 @@ setInterval(
   () => {
     const cutoff = Date.now() - 2 * 60 * 60 * 1000;
     for (const [id, job] of renderJobs.entries()) {
-      if (job.createdAt < cutoff) {
+      if (job.createdAt < cutoff && (job.status === "done" || job.status === "error" || job.status === "expired")) {
         if (job.outputPath) {
           try {
             unlinkSync(job.outputPath);
@@ -4075,6 +4171,9 @@ router.post("/bhagwat/analyze-audio", (req: Request, res: Response) => {
   const jobId = randomUUID();
 
   if (isBhagwatAnalyzeQueuePrimaryEnabled()) {
+    pendingS3Uploads.set(jobId, { status: "uploading", createdAt: Date.now() });
+    res.json({ jobId, status: "queued", message: "Bhagwat audio analysis queued" });
+
     void ensureBhagwatUploadedAudioS3Key(audioId, audio)
       .then(async (uploadS3Key) => {
         await submitYoutubeQueuePrimaryJob({
@@ -4091,16 +4190,11 @@ router.post("/bhagwat/analyze-audio", (req: Request, res: Response) => {
             sizeBytes: audio.sizeBytes,
           },
         });
-        res.json({ jobId, status: "queued", message: "Bhagwat audio analysis queued" });
+        pendingS3Uploads.delete(jobId);
       })
       .catch((err) => {
         req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio analysis");
-        res.status(502).json({
-          error:
-            err instanceof Error
-              ? err.message
-              : "Failed to queue Bhagwat audio analysis",
-        });
+        pendingS3Uploads.set(jobId, { status: "error", error: err instanceof Error ? err.message : "Failed to queue audio analysis", createdAt: Date.now() });
       });
     return;
   }
@@ -4142,38 +4236,36 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
   const jobId = randomUUID();
 
   if (isBhagwatRenderQueuePrimaryEnabled()) {
-    try {
-      const uploadS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
-      await submitYoutubeQueuePrimaryJob({
-        jobId,
-        jobType: "bhagwat-render",
-        sourceUrl: `upload://bhagwat/${audioId}`,
-        meta: {
-          timeline,
-          videoDuration: videoDuration ?? 0,
-          ...(typeof clipStartSec === "number" ? { clipStartSec } : {}),
-          ...(typeof clipEndSec === "number" ? { clipEndSec } : {}),
-          mode: mode ?? "full",
-          sourceKind: "upload",
-          audioId,
-          uploadS3Key,
-          originalFilename: audio.originalName,
-          mimeType: audio.mimeType,
-          sizeBytes: audio.sizeBytes,
-        },
+    pendingS3Uploads.set(jobId, { status: "uploading", createdAt: Date.now() });
+    res.json({ jobId, status: "queued", message: "Bhagwat audio render queued" });
+
+    void ensureBhagwatUploadedAudioS3Key(audioId, audio)
+      .then(async (uploadS3Key) => {
+        await submitYoutubeQueuePrimaryJob({
+          jobId,
+          jobType: "bhagwat-render",
+          sourceUrl: `upload://bhagwat/${audioId}`,
+          meta: {
+            timeline,
+            videoDuration: videoDuration ?? 0,
+            ...(typeof clipStartSec === "number" ? { clipStartSec } : {}),
+            ...(typeof clipEndSec === "number" ? { clipEndSec } : {}),
+            mode: mode ?? "full",
+            sourceKind: "upload",
+            audioId,
+            uploadS3Key,
+            originalFilename: audio.originalName,
+            mimeType: audio.mimeType,
+            sizeBytes: audio.sizeBytes,
+          },
+        });
+        pendingS3Uploads.delete(jobId);
+      })
+      .catch((err) => {
+        req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio render");
+        pendingS3Uploads.set(jobId, { status: "error", error: err instanceof Error ? err.message : "Failed to queue audio render", createdAt: Date.now() });
       });
-      res.json({ jobId, status: "queued", message: "Bhagwat audio render queued" });
-      return;
-    } catch (err) {
-      req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio render");
-      res.status(502).json({
-        error:
-          err instanceof Error
-            ? err.message
-            : "Failed to queue Bhagwat audio render",
-      });
-      return;
-    }
+    return;
   }
 
   const MAX_CONCURRENT_RENDERS = 3;

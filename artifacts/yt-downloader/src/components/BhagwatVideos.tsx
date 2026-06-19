@@ -798,12 +798,12 @@ function BhagwatEditor({
   useEffect(() => { void checkPendingRenders(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll every 30s while there are background renders not yet shown in main UI
+  const hasBackgroundRenders = pendingRenders.some(r => r.jobId !== renderJobId);
   useEffect(() => {
-    const backgroundCount = pendingRenders.filter(r => r.jobId !== renderJobId).length;
-    if (backgroundCount === 0) return;
+    if (!hasBackgroundRenders) return;
     const timer = setInterval(() => void checkPendingRenders(), 30_000);
     return () => clearInterval(timer);
-  }, [pendingRenders.length, renderJobId, checkPendingRenders]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasBackgroundRenders, checkPendingRenders]);
 
   const setStep = (name: string, status: string, message: string) =>
     setSteps(p => ({ ...p, [name]: { status, message } }));
@@ -1207,11 +1207,6 @@ function BhagwatEditor({
 
   const handleSwitchSource = (next: "youtube" | "upload") => {
     if (next === sourceMode) return;
-    // Clean up uploaded file when switching back to YouTube
-    if (next === "youtube" && uploadedFile) {
-      fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
-      setUploadedFile(null);
-    }
     setSourceMode(next);
     setPhase("idle");
     setTimeline(null);
@@ -1265,6 +1260,7 @@ function BhagwatEditor({
           body: JSON.stringify({ url, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? `Analyze request failed (${res.status})`);
         jobId = data.jobId;
       } else {
         const res = await fetch(`${BASE}/api/bhagwat/analyze-audio`, {
@@ -1273,6 +1269,7 @@ function BhagwatEditor({
           body: JSON.stringify({ audioId: uploadedFile!.audioId, mode }),
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? `Analyze audio request failed (${res.status})`);
         jobId = data.jobId;
       }
       setAnalyzeJobId(jobId);
@@ -1326,7 +1323,9 @@ function BhagwatEditor({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ timeline, videoTitle, videoDuration, transcriptText }),
       });
-      const { jobId } = await res.json();
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `Review request failed (${res.status})`);
+      const { jobId } = data;
       // Close any prior SSE before opening a new one (e.g. user clicked
       // Review again before the previous one finished) and save to esRef so
       // the global Stop button can cancel an in-flight review.
