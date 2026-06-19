@@ -247,13 +247,13 @@ function EditableTimelinePreview({
 
       {/* Timeline scrubber bar */}
       <div className="px-4 py-3 border-b border-white/6">
-        <div className="flex h-3 rounded-md overflow-hidden gap-px">
+        <div className="flex h-3 hover:h-6 rounded-md overflow-hidden gap-px transition-all duration-300 cursor-default">
           {barItems.map((item, i) =>
             item.kind === "gap" ? (
               <div
                 key={`gap-${i}`}
                 style={{ flex: `${item.pct} 0 0%` }}
-                className="h-full bg-white/5 shrink-0"
+                className="h-full bg-white/5 shrink-0 transition-all duration-300"
                 title="No image overlay in this region"
               />
             ) : (
@@ -261,7 +261,7 @@ function EditableTimelinePreview({
                 key={`seg-${item.idx}`}
                 style={{ flex: `${item.pct} 0 0%` }}
                 className={cn(
-                  "h-full min-w-[2px] shrink-0 transition-opacity hover:opacity-90",
+                  "h-full min-w-[2px] shrink-0 transition-all duration-300 hover:opacity-90 hover:brightness-125 relative group",
                   item.seg.isBhajan
                     ? "bg-gradient-to-r from-violet-500 to-violet-400"
                     : "bg-gradient-to-r from-amber-500 to-amber-400",
@@ -279,7 +279,7 @@ function EditableTimelinePreview({
       </div>
 
       {/* Segment list */}
-      <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto">
+      <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto overflow-x-hidden p-1">
         {timeline.map((seg, i) => {
           const hasSuggestion = !!sugByIdx[i];
           const suggestion = sugByIdx[i];
@@ -287,13 +287,19 @@ function EditableTimelinePreview({
           const isEditing = editingIdx === i;
 
           return (
-            <div key={i} className={cn(
-              "px-4 py-3 space-y-2 transition-all",
-              seg.isBhajan ? "bg-violet-500/3" : "",
-              hasSuggestion && "border-l-2 border-yellow-500/50",
-              !hasSuggestion && seg.isBhajan && "border-l-2 border-violet-500/30",
-              !hasSuggestion && !seg.isBhajan && "border-l-2 border-amber-500/20",
-            )}>
+            <motion.div 
+              key={i} 
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: Math.min(i * 0.05, 0.5) }}
+              className={cn(
+                "px-3 py-3 space-y-2 transition-all rounded-xl my-1",
+                seg.isBhajan ? "bg-violet-500/5 hover:bg-violet-500/10" : "hover:bg-white/5",
+                hasSuggestion && "border-l-4 border-yellow-500/50 ml-1",
+                !hasSuggestion && seg.isBhajan && "border-l-4 border-violet-500/30 ml-1",
+                !hasSuggestion && !seg.isBhajan && "border-l-4 border-amber-500/20 ml-1",
+              )}
+            >
               {/* Row header */}
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-white/25 tabular-nums font-mono shrink-0 w-20">
@@ -388,7 +394,7 @@ function EditableTimelinePreview({
                   </motion.div>
                 )}
               </AnimatePresence>
-            </div>
+            </motion.div>
           );
         })}
       </div>
@@ -559,13 +565,13 @@ function RenderHistory({
                 <HistoryDownloadRow key={entry.id} entry={entry} />
               ))}
 
-              <div className="flex items-center justify-between pt-1">
-                <p className="text-[10px] text-white/18">Downloads expire when the server restarts.</p>
+              <div className="flex items-center justify-between pt-2 mt-1 border-t border-white/5">
+                <p className="text-[10px] text-white/30">Downloads expire when the server restarts.</p>
                 <button
                   onClick={onClear}
-                  className="text-[10px] text-white/20 hover:text-white/40 transition-colors"
+                  className="text-[10px] bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 border border-transparent hover:border-red-500/30 px-2.5 py-1 rounded-md transition-all font-medium"
                 >
-                  Clear all
+                  Clear history
                 </button>
               </div>
             </div>
@@ -599,7 +605,14 @@ function AudioUploadZone({
     e.preventDefault();
     setDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file) onFileSelected(file);
+    if (file) {
+      if (!file.type.startsWith("audio/") && !file.type.startsWith("video/")) {
+        // Trigger a shake and show error using a small timeout if needed, but for now just show error.
+        onFileSelected(new File([], "INVALID_TYPE")); // We will handle this in parent or just block it
+        return;
+      }
+      onFileSelected(file);
+    }
   };
 
   const formatBytes = (b: number) => {
@@ -672,7 +685,18 @@ function AudioUploadZone({
           </div>
         )}
       </div>
-      {uploadError && <p className="text-red-400 text-xs mt-2 text-center">{uploadError}</p>}
+      <AnimatePresence>
+        {uploadError && (
+          <motion.p 
+            initial={{ opacity: 0, height: 0 }} 
+            animate={{ opacity: 1, height: "auto" }} 
+            exit={{ opacity: 0, height: 0 }}
+            className="text-red-400 text-xs mt-3 text-center bg-red-500/10 border border-red-500/20 py-2 rounded-lg"
+          >
+            {uploadError}
+          </motion.p>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1164,6 +1188,10 @@ function BhagwatEditor({
   }, []);
 
   const handleFileSelected = async (file: File) => {
+    if (file.name === "INVALID_TYPE") {
+      setUploadError("Invalid file type. Please upload an audio or video file.");
+      return;
+    }
     setUploading(true);
     setUploadProgress(0);
     setUploadError("");
@@ -1635,7 +1663,7 @@ function BhagwatEditor({
 
         <div className="p-5 space-y-5">
           {/* AUDIO SOURCE */}
-          <div className="space-y-2">
+          <div className="space-y-3">
             <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Audio Source</p>
             <div className="flex items-center gap-1.5 bg-black/40 border border-white/8 rounded-xl p-1">
               <button
@@ -1663,19 +1691,57 @@ function BhagwatEditor({
                 Upload Audio
               </button>
             </div>
-          </div>
 
-          {/* Upload zone */}
-          {sourceMode === "upload" && (
-            <AudioUploadZone
-              uploadedFile={uploadedFile}
-              uploading={uploading}
-              uploadProgress={uploadProgress}
-              uploadError={uploadError}
-              onFileSelected={handleFileSelected}
-              onRemove={handleRemoveFile}
-            />
-          )}
+            <div className="overflow-hidden">
+              <AnimatePresence mode="wait">
+                {sourceMode === "youtube" ? (
+                  <motion.div
+                    key="youtube"
+                    initial={{ opacity: 0, y: -10, height: 0 }}
+                    animate={{ opacity: 1, y: 0, height: "auto" }}
+                    exit={{ opacity: 0, y: -10, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <div className="glass-panel rounded-xl px-4 py-3 flex items-center gap-3 border border-amber-500/20 bg-amber-500/5 focus-within:border-amber-500/40 focus-within:bg-amber-500/10 transition-colors">
+                      <Film className="w-4 h-4 text-amber-400 shrink-0" />
+                      <input
+                        type="text"
+                        value={url}
+                        onChange={e => setUrl(e.target.value)}
+                        placeholder="Paste YouTube URL of Bhagwat Katha…"
+                        className="flex-1 bg-transparent text-white placeholder:text-white/30 outline-none text-sm"
+                      />
+                      {url && (
+                        <button
+                          onClick={() => setUrl("")}
+                          className="text-white/30 hover:text-white/60 transition-colors shrink-0"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="upload"
+                    initial={{ opacity: 0, y: -10, height: 0 }}
+                    animate={{ opacity: 1, y: 0, height: "auto" }}
+                    exit={{ opacity: 0, y: -10, height: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <AudioUploadZone
+                      uploadedFile={uploadedFile}
+                      uploading={uploading}
+                      uploadProgress={uploadProgress}
+                      uploadError={uploadError}
+                      onFileSelected={handleFileSelected}
+                      onRemove={handleRemoveFile}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </div>
 
           {/* GENERATION MODE */}
           <div className="space-y-2">
@@ -1753,9 +1819,9 @@ function BhagwatEditor({
             <button
               onClick={handleAnalyze}
               disabled={
-                phase === "analyzing" || phase === "rendering" || reviewing ||
+                phase === "analyzing" || phase === "rendering" || reviewing || uploading ||
                 (sourceMode === "upload" && !uploadedFile) ||
-                uploading
+                (sourceMode === "youtube" && !url.trim())
               }
               className={cn(
                 "w-full relative py-4 rounded-xl text-sm font-bold transition-all overflow-hidden group",
@@ -1856,173 +1922,211 @@ function BhagwatEditor({
       <AnimatePresence>
         {phase === "error" && (
           <motion.div
-            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-            className="glass-panel rounded-2xl p-4 border border-red-500/30 bg-red-500/5"
+            initial={{ opacity: 0, scale: 0.95, y: 10 }} 
+            animate={{ opacity: 1, scale: 1, y: 0 }} 
+            exit={{ opacity: 0, scale: 0.95, y: -10 }}
+            className="rounded-2xl p-4 border border-red-500/50 bg-gradient-to-br from-red-500/10 to-red-900/20 backdrop-blur-md shadow-[0_0_30px_rgba(239,68,68,0.15)] relative overflow-hidden"
           >
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500/0 via-red-500/50 to-red-500/0" />
+            <div className="flex items-start gap-4 relative z-10">
+              <div className="w-10 h-10 rounded-xl bg-red-500/20 border border-red-500/30 flex items-center justify-center shrink-0 shadow-inner">
+                <AlertCircle className="w-5 h-5 text-red-400" />
+              </div>
               <div className="flex-1">
-                <p className="text-sm font-semibold text-red-300 mb-1">Something went wrong</p>
-                <p className="text-xs text-white/50">{errorMsg}</p>
+                <p className="text-sm font-bold text-red-300 mb-1 tracking-tight">Processing Error</p>
+                <p className="text-xs text-white/60 leading-relaxed mb-4">{errorMsg}</p>
+                <Button
+                  size="sm"
+                  onClick={() => { setPhase("idle"); setErrorMsg(""); }}
+                  className="bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 transition-all hover:shadow-[0_0_15px_rgba(239,68,68,0.2)] h-8 px-4"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 mr-2" />
+                  Try Again
+                </Button>
               </div>
             </div>
-            <Button
-              size="sm"
-              onClick={() => { setPhase("idle"); setErrorMsg(""); }}
-              className="mt-3 bg-white/10 hover:bg-white/15 border-white/10 text-white/70"
-            >
-              Try Again
-            </Button>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Timeline + Review + Render */}
-      <AnimatePresence>
-        {phase === "analyzed" && timeline && (
+      <AnimatePresence mode="popLayout">
+        {(phase === "analyzed" || phase === "rendering") && timeline && (
           <motion.div
-            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-            className="space-y-4"
+            key="timeline-view"
+            initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -15 }}
+            transition={{ duration: 0.4, ease: "easeOut" }}
+            className="space-y-4 relative"
           >
-            {videoTitle && (
-              <div className="px-1">
-                <p className="text-white/60 text-sm">
-                  <span className="text-amber-400 font-semibold">"{videoTitle}"</span>
-                  {videoDuration > 0 && <span className="text-white/30 ml-2">· {formatSec(videoDuration)}</span>}
-                </p>
-              </div>
-            )}
-
-            {/* Editable Timeline */}
-            <EditableTimelinePreview
-              timeline={timeline}
-              suggestions={suggestions}
-              videoDuration={videoDuration}
-              onEditPrompt={handleEditPrompt}
-              onAcceptSuggestion={handleAcceptSuggestion}
-              onDismissSuggestion={handleDismissSuggestion}
-            />
-
-            {/* AI Plan Review panel */}
-            <div className="glass-panel rounded-2xl overflow-hidden border border-yellow-500/15">
-              <div className="p-3 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Lightbulb className="w-4 h-4 text-yellow-400" />
-                  <span className="text-sm font-medium text-white/80">AI Plan Review</span>
-                  {suggestions.length > 0 && (
-                    <span className="text-xs bg-yellow-500/20 text-yellow-300 border border-yellow-500/30 px-2 py-0.5 rounded-full">
-                      {suggestions.length} suggestion{suggestions.length !== 1 ? "s" : ""}
-                    </span>
-                  )}
-                </div>
-                <Button
-                  size="sm"
-                  onClick={handleReview}
-                  disabled={reviewing}
-                  className="bg-yellow-600/60 hover:bg-yellow-500/70 border-yellow-500/30 text-white text-xs h-8"
+            {/* Render Overlay - keeps timeline visible but dimmed in background */}
+            <AnimatePresence>
+              {phase === "rendering" && (
+                <motion.div
+                  initial={{ opacity: 0, backdropFilter: "blur(0px)" }}
+                  animate={{ opacity: 1, backdropFilter: "blur(4px)" }}
+                  exit={{ opacity: 0, backdropFilter: "blur(0px)" }}
+                  className="absolute inset-0 z-20 bg-[#0f0f14]/80 rounded-2xl flex items-start justify-center pt-8"
                 >
-                  {reviewing
-                    ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" />Reviewing…</>
-                    : reviewText
-                    ? <><Lightbulb className="w-3 h-3 mr-1.5" />Re-review</>
-                    : <><Lightbulb className="w-3 h-3 mr-1.5" />Review with AI</>
-                  }
-                </Button>
-              </div>
+                  {/* The render progress UI will be rendered below as a sibling, but we dim the timeline here */}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
-              {/* Live streaming review text */}
-              {(reviewText || reviewing) && (
-                <div
-                  ref={reviewScrollRef}
-                  className="border-t border-white/8 max-h-48 overflow-y-auto p-3 bg-black/20"
-                >
-                  <p className="text-xs text-white/50 leading-relaxed whitespace-pre-wrap font-mono">
-                    {reviewText.replace(/SUGGESTIONS_JSON[\s\S]*?END_SUGGESTIONS/g, "").trimEnd()}
-                    {reviewing && (
-                      <span className="inline-block w-1.5 h-3.5 bg-yellow-400/70 animate-pulse ml-0.5 align-middle rounded-sm" />
-                    )}
+            <motion.div
+              animate={{ scale: phase === "rendering" ? 0.98 : 1, opacity: phase === "rendering" ? 0.4 : 1 }}
+              transition={{ duration: 0.5, ease: "easeOut" }}
+              className="space-y-4 pointer-events-auto"
+              style={{ pointerEvents: phase === "rendering" ? "none" : "auto" }}
+            >
+              {videoTitle && (
+                <div className="px-1">
+                  <p className="text-white/60 text-sm">
+                    <span className="text-amber-400 font-semibold">"{videoTitle}"</span>
+                    {videoDuration > 0 && <span className="text-white/30 ml-2">· {formatSec(videoDuration)}</span>}
                   </p>
                 </div>
               )}
 
-              {/* Structured suggestions list — shown after review completes */}
-              {!reviewing && suggestions.length > 0 && (
-                <div className="border-t border-yellow-500/15 p-3 space-y-2">
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs text-yellow-300/80 font-medium">
-                      {suggestions.length} improvement{suggestions.length !== 1 ? "s" : ""} suggested
-                    </p>
-                    <button
-                      onClick={handleAcceptAllSuggestions}
-                      className="flex items-center gap-1 text-xs px-2.5 py-1 bg-yellow-600/60 hover:bg-yellow-500/70 text-white rounded-lg transition-colors"
-                    >
-                      <Check className="w-3 h-3" /> Accept All
-                    </button>
+              {/* Editable Timeline */}
+              <EditableTimelinePreview
+                timeline={timeline}
+                suggestions={suggestions}
+                videoDuration={videoDuration}
+                onEditPrompt={handleEditPrompt}
+                onAcceptSuggestion={handleAcceptSuggestion}
+                onDismissSuggestion={handleDismissSuggestion}
+              />
+
+              {/* AI Plan Review panel */}
+              <div className="glass-panel rounded-2xl overflow-hidden border border-yellow-500/15">
+                <div className="p-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="w-4 h-4 text-yellow-400" />
+                    <span className="text-sm font-medium text-white/80">AI Plan Review</span>
+                    {suggestions.length > 0 && (
+                      <span className="text-xs bg-yellow-500/20 text-yellow-300 border border-yellow-500/30 px-2 py-0.5 rounded-full">
+                        {suggestions.length} suggestion{suggestions.length !== 1 ? "s" : ""}
+                      </span>
+                    )}
                   </div>
-                  <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
-                    {suggestions.map((s) => (
-                      <div key={s.segIdx} className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-2.5 space-y-1.5">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs text-yellow-400/90 font-semibold">Scene #{s.segIdx + 1}</span>
-                          {timeline[s.segIdx] && (
-                            <span className="text-xs text-white/30 tabular-nums">
-                              {formatSec(timeline[s.segIdx].startSec)} – {formatSec(timeline[s.segIdx].endSec)}
-                            </span>
-                          )}
-                          {timeline[s.segIdx] && (
-                            <span className="text-xs text-white/30 truncate max-w-[140px]">{timeline[s.segIdx].description}</span>
-                          )}
-                        </div>
-                        <p className="text-xs text-yellow-300/60 leading-snug">{s.reason}</p>
-                        <p className="text-xs text-white/55 italic leading-snug">{s.improvedPrompt}</p>
-                        <div className="flex gap-1.5 pt-0.5">
-                          <button
-                            onClick={() => handleAcceptSuggestion(s)}
-                            className="flex items-center gap-1 text-xs px-2.5 py-1 bg-yellow-600/70 hover:bg-yellow-500/70 text-white rounded-lg transition-colors"
-                          >
-                            <Check className="w-3 h-3" /> Accept
-                          </button>
-                          <button
-                            onClick={() => handleDismissSuggestion(s.segIdx)}
-                            className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white/8 hover:bg-white/12 text-white/50 rounded-lg transition-colors"
-                          >
-                            <X className="w-3 h-3" /> Dismiss
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  <Button
+                    size="sm"
+                    onClick={handleReview}
+                    disabled={reviewing}
+                    className="bg-yellow-600/60 hover:bg-yellow-500/70 border-yellow-500/30 text-white text-xs h-8 transition-all hover:shadow-[0_0_15px_rgba(202,138,4,0.3)]"
+                  >
+                    {reviewing
+                      ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" />Reviewing…</>
+                      : reviewText
+                      ? <><Lightbulb className="w-3 h-3 mr-1.5" />Re-review</>
+                      : <><Lightbulb className="w-3 h-3 mr-1.5" />Review with AI</>
+                    }
+                  </Button>
                 </div>
-              )}
 
-              {!reviewText && !reviewing && suggestions.length === 0 && (
-                <p className="px-3 pb-3 text-xs text-white/25">
-                  Let AI review each scene prompt and suggest improvements before you render.
+                {/* Live streaming review text */}
+                {(reviewText || reviewing) && (
+                  <div
+                    ref={reviewScrollRef}
+                    className="border-t border-white/8 max-h-48 overflow-y-auto p-3 bg-black/20"
+                  >
+                    <p className="text-xs text-white/50 leading-relaxed whitespace-pre-wrap font-mono">
+                      {reviewText.replace(/SUGGESTIONS_JSON[\s\S]*?END_SUGGESTIONS/g, "").trimEnd()}
+                      {reviewing && (
+                        <span className="inline-block w-1.5 h-3.5 bg-yellow-400/70 animate-pulse ml-0.5 align-middle rounded-sm" />
+                      )}
+                    </p>
+                  </div>
+                )}
+
+                {/* Structured suggestions list — shown after review completes */}
+                {!reviewing && suggestions.length > 0 && (
+                  <div className="border-t border-yellow-500/15 p-3 space-y-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <p className="text-xs text-yellow-300/80 font-medium">
+                        {suggestions.length} improvement{suggestions.length !== 1 ? "s" : ""} suggested
+                      </p>
+                      <button
+                        onClick={handleAcceptAllSuggestions}
+                        className="flex items-center gap-1 text-xs px-2.5 py-1 bg-yellow-600/60 hover:bg-yellow-500/70 text-white rounded-lg transition-colors"
+                      >
+                        <Check className="w-3 h-3" /> Accept All
+                      </button>
+                    </div>
+                    <div className="space-y-2 max-h-72 overflow-y-auto pr-0.5">
+                      {suggestions.map((s, i) => (
+                        <motion.div 
+                          key={s.segIdx} 
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: i * 0.05 }}
+                          className="rounded-lg border border-yellow-500/20 bg-yellow-500/5 p-2.5 space-y-1.5"
+                        >
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-xs text-yellow-400/90 font-semibold">Scene #{s.segIdx + 1}</span>
+                            {timeline[s.segIdx] && (
+                              <span className="text-xs text-white/30 tabular-nums">
+                                {formatSec(timeline[s.segIdx].startSec)} – {formatSec(timeline[s.segIdx].endSec)}
+                              </span>
+                            )}
+                            {timeline[s.segIdx] && (
+                              <span className="text-xs text-white/30 truncate max-w-[140px]">{timeline[s.segIdx].description}</span>
+                            )}
+                          </div>
+                          <p className="text-xs text-yellow-300/60 leading-snug">{s.reason}</p>
+                          <p className="text-xs text-white/55 italic leading-snug">{s.improvedPrompt}</p>
+                          <div className="flex gap-1.5 pt-0.5">
+                            <button
+                              onClick={() => handleAcceptSuggestion(s)}
+                              className="flex items-center gap-1 text-xs px-2.5 py-1 bg-yellow-600/70 hover:bg-yellow-500/70 text-white rounded-lg transition-colors"
+                            >
+                              <Check className="w-3 h-3" /> Accept
+                            </button>
+                            <button
+                              onClick={() => handleDismissSuggestion(s.segIdx)}
+                              className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white/8 hover:bg-white/12 text-white/50 rounded-lg transition-colors"
+                            >
+                              <X className="w-3 h-3" /> Dismiss
+                            </button>
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {!reviewText && !reviewing && suggestions.length === 0 && (
+                  <p className="px-3 pb-3 text-xs text-white/25">
+                    Let AI review each scene prompt and suggest improvements before you render.
+                  </p>
+                )}
+              </div>
+
+              {/* Image count info */}
+              <div className="glass-panel rounded-xl p-3 flex items-center gap-3 border border-violet-500/20 bg-violet-500/5">
+                <ImageIcon className="w-4 h-4 text-violet-400 shrink-0" />
+                <p className="text-xs text-white/50 leading-relaxed">
+                  Gemini will generate <span className="text-violet-300 font-medium">~{timeline.length} devotional images</span> — a unique image for each scene — then render the full video.
                 </p>
-              )}
-            </div>
+              </div>
 
-            {/* Image count info */}
-            <div className="glass-panel rounded-xl p-3 flex items-center gap-3 border border-violet-500/20 bg-violet-500/5">
-              <ImageIcon className="w-4 h-4 text-violet-400 shrink-0" />
-              <p className="text-xs text-white/50 leading-relaxed">
-                Gemini will generate <span className="text-violet-300 font-medium">~{timeline.length} devotional images</span> — a unique image for each scene — then render the full video.
-              </p>
-            </div>
-
-            <Button
-              onClick={() => handleRender()}
-              disabled={reviewing}
-              className="w-full bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border-amber-500/30 text-white shadow-[0_0_30px_rgba(217,119,6,0.3)]"
-            >
-              <Sparkles className="w-4 h-4 mr-2" />
-              Generate Images &amp; Render Video
-            </Button>
+              <Button
+                onClick={() => handleRender()}
+                disabled={reviewing}
+                className="w-full relative py-5 bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 border border-amber-500/30 text-white shadow-[0_0_30px_rgba(217,119,6,0.3)] transition-all overflow-hidden group"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700 pointer-events-none" />
+                <span className="relative flex items-center gap-2">
+                  <Sparkles className="w-4 h-4" />
+                  Generate Images &amp; Render Video
+                </span>
+              </Button>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Render Progress */}
+      {/* Render Progress Overlay (absolutely positioned over timeline) */}
       <AnimatePresence>
         {phase === "rendering" && (() => {
           const stage = renderPercent < 15 ? 1 : renderPercent < 65 ? 2 : 3;
@@ -2033,27 +2137,30 @@ function BhagwatEditor({
           ];
           return (
             <motion.div
-              initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-              className="glass-panel rounded-2xl p-5 space-y-4 border border-amber-500/15"
+              initial={{ opacity: 0, scale: 0.95, y: 30 }} 
+              animate={{ opacity: 1, scale: 1, y: 0 }} 
+              exit={{ opacity: 0, scale: 0.95, y: -20 }}
+              transition={{ type: "spring", stiffness: 300, damping: 25 }}
+              className="relative z-30 -mt-[450px] mx-auto w-[90%] max-w-lg glass-panel rounded-2xl p-6 border border-amber-500/30 shadow-[0_0_50px_rgba(245,158,11,0.15)] bg-[#0f0f14]/95 backdrop-blur-xl"
             >
               {/* Header row */}
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0">
-                  <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
+              <div className="flex items-start gap-4 mb-6">
+                <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0 shadow-inner">
+                  <Loader2 className="w-6 h-6 text-amber-400 animate-spin" />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-white leading-tight">
+                <div className="flex-1 min-w-0 pt-1">
+                  <p className="text-base font-bold text-white leading-tight tracking-tight">
                     {stage === 1 ? "Downloading audio…" :
                      stage === 2 ? "Generating devotional images…" :
                      "Compositing with FFmpeg…"}
                   </p>
-                  <p className="text-xs text-white/35 mt-0.5 truncate">{renderMessage || "Starting…"}</p>
+                  <p className="text-xs text-white/50 mt-1 truncate">{renderMessage || "Starting…"}</p>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-amber-400 font-bold text-lg tabular-nums leading-none">{renderPercent}%</span>
+                <div className="flex flex-col items-end gap-2 shrink-0">
+                  <span className="text-amber-400 font-black text-2xl tabular-nums leading-none tracking-tighter">{renderPercent}%</span>
                   <button
                     onClick={handleStop}
-                    className="flex items-center gap-1 text-xs px-2.5 py-1.5 bg-red-600/70 hover:bg-red-500/80 text-white rounded-lg transition-colors border border-red-500/30"
+                    className="flex items-center gap-1.5 text-[10px] px-2.5 py-1 bg-red-600/10 hover:bg-red-500/20 text-red-400 rounded-md transition-colors border border-red-500/20 uppercase tracking-wider font-bold"
                     title="Stop rendering"
                   >
                     <Square className="w-2.5 h-2.5 fill-current" /> Stop
@@ -2062,58 +2169,61 @@ function BhagwatEditor({
               </div>
 
               {/* Stage breadcrumb */}
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1 mb-5">
                 {stages.map((s, i) => (
                   <div key={s.id} className="flex items-center gap-1 flex-1">
                     <div className={cn(
-                      "flex-1 flex items-center justify-center gap-1 py-1.5 px-2 rounded-lg text-[10px] font-medium transition-all",
-                      stage > s.id ? "bg-green-500/15 text-green-400 border border-green-500/20" :
-                      stage === s.id ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" :
+                      "flex-1 flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-[10px] font-bold transition-all uppercase tracking-wider",
+                      stage > s.id ? "bg-green-500/15 text-green-400 border border-green-500/20 shadow-[0_0_10px_rgba(34,197,94,0.1)]" :
+                      stage === s.id ? "bg-amber-500/20 text-amber-300 border border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.15)]" :
                       "bg-white/4 text-white/20 border border-white/8"
                     )}>
                       {stage > s.id
-                        ? <CheckCircle2 className="w-3 h-3 shrink-0" />
+                        ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                         : stage === s.id
-                          ? <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
                           : s.icon}
                       <span className="hidden sm:inline">{s.label}</span>
                     </div>
                     {i < stages.length - 1 && (
-                      <ChevronRight className="w-3 h-3 text-white/15 shrink-0" />
+                      <ChevronRight className="w-3.5 h-3.5 text-white/10 shrink-0 mx-0.5" />
                     )}
                   </div>
                 ))}
               </div>
 
               {/* Progress bar */}
-              <div className="h-2.5 rounded-full bg-white/8 overflow-hidden">
+              <div className="h-3 rounded-full bg-black/40 overflow-hidden border border-white/5 relative shadow-inner mb-4">
+                <div className="absolute inset-0 bg-white/5" />
                 <motion.div
-                  className="h-full rounded-full bg-gradient-to-r from-amber-500 via-orange-400 to-amber-400"
-                  style={{ boxShadow: "0 0 8px rgba(251,146,60,0.4)" }}
+                  className="h-full rounded-full bg-gradient-to-r from-amber-600 via-orange-400 to-amber-400 relative"
+                  style={{ boxShadow: "0 0 12px rgba(251,146,60,0.5)" }}
                   animate={{ width: `${renderPercent}%` }}
                   transition={{ duration: 0.6, ease: "easeOut" }}
-                />
+                >
+                  <div className="absolute inset-0 bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.2)_50%,transparent_75%,transparent_100%)] bg-[length:20px_20px] animate-[shimmer_1s_linear_infinite]" />
+                </motion.div>
               </div>
 
               {/* Background processing note */}
-              <div className="flex items-center gap-2.5 rounded-xl bg-white/3 border border-white/8 px-3 py-2.5">
-                <Cloud className="w-4 h-4 text-violet-400/60 shrink-0" />
-                <p className="text-xs text-white/35 leading-relaxed">
-                  Render runs on the server — <span className="text-white/55">you can close this tab</span> and come back later. The finished video will appear in your history.
+              <div className="flex items-center gap-3 rounded-xl bg-violet-500/5 border border-violet-500/20 px-4 py-3">
+                <Cloud className="w-5 h-5 text-violet-400/80 shrink-0" />
+                <p className="text-xs text-white/50 leading-relaxed font-medium">
+                  Render runs securely on the server. <span className="text-violet-300">You can safely close this tab</span> and return later.
                 </p>
               </div>
 
               {sseReconnecting && (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 mt-4 justify-center">
                   <Wifi className="w-3.5 h-3.5 text-yellow-400 animate-pulse shrink-0" />
-                  <span className="text-xs text-yellow-400/70">Reconnecting to server…</span>
+                  <span className="text-xs text-yellow-400/70 font-medium">Reconnecting to server stream…</span>
                 </div>
               )}
               {autoImprovedCount !== null && autoImprovedCount > 0 && (
-                <div className="flex items-center gap-2 rounded-lg bg-yellow-500/8 border border-yellow-500/20 px-3 py-2">
+                <div className="flex items-center gap-2 rounded-lg bg-yellow-500/8 border border-yellow-500/20 px-3 py-2 mt-3 justify-center">
                   <Lightbulb className="w-3.5 h-3.5 text-yellow-400 shrink-0" />
-                  <p className="text-xs text-yellow-300/70">
-                    {autoImprovedCount} AI improvement{autoImprovedCount !== 1 ? "s" : ""} applied to prompts &amp; scenes
+                  <p className="text-xs text-yellow-300/80 font-medium">
+                    {autoImprovedCount} AI improvement{autoImprovedCount !== 1 ? "s" : ""} applied
                   </p>
                 </div>
               )}
@@ -2248,28 +2358,6 @@ export function BhagwatVideos() {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-5"
     >
-      {/* Shared YouTube URL input — visible on both tabs */}
-      {!(tab === "editor" && sourceMode === "upload") && (
-        <div className="glass-panel rounded-2xl px-4 py-3 flex items-center gap-3">
-          <Film className="w-4 h-4 text-amber-400 shrink-0" />
-          <input
-            type="text"
-            value={url}
-            onChange={e => setUrl(e.target.value)}
-            placeholder="Paste YouTube URL of Bhagwat Katha, Ram Katha, or any devotional video…"
-            className="flex-1 bg-transparent text-white placeholder:text-white/30 outline-none text-sm"
-          />
-          {url && (
-            <button
-              onClick={() => setUrl("")}
-              className="text-white/30 hover:text-white/60 transition-colors shrink-0"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-      )}
-
       <div className="flex items-center gap-1 bg-white/5 border border-white/10 rounded-2xl p-1">
         <button
           onClick={() => setTab("editor")}

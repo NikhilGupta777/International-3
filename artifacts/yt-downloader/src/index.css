@@ -6,6 +6,11 @@
 @custom-variant dark (&:is(.dark *));
 
 html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed; overscroll-behavior-y: none; }
+
+@keyframes shimmer {
+  0% { background-position: 20px 0; }
+  100% { background-position: 0 0; }
+}
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
