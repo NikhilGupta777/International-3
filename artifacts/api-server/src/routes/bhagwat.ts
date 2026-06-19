@@ -200,18 +200,6 @@ export interface UploadedAudio {
   createdAt: number;
 }
 const uploadedAudios = new Map<string, UploadedAudio>();
-const pendingS3Uploads = new Map<string, { status: "uploading" | "error"; error?: string; createdAt: number }>();
-
-// Sweep pending S3 uploads older than 4 hours
-setInterval(
-  () => {
-    const cutoff = Date.now() - 4 * 60 * 60 * 1000;
-    for (const [id, upload] of pendingS3Uploads.entries()) {
-      if (upload.createdAt < cutoff) pendingS3Uploads.delete(id);
-    }
-  },
-  30 * 60 * 1000,
-);
 
 export function createBhagwatUploadedAudioState(
   audioId: string,
@@ -1517,10 +1505,6 @@ setInterval(
 // never exposed in client-side JavaScript.
 router.post("/bhagwat/auth", (req: Request, res: Response) => {
   const bodyPassword = (req.body as { password?: string })?.password;
-  const queryPassword = (() => {
-    const raw = (req.query as Record<string, unknown> | undefined)?.password;
-    return typeof raw === "string" ? raw : "";
-  })();
   const rawPassword = (() => {
     const raw = (req as Request & { rawBody?: unknown }).rawBody;
     if (typeof raw !== "string" || !raw) return "";
@@ -1547,7 +1531,7 @@ router.post("/bhagwat/auth", (req: Request, res: Response) => {
       return "";
     }
   })();
-  const password = bodyPassword || rawPassword || eventPassword || queryPassword;
+  const password = bodyPassword || rawPassword || eventPassword;
   const expected = process.env.BHAGWAT_PASSWORD;
   if (!expected) {
     res.status(503).json({ ok: false, message: "BHAGWAT_PASSWORD is not configured" });
@@ -1636,38 +1620,6 @@ router.get("/bhagwat/analyze-status/:jobId", (req: Request, res: Response) => {
   if (!job) {
     if (!isBhagwatAnalyzeQueueEnabled()) {
       res.status(404).json({ error: "Job not found" });
-      return;
-    }
-
-    const s3Upload = pendingS3Uploads.get(jobId);
-    if (s3Upload) {
-      setupSse(res);
-      const send = (event: string, data: object) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      if (s3Upload.status === "error") {
-        send("jobError", { message: s3Upload.error ?? "Failed to upload audio to cloud" });
-        pendingS3Uploads.delete(jobId);
-        res.end();
-        return;
-      }
-      let closed = false;
-      req.on("close", () => { closed = true; });
-      const timer = setInterval(() => {
-        if (closed) { clearInterval(timer); return; }
-        const current = pendingS3Uploads.get(jobId);
-        if (!current) {
-          send("step", { step: "metadata", status: "running", message: "Audio uploaded. Starting analysis..." });
-          clearInterval(timer);
-          // Let client reconnect to pick up normal queue polling
-          res.end();
-        } else if (current.status === "error") {
-          send("jobError", { message: current.error ?? "Failed to upload audio to cloud" });
-          clearInterval(timer);
-          pendingS3Uploads.delete(jobId);
-          res.end();
-        } else {
-          send("step", { step: "metadata", status: "running", message: "Uploading audio to cloud processing server..." });
-        }
-      }, 2000);
       return;
     }
 
@@ -2264,37 +2216,6 @@ router.get("/bhagwat/render-status/:jobId", (req: Request, res: Response) => {
   if (!job) {
     if (!isBhagwatRenderQueueEnabled()) {
       res.status(404).json({ error: "Job not found" });
-      return;
-    }
-
-    const s3Upload = pendingS3Uploads.get(jobId);
-    if (s3Upload) {
-      setupSse(res);
-      const send = (event: string, data: object) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      if (s3Upload.status === "error") {
-        send("jobError", { message: s3Upload.error ?? "Failed to upload audio to cloud" });
-        pendingS3Uploads.delete(jobId);
-        res.end();
-        return;
-      }
-      let closed = false;
-      req.on("close", () => { closed = true; });
-      const timer = setInterval(() => {
-        if (closed) { clearInterval(timer); return; }
-        const current = pendingS3Uploads.get(jobId);
-        if (!current) {
-          send("status", { state: "Running", message: "Audio uploaded. Starting render..." });
-          clearInterval(timer);
-          res.end();
-        } else if (current.status === "error") {
-          send("jobError", { message: current.error ?? "Failed to upload audio to cloud" });
-          clearInterval(timer);
-          pendingS3Uploads.delete(jobId);
-          res.end();
-        } else {
-          send("status", { state: "Running", message: "Uploading audio to cloud processing server..." });
-        }
-      }, 2000);
       return;
     }
 
@@ -4153,7 +4074,7 @@ router.delete("/bhagwat/audio/:audioId", (req: Request, res: Response) => {
 });
 
 // ── Analyze uploaded audio (uses same analysisJobs + SSE endpoint as YouTube) ─
-router.post("/bhagwat/analyze-audio", (req: Request, res: Response) => {
+router.post("/bhagwat/analyze-audio", async (req: Request, res: Response) => {
   const { audioId, mode } = req.body as {
     audioId: string;
     mode?: "smart" | "full";
@@ -4172,31 +4093,31 @@ router.post("/bhagwat/analyze-audio", (req: Request, res: Response) => {
   const jobId = randomUUID();
 
   if (isBhagwatAnalyzeQueuePrimaryEnabled()) {
-    pendingS3Uploads.set(jobId, { status: "uploading", createdAt: Date.now() });
-    res.json({ jobId, status: "queued", message: "Bhagwat audio analysis queued" });
-
-    void ensureBhagwatUploadedAudioS3Key(audioId, audio)
-      .then(async (uploadS3Key) => {
-        await submitYoutubeQueuePrimaryJob({
-          jobId,
-          jobType: "bhagwat-analyze",
-          sourceUrl: `upload://bhagwat/${audioId}`,
-          meta: {
-            mode: mode ?? "full",
-            sourceKind: "upload",
-            audioId,
-            uploadS3Key,
-            originalFilename: audio.originalName,
-            mimeType: audio.mimeType,
-            sizeBytes: audio.sizeBytes,
-          },
-        });
-        pendingS3Uploads.delete(jobId);
-      })
-      .catch((err) => {
-        req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio analysis");
-        pendingS3Uploads.set(jobId, { status: "error", error: err instanceof Error ? err.message : "Failed to queue audio analysis", createdAt: Date.now() });
+    try {
+      const uploadS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
+      const batchJobId = await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "bhagwat-analyze",
+        sourceUrl: `upload://bhagwat/${audioId}`,
+        meta: {
+          mode: mode ?? "full",
+          sourceKind: "upload",
+          audioId,
+          uploadS3Key,
+          originalFilename: audio.originalName,
+          mimeType: audio.mimeType,
+          sizeBytes: audio.sizeBytes,
+        },
       });
+      if (!batchJobId) {
+        res.status(503).json({ error: "Bhagwat audio queue is not configured" });
+        return;
+      }
+      res.json({ jobId, status: "queued", message: "Bhagwat audio analysis queued" });
+    } catch (err) {
+      req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio analysis");
+      res.status(500).json({ error: err instanceof Error ? err.message : "Failed to queue audio analysis" });
+    }
     return;
   }
 
@@ -4237,35 +4158,35 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
   const jobId = randomUUID();
 
   if (isBhagwatRenderQueuePrimaryEnabled()) {
-    pendingS3Uploads.set(jobId, { status: "uploading", createdAt: Date.now() });
-    res.json({ jobId, status: "queued", message: "Bhagwat audio render queued" });
-
-    void ensureBhagwatUploadedAudioS3Key(audioId, audio)
-      .then(async (uploadS3Key) => {
-        await submitYoutubeQueuePrimaryJob({
-          jobId,
-          jobType: "bhagwat-render",
-          sourceUrl: `upload://bhagwat/${audioId}`,
-          meta: {
-            timeline,
-            videoDuration: videoDuration ?? 0,
-            ...(typeof clipStartSec === "number" ? { clipStartSec } : {}),
-            ...(typeof clipEndSec === "number" ? { clipEndSec } : {}),
-            mode: mode ?? "full",
-            sourceKind: "upload",
-            audioId,
-            uploadS3Key,
-            originalFilename: audio.originalName,
-            mimeType: audio.mimeType,
-            sizeBytes: audio.sizeBytes,
-          },
-        });
-        pendingS3Uploads.delete(jobId);
-      })
-      .catch((err) => {
-        req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio render");
-        pendingS3Uploads.set(jobId, { status: "error", error: err instanceof Error ? err.message : "Failed to queue audio render", createdAt: Date.now() });
+    try {
+      const uploadS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
+      const batchJobId = await submitYoutubeQueuePrimaryJob({
+        jobId,
+        jobType: "bhagwat-render",
+        sourceUrl: `upload://bhagwat/${audioId}`,
+        meta: {
+          timeline,
+          videoDuration: videoDuration ?? 0,
+          ...(typeof clipStartSec === "number" ? { clipStartSec } : {}),
+          ...(typeof clipEndSec === "number" ? { clipEndSec } : {}),
+          mode: mode ?? "full",
+          sourceKind: "upload",
+          audioId,
+          uploadS3Key,
+          originalFilename: audio.originalName,
+          mimeType: audio.mimeType,
+          sizeBytes: audio.sizeBytes,
+        },
       });
+      if (!batchJobId) {
+        res.status(503).json({ error: "Bhagwat audio queue is not configured" });
+        return;
+      }
+      res.json({ jobId, status: "queued", message: "Bhagwat audio render queued" });
+    } catch (err) {
+      req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio render");
+      res.status(500).json({ error: err instanceof Error ? err.message : "Failed to queue audio render" });
+    }
     return;
   }
 

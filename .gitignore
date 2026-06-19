@@ -103,6 +103,17 @@ storage-state.json
 *.local-secrets.bak
 transcript_*.txt
 transcript_*.json
+run-timestamps.mjs
+vertex_backiop/
+payload.json
+trust.json
+setup_oidc.ps1
+incident-session-log.md
+live-openapi.json
+run_log.txt
+AWS-MASTER-SETUP-AND-MIGRATION.md
+artifacts/malware-quarantine/
+artifacts/malware-scan-report-*.txt
 *.hi-orig.srv1
 branch_structure.json
 temp_auto_push.bat
