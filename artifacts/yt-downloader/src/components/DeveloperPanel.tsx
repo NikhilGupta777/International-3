@@ -186,12 +186,13 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
     setTesting(true);
     setTestResult(null);
     try {
-      const res = await fetch(`${origin}/api/v1/health`, {
+      const res = await fetch(`${origin}/api/v1/jobs/test`, {
         headers: { Authorization: `Bearer ${k}` },
       });
       const body = await res.json().catch(() => ({}));
+      const ok = res.ok || res.status === 404; // 404 means auth passed
       setTestResult({
-        ok: res.ok,
+        ok,
         status: res.status,
         rate: {
           limit: res.headers.get("X-RateLimit-Limit"),
@@ -503,7 +504,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
               API Playground
             </h2>
             <p className="mb-5 text-sm text-slate-400">
-              Verify a key instantly by pinging the <code className="text-slate-300 font-mono text-xs">/api/v1/health</code> endpoint.
+              Verify a key instantly by pinging the <code className="text-slate-300 font-mono text-xs">/api/v1/jobs/test</code> endpoint.
             </p>
             
             <div className="space-y-3">
