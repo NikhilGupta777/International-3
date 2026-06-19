@@ -186,22 +186,22 @@ function EndpointExampleTabs({ endpoint }: { endpoint: EndpointDoc }) {
   const bodyMatch = endpoint.example.match(/-d '(\{.*?\})'/s);
   const bodyJson = bodyMatch ? bodyMatch[1] : null;
 
-  const nodeExample = \`const r = await fetch("\${API_BASE}\${endpoint.path}", {
-  method: "\${endpoint.method}",
+  const nodeExample = `const r = await fetch("${API_BASE}${endpoint.path}", {
+  method: "${endpoint.method}",
   headers: { 
     Authorization: "Bearer vms_live_YOUR_KEY",
     "Content-Type": "application/json"
-  }\${bodyJson ? \`,\\n  body: JSON.stringify(\${bodyJson})\` : ""}
+  }${bodyJson ? `,\n  body: JSON.stringify(${bodyJson})` : ""}
 });
 const data = await r.json();
-console.log(data);\`;
+console.log(data);`;
 
-  const pythonExample = \`import requests
+  const pythonExample = `import requests
 
-r = requests.\${endpoint.method.toLowerCase()}("\${API_BASE}\${endpoint.path}",
-    headers={"Authorization": "Bearer vms_live_YOUR_KEY"}\${bodyJson ? \`,\\n    json=\${bodyJson}\` : ""}
+r = requests.${endpoint.method.toLowerCase()}("${API_BASE}${endpoint.path}",
+    headers={"Authorization": "Bearer vms_live_YOUR_KEY"}${bodyJson ? `,\n    json=${bodyJson}` : ""}
 )
-print(r.json())\`;
+print(r.json())`;
 
   const value = tab === "curl" ? endpoint.example : tab === "node" ? nodeExample : pythonExample;
   const langStr = tab === "curl" ? "bash" : tab === "node" ? "typescript" : "python";
@@ -250,17 +250,17 @@ export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
     return () => observer.disconnect();
   }, []);
 
-  const quickStart = \`curl -X POST \${API_BASE}/api/v1/clips \\\\
-  -H "Authorization: Bearer vms_live_YOUR_KEY" \\\\
-  -H "Content-Type: application/json" \\\\
-  -d '{"url":"https://youtu.be/VIDEO_ID"}'\`;
+  const quickStart = `curl -X POST ${API_BASE}/api/v1/clips \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
 
-  const nodeExample = \`const BASE = "\${API_BASE}";
+  const nodeExample = `const BASE = "${API_BASE}";
 const KEY = process.env.VMS_API_KEY;
-const headers = { Authorization: \\\`Bearer \\\${KEY}\\\`, "Content-Type": "application/json" };
+const headers = { Authorization: \`Bearer \${KEY}\`, "Content-Type": "application/json" };
 
 // 1) Start a job
-const r = await fetch(\\\`\\\${BASE}/api/v1/clips\\\`, {
+const r = await fetch(\`\${BASE}/api/v1/clips\`, {
   method: "POST", headers,
   body: JSON.stringify({ url: "https://youtu.be/VIDEO_ID", durations: [30, 60] }),
 });
@@ -275,11 +275,11 @@ for (;;) {
     break;
   }
   await new Promise((s) => setTimeout(s, 5000));
-}\`;
+}`;
 
-  const pythonExample = \`import os, time, requests
+  const pythonExample = `import os, time, requests
 
-BASE = "\${API_BASE}"
+BASE = "${API_BASE}"
 headers = {"Authorization": f"Bearer {os.environ.get('VMS_API_KEY')}"}
 
 # 1) Start a job
@@ -295,33 +295,33 @@ while True:
     if job["terminal"]:
         print("result" if job["succeeded"] else "error", job.get("result") or job.get("message"))
         break
-    time.sleep(5)\`;
+    time.sleep(5)`;
 
   const examples = { curl: quickStart, node: nodeExample, python: pythonExample };
 
   const [activeTab, setActiveTab] = useState<"curl" | "node" | "python">("node");
 
-  const pollExample = \`curl \${API_BASE}/api/v1/jobs/JOB_ID \\\\
-  -H "Authorization: Bearer vms_live_YOUR_KEY"\`;
+  const pollExample = `curl ${API_BASE}/api/v1/jobs/JOB_ID \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
 
-  const sseExample = \`curl -N \${API_BASE}/api/v1/jobs/JOB_ID/events \\\\
-  -H "Authorization: Bearer vms_live_YOUR_KEY"\`;
+  const sseExample = `curl -N ${API_BASE}/api/v1/jobs/JOB_ID/events \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
 
-  const cancelExample = \`curl -X POST \${API_BASE}/api/v1/jobs/JOB_ID/cancel \\\\
-  -H "Authorization: Bearer vms_live_YOUR_KEY"\`;
+  const cancelExample = `curl -X POST ${API_BASE}/api/v1/jobs/JOB_ID/cancel \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
 
-  const idempotencyExample = \`curl -X POST \${API_BASE}/api/v1/clips \\\\
-  -H "Authorization: Bearer vms_live_YOUR_KEY" \\\\
-  -H "Idempotency-Key: 7e3f-client-generated-id" \\\\
-  -H "Content-Type: application/json" \\\\
-  -d '{"url":"https://youtu.be/VIDEO_ID"}'\`;
+  const idempotencyExample = `curl -X POST ${API_BASE}/api/v1/clips \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Idempotency-Key: 7e3f-client-generated-id" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
 
-  const uploadsExample = \`# 1) presign  2) upload to the returned URL  3) complete  4) use the file URL
-curl -X POST \${API_BASE}/api/v1/uploads/presign \\\\
-  -H "Authorization: Bearer vms_live_YOUR_KEY" \\\\
-  -H "Content-Type: application/json" \\\\
+  const uploadsExample = `# 1) presign  2) upload to the returned URL  3) complete  4) use the file URL
+curl -X POST ${API_BASE}/api/v1/uploads/presign \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
   -d '{"filename":"clip.mp4","size":1048576,"mimeType":"video/mp4"}'
-# then POST /api/v1/uploads/complete { fileId } and pass the file URL to /subtitles or /translate\`;
+# then POST /api/v1/uploads/complete { fileId } and pass the file URL to /subtitles or /translate`;
 
   return (
     <div className="mx-auto h-full w-full max-w-[1400px] overflow-y-auto px-4 py-10 font-sans text-slate-300 pb-24 scroll-smooth">
@@ -355,7 +355,7 @@ curl -X POST \${API_BASE}/api/v1/uploads/presign \\\\
           </div>
 
           <a
-            href={\`\${API_BASE}/api/v1/openapi.json\`}
+            href={`${API_BASE}/api/v1/openapi.json`}
             target="_blank"
             rel="noreferrer"
             className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3 font-semibold text-slate-950 shadow-[0_0_30px_rgba(16,185,129,0.3)] transition-all hover:opacity-90 active:scale-95 hover:shadow-[0_0_40px_rgba(16,185,129,0.5)]"
@@ -522,14 +522,14 @@ curl -X POST \${API_BASE}/api/v1/uploads/presign \\\\
                 Pass <code className="text-emerald-300">webhookUrl</code> on job creation. Your server will receive a POST request upon completion. Ensure you verify the <code className="text-emerald-300">X-VMS-Signature</code> using your Webhook Secret.
               </p>
               <div className="grid gap-4 lg:grid-cols-2">
-                <CodeBlock value={\`// 1) The payload sent to your server
+                <CodeBlock value={`// 1) The payload sent to your server
 {
   "jobId": "...",
   "status": "done",
   "succeeded": true,
   "result": { "url": "..." },
   "timestamp": 123456789
-}\`} language="json" />
+}`} language="json" />
                 <div className="flex h-full flex-col items-center justify-center rounded-xl border border-dashed border-white/10 bg-black/20 p-6 text-center">
                   <Shield className="mb-3 h-10 w-10 text-emerald-500/50" />
                   <p className="text-sm font-medium text-slate-300">Always verify HMAC SHA256 signatures to prevent spoofed job completions.</p>
@@ -607,7 +607,7 @@ curl -X POST \${API_BASE}/api/v1/uploads/presign \\\\
                 {endpointDocs.map(ep => {
                   const id = ep.path.replace(/[^a-zA-Z0-9-]/g, '');
                   return (
-                    <a key={ep.path} href={\`#\${id}\`} className={cn("text-xs transition-colors", activeSection === id ? "text-emerald-400 font-medium" : "text-slate-500 hover:text-slate-300")}>
+                    <a key={ep.path} href={`#${id}`} className={cn("text-xs transition-colors", activeSection === id ? "text-emerald-400 font-medium" : "text-slate-500 hover:text-slate-300")}>
                       {ep.name}
                     </a>
                   )
