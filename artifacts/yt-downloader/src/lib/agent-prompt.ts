@@ -17,6 +17,74 @@ Headers to include in every request:
 API DOCUMENTATION
 ====================
 
+# VideoMaking Studio API
+Integrate AI video generation, translation, and extraction into your own apps. 
+The /api/v1 routes are stable, fast, and built for scale.
+
+## Core Concepts
+- Base URL: https://videomaking.in
+- Authentication: Pass your key via the \`Authorization: Bearer\` header.
+- Asynchronous: Start a job, then poll, stream via SSE, or use Webhooks.
+
+## Quick Start
+Copy this code into your project to start your first job.
+
+### TypeScript / Node.js
+\`\`\`typescript
+const BASE = "https://videomaking.in";
+const KEY = process.env.VMS_API_KEY;
+const headers = { Authorization: \`Bearer \${KEY}\`, "Content-Type": "application/json" };
+
+// 1) Start a job
+const r = await fetch(\`\${BASE}/api/v1/clips\`, {
+  method: "POST", headers,
+  body: JSON.stringify({ url: "https://youtu.be/VIDEO_ID", durations: [30, 60] }),
+});
+const { jobId, statusUrl } = await r.json();
+
+// 2) Poll until terminal
+for (;;) {
+  const job = await (await fetch(statusUrl, { headers })).json();
+  if (job.terminal) {
+    if (job.succeeded) console.log("result:", job.result);
+    else console.error("failed:", job.message);
+    break;
+  }
+  await new Promise((s) => setTimeout(s, 5000));
+}
+\`\`\`
+
+### Python
+\`\`\`python
+import os, time, requests
+
+BASE = "https://videomaking.in"
+headers = {"Authorization": f"Bearer {os.environ.get('VMS_API_KEY')}"}
+
+# 1) Start a job
+r = requests.post(f"{BASE}/api/v1/subtitles",
+                  headers=headers,
+                  json={"url": "https://example.com/video.mp4", "language": "auto"})
+job = r.json()
+status_url = job["statusUrl"]
+
+# 2) Poll until terminal
+while True:
+    job = requests.get(status_url, headers=headers).json()
+    if job["terminal"]:
+        print("result" if job["succeeded"] else "error", job.get("result") or job.get("message"))
+        break
+    time.sleep(5)
+\`\`\`
+
+### cURL
+\`\`\`bash
+curl -X POST https://videomaking.in/api/v1/clips \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://youtu.be/VIDEO_ID"}'
+\`\`\`
+
 # CORE ENDPOINTS
 
 ## 1. Best clips
