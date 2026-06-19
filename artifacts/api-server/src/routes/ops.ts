@@ -47,6 +47,10 @@ router.get("/ops/readiness", (_req, res) => {
 });
 
 router.get("/ops/metrics", (_req, res) => {
+  if (!res.locals.authSession?.authenticated || res.locals.authSession?.role !== "admin") {
+    res.status(403).json({ error: "Admin access required" });
+    return;
+  }
   const http = getHttpMetricsSnapshot();
   const system = getSystemMetricsSnapshot();
   const youtube = getYoutubeOpsSnapshot();
@@ -64,6 +68,10 @@ router.get("/ops/metrics", (_req, res) => {
 });
 
 router.get("/ops/alerts", (_req, res) => {
+  if (!res.locals.authSession?.authenticated || res.locals.authSession?.role !== "admin") {
+    res.status(403).json({ error: "Admin access required" });
+    return;
+  }
   const http = getHttpMetricsSnapshot();
   const system = getSystemMetricsSnapshot();
   const youtube = getYoutubeOpsSnapshot();
