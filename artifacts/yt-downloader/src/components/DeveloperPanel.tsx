@@ -100,18 +100,26 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${base}/api/keys`, { credentials: "include" });
+      const res = await fetch(`${base}/api/keys`, { 
+        credentials: "include",
+        headers: { "Accept": "application/json" }
+      });
       if (res.status === 503) {
         setStoreDisabled(true);
         setKeys([]);
         return;
       }
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => ({}));
-        throw new Error(errorBody?.error || `Failed (${res.status})`);
+      const text = await res.text();
+      let data: any;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (err) {
+        throw new Error(`Invalid JSON response: ${text.slice(0, 80)}...`);
       }
-      const data = (await res.json().catch(() => ({}))) as { keys: ApiKey[] };
-      if (!data.keys) throw new Error("Invalid response from server (empty or malformed JSON)");
+      if (!res.ok) {
+        throw new Error(data?.error || `Failed (${res.status})`);
+      }
+      if (!data.keys) throw new Error("Invalid response from server (missing 'keys' array)");
       setStoreDisabled(false);
       setKeys(Array.isArray(data.keys) ? data.keys : []);
     } catch (err) {
@@ -225,7 +233,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
   }, [freshKey]);
 
   return (
-    <div className="dev-console mx-auto w-full max-w-[1000px] px-4 py-10 font-sans text-[14px] leading-relaxed text-slate-300">
+    <div className="dev-console mx-auto w-full h-full overflow-y-auto max-w-[1000px] px-4 py-10 font-sans text-[14px] leading-relaxed text-slate-300 pb-24 scroll-smooth">
       {/* Header */}
       <header className="mb-10 flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4">
