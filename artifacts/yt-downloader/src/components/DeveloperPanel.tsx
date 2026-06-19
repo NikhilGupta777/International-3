@@ -11,14 +11,14 @@ import {
   Loader2,
   CircleDot,
   BookOpen,
+  Activity,
+  Sparkles,
+  Zap
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Developer / API Keys panel
-//
-// Deliberately distinct from the rest of the studio: a minimal "console"
-// aesthetic (monospace, slate surface, emerald accent). Visible only to admins
-// and admin-granted emails (gated by features.apiAccessAllowed upstream).
+// Developer / API Keys panel - Premium UI
 // ─────────────────────────────────────────────────────────────────────────────
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -220,301 +220,364 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
   }, [freshKey]);
 
   return (
-    <div className="dev-console mx-auto w-full max-w-[920px] px-4 py-8 font-mono text-[13px] leading-relaxed text-slate-300">
+    <div className="dev-console mx-auto w-full max-w-[1000px] px-4 py-10 font-sans text-[14px] leading-relaxed text-slate-300">
       {/* Header */}
-      <header className="mb-7 flex items-center gap-3 border-b border-slate-700/60 pb-5">
-        <span className="flex h-10 w-10 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/30">
-          <Terminal className="h-5 w-5" />
-        </span>
-        <div className="min-w-0">
-          <h1 className="font-sans text-xl font-semibold tracking-tight text-slate-100">Developer</h1>
-          <p className="truncate text-xs text-slate-500">
-            One key, programmatic access to every studio service.
-          </p>
+      <header className="mb-10 flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-4">
+          <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 ring-1 ring-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.15)]">
+            <Terminal className="h-6 w-6 text-emerald-400" />
+            <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-emerald-400/10 to-transparent blur-xl" />
+          </div>
+          <div>
+            <h1 className="bg-gradient-to-r from-emerald-400 via-cyan-400 to-blue-400 bg-clip-text text-3xl font-bold tracking-tight text-transparent">
+              Developer Portal
+            </h1>
+            <p className="mt-1 text-sm text-slate-400">
+              One API key. Infinite programmatic possibilities.
+            </p>
+          </div>
         </div>
-        <button
-          onClick={() => void loadKeys()}
-          className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
-        >
-          <RefreshCw className={loading ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          {onOpenDocs && (
+            <button
+              onClick={onOpenDocs}
+              className="inline-flex items-center gap-2 rounded-xl bg-slate-800/50 px-4 py-2 text-sm font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/20 transition-all hover:bg-emerald-500/10 hover:text-emerald-200 active:scale-95"
+            >
+              <BookOpen className="h-4 w-4" />
+              API Docs
+            </button>
+          )}
+          <button
+            onClick={() => void loadKeys()}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-slate-800/50 text-slate-400 ring-1 ring-inset ring-slate-700/50 transition-all hover:bg-slate-700 hover:text-slate-200 active:scale-95"
+            title="Refresh keys"
+          >
+            <RefreshCw className={loading ? "h-4 w-4 animate-spin text-emerald-400" : "h-4 w-4"} />
+          </button>
+        </div>
       </header>
 
       {storeDisabled && (
-        <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-amber-300">
-          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-          <p className="text-xs">
-            The API key store is not configured yet. Set <code className="text-amber-200">ACCESS_TABLE</code> (or{" "}
-            <code className="text-amber-200">API_KEYS_TABLE</code>) on the server to enable keys.
-          </p>
+        <div className="mb-8 flex items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 shadow-lg shadow-amber-500/5 backdrop-blur-md">
+          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
+          <div>
+            <h3 className="font-semibold text-amber-200">API Store Disabled</h3>
+            <p className="mt-1 text-sm text-amber-300/80">
+              The API key store is not configured yet. Set <code className="font-mono text-amber-200">ACCESS_TABLE</code> (or <code className="font-mono text-amber-200">API_KEYS_TABLE</code>) on the server to enable keys.
+            </p>
+          </div>
         </div>
       )}
 
       {error && (
-        <div className="mb-6 rounded-md border border-red-500/30 bg-red-500/5 px-4 py-2.5 text-xs text-red-300">
+        <div className="mb-8 rounded-2xl border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-300 shadow-lg shadow-red-500/5 backdrop-blur-md">
           {error}
         </div>
       )}
 
       {/* One-time secret reveal */}
       {freshKey && (
-        <div className="mb-7 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4">
-          <div className="mb-2 flex items-center gap-2 text-emerald-300">
-            <KeyRound className="h-4 w-4" />
-            <span className="font-sans text-sm font-semibold">Copy your key now - it won't be shown again</span>
+        <div className="mb-8 animate-in fade-in slide-in-from-bottom-4 duration-500 rounded-2xl border border-emerald-500/50 bg-gradient-to-b from-emerald-500/10 to-transparent p-6 shadow-[0_0_40px_rgba(16,185,129,0.15)] backdrop-blur-xl relative overflow-hidden">
+          <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-emerald-500/20 blur-3xl pointer-events-none" />
+          
+          <div className="mb-3 flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-500/20">
+              <KeyRound className="h-4 w-4 text-emerald-400" />
+            </div>
+            <h2 className="text-lg font-semibold text-emerald-300">Save your new API key</h2>
           </div>
-          <div className="flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto whitespace-nowrap rounded-md bg-slate-950/70 px-3 py-2.5 text-emerald-300 ring-1 ring-inset ring-emerald-500/20">
-              {freshKey}
-            </code>
+          <p className="mb-4 text-sm text-emerald-400/80">This key will only be displayed once. Please store it securely.</p>
+          
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="relative flex-1">
+              <code className="block w-full overflow-x-auto whitespace-nowrap rounded-xl bg-slate-950/80 px-4 py-3 font-mono text-sm text-emerald-300 ring-1 ring-inset ring-emerald-500/30">
+                {freshKey}
+              </code>
+            </div>
             <button
               onClick={copyFresh}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-emerald-500 px-3 py-2.5 font-sans text-xs font-medium text-slate-950 transition-colors hover:bg-emerald-400"
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition-all hover:bg-emerald-400 hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] active:scale-95"
             >
-              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              {copied ? "Copied" : "Copy"}
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? "Copied!" : "Copy Key"}
             </button>
           </div>
+
           {freshWebhookSecret && (
-            <div className="mt-3">
-              <p className="mb-1 text-[11px] text-slate-400">
-                Webhook signing secret (verify <code className="text-slate-300">X-VMS-Signature</code>) - also shown once:
+            <div className="mt-5 rounded-xl bg-slate-950/40 p-4 ring-1 ring-inset ring-amber-500/20">
+              <p className="mb-2 text-sm text-slate-300">
+                Webhook signing secret <span className="text-slate-500">(verify X-VMS-Signature)</span> - also shown once:
               </p>
-              <code className="block overflow-x-auto whitespace-nowrap rounded-md bg-slate-950/70 px-3 py-2 text-amber-300 ring-1 ring-inset ring-amber-500/20">
+              <code className="block overflow-x-auto whitespace-nowrap rounded-lg bg-slate-950/80 px-3 py-2 font-mono text-sm text-amber-300 ring-1 ring-inset ring-amber-500/20">
                 {freshWebhookSecret}
               </code>
             </div>
           )}
-          <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-300/90">
-            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>
-              Treat this like a password. Never embed it in browser/client code, public repos, or screenshots. If it
-              leaks (chat, logs, a ticket), revoke it immediately and generate a new one.
-            </span>
+          <div className="mt-5 flex items-start gap-3 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-300/90">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+            <p>
+              Treat this like a password. Never embed it in browser/client code, public repos, or screenshots.
+            </p>
           </div>
         </div>
       )}
 
-      {/* Create key */}
-      <section className="mb-8 rounded-lg border border-slate-700/60 bg-slate-900/40 p-5">
-        <h2 className="mb-4 font-sans text-sm font-semibold text-slate-200">Create a new key</h2>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="flex flex-col gap-1.5 text-xs text-slate-500">
-            Name
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. zapier-automation"
-              className="rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-200 outline-none transition-colors focus:border-emerald-500/60"
-            />
-          </label>
-          <label className="flex flex-col gap-1.5 text-xs text-slate-500">
-            Expires in (days, optional)
-            <input
-              value={expiresInDays}
-              onChange={(e) => setExpiresInDays(e.target.value.replace(/[^0-9]/g, ""))}
-              placeholder="never"
-              inputMode="numeric"
-              className="rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-200 outline-none transition-colors focus:border-emerald-500/60"
-            />
-          </label>
-        </div>
-
-        <div className="mt-4">
-          <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
-            <input
-              type="checkbox"
-              checked={fullAccess}
-              onChange={(e) => setFullAccess(e.target.checked)}
-              className="h-3.5 w-3.5 accent-emerald-500"
-            />
-            Full access (all services) - recommended
-          </label>
-          {!fullAccess && (
-            <>
-              <input
-                value={scopesText}
-                onChange={(e) => setScopesText(e.target.value)}
-                placeholder="youtube, subtitles, translator"
-                className="mt-2 w-full rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-200 outline-none transition-colors focus:border-emerald-500/60"
-              />
-              <p className="mt-1.5 text-[11px] text-slate-600">
-                Valid: youtube, youtube:download, youtube:clip-cut, youtube:clips, youtube:timestamps, youtube:info,
-                subtitles, translator, uploads, thumbnail, agent, bhagwat. Unknown scopes are rejected.
-              </p>
-            </>
-          )}
-        </div>
-
-        <button
-          onClick={() => void createKey()}
-          disabled={creating || storeDisabled}
-          className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3.5 py-2 font-sans text-xs font-medium text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-          Generate key
-        </button>
-      </section>
-
-      {/* Existing keys */}
-      <section className="mb-8">
-        <h2 className="mb-3 font-sans text-sm font-semibold text-slate-200">Your keys</h2>
-        {loading ? (
-          <div className="flex items-center gap-2 py-6 text-xs text-slate-500">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading...
-          </div>
-        ) : keys.length === 0 ? (
-          <p className="rounded-md border border-dashed border-slate-700/70 px-4 py-6 text-center text-xs text-slate-600">
-            No keys yet. Generate one above to get started.
-          </p>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-slate-700/60">
-            {keys.map((k, i) => (
-              <div key={k.keyId} className={(i > 0 ? "border-t border-slate-800/80 " : "") + (k.status === "revoked" ? "opacity-50" : "")}>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedKeyId((cur) => (cur === k.keyId ? null : k.keyId))}
-                    title="Details"
-                    className="shrink-0 text-slate-500 transition-colors hover:text-slate-300"
-                  >
-                    <CircleDot
-                      className={"h-3 w-3 " + (k.status === "active" ? "text-emerald-400" : "text-slate-600")}
-                    />
-                  </button>
-                  <code className="text-slate-300">{k.prefix}...</code>
-                  <span className="font-sans text-slate-200">{k.name}</span>
-                  <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-400">
-                    {k.scopes.includes("*") ? "full access" : k.scopes.join(", ")}
-                  </span>
-                  <span className="ml-auto text-[11px] text-slate-600">
-                    {k.monthlyQuota
-                      ? `${k.usageMonth ?? 0}/${k.monthlyQuota} reqs/mo - `
-                      : (k.usageMonth ?? 0) > 0
-                        ? `${k.usageMonth} reqs/mo - `
-                        : ""}
-                    created {fmtDate(k.createdAt)} - used {fmtDate(k.lastUsedAt)}
-                    {k.expiresAt ? ` - expires ${fmtDate(k.expiresAt * 1000)}` : ""}
-                  </span>
-                  {k.status === "active" && (
-                    <button
-                      onClick={() => void revokeKey(k.keyId)}
-                      title="Revoke"
-                      className="rounded p-1 text-slate-500 transition-colors hover:bg-red-500/10 hover:text-red-400"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-                {expandedKeyId === k.keyId && (
-                  <dl className="grid gap-x-6 gap-y-1.5 border-t border-slate-800/60 bg-slate-950/40 px-4 py-3 text-[11px] sm:grid-cols-2">
-                    {[
-                      ["Key ID", k.keyId],
-                      ["Status", k.status],
-                      ["Scopes", k.scopes.join(", ")],
-                      ["Owner", k.ownerEmail || "-"],
-                      ["Created", fmtDate(k.createdAt)],
-                      ["Last used", fmtDate(k.lastUsedAt)],
-                      ["Usage this month", String(k.usageMonth ?? 0)],
-                      ["Lifetime requests", String(k.usageTotal ?? 0)],
-                      ["Rate limit", k.rateLimitPerMin ? `${k.rateLimitPerMin}/min` : "default"],
-                      ["Monthly quota", k.monthlyQuota ? String(k.monthlyQuota) : "unlimited"],
-                      ["Expires", k.expiresAt ? fmtDate(k.expiresAt * 1000) : "never"],
-                    ].map(([label, value]) => (
-                      <div key={label} className="flex gap-2">
-                        <dt className="w-32 shrink-0 text-slate-600">{label}</dt>
-                        <dd className="min-w-0 break-words text-slate-300">{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                )}
+      <div className="grid gap-8 lg:grid-cols-[1fr_380px]">
+        
+        {/* Left Column: Keys List & Creation */}
+        <div className="space-y-8">
+          
+          {/* Create key */}
+          <section className="relative overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-2xl backdrop-blur-xl transition-all hover:bg-white/[0.03]">
+            <div className="mb-5 flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-cyan-400" />
+              <h2 className="text-lg font-semibold text-slate-100">Generate New Key</h2>
+            </div>
+            
+            <div className="grid gap-5 sm:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-wider text-slate-400">Key Name</label>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. production-backend"
+                  className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-slate-200 placeholder-slate-600 outline-none transition-all focus:border-emerald-500/50 focus:bg-black/40 focus:ring-1 focus:ring-emerald-500/50"
+                />
               </div>
-            ))}
-          </div>
-        )}
-      </section>
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-wider text-slate-400">Expires In (Days)</label>
+                <input
+                  value={expiresInDays}
+                  onChange={(e) => setExpiresInDays(e.target.value.replace(/[^0-9]/g, ""))}
+                  placeholder="Never (leave blank)"
+                  inputMode="numeric"
+                  className="w-full rounded-xl border border-white/10 bg-black/20 px-4 py-2.5 text-slate-200 placeholder-slate-600 outline-none transition-all focus:border-emerald-500/50 focus:bg-black/40 focus:ring-1 focus:ring-emerald-500/50"
+                />
+              </div>
+            </div>
 
-      {/* Test a key */}
-      <section className="mb-8 rounded-lg border border-slate-700/60 bg-slate-900/40 p-5">
-        <h2 className="mb-1 font-sans text-sm font-semibold text-slate-200">Test a key</h2>
-        <p className="mb-3 text-xs text-slate-500">
-          Verify a key works by calling <code className="text-slate-400">GET /api/v1/health</code> with it. Paste a key
-          you just generated (it is never stored here).
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            value={testKey}
-            onChange={(e) => setTestKey(e.target.value)}
-            placeholder="vms_live_..."
-            className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950/60 px-3 py-2 text-slate-200 outline-none transition-colors focus:border-emerald-500/60"
-          />
-          <button
-            onClick={() => void runTest()}
-            disabled={testing || !testKey.trim()}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-emerald-500/40 px-3 py-2 font-sans text-xs font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {testing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CircleDot className="h-3.5 w-3.5" />}
-            Test
-          </button>
-        </div>
-        {testResult && (
-          <div className="mt-3 rounded-md border border-slate-700/60 bg-slate-950/60 p-3 text-[11px]">
-            <div className="mb-1.5 flex items-center gap-2">
-              {testResult.ok ? (
-                <span className="inline-flex items-center gap-1 text-emerald-400">
-                  <Check className="h-3.5 w-3.5" /> Key works (HTTP {testResult.status})
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-red-400">
-                  <ShieldAlert className="h-3.5 w-3.5" /> Failed (HTTP {testResult.status || "network"})
-                </span>
-              )}
-              {testResult.rate.limit && (
-                <span className="text-slate-500">
-                  rate {testResult.rate.remaining}/{testResult.rate.limit} per min
-                </span>
+            <div className="mt-5 rounded-xl bg-black/20 p-4 ring-1 ring-inset ring-white/5">
+              <label className="flex cursor-pointer items-center gap-3 text-sm text-slate-300">
+                <div className="relative flex items-center justify-center">
+                  <input
+                    type="checkbox"
+                    checked={fullAccess}
+                    onChange={(e) => setFullAccess(e.target.checked)}
+                    className="peer h-5 w-5 cursor-pointer appearance-none rounded border border-slate-600 bg-slate-800 transition-all checked:border-emerald-500 checked:bg-emerald-500 hover:border-emerald-400"
+                  />
+                  <Check className="pointer-events-none absolute h-3.5 w-3.5 text-slate-900 opacity-0 transition-opacity peer-checked:opacity-100" />
+                </div>
+                <span className="font-medium text-white">Full access (all services)</span>
+                <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-emerald-400">Recommended</span>
+              </label>
+              
+              {!fullAccess && (
+                <div className="mt-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                  <input
+                    value={scopesText}
+                    onChange={(e) => setScopesText(e.target.value)}
+                    placeholder="youtube, subtitles, translator"
+                    className="w-full rounded-lg border border-white/10 bg-black/40 px-3 py-2 text-sm text-slate-200 outline-none transition-all focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50"
+                  />
+                  <p className="mt-2 text-xs leading-relaxed text-slate-500">
+                    Valid scopes: <code className="text-slate-400">youtube, youtube:download, youtube:clip-cut, subtitles, translator, uploads, thumbnail, agent, bhagwat</code>.
+                  </p>
+                </div>
               )}
             </div>
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words text-slate-400">
-{JSON.stringify(testResult.body, null, 2)}
-            </pre>
-          </div>
-        )}
-      </section>
 
-      {/* Quick start */}
-      <section>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="font-sans text-sm font-semibold text-slate-200">Quick start</h2>
-          {onOpenDocs && (
             <button
-              type="button"
-              onClick={onOpenDocs}
-              className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 px-2.5 py-1.5 font-sans text-xs font-medium text-emerald-300 transition-colors hover:border-emerald-400/60 hover:bg-emerald-500/10 hover:text-emerald-200"
+              onClick={() => void createKey()}
+              disabled={creating || storeDisabled || (!fullAccess && !scopesText.trim())}
+              className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-4 py-3 font-semibold text-slate-950 transition-all hover:opacity-90 hover:shadow-[0_0_20px_rgba(16,185,129,0.3)] active:scale-95 disabled:pointer-events-none disabled:opacity-50"
             >
-              <BookOpen className="h-3.5 w-3.5" />
-              Read full documentation
+              {creating ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
+              {creating ? "Generating..." : "Generate API Key"}
             </button>
-          )}
+          </section>
+
+          {/* Existing keys */}
+          <section>
+            <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-slate-100">
+              <KeyRound className="h-5 w-5 text-blue-400" />
+              Active Keys
+            </h2>
+            
+            {loading ? (
+              <div className="space-y-3">
+                {[1, 2].map((i) => (
+                  <div key={i} className="h-20 w-full animate-pulse rounded-2xl bg-white/5" />
+                ))}
+              </div>
+            ) : keys.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-700/70 bg-white/[0.01] py-12 text-center">
+                <div className="mb-3 rounded-full bg-slate-800/50 p-3">
+                  <KeyRound className="h-6 w-6 text-slate-500" />
+                </div>
+                <h3 className="text-slate-300 font-medium">No API keys found</h3>
+                <p className="mt-1 text-sm text-slate-500">Generate your first key above to get started.</p>
+              </div>
+            ) : (
+              <div className="grid gap-3">
+                {keys.map((k) => (
+                  <div 
+                    key={k.keyId} 
+                    className={cn(
+                      "group relative overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02] p-1 transition-all hover:border-white/10 hover:bg-white/[0.04]",
+                      k.status === "revoked" && "opacity-50 grayscale"
+                    )}
+                  >
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedKeyId((cur) => (cur === k.keyId ? null : k.keyId))}
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-800/50 text-slate-400 transition-all hover:bg-slate-700 hover:text-white active:scale-95"
+                      >
+                        <CircleDot className={cn("h-4 w-4", k.status === "active" ? "text-emerald-400" : "text-slate-600")} />
+                      </button>
+                      
+                      <div className="flex-1 min-w-[120px]">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-slate-200">{k.name}</span>
+                          <span className="rounded-full bg-slate-800/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-400 ring-1 ring-inset ring-white/10">
+                            {k.scopes.includes("*") ? "Full Access" : "Custom Scopes"}
+                          </span>
+                        </div>
+                        <code className="mt-1 block font-mono text-xs text-slate-500">
+                          {k.prefix}••••••••••••
+                        </code>
+                      </div>
+
+                      <div className="hidden flex-col items-end text-xs text-slate-500 sm:flex">
+                        <span>Used: {k.lastUsedAt ? fmtDate(k.lastUsedAt) : "Never"}</span>
+                        <span>{k.usageMonth ?? 0} reqs this month</span>
+                      </div>
+
+                      {k.status === "active" && (
+                        <button
+                          onClick={() => void revokeKey(k.keyId)}
+                          title="Revoke Key"
+                          className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 opacity-0 transition-all hover:bg-red-500/10 hover:text-red-400 group-hover:opacity-100"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Details Expansion */}
+                    {expandedKeyId === k.keyId && (
+                      <div className="animate-in fade-in slide-in-from-top-2 overflow-hidden rounded-xl bg-black/40 p-5 mt-1 duration-200">
+                        <dl className="grid gap-x-8 gap-y-4 text-sm sm:grid-cols-2">
+                          {[
+                            ["Key ID", k.keyId],
+                            ["Status", <span key="status" className={k.status === 'active' ? 'text-emerald-400 capitalize' : 'text-slate-500 capitalize'}>{k.status}</span>],
+                            ["Scopes", k.scopes.join(", ")],
+                            ["Created", fmtDate(k.createdAt)],
+                            ["Last used", fmtDate(k.lastUsedAt)],
+                            ["Usage this month", <span key="usage" className="font-mono text-cyan-400">{k.usageMonth ?? 0}</span>],
+                            ["Lifetime requests", <span key="total" className="font-mono">{k.usageTotal ?? 0}</span>],
+                            ["Expires", k.expiresAt ? fmtDate(k.expiresAt * 1000) : <span key="exp" className="text-slate-500">Never</span>],
+                          ].map(([label, value]) => (
+                            <div key={label as string} className="flex flex-col gap-1">
+                              <dt className="text-xs font-medium uppercase tracking-wider text-slate-500">{label}</dt>
+                              <dd className="break-words text-slate-200">{value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
-        <p className="mb-2 text-xs text-slate-500">
-          Send your key as a bearer token. It works from anywhere - scripts, servers, automations.
-        </p>
-        <pre className="overflow-x-auto rounded-lg border border-slate-700/60 bg-slate-950/70 p-4 text-[12px] text-emerald-300">
-{curlExample}
-        </pre>
-        <p className="mb-2 mt-5 text-xs text-slate-500">Services this key can reach:</p>
-        <ul className="grid gap-1.5 sm:grid-cols-2">
-          {SERVICES.map((s) => (
-            <li key={s.scope} className="flex items-center gap-2 text-xs text-slate-400">
-              <span className="text-emerald-500/70">&gt;</span>
-              <code className="text-slate-300">{s.scope}</code>
-              <span className="truncate text-slate-600">{s.label}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
+
+        {/* Right Column: Tools & Quick Start */}
+        <div className="space-y-8">
+          
+          {/* Test a key */}
+          <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-xl">
+            <h2 className="mb-2 flex items-center gap-2 text-lg font-semibold text-slate-100">
+              <Activity className="h-5 w-5 text-purple-400" />
+              API Playground
+            </h2>
+            <p className="mb-5 text-sm text-slate-400">
+              Verify a key instantly by pinging the <code className="text-slate-300 font-mono text-xs">/api/v1/health</code> endpoint.
+            </p>
+            
+            <div className="space-y-3">
+              <input
+                value={testKey}
+                onChange={(e) => setTestKey(e.target.value)}
+                placeholder="Paste key: vms_live_..."
+                className="w-full rounded-xl border border-white/10 bg-black/30 px-4 py-2.5 font-mono text-sm text-slate-200 placeholder-slate-600 outline-none transition-all focus:border-purple-500/50 focus:bg-black/50 focus:ring-1 focus:ring-purple-500/50"
+              />
+              <button
+                onClick={() => void runTest()}
+                disabled={testing || !testKey.trim()}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-purple-500/20 px-4 py-2.5 font-semibold text-purple-300 ring-1 ring-inset ring-purple-500/30 transition-all hover:bg-purple-500/30 active:scale-95 disabled:pointer-events-none disabled:opacity-50"
+              >
+                {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                Run Test
+              </button>
+            </div>
+
+            {testResult && (
+              <div className="mt-5 animate-in fade-in slide-in-from-top-2 rounded-xl bg-black/40 p-4 ring-1 ring-inset ring-white/5 duration-300">
+                <div className="mb-3 flex items-center gap-2 border-b border-white/10 pb-3">
+                  {testResult.ok ? (
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-emerald-400">
+                      <div className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+                      Success ({testResult.status})
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-red-400">
+                      <div className="h-2 w-2 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]" />
+                      Failed ({testResult.status || "Network Error"})
+                    </span>
+                  )}
+                  {testResult.rate.limit && (
+                    <span className="ml-auto text-xs text-slate-500">
+                      Rate: {testResult.rate.remaining}/{testResult.rate.limit}
+                    </span>
+                  )}
+                </div>
+                <pre className="overflow-x-auto text-[11px] font-mono leading-relaxed text-slate-300 scrollbar-thin scrollbar-thumb-white/10">
+                  {JSON.stringify(testResult.body, null, 2)}
+                </pre>
+              </div>
+            )}
+          </section>
+
+          {/* Quick start */}
+          <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-xl">
+            <h2 className="mb-4 font-semibold text-slate-100 flex items-center gap-2">
+              <Terminal className="w-5 h-5 text-blue-400" /> Quick Snippet
+            </h2>
+            <div className="relative group">
+              <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 rounded-xl blur-md transition-opacity opacity-0 group-hover:opacity-100" />
+              <pre className="relative overflow-x-auto rounded-xl border border-white/10 bg-black/60 p-4 font-mono text-[11px] leading-relaxed text-emerald-300 scrollbar-thin scrollbar-thumb-white/10">
+                {curlExample}
+              </pre>
+            </div>
+            
+            <div className="mt-6">
+              <p className="mb-3 text-xs font-medium uppercase tracking-wider text-slate-500">Available Services</p>
+              <ul className="grid gap-2">
+                {SERVICES.map((s) => (
+                  <li key={s.scope} className="flex items-center gap-3 rounded-lg bg-white/[0.02] px-3 py-2 text-sm transition-colors hover:bg-white/[0.04]">
+                    <div className="h-1.5 w-1.5 rounded-full bg-emerald-500/50 shadow-[0_0_5px_#10b981]" />
+                    <code className="text-xs text-emerald-200">{s.scope}</code>
+                    <span className="truncate text-slate-400 text-xs">{s.label}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,9 +1,10 @@
-import { ArrowLeft, BookOpen, Copy, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, BookOpen, Copy, ExternalLink, Terminal, Code2, Cpu, Check, AlertCircle, Shield, Server, Box, Activity } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 // Use the live origin so copy-paste examples target whatever host the panel is
 // served from (falls back to the production domain during SSR/build).
-const API_BASE =
-  typeof window !== "undefined" ? window.location.origin : "https://videomaking.in";
+const API_BASE = typeof window !== "undefined" ? window.location.origin : "https://videomaking.in";
 
 type EndpointDoc = {
   name: string;
@@ -142,55 +143,49 @@ const errorCodes: [string, string][] = [
   ["UPSTREAM_ERROR / INTERNAL_ERROR", "Server-side failure (5xx, retryable)."],
 ];
 
-function copy(text: string) {
-  void navigator.clipboard?.writeText(text);
-}
+function CodeBlock({ value, language = "bash" }: { value: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
 
-function CodeBlock({ value }: { value: string }) {
+  const handleCopy = () => {
+    void navigator.clipboard?.writeText(value);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   return (
-    <div className="group relative">
-      <pre className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-950/80 p-4 text-[12px] leading-relaxed text-emerald-300">
-        {value}
+    <div className="group relative mt-2 w-full overflow-hidden rounded-xl border border-white/10 bg-[#0d1117] shadow-lg">
+      <div className="flex items-center justify-between border-b border-white/5 bg-white/[0.02] px-4 py-2">
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1.5">
+            <div className="h-2.5 w-2.5 rounded-full bg-red-500/50" />
+            <div className="h-2.5 w-2.5 rounded-full bg-amber-500/50" />
+            <div className="h-2.5 w-2.5 rounded-full bg-emerald-500/50" />
+          </div>
+          <span className="ml-2 text-[10px] font-medium uppercase tracking-widest text-slate-500">{language}</span>
+        </div>
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="inline-flex items-center gap-1.5 rounded-md bg-white/5 px-2 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-white/10 hover:text-white"
+        >
+          {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="overflow-x-auto p-4 text-[13px] leading-relaxed text-emerald-300/90 scrollbar-thin scrollbar-thumb-white/10">
+        <code>{value}</code>
       </pre>
-      <button
-        type="button"
-        onClick={() => copy(value)}
-        className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900/90 px-2 py-1 text-[11px] text-slate-300 opacity-0 transition-opacity hover:text-white group-hover:opacity-100"
-      >
-        <Copy className="h-3 w-3" />
-        Copy
-      </button>
     </div>
   );
 }
 
 export function ApiDocumentationPage({ onBack }: { onBack: () => void }) {
+  const [activeTab, setActiveTab] = useState<"curl" | "node" | "python">("node");
+
   const quickStart = `curl -X POST ${API_BASE}/api/v1/clips \\
   -H "Authorization: Bearer vms_live_YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
-
-  const pollExample = `curl ${API_BASE}/api/v1/jobs/JOB_ID \\
-  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
-
-  const sseExample = `curl -N ${API_BASE}/api/v1/jobs/JOB_ID/events \\
-  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
-
-  const cancelExample = `curl -X POST ${API_BASE}/api/v1/jobs/JOB_ID/cancel \\
-  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
-
-  const idempotencyExample = `curl -X POST ${API_BASE}/api/v1/clips \\
-  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
-  -H "Idempotency-Key: 7e3f-client-generated-id" \\
-  -H "Content-Type: application/json" \\
-  -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
-
-  const uploadsExample = `# 1) presign  2) upload to the returned URL  3) complete  4) use the file URL
-curl -X POST ${API_BASE}/api/v1/uploads/presign \\
-  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
-  -H "Content-Type: application/json" \\
-  -d '{"filename":"clip.mp4","size":1048576,"mimeType":"video/mp4"}'
-# then POST /api/v1/uploads/complete { fileId } and pass the file URL to /subtitles or /translate`;
 
   const nodeExample = `const BASE = "${API_BASE}";
 const KEY = process.env.VMS_API_KEY;
@@ -217,7 +212,7 @@ for (;;) {
   const pythonExample = `import os, time, requests
 
 BASE = "${API_BASE}"
-headers = {"Authorization": f"Bearer {os.environ['VMS_API_KEY']}"}
+headers = {"Authorization": f"Bearer {os.environ.get('VMS_API_KEY')}"}
 
 # 1) Start a job
 r = requests.post(f"{BASE}/api/v1/subtitles",
@@ -234,264 +229,271 @@ while True:
         break
     time.sleep(5)`;
 
-  const verifyExample = `import crypto from "crypto";
+  const examples = { curl: quickStart, node: nodeExample, python: pythonExample };
 
-// Express handler for your webhook endpoint.
-// WEBHOOK_SECRET = the per-key webhook secret shown once when the key was made.
-app.post("/vms-webhook", express.raw({ type: "*/*" }), (req, res) => {
-  const sig = req.header("X-VMS-Signature") || "";              // "sha256=<hex>"
-  const expected = "sha256=" + crypto
-    .createHmac("sha256", process.env.WEBHOOK_SECRET)
-    .update(req.body)                                            // raw bytes
-    .digest("hex");
-  const ok = sig.length === expected.length &&
-    crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-  if (!ok) return res.status(401).end();
-  const event = JSON.parse(req.body.toString());                // { jobId, status, ready, ... }
-  res.sendStatus(200);
-});`;
+  const pollExample = `curl ${API_BASE}/api/v1/jobs/JOB_ID \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
 
-  const errorExample = `{
-  "error": {
-    "code": "RATE_LIMIT_EXCEEDED",
-    "message": "Rate limit exceeded for this API key.",
-    "retryable": true,
-    "retryAfterSec": 42
-  }
-}`;
+  const sseExample = `curl -N ${API_BASE}/api/v1/jobs/JOB_ID/events \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
 
-  const webhookExample = `{
-  "url": "https://youtu.be/VIDEO_ID",
-  "startTime": 0,
-  "endTime": 30,
-  "webhookUrl": "https://example.com/vms-webhook"
-}`;
+  const cancelExample = `curl -X POST ${API_BASE}/api/v1/jobs/JOB_ID/cancel \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY"`;
+
+  const idempotencyExample = `curl -X POST ${API_BASE}/api/v1/clips \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Idempotency-Key: 7e3f-client-generated-id" \\
+  -H "Content-Type: application/json" \\
+  -d '{"url":"https://youtu.be/VIDEO_ID"}'`;
+
+  const uploadsExample = `# 1) presign  2) upload to the returned URL  3) complete  4) use the file URL
+curl -X POST ${API_BASE}/api/v1/uploads/presign \\
+  -H "Authorization: Bearer vms_live_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"filename":"clip.mp4","size":1048576,"mimeType":"video/mp4"}'
+# then POST /api/v1/uploads/complete { fileId } and pass the file URL to /subtitles or /translate`;
 
   return (
-    <div className="mx-auto h-full w-full max-w-[1120px] overflow-y-auto px-4 py-8 text-slate-300">
-      <header className="mb-8 border-b border-slate-800 pb-6">
+    <div className="mx-auto h-full w-full max-w-[1200px] overflow-y-auto px-4 py-10 font-sans text-slate-300 pb-24">
+      {/* Header */}
+      <header className="mb-14 relative">
         <button
           type="button"
           onClick={onBack}
-          className="mb-5 inline-flex items-center gap-2 rounded-md border border-slate-700 px-3 py-2 text-xs text-slate-300 transition-colors hover:border-slate-500 hover:text-white"
+          className="mb-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.02] px-4 py-2 text-xs font-medium text-slate-300 transition-all hover:bg-white/[0.05] hover:text-white"
         >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back to keys
+          <ArrowLeft className="h-4 w-4" />
+          Back to Dashboard
         </button>
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <div className="mb-2 inline-flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-emerald-400">
+
+        <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-2xl">
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-bold uppercase tracking-widest text-emerald-400 ring-1 ring-inset ring-emerald-500/20">
               <BookOpen className="h-3.5 w-3.5" />
-              API Documentation
+              API Reference
             </div>
-            <h1 className="font-sans text-3xl font-semibold tracking-tight text-slate-100">VideoMaking Studio API</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400">
-              One API key can start jobs across YouTube, subtitles, timestamps, translation, and downloads.
-              Use the stable <code className="text-slate-200">/api/v1</code> routes for scripts, servers, and automations.
+            <h1 className="bg-gradient-to-br from-white via-slate-200 to-slate-400 bg-clip-text text-4xl font-extrabold tracking-tight text-transparent sm:text-5xl">
+              VideoMaking Studio API
+            </h1>
+            <p className="mt-4 text-base leading-relaxed text-slate-400">
+              Integrate AI video generation, translation, and extraction into your own apps. 
+              The <code className="rounded bg-white/5 px-1.5 py-0.5 text-emerald-300">/api/v1</code> routes are stable, fast, and built for scale.
             </p>
           </div>
+
           <a
             href={`${API_BASE}/api/v1/openapi.json`}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-2 rounded-md bg-emerald-500 px-3.5 py-2 text-xs font-medium text-slate-950 transition-colors hover:bg-emerald-400"
+            className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3 font-semibold text-slate-950 shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all hover:opacity-90 active:scale-95"
           >
-            OpenAPI JSON
-            <ExternalLink className="h-3.5 w-3.5" />
+            <Code2 className="h-5 w-5" />
+            OpenAPI Spec
+            <ExternalLink className="ml-1 h-4 w-4" />
           </a>
         </div>
       </header>
 
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Quick start</h2>
-        <p className="mb-3 text-sm text-slate-400">
-          Send your key as a bearer token. Do not put API keys in frontend code, public repos, screenshots, or logs.
-        </p>
-        <CodeBlock value={quickStart} />
-      </section>
-
-      <section className="mb-10 grid gap-4 md:grid-cols-3">
-        <div className="rounded-lg border border-slate-800 bg-slate-900/35 p-4">
-          <h3 className="font-sans text-sm font-semibold text-slate-100">Base URL</h3>
-          <code className="mt-2 block text-xs text-emerald-300">{API_BASE}</code>
+      {/* Core Concepts */}
+      <section className="mb-14 grid gap-5 sm:grid-cols-3">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-lg backdrop-blur-md">
+          <Server className="mb-4 h-6 w-6 text-blue-400" />
+          <h3 className="font-bold text-slate-100">Base URL</h3>
+          <code className="mt-2 block rounded bg-black/40 px-2 py-1 text-xs text-blue-300">{API_BASE}</code>
         </div>
-        <div className="rounded-lg border border-slate-800 bg-slate-900/35 p-4">
-          <h3 className="font-sans text-sm font-semibold text-slate-100">Authentication</h3>
-          <p className="mt-2 text-xs text-slate-400">Use <code>Authorization: Bearer vms_live_...</code> or <code>X-API-Key</code>.</p>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-lg backdrop-blur-md">
+          <Shield className="mb-4 h-6 w-6 text-emerald-400" />
+          <h3 className="font-bold text-slate-100">Authentication</h3>
+          <p className="mt-2 text-sm text-slate-400">Pass your key via the <code className="text-emerald-300">Authorization: Bearer</code> header.</p>
         </div>
-        <div className="rounded-lg border border-slate-800 bg-slate-900/35 p-4">
-          <h3 className="font-sans text-sm font-semibold text-slate-100">Job model</h3>
-          <p className="mt-2 text-xs text-slate-400">Create a job, then poll, stream SSE, or receive a webhook.</p>
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-lg backdrop-blur-md">
+          <Activity className="mb-4 h-6 w-6 text-purple-400" />
+          <h3 className="font-bold text-slate-100">Asynchronous</h3>
+          <p className="mt-2 text-sm text-slate-400">Start a job, then poll, stream via SSE, or use Webhooks.</p>
         </div>
       </section>
 
-      <section className="mb-10">
-        <h2 className="mb-4 font-sans text-lg font-semibold text-slate-100">Endpoints</h2>
-        <div className="space-y-4">
+      {/* Quick Start / Examples */}
+      <section className="mb-16">
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-slate-100">Quick Start</h2>
+            <p className="mt-1 text-sm text-slate-400">Copy this code into your project to start your first job.</p>
+          </div>
+          <div className="flex items-center gap-1 rounded-xl border border-white/10 bg-black/40 p-1">
+            {(["node", "python", "curl"] as const).map((lang) => (
+              <button
+                key={lang}
+                onClick={() => setActiveTab(lang)}
+                className={cn(
+                  "rounded-lg px-4 py-1.5 text-xs font-semibold capitalize transition-all",
+                  activeTab === lang
+                    ? "bg-white/10 text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-200"
+                )}
+              >
+                {lang}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="animate-in fade-in zoom-in-95 duration-300">
+          <CodeBlock value={examples[activeTab]} language={activeTab === 'node' ? 'typescript' : activeTab} />
+        </div>
+      </section>
+
+      {/* Endpoints */}
+      <section className="mb-16">
+        <h2 className="mb-6 text-2xl font-bold text-slate-100">Core Endpoints</h2>
+        <div className="grid gap-6">
           {endpointDocs.map((doc) => (
-            <article key={doc.path} className="rounded-lg border border-slate-800 bg-slate-900/30 p-5">
-              <div className="mb-3 flex flex-wrap items-center gap-3">
-                <span className="rounded bg-emerald-500/10 px-2 py-1 text-[11px] font-semibold text-emerald-300">{doc.method}</span>
-                <code className="text-sm text-slate-100">{doc.path}</code>
-                <span className="font-sans text-sm font-semibold text-slate-200">{doc.name}</span>
+            <div key={doc.path} className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.02] shadow-xl backdrop-blur-md transition-all hover:bg-white/[0.04]">
+              <div className="border-b border-white/5 bg-black/20 p-5 sm:p-6">
+                <div className="mb-4 flex flex-wrap items-center gap-3">
+                  <span className="rounded-lg bg-emerald-500/20 px-3 py-1 font-mono text-xs font-bold tracking-widest text-emerald-400 ring-1 ring-inset ring-emerald-500/30">
+                    {doc.method}
+                  </span>
+                  <code className="text-sm font-semibold text-slate-200">{doc.path}</code>
+                  <div className="ml-auto flex items-center gap-2">
+                    <Box className="h-4 w-4 text-slate-500" />
+                    <span className="font-semibold text-slate-300">{doc.name}</span>
+                  </div>
+                </div>
+                <p className="text-sm leading-relaxed text-slate-400">{doc.purpose}</p>
               </div>
-              <p className="mb-3 text-sm text-slate-400">{doc.purpose}</p>
-              <div className="mb-3 grid gap-3 md:grid-cols-2">
-                <p className="text-xs text-slate-500">Input: <code className="text-slate-300">{doc.input}</code></p>
-                <p className="text-xs text-slate-500">Output: <span className="text-slate-300">{doc.output}</span></p>
+              <div className="grid gap-6 p-5 sm:p-6 lg:grid-cols-2">
+                <div className="space-y-5">
+                  <div>
+                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Payload</h4>
+                    <code className="block rounded-lg bg-black/40 px-3 py-2 text-xs text-cyan-300 ring-1 ring-inset ring-white/5">
+                      {doc.input}
+                    </code>
+                  </div>
+                  <div>
+                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Response</h4>
+                    <p className="text-sm text-slate-300">{doc.output}</p>
+                  </div>
+                  <div>
+                    <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Notes</h4>
+                    <ul className="space-y-1.5">
+                      {doc.notes.map((note, i) => (
+                        <li key={i} className="flex items-start gap-2 text-sm text-slate-400">
+                          <span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500/50" />
+                          <span>{note}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                <div>
+                  <h4 className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Example Request</h4>
+                  <CodeBlock value={doc.example} language="bash" />
+                </div>
               </div>
-              <ul className="mb-4 grid gap-1 text-xs text-slate-500">
-                {doc.notes.map((note) => <li key={note}>- {note}</li>)}
-              </ul>
-              <CodeBlock value={doc.example} />
-            </article>
+            </div>
           ))}
         </div>
       </section>
 
-      <section className="mb-10 grid gap-5 lg:grid-cols-2">
-        <div>
-          <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Polling</h2>
-          <p className="mb-3 text-sm text-slate-400">
-            The unified <code className="text-slate-200">GET /api/v1/jobs/&#123;id&#125;</code> works for every operation.
-            It returns a normalized status (<code>pending/queued/running/done/error/cancelled/expired</code>) plus
-            <code> terminal</code>, <code>succeeded</code>, and <code>failed</code> booleans. Poll every 5-10 seconds and
-            stop once <code>terminal</code> is true.
+      {/* Advanced Features Grid */}
+      <section className="mb-16 grid gap-6 lg:grid-cols-2">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-md">
+          <h2 className="mb-3 text-lg font-bold text-slate-100 flex items-center gap-2">
+            <Activity className="h-5 w-5 text-blue-400" /> Polling
+          </h2>
+          <p className="mb-4 text-sm text-slate-400">
+            The unified <code className="text-emerald-300">GET /api/v1/jobs/&#123;id&#125;</code> route works for all jobs. Poll every 5 seconds until <code className="text-emerald-300">terminal</code> is true.
           </p>
           <CodeBlock value={pollExample} />
         </div>
-        <div>
-          <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Server-Sent Events</h2>
-          <p className="mb-3 text-sm text-slate-400">
-            Subscribe to <code className="text-slate-200">eventsUrl</code> for live progress without a polling loop. It
-            emits <code>status</code> events and a final <code>done</code> event for any operation.
+        
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-md">
+          <h2 className="mb-3 text-lg font-bold text-slate-100 flex items-center gap-2">
+            <Cpu className="h-5 w-5 text-cyan-400" /> Server-Sent Events (SSE)
+          </h2>
+          <p className="mb-4 text-sm text-slate-400">
+            Subscribe to <code className="text-cyan-300">eventsUrl</code> for real-time progress without the overhead of a polling loop.
           </p>
           <CodeBlock value={sseExample} />
         </div>
+
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-md">
+          <h2 className="mb-3 text-lg font-bold text-slate-100 flex items-center gap-2">
+            <Shield className="h-5 w-5 text-amber-400" /> Idempotency
+          </h2>
+          <p className="mb-4 text-sm text-slate-400">
+            Add an <code className="text-amber-300">Idempotency-Key</code> header to safely retry requests without accidentally triggering duplicate jobs.
+          </p>
+          <CodeBlock value={idempotencyExample} />
+        </div>
+
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-md">
+          <h2 className="mb-3 text-lg font-bold text-slate-100 flex items-center gap-2">
+            <Server className="h-5 w-5 text-purple-400" /> Cancellation
+          </h2>
+          <p className="mb-4 text-sm text-slate-400">
+            Hit <code className="text-purple-300">/api/v1/jobs/&#123;id&#125;/cancel</code> to abort. Returns <code className="text-purple-300">NOT_CANCELLABLE</code> if unsupported.
+          </p>
+          <CodeBlock value={cancelExample} />
+        </div>
       </section>
 
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Cancel a job</h2>
-        <p className="mb-3 text-sm text-slate-400">
-          <code className="text-slate-200">POST /api/v1/jobs/&#123;id&#125;/cancel</code> stops a running job and routes
-          to the correct backend. Operations that cannot be cancelled (e.g. timestamps) return
-          <code> NOT_CANCELLABLE</code>. The create response includes <code>cancelUrl</code> (null when unsupported).
-        </p>
-        <CodeBlock value={cancelExample} />
+      {/* Webhooks & Uploads Full Width */}
+      <section className="mb-16 grid gap-6">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-md">
+          <h2 className="mb-3 text-xl font-bold text-slate-100">Webhooks</h2>
+          <p className="mb-4 text-sm text-slate-400">
+            Pass <code className="text-emerald-300">webhookUrl</code> on job creation. Your server will receive a POST request upon completion. Ensure you verify the <code className="text-emerald-300">X-VMS-Signature</code> using your Webhook Secret.
+          </p>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <CodeBlock value={`// 1) The payload sent to your server
+{
+  "jobId": "...",
+  "status": "done",
+  "succeeded": true,
+  "result": { "url": "..." },
+  "timestamp": 123456789
+}`} language="json" />
+            <div className="flex h-full flex-col items-center justify-center rounded-xl border border-dashed border-white/10 p-6 text-center">
+              <Shield className="mb-2 h-8 w-8 text-slate-600" />
+              <p className="text-sm font-medium text-slate-400">Always verify HMAC SHA256 signatures to prevent spoofed job completions.</p>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Idempotency</h2>
-        <p className="mb-3 text-sm text-slate-400">
-          Add an <code className="text-slate-200">Idempotency-Key</code> header to any create request to make retries
-          safe. The same key + body replays the original job (<code>Idempotent-Replayed: true</code>); the same key with a
-          different body returns <code>409 IDEMPOTENCY_KEY_REUSED</code>. Keys are retained for 24 hours.
-        </p>
-        <CodeBlock value={idempotencyExample} />
-      </section>
-
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Uploads</h2>
-        <p className="mb-3 text-sm text-slate-400">
-          To subtitle or translate your own media, upload it first (scope <code>uploads</code>), then pass the returned
-          public URL: <code>POST /api/v1/uploads/presign</code> &rarr; upload &rarr;{" "}
-          <code>POST /api/v1/uploads/complete</code> &rarr; <code>GET/DELETE /api/v1/uploads/&#123;fileId&#125;</code>.
-        </p>
-        <CodeBlock value={uploadsExample} />
-      </section>
-
-      <section className="mb-10 grid gap-5 lg:grid-cols-2">
+      {/* Reference Tables */}
+      <section className="mb-16 grid gap-8 lg:grid-cols-2">
         <div>
-          <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Node (fetch)</h2>
-          <CodeBlock value={nodeExample} />
+          <h2 className="mb-4 text-xl font-bold text-slate-100">Job Statuses</h2>
+          <div className="overflow-hidden rounded-xl border border-white/10 bg-black/20 shadow-lg">
+            {statuses.map(([status, meaning], i) => (
+              <div key={status} className={cn("flex items-start gap-4 p-4", i > 0 && "border-t border-white/5")}>
+                <code className="w-24 shrink-0 font-bold text-emerald-400">{status}</code>
+                <span className="text-sm text-slate-400">{meaning}</span>
+              </div>
+            ))}
+          </div>
         </div>
+        
         <div>
-          <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Python (requests)</h2>
-          <CodeBlock value={pythonExample} />
+          <h2 className="mb-4 text-xl font-bold text-slate-100">Error Codes</h2>
+          <div className="overflow-hidden rounded-xl border border-white/10 bg-black/20 shadow-lg">
+            {errorCodes.map(([code, meaning], i) => (
+              <div key={code} className={cn("flex items-start gap-4 p-4", i > 0 && "border-t border-white/5")}>
+                <code className="w-48 shrink-0 font-bold text-red-400">{code}</code>
+                <span className="text-sm text-slate-400">{meaning}</span>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
-
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Statuses</h2>
-        <div className="overflow-hidden rounded-lg border border-slate-800">
-          {statuses.map(([status, meaning], index) => (
-            <div key={status} className={`grid gap-3 px-4 py-3 text-sm md:grid-cols-[220px_1fr] ${index ? "border-t border-slate-800" : ""}`}>
-              <code className="text-emerald-300">{status}</code>
-              <span className="text-slate-400">{meaning}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Errors</h2>
-        <p className="mb-3 text-sm text-slate-400">
-          Every v1 error uses one shape with a stable machine-readable <code>code</code> and a <code>retryable</code> flag.
-        </p>
-        <CodeBlock value={errorExample} />
-        <div className="mt-4 overflow-hidden rounded-lg border border-slate-800">
-          {errorCodes.map(([code, meaning], index) => (
-            <div key={code} className={`grid gap-3 px-4 py-3 text-sm md:grid-cols-[260px_1fr] ${index ? "border-t border-slate-800" : ""}`}>
-              <code className="text-emerald-300">{code}</code>
-              <span className="text-slate-400">{meaning}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Rate limits</h2>
-        <p className="mb-3 text-sm text-slate-400">
-          Every key-authenticated response carries rate-limit headers. On <code>429</code> a <code>Retry-After</code>
-          {" "}header (seconds) is included.
-        </p>
-        <div className="overflow-hidden rounded-lg border border-slate-800">
-          {[
-            ["X-RateLimit-Limit", "Requests allowed per minute for this key."],
-            ["X-RateLimit-Remaining", "Requests left in the current window."],
-            ["X-RateLimit-Reset", "Epoch seconds when the window resets."],
-            ["Retry-After", "Seconds to wait before retrying (on 429)."],
-          ].map(([h, meaning], index) => (
-            <div key={h} className={`grid gap-3 px-4 py-3 text-sm md:grid-cols-[260px_1fr] ${index ? "border-t border-slate-800" : ""}`}>
-              <code className="text-emerald-300">{h}</code>
-              <span className="text-slate-400">{meaning}</span>
-            </div>
-          ))}
-        </div>
-        <p className="mt-3 text-xs text-slate-500">
-          Note: limits are enforced per server instance (best-effort), so brief bursts may exceed the nominal limit
-          under high concurrency.
-        </p>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Webhooks</h2>
-        <p className="mb-3 text-sm text-slate-400">
-          Include <code>webhookUrl</code> in a create request. The URL must be public HTTPS and cannot point to localhost,
-          private IP ranges, or internal hostnames. On completion we POST a JSON body
-          (<code>&#123; jobId, status, message, ready, timestamp &#125;</code>) with headers
-          <code> X-VMS-Event</code> (<code>job.completed</code> | <code>job.failed</code>) and
-          <code> X-VMS-Signature</code> (<code>sha256=&lt;hex hmac of the raw body&gt;</code>). Always verify the signature
-          using the <strong>per-key webhook secret</strong> shown once when the key was created. Check delivery status at
-          <code> GET /api/v1/jobs/&#123;id&#125;/webhook</code>.
-        </p>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <CodeBlock value={webhookExample} />
-          <CodeBlock value={verifyExample} />
-        </div>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="mb-3 font-sans text-lg font-semibold text-slate-100">Operational notes</h2>
-        <ul className="grid gap-2 text-sm text-slate-400">
-          <li>- API keys are shown once. Revoke and recreate a key if it is exposed.</li>
-          <li>- The key is scoped to its own client identity, so job history and outputs are isolated per key.</li>
-          <li>- Full access keys use the <code>*</code> scope. Narrow keys can use service scopes such as <code>youtube</code>, <code>subtitles</code>, and <code>translator</code>.</li>
-          <li>- Rate limiting is per key. When exceeded, the API returns <code>429</code> and may include <code>Retry-After</code>.</li>
-          <li>- Public API clients should prefer <code>/api/v1</code>. Other <code>/api/youtube</code>, <code>/api/subtitles</code>, and <code>/api/translator</code> routes are canonical app routes and may expose service-specific behavior.</li>
-          <li>- YouTube jobs depend on server-side YouTube access. Some videos may fail if YouTube blocks server download streams.</li>
-        </ul>
-      </section>
+      
+      {/* Footer Info */}
+      <div className="flex items-center justify-center gap-2 text-sm text-slate-500">
+        <AlertCircle className="h-4 w-4" />
+        If your API key is compromised, revoke it immediately from the Developer panel.
+      </div>
     </div>
   );
 }
