@@ -516,7 +516,8 @@ Triggered on push to `main`. Four parallel jobs:
 
 **Image tagging rule:** Always use timestamped/commit-SHA tags. Never push `:latest` alone. CI uses `${GITHUB_SHA::8}`.
 
-**Required GitHub Secrets:** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `ENV_GREEN_CONTENT` (base production env file), `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS_BASE64`, `NOTEBOOKLM_*`.
+**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS_BASE64`, `NOTEBOOKLM_*`.
+*(Note: AWS authentication now uses GitHub OIDC via the `ytgrabber-green-gha-deployer` IAM role. Long-lived `AWS_ACCESS_KEY_ID` secrets are no longer needed.)*
 
 ---
 

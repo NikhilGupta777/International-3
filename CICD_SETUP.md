@@ -28,98 +28,23 @@ All 3 done → Deploy job:
 
 Go to: **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**
 
-Add these 3 secrets:
+Add this secret:
 
 | Secret Name | Value |
 |-------------|-------|
-| `AWS_ACCESS_KEY_ID` | Your AWS IAM access key (see below) |
-| `AWS_SECRET_ACCESS_KEY` | Your AWS IAM secret key (see below) |
 | `ENV_GREEN_CONTENT` | Full contents of `deploy/ec2/.env.green` (see below) |
+
+*(Note: We used to require `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` here, but they are no longer needed since we migrated to GitHub OIDC.)*
 
 ---
 
-### Step 2 — Create AWS IAM User for GitHub Actions
+### Step 2 — Verify AWS OIDC Role
 
-In AWS Console → IAM → Create user `github-actions-deployer`:
+The repository uses OpenID Connect (OIDC) to authenticate with AWS. This means GitHub Actions assumes a temporary, short-lived IAM role (`ytgrabber-green-gha-deployer`) instead of using permanent credentials.
 
-Attach these **inline policies**:
+This role has already been provisioned in the AWS account using the `setup_oidc.ps1` script and is explicitly bound to the `NikhilGupta777/International-3` repository.
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ecr:GetAuthorizationToken",
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage",
-        "ecr:InitiateLayerUpload",
-        "ecr:UploadLayerPart",
-        "ecr:CompleteLayerUpload",
-        "ecr:PutImage",
-        "ecr:DescribeImages"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "lambda:UpdateFunctionCode",
-        "lambda:GetFunctionConfiguration",
-        "lambda:UpdateFunctionConfiguration"
-      ],
-      "Resource": "arn:aws:lambda:us-east-1:596596146505:function:ytgrabber-green-*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "cloudformation:CreateStack",
-        "cloudformation:UpdateStack",
-        "cloudformation:DescribeStacks",
-        "cloudformation:DescribeStackEvents",
-        "cloudformation:GetTemplate"
-      ],
-      "Resource": "arn:aws:cloudformation:us-east-1:596596146505:stack/ytgrabber-green*/*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:DeleteObject",
-        "s3:ListBucket",
-        "s3:PutBucketPolicy"
-      ],
-      "Resource": [
-        "arn:aws:s3:::malikaeditorr",
-        "arn:aws:s3:::malikaeditorr/*",
-        "arn:aws:s3:::ytgrabber-green-*",
-        "arn:aws:s3:::ytgrabber-green-*/*"
-      ]
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "cloudfront:CreateInvalidation",
-        "cloudfront:GetDistribution"
-      ],
-      "Resource": "arn:aws:cloudfront::596596146505:distribution/EDTEON6GFBEZH"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "batch:DescribeJobDefinitions",
-        "batch:RegisterJobDefinition"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-Then create **Access Key** → copy both values → paste into GitHub Secrets.
+You do not need to configure any AWS credentials manually. The `.github/workflows/deploy.yml` workflow automatically assumes this role during deployment.
 
 ---
 
