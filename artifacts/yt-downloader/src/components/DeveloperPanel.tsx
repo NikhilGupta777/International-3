@@ -301,10 +301,16 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
             </div>
             <button
               onClick={copyFresh}
-              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition-all hover:bg-emerald-400 hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] active:scale-95"
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-emerald-500 px-6 py-3 font-semibold text-slate-950 transition-all hover:bg-emerald-400 hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] active:scale-95 overflow-hidden"
             >
-              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-              {copied ? "Copied!" : "Copy Key"}
+              <div className="relative w-4 h-4">
+                <Check className={cn("absolute inset-0 transition-all duration-300", copied ? "scale-100 opacity-100 rotate-0" : "scale-50 opacity-0 -rotate-90")} />
+                <Copy className={cn("absolute inset-0 transition-all duration-300", copied ? "scale-50 opacity-0 rotate-90" : "scale-100 opacity-100 rotate-0")} />
+              </div>
+              <span className="relative">
+                <span className={cn("block transition-all duration-300", copied ? "-translate-y-8 opacity-0" : "translate-y-0 opacity-100")}>Copy Key</span>
+                <span className={cn("absolute inset-0 block transition-all duration-300", copied ? "translate-y-0 opacity-100" : "translate-y-8 opacity-0")}>Copied!</span>
+              </span>
             </button>
           </div>
 
@@ -422,25 +428,40 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
             </h2>
             
             {loading ? (
-              <div className="space-y-3">
-                {[1, 2].map((i) => (
-                  <div key={i} className="h-20 w-full animate-pulse rounded-2xl bg-white/5" />
+              <div className="grid gap-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="group relative overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02] p-1">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-3 px-4 py-3">
+                      <div className="h-8 w-8 rounded-full bg-slate-800/50 animate-pulse" />
+                      <div className="flex-1 min-w-[120px] space-y-2">
+                        <div className="h-4 w-32 rounded bg-slate-800/80 animate-pulse" />
+                        <div className="h-3 w-48 rounded bg-slate-800/50 animate-pulse" />
+                      </div>
+                      <div className="hidden flex-col items-end gap-2 sm:flex">
+                        <div className="h-3 w-24 rounded bg-slate-800/50 animate-pulse" />
+                        <div className="h-3 w-16 rounded bg-slate-800/30 animate-pulse" />
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             ) : keys.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-slate-700/70 bg-white/[0.01] py-12 text-center">
-                <div className="mb-3 rounded-full bg-slate-800/50 p-3">
-                  <KeyRound className="h-6 w-6 text-slate-500" />
+              <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.01] py-16 text-center animate-in fade-in zoom-in-95 duration-500">
+                <div className="relative mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-slate-800/50 ring-1 ring-white/10">
+                  <KeyRound className="h-8 w-8 text-slate-400" />
+                  <div className="absolute inset-0 rounded-full bg-emerald-500/20 blur-xl" />
                 </div>
-                <h3 className="text-slate-300 font-medium">No API keys found</h3>
-                <p className="mt-1 text-sm text-slate-500">Generate your first key above to get started.</p>
+                <h3 className="text-lg font-semibold text-slate-200">No API keys found</h3>
+                <p className="mt-2 text-sm text-slate-500 max-w-[250px]">Generate your first key above to unlock programmatic access.</p>
               </div>
             ) : (
               <div className="grid gap-3">
-                {keys.map((k) => (
+                {keys.map((k, i) => (
                   <div 
                     key={k.keyId} 
+                    style={{ animationDelay: `${i * 50}ms`, animationFillMode: "both" }}
                     className={cn(
+                      "animate-in fade-in slide-in-from-bottom-2 duration-500",
                       "group relative overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02] p-1 transition-all hover:border-white/10 hover:bg-white/[0.04]",
                       k.status === "revoked" && "opacity-50 grayscale"
                     )}
@@ -456,7 +477,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
                       
                       <div className="flex-1 min-w-[120px]">
                         <div className="flex items-center gap-2">
-                          <span className="font-semibold text-slate-200">{k.name}</span>
+                          <span className={cn("font-semibold text-slate-200", k.status === "revoked" && "line-through text-slate-400")}>{k.name}</span>
                           <span className="rounded-full bg-slate-800/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-400 ring-1 ring-inset ring-white/10">
                             {k.scopes.includes("*") ? "Full Access" : "Custom Scopes"}
                           </span>
