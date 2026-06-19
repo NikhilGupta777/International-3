@@ -20,11 +20,13 @@ jobs:
     name: Download & Upload Model Weights
     runs-on: ubuntu-latest
     timeout-minutes: 180
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: actions/setup-python@v5

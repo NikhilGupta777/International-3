@@ -370,8 +370,9 @@ jobs:
           BASE_URI="${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_TRANSLATOR_BASE_REPO }}:${TAG}"
 
           # Write AWS creds to temp files for BuildKit --mount=type=secret
-          echo -n "${{ secrets.AWS_ACCESS_KEY_ID }}" > /tmp/aws_access_key_id
-          echo -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" > /tmp/aws_secret_access_key
+          echo -n "$AWS_ACCESS_KEY_ID" > /tmp/aws_access_key_id
+          echo -n "$AWS_SECRET_ACCESS_KEY" > /tmp/aws_secret_access_key
+          echo -n "$AWS_SESSION_TOKEN" > /tmp/aws_session_token
           echo -n "${{ env.AWS_REGION }}" > /tmp/aws_region
 
           BUILDKIT_PROGRESS=plain docker buildx build \
@@ -382,11 +383,12 @@ jobs:
             --build-arg RUN_MODEL_SMOKE_TEST="false" \
             --secret id=aws_access_key_id,src=/tmp/aws_access_key_id \
             --secret id=aws_secret_access_key,src=/tmp/aws_secret_access_key \
+            --secret id=aws_session_token,src=/tmp/aws_session_token \
             --secret id=aws_region,src=/tmp/aws_region \
             -t "$BASE_URI" \
             --push artifacts/video-translator-service/
 
-          rm -f /tmp/aws_access_key_id /tmp/aws_secret_access_key /tmp/aws_region
+          rm -f /tmp/aws_access_key_id /tmp/aws_secret_access_key /tmp/aws_session_token /tmp/aws_region
           echo "base_uri=${BASE_URI}" >> "$GITHUB_OUTPUT"
           echo "Base image pushed: ${BASE_URI}"
 

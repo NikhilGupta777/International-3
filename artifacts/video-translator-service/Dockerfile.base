@@ -1,4 +1,4 @@
-﻿# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7
 # BASE image — heavy layer: CUDA + all Python deps + all model weights.
 # Rebuilt ONLY when Dockerfile.base, requirements.txt, constraints.txt, or runtime_deps.py change.
 # Typical rebuild: ~20-25 min.  Code-only changes (worker.py) do NOT rebuild this.
@@ -96,9 +96,11 @@ RUN pip install --no-cache-dir awscli
 # Tarball extracts torch-cache/ which maps to TORCH_HOME=/model-cache/torch.
 RUN --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_session_token \
     --mount=type=secret,id=aws_region \
     export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
     && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+    && export AWS_SESSION_TOKEN=$(cat /run/secrets/aws_session_token) \
     && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
     && mkdir -p /model-cache/torch \
     && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/demucs-htdemucs.tar.gz /tmp/demucs.tar.gz \
@@ -229,10 +231,12 @@ RUN python /tmp/smoke_test_imports.py && rm -f /tmp/smoke_test_imports.py
 RUN mkdir -p /model-cache/modelscope/hub/iic /model-cache/huggingface
 RUN --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_session_token \
     --mount=type=secret,id=aws_region \
     if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
       export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
       && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+      && export AWS_SESSION_TOKEN=$(cat /run/secrets/aws_session_token) \
       && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
       && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/cosyvoice3-0.5b.tar.gz /tmp/cosyvoice3.tar.gz \
       && tar xzf /tmp/cosyvoice3.tar.gz -C /tmp/ \
@@ -285,10 +289,12 @@ RUN if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ] && [ "$RUN_MODEL_SMOKE_TEST" = "
 # Original source: HuggingFace (~5 MB/s). S3 copy: ~10 seconds.
 RUN --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_session_token \
     --mount=type=secret,id=aws_region \
     if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
       export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
       && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+      && export AWS_SESSION_TOKEN=$(cat /run/secrets/aws_session_token) \
       && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
       && mkdir -p /model-cache/LatentSync/checkpoints/whisper \
       && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/latentsync_unet.pt \
@@ -307,10 +313,12 @@ RUN --mount=type=secret,id=aws_access_key_id \
 # Tarball contains the HuggingFace cache directory structure.
 RUN --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=aws_session_token \
     --mount=type=secret,id=aws_region \
     if [ "$DOWNLOAD_MODELS_AT_BUILD" = "true" ]; then \
       export AWS_ACCESS_KEY_ID=$(cat /run/secrets/aws_access_key_id) \
       && export AWS_SECRET_ACCESS_KEY=$(cat /run/secrets/aws_secret_access_key) \
+      && export AWS_SESSION_TOKEN=$(cat /run/secrets/aws_session_token) \
       && export AWS_DEFAULT_REGION=$(cat /run/secrets/aws_region) \
       && aws s3 cp s3://malikaeditorr/ytgrabber-green/model-weights/sd-vae-ft-mse.tar.gz /tmp/vae.tar.gz \
       && tar xzf /tmp/vae.tar.gz -C /tmp/ \
