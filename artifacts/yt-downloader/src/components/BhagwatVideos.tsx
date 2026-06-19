@@ -606,11 +606,6 @@ function AudioUploadZone({
     setDragging(false);
     const file = e.dataTransfer.files[0];
     if (file) {
-      if (!file.type.startsWith("audio/") && !file.type.startsWith("video/")) {
-        // Trigger a shake and show error using a small timeout if needed, but for now just show error.
-        onFileSelected(new File([], "INVALID_TYPE")); // We will handle this in parent or just block it
-        return;
-      }
       onFileSelected(file);
     }
   };
@@ -630,7 +625,8 @@ function AudioUploadZone({
         </div>
         <button
           onClick={onRemove}
-          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-red-400 transition-colors"
+          disabled={uploading}
+          className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/40 hover:text-red-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           title="Remove file"
         >
           <Trash2 className="w-3.5 h-3.5" />
@@ -659,7 +655,8 @@ function AudioUploadZone({
           type="file"
           accept="audio/*,video/mp4,video/webm,.mp3,.wav,.m4a,.ogg,.flac,.aac,.opus,.wma,.amr"
           className="hidden"
-          onChange={e => { const f = e.target.files?.[0]; if (f) onFileSelected(f); }}
+          disabled={uploading}
+          onChange={e => { const f = e.target.files?.[0]; if (f) onFileSelected(f); e.target.value = ''; }}
         />
         {uploading ? (
           <div className="flex flex-col items-center gap-3">
@@ -740,6 +737,8 @@ function BhagwatEditor({
 
   const [analyzeJobId, setAnalyzeJobId] = useState<string | null>(null);
   const [renderJobId, setRenderJobId] = useState<string | null>(null);
+
+  const isProcessing = phase === "analyzing" || phase === "rendering" || reviewing || uploading;
 
   const [transcriptText, setTranscriptText] = useState("");
   const [reviewing, setReviewing] = useState(false);
@@ -1188,7 +1187,8 @@ function BhagwatEditor({
   }, []);
 
   const handleFileSelected = async (file: File) => {
-    if (file.name === "INVALID_TYPE") {
+    const isValidType = file.type.startsWith("audio/") || file.type.startsWith("video/") || /\.(mp3|wav|m4a|mp4|webm|ogg|flac|aac|opus|wma|amr)$/i.test(file.name);
+    if (!isValidType) {
       setUploadError("Invalid file type. Please upload an audio or video file.");
       return;
     }
@@ -1668,11 +1668,13 @@ function BhagwatEditor({
             <div className="flex items-center gap-1.5 bg-black/40 border border-white/8 rounded-xl p-1">
               <button
                 onClick={() => handleSwitchSource("youtube")}
+                disabled={isProcessing}
                 className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all",
                   sourceMode === "youtube"
                     ? "bg-amber-600/80 text-white shadow-lg shadow-amber-900/30"
-                    : "text-white/35 hover:text-white/60 hover:bg-white/4"
+                    : "text-white/35 hover:text-white/60 hover:bg-white/4",
+                  isProcessing && "opacity-50 cursor-not-allowed"
                 )}
               >
                 <Youtube className="w-3.5 h-3.5" />
@@ -1680,11 +1682,13 @@ function BhagwatEditor({
               </button>
               <button
                 onClick={() => handleSwitchSource("upload")}
+                disabled={isProcessing}
                 className={cn(
                   "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-all",
                   sourceMode === "upload"
                     ? "bg-violet-600/80 text-white shadow-lg shadow-violet-900/30"
-                    : "text-white/35 hover:text-white/60 hover:bg-white/4"
+                    : "text-white/35 hover:text-white/60 hover:bg-white/4",
+                  isProcessing && "opacity-50 cursor-not-allowed"
                 )}
               >
                 <Headphones className="w-3.5 h-3.5" />
@@ -1707,13 +1711,20 @@ function BhagwatEditor({
                       <input
                         type="text"
                         value={url}
-                        onChange={e => setUrl(e.target.value)}
+                        onChange={e => {
+                          setUrl(e.target.value);
+                          if (phase !== "idle") { setPhase("idle"); setTimeline(null); }
+                        }}
+                        disabled={isProcessing}
                         placeholder="Paste YouTube URL of Bhagwat Katha…"
-                        className="flex-1 bg-transparent text-white placeholder:text-white/30 outline-none text-sm"
+                        className="flex-1 bg-transparent text-white placeholder:text-white/30 outline-none text-sm disabled:opacity-50"
                       />
-                      {url && (
+                      {url && !isProcessing && (
                         <button
-                          onClick={() => setUrl("")}
+                          onClick={() => {
+                            setUrl("");
+                            if (phase !== "idle") { setPhase("idle"); setTimeline(null); }
+                          }}
                           className="text-white/30 hover:text-white/60 transition-colors shrink-0"
                         >
                           <X className="w-3.5 h-3.5" />
@@ -1731,7 +1742,7 @@ function BhagwatEditor({
                   >
                     <AudioUploadZone
                       uploadedFile={uploadedFile}
-                      uploading={uploading}
+                      uploading={uploading || isProcessing}
                       uploadProgress={uploadProgress}
                       uploadError={uploadError}
                       onFileSelected={handleFileSelected}
@@ -1751,14 +1762,16 @@ function BhagwatEditor({
                 { v: "full",  label: "Full Coverage", icon: <ImageIcon className="w-4 h-4" />, desc: "Images across entire audio, start to end" },
                 { v: "smart", label: "AI Smart", icon: <Sparkles className="w-4 h-4" />, desc: "AI picks the most impactful moments" },
               ] as const).map(opt => (
-                <button
+                  <button
                   key={opt.v}
                   onClick={() => setMode(opt.v)}
+                  disabled={isProcessing}
                   className={cn(
                     "rounded-xl border p-3 text-left transition-all group",
                     mode === opt.v
                       ? "bg-amber-500/12 border-amber-500/45 shadow-[0_0_16px_rgba(245,158,11,0.08)]"
-                      : "border-white/8 bg-black/20 hover:border-white/15 hover:bg-white/3"
+                      : "border-white/8 bg-black/20 hover:border-white/15 hover:bg-white/3",
+                    isProcessing && "opacity-50 cursor-not-allowed"
                   )}
                 >
                   <div className={cn("mb-2 transition-colors", mode === opt.v ? "text-amber-400" : "text-white/25 group-hover:text-white/40")}>
@@ -1778,11 +1791,13 @@ function BhagwatEditor({
             <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Workflow</p>
             <button
               onClick={() => setAutonomousMode(p => !p)}
+              disabled={isProcessing}
               className={cn(
                 "w-full flex items-center gap-4 rounded-xl border px-4 py-3.5 text-left transition-all",
                 autonomousMode
                   ? "bg-violet-500/10 border-violet-500/35 shadow-[0_0_16px_rgba(139,92,246,0.06)]"
-                  : "border-white/8 bg-black/20 hover:border-white/15"
+                  : "border-white/8 bg-black/20 hover:border-white/15",
+                isProcessing && "opacity-50 cursor-not-allowed"
               )}
             >
               {/* Toggle pill */}
