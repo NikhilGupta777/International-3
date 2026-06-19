@@ -329,6 +329,7 @@ function EditableTimelinePreview({
                   <textarea
                     value={editDraft}
                     onChange={e => setEditDraft(e.target.value)}
+                    onFocus={e => e.target.select()}
                     rows={3}
                     className="w-full bg-black/40 border border-amber-500/35 rounded-lg px-3 py-2 text-xs text-white/80 outline-none focus:border-amber-400/60 resize-none"
                     autoFocus
@@ -1186,6 +1187,13 @@ function BhagwatEditor({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-scroll AI review stream
+  useEffect(() => {
+    if (reviewScrollRef.current) {
+      reviewScrollRef.current.scrollTop = reviewScrollRef.current.scrollHeight;
+    }
+  }, [reviewText]);
+
   const handleFileSelected = async (file: File) => {
     const isValidType = file.type.startsWith("audio/") || file.type.startsWith("video/") || /\.(mp3|wav|m4a|mp4|webm|ogg|flac|aac|opus|wma|amr)$/i.test(file.name);
     if (!isValidType) {
@@ -1757,7 +1765,7 @@ function BhagwatEditor({
           {/* GENERATION MODE */}
           <div className="space-y-2">
             <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Generation Mode</p>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {([
                 { v: "full",  label: "Full Coverage", icon: <ImageIcon className="w-4 h-4" />, desc: "Images across entire audio, start to end" },
                 { v: "smart", label: "AI Smart", icon: <Sparkles className="w-4 h-4" />, desc: "AI picks the most impactful moments" },
