@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
-import { ArrowLeft, BookOpen, Copy, ExternalLink, Terminal, Code2, Cpu, Check, AlertCircle, Shield, Server, Box, Activity } from "lucide-react";
+import { ArrowLeft, BookOpen, Copy, ExternalLink, Terminal, Code2, Cpu, Check, AlertCircle, Shield, Server, Box, Activity, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { generateAgentPrompt } from "@/lib/agent-prompt";
 
 // Use the live origin so copy-paste examples target whatever host the panel is
 // served from (falls back to the production domain during SSR/build).
@@ -323,6 +324,14 @@ curl -X POST ${API_BASE}/api/v1/uploads/presign \\
   -d '{"filename":"clip.mp4","size":1048576,"mimeType":"video/mp4"}'
 # then POST /api/v1/uploads/complete { fileId } and pass the file URL to /subtitles or /translate`;
 
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const handleCopyPrompt = () => {
+    const prompt = generateAgentPrompt();
+    void navigator.clipboard?.writeText(prompt);
+    setCopiedPrompt(true);
+    setTimeout(() => setCopiedPrompt(false), 2000);
+  };
+
   return (
     <div className="mx-auto h-full w-full max-w-[1400px] overflow-y-auto px-4 py-10 font-sans text-slate-300 pb-24 scroll-smooth">
       
@@ -354,16 +363,26 @@ curl -X POST ${API_BASE}/api/v1/uploads/presign \\
             </p>
           </div>
 
-          <a
-            href={`${API_BASE}/api/v1/openapi.json`}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3 font-semibold text-slate-950 shadow-[0_0_30px_rgba(16,185,129,0.3)] transition-all hover:opacity-90 active:scale-95 hover:shadow-[0_0_40px_rgba(16,185,129,0.5)]"
-          >
-            <Code2 className="h-5 w-5" />
-            OpenAPI Spec
-            <ExternalLink className="ml-1 h-4 w-4" />
-          </a>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              type="button"
+              onClick={handleCopyPrompt}
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-purple-500 to-fuchsia-500 px-6 py-3 font-semibold text-white shadow-[0_0_30px_rgba(168,85,247,0.3)] transition-all hover:opacity-90 active:scale-95 hover:shadow-[0_0_40px_rgba(168,85,247,0.5)]"
+            >
+              {copiedPrompt ? <Check className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
+              {copiedPrompt ? "Prompt Copied!" : "Copy Page for AI Agent"}
+            </button>
+            <a
+              href={`${API_BASE}/api/v1/openapi.json`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 px-6 py-3 font-semibold text-slate-950 shadow-[0_0_30px_rgba(16,185,129,0.3)] transition-all hover:opacity-90 active:scale-95 hover:shadow-[0_0_40px_rgba(16,185,129,0.5)]"
+            >
+              <Code2 className="h-5 w-5" />
+              OpenAPI Spec
+              <ExternalLink className="ml-1 h-4 w-4" />
+            </a>
+          </div>
         </div>
       </div>
 

@@ -16,6 +16,7 @@ import {
   Zap
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { generateAgentPrompt } from "@/lib/agent-prompt";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Developer / API Keys panel - Premium UI
@@ -84,6 +85,7 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
   const [freshKey, setFreshKey] = useState<string | null>(null);
   const [freshWebhookSecret, setFreshWebhookSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
 
   // key detail expansion
   const [expandedKeyId, setExpandedKeyId] = useState<string | null>(null);
@@ -189,6 +191,15 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
     void navigator.clipboard?.writeText(freshKey).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
+    });
+  }, [freshKey]);
+
+  const handleCopyPrompt = useCallback(() => {
+    const k = freshKey || "vms_live_YOUR_KEY";
+    const prompt = generateAgentPrompt(k);
+    void navigator.clipboard?.writeText(prompt).then(() => {
+      setCopiedPrompt(true);
+      setTimeout(() => setCopiedPrompt(false), 2000);
     });
   }, [freshKey]);
 
@@ -599,9 +610,18 @@ export function DeveloperPanel({ onOpenDocs }: { onOpenDocs?: () => void }) {
 
           {/* Quick start */}
           <section className="rounded-2xl border border-white/10 bg-white/[0.02] p-6 shadow-xl backdrop-blur-xl">
-            <h2 className="mb-4 font-semibold text-slate-100 flex items-center gap-2">
-              <Terminal className="w-5 h-5 text-blue-400" /> Quick Snippet
-            </h2>
+            <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <h2 className="font-semibold text-slate-100 flex items-center gap-2">
+                <Terminal className="w-5 h-5 text-blue-400" /> Quick Snippet
+              </h2>
+              <button
+                onClick={handleCopyPrompt}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 ring-1 ring-inset ring-emerald-500/20 transition-all hover:bg-emerald-500/20 hover:text-emerald-300"
+              >
+                {copiedPrompt ? <Check className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}
+                {copiedPrompt ? "Prompt Copied!" : "Copy prompt for AI agent"}
+              </button>
+            </div>
             <div className="relative group">
               <div className="absolute inset-0 bg-gradient-to-r from-emerald-500/10 to-cyan-500/10 rounded-xl blur-md transition-opacity opacity-0 group-hover:opacity-100" />
               <pre className="relative overflow-x-auto rounded-xl border border-white/10 bg-black/60 p-4 font-mono text-[11px] leading-relaxed text-emerald-300 scrollbar-thin scrollbar-thumb-white/10">
