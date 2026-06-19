@@ -580,12 +580,14 @@ function RenderHistory({
 function AudioUploadZone({
   uploadedFile,
   uploading,
+  uploadProgress,
   uploadError,
   onFileSelected,
   onRemove,
 }: {
-  uploadedFile: { audioId: string; filename: string; sizeBytes: number } | null;
+  uploadedFile: { audioId: string; uploadS3Key?: string; mimeType?: string; filename: string; sizeBytes: number } | null;
   uploading: boolean;
+  uploadProgress: number | null;
   uploadError: string;
   onFileSelected: (file: File) => void;
   onRemove: () => void;
@@ -647,9 +649,20 @@ function AudioUploadZone({
           onChange={e => { const f = e.target.files?.[0]; if (f) onFileSelected(f); }}
         />
         {uploading ? (
-          <div className="flex flex-col items-center gap-2">
+          <div className="flex flex-col items-center gap-3">
             <Loader2 className="w-8 h-8 text-amber-400 animate-spin" />
-            <p className="text-sm text-white/60">Uploading…</p>
+            <div className="w-full max-w-[240px]">
+              <div className="flex justify-between text-xs text-white/60 mb-1">
+                <span>Uploading...</span>
+                <span>{uploadProgress !== null ? `${Math.round(uploadProgress)}%` : ""}</span>
+              </div>
+              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-amber-500 transition-all duration-300 ease-out" 
+                  style={{ width: `${uploadProgress ?? 0}%` }}
+                />
+              </div>
+            </div>
           </div>
         ) : (
           <div className="flex flex-col items-center gap-2">
@@ -678,8 +691,9 @@ function BhagwatEditor({
   sourceMode: "youtube" | "upload";
   setSourceMode: (v: "youtube" | "upload") => void;
 }) {
-  const [uploadedFile, setUploadedFile] = useState<{ audioId: string; filename: string; sizeBytes: number } | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<{ audioId: string; uploadS3Key?: string; mimeType?: string; filename: string; sizeBytes: number } | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState("");
 
   const [mode, setMode] = useState<"full" | "smart">("full");
@@ -1151,13 +1165,10 @@ function BhagwatEditor({
 
   const handleFileSelected = async (file: File) => {
     setUploading(true);
+    setUploadProgress(0);
     setUploadError("");
-    // Delete previous upload if any
-    if (uploadedFile) {
-      fetch(`${BASE}/api/bhagwat/audio/${uploadedFile.audioId}`, { method: "DELETE" }).catch(() => {});
-      setUploadedFile(null);
-    }
-    // Reset editor state
+    // Reset old state
+    if (uploadedFile) setUploadedFile(null);
     setPhase("idle");
     setTimeline(null);
     setDownloadUrl(null);
@@ -1169,22 +1180,58 @@ function BhagwatEditor({
     hasAutoReviewedRef.current = false;
 
     try {
-      const formData = new FormData();
-      formData.append("audio", file);
-      const res = await fetch(`${BASE}/api/bhagwat/upload-audio`, {
+      // 1. Get Pre-signed URL
+      const presignedRes = await fetch(`${BASE}/api/bhagwat/upload-audio-presigned`, {
         method: "POST",
-        body: formData,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          mimeType: file.type || "audio/mpeg",
+          sizeBytes: file.size,
+        }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Upload failed" }));
-        throw new Error(err.error ?? "Upload failed");
+      if (!presignedRes.ok) {
+        throw new Error("Failed to initialize upload");
       }
-      const data = await res.json();
-      setUploadedFile({ audioId: data.audioId, filename: data.filename ?? file.name, sizeBytes: data.sizeBytes ?? file.size });
+      const { audioId, uploadUrl, uploadS3Key } = await presignedRes.json();
+
+      // 2. Upload to S3 directly using XMLHttpRequest for progress
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("PUT", uploadUrl, true);
+        xhr.setRequestHeader("Content-Type", file.type || "audio/mpeg");
+        
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            setUploadProgress((e.loaded / e.total) * 100);
+          }
+        };
+        
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+          } else {
+            reject(new Error(`S3 upload failed with status ${xhr.status}`));
+          }
+        };
+        
+        xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+        xhr.send(file);
+      });
+
+      setUploadedFile({ 
+        audioId, 
+        uploadS3Key, 
+        mimeType: file.type || "audio/mpeg", 
+        filename: file.name, 
+        sizeBytes: file.size 
+      });
+      setUploadProgress(null);
     } catch (err: any) {
       setUploadError(err.message ?? "Upload failed");
     } finally {
       setUploading(false);
+      setUploadProgress(null);
     }
   };
 
@@ -1266,7 +1313,14 @@ function BhagwatEditor({
         const res = await fetch(`${BASE}/api/bhagwat/analyze-audio`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ audioId: uploadedFile!.audioId, mode }),
+          body: JSON.stringify({ 
+            audioId: uploadedFile!.audioId, 
+            mode,
+            uploadS3Key: uploadedFile!.uploadS3Key,
+            originalFilename: uploadedFile!.filename,
+            mimeType: uploadedFile!.mimeType,
+            sizeBytes: uploadedFile!.sizeBytes
+          }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? `Analyze audio request failed (${res.status})`);
@@ -1431,7 +1485,16 @@ function BhagwatEditor({
         : fetch(`${BASE}/api/bhagwat/render-audio`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audioId: uploadedFile!.audioId, timeline: tl, videoDuration, mode }),
+            body: JSON.stringify({ 
+              audioId: uploadedFile!.audioId, 
+              timeline: tl, 
+              videoDuration, 
+              mode,
+              uploadS3Key: uploadedFile!.uploadS3Key,
+              originalFilename: uploadedFile!.filename,
+              mimeType: uploadedFile!.mimeType,
+              sizeBytes: uploadedFile!.sizeBytes
+            }),
           }));
       if (!renderRes.ok) {
         const errBody = await renderRes.json().catch(() => ({ error: "Render request failed" }));
@@ -1607,6 +1670,7 @@ function BhagwatEditor({
             <AudioUploadZone
               uploadedFile={uploadedFile}
               uploading={uploading}
+              uploadProgress={uploadProgress}
               uploadError={uploadError}
               onFileSelected={handleFileSelected}
               onRemove={handleRemoveFile}

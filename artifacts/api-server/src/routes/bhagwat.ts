@@ -36,6 +36,7 @@ import {
   isS3StorageEnabled,
   readTextFromS3,
   uploadFileToS3,
+  createS3PresignedUpload,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
@@ -4022,6 +4023,40 @@ ${
 }
 
 // ── Audio upload route ─────────────────────────────────────────────────────────
+router.post("/bhagwat/upload-audio-presigned", async (req: Request, res: Response) => {
+  const { filename, mimeType, sizeBytes } = req.body as {
+    filename?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+  };
+  if (!filename) {
+    res.status(400).json({ error: "filename is required" });
+    return;
+  }
+  const audioId = randomUUID();
+  try {
+    const presigned = await createS3PresignedUpload({
+      jobId: audioId,
+      namespace: "bhagwat/uploads",
+      filename,
+      contentType: mimeType,
+      expiresInSec: 3600, // 1 hour for large uploads
+    });
+    res.json({
+      audioId,
+      uploadUrl: presigned.uploadUrl,
+      uploadS3Key: presigned.key,
+      filename,
+      mimeType,
+      sizeBytes,
+    });
+  } catch (err: any) {
+    req.log.error({ err, filename }, "Failed to generate presigned URL for audio upload");
+    res.status(500).json({ error: "Failed to initialize upload" });
+  }
+});
+
+// Legacy disk upload (unused in serverless but kept for compatibility)
 router.post("/bhagwat/upload-audio", (req: Request, res: Response) => {
   audioUpload.single("audio")(req as any, res as any, (err: any) => {
     if (err) {
@@ -4075,26 +4110,46 @@ router.delete("/bhagwat/audio/:audioId", (req: Request, res: Response) => {
 
 // ── Analyze uploaded audio (uses same analysisJobs + SSE endpoint as YouTube) ─
 router.post("/bhagwat/analyze-audio", async (req: Request, res: Response) => {
-  const { audioId, mode } = req.body as {
+  const { audioId, mode, uploadS3Key, originalFilename, mimeType, sizeBytes } = req.body as {
     audioId: string;
     mode?: "smart" | "full";
+    uploadS3Key?: string;
+    originalFilename?: string;
+    mimeType?: string;
+    sizeBytes?: number;
   };
   if (!audioId) {
     res.status(400).json({ error: "audioId is required" });
     return;
   }
-  const audio = getBhagwatUploadedAudioState(audioId);
-  if (!audio) {
-    res
-      .status(404)
-      .json({ error: "Audio file not found — please upload again" });
-    return;
+  
+  // Use passed S3 data (for Serverless Presigned Uploads) or fallback to local disk map
+  let finalS3Key = uploadS3Key;
+  let finalOriginalName = originalFilename ?? "audio.mp3";
+  let finalMimeType = mimeType ?? "audio/mpeg";
+  let finalSizeBytes = sizeBytes ?? 0;
+
+  if (!finalS3Key) {
+    const audio = getBhagwatUploadedAudioState(audioId);
+    if (!audio) {
+      res.status(404).json({ error: "Audio file not found — please upload again" });
+      return;
+    }
+    try {
+      finalS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
+      finalOriginalName = audio.originalName;
+      finalMimeType = audio.mimeType;
+      finalSizeBytes = audio.sizeBytes;
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to upload to S3 from local disk" });
+      return;
+    }
   }
+
   const jobId = randomUUID();
 
   if (isBhagwatAnalyzeQueuePrimaryEnabled()) {
     try {
-      const uploadS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
       const batchJobId = await submitYoutubeQueuePrimaryJob({
         jobId,
         jobType: "bhagwat-analyze",
@@ -4103,10 +4158,10 @@ router.post("/bhagwat/analyze-audio", async (req: Request, res: Response) => {
           mode: mode ?? "full",
           sourceKind: "upload",
           audioId,
-          uploadS3Key,
-          originalFilename: audio.originalName,
-          mimeType: audio.mimeType,
-          sizeBytes: audio.sizeBytes,
+          uploadS3Key: finalS3Key,
+          originalFilename: finalOriginalName,
+          mimeType: finalMimeType,
+          sizeBytes: finalSizeBytes,
         },
       });
       if (!batchJobId) {
@@ -4118,6 +4173,13 @@ router.post("/bhagwat/analyze-audio", async (req: Request, res: Response) => {
       req.log.error({ err, audioId, jobId }, "Failed to queue Bhagwat audio analysis");
       res.status(500).json({ error: err instanceof Error ? err.message : "Failed to queue audio analysis" });
     }
+    return;
+  }
+
+  // Local sync mode fallback
+  const audio = getBhagwatUploadedAudioState(audioId);
+  if (!audio) {
+    res.status(400).json({ error: "Local processing requires local upload map" });
     return;
   }
 
@@ -4135,7 +4197,7 @@ router.post("/bhagwat/analyze-audio", async (req: Request, res: Response) => {
 
 // ── Render with uploaded audio (reuses same renderJobs + SSE endpoint) ─────────
 router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
-  const { audioId, timeline, videoDuration, clipStartSec, clipEndSec, mode } =
+  const { audioId, timeline, videoDuration, clipStartSec, clipEndSec, mode, uploadS3Key, originalFilename, mimeType, sizeBytes } =
     req.body as {
       audioId: string;
       timeline: TimelineSegment[];
@@ -4143,23 +4205,42 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
       clipStartSec?: number;
       clipEndSec?: number;
       mode?: "full" | "smart";
+      uploadS3Key?: string;
+      originalFilename?: string;
+      mimeType?: string;
+      sizeBytes?: number;
     };
   if (!audioId || !Array.isArray(timeline) || timeline.length === 0) {
     res.status(400).json({ error: "audioId and timeline are required" });
     return;
   }
-  const audio = getBhagwatUploadedAudioState(audioId);
-  if (!audio) {
-    res
-      .status(404)
-      .json({ error: "Audio file not found — please upload again" });
-    return;
+
+  let finalS3Key = uploadS3Key;
+  let finalOriginalName = originalFilename ?? "audio.mp3";
+  let finalMimeType = mimeType ?? "audio/mpeg";
+  let finalSizeBytes = sizeBytes ?? 0;
+
+  if (!finalS3Key) {
+    const audio = getBhagwatUploadedAudioState(audioId);
+    if (!audio) {
+      res.status(404).json({ error: "Audio file not found — please upload again" });
+      return;
+    }
+    try {
+      finalS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
+      finalOriginalName = audio.originalName;
+      finalMimeType = audio.mimeType;
+      finalSizeBytes = audio.sizeBytes;
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to upload to S3 from local disk" });
+      return;
+    }
   }
+
   const jobId = randomUUID();
 
   if (isBhagwatRenderQueuePrimaryEnabled()) {
     try {
-      const uploadS3Key = await ensureBhagwatUploadedAudioS3Key(audioId, audio);
       const batchJobId = await submitYoutubeQueuePrimaryJob({
         jobId,
         jobType: "bhagwat-render",
@@ -4172,10 +4253,10 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
           mode: mode ?? "full",
           sourceKind: "upload",
           audioId,
-          uploadS3Key,
-          originalFilename: audio.originalName,
-          mimeType: audio.mimeType,
-          sizeBytes: audio.sizeBytes,
+          uploadS3Key: finalS3Key,
+          originalFilename: finalOriginalName,
+          mimeType: finalMimeType,
+          sizeBytes: finalSizeBytes,
         },
       });
       if (!batchJobId) {
