@@ -2606,96 +2606,9 @@ body {
 </head>
 <body>
 
-<!-- ── LOGIN OVERLAY ── -->
-<div id="login-overlay" style="
-  position:fixed;inset:0;z-index:9999;
-  background:#0d0e10;
-  display:flex;align-items:center;justify-content:center;
-  font-family:'Inter',sans-serif;
-  transition:opacity 0.4s ease;
-">
-  <div style="
-    width:100%;max-width:400px;
-    background:#161719;
-    border:1px solid #24262b;
-    border-radius:20px;
-    padding:40px 36px 32px;
-    display:flex;flex-direction:column;align-items:center;
-    gap:0;
-    box-shadow:0 24px 64px rgba(0,0,0,0.7);
-    margin:16px;
-  ">
-    <!-- Logo -->
-    <div style="margin-bottom:32px;text-align:center">
-      <svg width="52" height="52" viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <rect width="52" height="52" rx="14" fill="#1e2025"/>
-        <path d="M26 10L38 18V30L26 38L14 30V18L26 10Z" fill="none" stroke="#00bcd4" stroke-width="2"/>
-        <path d="M26 10L38 18L26 26L14 18Z" fill="rgba(0,188,212,0.18)"/>
-        <path d="M14 18V30L26 38V26Z" fill="rgba(0,188,212,0.10)"/>
-        <path d="M38 18V30L26 38V26Z" fill="rgba(0,188,212,0.26)"/>
-      </svg>
-      <div style="margin-top:12px;font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px">Video Translate</div>
-      <div style="font-size:12px;color:#6b6e7a;margin-top:4px">Sign in to continue</div>
-    </div>
-
-    <!-- ID field -->
-    <div style="width:100%;margin-bottom:12px;position:relative">
-      <div style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:#4a4d58;pointer-events:none">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-      </div>
-      <input id="login-id" type="text" placeholder="Username" autocomplete="username" style="
-        width:100%;height:46px;
-        background:#1b1c20;
-        border:1px solid #2c2e35;
-        border-radius:10px;
-        color:#fff;font-size:14px;font-family:'Inter',sans-serif;
-        padding:0 14px 0 40px;
-        outline:none;
-        transition:border-color 0.2s;
-      " onfocus="this.style.borderColor='#00bcd4'" onblur="this.style.borderColor='#2c2e35'" onkeydown="if(event.key==='Enter')document.getElementById('login-pass').focus()"/>
-    </div>
-
-    <!-- Password field -->
-    <div style="width:100%;margin-bottom:20px;position:relative">
-      <div style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:#4a4d58;pointer-events:none">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-      </div>
-      <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" style="
-        width:100%;height:46px;
-        background:#1b1c20;
-        border:1px solid #2c2e35;
-        border-radius:10px;
-        color:#fff;font-size:14px;font-family:'Inter',sans-serif;
-        padding:0 14px 0 40px;
-        outline:none;
-        transition:border-color 0.2s;
-      " onfocus="this.style.borderColor='#00bcd4'" onblur="this.style.borderColor='#2c2e35'" onkeydown="if(event.key==='Enter')attemptLogin()"/>
-    </div>
-
-    <!-- Error message -->
-    <div id="login-error" style="
-      width:100%;margin-bottom:14px;
-      color:#ff4d6a;font-size:12px;font-weight:500;
-      text-align:center;min-height:18px;
-    "></div>
-
-    <!-- Sign in button -->
-    <button onclick="attemptLogin()" id="login-btn" style="
-      width:100%;height:46px;
-      background:#00bcd4;
-      border:none;border-radius:10px;
-      color:#000;font-size:14px;font-weight:700;
-      font-family:'Inter',sans-serif;
-      cursor:pointer;
-      display:flex;align-items:center;justify-content:center;gap:8px;
-      transition:opacity 0.2s,transform 0.15s;
-      letter-spacing:0.2px;
-    " onmouseover="this.style.opacity='0.88'" onmouseout="this.style.opacity='1'">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-      Sign in with Password
-    </button>
-  </div>
-</div>
+<!-- Login overlay removed: this embedded app runs inside the authenticated
+     parent app (videomaking_auth cookie) and all /api/heygen calls are gated
+     server-side. The old client-side login was decorative/dead code. -->
 
 <!-- Mobile sidebar overlay -->
 <div id="sidebar-overlay" onclick="closeMobileSidebar()"></div>
@@ -3446,78 +3359,8 @@ body {
     return nativeFetch(input, nextInit);
   };
 })();
-try { localStorage.setItem('vt_auth', 'ok'); sessionStorage.setItem('vt_auth', 'ok'); } catch(e) {}
-(async function initLogin() {
-  const overlay = document.getElementById('login-overlay');
-
-  // Already logged in this session?
-  if (localStorage.getItem('vt_auth') === 'ok') {
-    overlay.style.display = 'none';
-    return;
-  }
-
-  // Load credentials from server configuration
-  let validUser = '';
-  let validPass = ''; // No hardcoded fallback
-  try {
-    const r = await fetch('/api/heygen/disabled-config');
-    if (r.ok) {
-      const txt = await r.text();
-      for (const line of txt.split('\n')) {
-        const [k, ...v] = line.split('=');
-        const key = (k || '').trim();
-        const val = v.join('=').trim();
-        if (key === 'SERVER_USER' && val) validUser = val;
-        if (key === 'SERVER_PASS' && val) validPass = val;
-      }
-    }
-  } catch (e) { /* use fallback credentials */ }
-
-  window._loginCreds = { user: validUser, pass: validPass };
-})();
-
-function attemptLogin() {
-  const idEl   = document.getElementById('login-id');
-  const passEl = document.getElementById('login-pass');
-  const errEl  = document.getElementById('login-error');
-  const btn    = document.getElementById('login-btn');
-
-  const id   = idEl.value.trim();
-  const pass = passEl.value;
-  const creds = window._loginCreds || { user: '', pass: '' };
-
-  if (!id) { errEl.textContent = 'Please enter your username.'; idEl.focus(); return; }
-  if (!pass) { errEl.textContent = 'Please enter your password.'; passEl.focus(); return; }
-
-  // Animated loading state
-  const originalText = btn.innerHTML;
-  btn.innerHTML = '<span class="spinner"></span> Signing in...';
-  btn.style.opacity = '0.8';
-  btn.disabled = true;
-
-  setTimeout(() => {
-    btn.disabled = false;
-    btn.style.opacity = '1';
-    
-    if (id === creds.user && pass === creds.pass) {
-      // Success — save session and fade out overlay
-      localStorage.setItem('vt_auth', 'ok');
-      const overlay = document.getElementById('login-overlay');
-      overlay.style.opacity = '0';
-      overlay.style.pointerEvents = 'none';
-      setTimeout(() => overlay.style.display = 'none', 420);
-      btn.textContent = '✓ Signed in';
-    } else {
-      // Wrong credentials — shake + show error
-      errEl.textContent = 'Incorrect username or password.';
-      passEl.value = '';
-      passEl.style.borderColor = '#ff4d6a';
-      setTimeout(() => passEl.style.borderColor = '#2c2e35', 1500);
-      passEl.focus();
-      btn.innerHTML = originalText;
-    }
-  }, 600);
-}
+// Auth is handled by the parent app's session cookie; the embedded login UI was
+// removed. Nothing to initialize here beyond the fetch wrapper above.
 
 // ── DATA & STATE ──
 const LANGS = [
@@ -3596,6 +3439,21 @@ const state = {
   apiHistory: []
 };
 
+// ── JOB STATUS HELPERS ──
+// HeyGen's video-translation status enum is EXACTLY: pending | running | completed | failed
+// (verified against the v3 OpenAPI spec). 'success' is treated only as a defensive
+// alias for 'completed'. 'processing' / 'preparing' / 'cancelled' are NOT real HeyGen
+// states and must not be relied on.
+function isActiveStatus(status) {
+  return status === 'pending' || status === 'running';
+}
+function isDoneStatus(status) {
+  return status === 'completed' || status === 'success';
+}
+function isFailedStatus(status) {
+  return status === 'failed';
+}
+
 // ── INITIALIZATION ──
 window.addEventListener('DOMContentLoaded', () => {
   // Clear any old localStorage history cache \u2014 history is now 100% API-driven
@@ -3653,21 +3511,26 @@ async function validateApiKey() {
     });
     if (r.status === 200) {
       if (statusEl) {
-        statusEl.textContent = 'Verified ✓';
+        statusEl.textContent = 'Connected ✓';
         statusEl.style.color = 'var(--green-accent)';
       }
+      // History is already loaded once on init; only (re)load the glossary here.
       loadBrandGlossaries();
-      loadHistory();
+    } else if (r.status === 503) {
+      if (statusEl) {
+        statusEl.textContent = 'Server key not configured ✕';
+        statusEl.style.color = 'var(--red-accent)';
+      }
     } else {
       if (statusEl) {
-        statusEl.textContent = 'Invalid credentials ✕';
+        statusEl.textContent = 'Connection failed ✕';
         statusEl.style.color = 'var(--red-accent)';
       }
     }
   } catch (e) {
-    console.warn('API key validation error:', e);
+    console.warn('HeyGen connection check error:', e);
     if (statusEl) {
-      statusEl.textContent = 'Verification error';
+      statusEl.textContent = 'Connection error';
       statusEl.style.color = 'var(--yellow-accent)';
     }
   }
@@ -3704,10 +3567,8 @@ async function loadBrandGlossaries() {
 async function pollHistoryLive() {
   if (!state.apiKey) return;
 
-  // Only poll jobs that are still actively running
-  const activeJobs = state.history.filter(item =>
-    item.status === 'running' || item.status === 'processing' || item.status === 'preparing'
-  );
+  // Only poll jobs that are still in flight (pending or running).
+  const activeJobs = state.history.filter(item => isActiveStatus(item.status));
   if (!activeJobs.length) return;
 
   // Fetch status for each active job individually — no full list reload
@@ -3767,7 +3628,7 @@ function patchHistoryCard(jobId, item) {
   // Remove existing overlay
   thumb.querySelectorAll('.hc-status-overlay').forEach(el => el.remove());
 
-  if (status === 'running' || status === 'processing' || status === 'preparing') {
+  if (isActiveStatus(status)) {
     const elapsedSec = item.created_at ? (Date.now() - item.created_at * 1000) / 1000 : 60;
     const percent = Math.min(95, Math.max(5, Math.round((elapsedSec / 120) * 100)));
     const overlay = document.createElement('div');
@@ -3780,7 +3641,7 @@ function patchHistoryCard(jobId, item) {
       <div class="loading-percentage">${percent}% Ready</div>
     </div>`;
     thumb.appendChild(overlay);
-  } else if (status === 'failed' || status === 'cancelled') {
+  } else if (isFailedStatus(status)) {
     const overlay = document.createElement('div');
     overlay.className = 'hc-status-overlay';
     overlay.style.cssText = 'backdrop-filter:blur(4px);background:rgba(18,19,22,0.7)';
@@ -3788,20 +3649,18 @@ function patchHistoryCard(jobId, item) {
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5">
         <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
       </svg>
-      <span style="font-size:12px;font-weight:600">${item.failure_message || 'Cancelled by user'}</span>
+      <span style="font-size:12px;font-weight:600">${escapeHtml(item.failure_message || 'Translation failed')}</span>
     </div>`;
     thumb.appendChild(overlay);
-
-    // If video is now available, add it to the thumb too
-    if (status === 'completed' && item.video_url && !thumb.querySelector('video')) {
-      const vid = document.createElement('video');
-      vid.src = item.video_url + '#t=0.1';
-      vid.muted = true;
-      vid.preload = 'metadata';
-      vid.playsInline = true;
-      vid.style.cssText = 'width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0';
-      thumb.insertBefore(vid, thumb.firstChild);
-    }
+  } else if (isDoneStatus(status) && item.video_url && !thumb.querySelector('video')) {
+    // Job just completed and a video is now available — insert the thumbnail video.
+    const vid = document.createElement('video');
+    vid.src = encodeURI(item.video_url) + '#t=0.1';
+    vid.muted = true;
+    vid.preload = 'metadata';
+    vid.playsInline = true;
+    vid.style.cssText = 'width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0';
+    thumb.insertBefore(vid, thumb.firstChild);
   }
 }
 
@@ -3863,6 +3722,13 @@ function handleRouting() {
 
   let pageName = route;
   if (route === 'home') pageName = 'upload';
+
+  // Leaving the progress page: stop the foreground job poller and elapsed timer
+  // so they don't keep running (and leaking) in the background. The live history
+  // poller (pollHistoryLive) continues to track the job from the grid.
+  if (pageName !== 'progress') {
+    stopProgressTimers();
+  }
 
   if (pageName === 'video-detail') {
     if (id) {
@@ -4223,16 +4089,20 @@ async function uploadAsset(file) {
   return d?.data?.asset_id || d?.data?.id;
 }
 
-async function uploadSrtToTmpFiles(file) {
+async function uploadSrtToServer(file) {
+  // Host the subtitle on our own S3 (short-lived presigned URL) via the server,
+  // instead of POSTing it to a third-party public host. Keeps transcript content
+  // inside our infrastructure and runs through our own validation.
   const fd = new FormData();
   fd.append('file', file);
-  const r = await fetch('https://tmpfiles.org/api/v1/upload', {
+  const r = await fetch('/api/heygen/srt-upload', {
     method: 'POST',
     body: fd
   });
-  if (!r.ok) throw new Error('SRT Upload failed: HTTP ' + r.status);
-  const d = await r.json();
-  return d.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ('Subtitle upload failed: HTTP ' + r.status));
+  if (!d.url) throw new Error('Subtitle upload returned no URL');
+  return d.url;
 }
 
 // ✨ TRANSLATION PIPELINE ✨──
@@ -4253,10 +4123,10 @@ async function startTranslation() {
     if (!proceed) return;
   }
 
-  // Edge case: Large file warning
-  if (state.videoInputType === 'file' && state.selectedFile && state.selectedFile.size > 500 * 1024 * 1024) {
-    const proceed = confirm("📁 Your video file is quite large (over 500MB). Uploading may take several minutes.\n\nPlease ensure you leave this browser tab open until the upload finishes.\n\nProceed?");
-    if (!proceed) return;
+  // Edge case: file uploads are capped at HeyGen's 32 MB asset limit.
+  if (state.videoInputType === 'file' && state.selectedFile && state.selectedFile.size > 32 * 1024 * 1024) {
+    showToast('This file is over 32MB. HeyGen file uploads are capped at 32MB — paste a public video URL instead for larger videos.', 'error');
+    return;
   }
 
   document.getElementById('translate-btn').disabled = true;
@@ -4290,7 +4160,7 @@ async function startTranslation() {
     let srtField = null;
     if (state.selectedSrtFile) {
       showActiveToast('Uploading custom subtitles...');
-      const srtUrl = await uploadSrtToTmpFiles(state.selectedSrtFile);
+      const srtUrl = await uploadSrtToServer(state.selectedSrtFile);
       srtField = { type: 'url', url: srtUrl };
     }
 
@@ -4323,29 +4193,39 @@ async function startTranslation() {
       body: JSON.stringify(body)
     });
     const d = await r.json();
-    const ids = d?.data?.video_translation_ids || d?.data?.video_translation_id;
-    let jobId = '';
-    if (Array.isArray(ids)) jobId = ids[0];
-    else jobId = ids;
+    let ids = d?.data?.video_translation_ids || d?.data?.video_translation_id;
+    if (!Array.isArray(ids)) ids = ids ? [ids] : [];
 
-    if (!jobId) throw new Error(d?.message || d?.data?.error?.message || 'Failed to submit translation job');
+    if (!ids.length) throw new Error(d?.error || d?.message || d?.data?.error?.message || 'Failed to submit translation job');
 
+    // One job is created per target language. Track ALL of them so multi-language
+    // batches show up immediately and get picked up by the live history poller.
+    const createdAt = Math.floor(Date.now() / 1000);
+    const localPreview = state.selectedFile ? URL.createObjectURL(state.selectedFile) : null;
+    const baseTitle = (body.title || '').replace(/-[^-]*$/, '');
+    ids.forEach((id, i) => {
+      const lang = state.selectedLangs[i] || state.selectedLangs[0];
+      saveJobToLocalHistory({
+        id,
+        title: state.selectedLangs.length > 1 ? `${baseTitle}-${lang}` : body.title,
+        status: 'pending',
+        duration: state.selectedFile ? 60 : 120,
+        output_language: lang,
+        created_at: createdAt,
+        video_url: localPreview,
+      });
+    });
+
+    const jobId = ids[0];
     document.getElementById('progress-job-id').textContent = 'Job ID: ' + jobId;
-    showToast('Translation submitted successfully!', 'success');
-    
-    // Save to local history cache
-    const newJob = {
-      id: jobId,
-      title: body.title,
-      status: 'running',
-      duration: state.selectedFile ? 60 : 120,
-      output_language: state.selectedLangs[0],
-      created_at: Math.floor(Date.now() / 1000),
-      video_url: state.selectedFile ? URL.createObjectURL(state.selectedFile) : './input_video.mp4'
-    };
-    saveJobToLocalHistory(newJob);
+    showToast(
+      ids.length > 1
+        ? `${ids.length} translation jobs submitted — tracking the first; the rest appear in History.`
+        : 'Translation submitted successfully!',
+      'success',
+    );
 
-    // Begin polling status (via routing)
+    // Begin polling status of the first job (via routing); others tracked in grid.
     state.isUploadingToHeyGen = false;
     navigateToHash('progress', { id: jobId }, true);
 
@@ -4362,11 +4242,22 @@ async function startTranslation() {
 // ── POLLING ──
 let pollTimer = null;
 let elapsedTimer = null;
+let pollStartedAt = 0;
+// Stop polling a single job after this long; the live history poller keeps
+// tracking it from the grid so nothing is lost — we just stop the foreground loop.
+const MAX_POLL_DURATION_MS = 20 * 60 * 1000;
 
-function startPolling(jobId) {
+function stopProgressTimers() {
   clearTimeout(pollTimer);
   clearInterval(elapsedTimer);
+  pollTimer = null;
+  elapsedTimer = null;
+}
+
+function startPolling(jobId) {
+  stopProgressTimers();
   setStep(2);
+  pollStartedAt = Date.now();
   let elapsed = 0;
   let simulatedBarPercent = 5;
 
@@ -4378,7 +4269,7 @@ function startPolling(jobId) {
     const sec = String(elapsed%60).padStart(2,'0');
     document.getElementById('progress-elapsed').textContent = `${min}:${sec} elapsed`;
     
-    // Simulate step active transitions
+    // Estimated step transitions (visual only — HeyGen does not report sub-progress)
     if (elapsed > 10 && elapsed <= 25) { setStep(2, true); setStep(3); }
     else if (elapsed > 25 && elapsed <= 45) { setStep(3, true); setStep(4); }
     else if (elapsed > 45 && elapsed <= 70) { setStep(4, true); setStep(5); }
@@ -4393,6 +4284,16 @@ function startPolling(jobId) {
 }
 
 async function doPoll(jobId) {
+  // Give up the foreground loop after the cap; the job continues server-side and
+  // the History grid's live poller will surface the final result.
+  if (pollStartedAt && Date.now() - pollStartedAt > MAX_POLL_DURATION_MS) {
+    stopProgressTimers();
+    showToast('Still processing. This is taking a while — you can check the result later in History.', 'info');
+    dismissActiveToast();
+    document.getElementById('translate-btn').disabled = false;
+    showPage('history');
+    return;
+  }
   try {
     const r = await fetch('/api/heygen/video-translations/' + jobId, {
       headers: { 'x-api-key': state.apiKey }
@@ -4402,24 +4303,25 @@ async function doPoll(jobId) {
     const status = data?.status;
     const err = data?.error || data?.failure_message;
 
-    document.getElementById('progress-status-text').textContent = status || 'processing';
-    document.getElementById('progress-sub').textContent = status === 'running' ? 'HeyGen is working on dubbing...' : 'Job status: ' + (status || 'unknown');
-    showActiveToast('Dubbing in progress: ' + (status || 'processing'));
+    document.getElementById('progress-status-text').textContent = status || 'pending';
+    document.getElementById('progress-sub').textContent = status === 'running' ? 'HeyGen is working on dubbing...' : 'Job status: ' + (status || 'pending');
+    showActiveToast('Dubbing in progress: ' + (status || 'pending'));
 
-    // Update local storage status
+    // Update in-memory history status (no phantom video fallback)
     if (data) {
       saveJobToLocalHistory({
         id: jobId,
-        status: status || 'processing',
+        status: status || 'pending',
         duration: data.duration || 60,
-        video_url: data.video_url || './input_video.mp4',
+        video_url: data.video_url || null,
         srt_caption_url: data.srt_caption_url || '',
         audio_url: data.audio_url || ''
       });
     }
 
-    if (status === 'success' || status === 'completed') {
+    if (isDoneStatus(status)) {
       clearInterval(elapsedTimer);
+      elapsedTimer = null;
       setStep(5, true);
       document.getElementById('progress-bar').style.width = '100%';
       showToast('Translation completed successfully!', 'success');
@@ -4433,8 +4335,9 @@ async function doPoll(jobId) {
       return;
     }
 
-    if (status === 'failed' || status === 'cancelled') {
+    if (isFailedStatus(status)) {
       clearInterval(elapsedTimer);
+      elapsedTimer = null;
       if (data) {
         saveJobToLocalHistory({
           id: jobId,
@@ -4442,7 +4345,7 @@ async function doPoll(jobId) {
           failure_message: err || 'Translation failed'
         });
       }
-      showToast('Translation job failed: ' + (err || 'Cancelled by system'), 'error');
+      showToast('Translation job failed: ' + (err || 'Unknown error'), 'error');
       dismissActiveToast();
       document.getElementById('translate-btn').disabled = false;
       showPage('settings');
@@ -4457,8 +4360,7 @@ async function doPoll(jobId) {
 }
 
 function cancelTranslation() {
-  clearTimeout(pollTimer);
-  clearInterval(elapsedTimer);
+  stopProgressTimers();
   dismissActiveToast();
   document.getElementById('translate-btn').disabled = false;
   showPage('upload');
@@ -4581,11 +4483,12 @@ function renderHistoryGrid() {
   grid.innerHTML = merged.map(item => {
     const status = item.status || 'completed';
     const title = item.title || item.id || 'Translation';
+    const safeTitle = escapeHtml(title);
     const timeText = timeAgo(item.created_at * 1000 || Date.now());
     const metaText = `${timeText} • Video Translate`;
 
     let overlayHtml = '';
-    if (status === 'running' || status === 'processing' || status === 'preparing') {
+    if (isActiveStatus(status)) {
       let percent = 19;
       if (item.created_at) {
         const elapsedSec = (Date.now() - (item.created_at * 1000)) / 1000;
@@ -4604,29 +4507,31 @@ function renderHistoryGrid() {
           <div class="loading-percentage">${percent}% Ready</div>
         </div>
       </div>`;
-    } else if (status === 'failed' || status === 'cancelled') {
+    } else if (isFailedStatus(status)) {
       overlayHtml = `<div class="hc-status-overlay" style="backdrop-filter:blur(4px);background:rgba(18,19,22,0.7)">
         <div class="hc-status-failed" style="display:flex;flex-direction:column;align-items:center;gap:6px;color:#fff">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-bottom:2px">
             <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
-          <span style="font-size:12px;font-weight:600">${item.failure_message || 'Cancelled by user'}</span>
+          <span style="font-size:12px;font-weight:600">${escapeHtml(item.failure_message || 'Translation failed')}</span>
         </div>
       </div>`;
     }
 
     const hasVideo = item.video_url;
-    return `<div class="history-card" onclick="openVideoDetailById('${item.id}')">
+    const safeVideoSrc = hasVideo ? escapeHtml(encodeURI(item.video_url)) : '';
+    const safeId = escapeHtml(item.id);
+    return `<div class="history-card" onclick="openVideoDetailById('${safeId}')">
       <div class="hc-thumb">
         ${hasVideo
-          ? `<video class="hc-thumb-vid" data-src="${item.video_url}#t=0.1" muted preload="none" playsinline style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'"></video>`
+          ? `<video class="hc-thumb-vid" data-src="${safeVideoSrc}#t=0.1" muted preload="none" playsinline style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'"></video>`
           : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
         ${overlayHtml}
-        <input type="checkbox" class="hc-checkbox" data-id="${item.id}" onclick="event.stopPropagation()" onchange="handleHistoryCheckboxChange(event)"/>
-        <div class="hc-menu-dots" onclick="event.stopPropagation();toggleHistoryMenu(event, '${item.id}')">...</div>
+        <input type="checkbox" class="hc-checkbox" data-id="${safeId}" onclick="event.stopPropagation()" onchange="handleHistoryCheckboxChange(event)"/>
+        <div class="hc-menu-dots" onclick="event.stopPropagation();toggleHistoryMenu(event, '${safeId}')">...</div>
       </div>
       <div class="hc-details">
-        <div class="hc-title" title="${title}">${title}</div>
+        <div class="hc-title" title="${safeTitle}">${safeTitle}</div>
         <div class="hc-meta-row">${metaText}</div>
       </div>
     </div>`;
@@ -4677,14 +4582,14 @@ function renderSidebarRecents() {
     const status = item.status || 'completed';
     
     let metaText = `${time} • Video Translate`;
-    if (status === 'failed' || status === 'cancelled') {
+    if (isFailedStatus(status)) {
       metaText = 'Failed';
-    } else if (status === 'running' || status === 'processing' || status === 'preparing') {
+    } else if (isActiveStatus(status)) {
       metaText = 'Processing';
     }
 
-    return `<div class="recent-sidebar-item" onclick="openVideoDetailById('${item.id}')">
-      <div class="recent-sb-title">${title}</div>
+    return `<div class="recent-sidebar-item" onclick="openVideoDetailById('${escapeHtml(item.id)}')">
+      <div class="recent-sb-title">${escapeHtml(title)}</div>
       <div class="recent-sb-meta">${metaText}</div>
     </div>`;
   }).join('');
@@ -4720,7 +4625,7 @@ async function loadMoreSidebarRecents() {
 
 function loadRecentThumbs(items) {
   const wrap = document.getElementById('recent-thumbs');
-  const completed = items.filter(item => item.status === 'completed' || item.status === 'success');
+  const completed = items.filter(item => isDoneStatus(item.status));
   if (!completed.length) {
     if (state.isHistoryLoading) {
        wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Loading your projects...</div>';
@@ -4732,11 +4637,16 @@ function loadRecentThumbs(items) {
   wrap.innerHTML = completed.slice(0, 6).map(item => {
     const dur = item.duration ? formatDuration(Math.round(item.duration)) : '—';
     const title = item.title || item.id || 'Translation';
-    const lang = item.output_language || 'English';
+    const safeTitle = escapeHtml(title);
+    const lang = escapeHtml(item.output_language || 'English');
     const timeText = timeAgo(item.created_at * 1000 || Date.now());
-    return `<div class="recent-project-card" data-id="${item.id}" onclick="openVideoDetailById('${item.id}')">
+    const safeId = escapeHtml(item.id);
+    const safeVideoSrc = item.video_url ? escapeHtml(encodeURI(item.video_url)) : '';
+    return `<div class="recent-project-card" data-id="${safeId}" onclick="openVideoDetailById('${safeId}')">
       <div class="recent-project-thumb">
-        <video src="${item.video_url || './input_video.mp4'}#t=0.1" muted preload="metadata" playsinline></video>
+        ${safeVideoSrc
+          ? `<video src="${safeVideoSrc}#t=0.1" muted preload="metadata" playsinline></video>`
+          : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
         <div class="duration-overlay">
           <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="margin-right:2px; vertical-align:middle; display:inline-block;">
             <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
@@ -4750,7 +4660,7 @@ function loadRecentThumbs(items) {
         </div>
       </div>
       <div class="recent-project-details">
-        <div class="recent-project-title" title="${title}">${title}</div>
+        <div class="recent-project-title" title="${safeTitle}">${safeTitle}</div>
         <div class="recent-project-meta">${timeText} • ${lang}</div>
       </div>
     </div>`;
@@ -4796,12 +4706,12 @@ function openVideoDetailById(id) {
   
   if (item) {
     const status = item.status || 'completed';
-    if (status === 'running' || status === 'processing' || status === 'preparing') {
+    if (isActiveStatus(status)) {
       navigateToHash('progress', { id });
       return;
     }
-    if (status === 'failed' || status === 'cancelled') {
-      showToast(`Project translation failed: ${item.failure_message || 'Cancelled by user'}`, 'error');
+    if (isFailedStatus(status)) {
+      showToast(`Project translation failed: ${item.failure_message || 'Unknown error'}`, 'error');
       return;
     }
   }
@@ -4841,7 +4751,7 @@ async function openVideoDetailByIdDirect(id) {
             title: d.data.title || 'Translation',
             status: d.data.status || 'completed',
             duration: d.data.duration || 60,
-            video_url: d.data.video_url || './input_video.mp4',
+            video_url: d.data.video_url || null,
             srt_caption_url: d.data.srt_caption_url || '',
             vtt_caption_url: d.data.vtt_caption_url || '',
             audio_url: d.data.audio_url || '',
@@ -4862,13 +4772,13 @@ async function openVideoDetailByIdDirect(id) {
   }
   
   const status = item.status || 'completed';
-  if (status === 'running' || status === 'processing' || status === 'preparing') {
+  if (isActiveStatus(status)) {
     navigateToHash('progress', { id });
     return;
   }
   
-  if (status === 'failed' || status === 'cancelled') {
-    showToast(`Project translation failed: ${item.failure_message || 'Cancelled by user'}`, 'error');
+  if (isFailedStatus(status)) {
+    showToast(`Project translation failed: ${item.failure_message || 'Unknown error'}`, 'error');
     navigateToHash('home');
     return;
   }
@@ -4889,9 +4799,9 @@ function openVideoDetailDirect(item) {
   const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   document.getElementById('dt-date').textContent = 'Created on ' + dateStr;
   
-  // Set video element with local input_video.mp4 fallback
+  // Set video source (translated output). Completed jobs always have a video_url.
   const player = document.getElementById('dt-video');
-  player.src = item.video_url || './input_video.mp4';
+  player.src = item.video_url || '';
   
   // Clear any existing tracks
   while (player.firstChild) {
@@ -4981,36 +4891,12 @@ async function generateTranscriptSegments(item) {
     }
   }
 
-  // Fallback if no srt_caption_url or fetch failed
-  wrap.innerHTML = '';
-  const sentences = [
-    "Welcome to the HeyGen API v3 Translation engine.",
-    "This system processes human vocal tracks and preserves tone qualities.",
-    "The translation covers over 175 languages with localized lipsync overlays.",
-    "Natural speech patterns and pacing parameters are analyzed dynamically.",
-    "Adjust settings in the dashboard to optimize processing credits."
-  ];
-
-  const duration = item.duration || 60;
-  const count = Math.min(sentences.length, Math.ceil(duration / 10));
-
-  for (let i = 0; i < count; i++) {
-    const elapsedSec = i * 10;
-    const min = String(Math.floor(elapsedSec / 60));
-    const sec = String(elapsedSec % 60).padStart(2, '0');
-    
-    const card = document.createElement('div');
-    card.className = 'transcript-segment-card';
-    card.setAttribute('data-seconds', elapsedSec);
-    card.onclick = () => {
-      document.getElementById('dt-video').currentTime = elapsedSec;
-    };
-    card.innerHTML = `
-      <div class="segment-timecode">${min}:${sec}</div>
-      <div class="segment-text">${sentences[i]}</div>
-    `;
-    wrap.appendChild(card);
-  }
+  // No subtitle file available for this job — show an honest empty state rather
+  // than fabricated placeholder sentences that look like a real transcript.
+  wrap.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:16px;line-height:1.6">
+    Transcript is not available for this translation.<br>
+    Enable captions when creating a translation to get a downloadable transcript.
+  </div>`;
 }
 
 function copyFullTranscript() {
@@ -5032,7 +4918,7 @@ function openDownloadModal() {
   const durationSec = item.duration ? Math.round(item.duration) : 69;
   document.getElementById('dl-duration-text').textContent = formatDuration(durationSec);
   
-  document.getElementById('dl-thumb').src = item.video_url || './input_video.mp4';
+  document.getElementById('dl-thumb').src = item.video_url || '';
   
   const dateObj = item.created_at ? new Date(item.created_at * 1000) : new Date();
   const options = { month: 'long', day: 'numeric', year: 'numeric' };
@@ -5095,7 +4981,7 @@ function generateCarouselItems(activeItem) {
   const wrap = document.getElementById('carousel-projects');
   wrap.innerHTML = '';
   
-  const completed = state.history.filter(item => item.status === 'completed' || item.status === 'success');
+  const completed = state.history.filter(item => isDoneStatus(item.status));
   if (!completed.length) {
     wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px">No other items in this folder</div>';
     return;
@@ -5104,20 +4990,24 @@ function generateCarouselItems(activeItem) {
   wrap.innerHTML = completed.map(item => {
     const dur = item.duration ? formatDuration(Math.round(item.duration)) : '—';
     const title = item.title || item.id || 'Translation';
-    const lang = item.output_language || 'English';
+    const safeTitle = escapeHtml(title);
+    const lang = escapeHtml(item.output_language || 'English');
     const dateStr = item.created_at ? new Date(item.created_at * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
     const metaText = `${dateStr} • ${lang}`;
     const isActive = item.id === activeItem.id;
-    const videoSrc = item.video_url ? item.video_url + '#t=0.1' : './input_video.mp4#t=0.1';
+    const safeId = escapeHtml(item.id);
+    const safeVideoSrc = item.video_url ? escapeHtml(encodeURI(item.video_url)) : '';
 
-    return `<div class="carousel-item-wrapper" style="display:flex;flex-direction:column;gap:8px;flex:0 0 calc(33.333% - 11px);min-width:0;cursor:pointer;text-align:left" onclick="openVideoDetailById('${item.id}')">
-      <div class="project-card-thumb ${isActive ? 'active' : ''}" style="width:100%;aspect-ratio:1/1;height:auto !important;margin:0;border-radius:var(--radius-lg);overflow:hidden;position:relative;" data-id="${item.id}">
-        <video src="${videoSrc}" muted preload="metadata" playsinline style="width:100%;height:100%;object-fit:cover;"></video>
+    return `<div class="carousel-item-wrapper" style="display:flex;flex-direction:column;gap:8px;flex:0 0 calc(33.333% - 11px);min-width:0;cursor:pointer;text-align:left" onclick="openVideoDetailById('${safeId}')">
+      <div class="project-card-thumb ${isActive ? 'active' : ''}" style="width:100%;aspect-ratio:1/1;height:auto !important;margin:0;border-radius:var(--radius-lg);overflow:hidden;position:relative;" data-id="${safeId}">
+        ${safeVideoSrc
+          ? `<video src="${safeVideoSrc}#t=0.1" muted preload="metadata" playsinline style="width:100%;height:100%;object-fit:cover;"></video>`
+          : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
         <div class="duration-overlay" style="bottom:6px;right:6px;font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,0.7);position:absolute;color:#fff;">
           <span>${dur}</span>
         </div>
       </div>
-      <div style="font-size:14px;font-weight:500;color:var(--text-white);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px" title="${title}">${title}</div>
+      <div style="font-size:14px;font-weight:500;color:var(--text-white);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px" title="${safeTitle}">${safeTitle}</div>
       <div style="font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${metaText}</div>
     </div>`;
   }).join('');
@@ -5489,36 +5379,45 @@ function handleHistoryCheckboxChange(e) {
   }
 }
 
-function deleteSelectedVideos() {
+async function deleteSelectedVideos() {
   const checkboxes = document.querySelectorAll('#history-grid .hc-checkbox:checked');
-  const idsToDelete = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
+  const idsToDelete = Array.from(checkboxes).map(cb => cb.getAttribute('data-id')).filter(Boolean);
   
   if (idsToDelete.length === 0) return;
-  if (!confirm(`Are you sure you want to delete the ${idsToDelete.length} selected project(s)?`)) return;
+  if (!confirm(`Permanently delete the ${idsToDelete.length} selected project(s)? This cannot be undone.`)) return;
 
-  let cached = [];
-  try {
-    cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
-  } catch (e) {
-    console.warn(e);
-  }
-
-  // Filter out deleted IDs
-  const updated = cached.filter(item => !idsToDelete.includes(item.id));
-  
-  try {
-    localStorage.setItem('hg_history', JSON.stringify(updated));
-  } catch (e) {
-    console.warn(e);
-  }
-
-  showToast(`Successfully deleted ${idsToDelete.length} project(s)`, 'success');
-  
-  // Hide delete button
   const deleteBtn = document.getElementById('bulk-delete-btn');
-  if (deleteBtn) deleteBtn.style.display = 'none';
+  if (deleteBtn) { deleteBtn.disabled = true; deleteBtn.textContent = 'Deleting...'; }
 
+  const results = await Promise.allSettled(idsToDelete.map(id => deleteTranslationViaApi(id)));
+  const okCount = results.filter(r => r.status === 'fulfilled' && r.value).length;
+  const failCount = idsToDelete.length - okCount;
+
+  // Drop successfully-deleted jobs from in-memory history immediately
+  const deleted = new Set(idsToDelete.filter((_, i) => results[i].status === 'fulfilled' && results[i].value));
+  state.apiHistory = (state.apiHistory || []).filter(item => !deleted.has(item.id));
+
+  if (okCount) showToast(`Deleted ${okCount} project(s)` + (failCount ? `, ${failCount} failed` : ''), failCount ? 'info' : 'success');
+  else showToast('Failed to delete project(s)', 'error');
+
+  if (deleteBtn) { deleteBtn.disabled = false; deleteBtn.style.display = 'none'; }
+
+  // Refresh from the API to reflect the true server state
   loadHistory();
+}
+
+// Calls the server proxy → HeyGen DELETE /v3/video-translations/{id}. Returns true on success.
+async function deleteTranslationViaApi(id) {
+  try {
+    const r = await fetch('/api/heygen/video-translations/' + encodeURIComponent(id), {
+      method: 'DELETE',
+      headers: { 'x-api-key': state.apiKey }
+    });
+    return r.ok;
+  } catch (e) {
+    console.warn('Delete request failed:', e);
+    return false;
+  }
 }
 
 function toggleHistoryMenu(event, id) {
@@ -5531,49 +5430,54 @@ function toggleHistoryMenu(event, id) {
       renameProjectInHistory(id, newTitle.trim());
     }
   } else if (action === '2') {
-    if (confirm('Are you sure you want to delete this translation project?')) {
+    if (confirm('Permanently delete this translation project? This cannot be undone.')) {
       deleteSingleProject(id);
     }
   }
 }
 
-function renameProjectInHistory(id, newTitle) {
-  let cached = [];
+async function renameProjectInHistory(id, newTitle) {
+  const title = String(newTitle || '').trim().slice(0, 300);
+  if (!title) return;
   try {
-    cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
-  } catch (e) {
-    console.warn(e);
-  }
-  const idx = cached.findIndex(x => x.id === id);
-  if (idx !== -1) {
-    cached[idx].title = newTitle;
-    try {
-      localStorage.setItem('hg_history', JSON.stringify(cached));
-    } catch (e) {
-      console.warn(e);
+    const r = await fetch('/api/heygen/video-translations/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      headers: { 'x-api-key': state.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title })
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error || ('HTTP ' + r.status));
+    }
+    // Patch in-memory state so the rename shows instantly
+    const idx = (state.apiHistory || []).findIndex(x => x.id === id);
+    if (idx !== -1) state.apiHistory[idx] = { ...state.apiHistory[idx], title };
+    updateHistoryStateAndRender();
+    if (state.activeDetailJob && state.activeDetailJob.id === id) {
+      state.activeDetailJob.title = title;
+      const dtTitle = document.getElementById('dt-title');
+      if (dtTitle) dtTitle.textContent = title;
     }
     showToast('Project renamed', 'success');
-    loadHistory();
-  } else {
-    showToast('Cannot rename online API projects locally', 'info');
+  } catch (e) {
+    showToast('Failed to rename: ' + e.message, 'error');
   }
 }
 
-function deleteSingleProject(id) {
-  let cached = [];
-  try {
-    cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
-  } catch (e) {
-    console.warn(e);
+async function deleteSingleProject(id) {
+  const ok = await deleteTranslationViaApi(id);
+  if (ok) {
+    state.apiHistory = (state.apiHistory || []).filter(x => x.id !== id);
+    updateHistoryStateAndRender();
+    showToast('Project deleted', 'success');
+    // If we're viewing the deleted project, leave the detail page
+    if (state.activeDetailJob && state.activeDetailJob.id === id) {
+      navigateToHash('home');
+    }
+    loadHistory();
+  } else {
+    showToast('Failed to delete project', 'error');
   }
-  const updated = cached.filter(x => x.id !== id);
-  try {
-    localStorage.setItem('hg_history', JSON.stringify(updated));
-  } catch (e) {
-    console.warn(e);
-  }
-  showToast('Project deleted successfully', 'success');
-  loadHistory();
 }
 
 // ── TRANSCRIPT SYNC & SEARCH ──

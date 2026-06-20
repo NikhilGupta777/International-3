@@ -7,18 +7,27 @@ import { join, extname, basename } from "path";
 import { tmpdir } from "os";
 import { isIP } from "net";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
+import { isS3StorageEnabled, uploadBufferToS3, getS3SignedDownloadUrl } from "../lib/s3-storage";
 
 const router = Router();
 
 const HEYGEN_BASE_URL = "https://api.heygen.com/v3";
 const HEYGEN_API_KEY = (process.env.HEYGEN_API_KEY ?? "").trim();
+// HeyGen's POST /v3/assets endpoint rejects anything over 32 MB with a 400,
+// so we never allow an upload larger than that regardless of configuration.
+const HEYGEN_ASSET_MAX_BYTES = 32 * 1024 * 1024;
 const DEFAULT_UPLOAD_MAX_BYTES = process.env.NODE_ENV === "production"
-  ? 5 * 1024 * 1024
-  : 512 * 1024 * 1024;
-const HEYGEN_UPLOAD_MAX_BYTES = Math.max(
-  1,
-  Number(process.env.HEYGEN_UPLOAD_MAX_BYTES ?? String(DEFAULT_UPLOAD_MAX_BYTES)) || DEFAULT_UPLOAD_MAX_BYTES,
+  ? 5 * 1024 * 1024            // prod: AWS Lambda request payload limit (~6 MB)
+  : HEYGEN_ASSET_MAX_BYTES;    // dev: allow up to HeyGen's own 32 MB ceiling
+const HEYGEN_UPLOAD_MAX_BYTES = Math.min(
+  HEYGEN_ASSET_MAX_BYTES,
+  Math.max(
+    1,
+    Number(process.env.HEYGEN_UPLOAD_MAX_BYTES ?? String(DEFAULT_UPLOAD_MAX_BYTES)) || DEFAULT_UPLOAD_MAX_BYTES,
+  ),
 );
+// Cap subtitle uploads independently — SRT/VTT files are tiny text files.
+const HEYGEN_SRT_MAX_BYTES = 5 * 1024 * 1024;
 const HEYGEN_SRT_MODEL = process.env.HEYGEN_SRT_MODEL || process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-flash";
 const HEYGEN_REQUEST_TIMEOUT_MS = Math.max(
   5_000,
@@ -29,6 +38,8 @@ const GEMINI_SRT_PROCESSING_TIMEOUT_MS = Math.max(
   Math.min(600_000, Number(process.env.HEYGEN_SRT_PROCESSING_TIMEOUT_MS ?? "180000") || 180_000),
 );
 const SAFE_ID_RE = /^[A-Za-z0-9_-]{1,180}$/;
+// Broad media set accepted for Gemini SRT transcription (Gemini handles many
+// container formats, so we stay permissive on the transcription path).
 const ALLOWED_FILE_EXTENSIONS = new Set([
   ".mp4",
   ".mov",
@@ -39,6 +50,20 @@ const ALLOWED_FILE_EXTENSIONS = new Set([
   ".m4a",
   ".aac",
 ]);
+// Strict subset that HeyGen's /v3/assets endpoint actually accepts. Per the
+// docs the asset endpoint supports png, jpeg, mp4, webm, mp3, wav, pdf — we
+// only expose the audio/video formats relevant to video translation here.
+const HEYGEN_ASSET_EXTENSIONS = new Set([".mp4", ".webm", ".mp3", ".wav"]);
+const HEYGEN_ASSET_MIMES = new Set([
+  "video/mp4",
+  "video/webm",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/wav",
+  "audio/wave",
+  "audio/x-wav",
+]);
+const HEYGEN_ASSET_SUPPORTED_LABEL = "MP4, WebM, MP3, or WAV";
 
 const uploadDir = join(tmpdir(), "videomaking-heygen-uploads");
 mkdirSync(uploadDir, { recursive: true });
@@ -175,6 +200,26 @@ function isAllowedUploadFile(file: Express.Multer.File): boolean {
   return ALLOWED_FILE_EXTENSIONS.has(ext) || mime.startsWith("video/") || mime.startsWith("audio/") || mime === "application/octet-stream";
 }
 
+// Strict check for files forwarded to HeyGen's /v3/assets endpoint. Anything
+// outside HeyGen's supported set is rejected locally with a clear 415 instead
+// of bubbling up an opaque upstream 400.
+function isHeyGenAssetFile(file: Express.Multer.File): boolean {
+  const ext = extname(file.originalname || "").toLowerCase();
+  const mime = (file.mimetype || "").toLowerCase();
+  return HEYGEN_ASSET_EXTENSIONS.has(ext) || HEYGEN_ASSET_MIMES.has(mime);
+}
+
+// Log the real error server-side but return a generic message to the client so
+// internal details (outbound URLs, abort reasons) never leak in API responses.
+function proxyError(req: Request, res: Response, fallback: string, err: unknown, status = 502): void {
+  const detail = err instanceof Error ? err.message : String(err);
+  (req as Request & { log?: { warn: (obj: unknown, msg?: string) => void } }).log?.warn(
+    { err: detail },
+    fallback,
+  );
+  res.status(status).json({ error: fallback });
+}
+
 async function proxyHeyGenJson(req: Request, res: Response, path: string, init?: RequestInit) {
   if (!requireHeyGenKey(res)) return;
   const url = new URL(`${HEYGEN_BASE_URL}${path}`);
@@ -191,15 +236,11 @@ async function proxyHeyGenJson(req: Request, res: Response, path: string, init?:
   res.status(resp.status).json(body);
 }
 
-router.get("/disabled-config", (_req, res) => {
-  res.status(404).json({ error: "Client-side config files are disabled. HeyGen keys are server-managed." });
-});
-
 router.get("/me", async (req, res) => {
   try {
     await proxyHeyGenJson(req, res, "/users/me", { headers: heygenHeaders() });
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "HeyGen user lookup failed" });
+    proxyError(req, res, "HeyGen user lookup failed", err);
   }
 });
 
@@ -207,7 +248,7 @@ router.get("/brand-glossaries", async (req, res) => {
   try {
     await proxyHeyGenJson(req, res, "/brand-glossaries", { headers: heygenHeaders() });
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "HeyGen glossary lookup failed" });
+    proxyError(req, res, "HeyGen glossary lookup failed", err);
   }
 });
 
@@ -215,7 +256,7 @@ router.get("/video-translations", async (req, res) => {
   try {
     await proxyHeyGenJson(req, res, "/video-translations", { headers: heygenHeaders() });
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "HeyGen translation list failed" });
+    proxyError(req, res, "HeyGen translation list failed", err);
   }
 });
 
@@ -230,7 +271,7 @@ router.get("/video-translations/:id", async (req, res) => {
       headers: heygenHeaders(),
     });
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "HeyGen translation status failed" });
+    proxyError(req, res, "HeyGen translation status failed", err);
   }
 });
 
@@ -250,7 +291,54 @@ router.post("/video-translations", async (req, res) => {
     const body = await readHeyGenJson(resp);
     res.status(resp.status).json(body);
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "HeyGen translation create failed" });
+    proxyError(req, res, "HeyGen translation create failed", err);
+  }
+});
+
+// Rename a translation job (HeyGen: PATCH /v3/video-translations/{id}, body { title }).
+router.patch("/video-translations/:id", async (req, res) => {
+  if (!requireHeyGenKey(res)) return;
+  const id = String(req.params.id || "");
+  if (!SAFE_ID_RE.test(id)) {
+    res.status(400).json({ error: "Invalid translation id" });
+    return;
+  }
+  const rawTitle = (req.body as { title?: unknown })?.title;
+  const title = typeof rawTitle === "string" ? rawTitle.trim() : "";
+  if (!title || title.length > 300) {
+    res.status(400).json({ error: "title is required (1-300 characters)" });
+    return;
+  }
+  try {
+    const resp = await fetchWithTimeout(`${HEYGEN_BASE_URL}/video-translations/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: heygenHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ title }),
+    });
+    const body = await readHeyGenJson(resp);
+    res.status(resp.status).json(body);
+  } catch (err) {
+    proxyError(req, res, "HeyGen translation update failed", err);
+  }
+});
+
+// Permanently delete a translation job (HeyGen: DELETE /v3/video-translations/{id}).
+router.delete("/video-translations/:id", async (req, res) => {
+  if (!requireHeyGenKey(res)) return;
+  const id = String(req.params.id || "");
+  if (!SAFE_ID_RE.test(id)) {
+    res.status(400).json({ error: "Invalid translation id" });
+    return;
+  }
+  try {
+    const resp = await fetchWithTimeout(`${HEYGEN_BASE_URL}/video-translations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: heygenHeaders(),
+    });
+    const body = await readHeyGenJson(resp);
+    res.status(resp.status).json(body);
+  } catch (err) {
+    proxyError(req, res, "HeyGen translation delete failed", err);
   }
 });
 
@@ -261,9 +349,9 @@ router.post("/assets", runUpload, async (req: Request, res: Response) => {
     res.status(400).json({ error: "file is required" });
     return;
   }
-  if (!isAllowedUploadFile(file)) {
+  if (!isHeyGenAssetFile(file)) {
     await rm(file.path, { force: true }).catch(() => {});
-    res.status(415).json({ error: "Unsupported file type" });
+    res.status(415).json({ error: `Unsupported file type. HeyGen accepts ${HEYGEN_ASSET_SUPPORTED_LABEL}.` });
     return;
   }
 
@@ -284,7 +372,56 @@ router.post("/assets", runUpload, async (req: Request, res: Response) => {
     const body = await readHeyGenJson(resp);
     res.status(resp.status).json(body);
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "HeyGen asset upload failed" });
+    proxyError(req, res, "HeyGen asset upload failed", err);
+  } finally {
+    await rm(file.path, { force: true }).catch(() => {});
+  }
+});
+
+// Subtitle upload: host the SRT/VTT on our own S3 (short-lived presigned URL)
+// and return that URL for the translation request. This replaces the previous
+// browser-side upload to a third-party public host (tmpfiles.org), keeping
+// potentially sensitive transcript content inside our own infrastructure.
+router.post("/srt-upload", runUpload, async (req: Request, res: Response) => {
+  const file = req.file;
+  if (!file) {
+    res.status(400).json({ error: "file is required" });
+    return;
+  }
+  const ext = extname(file.originalname || "").toLowerCase();
+  const mime = (file.mimetype || "").toLowerCase();
+  const looksLikeSubtitle = ext === ".srt" || ext === ".vtt" || mime.startsWith("text/") || mime === "application/x-subrip";
+  if (!looksLikeSubtitle) {
+    await rm(file.path, { force: true }).catch(() => {});
+    res.status(415).json({ error: "Only .srt or .vtt subtitle files are supported" });
+    return;
+  }
+  if (!isS3StorageEnabled()) {
+    await rm(file.path, { force: true }).catch(() => {});
+    res.status(503).json({ error: "Subtitle hosting is not configured on the server (S3 required)." });
+    return;
+  }
+  try {
+    const bytes = await readFile(file.path);
+    if (bytes.byteLength > HEYGEN_SRT_MAX_BYTES) {
+      res.status(413).json({ error: "Subtitle file is too large (max 5 MB)." });
+      return;
+    }
+    const jobId = randomUUID();
+    const safeName = (file.originalname || "subtitles.srt").replace(/[^\w.\-]+/g, "_").slice(0, 120);
+    const isVtt = ext === ".vtt";
+    const { key, filename } = await uploadBufferToS3({
+      body: bytes,
+      jobId,
+      namespace: "heygen-srt",
+      filename: safeName,
+      contentType: isVtt ? "text/vtt" : "application/x-subrip",
+    });
+    // HeyGen fetches this URL server-side; a short-lived window is enough.
+    const url = await getS3SignedDownloadUrl({ key, filename, expiresInSec: 6 * 60 * 60 });
+    res.json({ url });
+  } catch (err) {
+    proxyError(req, res, "Subtitle upload failed", err);
   } finally {
     await rm(file.path, { force: true }).catch(() => {});
   }
@@ -362,7 +499,7 @@ router.post("/generate-srt", runUpload, async (req: Request, res: Response) => {
       .trim();
     res.json({ srt: text });
   } catch (err) {
-    res.status(502).json({ error: err instanceof Error ? err.message : "Gemini SRT generation failed" });
+    proxyError(req, res, "Gemini SRT generation failed", err);
   } finally {
     if (uploadedName) {
       try {
