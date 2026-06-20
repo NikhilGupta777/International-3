@@ -4379,7 +4379,7 @@ function setStep(idx, done = false) {
 // ── HISTORY LIST RETRIEVAL ──
 async function fetchHistoryPage(token = '') {
   if (!state.apiKey) {
-    return { items: [], nextToken: '', hasMore: false };
+    return { ok: false, items: [], nextToken: '', hasMore: false };
   }
   try {
     let url = '/api/heygen/video-translations?limit=50';
@@ -4411,10 +4411,12 @@ async function fetchHistoryPage(token = '') {
 
     const nextToken = d?.next_token || '';
     const hasMore = !!d?.has_more;
-    return { items, nextToken, hasMore };
+    return { ok: true, items, nextToken, hasMore };
   } catch (e) {
+    // Network error / rate-limit (429) / 5xx. Signal failure so callers can
+    // preserve the currently-displayed list instead of wiping it to empty.
     console.warn('Failed to fetch history page:', e);
-    return { items: [], nextToken: '', hasMore: false };
+    return { ok: false, items: [], nextToken: '', hasMore: false };
   }
 }
 
@@ -4422,25 +4424,32 @@ async function loadHistory(showSpinner = true) {
   const grid = document.getElementById('history-grid');
   const recentThumbs = document.getElementById('recent-thumbs');
   const sidebarRecents = document.getElementById('sidebar-recents');
-  
+
+  // Only show spinners on the very first load (when we have nothing yet).
+  // Otherwise keep the existing list visible so a refresh never flashes empty.
+  const hasExisting = (state.apiHistory || []).length > 0;
   state.isHistoryLoading = true;
 
-  if (showSpinner) {
+  if (showSpinner && !hasExisting) {
     if (grid) grid.innerHTML = '<div style="color:var(--text-muted);font-size:13px;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Fetching videos...</div>';
     if (recentThumbs) recentThumbs.innerHTML = '<div style="color:var(--text-muted);font-size:12px;display:flex;align-items:center;gap:8px;padding:8px 0"><div class="spinner"></div>Loading your projects...</div>';
     if (sidebarRecents) sidebarRecents.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:11px;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Loading...</div>';
   }
 
-  // Reset pagination state for a fresh load
-  state.apiHistory = [];
-  state.nextToken = '';
-  state.hasMore = false;
-
   const res = await fetchHistoryPage('');
+  state.isHistoryLoading = false;
+
+  if (!res.ok) {
+    // Transient failure (rate-limit/network). Keep whatever we already have so
+    // the list doesn't vanish a few seconds after loading. Re-render to clear
+    // any spinner; if we had nothing, this shows the normal empty state.
+    updateHistoryStateAndRender();
+    return;
+  }
+
   state.apiHistory = res.items;
   state.nextToken = res.nextToken;
   state.hasMore = res.hasMore;
-  state.isHistoryLoading = false;
 
   updateHistoryStateAndRender();
 }
@@ -4609,7 +4618,17 @@ async function loadMoreSidebarRecents() {
   }
 
   const res = await fetchHistoryPage(state.nextToken);
-  
+
+  if (!res.ok) {
+    // Transient failure — keep current pagination so "Load more" stays usable.
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Load more';
+    }
+    showToast('Could not load more right now. Try again.', 'info');
+    return;
+  }
+
   if (res.items.length > 0) {
     // Append unique items to state.apiHistory
     const existingIds = state.apiHistory.map(x => x.id);
