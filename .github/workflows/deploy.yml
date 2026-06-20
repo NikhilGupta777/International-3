@@ -714,7 +714,7 @@ jobs:
           upsert_env "YOUTUBE_QUEUE_PRIMARY_JOB_TYPES" "clip-cut,bhagwat-analyze,bhagwat-render,subtitles"
           upsert_env "VIDEO_EDITOR_BATCH_ENABLED" "true"
           upsert_env "VIDEO_EDITOR_BATCH_JOB_DEFINITION" "${{ needs.build-worker.outputs.batch_job_def }}"
-          upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "420"
+          upsert_env "LAMBDA_CLIP_MAX_DURATION_SECONDS" "600"
           upsert_env "LAMBDA_CLIP_COMMAND_TIMEOUT_MS" "840000"
           upsert_env "LAMBDA_CLIP_STALL_TIMEOUT_MS" "180000"
           upsert_env "YTDLP_DOWNLOAD_STALL_TIMEOUT_MS" "180000"
