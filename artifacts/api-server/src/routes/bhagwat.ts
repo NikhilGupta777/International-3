@@ -39,7 +39,7 @@ import {
   createS3PresignedUpload,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
-import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
+import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 
 const router: Router = Router();
 const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
@@ -513,9 +513,9 @@ function extractImageBytes(response: any): Buffer {
 
 const IMAGE_GEN_TIMEOUT_MS = Number(process.env.IMAGE_GEN_TIMEOUT_MS ?? 90_000);
 // Image resolution for generated devotional frames. The video is rendered at
-// 1080p, so "2K" downscales cleanly for crisp frames; override to "1K" for
-// faster/cheaper generation if image timeouts persist on a slow key.
-const BHAGWAT_IMAGE_SIZE = process.env.BHAGWAT_IMAGE_SIZE ?? "2K";
+// 1080p, so "1K" is plenty (and much faster/cheaper than 2K, which kept timing
+// out). Override via env to "2K"/"4K" if you want sharper source frames.
+const BHAGWAT_IMAGE_SIZE = process.env.BHAGWAT_IMAGE_SIZE ?? "1K";
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -568,6 +568,11 @@ async function generateImageViaReplit(
 }
 
 async function generateImageViaOwnKey(prompt: string, signal?: AbortSignal): Promise<Buffer> {
+  // When Vertex is enabled, load the service-account credentials (which on
+  // Lambda live in S3) BEFORE building the Vertex client — otherwise the image
+  // call fails to authenticate and every segment falls back to a scene card.
+  // This mirrors how the working Thumbnail Studio (routes/thumbnail.ts) does it.
+  if (isVertexGeminiEnabled()) await ensureVertexCredentials();
   const keys = getPersonalGeminiApiKeys();
   if (keys.length === 0)
     throw new Error("GEMINI_API_KEY is not configured");
@@ -609,7 +614,10 @@ function isAnyAIConfigured(): boolean {
 }
 
 async function generateImage(prompt: string, outputPath: string): Promise<void> {
+  // When Vertex is the configured provider, skip the Replit integration entirely
+  // and generate via Vertex creds (mirrors the rest of the app).
   const replitReady =
+    !isVertexGeminiEnabled() &&
     !!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL &&
     !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
 
@@ -921,8 +929,10 @@ async function generateAllSegmentImages(
   const total = tasks.length;
   let remoteImageGenerationDisabled = false;
 
-  // Process with concurrency = 4
-  const CONCURRENCY = 4;
+  // Number of images generated in parallel — the dominant factor in render
+  // speed. Higher = faster, bounded only by your Gemini/Vertex rate limits
+  // (Vertex typically handles 6–8 comfortably). Tune via env without a rebuild.
+  const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.BHAGWAT_IMAGE_CONCURRENCY ?? 6)));
   for (let i = 0; i < tasks.length; i += CONCURRENCY) {
     // Honour user-initiated cancellation between batches so Stop takes effect
     // during the (longest) image-generation phase instead of after it.
