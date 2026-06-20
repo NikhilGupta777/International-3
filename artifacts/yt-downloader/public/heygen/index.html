@@ -4470,6 +4470,9 @@ function updateHistoryStateAndRender() {
 
   // Load Recent Thumbs on homepage
   loadRecentThumbs(items);
+
+  // Wire lazy load/unload across every thumbnail grid we just rendered.
+  setupLazyVideoLoad();
 }
 
 function renderHistoryGrid() {
@@ -4546,28 +4549,33 @@ function renderHistoryGrid() {
     </div>`;
   }).join('');
 
-  // Only load video src for cards currently in viewport
-  setupLazyVideoLoad();
+  // Lazy load/unload handled centrally after render.
 }
 
-// IntersectionObserver lazy-loader — sets video src only when card scrolls into view
+// IntersectionObserver lazy-loader — loads a video's source only when it scrolls
+// into view, and RELEASES it (frees decoder/network memory) when it scrolls far
+// out of view. This keeps at most ~a screenful of videos loaded at once instead
+// of accumulating every project's video in memory.
 let _lazyVideoObserver = null;
 function setupLazyVideoLoad() {
   if (_lazyVideoObserver) _lazyVideoObserver.disconnect();
   _lazyVideoObserver = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
-      if (!entry.isIntersecting) return;
       const vid = entry.target;
-      if (vid.dataset.src && !vid.src) {
-        vid.src = vid.dataset.src;
+      if (entry.isIntersecting) {
+        if (vid.dataset.src && !vid.getAttribute('src')) {
+          vid.setAttribute('src', vid.dataset.src);
+          vid.load();
+        }
+      } else if (vid.getAttribute('src') && vid.paused) {
+        // Off-screen and not actively previewing on hover → drop the source so
+        // the browser can reclaim the buffered data. It reloads on re-entry.
+        vid.removeAttribute('src');
         vid.load();
       }
-      _lazyVideoObserver.unobserve(vid);
     });
-  }, { rootMargin: '120px' });
-  document.querySelectorAll('.hc-thumb-vid[data-src]').forEach(vid => {
-    if (!vid.src) _lazyVideoObserver.observe(vid);
-  });
+  }, { rootMargin: '200px' });
+  document.querySelectorAll('video[data-src]').forEach(vid => _lazyVideoObserver.observe(vid));
 }
 
 
@@ -4664,7 +4672,7 @@ function loadRecentThumbs(items) {
     return `<div class="recent-project-card" data-id="${safeId}" onclick="openVideoDetailById('${safeId}')">
       <div class="recent-project-thumb">
         ${safeVideoSrc
-          ? `<video src="${safeVideoSrc}#t=0.1" muted preload="metadata" playsinline></video>`
+          ? `<video class="lazy-thumb-vid" data-src="${safeVideoSrc}#t=0.1" muted preload="none" playsinline onerror="this.style.display='none'"></video>`
           : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
         <div class="duration-overlay">
           <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="margin-right:2px; vertical-align:middle; display:inline-block;">
@@ -5020,7 +5028,7 @@ function generateCarouselItems(activeItem) {
     return `<div class="carousel-item-wrapper" style="display:flex;flex-direction:column;gap:8px;flex:0 0 calc(33.333% - 11px);min-width:0;cursor:pointer;text-align:left" onclick="openVideoDetailById('${safeId}')">
       <div class="project-card-thumb ${isActive ? 'active' : ''}" style="width:100%;aspect-ratio:1/1;height:auto !important;margin:0;border-radius:var(--radius-lg);overflow:hidden;position:relative;" data-id="${safeId}">
         ${safeVideoSrc
-          ? `<video src="${safeVideoSrc}#t=0.1" muted preload="metadata" playsinline style="width:100%;height:100%;object-fit:cover;"></video>`
+          ? `<video class="lazy-thumb-vid" data-src="${safeVideoSrc}#t=0.1" muted preload="none" playsinline style="width:100%;height:100%;object-fit:cover;"></video>`
           : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
         <div class="duration-overlay" style="bottom:6px;right:6px;font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,0.7);position:absolute;color:#fff;">
           <span>${dur}</span>
@@ -5032,6 +5040,9 @@ function generateCarouselItems(activeItem) {
   }).join('');
   
   state.activeCarouselIndex = 0;
+
+  // Lazy-load/unload the carousel videos instead of fetching them all at once.
+  setupLazyVideoLoad();
 }
 
 function slideCarousel(dir) {
