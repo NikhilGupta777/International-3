@@ -1759,6 +1759,15 @@ router.post("/bhagwat/auth", (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// Lightweight session probe. This route sits behind the bhagwat auth
+// middleware, so it only reaches this handler (200) when the bhagwat_auth
+// cookie is valid; otherwise the middleware returns 401. The frontend calls it
+// on load so a returning user with a still-valid 30-day cookie skips the
+// password gate instead of re-entering the password every browser session.
+router.get("/bhagwat/auth-check", (_req: Request, res: Response) => {
+  res.json({ ok: true });
+});
+
 router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
   const { url, mode, clipStartSec, clipEndSec } = req.body as {
     url: string;

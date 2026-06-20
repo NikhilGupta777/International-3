@@ -92,7 +92,7 @@ function PasswordGate({ onUnlock }: { onUnlock: () => void }) {
         body: JSON.stringify({ password: pw }),
       });
       if (res.ok) {
-        sessionStorage.setItem(STORAGE_KEY, "1");
+        localStorage.setItem(STORAGE_KEY, "1");
         onUnlock();
       } else {
         setError("Incorrect password");
@@ -759,7 +759,7 @@ function BhagwatEditor({
   // bubble up so the parent re-shows the password gate instead of leaving the
   // UI "unlocked" while every request silently fails.
   const handleAuthExpired = useCallback(() => {
-    try { sessionStorage.removeItem(STORAGE_KEY); } catch {}
+    try { localStorage.removeItem(STORAGE_KEY); } catch {}
     onAuthExpired();
   }, [onAuthExpired]);
 
@@ -2388,7 +2388,7 @@ function BhagwatEditor({
 
 // ── BhagwatVideos (tab panels) ────────────────────────────────────────────────
 export function BhagwatVideos() {
-  const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem(STORAGE_KEY) === "1");
+  const [unlocked, setUnlocked] = useState(() => localStorage.getItem(STORAGE_KEY) === "1");
   const [tab, setTab] = useState<"clips" | "editor">("editor");
   // Lifted up so the Find Clips tab pre-fills the same URL the editor already has
   const [url, setUrl] = useState("");
@@ -2399,6 +2399,30 @@ export function BhagwatVideos() {
   const [editorKey, setEditorKey] = useState(0);
 
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  // Source of truth = the server cookie, not localStorage. On load, probe the
+  // bhagwat auth-check endpoint: if the 30-day cookie is still valid, unlock
+  // automatically (no re-login); if it's gone/expired, lock and clear the flag.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${BASE}/api/bhagwat/auth-check`, { cache: "no-store" });
+        if (cancelled) return;
+        if (res.ok) {
+          localStorage.setItem(STORAGE_KEY, "1");
+          setUnlocked(true);
+        } else if (res.status === 401) {
+          localStorage.removeItem(STORAGE_KEY);
+          setUnlocked(false);
+        }
+        // Other statuses (network/5xx): keep the optimistic localStorage value.
+      } catch {
+        // Offline / transient error — keep current state, don't force re-login.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [BASE]);
 
   const handleEditClip = useCallback((clip: { startSec: number; endSec: number; title: string }) => {
     setClipRange({ startSec: clip.startSec, endSec: clip.endSec, title: clip.title });
