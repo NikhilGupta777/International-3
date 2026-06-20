@@ -622,6 +622,7 @@ jobs:
           GEMINI_API_KEY_SECRET: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_KEY_2_SECRET: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3_SECRET: ${{ secrets.GEMINI_API_KEY_3 }}
+          HEYGEN_API_KEY_SECRET: ${{ secrets.HEYGEN_API_KEY }}
           WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
           BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
           GOOGLE_CLIENT_ID_SECRET: ${{ secrets.GOOGLE_CLIENT_ID }}
@@ -653,6 +654,9 @@ jobs:
           upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
           upsert_env "GEMINI_API_KEY_2" "$GEMINI_API_KEY_2_SECRET"
           upsert_env "GEMINI_API_KEY_3" "$GEMINI_API_KEY_3_SECRET"
+          upsert_env "HEYGEN_API_KEY" "$HEYGEN_API_KEY_SECRET"
+          upsert_env "HEYGEN_UPLOAD_MAX_BYTES" "5242880"
+          upsert_env "HEYGEN_REQUEST_TIMEOUT_MS" "60000"
           upsert_env "E2B_API_KEY" "$E2B_API_KEY_SECRET"
           upsert_env "GOOGLE_GENAI_USE_VERTEXAI" "$GOOGLE_GENAI_USE_VERTEXAI_SECRET"
           if [[ "$GOOGLE_GENAI_USE_VERTEXAI_SECRET" =~ ^(1|true|yes|on)$ ]]; then

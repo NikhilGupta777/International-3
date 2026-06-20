@@ -35,7 +35,7 @@ function buildFootItems(opts: { showAdmin?: boolean; showDeveloper?: boolean }):
   return items;
 }
 
-// Top "Super Agent" item — special, always pinned above the main list
+// Top "Super Agent" item: special, always pinned above the main list
 const SUPER_AGENT_ITEM: NavItem = {
   mode: "copilot",
   icon: (
@@ -133,7 +133,7 @@ function NavList({
       {/* Main nav */}
       {NAV_ITEMS.filter((item) => {
         if (item.mode === "copilot" && !superAgentEnabled) return false;
-        if (item.mode === "translator" && !translatorEnabled) return false;
+        if ((item.mode === "translator" || item.mode === "heygen") && !translatorEnabled) return false;
         return true;
       }).map((item) => (
         <GsItem

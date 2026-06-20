@@ -675,7 +675,7 @@ export default function Home({
   };
 
   const openGuide = () => {
-    // Help is now a sidebar tab — switch into it and remember the user's
+    // Help is now a sidebar tab; switch into it and remember the user's
     // current tab so the guide opens to the relevant section by default.
     if (mode !== "help" && mode !== "activity" && mode !== "settings" && mode !== "home" && mode !== "copilot" && mode !== "translator" && mode !== "findvideo") {
       setHelpInitialMode(mode as GuideMode);
@@ -822,7 +822,7 @@ export default function Home({
   return (
     <div className="studio-workspace">
 
-      {/* Floating Help / Activity panel — pinned to top-right since the
+      {/* Floating Help / Activity panel; pinned to top-right since the
           old topbar is removed in the new sidebar-based layout */}
       {/* Help and Activity are now first-class sidebar tabs (rendered below)
           instead of a floating top-right panel. */}
@@ -866,9 +866,13 @@ export default function Home({
                 : <FeatureUnavailable title="Translator is restricted" detail="Your account is not allowed to use video translation right now." />
             )}
 
-            {showHeyGen && <HeyGenTranslator />}
+            {showHeyGen && (
+              canUseTranslator
+                ? <HeyGenTranslator />
+                : <FeatureUnavailable title="HeyGen is restricted" detail="Your account is not allowed to use video translation right now." />
+            )}
 
-            {/* Help tab — dedicated page (replaces old GuideModal) */}
+            {/* Help tab; dedicated page (replaces old GuideModal) */}
             {mode === "help" && (
               <HelpPanel
                 initialMode={helpInitialMode}
@@ -876,7 +880,7 @@ export default function Home({
               />
             )}
 
-            {/* Activity tab — dedicated page (replaces old floating panel) */}
+            {/* Activity tab; dedicated page (replaces old floating panel) */}
             {mode === "activity" && (
               <ActivityPanel
                 onSwitchTab={(next) => switchMode(next as Mode)}

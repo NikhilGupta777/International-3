@@ -102,6 +102,19 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  HeyGenApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  HeyGenUploadMaxBytes:
+    Type: Number
+    Default: 5242880
+  HeyGenSrtModel:
+    Type: String
+    Default: gemini-3.5-flash
+  HeyGenRequestTimeoutMs:
+    Type: Number
+    Default: 60000
   GoogleGenaiUseVertexai:
     Type: String
     Default: "false"
@@ -478,6 +491,10 @@ Resources:
           PITAJI_FEATURE_ENABLED: !Ref PitajiFeatureEnabled
           BHAGWAT_PASSWORD: !Ref BhagwatPassword
           GEMINI_API_KEY: !Ref GeminiApiKey
+          HEYGEN_API_KEY: !Ref HeyGenApiKey
+          HEYGEN_UPLOAD_MAX_BYTES: !Ref HeyGenUploadMaxBytes
+          HEYGEN_SRT_MODEL: !Ref HeyGenSrtModel
+          HEYGEN_REQUEST_TIMEOUT_MS: !Ref HeyGenRequestTimeoutMs
           GOOGLE_GENAI_USE_VERTEXAI: !Ref GoogleGenaiUseVertexai
           GOOGLE_CLOUD_PROJECT: !Ref GoogleCloudProject
           GOOGLE_CLOUD_LOCATION: !Ref GoogleCloudLocation
