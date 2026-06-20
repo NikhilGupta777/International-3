@@ -45,6 +45,18 @@ const router: Router = Router();
 const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
 const BHAGWAT_AUTH_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
 const BHAGWAT_QUEUE_POLL_MS = 2000;
+// Hard caps to bound cost & render time. A project may not exceed
+// BHAGWAT_MAX_VIDEO_SEC (default 10 minutes) of source duration, and a single
+// render may not generate more than BHAGWAT_MAX_IMAGES_PER_JOB images.
+const BHAGWAT_MAX_VIDEO_SEC = Math.max(
+  30,
+  Number(process.env.BHAGWAT_MAX_VIDEO_SEC ?? 600),
+);
+function formatDurationLimit(sec: number): string {
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return s === 0 ? `${m} minute${m === 1 ? "" : "s"}` : `${m}m ${s}s`;
+}
 // Mirror the main app's cookie policy (app.ts): default to Secure cookies, but
 // allow opting out for local/non-HTTPS dev via AUTH_COOKIE_SECURE=false.
 // Hardcoding `secure: true` broke the tab over HTTP — the browser silently
@@ -320,6 +332,9 @@ function validateClipRange(
   }
   if (clipEndSec <= clipStartSec) {
     return "clipEndSec must be greater than clipStartSec";
+  }
+  if (clipEndSec - clipStartSec > BHAGWAT_MAX_VIDEO_SEC) {
+    return `Clip is too long — the maximum is ${formatDurationLimit(BHAGWAT_MAX_VIDEO_SEC)}. Please select a shorter range.`;
   }
   return null;
 }
@@ -863,7 +878,7 @@ async function geminiProStream(
 // "Full Coverage" job can't spawn thousands of generations (cost/quota guard).
 const BHAGWAT_MAX_IMAGES_PER_JOB = Math.max(
   1,
-  Number(process.env.BHAGWAT_MAX_IMAGES_PER_JOB ?? 400),
+  Number(process.env.BHAGWAT_MAX_IMAGES_PER_JOB ?? 100),
 );
 
 async function generateAllSegmentImages(
@@ -2352,6 +2367,16 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
     res.status(400).json({ error: renderClipError });
     return;
   }
+  // Cap full (non-clip) renders by the timeline span — the real output length.
+  if (!(typeof clipStartSec === "number" && typeof clipEndSec === "number")) {
+    const spanSec = Math.max(videoDuration ?? 0, ...timeline.map((s) => s.endSec || 0));
+    if (spanSec > BHAGWAT_MAX_VIDEO_SEC) {
+      res.status(400).json({
+        error: `This project is ${formatTime(spanSec)} long, but the maximum allowed is ${formatDurationLimit(BHAGWAT_MAX_VIDEO_SEC)}.`,
+      });
+      return;
+    }
+  }
   const jobId = randomUUID();
   if (isBhagwatRenderQueuePrimaryEnabled()) {
     try {
@@ -2877,6 +2902,16 @@ export async function runBhagwatAnalysis(
       throw new Error(
         "Could not fetch video metadata from YouTube. This is usually caused by bot-detection on cloud IPs. " +
           "Please try again in a few minutes, or check that the URL is a valid public YouTube video.",
+      );
+    }
+
+    // Hard duration cap. In clip mode videoDuration is already the clip length.
+    if (videoDuration > BHAGWAT_MAX_VIDEO_SEC) {
+      throw new Error(
+        `This ${clipMode ? "clip" : "video"} is ${formatTime(videoDuration)} long, but the maximum allowed is ${formatDurationLimit(BHAGWAT_MAX_VIDEO_SEC)}. ` +
+          (clipMode
+            ? "Please select a shorter clip range."
+            : "Use the Find Clips tab to pick a section under the limit, then edit that clip."),
       );
     }
 
@@ -4083,6 +4118,13 @@ export async function runBhagwatAnalysisFromFile(
       );
     }
 
+    // Hard duration cap for uploaded audio.
+    if (videoDuration > BHAGWAT_MAX_VIDEO_SEC) {
+      throw new Error(
+        `This audio is ${formatTime(videoDuration)} long, but the maximum allowed is ${formatDurationLimit(BHAGWAT_MAX_VIDEO_SEC)}. Please upload a shorter file.`,
+      );
+    }
+
     // ── Step 3: Gemini AI timeline ─────────────────────────────────────────────
     step(
       "ai",
@@ -4454,6 +4496,16 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
   if (renderAudioClipError) {
     res.status(400).json({ error: renderAudioClipError });
     return;
+  }
+  // Cap full (non-clip) renders by the timeline span — the real output length.
+  if (!(typeof clipStartSec === "number" && typeof clipEndSec === "number")) {
+    const spanSec = Math.max(videoDuration ?? 0, ...timeline.map((s) => s.endSec || 0));
+    if (spanSec > BHAGWAT_MAX_VIDEO_SEC) {
+      res.status(400).json({
+        error: `This audio is ${formatTime(spanSec)} long, but the maximum allowed is ${formatDurationLimit(BHAGWAT_MAX_VIDEO_SEC)}.`,
+      });
+      return;
+    }
   }
 
   let finalS3Key = uploadS3Key;
