@@ -704,6 +704,7 @@ function BhagwatEditor({
   BASE, url, setUrl,
   clipRange, onClearClip,
   sourceMode, setSourceMode,
+  onAuthExpired,
 }: {
   BASE: string;
   url: string;
@@ -712,6 +713,7 @@ function BhagwatEditor({
   onClearClip?: () => void;
   sourceMode: "youtube" | "upload";
   setSourceMode: (v: "youtube" | "upload") => void;
+  onAuthExpired: () => void;
 }) {
   const [uploadedFile, setUploadedFile] = useState<{ audioId: string; uploadS3Key?: string; mimeType?: string; filename: string; sizeBytes: number } | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -751,6 +753,24 @@ function BhagwatEditor({
   const sessionHydratedRef = useRef(false);
   // Always tracks the latest timeline so SSE handlers don't use stale closures
   const timelineRef = useRef<TimelineSegment[] | null>(null);
+
+  // Auth-aware fetch: a 401 means the bhagwat_auth cookie expired or was never
+  // set (e.g. Secure cookie over HTTP). Clear the cached "unlocked" flag and
+  // bubble up so the parent re-shows the password gate instead of leaving the
+  // UI "unlocked" while every request silently fails.
+  const handleAuthExpired = useCallback(() => {
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch {}
+    onAuthExpired();
+  }, [onAuthExpired]);
+
+  const authedFetch = useCallback(async (input: string, init?: RequestInit): Promise<Response> => {
+    const res = await fetch(input, init);
+    if (res.status === 401) {
+      handleAuthExpired();
+      throw new Error("Your session has expired — please unlock the studio again.");
+    }
+    return res;
+  }, [handleAuthExpired]);
 
   const [history, setHistory] = useState<HistoryEntry[]>(() => {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY) ?? "[]"); } catch { return []; }
@@ -1217,7 +1237,7 @@ function BhagwatEditor({
 
     try {
       // 1. Get Pre-signed URL
-      const presignedRes = await fetch(`${BASE}/api/bhagwat/upload-audio-presigned`, {
+      const presignedRes = await authedFetch(`${BASE}/api/bhagwat/upload-audio-presigned`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1337,7 +1357,7 @@ function BhagwatEditor({
     try {
       let jobId: string;
       if (sourceMode === "youtube") {
-        const res = await fetch(`${BASE}/api/bhagwat/analyze`, {
+        const res = await authedFetch(`${BASE}/api/bhagwat/analyze`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
@@ -1346,7 +1366,7 @@ function BhagwatEditor({
         if (!res.ok) throw new Error(data.error ?? `Analyze request failed (${res.status})`);
         jobId = data.jobId;
       } else {
-        const res = await fetch(`${BASE}/api/bhagwat/analyze-audio`, {
+        const res = await authedFetch(`${BASE}/api/bhagwat/analyze-audio`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ 
@@ -1408,7 +1428,7 @@ function BhagwatEditor({
     setSuggestions([]);
 
     try {
-      const res = await fetch(`${BASE}/api/bhagwat/review-plan`, {
+      const res = await authedFetch(`${BASE}/api/bhagwat/review-plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ timeline, videoTitle, videoDuration, transcriptText }),
@@ -1531,12 +1551,12 @@ function BhagwatEditor({
 
     try {
       const renderRes = await (sourceMode === "youtube"
-        ? fetch(`${BASE}/api/bhagwat/render`, {
+        ? authedFetch(`${BASE}/api/bhagwat/render`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ url, timeline: tl, videoDuration, videoTitle, mode, ...(clipRange && { clipStartSec: clipRange.startSec, clipEndSec: clipRange.endSec }) }),
           })
-        : fetch(`${BASE}/api/bhagwat/render-audio`, {
+        : authedFetch(`${BASE}/api/bhagwat/render-audio`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
@@ -1787,8 +1807,8 @@ function BhagwatEditor({
             <p className="text-[10px] text-white/30 uppercase tracking-widest font-semibold">Generation Mode</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {([
-                { v: "full",  label: "Full Coverage", icon: <ImageIcon className="w-4 h-4" />, desc: "Images across entire audio, start to end" },
-                { v: "smart", label: "AI Smart", icon: <Sparkles className="w-4 h-4" />, desc: "AI picks the most impactful moments" },
+                { v: "full",  label: "Full Coverage", icon: <ImageIcon className="w-4 h-4" />, desc: "AI image slideshow across the entire audio, start to end" },
+                { v: "smart", label: "AI Smart", icon: <Sparkles className="w-4 h-4" />, desc: sourceMode === "youtube" ? "Keeps the original video, overlays AI images on key moments" : "AI picks the most impactful moments (slideshow)" },
               ] as const).map(opt => (
                   <button
                   key={opt.v}
@@ -2305,7 +2325,7 @@ function BhagwatEditor({
                   {downloadAlive === null
                     ? "Verifying the file is still available"
                     : downloadAlive
-                      ? "File deletes 10 min after you start downloading"
+                      ? "File deletes 1 hour after you start downloading"
                       : "Server restarted — file was lost. Re-render to get a new copy."}
                 </p>
               </div>
@@ -2439,6 +2459,7 @@ export function BhagwatVideos() {
           onClearClip={handleClearClip}
           sourceMode={sourceMode}
           setSourceMode={setSourceMode}
+          onAuthExpired={() => setUnlocked(false)}
         />
       </div>
       <div className={tab === "clips" ? undefined : "hidden"}>

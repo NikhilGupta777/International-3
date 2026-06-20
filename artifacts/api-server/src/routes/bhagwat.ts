@@ -15,7 +15,7 @@ import { promises as fsPromises } from "fs";
 import { join, basename, dirname } from "path";
 import { tmpdir } from "os";
 import { spawn } from "child_process";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import { EventEmitter } from "events";
 import { GoogleGenAI, Modality } from "@google/genai";
 import { get as httpsGet } from "https";
@@ -45,9 +45,28 @@ const router: Router = Router();
 const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
 const BHAGWAT_AUTH_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 30;
 const BHAGWAT_QUEUE_POLL_MS = 2000;
+// Mirror the main app's cookie policy (app.ts): default to Secure cookies, but
+// allow opting out for local/non-HTTPS dev via AUTH_COOKIE_SECURE=false.
+// Hardcoding `secure: true` broke the tab over HTTP — the browser silently
+// dropped the cookie, so /auth returned 200 but every later call returned 401.
+const BHAGWAT_AUTH_COOKIE_SECURE =
+  process.env.AUTH_COOKIE_SECURE === "false" ? false : true;
 
 function isBhagwatAuthenticated(req: Request): boolean {
   return req.signedCookies?.[BHAGWAT_AUTH_COOKIE_NAME] === "1";
+}
+
+// Constant-time string comparison (mirrors app.ts `secureEqual`) so the
+// Bhagwat password check is not vulnerable to timing analysis.
+function bhagwatSecureEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  try {
+    return timingSafeEqual(ab, bb);
+  } catch {
+    return false;
+  }
 }
 
 const isBhagwatAnalyzeQueuePrimaryEnabled = (): boolean =>
@@ -279,6 +298,32 @@ function safeFsArg(p: string): string {
   return p;
 }
 
+// Validate optional clip range supplied by the client. Returns an error string
+// when the pair is present but invalid (NaN, negative, or end ≤ start), else
+// null. A clip with end ≤ start would yield a zero/negative videoDuration and
+// corrupt every downstream timing calculation.
+function validateClipRange(
+  clipStartSec: unknown,
+  clipEndSec: unknown,
+): string | null {
+  const hasStart = clipStartSec !== undefined && clipStartSec !== null;
+  const hasEnd = clipEndSec !== undefined && clipEndSec !== null;
+  if (!hasStart && !hasEnd) return null;
+  if (hasStart !== hasEnd) {
+    return "clipStartSec and clipEndSec must be provided together";
+  }
+  if (typeof clipStartSec !== "number" || !Number.isFinite(clipStartSec) || clipStartSec < 0) {
+    return "clipStartSec must be a non-negative number";
+  }
+  if (typeof clipEndSec !== "number" || !Number.isFinite(clipEndSec)) {
+    return "clipEndSec must be a number";
+  }
+  if (clipEndSec <= clipStartSec) {
+    return "clipEndSec must be greater than clipStartSec";
+  }
+  return null;
+}
+
 // Sweep old uploads after 12 hours
 setInterval(
   () => {
@@ -466,10 +511,14 @@ async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
   label: string,
+  onTimeout?: () => void,
 ): Promise<T> {
   let timer: NodeJS.Timeout | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      // Best-effort abort of the underlying request so a timed-out image/text
+      // generation doesn't keep running in the background and leaking sockets.
+      try { onTimeout?.(); } catch {}
       reject(new Error(`${label} timed out after ${timeoutMs}ms`));
     }, timeoutMs);
   });
@@ -480,21 +529,32 @@ async function withTimeout<T>(
   }
 }
 
-async function generateImageViaReplit(prompt: string, model = "gemini-3.1-flash-image-preview"): Promise<Buffer> {
+async function generateImageViaReplit(
+  prompt: string,
+  model = "gemini-3.1-flash-image-preview",
+  signal?: AbortSignal,
+): Promise<Buffer> {
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
   const apiKey = process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
   if (!baseUrl || !apiKey) throw new Error("Replit AI integration not configured");
 
   const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
+  // Aspect-ratio parity with the own-key path so images are a consistent 16:9
+  // regardless of which provider served them (avoids letterbox padding drift).
+  const config: any = {
+    responseModalities: [Modality.IMAGE],
+    imageConfig: { aspectRatio: "16:9", imageSize: "2K" },
+  };
+  if (signal) config.abortSignal = signal;
   const response = await client.models.generateContent({
     model,
     contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
-    config: { responseModalities: [Modality.IMAGE] },
+    config,
   });
   return extractImageBytes(response);
 }
 
-async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
+async function generateImageViaOwnKey(prompt: string, signal?: AbortSignal): Promise<Buffer> {
   const keys = getPersonalGeminiApiKeys();
   if (keys.length === 0)
     throw new Error("GEMINI_API_KEY is not configured");
@@ -503,17 +563,20 @@ async function generateImageViaOwnKey(prompt: string): Promise<Buffer> {
   for (let i = 0; i < keys.length; i++) {
     try {
       const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
+      const config: any = {
+        responseModalities: [Modality.TEXT, Modality.IMAGE],
+        imageConfig: { aspectRatio: "16:9", imageSize: "2K" },
+      };
+      if (signal) config.abortSignal = signal;
       const response = await client.models.generateContent({
         model: "gemini-3.1-flash-image-preview",
         contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
-        config: {
-          responseModalities: [Modality.TEXT, Modality.IMAGE],
-          imageConfig: { aspectRatio: "16:9", imageSize: "2K" } as any,
-        },
+        config,
       });
       return extractImageBytes(response);
     } catch (err) {
       lastErr = err;
+      if (signal?.aborted) throw err instanceof Error ? err : new Error("aborted");
       console.warn(
         `[bhagwat/img] own Gemini image key ${i + 1} failed, trying next key:`,
         err instanceof Error ? err.message : String(err ?? ""),
@@ -539,11 +602,13 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
 
   // 1. Try Replit integration: fast flash model
   if (replitReady) {
+    const controller = new AbortController();
     try {
       const bytes = await withTimeout(
-        generateImageViaReplit(prompt, "gemini-3.1-flash-image-preview"),
+        generateImageViaReplit(prompt, "gemini-3.1-flash-image-preview", controller.signal),
         IMAGE_GEN_TIMEOUT_MS,
         "Replit flash image generation",
+        () => controller.abort(),
       );
       writeFileSync(outputPath, bytes);
       return;
@@ -556,10 +621,12 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
   }
 
   // 2. Final fallback: own GEMINI_API_KEY
+  const controller = new AbortController();
   const bytes = await withTimeout(
-    generateImageViaOwnKey(prompt),
+    generateImageViaOwnKey(prompt, controller.signal),
     IMAGE_GEN_TIMEOUT_MS,
     "Gemini image generation",
+    () => controller.abort(),
   );
   writeFileSync(outputPath, bytes);
 }
@@ -771,10 +838,18 @@ async function geminiProStream(
 }
 
 // Generate images for all segments — 1 per segment
+// BHAGWAT_MAX_IMAGES_PER_JOB bounds total Gemini image calls so a multi-hour
+// "Full Coverage" job can't spawn thousands of generations (cost/quota guard).
+const BHAGWAT_MAX_IMAGES_PER_JOB = Math.max(
+  1,
+  Number(process.env.BHAGWAT_MAX_IMAGES_PER_JOB ?? 400),
+);
+
 async function generateAllSegmentImages(
   segments: TimelineSegment[],
   imgDir: string,
   onProgress: (done: number, total: number, msg: string) => void,
+  shouldCancel?: () => boolean,
 ): Promise<string[][]> {
   // Build task list: each task is one image generation
   interface Task {
@@ -783,18 +858,41 @@ async function generateAllSegmentImages(
     prompt: string;
     path: string;
   }
-  const tasks: Task[] = [];
 
-  for (let i = 0; i < segments.length; i++) {
-    const seg = segments[i];
+  // First pass: desired image count per segment (capped at 6 each as before).
+  const counts: number[] = segments.map((seg) => {
     const segDur = seg.endSec - seg.startSec;
-    // Honour imageChangeEvery: generate one image per interval, capped at 6
-    // so a long gap-filler segment doesn't spawn dozens of identical images.
-    const count = Math.min(
+    return Math.min(
       6,
       Math.max(1, Math.round(segDur / Math.max(1, seg.imageChangeEvery))),
     );
-    for (let j = 0; j < count; j++) {
+  });
+
+  // Global cap: if the naive total exceeds the budget, scale down proportionally
+  // (keeping ≥1 per segment where possible), then trim from the tail so earlier
+  // story beats keep their visual variety.
+  let totalDesired = counts.reduce((a, b) => a + b, 0);
+  if (totalDesired > BHAGWAT_MAX_IMAGES_PER_JOB) {
+    const scale = BHAGWAT_MAX_IMAGES_PER_JOB / totalDesired;
+    for (let i = 0; i < counts.length; i++) {
+      counts[i] = Math.max(1, Math.floor(counts[i] * scale));
+    }
+    let running = counts.reduce((a, b) => a + b, 0);
+    // Reduce multi-image segments from the tail first.
+    for (let i = counts.length - 1; i >= 0 && running > BHAGWAT_MAX_IMAGES_PER_JOB; i--) {
+      while (counts[i] > 1 && running > BHAGWAT_MAX_IMAGES_PER_JOB) { counts[i]--; running--; }
+    }
+    // If there are still more segments than the budget allows, zero out the tail
+    // (those segments inherit a neighbour's image via the empty-pool fill below).
+    for (let i = counts.length - 1; i >= 0 && running > BHAGWAT_MAX_IMAGES_PER_JOB; i--) {
+      if (counts[i] === 1) { counts[i] = 0; running--; }
+    }
+  }
+
+  const tasks: Task[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    for (let j = 0; j < counts[i]; j++) {
       tasks.push({
         segIdx: i,
         imgIdx: j,
@@ -813,6 +911,9 @@ async function generateAllSegmentImages(
   // Process with concurrency = 4
   const CONCURRENCY = 4;
   for (let i = 0; i < tasks.length; i += CONCURRENCY) {
+    // Honour user-initiated cancellation between batches so Stop takes effect
+    // during the (longest) image-generation phase instead of after it.
+    if (shouldCancel?.()) throw new Error("Cancelled by user");
     const batch = tasks.slice(i, i + CONCURRENCY);
     await Promise.all(
       batch.map(async (task) => {
@@ -1164,27 +1265,58 @@ function isBhagwatYtBlocked(msg: string): boolean {
 const YTDLP_CLOUD_FALLBACKS: string[][] = getBhagwatYoutubeFallbacks();
 
 // ── yt-dlp helpers ────────────────────────────────────────────────────────────
-function runYtDlpOnce(baseArgs: string[], extraArgs: string[], callArgs: string[]): Promise<string> {
+// Optional cancel signal: any object whose `cancelled` becomes true mid-run
+// (AnalysisJob / RenderJob both qualify) will SIGKILL the spawned yt-dlp.
+type BhagwatCancelSignal = { cancelled?: boolean };
+
+function runYtDlpOnce(
+  baseArgs: string[],
+  extraArgs: string[],
+  callArgs: string[],
+  cancel?: BhagwatCancelSignal,
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (cancel?.cancelled) {
+      reject(new Error("Cancelled by user"));
+      return;
+    }
     let out = "", err = "";
     const command = YTDLP_BIN || PYTHON_BIN;
     const commandArgs = YTDLP_BIN
       ? [...baseArgs, ...extraArgs, ...callArgs]
       : ["-m", "yt_dlp", ...baseArgs, ...extraArgs, ...callArgs];
     const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
+    let killedByCancel = false;
+    const cancelPoll = cancel
+      ? setInterval(() => {
+          if (cancel.cancelled && !killedByCancel) {
+            killedByCancel = true;
+            try { proc.kill("SIGKILL"); } catch {}
+          }
+        }, 500)
+      : null;
     proc.stdout.on("data", (d) => {
       if (out.length < 50 * 1024 * 1024) out += d.toString();
     });
     proc.stderr.on("data", (d) => {
       if (err.length < 10 * 1024 * 1024) err += d.toString();
     });
-    proc.on("close", (code) =>
-      code === 0 ? resolve(out.trim()) : reject(new Error(err.slice(-1000) || `yt-dlp exited ${code}`)),
-    );
+    proc.on("error", (spawnErr) => {
+      if (cancelPoll) clearInterval(cancelPoll);
+      reject(spawnErr instanceof Error ? spawnErr : new Error("yt-dlp spawn failed"));
+    });
+    proc.on("close", (code) => {
+      if (cancelPoll) clearInterval(cancelPoll);
+      if (killedByCancel || cancel?.cancelled) {
+        reject(new Error("Cancelled by user"));
+        return;
+      }
+      code === 0 ? resolve(out.trim()) : reject(new Error(err.slice(-1000) || `yt-dlp exited ${code}`));
+    });
   });
 }
 
-async function runYtDlp(args: string[]): Promise<string> {
+async function runYtDlp(args: string[], cancel?: BhagwatCancelSignal): Promise<string> {
   const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
   // Load cookies from S3 lazily on first use (Lambda cold start).
   await ensureBhagwatYtdlpCookiesLoaded();
@@ -1198,25 +1330,30 @@ async function runYtDlp(args: string[]): Promise<string> {
   const attempted = new Set<string>();
 
   for (const extra of attemptPlans) {
+    if (cancel?.cancelled) throw new Error("Cancelled by user");
     const key = extra.join("\x01");
     if (attempted.has(key)) continue;
     attempted.add(key);
-    try { return await runYtDlpOnce(YTDLP_BASE_ARGS, extra, args); }
+    try { return await runYtDlpOnce(YTDLP_BASE_ARGS, extra, args, cancel); }
     catch (err) {
       lastErr = err instanceof Error ? err : new Error("yt-dlp failed");
+      if (cancel?.cancelled) throw lastErr;
       if (!maybeUrl || !isBhagwatYtBlocked(lastErr.message)) throw lastErr;
     }
   }
 
   if (maybeUrl && lastErr) {
     for (const fallback of YTDLP_CLOUD_FALLBACKS) {
-      const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
-      for (const extra of plans) {
+      for (const extra of (cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback])) {
+        if (cancel?.cancelled) throw new Error("Cancelled by user");
         const key = extra.join("\x01");
         if (attempted.has(key)) continue;
         attempted.add(key);
-        try { return await runYtDlpOnce(YTDLP_BASE_ARGS, extra, args); }
-        catch (err) { lastErr = err instanceof Error ? err : new Error("yt-dlp fallback failed"); }
+        try { return await runYtDlpOnce(YTDLP_BASE_ARGS, extra, args, cancel); }
+        catch (err) {
+          lastErr = err instanceof Error ? err : new Error("yt-dlp fallback failed");
+          if (cancel?.cancelled) throw lastErr;
+        }
       }
     }
   }
@@ -1224,7 +1361,7 @@ async function runYtDlp(args: string[]): Promise<string> {
   throw lastErr ?? new Error("yt-dlp failed");
 }
 
-async function runYtDlpForSubs(args: string[]): Promise<string> {
+async function runYtDlpForSubs(args: string[], cancel?: BhagwatCancelSignal): Promise<string> {
   await ensureBhagwatYtdlpCookiesLoaded();
   const cookieArgs = getBhagwatCookieArgs();
   const defaultYoutubeArgs = getDefaultBhagwatYoutubeExtractorArgs();
@@ -1236,41 +1373,72 @@ async function runYtDlpForSubs(args: string[]): Promise<string> {
   const attempted = new Set<string>();
 
   for (const extra of attemptPlans) {
+    if (cancel?.cancelled) throw new Error("Cancelled by user");
     const key = extra.join("\x01");
     if (attempted.has(key)) continue;
     attempted.add(key);
-    try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, extra, args); }
+    try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, extra, args, cancel); }
     catch (err) {
       lastErr = err instanceof Error ? err : new Error("yt-dlp subs failed");
+      if (cancel?.cancelled) throw lastErr;
       if (!isBhagwatYtBlocked(lastErr.message)) throw lastErr;
     }
   }
 
   for (const fallback of YTDLP_CLOUD_FALLBACKS.slice(0, 3)) {
-    const plans = cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback];
-    for (const extra of plans) {
+    for (const extra of (cookieArgs.length ? [[...cookieArgs, ...fallback], fallback] : [fallback])) {
+      if (cancel?.cancelled) throw new Error("Cancelled by user");
       const key = extra.join("\x01");
       if (attempted.has(key)) continue;
       attempted.add(key);
-      try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, extra, args); }
-      catch (err) { lastErr = err instanceof Error ? err : new Error("yt-dlp subs fallback failed"); }
+      try { return await runYtDlpOnce(YTDLP_SUBS_ARGS, extra, args, cancel); }
+      catch (err) {
+        lastErr = err instanceof Error ? err : new Error("yt-dlp subs fallback failed");
+        if (cancel?.cancelled) throw lastErr;
+      }
     }
   }
 
   throw lastErr ?? new Error("yt-dlp subs failed");
 }
 
+const FETCH_URL_TIMEOUT_MS = Number(process.env.BHAGWAT_FETCH_URL_TIMEOUT_MS ?? 20_000);
+const FETCH_URL_MAX_BYTES = 25 * 1024 * 1024; // 25 MB cap for subtitle payloads
+
 function fetchUrl(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const get = url.startsWith("https") ? httpsGet : httpGet;
-    get(url, (res) => {
+    const req = get(url, (res) => {
+      const status = res.statusCode ?? 0;
+      // Reject non-2xx so the caller falls back to the yt-dlp subtitle path
+      // instead of treating an error page as transcript content.
+      if (status < 200 || status >= 300) {
+        res.resume(); // drain so the socket can be freed
+        reject(new Error(`subtitle fetch failed: HTTP ${status}`));
+        return;
+      }
       let body = "";
-      res.on("data", (c) => {
-        body += c;
+      let bytes = 0;
+      let aborted = false;
+      res.on("data", (c: Buffer) => {
+        if (aborted) return;
+        bytes += c.length;
+        if (bytes > FETCH_URL_MAX_BYTES) {
+          aborted = true;
+          req.destroy();
+          reject(new Error("subtitle fetch exceeded size limit"));
+          return;
+        }
+        body += c.toString();
       });
-      res.on("end", () => resolve(body));
+      res.on("end", () => { if (!aborted) resolve(body); });
       res.on("error", reject);
-    }).on("error", reject);
+    });
+    req.on("error", reject);
+    // Guard against a hung connection stalling the whole analyze step.
+    req.setTimeout(FETCH_URL_TIMEOUT_MS, () => {
+      req.destroy(new Error(`subtitle fetch timed out after ${FETCH_URL_TIMEOUT_MS}ms`));
+    });
   });
 }
 
@@ -1538,13 +1706,13 @@ router.post("/bhagwat/auth", (req: Request, res: Response) => {
     res.status(503).json({ ok: false, message: "BHAGWAT_PASSWORD is not configured" });
     return;
   }
-  if (!password || password !== expected) {
+  if (!password || !bhagwatSecureEqual(password, expected)) {
     res.status(401).json({ ok: false, message: "Incorrect password" });
     return;
   }
   res.cookie(BHAGWAT_AUTH_COOKIE_NAME, "1", {
     httpOnly: true,
-    secure: true,
+    secure: BHAGWAT_AUTH_COOKIE_SECURE,
     sameSite: "lax",
     signed: true,
     maxAge: BHAGWAT_AUTH_MAX_AGE_MS,
@@ -1562,6 +1730,11 @@ router.post("/bhagwat/analyze", async (req: Request, res: Response) => {
   };
   if (!url) {
     res.status(400).json({ error: "url is required" });
+    return;
+  }
+  const clipRangeError = validateClipRange(clipStartSec, clipEndSec);
+  if (clipRangeError) {
+    res.status(400).json({ error: clipRangeError });
     return;
   }
   const jobId = randomUUID();
@@ -2151,6 +2324,11 @@ router.post("/bhagwat/render", async (req: Request, res: Response) => {
     res.status(400).json({ error: "url and timeline are required" });
     return;
   }
+  const renderClipError = validateClipRange(clipStartSec, clipEndSec);
+  if (renderClipError) {
+    res.status(400).json({ error: renderClipError });
+    return;
+  }
   const jobId = randomUUID();
   if (isBhagwatRenderQueuePrimaryEnabled()) {
     try {
@@ -2485,6 +2663,29 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
+  // HEAD is used by the history panel purely to probe liveness. Answer it
+  // directly (200/410/404) without redirecting to a GET-signed S3 URL — a
+  // followed HEAD against that URL fails and produces false "expired" labels.
+  if (req.method === "HEAD") {
+    const memJob = renderJobs.get(jobId);
+    if (memJob?.outputPath && existsSync(memJob.outputPath)) {
+      res.status(200).end();
+      return;
+    }
+    if (!isBhagwatRenderQueueEnabled()) {
+      res.status(404).end();
+      return;
+    }
+    void getYoutubeQueueJobStatus(jobId)
+      .then((queueStatus) => {
+        if (!queueStatus) { res.status(404).end(); return; }
+        if (queueStatus.status === "expired") { res.status(410).end(); return; }
+        if (queueStatus.status === "done" && queueStatus.s3Key) { res.status(200).end(); return; }
+        res.status(404).end();
+      })
+      .catch(() => { res.status(500).end(); });
+    return;
+  }
   const job = renderJobs.get(jobId);
   if (!job?.outputPath || !existsSync(job.outputPath)) {
     if (!isBhagwatRenderQueueEnabled()) {
@@ -2519,8 +2720,8 @@ router.get("/bhagwat/download/:jobId", (req: Request, res: Response) => {
   }
   res.download(job.outputPath, job.filename ?? "bhagwat_video.mp4");
 
-  // Schedule file + job deletion 10 minutes after a real GET download is triggered.
-  // HEAD requests (used by the history panel to check liveness) must NOT start the timer.
+  // Schedule file + job deletion RENDER_DELETE_MS (60 minutes) after a real GET
+  // download is triggered. HEAD requests are handled above and never reach here.
   if (req.method !== "HEAD" && !job.deleteScheduled) {
     job.deleteScheduled = true;
     setTimeout(() => {
@@ -2597,7 +2798,7 @@ export async function runBhagwatAnalysis(
         "--no-playlist",
         "--no-warnings",
         url,
-      ]);
+      ], job);
       const meta = JSON.parse(metaJson);
       videoDuration = meta.duration ?? 0;
       // In clip mode, restrict duration to the clip range
@@ -2656,6 +2857,8 @@ export async function runBhagwatAnalysis(
       );
     }
 
+    if (job.cancelled) throw new Error("Cancelled by user");
+
     // ── Step 2: Transcript ────────────────────────────────────────────────────
     if (!transcript) {
       step("transcript", "running", "Downloading transcript…");
@@ -2683,7 +2886,7 @@ export async function runBhagwatAnalysis(
             "-o",
             subBase,
             url,
-          ]).catch(() => {});
+          ], job).catch(() => {});
           if (!readdirSync(subDir).some((f) => f.endsWith(".vtt"))) {
             await runYtDlpForSubs([
               "--write-subs",
@@ -2696,7 +2899,7 @@ export async function runBhagwatAnalysis(
               "-o",
               subBase,
               url,
-            ]).catch(() => {});
+            ], job).catch(() => {});
           }
           const files = readdirSync(subDir);
           const vttFile = files
@@ -2753,6 +2956,7 @@ export async function runBhagwatAnalysis(
     }
 
     // ── Step 3: AI timeline ───────────────────────────────────────────────────
+    if (job.cancelled) throw new Error("Cancelled by user");
     step(
       "ai",
       "running",
@@ -3038,7 +3242,7 @@ export async function runBhagwatRender(
               "-o",
               `${audioPath}.%(ext)s`,
               url,
-            ]);
+            ], job);
           } catch (err) {
             ytdlpError = err instanceof Error ? err.message : String(err);
             console.error(
@@ -3068,6 +3272,10 @@ export async function runBhagwatRender(
           }
           return resolved;
         })();
+    // If image generation rejects first (e.g. user cancellation), Promise.all
+    // settles immediately; attach a no-op handler so the still-pending download
+    // rejection doesn't surface as an unhandledRejection.
+    audioDownloadPromise.catch(() => {});
 
     let [audioFile, imagePaths] = await Promise.all([
       audioDownloadPromise,
@@ -3077,7 +3285,7 @@ export async function runBhagwatRender(
           percent: pct,
           message: `Generating image ${done}/${total}: "${desc.slice(0, 50)}"…`,
         });
-      }),
+      }, () => job.cancelled === true),
     ]);
 
     if (job.cancelled) throw new Error("Cancelled by user");
@@ -3764,6 +3972,9 @@ export async function runBhagwatAnalysisFromFile(
     message: string,
   ) => emit("step", { step: s, status, message });
   job.status = "running";
+  // Drop a "running" marker so a server restart mid-analysis is detectable on
+  // next boot (parity with runBhagwatAnalysis / hydrateInterruptedAnalysis).
+  persistAnalysisMetaStart(jobId);
 
   try {
     if (!isAnyAIConfigured())
@@ -4012,12 +4223,14 @@ ${
     };
     job.status = "done";
     job.result = resultData;
+    clearAnalysisMeta(jobId);
     emit("done", resultData);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[bhagwat/analyze-audio] Error:", message);
     job.status = "error";
     job.error = message;
+    clearAnalysisMeta(jobId);
     emit("jobError", { message });
   }
 }
@@ -4190,9 +4403,9 @@ router.post("/bhagwat/analyze-audio", async (req: Request, res: Response) => {
   };
   createBhagwatAnalysisJobState(jobId, job);
   res.json({ jobId });
-  runBhagwatAnalysisFromFile(jobId, job, audioId, mode ?? "full").catch(
-    () => {},
-  );
+  runBhagwatAnalysisFromFile(jobId, job, audioId, mode ?? "full").catch((err) => {
+    req.log.error({ err, jobId, audioId }, "[bhagwat] background analyze-audio failed");
+  });
 });
 
 // ── Render with uploaded audio (reuses same renderJobs + SSE endpoint) ─────────
@@ -4212,6 +4425,11 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     };
   if (!audioId || !Array.isArray(timeline) || timeline.length === 0) {
     res.status(400).json({ error: "audioId and timeline are required" });
+    return;
+  }
+  const renderAudioClipError = validateClipRange(clipStartSec, clipEndSec);
+  if (renderAudioClipError) {
+    res.status(400).json({ error: renderAudioClipError });
     return;
   }
 
