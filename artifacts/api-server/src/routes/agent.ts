@@ -2548,16 +2548,30 @@ async function executeTool(
         })(),
         runStep("find_best_clips", { url, instructions: args.instructions ?? "" }),
       ]);
+      const failedSteps: string[] = [];
       for (const r of phase2) {
-        if (r.status === "rejected") console.warn(`[agent] full_package step failed: ${r.reason?.message ?? r.reason}`);
+        if (r.status === "rejected") {
+          const msg = r.reason?.message ?? String(r.reason);
+          console.warn(`[agent] full_package step failed: ${msg}`);
+          failedSteps.push(msg);
+        }
       }
 
+      const allFailed = failedSteps.length === phase2.length;
+      if (allFailed) {
+        throw new Error(`Full package failed — all tasks errored: ${failedSteps.join("; ")}`);
+      }
+
+      const successCount = phase2.length - failedSteps.length;
+      const summaryParts = [`${successCount}/${phase2.length} tasks completed.`];
+      if (failedSteps.length > 0) summaryParts.push(`Failed: ${failedSteps.join("; ")}`);
+
       return {
-        result: { completed: true, results },
+        result: { completed: !allFailed, results, failedSteps },
         artifact: {
           artifactType: "text",
           label: "Full Package Summary",
-          content: "Full package completed: metadata, download, summary, timestamps, SEO, subtitles/captions, and best-clips analysis.",
+          content: summaryParts.join("\n"),
         },
       };
     }
@@ -3143,6 +3157,14 @@ except Exception as exc:
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
+      // SSRF guard: external URLs must not point at internal/private networks.
+      // Internal /api/... paths are safe — they resolve to this server.
+      if (!sourceUrl.startsWith("/")) {
+        const parsed = new URL(resolvedUrl);
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http/https URLs can be saved.");
+        if (isInternalHost(parsed.hostname)) throw new Error("Cannot fetch from internal/private network URLs.");
+      }
+
       const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "follow" });
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
@@ -3224,7 +3246,7 @@ except Exception as exc:
         method: "PUT",
         body,
         duplex: "half",
-        headers: { "Content-Type": mimeType },
+        headers: { "Content-Type": mimeType, "Content-Length": String(size) },
       } as any);
       if (!putRes.ok) throw new Error(`workspace upload failed: ${putRes.status}`);
 
@@ -3863,6 +3885,8 @@ router.post("/agent/chat", async (req, res) => {
         .replace(/thought_signature/gi, "")
         .trim();
       sseEvent(res, { type: "error", message: errMsg || "Something went wrong — please try again." });
+      sseEvent(res, { type: "done", runId, ts: Date.now() });
+      runCompleted = true;
     }
   } finally {
     clearInterval(keepAlive);
