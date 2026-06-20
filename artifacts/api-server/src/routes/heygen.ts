@@ -1,13 +1,15 @@
 import { Router, Request, Response, NextFunction } from "express";
 import multer from "multer";
 import { randomUUID } from "crypto";
+import { spawn } from "child_process";
+import ffmpegStatic from "ffmpeg-static";
 import { existsSync, mkdirSync } from "fs";
 import { readFile, rm } from "fs/promises";
 import { join, extname, basename } from "path";
 import { tmpdir } from "os";
 import { isIP } from "net";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
-import { isS3StorageEnabled, uploadBufferToS3, getS3SignedDownloadUrl } from "../lib/s3-storage";
+import { isS3StorageEnabled, uploadBufferToS3, getS3SignedDownloadUrl, readBufferFromS3, putBufferAtKey } from "../lib/s3-storage";
 
 const router = Router();
 
@@ -220,6 +222,58 @@ function proxyError(req: Request, res: Response, fallback: string, err: unknown,
   res.status(status).json({ error: fallback });
 }
 
+// ── Poster thumbnails ──────────────────────────────────────────────────────
+// Generate a single still-frame JPEG from a translated video so the project
+// grids can render a lightweight <img> instead of a heavy <video> element.
+const POSTER_CACHE_PREFIX = "heygen-posters";
+const POSTER_FFMPEG_TIMEOUT_MS = 30_000;
+
+function resolveFfmpegBin(): string {
+  return process.env.FFMPEG_BIN || (ffmpegStatic as string | null) || "ffmpeg";
+}
+
+function generatePosterJpeg(videoUrl: string): Promise<Buffer> {
+  const bin = resolveFfmpegBin();
+  return new Promise<Buffer>((resolve, reject) => {
+    // -ss before -i = fast input seek (only downloads the bytes needed to decode
+    // a frame ~1s in). Scaled to 480px wide, single frame, piped to stdout.
+    const args = [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-ss", "1",
+      "-i", videoUrl,
+      "-frames:v", "1",
+      "-vf", "scale=480:-2",
+      "-q:v", "5",
+      "-f", "image2",
+      "-c:v", "mjpeg",
+      "pipe:1",
+    ];
+    const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    const timer = setTimeout(() => {
+      proc.kill("SIGKILL");
+      reject(new Error("poster ffmpeg timed out"));
+    }, POSTER_FFMPEG_TIMEOUT_MS);
+    proc.stdout.on("data", (c: Buffer) => out.push(c));
+    proc.stderr.on("data", (c: Buffer) => err.push(c));
+    proc.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      const buf = Buffer.concat(out);
+      if (code === 0 && buf.length > 0) {
+        resolve(buf);
+      } else {
+        reject(new Error(`poster ffmpeg failed (code ${code}): ${Buffer.concat(err).toString("utf8").slice(-300)}`));
+      }
+    });
+  });
+}
+
 async function proxyHeyGenJson(req: Request, res: Response, path: string, init?: RequestInit) {
   if (!requireHeyGenKey(res)) return;
   const url = new URL(`${HEYGEN_BASE_URL}${path}`);
@@ -272,6 +326,59 @@ router.get("/video-translations/:id", async (req, res) => {
     });
   } catch (err) {
     proxyError(req, res, "HeyGen translation status failed", err);
+  }
+});
+
+// Lightweight poster image for a completed translation. Cached in S3 after first
+// generation so the grids load a small cached JPEG instead of a heavy <video>.
+router.get("/poster/:id", async (req, res) => {
+  if (!requireHeyGenKey(res)) return;
+  const id = String(req.params.id || "");
+  if (!SAFE_ID_RE.test(id)) {
+    res.status(400).json({ error: "Invalid translation id" });
+    return;
+  }
+  if (!isS3StorageEnabled()) {
+    res.status(404).json({ error: "Poster storage is not configured." });
+    return;
+  }
+
+  const cacheKey = `${POSTER_CACHE_PREFIX}/${id}.jpg`;
+
+  // 1) Serve from cache if we've already generated it.
+  try {
+    const cached = await readBufferFromS3(cacheKey);
+    if (cached && cached.length > 0) {
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.end(cached);
+      return;
+    }
+  } catch {
+    // not cached yet → generate below
+  }
+
+  // 2) Resolve the current presigned video URL, then extract one frame.
+  try {
+    const resp = await fetchWithTimeout(`${HEYGEN_BASE_URL}/video-translations/${encodeURIComponent(id)}`, {
+      headers: heygenHeaders(),
+    });
+    const body = (await readHeyGenJson(resp)) as { data?: { video_url?: unknown; status?: unknown } };
+    const videoUrl = typeof body?.data?.video_url === "string" ? body.data.video_url : "";
+    if (!videoUrl || !isSafeExternalUrl(videoUrl)) {
+      res.status(404).json({ error: "No video available for poster." });
+      return;
+    }
+
+    const poster = await generatePosterJpeg(videoUrl);
+    // Cache for future requests (best-effort — don't block the response).
+    void putBufferAtKey({ key: cacheKey, body: poster, contentType: "image/jpeg" }).catch(() => {});
+
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.end(poster);
+  } catch (err) {
+    proxyError(req, res, "Poster generation failed", err);
   }
 });
 

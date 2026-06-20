@@ -311,6 +311,30 @@ export async function readBufferFromS3(key: string): Promise<Buffer> {
   return bodyToBuffer(out.Body);
 }
 
+// Upload a buffer to an EXPLICIT, caller-controlled key (no date/namespace key
+// derivation). Useful for deterministic caches like generated poster images.
+export async function putBufferAtKey(params: {
+  key: string;
+  body: Buffer;
+  contentType?: string;
+  cacheControl?: string;
+}): Promise<void> {
+  const client = getS3Client();
+  await client.send(
+    new PutObjectCommand({
+      Bucket: S3_BUCKET,
+      Key: params.key,
+      Body: params.body,
+      ContentType: params.contentType ?? "application/octet-stream",
+      CacheControl: params.cacheControl ?? "public, max-age=86400",
+      Metadata: {
+        "created-at": String(Date.now()),
+        "source-app": "ytgrabber",
+      },
+    }),
+  );
+}
+
 export async function cleanupOldS3Objects(params: {
   namespace: string;
   maxAgeMs: number;

@@ -4531,13 +4531,10 @@ function renderHistoryGrid() {
     }
 
     const hasVideo = item.video_url;
-    const safeVideoSrc = hasVideo ? escapeHtml(encodeURI(item.video_url)) : '';
     const safeId = escapeHtml(item.id);
     return `<div class="history-card" onclick="openVideoDetailById('${safeId}')">
       <div class="hc-thumb">
-        ${hasVideo
-          ? `<video class="hc-thumb-vid" data-src="${safeVideoSrc}#t=0.1" muted preload="none" playsinline style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'"></video>`
-          : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
+        ${posterThumbHtml(item.id, hasVideo)}
         ${overlayHtml}
         <input type="checkbox" class="hc-checkbox" data-id="${safeId}" onclick="event.stopPropagation()" onchange="handleHistoryCheckboxChange(event)"/>
         <div class="hc-menu-dots" onclick="event.stopPropagation();toggleHistoryMenu(event, '${safeId}')">...</div>
@@ -4668,12 +4665,9 @@ function loadRecentThumbs(items) {
     const lang = escapeHtml(item.output_language || 'English');
     const timeText = timeAgo(item.created_at * 1000 || Date.now());
     const safeId = escapeHtml(item.id);
-    const safeVideoSrc = item.video_url ? escapeHtml(encodeURI(item.video_url)) : '';
     return `<div class="recent-project-card" data-id="${safeId}" onclick="openVideoDetailById('${safeId}')">
       <div class="recent-project-thumb">
-        ${safeVideoSrc
-          ? `<video class="lazy-thumb-vid" data-src="${safeVideoSrc}#t=0.1" muted preload="none" playsinline onerror="this.style.display='none'"></video>`
-          : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
+        ${posterThumbHtml(item.id, !!item.video_url)}
         <div class="duration-overlay">
           <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="margin-right:2px; vertical-align:middle; display:inline-block;">
             <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
@@ -4694,27 +4688,34 @@ function loadRecentThumbs(items) {
   }).join('');
 }
 
-// ── HOVER CARD TOOLTIPS FOR THUMBNAILS ──
-function setupHoverCardTooltips() {
-  // Direct silent hover playback on the video elements inside card thumbnails (matching HeyGen behavior)
-  document.addEventListener('mouseover', e => {
-    const video = e.target.closest('.recent-project-thumb video, .hc-thumb video, .project-card-thumb video');
-    if (video) {
-      video.muted = true;
-      video.playsInline = true;
-      video.play().catch(err => {
-        console.warn('Autoplay blocked:', err);
-      });
-    }
-  });
+// Lightweight static thumbnail placeholder — avoids creating <video> elements
+// for every project (which each fetch + decode a frame and stay in memory).
+// The actual video only loads in the detail player when a project is opened.
+function thumbPlaceholderHtml(extraStyle = '') {
+  return `<div class="thumb-placeholder" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1d2024,#141619);${extraStyle}">
+    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#41454d" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><polygon points="10 9 16 12 10 15 10 9" fill="#41454d" stroke="none"/></svg>
+  </div>`;
+}
 
-  document.addEventListener('mouseout', e => {
-    const video = e.target.closest('.recent-project-thumb video, .hc-thumb video, .project-card-thumb video');
-    if (video) {
-      video.pause();
-      video.currentTime = 0.1;
-    }
-  });
+// Static poster thumbnail: a tiny server-generated JPEG (cached in S3) instead of
+// a <video> element. Falls back to the placeholder if the poster isn't ready yet.
+function posterThumbHtml(id, hasVideo) {
+  if (!hasVideo) return thumbPlaceholderHtml();
+  const safeId = escapeHtml(String(id));
+  return `<img class="poster-thumb" src="/api/heygen/poster/${encodeURIComponent(safeId)}" loading="lazy" decoding="async" alt="" style="width:100%;height:100%;object-fit:cover;display:block;background:#1d2024" onerror="posterError(this)"/>`;
+}
+
+// On poster load failure (not generated yet / error), swap in the placeholder.
+function posterError(img) {
+  if (img && img.parentNode) img.outerHTML = thumbPlaceholderHtml();
+}
+
+// ── HOVER CARD TOOLTIPS FOR THUMBNAILS ──
+// Hover preview is disabled: thumbnails are static placeholders, so there are no
+// <video> elements to play. This removes the full-clip download that used to fire
+// on every mouseover.
+function setupHoverCardTooltips() {
+  /* no-op — thumbnails no longer contain video elements */
 }
 
 // ── DETAIL PLAYER & SIDEBAR TABS ──
@@ -5023,13 +5024,10 @@ function generateCarouselItems(activeItem) {
     const metaText = `${dateStr} • ${lang}`;
     const isActive = item.id === activeItem.id;
     const safeId = escapeHtml(item.id);
-    const safeVideoSrc = item.video_url ? escapeHtml(encodeURI(item.video_url)) : '';
 
     return `<div class="carousel-item-wrapper" style="display:flex;flex-direction:column;gap:8px;flex:0 0 calc(33.333% - 11px);min-width:0;cursor:pointer;text-align:left" onclick="openVideoDetailById('${safeId}')">
       <div class="project-card-thumb ${isActive ? 'active' : ''}" style="width:100%;aspect-ratio:1/1;height:auto !important;margin:0;border-radius:var(--radius-lg);overflow:hidden;position:relative;" data-id="${safeId}">
-        ${safeVideoSrc
-          ? `<video class="lazy-thumb-vid" data-src="${safeVideoSrc}#t=0.1" muted preload="none" playsinline style="width:100%;height:100%;object-fit:cover;"></video>`
-          : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
+        ${posterThumbHtml(item.id, !!item.video_url)}
         <div class="duration-overlay" style="bottom:6px;right:6px;font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,0.7);position:absolute;color:#fff;">
           <span>${dur}</span>
         </div>
