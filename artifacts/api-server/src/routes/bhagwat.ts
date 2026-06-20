@@ -489,7 +489,13 @@ async function createFallbackSceneCard(
 }
 
 function shouldDisableRemoteImageGeneration(errMsg: string): boolean {
-  return /resource_exhausted|quota exceeded|limit:\s*0|not available|rate.?limit|preview-image|no image data/i.test(
+  // ONLY latch the entire job off for genuine ACCOUNT-WIDE conditions
+  // (exhausted quota / rate limit / billing / bad key). Per-REQUEST failures —
+  // a safety refusal ("no image data"), a transient "model overloaded", or a
+  // momentary "not available" — must NOT convert every remaining segment into a
+  // text fallback card. Previously a single early failure (often the opening
+  // deity prompt) turned the whole video into scene cards.
+  return /resource_exhausted|quota exceeded|quota_exceeded|limit:\s*0|rate.?limit|too many requests|http error 429|\b429\b|billing|permission denied|api[_ ]?key not valid|api key expired/i.test(
     errMsg,
   );
 }
@@ -505,7 +511,11 @@ function extractImageBytes(response: any): Buffer {
   return Buffer.from(imagePart.inlineData.data, "base64");
 }
 
-const IMAGE_GEN_TIMEOUT_MS = Number(process.env.IMAGE_GEN_TIMEOUT_MS ?? 20_000);
+const IMAGE_GEN_TIMEOUT_MS = Number(process.env.IMAGE_GEN_TIMEOUT_MS ?? 90_000);
+// Image resolution for generated devotional frames. The video is rendered at
+// 1080p, so "2K" downscales cleanly for crisp frames; override to "1K" for
+// faster/cheaper generation if image timeouts persist on a slow key.
+const BHAGWAT_IMAGE_SIZE = process.env.BHAGWAT_IMAGE_SIZE ?? "2K";
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -539,11 +549,14 @@ async function generateImageViaReplit(
   if (!baseUrl || !apiKey) throw new Error("Replit AI integration not configured");
 
   const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "", baseUrl } });
-  // Aspect-ratio parity with the own-key path so images are a consistent 16:9
-  // regardless of which provider served them (avoids letterbox padding drift).
+  // Use the SAME config shape as the proven-working Thumbnail Studio
+  // (routes/thumbnail.ts): `responseFormat` (NOT `imageConfig`) is the field
+  // this SDK/model actually honours, and requesting TEXT+IMAGE modalities
+  // avoids the "no image data" response some image-capable flash models return
+  // when only IMAGE is requested.
   const config: any = {
-    responseModalities: [Modality.IMAGE],
-    imageConfig: { aspectRatio: "16:9", imageSize: "2K" },
+    responseModalities: [Modality.TEXT, Modality.IMAGE],
+    responseFormat: { image: { aspectRatio: "16:9", imageSize: BHAGWAT_IMAGE_SIZE } },
   };
   if (signal) config.abortSignal = signal;
   const response = await client.models.generateContent({
@@ -565,7 +578,7 @@ async function generateImageViaOwnKey(prompt: string, signal?: AbortSignal): Pro
       const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
       const config: any = {
         responseModalities: [Modality.TEXT, Modality.IMAGE],
-        imageConfig: { aspectRatio: "16:9", imageSize: "2K" },
+        responseFormat: { image: { aspectRatio: "16:9", imageSize: BHAGWAT_IMAGE_SIZE } },
       };
       if (signal) config.abortSignal = signal;
       const response = await client.models.generateContent({

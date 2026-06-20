@@ -151,8 +151,40 @@ type DownloadableClip = Pick<ActiveJob, "jobId" | "filename" | "status">;
 
 
 function extractYouTubeUrl(text: string): string | null {
-  const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-  const match = text.match(ytRegex);
+  const raw = (text ?? "").trim();
+  if (!raw) return null;
+
+  const isValidId = (id: string | null | undefined): id is string =>
+    !!id && /^[a-zA-Z0-9_-]{11}$/.test(id);
+
+  // Pull the first URL-looking token out of the text, then parse it properly so
+  // we support every YouTube URL shape: watch?v=, youtu.be/, /live/, /shorts/,
+  // /embed/, /v/, and mobile/music hosts.
+  const urlToken = raw.match(/(?:https?:\/\/)?[^\s]*(?:youtube\.com|youtu\.be)[^\s]*/i)?.[0];
+  if (urlToken) {
+    try {
+      const u = new URL(/^https?:\/\//i.test(urlToken) ? urlToken : `https://${urlToken}`);
+      const host = u.hostname.toLowerCase();
+      if (host === "youtu.be") {
+        const id = u.pathname.split("/").filter(Boolean)[0];
+        if (isValidId(id)) return `https://www.youtube.com/watch?v=${id}`;
+      } else if (host.includes("youtube.com")) {
+        const v = u.searchParams.get("v");
+        if (isValidId(v)) return `https://www.youtube.com/watch?v=${v}`;
+        // /live/<id>, /shorts/<id>, /embed/<id>, /v/<id>
+        const parts = u.pathname.split("/").filter(Boolean);
+        if (parts.length >= 2 && /^(live|shorts|embed|v)$/i.test(parts[0]) && isValidId(parts[1])) {
+          return `https://www.youtube.com/watch?v=${parts[1]}`;
+        }
+      }
+    } catch {
+      // fall through to regex
+    }
+  }
+
+  // Fallback: legacy regex (covers odd embeds without a clean URL token).
+  const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?|live|shorts)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+  const match = raw.match(ytRegex);
   return match ? `https://www.youtube.com/watch?v=${match[1]}` : null;
 }
 
