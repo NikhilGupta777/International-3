@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
+  | "upload" | "translator" | "heygen" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
 
 interface NavItem {
   mode: Mode;
@@ -54,6 +54,7 @@ const NAV_ITEMS: NavItem[] = [
   { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },
   // { mode: "thumbnail",   icon: <ImageIcon className="gs-icon" />,       label: "Thumbnail" },
   { mode: "translator",  icon: <Languages className="gs-icon" />,       label: "Translator" },
+  { mode: "heygen",      icon: <Languages className="gs-icon" />,       label: "HeyGen" },
   { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video" },
   { mode: "timestamps",  icon: <AlarmClock className="gs-icon" />,      label: "Timestamps" },
   { mode: "download",    icon: <Download className="gs-icon" />,        label: "Download" },

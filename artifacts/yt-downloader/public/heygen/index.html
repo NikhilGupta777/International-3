@@ -1,0 +1,5763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>HeyGen Video Translate</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+<style>
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+:root {
+  --bg-main: #111214;
+  --bg-sidebar: #161719;
+  --bg-card: #1e2025;
+  --bg-hover: #262830;
+  --bg-input: #1b1c20;
+  --accent-cyan: #00bcd4;
+  --accent-cyan-hover: #00acc1;
+  --accent-cyan-dim: rgba(0, 188, 212, 0.12);
+  --accent-cyan-glow: rgba(0, 188, 212, 0.25);
+  --border-color: #24262b;
+  --border-color-light: #2c2e35;
+  --text-white: #ffffff;
+  --text-muted: #8e909a;
+  --text-disabled: #54565e;
+  --red-accent: #ff4d6a;
+  --green-accent: #00e896;
+  --yellow-accent: #ffd23f;
+  --radius-xl: 16px;
+  --radius-lg: 12px;
+  --radius-md: 8px;
+  --radius-sm: 6px;
+  --radius-xs: 4px;
+}
+body {
+  font-family: 'Inter', sans-serif;
+  background: var(--bg-main);
+  color: var(--text-white);
+  min-height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3c3e45;
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4c4e57;
+}
+
+/* ── SIDEBAR ── */
+#sidebar {
+  width: 240px;
+  min-width: 240px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  flex-shrink: 0;
+  transition: transform 0.3s ease, width 0.3s ease;
+  z-index: 100;
+}
+#sidebar.collapsed {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-right: none;
+}
+#topbar-sidebar-toggle-btn,
+#detail-sidebar-toggle-btn {
+  display: none !important;
+}
+#sidebar.collapsed ~ #main #topbar-sidebar-toggle-btn {
+  display: flex !important;
+  margin-right: 8px;
+}
+#sidebar.collapsed ~ #main #detail-sidebar-toggle-btn {
+  display: flex !important;
+  margin-right: 12px;
+}
+.sidebar-header {
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-color);
+}
+.sidebar-title {
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--text-white);
+}
+.sidebar-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  transition: background 0.2s, color 0.2s;
+}
+.sidebar-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-white);
+}
+.sidebar-menu {
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+}
+.menu-item:hover {
+  background: var(--bg-card);
+  color: var(--text-white);
+}
+.menu-item.active {
+  background: var(--bg-hover);
+  color: var(--text-white);
+}
+.menu-item svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.sidebar-recents-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid var(--border-color);
+  padding: 16px 0;
+}
+.recents-header {
+  padding: 0 20px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.8px;
+}
+.see-all-link {
+  color: var(--text-muted);
+  cursor: pointer;
+  text-transform: none;
+  font-size: 11px;
+  transition: color 0.15s;
+}
+.see-all-link:hover {
+  color: var(--text-white);
+  text-decoration: underline;
+}
+.sidebar-recents-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.recent-sidebar-item {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.recent-sidebar-item:hover {
+  background: var(--bg-card);
+}
+.recent-sb-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.recent-sb-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+
+.load-more-sb-btn {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-white);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.2s;
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+.load-more-sb-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.recent-sb-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 700;
+  margin-top: 4px;
+  text-transform: capitalize;
+}
+.badge-completed {
+  background: rgba(0, 232, 150, 0.1);
+  color: var(--green-accent);
+}
+.badge-failed {
+  background: rgba(255, 77, 106, 0.1);
+  color: var(--red-accent);
+}
+.badge-processing {
+  background: rgba(0, 188, 212, 0.1);
+  color: var(--accent-cyan);
+}
+
+/* ── MAIN CONTENT ── */
+#main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ── TOPBAR ── */
+#topbar {
+  height: 64px;
+  min-height: 64px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 12px;
+  flex-shrink: 0;
+  position: relative;
+}
+.circle-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color-light);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.circle-btn:hover {
+  background: var(--bg-card);
+  color: var(--text-white);
+  border-color: var(--text-muted);
+}
+.topbar-tabs {
+  display: flex;
+  background: #191b1f;
+  padding: 4px;
+  border-radius: 99px;
+  border: 1px solid var(--border-color);
+}
+.tab-pill {
+  padding: 6px 18px;
+  border-radius: 99px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+}
+.tab-pill.active {
+  background: var(--accent-cyan);
+  color: #000;
+}
+.tab-pill:hover:not(.active) {
+  color: var(--text-white);
+}
+.topbar-spacer {
+  flex: 1;
+}
+.pill-btn {
+  padding: 8px 18px;
+  border-radius: 99px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--border-color-light);
+  background: transparent;
+  color: var(--text-white);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.pill-btn:hover {
+  background: var(--bg-card);
+  border-color: var(--text-muted);
+}
+.cyan-btn {
+  background: var(--accent-cyan) !important;
+  color: #000 !important;
+  border: none !important;
+}
+.cyan-btn:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+#translate-btn {
+  height: 38px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+}
+
+/* API Popover styling */
+.api-popover {
+  position: absolute;
+  top: 70px;
+  right: 24px;
+  width: 320px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 300;
+}
+.api-popover.open {
+  display: flex;
+}
+.popover-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-white);
+}
+.api-popover input {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  color: var(--text-white);
+  font-size: 12px;
+  font-family: monospace;
+}
+.api-popover input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+#api-status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── PAGES ── */
+.page {
+  flex: 1;
+  overflow-y: auto;
+  display: none;
+}
+.page.active {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── ANIMATIONS ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse-glow {
+  0% { box-shadow: 0 0 0 0 rgba(0, 188, 212, 0.4); }
+  70% { box-shadow: 0 0 0 12px rgba(0, 188, 212, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 188, 212, 0); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.anim-shimmer {
+  background: linear-gradient(90deg, #fff 25%, var(--accent-cyan) 50%, #fff 75%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
+  color: transparent !important;
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+.anim-pulse-glow {
+  animation: pulse-glow 1.5s infinite cubic-bezier(0.66, 0, 0, 1);
+  border-color: var(--accent-cyan) !important;
+  color: var(--accent-cyan) !important;
+}
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+/* ── UPLOAD PAGE ── */
+#upload-page {
+  align-items: center;
+  padding: 60px 24px;
+}
+.hero-section {
+  text-align: center;
+  margin-bottom: 40px;
+}
+.hero-section h1 {
+  font-size: 36px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  margin-bottom: 12px;
+  color: var(--text-white);
+}
+.hero-section p {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.hero-section p span {
+  color: var(--text-white);
+  font-weight: 600;
+}
+.drop-zone-card {
+  width: 100%;
+  max-width: 720px;
+  background: #191b1f;
+  border: 1.5px dashed #30333a;
+  border-radius: var(--radius-xl);
+  padding: 56px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.25s;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.drop-zone-card:hover, .drop-zone-card.drag {
+  border-color: var(--accent-cyan);
+  background: rgba(0, 188, 212, 0.03);
+}
+.upload-icon-wrap {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.03);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+.drop-zone-card h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-white);
+}
+.drop-zone-card p {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.divider-or {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 24px 0;
+}
+.divider-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+.url-input-container {
+  width: 100%;
+  max-width: 720px;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.link-icon {
+  position: absolute;
+  left: 16px;
+  color: var(--text-muted);
+}
+.url-input-container input {
+  width: 100%;
+  padding: 14px 16px 14px 44px;
+  background: #191b1f;
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-lg);
+  color: var(--text-white);
+  font-size: 14px;
+  transition: all 0.2s;
+}
+.url-input-container input:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px var(--accent-cyan-dim);
+}
+
+/* Recent Projects Horizontal Row */
+.recent-projects-container {
+  width: 100%;
+  max-width: 800px;
+  margin-top: 48px;
+}
+.recent-projects-container h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-white);
+  margin-bottom: 16px;
+  text-align: center;
+}
+.projects-row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: center;
+  position: relative;
+  flex-wrap: wrap;
+}
+.recent-project-card {
+  width: 192px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  flex-shrink: 0;
+}
+.recent-project-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-cyan);
+}
+.recent-project-thumb {
+  aspect-ratio: 16 / 9;
+  background: #121316;
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+}
+.recent-project-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.recent-project-details {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+.recent-project-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 3px;
+}
+.recent-project-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-card-thumb {
+  width: 110px;
+  height: 72px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+  border: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+.project-card-thumb:hover {
+  transform: scale(1.05);
+  border-color: var(--accent-cyan);
+}
+.project-card-thumb img, .project-card-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.duration-overlay {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  background: rgba(0,0,0,0.7);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+}
+.lang-badge-overlay {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  background: rgba(0,0,0,0.7);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  color: var(--accent-cyan);
+}
+.view-all-sidebar-btn {
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  border: 1px solid var(--border-color-light);
+  color: var(--text-white);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+.view-all-sidebar-btn:hover {
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+/* Hover popup card details */
+.hover-card-tooltip {
+  position: absolute;
+  width: 240px;
+  background: #1b1d22;
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.6);
+  z-index: 500;
+  display: none;
+  pointer-events: none;
+}
+.hover-card-preview {
+  width: 100%;
+  height: 120px;
+  border-radius: var(--radius-md);
+  background: #000;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 8px;
+}
+.hover-card-preview img, .hover-card-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.hover-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hover-card-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* ── SETTINGS PAGE ── */
+#settings-page {
+}
+.settings-nav-bar {
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-color);
+  padding: 14px 24px;
+}
+.settings-nav-inner {
+  max-width: 820px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.select-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.flex-fill {
+  flex: 1;
+  min-width: 180px;
+  max-width: 380px;
+}
+.select-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.red-star {
+  color: var(--red-accent);
+}
+.src-lang-wrap {
+  position: relative;
+}
+.src-lang-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-md);
+  padding: 0 32px 0 12px;
+  height: 38px;
+  box-sizing: border-box;
+  color: var(--text-white);
+  font-size: 13px;
+  cursor: pointer;
+  min-width: 160px;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 0.15s;
+}
+.src-lang-btn:focus, .src-lang-btn.open {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+.src-lang-btn-chevron {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.src-lang-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 340px;
+  background: #1c1d23;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.7);
+  z-index: 300;
+  padding: 6px 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.12) transparent;
+}
+.src-lang-panel::-webkit-scrollbar { width: 4px; }
+.src-lang-panel::-webkit-scrollbar-track { background: transparent; }
+.src-lang-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+.src-lang-search {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(255,255,255,0.05);
+  border: none;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px 12px 0 0;
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--text-white);
+  outline: none;
+  font-family: inherit;
+}
+.src-lang-item {
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--text-white);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  transition: background 0.1s;
+}
+.src-lang-item:hover { background: rgba(255,255,255,0.05); }
+.src-lang-item.selected { color: var(--accent-cyan); font-weight: 600; }
+.src-lang-item-special {
+  color: var(--accent-cyan);
+  font-size: 13px;
+  font-weight: 500;
+}
+.arrow-between {
+  color: var(--text-muted);
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lang-picker-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.lang-pill-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-md);
+  padding: 0 32px 0 10px;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 5px;
+  align-items: center;
+  cursor: text;
+  position: relative;
+  height: 38px;
+  box-sizing: border-box;
+  overflow: hidden;
+  min-width: 0;
+}
+.lang-pill-select:focus-within {
+  border-color: var(--accent-cyan);
+}
+.lang-pill-chevron {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  pointer-events: auto;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.lang-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--text-white);
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.lang-tag button {
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.6);
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  line-height: 1;
+}
+.lang-tag button:hover {
+  color: #fff;
+}
+.lang-search-input {
+  border: none;
+  background: transparent;
+  color: var(--text-white);
+  font-size: 13px;
+  outline: none;
+  flex: 1;
+  min-width: 60px;
+  font-family: inherit;
+}
+.lang-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  width: max-content;
+  max-width: 340px;
+  background: #1c1d23;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  max-height: 280px;
+  overflow-y: auto;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.7);
+  z-index: 300;
+  padding: 6px 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.12) transparent;
+}
+.lang-dropdown-panel::-webkit-scrollbar { width: 4px; }
+.lang-dropdown-panel::-webkit-scrollbar-track { background: transparent; }
+.lang-dropdown-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+.lang-item {
+  padding: 9px 14px;
+  font-size: 13px;
+  color: var(--text-white);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+  transition: background 0.12s;
+}
+.lang-item:hover {
+  background: rgba(255,255,255,0.05);
+}
+.lang-item.selected {
+  color: var(--text-white);
+}
+.lang-checkbox {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  border-radius: 4px;
+  border: 1.5px solid rgba(255,255,255,0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lang-item.selected .lang-checkbox {
+  background: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+}
+.lang-item.selected .lang-checkbox::after {
+  content: '';
+  width: 9px;
+  height: 6px;
+  border-left: 2px solid #000;
+  border-bottom: 2px solid #000;
+  transform: rotate(-45deg) translateY(-1px);
+  display: block;
+}
+.lang-item-label {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.lang-item-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-white);
+}
+.lang-item-country {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Engine Select Dropdown */
+.engine-select-dropdown {
+  position: relative;
+}
+.engine-select-btn {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-md);
+  padding: 0 16px;
+  height: 38px;
+  box-sizing: border-box;
+  color: var(--text-white);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.engine-select-btn:focus {
+  outline: none;
+  border-color: var(--accent-cyan);
+}
+.engine-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 280px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-lg);
+  padding: 6px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  z-index: 250;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.engine-option-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.engine-option-item:hover {
+  background: var(--bg-hover);
+}
+.engine-option-item.selected {
+  background: var(--accent-cyan-dim);
+}
+.engine-opt-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-white);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.engine-opt-credits {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  background: rgba(0, 188, 212, 0.15);
+  padding: 1px 6px;
+  border-radius: 99px;
+}
+.engine-opt-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+/* Settings body preview area */
+.settings-body {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  padding: 32px 24px;
+  overflow-y: auto;
+}
+.video-preview-card {
+  width: 100%;
+  max-width: 820px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: fit-content;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 12px;
+}
+.preview-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+}
+.preview-mini-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 4px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.preview-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.close-video-btn {
+  font-size: 24px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s;
+  padding: 4px;
+}
+.close-video-btn:hover {
+  color: var(--text-white);
+}
+.preview-video-container {
+  width: 100%;
+  background: #000;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  position: relative;
+  aspect-ratio: 16 / 9;
+}
+.preview-video-container video {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 16px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 12px;
+}
+.text-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: color 0.2s;
+}
+.text-action-btn:hover {
+  color: var(--text-white);
+}
+.text-action-btn svg {
+  color: var(--text-muted);
+}
+.text-action-btn:hover svg {
+  color: var(--text-white);
+}
+
+/* ── PROGRESS PAGE ── */
+#progress-page {
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+}
+.progress-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: 40px;
+  max-width: 540px;
+  width: 100%;
+  text-align: center;
+}
+.progress-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--accent-cyan-dim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 24px;
+}
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(0, 188, 212, 0.15);
+  border-top-color: var(--accent-cyan);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.progress-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.progress-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 24px;
+}
+.progress-bar-wrap {
+  background: #191b1f;
+  border-radius: 99px;
+  height: 6px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.progress-bar {
+  height: 100%;
+  border-radius: 99px;
+  background: var(--accent-cyan);
+  transition: width 0.5s;
+  width: 0%;
+}
+.progress-status {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  justify-content: space-between;
+}
+.progress-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 24px;
+  text-align: left;
+}
+.step-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-disabled);
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+.step-dot.done {
+  background: var(--green-accent);
+}
+.step-dot.active {
+  background: var(--accent-cyan);
+  box-shadow: 0 0 8px var(--accent-cyan);
+}
+.progress-job-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 20px;
+  font-family: monospace;
+  background: #191b1f;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  word-break: break-all;
+}
+
+/* ── VIDEOS (HISTORY) PAGE ── */
+#history-page {
+  padding: 24px 32px;
+  overflow-y: auto;
+}
+.history-header-row {
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.history-header-row h1 {
+  font-size: 24px;
+  font-weight: 800;
+}
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+}
+.history-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.history-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--accent-cyan);
+}
+.hc-thumb {
+  aspect-ratio: 16 / 9;
+  background: #121316;
+  position: relative;
+  overflow: hidden;
+}
+.hc-thumb img, .hc-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.hc-checkbox {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1.5px solid rgba(255,255,255,0.4);
+  background: rgba(0,0,0,0.6);
+  opacity: 0;
+  transition: opacity 0.15s;
+  cursor: pointer;
+}
+.history-card:hover .hc-checkbox {
+  opacity: 1;
+}
+.hc-checkbox:checked {
+  opacity: 1;
+  background: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+}
+.hc-checkbox:checked::after {
+  content: '✓';
+  color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+.hc-menu-dots {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s;
+  font-weight: bold;
+}
+.history-card:hover .hc-menu-dots {
+  opacity: 1;
+}
+.hc-status-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(18, 19, 22, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.hc-status-spinner {
+  width: 32px;
+  height: 32px;
+}
+.hc-status-percent {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+}
+.hc-status-failed {
+  font-size: 12px;
+  color: var(--red-accent);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.failed-warn-icon {
+  font-size: 20px;
+}
+.hc-details {
+  padding: 12px 16px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.hc-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 4px;
+}
+.hc-meta-row {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── VIDEO PLAYER DETAIL PAGE ── */
+#video-detail-page {
+  padding: 0;
+  flex-direction: row;
+  height: calc(100vh - 64px);
+  min-height: 0;
+}
+.detail-main-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px;
+  overflow-y: auto;
+}
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.detail-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-white);
+}
+.detail-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.detail-actions-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.share-white-btn {
+  background: #ffffff !important;
+  color: #000000 !important;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none !important;
+}
+.share-white-btn:hover {
+  opacity: 0.9;
+}
+
+.detail-player-wrapper {
+  background: #000;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  position: relative;
+  aspect-ratio: 16 / 9;
+  width: 100%;
+  flex-shrink: 0;
+}
+.detail-video {
+  width: 100%;
+  height: 100%;
+}
+
+/* Reactions Bar below Video Player */
+.reactions-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  margin-bottom: 24px;
+}
+.emoji-reactions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.emoji-reaction-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s, border-color 0.2s;
+  color: #fff;
+  padding: 0;
+  line-height: 1;
+}
+.emoji-reaction-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: scale(1.1);
+}
+.emoji-reaction-btn.active {
+  background: var(--accent-cyan-dim);
+  border-color: var(--accent-cyan);
+}
+.emoji-action-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s, color 0.2s, border-color 0.2s;
+  color: var(--text-muted);
+  position: relative;
+  padding: 0;
+}
+.emoji-action-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  transform: scale(1.1);
+}
+.emoji-action-btn.active {
+  background: var(--accent-cyan-dim);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+/* More in folder section */
+.folder-more-section {
+  width: 100%;
+  border-top: 1px solid var(--border-color);
+  padding-top: 24px;
+}
+.folder-more-section h3 {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+.carousel-wrapper {
+  display: block;
+  position: relative;
+}
+.carousel-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color-light);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  top: 42%;
+  transform: translateY(-50%);
+  z-index: 10;
+  transition: background 0.2s;
+}
+.carousel-btn.left { left: -16px; }
+.carousel-btn.right { right: -16px; }
+.carousel-btn:hover {
+  background: var(--bg-hover);
+}
+.carousel-content {
+  display: flex;
+  gap: 16px;
+  overflow: hidden;
+  width: 100%;
+}
+
+/* Sidebar detail panel (Transcript) */
+.detail-sidebar-panel {
+  width: 360px;
+  min-width: 360px;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.sidebar-tabs-row {
+  display: flex;
+  border-bottom: 1px solid var(--border-color);
+  padding: 12px 16px 0;
+  gap: 16px;
+}
+.sidebar-tab-item {
+  font-size: 14px;
+  font-weight: 600;
+  padding-bottom: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  position: relative;
+}
+.sidebar-tab-item.active {
+  color: var(--text-white);
+}
+.sidebar-tab-item.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--accent-cyan);
+}
+.transcript-actions-bar {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-color);
+}
+.action-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.action-link-btn:hover {
+  color: var(--text-white);
+}
+.transcript-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.transcript-list-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.transcript-list-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.transcript-list-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 99px;
+}
+.transcript-list-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+.transcript-segment-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.transcript-segment-card:hover {
+  border-color: var(--accent-cyan);
+}
+.segment-timecode {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  width: 32px;
+  margin-top: 1px;
+}
+.segment-text {
+  font-size: 13px;
+  color: var(--text-white);
+  line-height: 1.4;
+}
+
+/* ── MODAL TABS ── */
+.modal-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 16px;
+  padding-bottom: 4px;
+}
+.modal-tab-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+  position: relative;
+}
+.modal-tab-btn:hover {
+  color: var(--text-white);
+  background: var(--bg-hover);
+}
+.modal-tab-btn.active {
+  color: var(--accent-cyan);
+  background: var(--bg-hover);
+}
+.modal-tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: -5px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent-cyan);
+  border-radius: 99px;
+}
+.modal-tab-content {
+  display: none;
+}
+.modal-tab-content.active {
+  display: block;
+}
+
+/* ── FILE INFO PILL ── */
+.file-info-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  margin-top: 4px;
+}
+.file-pill-icon {
+  color: var(--accent-cyan);
+  flex-shrink: 0;
+}
+.file-name-text {
+  flex-grow: 1;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-white);
+}
+.file-clear-btn {
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--text-muted);
+  line-height: 1;
+  transition: color 0.2s;
+  padding: 0 4px;
+  user-select: none;
+}
+.file-clear-btn:hover {
+  color: var(--red-accent);
+}
+
+/* ── CREATIVE INPUT FORMS ── */
+.creative-field-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.creative-field-icon {
+  position: absolute;
+  left: 12px;
+  color: var(--accent-cyan);
+  pointer-events: none;
+  width: 14px;
+  height: 14px;
+}
+.creative-input {
+  background: var(--bg-hover) !important;
+  border: 1px solid var(--border-color-light) !important;
+  border-radius: var(--radius-md) !important;
+  padding: 10px 12px 10px 36px !important; /* Extra padding-left for icon */
+  color: var(--text-white) !important;
+  font-size: 13px !important;
+  width: 100%;
+  transition: all 0.2s ease-in-out;
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
+}
+.creative-input:focus {
+  outline: none !important;
+  border-color: var(--accent-cyan) !important;
+  box-shadow: 0 0 8px rgba(0, 240, 255, 0.25), inset 0 1px 2px rgba(0,0,0,0.2) !important;
+}
+
+/* For selects in creative format */
+.creative-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2300F0FF' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 14px center !important;
+  padding-right: 36px !important;
+}
+
+/* Beautiful Label Headers */
+.creative-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  margin-top: 14px;
+}
+.creative-label svg {
+  color: var(--accent-cyan);
+}
+
+/* Trim Input Group container styling */
+.creative-trim-container {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px dashed var(--border-color-light);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* ── MODALS ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.modal-overlay.open {
+  opacity: 1;
+  pointer-events: all;
+}
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color-light);
+  border-radius: var(--radius-xl);
+  padding: 28px;
+  max-width: 460px;
+  width: 90%;
+  box-shadow: 0 15px 35px rgba(0,0,0,0.6);
+  position: relative;
+  transform: scale(0.95);
+  transition: transform 0.2s ease;
+}
+.modal-overlay.open .modal-card {
+  transform: scale(1);
+}
+.modal-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.modal-header-row h3 {
+  font-size: 18px;
+  font-weight: 700;
+}
+.modal-close-icon {
+  font-size: 24px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.modal-close-icon:hover {
+  color: var(--text-white);
+}
+.modal-body-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.modal-form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.modal-form-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-white);
+}
+.modal-form-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.toggle-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+.toggle-switch-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.toggle-switch-left svg {
+  color: var(--text-muted);
+  width: 16px;
+  height: 16px;
+}
+.switch-control {
+  width: 40px;
+  height: 22px;
+  background: #3c3e45;
+  border-radius: 99px;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.2s;
+  border: none;
+}
+.switch-control.active {
+  background: var(--accent-cyan);
+}
+.switch-control::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  top: 3px;
+  left: 3px;
+  transition: transform 0.2s;
+}
+.switch-control.active::after {
+  transform: translateX(18px);
+}
+
+/* Redesigned Download Modal (Capsule & Card style) */
+.download-modal-card {
+  max-width: 440px !important;
+  width: 90%;
+  padding: 24px !important;
+  background: var(--bg-card) !important;
+  border-radius: var(--radius-xl) !important;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.dl-capsule-tabs {
+  display: flex;
+  background: #191b1f;
+  padding: 4px;
+  border-radius: 99px;
+  margin: 0 auto;
+  width: fit-content;
+}
+.dl-capsule-btn {
+  padding: 8px 24px;
+  border-radius: 99px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.dl-capsule-btn.active {
+  background: var(--bg-card);
+  color: var(--text-white);
+}
+.dl-content-card {
+  background: #191b1f;
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  border: 1px solid var(--border-color);
+}
+.dl-card-thumb {
+  width: 96px;
+  height: 60px;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #000;
+}
+.dl-card-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+  text-align: left;
+}
+.dl-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-white);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dl-duration-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-hover);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-white);
+  width: fit-content;
+}
+.dl-duration-badge svg {
+  color: var(--text-muted);
+}
+.dl-card-date {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.dl-collapsible-section {
+  display: flex;
+  flex-direction: column;
+}
+.dl-collapsible-trigger {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 4px;
+}
+.dl-collapsible-trigger:hover {
+  color: var(--text-white);
+}
+.dl-collapsible-trigger svg {
+  transition: transform 0.2s;
+}
+.dl-collapsible-trigger.open svg {
+  transform: rotate(180deg);
+}
+.dl-collapsible-content {
+  padding: 12px 4px;
+  border-top: 1px solid var(--border-color);
+  text-align: left;
+}
+.dl-advanced-option a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-decoration: none;
+  font-weight: 600;
+  transition: color 0.15s;
+}
+.dl-advanced-option a:hover {
+  color: var(--text-white);
+}
+.dl-main-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 99px;
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+  background: var(--accent-cyan);
+  color: #000;
+  transition: all 0.2s;
+  border: none;
+  cursor: pointer;
+}
+.dl-main-btn:hover {
+  opacity: 0.9;
+  transform: scale(1.01);
+}
+
+/* Custom HeyGen Shifting Diamond Loader */
+.heygen-loader-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  height: 100%;
+}
+.heygen-loader-logo {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  animation: logo-bounce 2s infinite ease-in-out;
+}
+.logo-part {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  transform: rotate(45deg);
+  border-radius: 3px;
+}
+.part-cyan {
+  background: #00bcd4;
+  top: 4px;
+  left: 4px;
+  animation: part-cyan-shift 2s infinite ease-in-out;
+}
+.part-purple {
+  background: #b388ff;
+  bottom: 4px;
+  right: 4px;
+  animation: part-purple-shift 2s infinite ease-in-out;
+  mix-blend-mode: screen;
+}
+.loading-percentage {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-white);
+  margin-top: 4px;
+}
+@keyframes logo-bounce {
+  0%, 100% { transform: scale(1) rotate(0deg); }
+  50% { transform: scale(1.08) rotate(180deg); }
+}
+@keyframes part-cyan-shift {
+  0%, 100% { transform: rotate(45deg) translate(0, 0); }
+  50% { transform: rotate(45deg) translate(-3px, -3px); }
+}
+@keyframes part-purple-shift {
+  0%, 100% { transform: rotate(45deg) translate(0, 0); }
+  50% { transform: rotate(45deg) translate(3px, 3px); }
+}
+
+/* Active outline for carousel project card thumb */
+.project-card-thumb.active {
+  border: 2px solid var(--accent-cyan) !important;
+  box-shadow: 0 0 8px var(--accent-cyan-glow);
+}
+
+/* ── BOTTOM ACTIVE TOAST ── */
+.bottom-toast-bar {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #ffffff;
+  color: #000000;
+  border-radius: 99px;
+  padding: 8px 16px 8px 12px;
+  display: none;
+  align-items: center;
+  gap: 12px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  z-index: 400;
+}
+.toast-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(0,0,0,0.1);
+  border-top-color: #000;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.toast-text {
+  font-size: 13px;
+  font-weight: 600;
+}
+.toast-btn {
+  background: #000000;
+  color: #ffffff;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.toast-btn:hover {
+  opacity: 0.9;
+}
+.toast-close {
+  font-size: 16px;
+  font-weight: 700;
+  color: #666;
+  cursor: pointer;
+}
+
+/* ── TOAST NOTIFICATIONS ── */
+#toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast-item {
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 240px;
+  animation: slideIn 0.2s ease-out;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.4);
+}
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+.toast-item.success {
+  background: #0a2d1f;
+  border: 1px solid var(--green-accent);
+  color: var(--green-accent);
+}
+.toast-item.error {
+  background: #3b1016;
+  border: 1px solid var(--red-accent);
+  color: var(--red-accent);
+}
+.toast-item.info {
+  background: #0d263b;
+  border: 1px solid var(--accent-cyan);
+  color: var(--accent-cyan);
+}
+
+/* Transcript syncing highlight styling */
+.transcript-segment-card.active-segment {
+  border-color: var(--accent-cyan) !important;
+  background: var(--accent-cyan-dim) !important;
+  box-shadow: 0 0 8px var(--accent-cyan-glow);
+}
+
+/* Glossary Layout Styles */
+.glossary-container {
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.glossary-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  padding: 24px;
+}
+.glossary-form {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  background: #191b1f;
+  padding: 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color-light);
+}
+.glossary-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 150px;
+}
+.glossary-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+  text-align: left;
+}
+.glossary-table th, .glossary-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 13px;
+}
+.glossary-table th {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--red-accent);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.delete-btn:hover {
+  text-decoration: underline;
+}
+
+/* Red button for deletion */
+.red-btn {
+  background: var(--red-accent) !important;
+  color: #fff !important;
+  border: none !important;
+}
+.red-btn:hover {
+  opacity: 0.9;
+}
+.combined-share-pill {
+  display: inline-flex;
+  align-items: center;
+  background: #ffffff;
+  border-radius: 99px;
+  overflow: hidden;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border-color-light);
+  flex-shrink: 0;
+}
+.share-part-btn {
+  background: transparent;
+  border: none;
+  color: #000000;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  height: 100%;
+}
+.share-part-btn:hover, .link-part-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+.share-pill-divider {
+  width: 1px;
+  height: 18px;
+  background: #d0d0d0;
+}
+.link-part-btn {
+  background: transparent;
+  border: none;
+  color: #000000;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  height: 100%;
+}
+
+/* ══════════════════════════════════════════════════════
+   RESPONSIVE / MOBILE  (all breakpoints)
+══════════════════════════════════════════════════════ */
+
+/* ── Tablet 1024px ── */
+@media (max-width: 1024px) {
+  .history-grid { grid-template-columns: repeat(2, 1fr); gap: 16px; }
+  #history-page > .page-content { padding: 20px; }
+  .settings-nav-inner { max-width: 100%; gap: 10px; }
+  .flex-fill { max-width: none; min-width: 140px; }
+  #video-detail-page { flex-direction: column; height: auto; }
+  .detail-sidebar-panel { width: 100% !important; border-left: none !important; border-top: 1px solid var(--border-color); max-height: 50vh; overflow-y: auto; }
+}
+
+/* ── Mobile 768px ── */
+@media (max-width: 768px) {
+
+  /* Sidebar: hidden by default, slides in as overlay */
+  #sidebar {
+    position: fixed;
+    left: 0; top: 0;
+    height: 100vh;
+    width: 260px;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
+    z-index: 400;
+    will-change: transform;
+  }
+  #sidebar.mobile-open {
+    transform: translateX(0);
+  }
+  #sidebar.collapsed {
+    width: 260px;
+    min-width: 260px;
+    overflow: auto;
+    border-right: 1px solid var(--border-color);
+  }
+
+  /* Sidebar overlay backdrop */
+  #sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 399;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.28s;
+  }
+  #sidebar-overlay.visible {
+    opacity: 1;
+    pointer-events: all;
+  }
+
+  /* Main content takes full width */
+  #main { width: 100%; min-width: 0; }
+
+  /* Topbar */
+  #topbar {
+    padding: 0 12px;
+    gap: 8px;
+    height: 56px;
+    min-height: 56px;
+  }
+  .topbar-tabs { display: none; } /* hide on mobile, replaced by page nav */
+  .topbar-spacer { flex: 1; }
+
+  /* Mobile hamburger — show always on mobile */
+  #mobile-menu-btn {
+    display: flex !important;
+  }
+
+  /* On video-detail page, topbar is hidden so show the detail sidebar toggle as hamburger */
+  #detail-sidebar-toggle-btn {
+    display: flex !important;
+    margin-right: 8px;
+  }
+
+  /* Show dedicated mobile hamburger on detail page, hide desktop toggle */
+  #detail-mobile-menu-btn {
+    display: flex !important;
+  }
+  /* Hide the desktop sidebar-collapse icon on mobile detail page */
+  #detail-sidebar-toggle-btn {
+    display: none !important;
+  }
+
+  /* Upload / Home page */
+  #upload-page {
+    padding: 32px 16px 40px;
+    align-items: stretch;
+  }
+  .hero-section h1 {
+    font-size: 22px;
+    letter-spacing: -0.3px;
+  }
+  .hero-section { margin-bottom: 24px; }
+  .drop-zone-card {
+    padding: 36px 16px;
+    max-width: 100%;
+  }
+  .divider-or { max-width: 100%; margin: 16px 0; }
+  .url-input-container { max-width: 100%; }
+  .recent-projects-container { max-width: 100%; margin-top: 32px; }
+  .projects-row { gap: 12px; }
+  .recent-project-card { width: calc(50% - 6px); }
+
+  /* Settings nav bar */
+  .settings-nav-bar { padding: 12px 14px; }
+  .settings-nav-inner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+    max-width: 100%;
+  }
+  .select-group { width: 100%; }
+  .flex-fill { max-width: 100%; min-width: 0; flex: 1; }
+  .lang-picker-wrap { width: 100%; }
+  .lang-pill-select { width: 100%; }
+
+  /* Arrow between source/target */
+  .settings-nav-inner > svg[viewBox] { display: none; }
+
+  /* Translate button full-width */
+  #translate-btn {
+    width: 100%;
+    height: 42px;
+    border-radius: var(--radius-md);
+  }
+
+  /* History page */
+  #history-page .page-content { padding: 14px; }
+  .history-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+  .hc-details { padding: 8px 10px; }
+  .hc-title { font-size: 12px; }
+  .hc-meta-row { font-size: 10px; }
+
+  /* Video detail — stack vertically, full height since topbar is hidden */
+  #video-detail-page {
+    flex-direction: column;
+    height: 100vh;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .detail-main-panel {
+    padding: 14px;
+    overflow-y: unset;
+    flex-shrink: 0;
+  }
+  .detail-sidebar-panel {
+    width: 100% !important;
+    max-height: none !important;
+    border-left: none !important;
+    border-top: 1px solid var(--border-color);
+    overflow-y: auto;
+  }
+  .detail-header { flex-wrap: wrap; gap: 8px; }
+  .detail-title { font-size: 15px; }
+  .detail-actions-top { flex-wrap: wrap; gap: 6px; }
+  .reactions-bar { flex-wrap: wrap; gap: 8px; }
+
+  /* API popover */
+  .api-popover {
+    width: calc(100vw - 24px);
+    right: 12px;
+    left: 12px;
+    top: 64px;
+  }
+
+  /* Progress page */
+  #progress-page { padding: 24px 14px; }
+
+  /* Glossary page */
+  #glossary-page .page-content { padding: 14px; }
+
+  /* Engine button label — shorter on tiny screens */
+  .engine-select-btn { font-size: 12px; padding: 0 10px; }
+
+  /* Touch-friendly tap targets */
+  .menu-item { padding: 12px 16px; }
+  .tab-pill { padding: 8px 14px; }
+  .recent-sidebar-item { padding: 10px 12px; }
+
+  /* Checkbox & dots always visible on touch (no hover) */
+  .hc-menu-dots { opacity: 1; }
+}
+
+/* ── Very small phones 480px ── */
+@media (max-width: 480px) {
+  .hero-section h1 { font-size: 19px; }
+  .history-grid {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .recent-project-card { width: 100%; }
+  .drop-zone-card h2 { font-size: 15px; }
+  #topbar { padding: 0 10px; gap: 6px; }
+  .pill-btn { padding: 7px 14px; font-size: 12px; }
+}
+
+</style>
+</head>
+<body>
+
+<!-- ── LOGIN OVERLAY ── -->
+<div id="login-overlay" style="
+  position:fixed;inset:0;z-index:9999;
+  background:#0d0e10;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Inter',sans-serif;
+  transition:opacity 0.4s ease;
+">
+  <div style="
+    width:100%;max-width:400px;
+    background:#161719;
+    border:1px solid #24262b;
+    border-radius:20px;
+    padding:40px 36px 32px;
+    display:flex;flex-direction:column;align-items:center;
+    gap:0;
+    box-shadow:0 24px 64px rgba(0,0,0,0.7);
+    margin:16px;
+  ">
+    <!-- Logo -->
+    <div style="margin-bottom:32px;text-align:center">
+      <svg width="52" height="52" viewBox="0 0 52 52" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect width="52" height="52" rx="14" fill="#1e2025"/>
+        <path d="M26 10L38 18V30L26 38L14 30V18L26 10Z" fill="none" stroke="#00bcd4" stroke-width="2"/>
+        <path d="M26 10L38 18L26 26L14 18Z" fill="rgba(0,188,212,0.18)"/>
+        <path d="M14 18V30L26 38V26Z" fill="rgba(0,188,212,0.10)"/>
+        <path d="M38 18V30L26 38V26Z" fill="rgba(0,188,212,0.26)"/>
+      </svg>
+      <div style="margin-top:12px;font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.5px">Video Translate</div>
+      <div style="font-size:12px;color:#6b6e7a;margin-top:4px">Sign in to continue</div>
+    </div>
+
+    <!-- ID field -->
+    <div style="width:100%;margin-bottom:12px;position:relative">
+      <div style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:#4a4d58;pointer-events:none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </div>
+      <input id="login-id" type="text" placeholder="Username" autocomplete="username" style="
+        width:100%;height:46px;
+        background:#1b1c20;
+        border:1px solid #2c2e35;
+        border-radius:10px;
+        color:#fff;font-size:14px;font-family:'Inter',sans-serif;
+        padding:0 14px 0 40px;
+        outline:none;
+        transition:border-color 0.2s;
+      " onfocus="this.style.borderColor='#00bcd4'" onblur="this.style.borderColor='#2c2e35'" onkeydown="if(event.key==='Enter')document.getElementById('login-pass').focus()"/>
+    </div>
+
+    <!-- Password field -->
+    <div style="width:100%;margin-bottom:20px;position:relative">
+      <div style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:#4a4d58;pointer-events:none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </div>
+      <input id="login-pass" type="password" placeholder="Password" autocomplete="current-password" style="
+        width:100%;height:46px;
+        background:#1b1c20;
+        border:1px solid #2c2e35;
+        border-radius:10px;
+        color:#fff;font-size:14px;font-family:'Inter',sans-serif;
+        padding:0 14px 0 40px;
+        outline:none;
+        transition:border-color 0.2s;
+      " onfocus="this.style.borderColor='#00bcd4'" onblur="this.style.borderColor='#2c2e35'" onkeydown="if(event.key==='Enter')attemptLogin()"/>
+    </div>
+
+    <!-- Error message -->
+    <div id="login-error" style="
+      width:100%;margin-bottom:14px;
+      color:#ff4d6a;font-size:12px;font-weight:500;
+      text-align:center;min-height:18px;
+    "></div>
+
+    <!-- Sign in button -->
+    <button onclick="attemptLogin()" id="login-btn" style="
+      width:100%;height:46px;
+      background:#00bcd4;
+      border:none;border-radius:10px;
+      color:#000;font-size:14px;font-weight:700;
+      font-family:'Inter',sans-serif;
+      cursor:pointer;
+      display:flex;align-items:center;justify-content:center;gap:8px;
+      transition:opacity 0.2s,transform 0.15s;
+      letter-spacing:0.2px;
+    " onmouseover="this.style.opacity='0.88'" onmouseout="this.style.opacity='1'">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Sign in with Password
+    </button>
+  </div>
+</div>
+
+<!-- Mobile sidebar overlay -->
+<div id="sidebar-overlay" onclick="closeMobileSidebar()"></div>
+
+<!-- LEFT SIDEBAR -->
+<nav id="sidebar">
+  <div class="sidebar-header">
+    <span class="sidebar-title">Apps</span>
+    <button class="sidebar-toggle" onclick="toggleSidebar()">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <line x1="9" y1="3" x2="9" y2="21" />
+      </svg>
+    </button>
+  </div>
+  <div class="sidebar-menu">
+    <div class="menu-item active" id="menu-home" onclick="showPage('upload')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+        <polyline points="9 22 9 12 15 12 15 22"/>
+      </svg>
+      Home
+    </div>
+
+  </div>
+  <div class="sidebar-recents-section">
+    <div class="recents-header">
+      <span>RECENTS</span>
+      <span class="see-all-link" onclick="showPage('history')">See all ›</span>
+    </div>
+    <div class="sidebar-recents-list" id="sidebar-recents">
+      <div style="padding:12px;text-align:center;color:var(--text-muted);font-size:11px">Loading...</div>
+    </div>
+  </div>
+</nav>
+
+<!-- MAIN SECTION -->
+<div id="main">
+
+  <!-- TOPBAR -->
+  <header id="topbar">
+    <!-- Mobile hamburger (only visible on mobile via CSS) -->
+    <button id="mobile-menu-btn" onclick="openMobileSidebar()" style="display:none;background:transparent;border:none;color:var(--text-muted);cursor:pointer;padding:4px;border-radius:6px;align-items:center;justify-content:center;flex-shrink:0" title="Menu">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
+    <button class="sidebar-toggle" id="topbar-sidebar-toggle-btn" onclick="toggleSidebar()" title="Open Sidebar">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <line x1="9" y1="3" x2="9" y2="21" />
+      </svg>
+    </button>
+    <button class="circle-btn" onclick="goBack()" title="Back">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="15 18 9 12 15 6"/>
+      </svg>
+    </button>
+    <div class="topbar-tabs">
+      <button class="tab-pill active" id="tab-translate" onclick="showPage('upload')">Translate</button>
+      <button class="tab-pill" id="tab-glossary" onclick="showPage('glossary')">Glossary &amp; Rules</button>
+    </div>
+    <div class="topbar-spacer"></div>
+
+
+  </header>
+
+  <!-- CONTENT PAGES -->
+
+  <!-- 1. UPLOAD PAGE -->
+  <div class="page active" id="upload-page">
+    <div class="hero-section">
+      <h1>Translate your videos in 175+ languages</h1>
+      <p>Your <span>Creator</span> plan supports videos up to 30 minutes in length.</p>
+    </div>
+
+    <div class="drop-zone-card" id="drop-zone" onclick="document.getElementById('file-input').click()">
+      <h2>Drop your videos here to translate</h2>
+      <p>Videos can be up to 5 GB in MP4, MOV, or WEBM format</p>
+      <button class="pill-btn cyan-btn" onclick="event.stopPropagation();document.getElementById('file-input').click()">Browse local files</button>
+      <input type="file" id="file-input" accept="video/*" style="display:none" onchange="handleFileSelect(this.files[0])"/>
+    </div>
+
+    <div class="divider-or">
+      <span class="divider-line"></span>
+      <span>OR</span>
+      <span class="divider-line"></span>
+    </div>
+
+    <div class="url-input-container">
+      <svg class="link-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+      </svg>
+      <input type="text" id="url-input" placeholder="Paste a YouTube or Google Drive URL" oninput="handleUrlInput(this.value)" onkeydown="if(event.key==='Enter')submitUrl()"/>
+    </div>
+
+    <div class="recent-projects-container" id="recent-projects-section">
+      <h3>Translate one of your recent projects</h3>
+      <div class="projects-row" id="recent-thumbs">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. SETTINGS PAGE -->
+  <div class="page" id="settings-page">
+    <div class="settings-nav-bar">
+      <div class="settings-nav-inner">
+      <!-- Source language -->
+      <div class="select-group">
+        <span class="select-label">Source video language</span>
+        <div class="src-lang-wrap" id="src-lang-wrap">
+          <button class="src-lang-btn" id="src-lang-btn" onclick="toggleSrcLangDropdown()">
+            <span id="src-lang-label">Auto-detect</span>
+            <svg class="src-lang-btn-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+          <div class="src-lang-panel" id="src-lang-panel" style="display:none" onclick="event.stopPropagation()">
+            <input class="src-lang-search" id="src-lang-search" placeholder="Search..." oninput="renderSrcLangPanel(this.value)" onclick="event.stopPropagation()"/>
+            <div id="src-lang-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="arrow-between">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+        </svg>
+      </div>
+
+      <!-- Target language picker -->
+      <div class="select-group flex-fill">
+        <span class="select-label">Translate it into <span class="red-star">*</span></span>
+        <div class="lang-picker-wrap">
+          <div class="lang-pill-select" id="lang-box" onclick="toggleLangDropdown()">
+            <div id="lang-tags" style="display:flex;flex-wrap:nowrap;gap:5px;align-items:center"></div>
+            <input class="lang-search-input" id="lang-search" placeholder="Search language..." oninput="filterLangs(this.value)" onfocus="openLangDropdown()" onclick="event.stopPropagation()"/>
+            <svg class="lang-pill-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" onclick="event.stopPropagation();toggleLangDropdown()">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+          <div class="lang-dropdown-panel" id="lang-dropdown" style="display:none" onclick="event.stopPropagation()"></div>
+        </div>
+      </div>
+
+      <!-- Engine -->
+      <div class="select-group">
+        <span class="select-label">Engine used</span>
+        <div class="engine-select-dropdown">
+          <button class="engine-select-btn" id="engine-btn" onclick="toggleEngineDropdown()">
+            <span id="engine-label">Audio only</span>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
+          <div class="engine-dropdown-panel" id="engine-dropdown" style="display:none">
+            <div class="engine-option-item selected" id="eng-audio" onclick="selectEngine('audio_only')">
+              <div class="engine-opt-name">Audio only <span class="engine-opt-credits">2 credits/min</span></div>
+              <div class="engine-opt-desc">Translates voice without applying lip-sync overlay.</div>
+            </div>
+            <div class="engine-option-item" id="eng-speed" onclick="selectEngine('speed')">
+              <div class="engine-opt-name">Speed <span class="engine-opt-credits">5 credits/min</span></div>
+              <div class="engine-opt-desc">Generates rapid lip-sync suitable for straight-to-camera speech.</div>
+            </div>
+            <div class="engine-option-item" id="eng-precision" onclick="selectEngine('precision')">
+              <div class="engine-opt-name">Precision <span class="engine-opt-credits">10 credits/min</span></div>
+              <div class="engine-opt-desc">High-quality lip-sync that accounts for angles, multiple speakers, and layout shifts.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button class="pill-btn cyan-btn" id="translate-btn" onclick="startTranslation()">Translate</button>
+      </div>
+    </div>
+
+    <!-- Preview Container -->
+    <div class="settings-body">
+      <div class="video-preview-card">
+        <div class="preview-header">
+          <div class="preview-title-wrap">
+            <img id="vid-thumb" class="preview-mini-thumb" src="" style="display:none"/>
+            <div class="preview-title" id="vid-title">Loading video details...</div>
+          </div>
+          <div class="close-video-btn" onclick="startNew()">×</div>
+        </div>
+        <div class="preview-video-container">
+          <video id="vid-preview" controls></video>
+        </div>
+        <div class="preview-actions">
+          <div id="left-srt-container">
+            <button class="text-action-btn generate-srt-btn" onclick="generateSrtWithGemini()">
+              <svg class="generate-srt-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+              </svg>
+              <span class="generate-srt-text">✨ Generate SRT with AI</span>
+            </button>
+          </div>
+          <button class="text-action-btn" onclick="openAdvancedModal()">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            Advanced Settings
+          </button>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. PROGRESS PAGE -->
+  <div class="page" id="progress-page">
+    <div class="progress-card">
+      <div class="progress-icon">
+        <div class="spinner"></div>
+      </div>
+      <div class="progress-title">Translating your video…</div>
+      <div class="progress-sub" id="progress-sub">Sending payload to HeyGen network</div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar anim-shimmer" id="progress-bar"></div>
+      </div>
+      <div class="progress-status">
+        <span id="progress-status-text">Uploading</span>
+        <span id="progress-elapsed">00:00 elapsed</span>
+      </div>
+      <div class="progress-steps" id="progress-steps">
+        <div class="step-row"><div class="step-dot active" id="step-0"></div>Uploading asset to workspace</div>
+        <div class="step-row"><div class="step-dot" id="step-1"></div>Creating video translation job</div>
+        <div class="step-row"><div class="step-dot" id="step-2"></div>Transcribing audio vocal tracks</div>
+        <div class="step-row"><div class="step-dot" id="step-3"></div>Translating transcript texts</div>
+        <div class="step-row"><div class="step-dot" id="step-4"></div>Synthesizing output voice clones</div>
+        <div class="step-row"><div class="step-dot" id="step-5"></div>Applying lipsync overlay and exporting</div>
+      </div>
+      <div class="progress-job-id" id="progress-job-id">Job ID: —</div>
+      <button class="pill-btn" style="margin-top:20px;width:100%;" onclick="cancelTranslation()">Cancel Translation</button>
+    </div>
+  </div>
+
+  <!-- 4. VIDEOS (HISTORY) PAGE -->
+  <div class="page" id="history-page">
+    <div class="history-header-row">
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="circle-btn" onclick="goBack()" style="width:32px;height:32px;flex-shrink:0;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+        </button>
+        <h1 style="font-size:20px;font-weight:700;color:#fff;margin:0">All App Outputs</h1>
+      </div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <button class="pill-btn red-btn" id="bulk-delete-btn" style="display:none;" onclick="deleteSelectedVideos()">
+          Delete Selected (0)
+        </button>
+      </div>
+    </div>
+    <div class="history-grid" id="history-grid">
+      <!-- Loaded dynamically -->
+    </div>
+  </div>
+
+  <!-- 5. VIDEO DETAIL PAGE -->
+  <div class="page" id="video-detail-page">
+    <div class="detail-main-panel">
+      <div class="detail-header">
+        <!-- Desktop: collapse sidebar panel toggle -->
+        <button class="sidebar-toggle" id="detail-sidebar-toggle-btn" onclick="toggleSidebar()" title="Open Sidebar">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="9" y1="3" x2="9" y2="21" />
+          </svg>
+        </button>
+        <!-- Mobile: hamburger to open nav sidebar (always visible on mobile via CSS) -->
+        <button id="detail-mobile-menu-btn" onclick="openMobileSidebar()" title="Menu" style="display:none;background:transparent;border:none;color:var(--text-muted);cursor:pointer;padding:6px;border-radius:6px;align-items:center;justify-content:center;flex-shrink:0">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+          </svg>
+        </button>
+        <!-- Back button -->
+        <button onclick="goBack()" title="Go back" style="background:transparent;border:none;color:var(--text-muted);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:color 0.15s" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='var(--text-muted)'">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 18 9 12 15 6"/>
+          </svg>
+        </button>
+        <div>
+          <div class="detail-title" id="dt-title">Video Title</div>
+          <div class="detail-date" id="dt-date">Created on —</div>
+        </div>
+        <div class="detail-actions-top">
+          <button class="pill-btn" style="background:#fff;color:#000;font-weight:700;display:flex;align-items:center;gap:6px;border:none;" onclick="openDownloadModal()">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Download
+          </button>
+          <div class="combined-share-pill">
+            <button class="share-part-btn" onclick="copyShareLink()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+              </svg>
+              Share
+            </button>
+            <div class="share-pill-divider"></div>
+            <button class="link-part-btn" onclick="copyShareLink()" title="Copy Link">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+            </button>
+          </div>
+          <button class="circle-btn" id="dt-open-sidebar-btn" onclick="toggleDetailSidebar()" style="display:none;" title="Open Transcript">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
+          <button class="circle-btn">...</button>
+        </div>
+      </div>
+
+      <div class="detail-player-wrapper">
+        <video class="detail-video" id="dt-video" controls crossorigin="anonymous"></video>
+      </div>
+
+      <!-- Reactions Row under video player -->
+      <div class="reactions-bar">
+        <div class="emoji-reactions">
+          <button class="emoji-reaction-btn" onclick="toggleEmojiReaction(this, '😍')">😍</button>
+          <button class="emoji-reaction-btn" onclick="toggleEmojiReaction(this, '🤣')">🤣</button>
+          <button class="emoji-reaction-btn" onclick="toggleEmojiReaction(this, '👍')">👍</button>
+          <button class="emoji-reaction-btn" onclick="toggleEmojiReaction(this, '👎')">👎</button>
+          <button class="emoji-reaction-btn" onclick="toggleEmojiReaction(this, '🙌')">🙌</button>
+          <button class="emoji-reaction-btn" onclick="toggleEmojiReaction(this, '❤️')">❤️</button>
+        </div>
+        <button class="emoji-action-btn" onclick="toggleEmojiReaction(this, 'add')" title="Add reaction">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
+            <line x1="9" y1="9" x2="9.01" y2="9"/>
+            <line x1="15" y1="9" x2="15.01" y2="9"/>
+          </svg>
+          <span style="font-size: 10px; position: absolute; bottom: 1px; right: 1px; font-weight: bold; line-height: 1; pointer-events: none;">+</span>
+        </button>
+        <button class="emoji-action-btn" onclick="toggleEmojiReaction(this, 'comment')" title="Comments">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="folder-more-section">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:16px;">
+          <h3 style="margin:0;font-size:14px;font-weight:700;">More in this folder</h3>
+          <svg class="info-icon-svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-muted);cursor:pointer;" title="All translations in this folder">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+        </div>
+        <div class="carousel-wrapper">
+          <button class="carousel-btn left" onclick="slideCarousel(-1)">‹</button>
+          <div class="carousel-content" id="carousel-projects">
+            <!-- Rendered dynamically -->
+          </div>
+          <button class="carousel-btn right" onclick="slideCarousel(1)">›</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transcript sidebar detail page -->
+    <div class="detail-sidebar-panel" id="dt-sidebar-panel">
+      <div class="sidebar-tabs-row" style="display:flex;justify-content:space-between;align-items:center;">
+        <div style="display:flex;gap:16px;">
+          <div class="sidebar-tab-item active">Transcript</div>
+        </div>
+        <button class="sidebar-toggle-btn" onclick="toggleDetailSidebar()" title="Toggle Sidebar" style="background:transparent;border:none;color:var(--text-muted);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:4px;border-radius:4px;margin-bottom:8px;">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" id="dt-sidebar-toggle-icon">
+            <line x1="4" y1="12" x2="16" y2="12"/>
+            <polyline points="11 7 16 12 11 17"/>
+            <line x1="20" y1="5" x2="20" y2="19"/>
+          </svg>
+        </button>
+      </div>
+      <div class="transcript-actions-bar">
+        <button class="action-link-btn" onclick="copyFullTranscript()">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          Copy all
+        </button>
+        <button class="action-link-btn" id="dt-download-srt">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Download
+        </button>
+        <div style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-muted);font-size:12px;">
+          <input type="text" id="transcript-search" placeholder="Search" oninput="filterTranscript(this.value)" style="background:transparent;border:none;color:#fff;font-size:12px;outline:none;width:55px;text-align:right;padding:0;"/>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-muted);flex-shrink:0;">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </div>
+      </div>
+      <div class="transcript-list-scroll" id="dt-transcript-list">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. GLOSSARY & RULES PAGE -->
+  <div class="page" id="glossary-page" style="padding:24px 32px">
+    <h2 style="font-size:20px;font-weight:700;margin-bottom:6px">Glossary &amp; Rules</h2>
+    <p style="color:var(--text-muted);font-size:13px;margin-bottom:24px">Define custom translation rules for brand terms, proper nouns, and specialized vocabulary.</p>
+    
+    <div class="glossary-container">
+      <!-- Glossary Creation Card -->
+      <div class="glossary-card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:16px">Add Brand Term Rule</h3>
+        <form class="glossary-form" onsubmit="addGlossaryTerm(event)">
+          <div class="form-group">
+            <span class="select-label">Source term (original text)</span>
+            <input type="text" id="gl-source-term" class="custom-select" style="width:100%" placeholder="e.g. HeyGen" required/>
+          </div>
+          <div class="form-group">
+            <span class="select-label">Target term (translation text)</span>
+            <input type="text" id="gl-target-term" class="custom-select" style="width:100%" placeholder="e.g. 黑根" required/>
+          </div>
+          <div class="form-group">
+            <span class="select-label">Target language context</span>
+            <select class="custom-select" id="gl-lang" style="width:100%">
+              <option value="Any">Any Language</option>
+              <option value="Spanish">Spanish</option>
+              <option value="Chinese">Chinese</option>
+              <option value="French">French</option>
+              <option value="German">German</option>
+              <option value="Hindi">Hindi</option>
+            </select>
+          </div>
+          <button type="submit" class="pill-btn cyan-btn" style="height:38px;padding:8px 24px">+ Add Rule</button>
+        </form>
+      </div>
+
+      <!-- Glossary List Card -->
+      <div class="glossary-card" id="glossary-list-card">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:12px">Defined Glossary Rules</h3>
+        <div id="glossary-table-container">
+          <!-- Rendered dynamically -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+
+</div>
+
+<!-- ── ADVANCED SETTINGS MODAL ── -->
+<div class="modal-overlay" id="adv-modal">
+  <div class="modal-card">
+    <div class="modal-header-row">
+      <h3>Settings</h3>
+      <span class="modal-close-icon" onclick="closeAdvancedModal()">×</span>
+    </div>
+    
+    <!-- Tab Capsule -->
+    <div class="modal-tabs">
+      <button class="modal-tab-btn active" onclick="selectModalTab('modal-tab-features')">Features &amp; Specs</button>
+      <button class="modal-tab-btn" onclick="selectModalTab('modal-tab-audio-general')">General &amp; Audio</button>
+    </div>
+
+    <div class="modal-body-section">
+      <!-- Tab 1: Features & Specs -->
+      <div class="modal-tab-content active" id="modal-tab-features">
+        <div class="modal-form-item">
+          <div class="toggle-switch-row">
+            <div class="toggle-switch-left">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+                <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+              </svg>
+              <span>Allow dynamic duration</span>
+            </div>
+            <button class="switch-control active" id="sw-dynamic" onclick="toggleSwitch(this)"></button>
+          </div>
+
+          <div class="toggle-switch-row">
+            <div class="toggle-switch-left">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/>
+              </svg>
+              <span>Create collection</span>
+            </div>
+            <button class="switch-control" id="sw-collection" onclick="toggleSwitch(this)"></button>
+          </div>
+
+          <div class="toggle-switch-row">
+            <div class="toggle-switch-left">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+                <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+              </svg>
+              <span>Remove background sound</span>
+            </div>
+            <button class="switch-control" id="sw-music" onclick="toggleSwitch(this)"></button>
+          </div>
+
+          <div class="toggle-switch-row">
+            <div class="toggle-switch-left">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+                <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+              <span>Output to original video specs 👑</span>
+            </div>
+            <button class="switch-control" id="sw-specs" onclick="toggleSwitch(this)"></button>
+          </div>
+
+          <div class="toggle-switch-row">
+            <div class="toggle-switch-left">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+                <rect x="3" y="4" width="18" height="12" rx="2"/><line x1="7" y1="8" x2="17" y2="8"/><line x1="7" y1="12" x2="13" y2="12"/>
+              </svg>
+              <span>Enable captions</span>
+            </div>
+            <button class="switch-control" id="sw-captions" onclick="toggleSwitch(this)"></button>
+          </div>
+
+          <div class="toggle-switch-row">
+            <div class="toggle-switch-left">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+              <span>Enhance voice</span>
+            </div>
+            <button class="switch-control" id="sw-enhance" onclick="toggleSwitch(this)"></button>
+          </div>
+
+          <div class="toggle-switch-row">
+            <div class="toggle-switch-left">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+              <span>Enable watermark</span>
+            </div>
+            <button class="switch-control" id="sw-watermark" onclick="toggleSwitch(this)"></button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: General & Audio -->
+      <div class="modal-tab-content" id="modal-tab-audio-general">
+        <!-- Brand Glossary -->
+        <div class="modal-form-item" style="margin-bottom: 14px;">
+          <label class="creative-label">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            Brand Glossary
+          </label>
+          <div class="creative-field-wrapper">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" class="creative-field-icon">
+              <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <select class="creative-input creative-select" id="adv-glossary">
+              <option value="">🔍 None</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Speaker Count -->
+        <div class="modal-form-item" style="margin-bottom: 14px;">
+          <label class="creative-label">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            Speaker Count
+          </label>
+          <div class="creative-field-wrapper">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" class="creative-field-icon">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+            </svg>
+            <input type="number" id="adv-speakers" class="creative-input" placeholder="Auto-detect speakers" min="1" max="10"/>
+          </div>
+        </div>
+
+        <!-- Partial Trim Times -->
+        <div class="modal-form-item" style="margin-bottom: 14px;">
+          <label class="creative-label">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+            </svg>
+            Partial Translation Trim (Optional)
+          </label>
+          <div class="creative-trim-container">
+            <div style="flex:1">
+              <span class="modal-form-desc" style="display:block;margin-bottom:4px;font-size:10px">START TIME (SEC)</span>
+              <div class="creative-field-wrapper">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" class="creative-field-icon">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                <input type="number" id="adv-start-time" class="creative-input" placeholder="0" min="0" step="0.1"/>
+              </div>
+            </div>
+            <div style="flex:1">
+              <span class="modal-form-desc" style="display:block;margin-bottom:4px;font-size:10px">END TIME (SEC)</span>
+              <div class="creative-field-wrapper">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" class="creative-field-icon">
+                  <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+                </svg>
+                <input type="number" id="adv-end-time" class="creative-input" placeholder="Video end" min="0" step="0.1"/>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- SRT Source Transcript -->
+        <div class="modal-form-item" style="margin-bottom: 14px;">
+          <label class="creative-label">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+            </svg>
+            Source Transcript (Subtitles)
+          </label>
+          <div id="srt-file-container">
+            <button class="pill-btn generate-srt-btn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--accent-cyan);color:#000;border:1px solid transparent;" onclick="generateSrtWithGemini()">
+              <svg class="generate-srt-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+              </svg>
+              <span class="generate-srt-text">✨ Generate SRT with AI</span>
+            </button>
+          </div>
+          <input type="file" id="srt-file-input" accept=".srt,.ass" style="display:none" onchange="handleSrtUpload(this.files[0])"/>
+        </div>
+
+        <!-- Custom Audio -->
+        <div class="modal-form-item" style="margin-bottom: 8px;">
+          <label class="creative-label">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+            </svg>
+            Custom Dubbing Audio
+          </label>
+          <div id="audio-file-container">
+            <button class="pill-btn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px" onclick="document.getElementById('audio-file-input').click()">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+              </svg>
+              <span>Select custom audio (MP3/WAV)</span>
+            </button>
+          </div>
+          <input type="file" id="audio-file-input" accept="audio/*" style="display:none" onchange="handleAudioUpload(this.files[0])"/>
+        </div>
+      </div>
+      
+      <button class="pill-btn cyan-btn" style="width:100%;margin-top:8px" onclick="closeAdvancedModal()">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── DOWNLOAD MODAL ── -->
+<div class="modal-overlay" id="download-modal">
+  <div class="modal-card download-modal-card">
+    <span class="modal-close-icon" onclick="closeDownloadModal()">×</span>
+    
+    <!-- Tab Capsule -->
+    <div class="dl-capsule-tabs">
+      <button class="dl-capsule-btn active" id="dl-tab-video" onclick="selectDownloadTab('video')">Video</button>
+      <button class="dl-capsule-btn" id="dl-tab-caption" onclick="selectDownloadTab('captions')">Captions</button>
+    </div>
+    
+    <div class="dl-content-card">
+      <video class="dl-card-thumb" id="dl-thumb" muted playsinline style="object-fit:cover;"></video>
+      <div class="dl-card-info">
+        <div class="dl-card-title" id="dl-title">video_title.mp4</div>
+        <div class="dl-duration-badge">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <span id="dl-duration-text">1m 9s</span>
+        </div>
+        <div class="dl-card-date" id="dl-date-text">June 20, 2026 at 1:03 AM</div>
+      </div>
+    </div>
+    
+    <!-- Advanced Settings Collapsible -->
+    <div class="dl-collapsible-section">
+      <button class="dl-collapsible-trigger" id="dl-collapsible-btn" onclick="toggleDlAdvanced()">
+        <span>Advanced Settings</span>
+        <svg id="dl-caret" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </button>
+      <div class="dl-collapsible-content" id="dl-advanced-content" style="display:none">
+        <div class="dl-advanced-option">
+          <a href="#" id="dl-btn-audio" download target="_blank">
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:6px">
+              <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+            </svg>
+            Download Audio Only
+          </a>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Big Download Button -->
+    <div class="dl-action-row">
+      <a class="dl-main-btn" id="dl-btn-main" href="#" download target="_blank">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Download
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- ── ACTIVE BOTTOM STATUS TOAST ── -->
+<div class="bottom-toast-bar" id="active-toast">
+  <div class="toast-spinner"></div>
+  <span class="toast-text">Translating video</span>
+  <button class="toast-btn" onclick="showPage('history')">View project</button>
+  <span class="toast-close" onclick="dismissActiveToast()">×</span>
+</div>
+
+<!-- ── TOAST NOTIFICATIONS CONTAINER ── -->
+<div id="toast"></div>
+
+
+
+<script>
+// ── LOGIN AUTH ──
+// Route HeyGen API calls through the authenticated app session. The original
+// standalone page used a client-side API key header; this embedded version keeps
+// the key server-side and relies on the app's same-origin auth cookie.
+(function patchHeyGenFetch() {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    const rawUrl = typeof input === 'string' ? input : (input && input.url) || '';
+    const isHeyGenProxy = rawUrl.startsWith('/api/heygen');
+    if (!isHeyGenProxy) return nativeFetch(input, init);
+
+    const nextInit = Object.assign({}, init || {}, { credentials: 'same-origin' });
+    const headers = new Headers(nextInit.headers || {});
+    headers.delete('x-api-key');
+    nextInit.headers = headers;
+    return nativeFetch(input, nextInit);
+  };
+})();
+try { localStorage.setItem('vt_auth', 'ok'); sessionStorage.setItem('vt_auth', 'ok'); } catch(e) {}
+(async function initLogin() {
+  const overlay = document.getElementById('login-overlay');
+
+  // Already logged in this session?
+  if (localStorage.getItem('vt_auth') === 'ok') {
+    overlay.style.display = 'none';
+    return;
+  }
+
+  // Load credentials from server configuration
+  let validUser = '';
+  let validPass = ''; // No hardcoded fallback
+  try {
+    const r = await fetch('/api/heygen/disabled-config');
+    if (r.ok) {
+      const txt = await r.text();
+      for (const line of txt.split('\n')) {
+        const [k, ...v] = line.split('=');
+        const key = (k || '').trim();
+        const val = v.join('=').trim();
+        if (key === 'SERVER_USER' && val) validUser = val;
+        if (key === 'SERVER_PASS' && val) validPass = val;
+      }
+    }
+  } catch (e) { /* use fallback credentials */ }
+
+  window._loginCreds = { user: validUser, pass: validPass };
+})();
+
+function attemptLogin() {
+  const idEl   = document.getElementById('login-id');
+  const passEl = document.getElementById('login-pass');
+  const errEl  = document.getElementById('login-error');
+  const btn    = document.getElementById('login-btn');
+
+  const id   = idEl.value.trim();
+  const pass = passEl.value;
+  const creds = window._loginCreds || { user: '', pass: '' };
+
+  if (!id) { errEl.textContent = 'Please enter your username.'; idEl.focus(); return; }
+  if (!pass) { errEl.textContent = 'Please enter your password.'; passEl.focus(); return; }
+
+  // Animated loading state
+  const originalText = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner"></span> Signing in...';
+  btn.style.opacity = '0.8';
+  btn.disabled = true;
+
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    
+    if (id === creds.user && pass === creds.pass) {
+      // Success — save session and fade out overlay
+      localStorage.setItem('vt_auth', 'ok');
+      const overlay = document.getElementById('login-overlay');
+      overlay.style.opacity = '0';
+      overlay.style.pointerEvents = 'none';
+      setTimeout(() => overlay.style.display = 'none', 420);
+      btn.textContent = '✓ Signed in';
+    } else {
+      // Wrong credentials — shake + show error
+      errEl.textContent = 'Incorrect username or password.';
+      passEl.value = '';
+      passEl.style.borderColor = '#ff4d6a';
+      setTimeout(() => passEl.style.borderColor = '#2c2e35', 1500);
+      passEl.focus();
+      btn.innerHTML = originalText;
+    }
+  }, 600);
+}
+
+// ── DATA & STATE ──
+const LANGS = [
+  'Afrikaans (South Africa)', 'Albanian (Albania)', 'Amharic (Ethiopia)', 'Arabic',
+  'Arabic (Algeria)', 'Arabic (Bahrain)', 'Arabic (Egypt)', 'Arabic (Iraq)',
+  'Arabic (Jordan)', 'Arabic (Kuwait)', 'Arabic (Lebanon)', 'Arabic (Libya)',
+  'Arabic (Morocco)', 'Arabic (Oman)', 'Arabic (Qatar)', 'Arabic (Saudi Arabia)',
+  'Arabic (Syria)', 'Arabic (Tunisia)', 'Arabic (United Arab Emirates)', 'Arabic (World)',
+  'Arabic (Yemen)', 'Armenian (Armenia)', 'Azerbaijani (Latin, Azerbaijan)', 'Bangla (Bangladesh)',
+  'Basque', 'Belarusian (Belarus)', 'Bengali (India)', 'Bosnian (Bosnia and Herzegovina)',
+  'Bulgarian', 'Bulgarian (Bulgaria)', 'Burmese (Myanmar)', 'Catalan', 'Chinese (Cantonese, Traditional)',
+  'Chinese (Jilu Mandarin, Simplified)', 'Chinese (Mandarin, Simplified)', 'Chinese (Northeastern Mandarin, Simplified)',
+  'Chinese (Southwestern Mandarin, Simplified)', 'Chinese (Taiwanese Mandarin, Traditional)',
+  'Chinese (Wu, Simplified)', 'Chinese (Zhongyuan Mandarin Henan, Simplified)',
+  'Chinese (Zhongyuan Mandarin Shaanxi, Simplified)', 'Croatian', 'Croatian (Croatia)', 'Czech',
+  'Czech (Czechia)', 'Danish', 'Danish (Denmark)', 'Dutch', 'Dutch (Belgium)', 'Dutch (Netherlands)',
+  'English', 'English (Australia)', 'English (Canada)', 'English (Hong Kong SAR)', 'English (India)',
+  'English (Ireland)', 'English (Kenya)', 'English (New Zealand)', 'English (Nigeria)', 'English (Philippines)',
+  'English (Singapore)', 'English (South Africa)', 'English (Tanzania)', 'English (UK)', 'English (United States)',
+  'Estonian (Estonia)', 'Filipino', 'Filipino (Cebuano)', 'Filipino (Philippines)', 'Finnish', 'Finnish (Finland)',
+  'French', 'French (Belgium)', 'French (Canada)', 'French (France)', 'French (Switzerland)', 'Galician',
+  'Georgia (Georgian)', 'German', 'German (Austria)', 'German (Germany)', 'German (Switzerland)', 'Greek',
+  'Greek (Greece)', 'Gujarati (India)', 'Haitian Creole (Haiti)', 'Hebrew (Israel)', 'Hindi', 'Hindi (India)',
+  'Hungarian (Hungary)', 'Icelandic (Iceland)', 'Indonesian', 'Indonesian (Indonesia)', 'Irish (Ireland)',
+  'Italian', 'Italian (Italy)', 'Japanese', 'Japanese (Japan)', 'Javanese (Latin, Indonesia)', 'Kannada (India)',
+  'Kazakh (Kazakhstan)', 'Khmer (Cambodia)', 'Konkani (India)', 'Korean', 'Korean (Korea)', 'Lao (Laos)',
+  'Latin (Vatican City)', 'Latvian (Latvia)', 'Lithuanian (Lithuania)', 'Luxembourgish (Luxembourg)',
+  'Macedonian (North Macedonia)', 'Maithili (India)', 'Malagasy (Madagascar)', 'Malay', 'Malay (Malaysia)',
+  'Malayalam (India)', 'Maltese (Malta)', 'Mandarin', 'Marathi (India)', 'Mongolian (Mongolia)', 'Nepali (Nepal)',
+  'Norwegian Bokmål (Norway)', 'Norwegian Nynorsk (Norway)', 'Odia (India)', 'Pashto (Afghanistan)',
+  'Persian (Iran)', 'Polish', 'Polish (Poland)', 'Portuguese', 'Portuguese (Brazil)', 'Portuguese (Portugal)',
+  'Punjabi (India)', 'Romanian', 'Romanian (Romania)', 'Russian', 'Russian (Russia)', 'Serbian (Latin, Serbia)',
+  'Sindhi (India)', 'Sinhala (Sri Lanka)', 'Slovak', 'Slovak (Slovakia)', 'Slovenian (Slovenia)',
+  'Somali (Somalia)', 'Spanish', 'Spanish (Argentina)', 'Spanish (Bolivia)', 'Spanish (Chile)', 'Spanish (Colombia)',
+  'Spanish (Costa Rica)', 'Spanish (Cuba)', 'Spanish (Dominican Republic)', 'Spanish (Ecuador)', 'Spanish (El Salvador)',
+  'Spanish (Equatorial Guinea)', 'Spanish (Guatemala)', 'Spanish (Honduras)', 'Spanish (Latin America)',
+  'Spanish (Mexico)', 'Spanish (Nicaragua)', 'Spanish (Panama)', 'Spanish (Paraguay)', 'Spanish (Peru)',
+  'Spanish (Puerto Rico)', 'Spanish (Spain)', 'Spanish (United States)', 'Spanish (Uruguay)', 'Spanish (Venezuela)',
+  'Sundanese (Indonesia)', 'Swahili (Kenya)', 'Swahili (Tanzania)', 'Swedish', 'Swedish (Sweden)', 'Tamil',
+  'Tamil (India)', 'Tamil (Malaysia)', 'Tamil (Singapore)', 'Tamil (Sri Lanka)', 'Telugu (India)', 'Thai (Thailand)',
+  'Turkish', 'Turkish (Türkiye)', 'Ukrainian', 'Ukrainian (Ukraine)', 'Urdu (India)', 'Urdu (Pakistan)',
+  'Uzbek (Latin, Uzbekistan)', 'Vietnamese', 'Vietnamese (Vietnam)', 'Welsh (United Kingdom)', 'Zulu (South Africa)'
+];
+
+const state = {
+  apiKey: '',
+  geminiKeys: [],
+  selectedFile: null,
+  selectedUrl: '',
+  videoInputType: null, // 'file' or 'url'
+  assetId: null,
+  selectedLangs: ['English'],
+  sourceLanguage: '',  // '' = auto-detect
+  engine: 'audio_only', // 'audio_only', 'speed', 'precision'
+  selectedSrtFile: null,
+  selectedAudioFile: null,
+  adv: {
+    dynamicDuration: true,
+    removeMusic: false,
+    keepSpecs: false,
+    captions: false,
+    enhanceVoice: false,
+    watermark: false,
+    speakers: null,
+    startTime: null,
+    endTime: null,
+    glossaryId: null
+  },
+  history: [],
+  pageHistory: ['upload'],
+  activeDetailJob: null,
+  activeCarouselIndex: 0,
+  sidebarLimit: 20,
+  nextToken: '',
+  hasMore: false,
+  apiHistory: []
+};
+
+// ── INITIALIZATION ──
+window.addEventListener('DOMContentLoaded', () => {
+  // Clear any old localStorage history cache \u2014 history is now 100% API-driven
+  try { localStorage.removeItem('hg_history'); } catch(e) {}
+
+  loadApiKeyFromEnv();
+  setupDragDrop();
+  renderLangTags();
+  renderLangDropdown('');
+  loadHistory();
+  loadGlossary();
+  setupTranscriptSync();
+  
+  // Single consolidated outside-click handler for all dropdowns
+  document.addEventListener('click', (e) => {
+    // Lang picker (translate-into)
+    const langWrap = document.querySelector('.lang-picker-wrap');
+    if (langWrap && !langWrap.contains(e.target)) closeLangDropdown();
+    // Source lang
+    const srcWrap = document.getElementById('src-lang-wrap');
+    if (srcWrap && !srcWrap.contains(e.target)) closeSrcLangDropdown();
+    // Engine
+    const engineWrap = document.querySelector('.engine-select-dropdown');
+    if (engineWrap && !engineWrap.contains(e.target)) closeEngineDropdown();
+  });
+
+  // Track hover cards for recent project thumbnails
+  setupHoverCardTooltips();
+
+  // Trigger initial routing and listen for hash changes
+  window.addEventListener('hashchange', handleRouting);
+  handleRouting();
+
+  // Live history update poller (every 13 seconds, active jobs only)
+  setInterval(pollHistoryLive, 13000);
+});
+
+// ── API KEY & LIVE POLLER ──
+async function loadApiKeyFromEnv() {
+  state.apiKey = 'server-managed';
+  state.geminiKeys = ['server-managed'];
+  validateApiKey();
+}
+
+async function validateApiKey() {
+  const statusEl = document.getElementById('api-status');
+  if (statusEl) {
+    statusEl.textContent = 'Verifying...';
+    statusEl.style.color = 'var(--text-muted)';
+  }
+  
+  try {
+    const r = await fetch('/api/heygen/me', {
+      headers: { 'x-api-key': state.apiKey }
+    });
+    if (r.status === 200) {
+      if (statusEl) {
+        statusEl.textContent = 'Verified ✓';
+        statusEl.style.color = 'var(--green-accent)';
+      }
+      loadBrandGlossaries();
+      loadHistory();
+    } else {
+      if (statusEl) {
+        statusEl.textContent = 'Invalid credentials ✕';
+        statusEl.style.color = 'var(--red-accent)';
+      }
+    }
+  } catch (e) {
+    console.warn('API key validation error:', e);
+    if (statusEl) {
+      statusEl.textContent = 'Verification error';
+      statusEl.style.color = 'var(--yellow-accent)';
+    }
+  }
+}
+
+async function loadBrandGlossaries() {
+  const selector = document.getElementById('adv-glossary');
+  if (!selector) return;
+  
+  if (!state.apiKey) {
+    selector.innerHTML = '<option value="">🔍 None</option>';
+    return;
+  }
+  
+  try {
+    const r = await fetch('/api/heygen/brand-glossaries', {
+      headers: { 'x-api-key': state.apiKey }
+    });
+    if (r.ok) {
+      const d = await r.json();
+      const items = d?.data || [];
+      selector.innerHTML = '<option value="">🔍 None</option>' + items.map(item => `
+        <option value="${escapeHtml(item.brand_glossary_id)}">${escapeHtml(item.name)}</option>
+      `).join('');
+    } else {
+      selector.innerHTML = '<option value="">🔍 None (Failed to load)</option>';
+    }
+  } catch (e) {
+    console.warn('Failed to load brand glossaries:', e);
+    selector.innerHTML = '<option value="">🔍 None (Error loading)</option>';
+  }
+}
+
+async function pollHistoryLive() {
+  if (!state.apiKey) return;
+
+  // Only poll jobs that are still actively running
+  const activeJobs = state.history.filter(item =>
+    item.status === 'running' || item.status === 'processing' || item.status === 'preparing'
+  );
+  if (!activeJobs.length) return;
+
+  // Fetch status for each active job individually — no full list reload
+  const updates = await Promise.allSettled(
+    activeJobs.map(async (job) => {
+      const r = await fetch(`/api/heygen/video-translations/${job.id}`, {
+        headers: { 'x-api-key': state.apiKey }
+      });
+      if (!r.ok) return null;
+      const d = await r.json();
+      return d?.data || null;
+    })
+  );
+
+  let anyChanged = false;
+  updates.forEach((result, i) => {
+    if (result.status !== 'fulfilled' || !result.value) return;
+    const fresh = result.value;
+    const jobId = activeJobs[i].id;
+    const idx = state.history.findIndex(h => h.id === jobId);
+    if (idx === -1) return;
+
+    const oldStatus = state.history[idx].status;
+    const newStatus = fresh.status || oldStatus;
+    const videoUrl = fresh.video_url || fresh.output_video_url || state.history[idx].video_url || null;
+
+    // Patch state in-place
+    state.history[idx] = {
+      ...state.history[idx],
+      status: newStatus,
+      video_url: videoUrl,
+      failure_message: fresh.failure_message || null,
+    };
+    if (oldStatus !== newStatus) anyChanged = true;
+
+    // Surgically update only this card's overlay — don't touch the whole grid
+    patchHistoryCard(jobId, state.history[idx]);
+  });
+
+  // If any job finished, update sidebar recents (text only, cheap)
+  if (anyChanged) renderSidebarRecents();
+}
+
+// Patch a single history card overlay/status without rebuilding the whole grid
+function patchHistoryCard(jobId, item) {
+  const grid = document.getElementById('history-grid');
+  if (!grid) return;
+
+  // Find the card by data attribute or matching onclick
+  const card = grid.querySelector(`.history-card[onclick*="'${jobId}'"]`);
+  if (!card) return;
+
+  const status = item.status || 'completed';
+  const thumb = card.querySelector('.hc-thumb');
+  if (!thumb) return;
+
+  // Remove existing overlay
+  thumb.querySelectorAll('.hc-status-overlay').forEach(el => el.remove());
+
+  if (status === 'running' || status === 'processing' || status === 'preparing') {
+    const elapsedSec = item.created_at ? (Date.now() - item.created_at * 1000) / 1000 : 60;
+    const percent = Math.min(95, Math.max(5, Math.round((elapsedSec / 120) * 100)));
+    const overlay = document.createElement('div');
+    overlay.className = 'hc-status-overlay';
+    overlay.innerHTML = `<div class="heygen-loader-container">
+      <div class="heygen-loader-logo">
+        <div class="logo-part part-cyan"></div>
+        <div class="logo-part part-purple"></div>
+      </div>
+      <div class="loading-percentage">${percent}% Ready</div>
+    </div>`;
+    thumb.appendChild(overlay);
+  } else if (status === 'failed' || status === 'cancelled') {
+    const overlay = document.createElement('div');
+    overlay.className = 'hc-status-overlay';
+    overlay.style.cssText = 'backdrop-filter:blur(4px);background:rgba(18,19,22,0.7)';
+    overlay.innerHTML = `<div class="hc-status-failed" style="display:flex;flex-direction:column;align-items:center;gap:6px;color:#fff">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <span style="font-size:12px;font-weight:600">${item.failure_message || 'Cancelled by user'}</span>
+    </div>`;
+    thumb.appendChild(overlay);
+
+    // If video is now available, add it to the thumb too
+    if (status === 'completed' && item.video_url && !thumb.querySelector('video')) {
+      const vid = document.createElement('video');
+      vid.src = item.video_url + '#t=0.1';
+      vid.muted = true;
+      vid.preload = 'metadata';
+      vid.playsInline = true;
+      vid.style.cssText = 'width:100%;height:100%;object-fit:cover;position:absolute;top:0;left:0';
+      thumb.insertBefore(vid, thumb.firstChild);
+    }
+  }
+}
+
+// ── SIDEBAR COLLAPSE ──
+function toggleSidebar() {
+  if (window.innerWidth <= 768) {
+    openMobileSidebar();
+  } else {
+    const sb = document.getElementById('sidebar');
+    sb.classList.toggle('collapsed');
+  }
+}
+function openMobileSidebar() {
+  document.getElementById('sidebar').classList.add('mobile-open');
+  document.getElementById('sidebar-overlay').classList.add('visible');
+  document.body.style.overflow = 'hidden';
+}
+function closeMobileSidebar() {
+  document.getElementById('sidebar').classList.remove('mobile-open');
+  document.getElementById('sidebar-overlay').classList.remove('visible');
+  document.body.style.overflow = '';
+}
+
+// ── PAGE NAVIGATION ──
+function navigateToHash(route, params = {}, replace = false) {
+  let hash = '#/' + route;
+  const searchParams = new URLSearchParams();
+  for (const [key, val] of Object.entries(params)) {
+    if (val !== undefined && val !== null) {
+      searchParams.set(key, val);
+    }
+  }
+  const searchStr = searchParams.toString();
+  if (searchStr) {
+    hash += '?' + searchStr;
+  }
+  if (replace) {
+    window.history.replaceState(null, '', hash);
+    handleRouting();
+  } else {
+    window.location.hash = hash;
+  }
+}
+
+function handleRouting() {
+  const hash = window.location.hash;
+  
+  if (!hash || hash === '#' || hash === '#/') {
+    navigateToHash('home', {}, true);
+    return;
+  }
+
+  const pathPart = hash.slice(1).split('?')[0];
+  const searchPart = hash.slice(1).split('?')[1] || '';
+  
+  const route = pathPart.replace(/^\//, '');
+  const params = new URLSearchParams(searchPart);
+  const id = params.get('id');
+
+  let pageName = route;
+  if (route === 'home') pageName = 'upload';
+
+  if (pageName === 'video-detail') {
+    if (id) {
+      openVideoDetailByIdDirect(id);
+    } else {
+      navigateToHash('home', {}, true);
+    }
+  } else if (pageName === 'progress') {
+    showPageDirect('progress');
+    if (id) {
+      document.getElementById('progress-job-id').textContent = 'Job ID: ' + id;
+      startPolling(id);
+    } else {
+      document.getElementById('progress-job-id').textContent = 'Job ID: —';
+    }
+  } else if (pageName === 'settings') {
+    // If user refreshes on settings page, their selected local file/url is lost. Send them to home.
+    if (!state.selectedFile && !state.selectedUrl) {
+      navigateToHash('home', {}, true);
+    } else {
+      showPageDirect('settings');
+    }
+  } else if (['upload', 'history', 'glossary'].includes(pageName)) {
+    showPageDirect(pageName);
+  } else {
+    navigateToHash('home', {}, true);
+  }
+}
+
+function showPage(name) {
+  closeMobileSidebar(); // close drawer on mobile when navigating
+  if (name === 'upload') {
+    navigateToHash('home');
+  } else {
+    navigateToHash(name);
+  }
+}
+
+function showPageDirect(name) {
+  // Navigation stack
+  if (state.pageHistory[state.pageHistory.length - 1] !== name) {
+    state.pageHistory.push(name);
+  }
+
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pageEl = document.getElementById(name + '-page');
+  if (pageEl) pageEl.classList.add('active');
+
+  const topbar = document.getElementById('topbar');
+  if (topbar) {
+    topbar.style.display = name === 'video-detail' ? 'none' : 'flex';
+    const tabs = topbar.querySelector('.topbar-tabs');
+    if (tabs) {
+      tabs.style.display = (name === 'upload' || name === 'settings' || name === 'progress' || name === 'glossary') ? 'flex' : 'none';
+    }
+  }
+
+  // Update tabs
+  document.querySelectorAll('.tab-pill').forEach(t => t.classList.remove('active'));
+  if (name === 'upload' || name === 'settings' || name === 'progress') {
+    document.getElementById('tab-translate').classList.add('active');
+  } else if (name === 'glossary') {
+    document.getElementById('tab-glossary').classList.add('active');
+  }
+
+  // Update sidebar active menu items
+  document.querySelectorAll('.menu-item').forEach(i => i.classList.remove('active'));
+  if (name === 'upload' || name === 'settings') {
+    const homeMenu = document.getElementById('menu-home');
+    if (homeMenu) homeMenu.classList.add('active');
+  }
+
+  if (name === 'history') loadHistory(false);
+}
+
+function goBack() {
+  if (window.history.length > 1) {
+    window.history.back();
+  } else {
+    navigateToHash('home');
+  }
+}
+
+// ── DRAG & DROP ──
+function setupDragDrop() {
+  const zone = document.getElementById('drop-zone');
+  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('drag');
+    const f = e.dataTransfer.files[0];
+    if (f && f.type.startsWith('video/')) handleFileSelect(f);
+    else showToast('Please select a valid video file', 'error');
+  });
+}
+
+function handleFileSelect(file) {
+  if (!file) return;
+  if (!state.apiKey) {
+    showToast('Please enter and verify your API credentials first', 'error');
+    toggleApiPopover();
+    return;
+  }
+  state.selectedFile = file;
+  state.selectedUrl = '';
+  state.videoInputType = 'file';
+  const url = URL.createObjectURL(file);
+  setupSettingsPage(file.name, formatBytes(file.size), url, 'file');
+  showPage('settings');
+}
+
+let urlInputTimeout = null;
+function handleUrlInput(val) {
+  state.selectedUrl = val;
+  clearTimeout(urlInputTimeout);
+  if (val.startsWith('http://') || val.startsWith('https://')) {
+    urlInputTimeout = setTimeout(() => {
+      submitUrl();
+    }, 1000);
+  }
+}
+
+function submitUrl() {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) return;
+  if (!state.apiKey) {
+    showToast('Please enter and verify your API credentials first', 'error');
+    toggleApiPopover();
+    return;
+  }
+  state.selectedUrl = url;
+  state.selectedFile = null;
+  state.videoInputType = 'url';
+  const title = extractTitle(url);
+  setupSettingsPage(title, 'URL source stream', null, 'url');
+  showPage('settings');
+}
+
+function extractTitle(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('youtube') || u.hostname.includes('youtu.be')) {
+      const id = u.searchParams.get('v') || u.pathname.split('/').pop();
+      return 'YouTube: ' + id;
+    }
+    return decodeURIComponent(u.pathname.split('/').pop() || url);
+  } catch { return url; }
+}
+
+function setupSettingsPage(title, size, videoUrl, type) {
+  document.getElementById('vid-title').textContent = title;
+  
+  const previewContainer = document.querySelector('.preview-video-container');
+  previewContainer.innerHTML = '';
+  
+  // Use provided videoUrl or fallback to the local input_video.mp4 to keep it interactive
+  const playableUrl = videoUrl || './input_video.mp4';
+  
+  const video = document.createElement('video');
+  video.id = 'vid-preview';
+  video.controls = true;
+  video.src = playableUrl;
+  previewContainer.appendChild(video);
+  document.getElementById('vid-thumb').style.display = 'none';
+}
+
+// ── SOURCE LANGUAGE PICKER ──
+const SRC_LANGS = ['', ...LANGS]; // '' = Auto-detect
+function renderSrcLangPanel(filter) {
+  const list = document.getElementById('src-lang-list');
+  const f = (filter || '').toLowerCase();
+  const items = SRC_LANGS.filter(l => !f || l.toLowerCase().includes(f));
+  list.innerHTML = items.map(l => {
+    const sel = state.sourceLanguage === l;
+    const match = l ? l.match(/^(.+?)(?:\s*(\(.+\)))?$/) : null;
+    const name = match ? match[1].trim() : 'Auto-detect';
+    const country = match && match[2] ? match[2] : '';
+    const display = l === '' ? '<span style="color:var(--text-muted)">Auto-detect</span>' :
+      `<span class="lang-item-name">${name}</span>${country ? `<span class="lang-item-country" style="margin-left:4px">${country}</span>` : ''}`;
+    return `<div class="src-lang-item${sel?' selected':''}" onclick="selectSrcLang('${l.replace(/'/g,"\\'")}')"><span style="display:flex;align-items:baseline;gap:4px">${display}</span></div>`;
+  }).join('');
+  // Scroll to selected
+  setTimeout(() => {
+    const sel = list.querySelector('.src-lang-item.selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }, 0);
+}
+function selectSrcLang(lang) {
+  state.sourceLanguage = lang;
+  document.getElementById('src-lang-label').textContent = lang || 'Auto-detect';
+  closeSrcLangDropdown();
+}
+function openSrcLangDropdown() {
+  const panel = document.getElementById('src-lang-panel');
+  panel.style.display = 'block';
+  document.getElementById('src-lang-btn').classList.add('open');
+  document.getElementById('src-lang-search').value = '';
+  renderSrcLangPanel('');
+  document.getElementById('src-lang-search').focus();
+}
+function closeSrcLangDropdown() {
+  document.getElementById('src-lang-panel').style.display = 'none';
+  document.getElementById('src-lang-btn').classList.remove('open');
+}
+function toggleSrcLangDropdown() {
+  const panel = document.getElementById('src-lang-panel');
+  panel.style.display === 'none' ? openSrcLangDropdown() : closeSrcLangDropdown();
+}
+// (outside-click handling is consolidated in DOMContentLoaded)
+
+// ── LANGUAGE PICKER ──
+function renderLangDropdown(filter) {
+  const dd = document.getElementById('lang-dropdown');
+  const f = (filter || '').toLowerCase();
+  const filtered = LANGS.filter(l => l.toLowerCase().includes(f)).slice(0, 80);
+  dd.innerHTML = filtered.map(l => {
+    const sel = state.selectedLangs.includes(l);
+    // Split "Language (Country)" into two parts
+    const match = l.match(/^(.+?)(?:\s*(\(.+\)))?$/);
+    const name = match ? match[1].trim() : l;
+    const country = match && match[2] ? match[2] : '';
+    return `<div class="lang-item${sel?' selected':''}" onclick="toggleLang('${l.replace(/'/g,"\\'")}')">
+      <div class="lang-checkbox"></div>
+      <div class="lang-item-label">
+        <span class="lang-item-name">${name}</span>
+        ${country ? `<span class="lang-item-country">${country}</span>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleLang(lang) {
+  if (state.selectedLangs.includes(lang)) {
+    state.selectedLangs = state.selectedLangs.filter(l => l !== lang);
+  } else {
+    state.selectedLangs.push(lang);
+  }
+  renderLangTags();
+  renderLangDropdown(document.getElementById('lang-search').value);
+}
+
+function removeLang(lang) {
+  state.selectedLangs = state.selectedLangs.filter(l => l !== lang);
+  renderLangTags();
+  renderLangDropdown(document.getElementById('lang-search').value);
+}
+
+// ── RENDER LANGUAGE TAGS ──
+function renderLangTags() {
+  const wrap = document.getElementById('lang-tags');
+  const searchInput = document.getElementById('lang-search');
+  wrap.innerHTML = state.selectedLangs.map(l =>
+    `<div class="lang-tag">${l}<button onclick="event.stopPropagation();removeLang('${l.replace(/'/g,"\\'")}')">×</button></div>`
+  ).join('');
+  // Show placeholder only when no langs selected
+  searchInput.placeholder = state.selectedLangs.length ? '' : 'Search language...';
+  // Scroll tag container to show latest tag
+  wrap.scrollLeft = wrap.scrollWidth;
+}
+
+function filterLangs(val) { renderLangDropdown(val); openLangDropdown(); }
+function openLangDropdown() {
+  const dd = document.getElementById('lang-dropdown');
+  dd.style.display = 'block';
+  renderLangDropdown(document.getElementById('lang-search').value);
+}
+function closeLangDropdown() { document.getElementById('lang-dropdown').style.display = 'none'; }
+function toggleLangDropdown() {
+  const dd = document.getElementById('lang-dropdown');
+  if (dd.style.display === 'none' || !dd.style.display) {
+    openLangDropdown();
+    document.getElementById('lang-search').focus();
+  } else {
+    closeLangDropdown();
+  }
+}
+// (outside-click handling is consolidated in DOMContentLoaded)
+
+// ── ENGINE ──
+function toggleEngineDropdown() {
+  event.stopPropagation();
+  const dd = document.getElementById('engine-dropdown');
+  dd.style.display = dd.style.display === 'none' ? 'block' : 'none';
+}
+function closeEngineDropdown() { document.getElementById('engine-dropdown').style.display = 'none'; }
+
+function selectEngine(e) {
+  state.engine = e;
+  const labels = { audio_only: 'Audio only', speed: 'Speed', precision: 'Precision' };
+  document.getElementById('engine-label').textContent = labels[e];
+  ['audio','speed','precision'].forEach(k => {
+    const opt = document.getElementById('eng-'+k);
+    const map = { audio: 'audio_only', speed: 'speed', precision: 'precision' };
+    if (map[k] === e) opt.classList.add('selected');
+    else opt.classList.remove('selected');
+  });
+  closeEngineDropdown();
+}
+
+// ── ADVANCED SETTINGS MODAL ──
+function openAdvancedModal() { 
+  document.getElementById('adv-modal').classList.add('open'); 
+  selectModalTab('modal-tab-features');
+}
+
+function selectModalTab(tabId) {
+  const contents = document.querySelectorAll('.modal-tab-content');
+  contents.forEach(c => c.classList.remove('active'));
+
+  const buttons = document.querySelectorAll('.modal-tab-btn');
+  buttons.forEach(b => b.classList.remove('active'));
+
+  const activeContent = document.getElementById(tabId);
+  if (activeContent) activeContent.classList.add('active');
+
+  buttons.forEach(btn => {
+    if (btn.getAttribute('onclick') && btn.getAttribute('onclick').includes(tabId)) {
+      btn.classList.add('active');
+    }
+  });
+}
+function closeAdvancedModal() {
+  document.getElementById('adv-modal').classList.remove('open');
+  // Read state switches
+  state.adv.dynamicDuration = document.getElementById('sw-dynamic').classList.contains('active');
+  state.adv.collection = document.getElementById('sw-collection').classList.contains('active');
+  state.adv.removeMusic = document.getElementById('sw-music').classList.contains('active');
+  state.adv.keepSpecs = document.getElementById('sw-specs').classList.contains('active');
+  state.adv.captions = document.getElementById('sw-captions').classList.contains('active');
+  state.adv.enhanceVoice = document.getElementById('sw-enhance').classList.contains('active');
+  state.adv.watermark = document.getElementById('sw-watermark').classList.contains('active');
+  const sp = document.getElementById('adv-speakers').value;
+  state.adv.speakers = sp ? parseInt(sp) : null;
+
+  // Trim times and brand glossary ID
+  const start = document.getElementById('adv-start-time').value;
+  state.adv.startTime = start ? parseFloat(start) : null;
+  const end = document.getElementById('adv-end-time').value;
+  state.adv.endTime = end ? parseFloat(end) : null;
+  const gloss = document.getElementById('adv-glossary').value;
+  state.adv.glossaryId = gloss || null;
+}
+function toggleSwitch(el) { el.classList.toggle('active'); }
+
+// ── ASSET UPLOAD ──
+async function uploadAsset(file) {
+  showToast('Uploading file...', 'info');
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('/api/heygen/assets', {
+    method: 'POST',
+    headers: { 'x-api-key': state.apiKey },
+    body: fd
+  });
+  if (!r.ok) throw new Error('Upload failed: HTTP ' + r.status);
+  const d = await r.json();
+  return d?.data?.asset_id || d?.data?.id;
+}
+
+async function uploadSrtToTmpFiles(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('https://tmpfiles.org/api/v1/upload', {
+    method: 'POST',
+    body: fd
+  });
+  if (!r.ok) throw new Error('SRT Upload failed: HTTP ' + r.status);
+  const d = await r.json();
+  return d.data.url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+}
+
+// ✨ TRANSLATION PIPELINE ✨──
+async function startTranslation() {
+  if (!state.apiKey) { showToast('API credentials required', 'error'); return; }
+  if (!state.selectedLangs.length) { showToast('Please choose target output language', 'error'); return; }
+  if (!state.videoInputType) { showToast('Please select or paste a video first', 'error'); return; }
+
+  // Edge case: User clicks translate while AI is still generating SRT
+  if (state.isSrtGenerating) {
+    const proceed = confirm("✨ Subtitles are currently being generated by AI.\n\nAre you sure you want to start the translation WITHOUT attaching them?");
+    if (!proceed) return;
+  }
+
+  // Edge case: Multiple languages = multiple credits
+  if (state.selectedLangs.length > 1) {
+    const proceed = confirm(`⚠️ You have selected ${state.selectedLangs.length} target languages.\n\nThis will create ${state.selectedLangs.length} separate translation jobs and consume ${state.selectedLangs.length}x the normal credits.\n\nDo you want to proceed?`);
+    if (!proceed) return;
+  }
+
+  // Edge case: Large file warning
+  if (state.videoInputType === 'file' && state.selectedFile && state.selectedFile.size > 500 * 1024 * 1024) {
+    const proceed = confirm("📁 Your video file is quite large (over 500MB). Uploading may take several minutes.\n\nPlease ensure you leave this browser tab open until the upload finishes.\n\nProceed?");
+    if (!proceed) return;
+  }
+
+  document.getElementById('translate-btn').disabled = true;
+  showPage('progress');
+  setStep(0);
+  
+  // Show active bottom status bar
+  showActiveToast('Preparing upload payload');
+
+  try {
+    state.isUploadingToHeyGen = true;
+    let videoField;
+    if (state.videoInputType === 'file') {
+      setStep(0, true);
+      const assetId = await uploadAsset(state.selectedFile);
+      state.assetId = assetId;
+      videoField = { type: 'asset_id', asset_id: assetId };
+    } else {
+      videoField = { type: 'url', url: state.selectedUrl };
+    }
+
+    // Upload custom audio if selected
+    let audioField = null;
+    if (state.selectedAudioFile) {
+      showActiveToast('Uploading custom audio track...');
+      const audioAssetId = await uploadAsset(state.selectedAudioFile);
+      audioField = { type: 'asset_id', asset_id: audioAssetId };
+    }
+
+    // Upload custom SRT subtitles if selected
+    let srtField = null;
+    if (state.selectedSrtFile) {
+      showActiveToast('Uploading custom subtitles...');
+      const srtUrl = await uploadSrtToTmpFiles(state.selectedSrtFile);
+      srtField = { type: 'url', url: srtUrl };
+    }
+
+    setStep(1);
+    const isAudioOnly = state.engine === 'audio_only';
+    const body = {
+      video: videoField,
+      output_languages: state.selectedLangs,
+      mode: isAudioOnly ? 'speed' : state.engine,
+      translate_audio_only: isAudioOnly,
+      enable_dynamic_duration: state.adv.dynamicDuration,
+      disable_music_track: state.adv.removeMusic,
+      enable_caption: state.adv.captions,
+      enable_speech_enhancement: state.adv.enhanceVoice,
+      enable_watermark: state.adv.watermark,
+      keep_the_same_format: state.adv.keepSpecs || null,
+      ...(state.adv.speakers && { speaker_num: state.adv.speakers }),
+      ...(state.adv.startTime !== null && { start_time: state.adv.startTime }),
+      ...(state.adv.endTime !== null && { end_time: state.adv.endTime }),
+      ...(state.adv.glossaryId && { brand_glossary_id: state.adv.glossaryId }),
+      ...(audioField && { audio: audioField }),
+      ...(srtField && { srt: srtField, srt_role: 'input' }),
+      ...(state.sourceLanguage && { input_language: state.sourceLanguage }),
+      title: (state.selectedFile?.name || extractTitle(state.selectedUrl)).replace(/\.[^.]+$/,'') + '-' + state.selectedLangs[0]
+    };
+
+    const r = await fetch('/api/heygen/video-translations', {
+      method: 'POST',
+      headers: { 'x-api-key': state.apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    const ids = d?.data?.video_translation_ids || d?.data?.video_translation_id;
+    let jobId = '';
+    if (Array.isArray(ids)) jobId = ids[0];
+    else jobId = ids;
+
+    if (!jobId) throw new Error(d?.message || d?.data?.error?.message || 'Failed to submit translation job');
+
+    document.getElementById('progress-job-id').textContent = 'Job ID: ' + jobId;
+    showToast('Translation submitted successfully!', 'success');
+    
+    // Save to local history cache
+    const newJob = {
+      id: jobId,
+      title: body.title,
+      status: 'running',
+      duration: state.selectedFile ? 60 : 120,
+      output_language: state.selectedLangs[0],
+      created_at: Math.floor(Date.now() / 1000),
+      video_url: state.selectedFile ? URL.createObjectURL(state.selectedFile) : './input_video.mp4'
+    };
+    saveJobToLocalHistory(newJob);
+
+    // Begin polling status (via routing)
+    state.isUploadingToHeyGen = false;
+    navigateToHash('progress', { id: jobId }, true);
+
+  } catch (e) {
+    state.isUploadingToHeyGen = false;
+    console.error(e);
+    showToast(e.message, 'error');
+    dismissActiveToast();
+    document.getElementById('translate-btn').disabled = false;
+    showPage('settings');
+  }
+}
+
+// ── POLLING ──
+let pollTimer = null;
+let elapsedTimer = null;
+
+function startPolling(jobId) {
+  clearTimeout(pollTimer);
+  clearInterval(elapsedTimer);
+  setStep(2);
+  let elapsed = 0;
+  let simulatedBarPercent = 5;
+
+  document.getElementById('progress-bar').style.width = '5%';
+  
+  elapsedTimer = setInterval(() => {
+    elapsed++;
+    const min = String(Math.floor(elapsed/60)).padStart(2,'0');
+    const sec = String(elapsed%60).padStart(2,'0');
+    document.getElementById('progress-elapsed').textContent = `${min}:${sec} elapsed`;
+    
+    // Simulate step active transitions
+    if (elapsed > 10 && elapsed <= 25) { setStep(2, true); setStep(3); }
+    else if (elapsed > 25 && elapsed <= 45) { setStep(3, true); setStep(4); }
+    else if (elapsed > 45 && elapsed <= 70) { setStep(4, true); setStep(5); }
+    
+    if (simulatedBarPercent < 90) {
+      simulatedBarPercent += 0.2;
+      document.getElementById('progress-bar').style.width = simulatedBarPercent + '%';
+    }
+  }, 1000);
+
+  doPoll(jobId);
+}
+
+async function doPoll(jobId) {
+  try {
+    const r = await fetch('/api/heygen/video-translations/' + jobId, {
+      headers: { 'x-api-key': state.apiKey }
+    });
+    const d = await r.json();
+    const data = d?.data;
+    const status = data?.status;
+    const err = data?.error || data?.failure_message;
+
+    document.getElementById('progress-status-text').textContent = status || 'processing';
+    document.getElementById('progress-sub').textContent = status === 'running' ? 'HeyGen is working on dubbing...' : 'Job status: ' + (status || 'unknown');
+    showActiveToast('Dubbing in progress: ' + (status || 'processing'));
+
+    // Update local storage status
+    if (data) {
+      saveJobToLocalHistory({
+        id: jobId,
+        status: status || 'processing',
+        duration: data.duration || 60,
+        video_url: data.video_url || './input_video.mp4',
+        srt_caption_url: data.srt_caption_url || '',
+        audio_url: data.audio_url || ''
+      });
+    }
+
+    if (status === 'success' || status === 'completed') {
+      clearInterval(elapsedTimer);
+      setStep(5, true);
+      document.getElementById('progress-bar').style.width = '100%';
+      showToast('Translation completed successfully!', 'success');
+      dismissActiveToast();
+      
+      // Load and view project
+      setTimeout(() => {
+        const item = state.history.find(x => x.id === jobId) || data;
+        openVideoDetail(item);
+      }, 800);
+      return;
+    }
+
+    if (status === 'failed' || status === 'cancelled') {
+      clearInterval(elapsedTimer);
+      if (data) {
+        saveJobToLocalHistory({
+          id: jobId,
+          status: 'failed',
+          failure_message: err || 'Translation failed'
+        });
+      }
+      showToast('Translation job failed: ' + (err || 'Cancelled by system'), 'error');
+      dismissActiveToast();
+      document.getElementById('translate-btn').disabled = false;
+      showPage('settings');
+      return;
+    }
+
+    pollTimer = setTimeout(() => doPoll(jobId), 6000);
+  } catch (e) {
+    console.warn('Network issue during polling:', e.message);
+    pollTimer = setTimeout(() => doPoll(jobId), 10000);
+  }
+}
+
+function cancelTranslation() {
+  clearTimeout(pollTimer);
+  clearInterval(elapsedTimer);
+  dismissActiveToast();
+  document.getElementById('translate-btn').disabled = false;
+  showPage('upload');
+}
+
+function setStep(idx, done = false) {
+  for (let i = 0; i <= 5; i++) {
+    const dot = document.getElementById('step-' + i);
+    if (!dot) continue;
+    dot.classList.remove('active', 'done');
+    if (i < idx) dot.classList.add('done');
+    else if (i === idx) dot.classList.add(done ? 'done' : 'active');
+  }
+}
+
+// ── HISTORY LIST RETRIEVAL ──
+async function fetchHistoryPage(token = '') {
+  if (!state.apiKey) {
+    return { items: [], nextToken: '', hasMore: false };
+  }
+  try {
+    let url = '/api/heygen/video-translations?limit=50';
+    if (token) {
+      url += '&token=' + encodeURIComponent(token);
+    }
+    const r = await fetch(url, {
+      headers: { 'x-api-key': state.apiKey }
+    });
+    if (!r.ok) {
+      throw new Error('HTTP ' + r.status);
+    }
+    const d = await r.json();
+    const allItems = d?.data || [];
+
+    // Filter out deleted/trashed items
+    const items = allItems.filter(item => {
+      if (item.is_deleted === true) return false;
+      if (item.deleted_at) return false;
+      if (['deleted','removed','trashed','trash'].includes(item.status)) return false;
+      // Hide failed jobs with credit errors — HeyGen's own UI hides these
+      // They never produced output so nothing useful to show
+      if (item.status === 'failed') {
+        const msg = (item.failure_message || '').toLowerCase();
+        if (msg.includes('insufficient credit') || msg.includes("requires 'api' credits") || msg.includes('credit')) return false;
+      }
+      return true;
+    });
+
+    const nextToken = d?.next_token || '';
+    const hasMore = !!d?.has_more;
+    return { items, nextToken, hasMore };
+  } catch (e) {
+    console.warn('Failed to fetch history page:', e);
+    return { items: [], nextToken: '', hasMore: false };
+  }
+}
+
+async function loadHistory(showSpinner = true) {
+  const grid = document.getElementById('history-grid');
+  const recentThumbs = document.getElementById('recent-thumbs');
+  const sidebarRecents = document.getElementById('sidebar-recents');
+  
+  state.isHistoryLoading = true;
+
+  if (showSpinner) {
+    if (grid) grid.innerHTML = '<div style="color:var(--text-muted);font-size:13px;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Fetching videos...</div>';
+    if (recentThumbs) recentThumbs.innerHTML = '<div style="color:var(--text-muted);font-size:12px;display:flex;align-items:center;gap:8px;padding:8px 0"><div class="spinner"></div>Loading your projects...</div>';
+    if (sidebarRecents) sidebarRecents.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:11px;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Loading...</div>';
+  }
+
+  // Reset pagination state for a fresh load
+  state.apiHistory = [];
+  state.nextToken = '';
+  state.hasMore = false;
+
+  const res = await fetchHistoryPage('');
+  state.apiHistory = res.items;
+  state.nextToken = res.nextToken;
+  state.hasMore = res.hasMore;
+  state.isHistoryLoading = false;
+
+  updateHistoryStateAndRender();
+}
+
+function updateHistoryStateAndRender() {
+  // History is 100% API-driven — no localStorage merging
+  const items = (state.apiHistory || []).slice();
+
+  // Sort by created_at descending (newest first)
+  items.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  state.history = items;
+
+  // Render Videos page history grid if it exists
+  renderHistoryGrid();
+
+  // Render Sidebar Recents
+  renderSidebarRecents();
+
+  // Load Recent Thumbs on homepage
+  loadRecentThumbs(items);
+}
+
+function renderHistoryGrid() {
+  const grid = document.getElementById('history-grid');
+  if (!grid) return;
+
+  const merged = state.history || [];
+  if (!merged.length) {
+    if (state.isHistoryLoading) {
+       grid.innerHTML = '<div style="color:var(--text-muted);font-size:13px;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Fetching videos...</div>';
+       return;
+    }
+    grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:48px 16px;color:var(--text-muted)">
+      <h3 style="color:#fff;margin-bottom:8px">No translations yet</h3>
+      <p style="font-size:13px">Translate files or paste links to get started.</p>
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = merged.map(item => {
+    const status = item.status || 'completed';
+    const title = item.title || item.id || 'Translation';
+    const timeText = timeAgo(item.created_at * 1000 || Date.now());
+    const metaText = `${timeText} • Video Translate`;
+
+    let overlayHtml = '';
+    if (status === 'running' || status === 'processing' || status === 'preparing') {
+      let percent = 19;
+      if (item.created_at) {
+        const elapsedSec = (Date.now() - (item.created_at * 1000)) / 1000;
+        if (elapsedSec < 120) {
+          percent = Math.min(95, Math.max(5, Math.round((elapsedSec / 120) * 100)));
+        } else {
+          percent = 95;
+        }
+      }
+      overlayHtml = `<div class="hc-status-overlay">
+        <div class="heygen-loader-container">
+          <div class="heygen-loader-logo">
+            <div class="logo-part part-cyan"></div>
+            <div class="logo-part part-purple"></div>
+          </div>
+          <div class="loading-percentage">${percent}% Ready</div>
+        </div>
+      </div>`;
+    } else if (status === 'failed' || status === 'cancelled') {
+      overlayHtml = `<div class="hc-status-overlay" style="backdrop-filter:blur(4px);background:rgba(18,19,22,0.7)">
+        <div class="hc-status-failed" style="display:flex;flex-direction:column;align-items:center;gap:6px;color:#fff">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" style="margin-bottom:2px">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <span style="font-size:12px;font-weight:600">${item.failure_message || 'Cancelled by user'}</span>
+        </div>
+      </div>`;
+    }
+
+    const hasVideo = item.video_url;
+    return `<div class="history-card" onclick="openVideoDetailById('${item.id}')">
+      <div class="hc-thumb">
+        ${hasVideo
+          ? `<video class="hc-thumb-vid" data-src="${item.video_url}#t=0.1" muted preload="none" playsinline style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'"></video>`
+          : `<div style="width:100%;height:100%;background:#1d2024"></div>`}
+        ${overlayHtml}
+        <input type="checkbox" class="hc-checkbox" data-id="${item.id}" onclick="event.stopPropagation()" onchange="handleHistoryCheckboxChange(event)"/>
+        <div class="hc-menu-dots" onclick="event.stopPropagation();toggleHistoryMenu(event, '${item.id}')">...</div>
+      </div>
+      <div class="hc-details">
+        <div class="hc-title" title="${title}">${title}</div>
+        <div class="hc-meta-row">${metaText}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Only load video src for cards currently in viewport
+  setupLazyVideoLoad();
+}
+
+// IntersectionObserver lazy-loader — sets video src only when card scrolls into view
+let _lazyVideoObserver = null;
+function setupLazyVideoLoad() {
+  if (_lazyVideoObserver) _lazyVideoObserver.disconnect();
+  _lazyVideoObserver = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      const vid = entry.target;
+      if (vid.dataset.src && !vid.src) {
+        vid.src = vid.dataset.src;
+        vid.load();
+      }
+      _lazyVideoObserver.unobserve(vid);
+    });
+  }, { rootMargin: '120px' });
+  document.querySelectorAll('.hc-thumb-vid[data-src]').forEach(vid => {
+    if (!vid.src) _lazyVideoObserver.observe(vid);
+  });
+}
+
+
+function renderSidebarRecents() {
+  const wrap = document.getElementById('sidebar-recents');
+  if (!wrap) return;
+
+  const items = state.history || [];
+  if (!items.length) {
+    if (state.isHistoryLoading) {
+      wrap.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:11px;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Loading...</div>';
+      return;
+    }
+    wrap.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:11px">No recent translations</div>';
+    return;
+  }
+  
+  let html = items.map(item => {
+    const title = item.title || item.id || 'Translation';
+    const time = item.created_at ? timeAgo(item.created_at * 1000) : 'Recently';
+    const status = item.status || 'completed';
+    
+    let metaText = `${time} • Video Translate`;
+    if (status === 'failed' || status === 'cancelled') {
+      metaText = 'Failed';
+    } else if (status === 'running' || status === 'processing' || status === 'preparing') {
+      metaText = 'Processing';
+    }
+
+    return `<div class="recent-sidebar-item" onclick="openVideoDetailById('${item.id}')">
+      <div class="recent-sb-title">${title}</div>
+      <div class="recent-sb-meta">${metaText}</div>
+    </div>`;
+  }).join('');
+  
+  if (state.hasMore) {
+    html += `<button class="load-more-sb-btn" id="sidebar-load-more-btn" onclick="loadMoreSidebarRecents()">Load more</button>`;
+  }
+  
+  wrap.innerHTML = html;
+}
+
+async function loadMoreSidebarRecents() {
+  const btn = document.getElementById('sidebar-load-more-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px;justify-content:center;width:100%"><div class="spinner" style="width:12px;height:12px;border-width:2px;margin:0"></div>Loading...</span>';
+  }
+
+  const res = await fetchHistoryPage(state.nextToken);
+  
+  if (res.items.length > 0) {
+    // Append unique items to state.apiHistory
+    const existingIds = state.apiHistory.map(x => x.id);
+    const newUniqueItems = res.items.filter(item => !existingIds.includes(item.id));
+    state.apiHistory = [...state.apiHistory, ...newUniqueItems];
+  }
+  
+  state.nextToken = res.nextToken;
+  state.hasMore = res.hasMore;
+
+  updateHistoryStateAndRender();
+}
+
+function loadRecentThumbs(items) {
+  const wrap = document.getElementById('recent-thumbs');
+  const completed = items.filter(item => item.status === 'completed' || item.status === 'success');
+  if (!completed.length) {
+    if (state.isHistoryLoading) {
+       wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0;display:flex;align-items:center;gap:8px"><div class="spinner"></div>Loading your projects...</div>';
+       return;
+    }
+    wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:8px 0">No recent translations found</div>';
+    return;
+  }
+  wrap.innerHTML = completed.slice(0, 6).map(item => {
+    const dur = item.duration ? formatDuration(Math.round(item.duration)) : '—';
+    const title = item.title || item.id || 'Translation';
+    const lang = item.output_language || 'English';
+    const timeText = timeAgo(item.created_at * 1000 || Date.now());
+    return `<div class="recent-project-card" data-id="${item.id}" onclick="openVideoDetailById('${item.id}')">
+      <div class="recent-project-thumb">
+        <video src="${item.video_url || './input_video.mp4'}#t=0.1" muted preload="metadata" playsinline></video>
+        <div class="duration-overlay">
+          <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="margin-right:2px; vertical-align:middle; display:inline-block;">
+            <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          <span>${dur}</span>
+        </div>
+        <div class="lang-badge-overlay">
+          <svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor" style="display:block;">
+            <path d="M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.17 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z"/>
+          </svg>
+        </div>
+      </div>
+      <div class="recent-project-details">
+        <div class="recent-project-title" title="${title}">${title}</div>
+        <div class="recent-project-meta">${timeText} • ${lang}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── HOVER CARD TOOLTIPS FOR THUMBNAILS ──
+function setupHoverCardTooltips() {
+  // Direct silent hover playback on the video elements inside card thumbnails (matching HeyGen behavior)
+  document.addEventListener('mouseover', e => {
+    const video = e.target.closest('.recent-project-thumb video, .hc-thumb video, .project-card-thumb video');
+    if (video) {
+      video.muted = true;
+      video.playsInline = true;
+      video.play().catch(err => {
+        console.warn('Autoplay blocked:', err);
+      });
+    }
+  });
+
+  document.addEventListener('mouseout', e => {
+    const video = e.target.closest('.recent-project-thumb video, .hc-thumb video, .project-card-thumb video');
+    if (video) {
+      video.pause();
+      video.currentTime = 0.1;
+    }
+  });
+}
+
+// ── DETAIL PLAYER & SIDEBAR TABS ──
+function openVideoDetailById(id) {
+  let item = state.history.find(x => x.id === id);
+  
+  if (!item) {
+    let cached = [];
+    try {
+      cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
+    } catch (e) {
+      console.warn('localStorage read failed:', e);
+    }
+    item = cached.find(x => x.id === id);
+  }
+  
+  if (item) {
+    const status = item.status || 'completed';
+    if (status === 'running' || status === 'processing' || status === 'preparing') {
+      navigateToHash('progress', { id });
+      return;
+    }
+    if (status === 'failed' || status === 'cancelled') {
+      showToast(`Project translation failed: ${item.failure_message || 'Cancelled by user'}`, 'error');
+      return;
+    }
+  }
+  
+  navigateToHash('video-detail', { id });
+}
+
+async function openVideoDetailByIdDirect(id) {
+  let item = state.history.find(x => x.id === id);
+  
+  if (!item) {
+    let cached = [];
+    try {
+      cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
+    } catch (e) {
+      console.warn('localStorage read failed:', e);
+    }
+    item = cached.find(x => x.id === id);
+  }
+  
+  if (!item) {
+    showToast('Loading project history...', 'info');
+    await loadHistory(false);
+    item = state.history.find(x => x.id === id);
+  }
+
+  if (!item && state.apiKey) {
+    try {
+      const r = await fetch('/api/heygen/video-translations/' + id, {
+        headers: { 'x-api-key': state.apiKey }
+      });
+      if (r.ok) {
+        const d = await r.json();
+        if (d?.data) {
+          item = {
+            id: id,
+            title: d.data.title || 'Translation',
+            status: d.data.status || 'completed',
+            duration: d.data.duration || 60,
+            video_url: d.data.video_url || './input_video.mp4',
+            srt_caption_url: d.data.srt_caption_url || '',
+            vtt_caption_url: d.data.vtt_caption_url || '',
+            audio_url: d.data.audio_url || '',
+            created_at: d.data.created_at || Math.floor(Date.now() / 1000)
+          };
+          saveJobToLocalHistory(item);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to fetch job details from API:', e);
+    }
+  }
+  
+  if (!item) {
+    showToast('Project not found in workspace', 'error');
+    navigateToHash('home');
+    return;
+  }
+  
+  const status = item.status || 'completed';
+  if (status === 'running' || status === 'processing' || status === 'preparing') {
+    navigateToHash('progress', { id });
+    return;
+  }
+  
+  if (status === 'failed' || status === 'cancelled') {
+    showToast(`Project translation failed: ${item.failure_message || 'Cancelled by user'}`, 'error');
+    navigateToHash('home');
+    return;
+  }
+  
+  openVideoDetailDirect(item);
+}
+
+function openVideoDetail(item) {
+  navigateToHash('video-detail', { id: item.id });
+}
+
+function openVideoDetailDirect(item) {
+  state.activeDetailJob = item;
+  showPageDirect('video-detail');
+
+  document.getElementById('dt-title').textContent = item.title || item.id || 'Video translation';
+  const dateObj = item.created_at ? new Date(item.created_at * 1000) : new Date();
+  const dateStr = dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  document.getElementById('dt-date').textContent = 'Created on ' + dateStr;
+  
+  // Set video element with local input_video.mp4 fallback
+  const player = document.getElementById('dt-video');
+  player.src = item.video_url || './input_video.mp4';
+  
+  // Clear any existing tracks
+  while (player.firstChild) {
+    player.removeChild(player.firstChild);
+  }
+  
+  // Load track if VTT caption is available
+  if (item.vtt_caption_url) {
+    const track = document.createElement('track');
+    track.kind = 'captions';
+    track.label = item.output_language || 'English';
+    track.srclang = (item.output_language || 'en').substring(0, 2).toLowerCase();
+    track.src = item.vtt_caption_url;
+    track.default = true;
+    player.appendChild(track);
+  }
+  
+  player.load();
+  
+  document.getElementById('dt-download-srt').onclick = () => {
+    if (item.srt_caption_url) window.open(item.srt_caption_url, '_blank');
+    else showToast('Subtitles not available for this job', 'info');
+  };
+
+  // Generate mock scrollable transcript timestamps
+  generateTranscriptSegments(item);
+
+  // Populate folder carousel
+  generateCarouselItems(item);
+}
+
+function parseSRT(srtText) {
+  const segments = [];
+  const regex = /(\d+)\r?\n(\d{2}:\d{2}:\d{2}[,\.]\d{3}) --> (\d{2}:\d{2}:\d{2}[,\.]\d{3})\r?\n([\s\S]*?)(?=\r?\n\r?\n\d+|\r?\n\r?\n?$)/g;
+  let match;
+  while ((match = regex.exec(srtText)) !== null) {
+    const timeStr = match[2];
+    const text = match[4].replace(/\r?\n/g, ' ').trim();
+    const parts = timeStr.split(':');
+    const secParts = parts[2].split(/[,\.]/);
+    const seconds = parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseFloat(secParts[0] + '.' + secParts[1]);
+    
+    const minutesLabel = String(Math.floor(seconds / 60));
+    const secondsLabel = String(Math.floor(seconds % 60)).padStart(2, '0');
+    
+    segments.push({
+      seconds: seconds,
+      timeLabel: minutesLabel + ':' + secondsLabel,
+      text: text
+    });
+  }
+  return segments;
+}
+
+async function generateTranscriptSegments(item) {
+  const wrap = document.getElementById('dt-transcript-list');
+  wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px;padding:12px">Loading transcript...</div>';
+  
+  const srtUrl = item.srt_caption_url || item.subtitle_url;
+  if (srtUrl) {
+    try {
+      const resp = await fetch(srtUrl);
+      if (resp.ok) {
+        const srtText = await resp.text();
+        const segments = parseSRT(srtText);
+        if (segments.length > 0) {
+          wrap.innerHTML = '';
+          segments.forEach(seg => {
+            const card = document.createElement('div');
+            card.className = 'transcript-segment-card';
+            card.setAttribute('data-seconds', seg.seconds);
+            card.onclick = () => {
+              document.getElementById('dt-video').currentTime = seg.seconds;
+            };
+            card.innerHTML = `
+              <div class="segment-timecode">${seg.timeLabel}</div>
+              <div class="segment-text">${escapeHtml(seg.text)}</div>
+            `;
+            wrap.appendChild(card);
+          });
+          setupTranscriptSync();
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to fetch/parse real SRT transcript:", e);
+    }
+  }
+
+  // Fallback if no srt_caption_url or fetch failed
+  wrap.innerHTML = '';
+  const sentences = [
+    "Welcome to the HeyGen API v3 Translation engine.",
+    "This system processes human vocal tracks and preserves tone qualities.",
+    "The translation covers over 175 languages with localized lipsync overlays.",
+    "Natural speech patterns and pacing parameters are analyzed dynamically.",
+    "Adjust settings in the dashboard to optimize processing credits."
+  ];
+
+  const duration = item.duration || 60;
+  const count = Math.min(sentences.length, Math.ceil(duration / 10));
+
+  for (let i = 0; i < count; i++) {
+    const elapsedSec = i * 10;
+    const min = String(Math.floor(elapsedSec / 60));
+    const sec = String(elapsedSec % 60).padStart(2, '0');
+    
+    const card = document.createElement('div');
+    card.className = 'transcript-segment-card';
+    card.setAttribute('data-seconds', elapsedSec);
+    card.onclick = () => {
+      document.getElementById('dt-video').currentTime = elapsedSec;
+    };
+    card.innerHTML = `
+      <div class="segment-timecode">${min}:${sec}</div>
+      <div class="segment-text">${sentences[i]}</div>
+    `;
+    wrap.appendChild(card);
+  }
+}
+
+function copyFullTranscript() {
+  const cards = document.querySelectorAll('.segment-text');
+  const fullText = Array.from(cards).map(c => c.textContent).join('\n');
+  navigator.clipboard.writeText(fullText).then(() => {
+    showToast('Transcript copied to clipboard', 'success');
+  });
+}
+
+// ── DOWNLOAD MODAL ──
+function openDownloadModal() {
+  if (!state.activeDetailJob) return;
+  const item = state.activeDetailJob;
+  
+  document.getElementById('download-modal').classList.add('open');
+  document.getElementById('dl-title').textContent = item.title || 'translated_output.mp4';
+  
+  const durationSec = item.duration ? Math.round(item.duration) : 69;
+  document.getElementById('dl-duration-text').textContent = formatDuration(durationSec);
+  
+  document.getElementById('dl-thumb').src = item.video_url || './input_video.mp4';
+  
+  const dateObj = item.created_at ? new Date(item.created_at * 1000) : new Date();
+  const options = { month: 'long', day: 'numeric', year: 'numeric' };
+  const datePart = dateObj.toLocaleDateString('en-US', options);
+  const timePart = dateObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  document.getElementById('dl-date-text').textContent = `${datePart} at ${timePart}`;
+
+  if (item.audio_url) {
+    document.getElementById('dl-btn-audio').href = item.audio_url;
+    document.getElementById('dl-btn-audio').style.display = 'inline-flex';
+  } else {
+    document.getElementById('dl-btn-audio').href = item.video_url || '#';
+  }
+
+  selectDownloadTab('video');
+}
+
+function closeDownloadModal() {
+  document.getElementById('download-modal').classList.remove('open');
+  // Reset advanced settings collapse state
+  const trigger = document.getElementById('dl-collapsible-btn');
+  const content = document.getElementById('dl-advanced-content');
+  trigger.classList.remove('open');
+  content.style.display = 'none';
+}
+
+function selectDownloadTab(tab) {
+  const tabVideo = document.getElementById('dl-tab-video');
+  const tabCaption = document.getElementById('dl-tab-caption');
+  const btnMain = document.getElementById('dl-btn-main');
+  const item = state.activeDetailJob;
+
+  if (tab === 'video') {
+    tabVideo.classList.add('active');
+    tabCaption.classList.remove('active');
+    btnMain.href = (item && item.video_url) ? item.video_url : '#';
+  } else {
+    tabVideo.classList.remove('active');
+    tabCaption.classList.add('active');
+    btnMain.href = (item && item.srt_caption_url) ? item.srt_caption_url : '#';
+  }
+}
+
+function toggleDlAdvanced() {
+  const trigger = document.getElementById('dl-collapsible-btn');
+  const content = document.getElementById('dl-advanced-content');
+  const isOpen = trigger.classList.contains('open');
+
+  if (isOpen) {
+    trigger.classList.remove('open');
+    content.style.display = 'none';
+  } else {
+    trigger.classList.add('open');
+    content.style.display = 'block';
+  }
+}
+
+// ── MORE IN FOLDER CAROUSEL ──
+function generateCarouselItems(activeItem) {
+  const wrap = document.getElementById('carousel-projects');
+  wrap.innerHTML = '';
+  
+  const completed = state.history.filter(item => item.status === 'completed' || item.status === 'success');
+  if (!completed.length) {
+    wrap.innerHTML = '<div style="color:var(--text-muted);font-size:12px">No other items in this folder</div>';
+    return;
+  }
+
+  wrap.innerHTML = completed.map(item => {
+    const dur = item.duration ? formatDuration(Math.round(item.duration)) : '—';
+    const title = item.title || item.id || 'Translation';
+    const lang = item.output_language || 'English';
+    const dateStr = item.created_at ? new Date(item.created_at * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recently';
+    const metaText = `${dateStr} • ${lang}`;
+    const isActive = item.id === activeItem.id;
+    const videoSrc = item.video_url ? item.video_url + '#t=0.1' : './input_video.mp4#t=0.1';
+
+    return `<div class="carousel-item-wrapper" style="display:flex;flex-direction:column;gap:8px;flex:0 0 calc(33.333% - 11px);min-width:0;cursor:pointer;text-align:left" onclick="openVideoDetailById('${item.id}')">
+      <div class="project-card-thumb ${isActive ? 'active' : ''}" style="width:100%;aspect-ratio:1/1;height:auto !important;margin:0;border-radius:var(--radius-lg);overflow:hidden;position:relative;" data-id="${item.id}">
+        <video src="${videoSrc}" muted preload="metadata" playsinline style="width:100%;height:100%;object-fit:cover;"></video>
+        <div class="duration-overlay" style="bottom:6px;right:6px;font-size:10px;font-weight:600;padding:2px 6px;border-radius:4px;background:rgba(0,0,0,0.7);position:absolute;color:#fff;">
+          <span>${dur}</span>
+        </div>
+      </div>
+      <div style="font-size:14px;font-weight:500;color:var(--text-white);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px" title="${title}">${title}</div>
+      <div style="font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${metaText}</div>
+    </div>`;
+  }).join('');
+  
+  state.activeCarouselIndex = 0;
+}
+
+function slideCarousel(dir) {
+  const wrap = document.getElementById('carousel-projects');
+  const count = wrap.children.length;
+  if (count === 0) return;
+  
+  const containerWidth = wrap.clientWidth;
+  const itemWidth = containerWidth / 3;
+  const visibleCount = 3;
+  const maxIndex = Math.max(0, count - visibleCount);
+  
+  state.activeCarouselIndex = Math.max(0, Math.min(maxIndex, state.activeCarouselIndex + dir));
+  const offset = state.activeCarouselIndex * itemWidth;
+  wrap.scrollTo({
+    left: offset,
+    behavior: 'smooth'
+  });
+}
+
+// ── BOTTOM TRANSLATION TOAST ──
+function showActiveToast(text) {
+  const bar = document.getElementById('active-toast');
+  bar.querySelector('.toast-text').textContent = text;
+  bar.style.display = 'flex';
+}
+
+function dismissActiveToast() {
+  document.getElementById('active-toast').style.display = 'none';
+}
+
+function toggleEmojiReaction(btn, type) {
+  btn.classList.toggle('active');
+  const isActive = btn.classList.contains('active');
+  if (type === 'add') {
+    if (isActive) showToast('Opened emoji picker', 'success');
+  } else if (type === 'comment') {
+    if (isActive) showToast('Opened comments panel', 'success');
+  } else {
+    if (isActive) {
+      showToast(`Added reaction ${type}`, 'success');
+    } else {
+      showToast(`Removed reaction ${type}`, 'info');
+    }
+  }
+}
+
+// ── UTILITY FUNCTIONS ──
+function formatBytes(bytes) {
+  if (!bytes) return '—';
+  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+  return (bytes/(1024*1024)).toFixed(1) + ' MB';
+}
+
+function formatDuration(sec) {
+  if (isNaN(sec)) return '—';
+  const m = Math.floor(sec/60), s = Math.round(sec%60);
+  return `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function timeAgo(ts) {
+  const diff = (Date.now() - ts) / 1000;
+  if (diff < 60) return 'Just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toast');
+  const el = document.createElement('div');
+  el.className = 'toast-item ' + type;
+  const icons = { success: '✓', error: '✕', info: 'ℹ' };
+  el.innerHTML = `<span style="font-weight:700">${icons[type]||''}</span> ${msg}`;
+  c.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(100%)';
+    el.style.transition = 'all 0.3s';
+    setTimeout(() => el.remove(), 300);
+  }, 4000);
+}
+
+
+
+// ── GLOSSARY MANAGEMENT ──
+function loadGlossary() {
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem('hg_glossary') || '[]');
+  } catch (e) {
+    console.warn('localStorage read failed:', e);
+  }
+  
+  // Render Glossary Table
+  const tableContainer = document.getElementById('glossary-table-container');
+  if (!tableContainer) return;
+
+  if (list.length === 0) {
+    tableContainer.innerHTML = `<div style="text-align:center;padding:24px;color:var(--text-muted);font-size:13px">
+      No glossary rules defined yet. Add a rule above to get started.
+    </div>`;
+  } else {
+    tableContainer.innerHTML = `
+      <table class="glossary-table">
+        <thead>
+          <tr>
+            <th>Source Term</th>
+            <th>Target Term</th>
+            <th>Target Language Context</th>
+            <th style="text-align:right">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${list.map((item, idx) => `
+            <tr>
+              <td style="font-weight:600">${escapeHtml(item.source)}</td>
+              <td>${escapeHtml(item.target)}</td>
+              <td><span class="lang-tag" style="background:rgba(255,255,255,0.05);color:var(--text-muted);">${escapeHtml(item.lang)}</span></td>
+              <td style="text-align:right">
+                <button class="delete-btn" onclick="deleteGlossaryTerm(${idx})">Delete</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+
+  // Populate Advanced settings modal brand glossary selector
+  const selector = document.getElementById('adv-glossary');
+  if (selector) {
+    selector.innerHTML = '<option value="">🔍 None</option>' + list.map(item => `
+      <option value="${escapeHtml(item.source)}">${escapeHtml(item.source)} → ${escapeHtml(item.target)} (${escapeHtml(item.lang)})</option>
+    `).join('');
+  }
+}
+
+function addGlossaryTerm(e) {
+  e.preventDefault();
+  const sourceInput = document.getElementById('gl-source-term');
+  const targetInput = document.getElementById('gl-target-term');
+  const langSelect = document.getElementById('gl-lang');
+
+  const source = sourceInput.value.trim();
+  const target = targetInput.value.trim();
+  const lang = langSelect.value;
+
+  if (!source || !target) return;
+
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem('hg_glossary') || '[]');
+  } catch (err) {
+    console.warn(err);
+  }
+
+  list.push({ source, target, lang });
+
+  try {
+    localStorage.setItem('hg_glossary', JSON.stringify(list));
+  } catch (err) {
+    console.warn(err);
+  }
+
+  sourceInput.value = '';
+  targetInput.value = '';
+  langSelect.value = 'Any';
+
+  loadGlossary();
+  showToast('Glossary rule added successfully', 'success');
+}
+
+function deleteGlossaryTerm(idx) {
+  let list = [];
+  try {
+    list = JSON.parse(localStorage.getItem('hg_glossary') || '[]');
+  } catch (err) {
+    console.warn(err);
+  }
+
+  list.splice(idx, 1);
+
+  try {
+    localStorage.setItem('hg_glossary', JSON.stringify(list));
+  } catch (err) {
+    console.warn(err);
+  }
+
+  loadGlossary();
+  showToast('Glossary rule deleted', 'info');
+}
+
+// ✨ GEMINI AI SRT GENERATION ✨
+async function uploadToGeminiFileApi(file, apiKey) {
+  throw new Error('Gemini upload is server-managed in this build.');
+}
+
+async function generateSrtWithGemini() {
+  if (!state.selectedUrl && !state.selectedFile) {
+    showToast('Please select a video file or enter a YouTube URL first.', 'error');
+    return;
+  }
+  if (state.isSrtGenerating) {
+    showToast('SRT is already generating. Please wait.', 'info');
+    return;
+  }
+  state.isSrtGenerating = true;
+  const btnTexts = document.querySelectorAll('.generate-srt-text');
+  const btnEls = document.querySelectorAll('.generate-srt-btn');
+  btnTexts.forEach(t => t.textContent = 'Generating SRT on server...');
+  btnEls.forEach(b => b.classList.add('anim-pulse-glow'));
+  try {
+    const fd = new FormData();
+    if (state.selectedFile) fd.append('file', state.selectedFile);
+    if (state.selectedUrl) fd.append('url', state.selectedUrl);
+    const res = await fetch('/api/heygen/generate-srt', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `SRT generation failed: HTTP ${res.status}`);
+    const srtResult = String(data.srt || '').trim();
+    if (!srtResult) throw new Error('Empty SRT response');
+    const blob = new Blob([srtResult], { type: 'text/plain' });
+    const srtFile = new File([blob], 'ai_generated_subtitles.srt', { type: 'text/plain' });
+    handleSrtUpload(srtFile);
+    showToast('SRT generated successfully', 'success');
+  } catch (err) {
+    showToast(err.message || 'SRT generation failed', 'error');
+  } finally {
+    state.isSrtGenerating = false;
+    btnTexts.forEach(t => t.textContent = '\u2728 Generate SRT with AI');
+    btnEls.forEach(b => b.classList.remove('anim-pulse-glow', 'anim-shimmer'));
+  }
+}
+function handleSrtUpload(file) {
+  if (!file) return;
+  state.selectedSrtFile = file;
+  renderSrtFileUploader();
+  showToast(`Subtitles loaded: ${file.name}`, 'success');
+}
+
+function clearSrtFile(e) {
+  if (e) e.stopPropagation();
+  state.selectedSrtFile = null;
+  document.getElementById('srt-file-input').value = '';
+  renderSrtFileUploader();
+}
+
+function renderSrtFileUploader() {
+  const container = document.getElementById('srt-file-container');
+  const leftContainer = document.getElementById('left-srt-container');
+  
+  let html = '';
+  if (state.selectedSrtFile) {
+    html = `
+      <div class="file-info-pill" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1b1c20;border:1px solid #2c2e35;border-radius:8px">
+        <div style="display:flex;align-items:center;gap:8px;overflow:hidden">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="file-pill-icon" style="flex-shrink:0">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
+          <span class="file-name-text" style="font-size:12px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(state.selectedSrtFile.name)}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;flex-shrink:0;margin-left:8px">
+          <button onclick="viewSrtFile()" style="background:none;border:none;color:var(--accent-cyan);font-size:12px;cursor:pointer;padding:0;font-weight:600;transition:opacity 0.2s" onmouseover="this.style.opacity=0.8" onmouseout="this.style.opacity=1">View</button>
+          <button onclick="downloadSrtFile()" style="background:none;border:none;color:var(--accent-cyan);font-size:12px;cursor:pointer;padding:0;font-weight:600;transition:opacity 0.2s" onmouseover="this.style.opacity=0.8" onmouseout="this.style.opacity=1">Download</button>
+          <button class="file-clear-btn" onclick="clearSrtFile(event)" style="margin-left:4px">×</button>
+        </div>
+      </div>
+    `;
+    if (container) container.innerHTML = html;
+    if (leftContainer) leftContainer.innerHTML = html;
+  } else {
+    if (container) {
+      container.innerHTML = `
+        <button class="pill-btn generate-srt-btn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--accent-cyan);color:#000;border:1px solid transparent;" onclick="generateSrtWithGemini()">
+          <svg class="generate-srt-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+          <span class="generate-srt-text">✨ Generate SRT with AI</span>
+        </button>
+      `;
+    }
+    if (leftContainer) {
+      leftContainer.innerHTML = `
+        <button class="text-action-btn generate-srt-btn" onclick="generateSrtWithGemini()">
+          <svg class="generate-srt-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+          <span class="generate-srt-text">✨ Generate SRT with AI</span>
+        </button>
+      `;
+    }
+  }
+}
+
+function handleAudioUpload(file) {
+  if (!file) return;
+  state.selectedAudioFile = file;
+  renderAudioFileUploader();
+  showToast(`Custom audio loaded: ${file.name}`, 'success');
+}
+
+function clearAudioFile(e) {
+  if (e) e.stopPropagation();
+  state.selectedAudioFile = null;
+  document.getElementById('audio-file-input').value = '';
+  renderAudioFileUploader();
+}
+
+function renderAudioFileUploader() {
+  const container = document.getElementById('audio-file-container');
+  if (!container) return;
+  if (state.selectedAudioFile) {
+    container.innerHTML = `
+      <div class="file-info-pill">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="file-pill-icon">
+          <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+        </svg>
+        <span class="file-name-text">${escapeHtml(state.selectedAudioFile.name)}</span>
+        <span class="file-clear-btn" onclick="clearAudioFile(event)">×</span>
+      </div>
+    `;
+  } else {
+    container.innerHTML = `
+      <button class="pill-btn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px" onclick="document.getElementById('audio-file-input').click()">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+        </svg>
+        <span>Select custom audio (MP3/WAV)</span>
+      </button>
+    `;
+  }
+}
+
+// ── IN-MEMORY JOB TRACKER (no localStorage, pure API-driven) ──
+// Called when we submit a new job so it appears instantly in the grid
+// before the next API poll cycle picks it up.
+function saveJobToLocalHistory(job) {
+  if (!state.apiHistory) state.apiHistory = [];
+
+  // Patch existing entry or prepend new one in-memory only
+  const idx = state.apiHistory.findIndex(x => x.id === job.id);
+  if (idx !== -1) {
+    state.apiHistory[idx] = { ...state.apiHistory[idx], ...job };
+  } else {
+    state.apiHistory.unshift(job);
+  }
+
+  updateHistoryStateAndRender();
+}
+
+// ── BULK VIDEO SELECTION & DELETION ──
+function handleHistoryCheckboxChange(e) {
+  const checkboxes = document.querySelectorAll('#history-grid .hc-checkbox:checked');
+  const count = checkboxes.length;
+  const deleteBtn = document.getElementById('bulk-delete-btn');
+  if (deleteBtn) {
+    if (count > 0) {
+      deleteBtn.textContent = `Delete Selected (${count})`;
+      deleteBtn.style.display = 'block';
+    } else {
+      deleteBtn.style.display = 'none';
+    }
+  }
+}
+
+function deleteSelectedVideos() {
+  const checkboxes = document.querySelectorAll('#history-grid .hc-checkbox:checked');
+  const idsToDelete = Array.from(checkboxes).map(cb => cb.getAttribute('data-id'));
+  
+  if (idsToDelete.length === 0) return;
+  if (!confirm(`Are you sure you want to delete the ${idsToDelete.length} selected project(s)?`)) return;
+
+  let cached = [];
+  try {
+    cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
+  } catch (e) {
+    console.warn(e);
+  }
+
+  // Filter out deleted IDs
+  const updated = cached.filter(item => !idsToDelete.includes(item.id));
+  
+  try {
+    localStorage.setItem('hg_history', JSON.stringify(updated));
+  } catch (e) {
+    console.warn(e);
+  }
+
+  showToast(`Successfully deleted ${idsToDelete.length} project(s)`, 'success');
+  
+  // Hide delete button
+  const deleteBtn = document.getElementById('bulk-delete-btn');
+  if (deleteBtn) deleteBtn.style.display = 'none';
+
+  loadHistory();
+}
+
+function toggleHistoryMenu(event, id) {
+  event.stopPropagation();
+  // Simple card individual action menu
+  const action = prompt(`Select action for this translation project:\n1. Rename Project\n2. Delete Project\nType '1' or '2':`);
+  if (action === '1') {
+    const newTitle = prompt('Enter new project title:');
+    if (newTitle && newTitle.trim()) {
+      renameProjectInHistory(id, newTitle.trim());
+    }
+  } else if (action === '2') {
+    if (confirm('Are you sure you want to delete this translation project?')) {
+      deleteSingleProject(id);
+    }
+  }
+}
+
+function renameProjectInHistory(id, newTitle) {
+  let cached = [];
+  try {
+    cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
+  } catch (e) {
+    console.warn(e);
+  }
+  const idx = cached.findIndex(x => x.id === id);
+  if (idx !== -1) {
+    cached[idx].title = newTitle;
+    try {
+      localStorage.setItem('hg_history', JSON.stringify(cached));
+    } catch (e) {
+      console.warn(e);
+    }
+    showToast('Project renamed', 'success');
+    loadHistory();
+  } else {
+    showToast('Cannot rename online API projects locally', 'info');
+  }
+}
+
+function deleteSingleProject(id) {
+  let cached = [];
+  try {
+    cached = JSON.parse(localStorage.getItem('hg_history') || '[]');
+  } catch (e) {
+    console.warn(e);
+  }
+  const updated = cached.filter(x => x.id !== id);
+  try {
+    localStorage.setItem('hg_history', JSON.stringify(updated));
+  } catch (e) {
+    console.warn(e);
+  }
+  showToast('Project deleted successfully', 'success');
+  loadHistory();
+}
+
+// ── TRANSCRIPT SYNC & SEARCH ──
+function setupTranscriptSync() {
+  const video = document.getElementById('dt-video');
+  if (!video) return;
+  
+  video.addEventListener('timeupdate', () => {
+    const time = video.currentTime;
+    const cards = document.querySelectorAll('#dt-transcript-list .transcript-segment-card');
+    if (!cards.length) return;
+    
+    let activeCard = null;
+    let maxSeconds = -1;
+    
+    cards.forEach(card => {
+      const cardSeconds = parseFloat(card.getAttribute('data-seconds') || '0');
+      if (time >= cardSeconds && cardSeconds > maxSeconds) {
+        maxSeconds = cardSeconds;
+        activeCard = card;
+      }
+    });
+    
+    cards.forEach(card => {
+      if (card === activeCard) {
+        if (!card.classList.contains('active-segment')) {
+          card.classList.add('active-segment');
+          
+          // Center the card in the scrolling area
+          const scrollContainer = document.getElementById('dt-transcript-list');
+          const cardTop = card.offsetTop;
+          const containerHeight = scrollContainer.clientHeight;
+          const cardHeight = card.clientHeight;
+          
+          scrollContainer.scrollTo({
+            top: cardTop - (containerHeight / 2) + (cardHeight / 2),
+            behavior: 'smooth'
+          });
+        }
+      } else {
+        card.classList.remove('active-segment');
+      }
+    });
+  });
+}
+
+function filterTranscript(query) {
+  const cards = document.querySelectorAll('#dt-transcript-list .transcript-segment-card');
+  const q = query.toLowerCase();
+  cards.forEach(card => {
+    const text = card.querySelector('.segment-text').textContent.toLowerCase();
+    if (text.includes(q)) {
+      card.style.display = 'block';
+    } else {
+      card.style.display = 'none';
+    }
+  });
+}
+
+// Utility escape helper
+function escapeHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function startNew() {
+  state.selectedFile = null;
+  state.selectedUrl = '';
+  state.videoInputType = null;
+  state.assetId = null;
+  state.selectedSrtFile = null;
+  state.selectedAudioFile = null;
+  state.adv.startTime = null;
+  state.adv.endTime = null;
+  state.adv.glossaryId = null;
+  
+  document.getElementById('url-input').value = '';
+  document.getElementById('translate-btn').disabled = false;
+  document.getElementById('file-input').value = '';
+  
+  const srtInput = document.getElementById('srt-file-input');
+  if (srtInput) srtInput.value = '';
+  const audioInput = document.getElementById('audio-file-input');
+  if (audioInput) audioInput.value = '';
+  
+  renderSrtFileUploader();
+  renderAudioFileUploader();
+  
+  const startInp = document.getElementById('adv-start-time');
+  if (startInp) startInp.value = '';
+  const endInp = document.getElementById('adv-end-time');
+  if (endInp) endInp.value = '';
+  const glossSel = document.getElementById('adv-glossary');
+  if (glossSel) glossSel.value = '';
+  
+  showPage('upload');
+}
+
+function copyShareLink() {
+  if (state.activeDetailJob && state.activeDetailJob.video_url) {
+    navigator.clipboard.writeText(state.activeDetailJob.video_url).then(() => {
+      showToast('Video link copied to clipboard', 'success');
+    });
+  } else {
+    showToast('Link not available', 'info');
+  }
+}
+
+function toggleDetailSidebar() {
+  const panel = document.getElementById('dt-sidebar-panel');
+  const openBtn = document.getElementById('dt-open-sidebar-btn');
+  if (!panel) return;
+  const isCollapsed = panel.classList.contains('collapsed');
+  
+  if (isCollapsed) {
+    panel.classList.remove('collapsed');
+    panel.style.width = '360px';
+    panel.style.minWidth = '360px';
+    panel.style.borderLeft = '1px solid var(--border-color)';
+    if (openBtn) openBtn.style.display = 'none';
+  } else {
+    panel.classList.add('collapsed');
+    panel.style.width = '0px';
+    panel.style.minWidth = '0px';
+    panel.style.borderLeft = 'none';
+    panel.style.overflow = 'hidden';
+    if (openBtn) openBtn.style.display = 'flex';
+  }
+}
+</script>
+<!-- ── SRT VIEWER MODAL ── -->
+<div class="modal-overlay" id="srt-viewer-modal" style="z-index:99999;">
+  <div class="modal-card" style="width: 500px; max-width: 90vw;">
+    <div class="modal-header-row">
+      <h3 id="srt-viewer-title">Subtitles Viewer</h3>
+      <span class="modal-close-icon" onclick="closeSrtViewer()">×</span>
+    </div>
+    <div class="modal-body-section" style="padding: 16px;">
+      <pre id="srt-viewer-content" style="background:#1b1c20;border:1px solid #2c2e35;padding:12px;border-radius:8px;max-height:400px;overflow-y:auto;font-family:monospace;font-size:12px;color:var(--text-muted);white-space:pre-wrap;"></pre>
+    </div>
+    <div style="padding: 0 16px 16px;">
+      <button class="pill-btn cyan-btn" style="width:100%" onclick="closeSrtViewer()">Close Viewer</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function viewSrtFile() {
+  if (!state.selectedSrtFile) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    document.getElementById('srt-viewer-content').textContent = e.target.result;
+    document.getElementById('srt-viewer-title').textContent = state.selectedSrtFile.name;
+    document.getElementById('srt-viewer-modal').classList.add('open');
+  };
+  reader.readAsText(state.selectedSrtFile);
+}
+
+function closeSrtViewer() {
+  document.getElementById('srt-viewer-modal').classList.remove('open');
+}
+
+function downloadSrtFile() {
+  if (!state.selectedSrtFile) return;
+  const url = URL.createObjectURL(state.selectedSrtFile);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = state.selectedSrtFile.name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+window.addEventListener('beforeunload', function (e) {
+  if (state.isSrtGenerating || state.isUploadingToHeyGen) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+</script>
+
+</body>
+</html>

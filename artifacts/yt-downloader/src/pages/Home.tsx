@@ -33,6 +33,7 @@ import { AiVideoStudio, type AiVideoStudioHandle } from "@/components/AiVideoStu
 import { FindVideo } from "@/components/FindVideo";
 import { Thumbnail } from "@/components/Thumbnail";
 import VideoTranslator from "./VideoTranslator";
+import HeyGenTranslator from "./HeyGenTranslator";
 import {
   saveActiveDownload,
   loadActiveDownload,
@@ -60,7 +61,7 @@ import {
   subscribeToPreferenceChanges,
 } from "@/lib/user-preferences";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -103,6 +104,7 @@ const MODE_LABELS: Record<Mode, string> = {
   upload: "Share",
   copilot: "Super Agent",
   translator: "Translator",
+  heygen: "HeyGen",
   findvideo: "Find Video",
   thumbnail: "Thumbnail",
   videostudio: "AI Video Studio",
@@ -127,6 +129,7 @@ const MODE_PATHS: Record<Mode, string> = {
   upload: "/share",
   copilot: "/super-agent",
   translator: "/translator",
+  heygen: "/heygen",
   findvideo: "/find-video",
   thumbnail: "/thumbnail",
   videostudio: "/ai-studio",
@@ -563,6 +566,7 @@ export default function Home({
   const showTimestamps = mode === "timestamps";
   const showUpload = mode === "upload";
   const showCopilot = mode === "copilot";
+  const showHeyGen = mode === "heygen";
   const showFindVideo = mode === "findvideo";
   const showThumbnail = mode === "thumbnail";
   const showVideoStudio = mode === "videostudio";
@@ -844,8 +848,8 @@ export default function Home({
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "heygen" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "heygen" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
             {/* Translator tab - full screen */}
             {mode === "translator" && (
               canUseTranslator
@@ -861,6 +865,8 @@ export default function Home({
                 )
                 : <FeatureUnavailable title="Translator is restricted" detail="Your account is not allowed to use video translation right now." />
             )}
+
+            {showHeyGen && <HeyGenTranslator />}
 
             {/* Help tab — dedicated page (replaces old GuideModal) */}
             {mode === "help" && (
