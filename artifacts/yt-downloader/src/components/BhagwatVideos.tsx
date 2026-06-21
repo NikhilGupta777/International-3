@@ -1235,6 +1235,26 @@ function BhagwatEditor({
     setReviewing(false);
     hasAutoReviewedRef.current = false;
 
+    const uploadLocally = async () => {
+      const formData = new FormData();
+      formData.append("audio", file);
+      const localRes = await authedFetch(`${BASE}/api/bhagwat/upload-audio`, {
+        method: "POST",
+        body: formData,
+      });
+      const localData = await localRes.json().catch(() => ({}));
+      if (!localRes.ok) {
+        throw new Error(localData.error ?? "Failed to initialize upload");
+      }
+      setUploadedFile({
+        audioId: localData.audioId,
+        mimeType: localData.mimeType || file.type || "audio/mpeg",
+        filename: localData.filename || file.name,
+        sizeBytes: localData.sizeBytes ?? file.size,
+      });
+      setUploadProgress(null);
+    };
+
     try {
       // 1. Get Pre-signed URL
       const presignedRes = await authedFetch(`${BASE}/api/bhagwat/upload-audio-presigned`, {
@@ -1247,33 +1267,39 @@ function BhagwatEditor({
         }),
       });
       if (!presignedRes.ok) {
-        throw new Error("Failed to initialize upload");
+        await uploadLocally();
+        return;
       }
       const { audioId, uploadUrl, uploadS3Key } = await presignedRes.json();
 
       // 2. Upload to S3 directly using XMLHttpRequest for progress
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", uploadUrl, true);
-        xhr.setRequestHeader("Content-Type", file.type || "audio/mpeg");
-        
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            setUploadProgress((e.loaded / e.total) * 100);
-          }
-        };
-        
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve();
-          } else {
-            reject(new Error(`S3 upload failed with status ${xhr.status}`));
-          }
-        };
-        
-        xhr.onerror = () => reject(new Error("Network error during S3 upload"));
-        xhr.send(file);
-      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", uploadUrl, true);
+          xhr.setRequestHeader("Content-Type", file.type || "audio/mpeg");
+
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              setUploadProgress((e.loaded / e.total) * 100);
+            }
+          };
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve();
+            } else {
+              reject(new Error(`S3 upload failed with status ${xhr.status}`));
+            }
+          };
+
+          xhr.onerror = () => reject(new Error("Network error during S3 upload"));
+          xhr.send(file);
+        });
+      } catch {
+        await uploadLocally();
+        return;
+      }
 
       setUploadedFile({ 
         audioId, 

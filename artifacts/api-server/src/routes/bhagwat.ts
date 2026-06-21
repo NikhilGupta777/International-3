@@ -32,6 +32,7 @@ import {
 } from "../lib/youtube-queue";
 import {
   deleteS3Object,
+  downloadS3ObjectToFile,
   getS3SignedDownloadUrl,
   isS3StorageEnabled,
   readTextFromS3,
@@ -271,6 +272,36 @@ export async function ensureBhagwatUploadedAudioS3Key(
   return uploaded.key;
 }
 
+async function ensureBhagwatUploadedAudioLocalState(params: {
+  audioId: string;
+  s3Key?: string;
+  originalFilename?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+}): Promise<UploadedAudio | null> {
+  const existing = getBhagwatUploadedAudioState(params.audioId);
+  if (existing && existsSync(existing.path)) return existing;
+  if (!params.s3Key) return existing ?? null;
+  if (!isS3StorageEnabled()) return existing ?? null;
+
+  const originalName = params.originalFilename?.trim() || "audio.mp3";
+  const ext = originalName.match(/\.[^.]+$/)?.[0]?.toLowerCase() ?? ".mp3";
+  const localPath = join(BHAGWAT_UPLOADS_DIR, `${params.audioId}${ext}`);
+  if (!existsSync(localPath)) {
+    await downloadS3ObjectToFile(params.s3Key, localPath);
+  }
+
+  return createBhagwatUploadedAudioState(params.audioId, {
+    path: localPath,
+    originalName,
+    mimeType: params.mimeType || "application/octet-stream",
+    sizeBytes: params.sizeBytes ?? 0,
+    s3Key: params.s3Key,
+    durationSec: 0,
+    createdAt: Date.now(),
+  });
+}
+
 router.use("/bhagwat", (req: Request, res: Response, next: NextFunction) => {
   const normalizedPath = req.path.replace(/\/+$/, "");
   if (normalizedPath.endsWith("/auth")) {
@@ -374,7 +405,10 @@ if (!process.env.GEMINI_API_KEY && process.env.GOOGLE_API_KEY) {
 delete process.env.GOOGLE_API_KEY;
 
 // ── Gemini image generation ───────────────────────────────────────────────────
-// Priority: Replit AI integration (gemini-3.1-flash-image-preview) → own GEMINI_API_KEY (gemini-3.1-flash-image-preview)
+// Priority: Replit AI integration → own GEMINI_API_KEY / Vertex.
+// Try stable image models before the old preview id so production does not fall
+// back to text scene cards just because a preview alias is unavailable in a
+// region/provider.
 
 const IMAGE_PROMPT_PREFIX = `Create a UHD, cinematic, high-quality PHOTOREALISTIC image suitable for video content with a spiritual and reverential tone.
 The image should visually represent: `;
@@ -388,6 +422,23 @@ CRITICAL STYLE REQUIREMENTS (override any conflicting instructions):
 - Must look authentic, timeless, and suitable for high-quality B-roll usage
 - Consistent with other images in the same video project
 No subtitles, logos, watermarks, UI elements`;
+
+function parseCsvEnv(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+const BHAGWAT_IMAGE_MODELS = (() => {
+  const configured = parseCsvEnv(process.env.BHAGWAT_IMAGE_MODELS);
+  const defaults = [
+    "gemini-3.1-flash-image",
+    "gemini-2.5-flash-image",
+    "gemini-3.1-flash-image-preview",
+  ];
+  return Array.from(new Set([...(configured.length ? configured : defaults)]));
+})();
 
 const FALLBACK_PALETTES = [
   { bg: "#1b1230", panel: "#6d28d9", line: "#f59e0b" },
@@ -515,6 +566,24 @@ function shouldDisableRemoteImageGeneration(errMsg: string): boolean {
   );
 }
 
+function allowFallbackSceneCards(): boolean {
+  return /^(1|true|yes|on)$/i.test(String(process.env.BHAGWAT_ALLOW_FALLBACK_VISUALS ?? "").trim());
+}
+
+function imageGenerationUnavailableError(errMsg: string): Error {
+  if (shouldDisableRemoteImageGeneration(errMsg)) {
+    return new Error(
+      "Gemini image generation quota/rate limit is exhausted. Render stopped so a fallback-card video is not produced. Reduce BHAGWAT_IMAGE_CONCURRENCY or wait for quota to reset.",
+    );
+  }
+  if (/timed out/i.test(errMsg)) {
+    return new Error(
+      "Gemini image generation timed out. Render stopped so a fallback-card video is not produced. Try again with fewer images or increase IMAGE_GEN_TIMEOUT_MS.",
+    );
+  }
+  return new Error(`Gemini image generation failed: ${errMsg}`);
+}
+
 function extractImageBytes(response: any): Buffer {
   const candidate = response.candidates?.[0];
   if (!candidate) throw new Error("Gemini returned no candidate");
@@ -527,6 +596,18 @@ function extractImageBytes(response: any): Buffer {
 }
 
 const IMAGE_GEN_TIMEOUT_MS = Number(process.env.IMAGE_GEN_TIMEOUT_MS ?? 90_000);
+const BHAGWAT_IMAGE_RETRY_ATTEMPTS = Math.max(
+  1,
+  Math.min(10, Number(process.env.BHAGWAT_IMAGE_RETRY_ATTEMPTS ?? 5)),
+);
+const BHAGWAT_IMAGE_RETRY_DELAY_MS = Math.max(
+  0,
+  Number(process.env.BHAGWAT_IMAGE_RETRY_DELAY_MS ?? 7_000),
+);
+const BHAGWAT_IMAGE_MIN_INTERVAL_MS = Math.max(
+  0,
+  Number(process.env.BHAGWAT_IMAGE_MIN_INTERVAL_MS ?? 31_000),
+);
 // Image resolution for generated devotional frames. The video is rendered at
 // 1080p, so "1K" is plenty (and much faster/cheaper than 2K, which kept timing
 // out). Override via env to "2K"/"4K" if you want sharper source frames.
@@ -554,9 +635,22 @@ async function withTimeout<T>(
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let nextBhagwatImageRequestAt = 0;
+async function waitForBhagwatImageRequestSlot(): Promise<void> {
+  if (BHAGWAT_IMAGE_MIN_INTERVAL_MS <= 0) return;
+  const now = Date.now();
+  const waitMs = Math.max(0, nextBhagwatImageRequestAt - now);
+  nextBhagwatImageRequestAt = Math.max(now, nextBhagwatImageRequestAt) + BHAGWAT_IMAGE_MIN_INTERVAL_MS;
+  if (waitMs > 0) await sleep(waitMs);
+}
+
 async function generateImageViaReplit(
   prompt: string,
-  model = "gemini-3.1-flash-image-preview",
+  model: string,
   signal?: AbortSignal,
 ): Promise<Buffer> {
   const baseUrl = process.env.AI_INTEGRATIONS_GEMINI_BASE_URL;
@@ -593,31 +687,35 @@ async function generateImageViaOwnKey(prompt: string, signal?: AbortSignal): Pro
     throw new Error("GEMINI_API_KEY is not configured");
 
   let lastErr: unknown;
-  for (let i = 0; i < keys.length; i++) {
-    try {
-      const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
-      const config: any = {
-        responseModalities: [Modality.TEXT, Modality.IMAGE],
-        responseFormat: { image: { aspectRatio: "16:9", imageSize: BHAGWAT_IMAGE_SIZE } },
-      };
-      if (signal) config.abortSignal = signal;
-      const response = await client.models.generateContent({
-        model: "gemini-3.1-flash-image-preview",
-        contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
-        config,
-      });
-      return extractImageBytes(response);
-    } catch (err) {
-      lastErr = err;
-      if (signal?.aborted) throw err instanceof Error ? err : new Error("aborted");
-      console.warn(
-        `[bhagwat/img] own Gemini image key ${i + 1} failed, trying next key:`,
-        err instanceof Error ? err.message : String(err ?? ""),
-      );
+  for (const model of BHAGWAT_IMAGE_MODELS) {
+    for (let i = 0; i < keys.length; i++) {
+      try {
+        const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
+        const config: any = {
+          responseModalities: [Modality.TEXT, Modality.IMAGE],
+          responseFormat: { image: { aspectRatio: "16:9", imageSize: BHAGWAT_IMAGE_SIZE } },
+        };
+        if (signal) config.abortSignal = signal;
+        const response = await client.models.generateContent({
+          model,
+          contents: [{ role: "user", parts: [{ text: IMAGE_PROMPT_PREFIX + prompt + IMAGE_PROMPT_SUFFIX }] }],
+          config,
+        });
+        return extractImageBytes(response);
+      } catch (err) {
+        lastErr = err;
+        if (signal?.aborted) throw err instanceof Error ? err : new Error("aborted");
+        console.warn(
+          `[bhagwat/img] own Gemini image model ${model} key ${i + 1} failed, trying next model/key:`,
+          err instanceof Error ? err.message : String(err ?? ""),
+        );
+      }
     }
   }
 
-  throw lastErr instanceof Error ? lastErr : new Error("Gemini image generation failed");
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(`Gemini image generation failed for models: ${BHAGWAT_IMAGE_MODELS.join(", ")}`);
 }
 
 function isAnyAIConfigured(): boolean {
@@ -628,7 +726,32 @@ function isAnyAIConfigured(): boolean {
   );
 }
 
+async function generateImageWithRetries(
+  prompt: string,
+  outputPath: string,
+  onRetry?: (attempt: number, maxAttempts: number, errMsg: string) => void,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= BHAGWAT_IMAGE_RETRY_ATTEMPTS; attempt++) {
+    try {
+      await generateImage(prompt, outputPath);
+      return;
+    } catch (err) {
+      lastErr = err;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (attempt >= BHAGWAT_IMAGE_RETRY_ATTEMPTS) break;
+      onRetry?.(attempt, BHAGWAT_IMAGE_RETRY_ATTEMPTS, errMsg);
+      await sleep(BHAGWAT_IMAGE_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error("Gemini image generation failed after retries");
+}
+
 async function generateImage(prompt: string, outputPath: string): Promise<void> {
+  await waitForBhagwatImageRequestSlot();
   // When Vertex is the configured provider, skip the Replit integration entirely
   // and generate via Vertex creds (mirrors the rest of the app).
   const replitReady =
@@ -636,23 +759,25 @@ async function generateImage(prompt: string, outputPath: string): Promise<void> 
     !!process.env.AI_INTEGRATIONS_GEMINI_BASE_URL &&
     !!process.env.AI_INTEGRATIONS_GEMINI_API_KEY;
 
-  // 1. Try Replit integration: fast flash model
+  // 1. Try Replit integration: fast flash image models
   if (replitReady) {
-    const controller = new AbortController();
-    try {
-      const bytes = await withTimeout(
-        generateImageViaReplit(prompt, "gemini-3.1-flash-image-preview", controller.signal),
-        IMAGE_GEN_TIMEOUT_MS,
-        "Replit flash image generation",
-        () => controller.abort(),
-      );
-      writeFileSync(outputPath, bytes);
-      return;
-    } catch (err) {
-      console.warn(
-        "[bhagwat/img] Replit flash image gen failed, falling back to own key:",
-        (err as Error).message,
-      );
+    for (const model of BHAGWAT_IMAGE_MODELS) {
+      const controller = new AbortController();
+      try {
+        const bytes = await withTimeout(
+          generateImageViaReplit(prompt, model, controller.signal),
+          IMAGE_GEN_TIMEOUT_MS,
+          `Replit image generation (${model})`,
+          () => controller.abort(),
+        );
+        writeFileSync(outputPath, bytes);
+        return;
+      } catch (err) {
+        console.warn(
+          `[bhagwat/img] Replit image gen failed for ${model}, trying next provider/model:`,
+          (err as Error).message,
+        );
+      }
     }
   }
 
@@ -942,12 +1067,12 @@ async function generateAllSegmentImages(
   const imagePaths: string[][] = segments.map(() => []);
   let done = 0;
   const total = tasks.length;
-  let remoteImageGenerationDisabled = false;
+  const fallbackSceneCardsAllowed = allowFallbackSceneCards();
 
   // Number of images generated in parallel — the dominant factor in render
   // speed. Higher = faster, bounded only by your Gemini/Vertex rate limits
   // (Vertex typically handles 6–8 comfortably). Tune via env without a rebuild.
-  const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.BHAGWAT_IMAGE_CONCURRENCY ?? 6)));
+  const CONCURRENCY = Math.max(1, Math.min(16, Number(process.env.BHAGWAT_IMAGE_CONCURRENCY ?? 1)));
   for (let i = 0; i < tasks.length; i += CONCURRENCY) {
     // Honour user-initiated cancellation between batches so Stop takes effect
     // during the (longest) image-generation phase instead of after it.
@@ -955,19 +1080,14 @@ async function generateAllSegmentImages(
     const batch = tasks.slice(i, i + CONCURRENCY);
     await Promise.all(
       batch.map(async (task) => {
-        if (remoteImageGenerationDisabled) {
-          await createFallbackSceneCard(
-            segments[task.segIdx],
-            task.path,
-            `${task.segIdx}:${task.imgIdx}:${task.prompt}`,
-          );
-          imagePaths[task.segIdx].push(task.path);
-          done++;
-          onProgress(done, total, `${segments[task.segIdx].description} (fallback visual)`);
-          return;
-        }
         try {
-          await generateImage(task.prompt, task.path);
+          await generateImageWithRetries(task.prompt, task.path, (attempt, maxAttempts, errMsg) => {
+            onProgress(
+              done,
+              total,
+              `${segments[task.segIdx].description} retry ${attempt}/${maxAttempts - 1} after image error: ${errMsg.slice(0, 80)}`,
+            );
+          });
           imagePaths[task.segIdx].push(task.path);
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -977,6 +1097,7 @@ async function generateAllSegmentImages(
           );
           // If the primary attempt timed out, skip fallback to avoid multi-minute hangs.
           if (/timed out/i.test(errMsg)) {
+            if (!fallbackSceneCardsAllowed) throw imageGenerationUnavailableError(errMsg);
             await createFallbackSceneCard(
               segments[task.segIdx],
               task.path,
@@ -988,12 +1109,18 @@ async function generateAllSegmentImages(
             return;
           }
           if (shouldDisableRemoteImageGeneration(errMsg)) {
-            remoteImageGenerationDisabled = true;
+            throw imageGenerationUnavailableError(errMsg);
           }
           // Retry with a simpler fallback prompt
           const fallback = `${task.prompt}. MUST be photorealistic — no abstract, digital, animated, or illustrated styles`;
           try {
-            await generateImage(fallback, task.path);
+            await generateImageWithRetries(fallback, task.path, (attempt, maxAttempts, errMsg) => {
+              onProgress(
+                done,
+                total,
+                `${segments[task.segIdx].description} fallback retry ${attempt}/${maxAttempts - 1}: ${errMsg.slice(0, 80)}`,
+              );
+            });
             imagePaths[task.segIdx].push(task.path);
           } catch (err2) {
             const errMsg2 = err2 instanceof Error ? err2.message : String(err2);
@@ -1002,7 +1129,10 @@ async function generateAllSegmentImages(
               errMsg2,
             );
             if (shouldDisableRemoteImageGeneration(errMsg2)) {
-              remoteImageGenerationDisabled = true;
+              throw imageGenerationUnavailableError(errMsg2);
+            }
+            if (!fallbackSceneCardsAllowed) {
+              throw imageGenerationUnavailableError(errMsg2);
             }
             await createFallbackSceneCard(
               segments[task.segIdx],
@@ -4463,10 +4593,24 @@ router.post("/bhagwat/analyze-audio", async (req: Request, res: Response) => {
     return;
   }
 
-  // Local sync mode fallback
-  const audio = getBhagwatUploadedAudioState(audioId);
+  // Local sync mode fallback. Presigned uploads only give us an S3 key, so
+  // hydrate the local disk map before running the file-based analysis path.
+  let audio: UploadedAudio | null;
+  try {
+    audio = await ensureBhagwatUploadedAudioLocalState({
+      audioId,
+      s3Key: finalS3Key,
+      originalFilename: finalOriginalName,
+      mimeType: finalMimeType,
+      sizeBytes: finalSizeBytes,
+    });
+  } catch (err) {
+    req.log.error({ err, audioId, uploadS3Key: finalS3Key }, "Failed to hydrate Bhagwat upload for local analysis");
+    res.status(500).json({ error: "Failed to prepare uploaded audio for local processing" });
+    return;
+  }
   if (!audio) {
-    res.status(400).json({ error: "Local processing requires local upload map" });
+    res.status(400).json({ error: "Local processing could not find uploaded audio. Please upload again." });
     return;
   }
 
@@ -4573,10 +4717,24 @@ router.post("/bhagwat/render-audio", async (req: Request, res: Response) => {
     return;
   }
 
-  // Local sync mode fallback
-  const audio = getBhagwatUploadedAudioState(audioId);
+  // Local sync mode fallback. Presigned uploads only give us an S3 key, so
+  // hydrate the local disk map before running the file-based render path.
+  let audio: UploadedAudio | null;
+  try {
+    audio = await ensureBhagwatUploadedAudioLocalState({
+      audioId,
+      s3Key: finalS3Key,
+      originalFilename: finalOriginalName,
+      mimeType: finalMimeType,
+      sizeBytes: finalSizeBytes,
+    });
+  } catch (err) {
+    req.log.error({ err, audioId, uploadS3Key: finalS3Key }, "Failed to hydrate Bhagwat upload for local render");
+    res.status(500).json({ error: "Failed to prepare uploaded audio for local processing" });
+    return;
+  }
   if (!audio) {
-    res.status(400).json({ error: "Local processing requires local upload map" });
+    res.status(400).json({ error: "Local processing could not find uploaded audio. Please upload again." });
     return;
   }
 
