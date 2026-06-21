@@ -29,6 +29,9 @@ const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
 const ALLOWED_MODELS = new Set([
   "gemini-3.5-flash",
   "gemini-3.1-pro-preview",
+  AGENT_MODEL,
+  ULTRA_MODEL,
+  SEARCH_MODEL,
 ]);
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -880,7 +883,8 @@ function buildAgentTools(includeNativeSearch: boolean): any[] {
 
 function isNativeToolConfigError(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "");
-  return /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(message);
+  return /googleSearch|google_search|functionDeclarations|function_declarations/i.test(message)
+    || (/INVALID_ARGUMENT/i.test(message) && /tools?\b/i.test(message));
 }
 
 const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot, an action-focused assistant inside a YouTube/video production web app.
@@ -3403,6 +3407,7 @@ router.post("/agent/chat", async (req, res) => {
 
     let iterations = 0;
     let emptyResponseRetries = 0;
+    let totalEmptyRetries = 0;
     let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH;
     let finalAnswerSent = false;
 
@@ -3673,9 +3678,10 @@ router.post("/agent/chat", async (req, res) => {
       // edge cases, mid-stream interruptions, or the 'model output must contain
       // either output text or tool calls' condition). Retry silently.
       if (fullText.trim() === "" && functionCalls.length === 0) {
-        if (emptyResponseRetries < 3) {
+        if (emptyResponseRetries < 3 && totalEmptyRetries < 9) {
           emptyResponseRetries++;
-          iterations--; // don't count against MAX_ITERATIONS
+          totalEmptyRetries++;
+          iterations--;
           await new Promise(r => setTimeout(r, emptyResponseRetries * 800));
           continue;
         }
