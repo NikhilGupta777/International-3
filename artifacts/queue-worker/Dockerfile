@@ -19,6 +19,7 @@ RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY scripts/package.json ./scripts/
 COPY scripts/enforce-pnpm.mjs scripts/optional-uv-sync.mjs ./scripts/
+COPY stubs ./stubs/
 
 # Copy workspace package.json files so pnpm can resolve the graph
 # The queue-worker dynamically imports api-server modules at runtime,
