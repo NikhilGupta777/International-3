@@ -620,4 +620,74 @@ router.post("/generate-srt", runUpload, async (req: Request, res: Response) => {
   }
 });
 
+const verifySrtPrompt = `
+You are a senior professional transcription expert with 20+ years of experience verifying and correcting auto-generated subtitles for video content.
+
+You will be given:
+1. A video (YouTube URL) — watch and listen carefully to every word
+2. An auto-generated SRT subtitle file — cross-check every word against what is actually spoken
+
+Your task: VERIFY and CORRECT the SRT word-by-word.
+
+What to fix:
+- Wrong words, missed words, extra words, incorrect phrases
+- Mishearings — especially names, places, devotional terms, Sanskrit/Hindi words, technical terms, numbers
+- Broken or run-on subtitle blocks that don't match natural speech breaks
+- Obvious timing mismatches where text clearly doesn't match the speech at that timestamp
+
+Hard rules (never break these):
+- Do NOT translate — keep the original spoken language(s) exactly
+- Do NOT add sound descriptors: [music], [applause], [laughter], [inaudible], etc.
+- Do NOT add speaker labels
+- Do NOT reword, paraphrase, or improve the style — only fix actual transcription errors
+- Do NOT change correct blocks — if a subtitle is accurate, leave it exactly as-is
+- Preserve SRT format exactly: sequential numbers, HH:MM:SS,mmm --> HH:MM:SS,mmm timestamps, subtitle text
+- Return ONLY the corrected SRT text — no markdown, no explanations, no code fences, no commentary
+`.trim();
+
+router.post("/verify-srt", async (req: Request, res: Response) => {
+  if (!isGeminiConfigured()) {
+    res.status(503).json({ error: "Gemini is not configured on the server." });
+    return;
+  }
+
+  const srt = typeof req.body?.srt === "string" ? req.body.srt.trim() : "";
+  const url = typeof req.body?.url === "string" ? req.body.url.trim() : "";
+
+  if (!srt) {
+    res.status(400).json({ error: "srt text is required" });
+    return;
+  }
+  if (!url) {
+    res.status(400).json({ error: "video url is required for verification" });
+    return;
+  }
+  if (!isSafeExternalUrl(url)) {
+    res.status(400).json({ error: "url must be a public http(s) URL" });
+    return;
+  }
+
+  try {
+    const ai = createGeminiClient();
+    const parts: any[] = [
+      { fileData: { fileUri: url, mimeType: "video/mp4" } },
+      { text: `${verifySrtPrompt}\n\nHere is the auto-generated SRT to verify and correct:\n\n${srt}` },
+    ];
+
+    const result = await ai.models.generateContent({
+      model: HEYGEN_SRT_MODEL,
+      contents: [{ role: "user", parts }],
+    });
+    const text = String((result as any).text ?? "")
+      .replace(/```srt/gi, "")
+      .replace(/```/g, "")
+      .trim();
+
+    if (!text) throw new Error("Empty response from Gemini verification");
+    res.json({ srt: text });
+  } catch (err) {
+    proxyError(req, res, "Gemini SRT verification failed", err);
+  }
+});
+
 export default router;

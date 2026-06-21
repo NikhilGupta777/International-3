@@ -2587,6 +2587,95 @@ body {
 
   /* Checkbox & dots always visible on touch (no hover) */
   .hc-menu-dots { opacity: 1; }
+
+  /* ── Smooth touch scroll on all scrollable containers ── */
+  .page,
+  .settings-body,
+  #history-page,
+  #video-detail-page,
+  .detail-sidebar-panel,
+  #glossary-page,
+  #dt-transcript-list,
+  .sidebar-recents-list {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ── Settings page post-submit area — mobile improvements ── */
+  .settings-body { padding: 12px 14px; }
+
+  /* Preview actions: stack vertically so both buttons get full width */
+  .preview-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding-top: 12px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border-color);
+  }
+
+  /* Make "Make Subtitles with AI" text action btn full-width on mobile */
+  #left-srt-container { width: 100%; }
+  #left-srt-container .text-action-btn {
+    width: 100%;
+    justify-content: center;
+    border: 1px solid var(--border-color-light);
+    border-radius: var(--radius-md);
+    padding: 10px 16px;
+    background: var(--bg-card);
+    min-height: 42px;
+  }
+
+  /* Advanced settings button full width */
+  .adv-btn-wrap { width: 100%; }
+  .adv-btn-wrap button,
+  #advanced-settings-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* Video preview card tighter on mobile */
+  .video-preview-card { padding: 12px; gap: 12px; }
+  .preview-header {
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+  }
+  .preview-video-container {
+    max-height: 220px;
+    min-height: 160px;
+  }
+
+  /* Verify SRT button comfortable tap height on mobile */
+  .verify-srt-btn { padding: 11px 16px; font-size: 13px; }
+}
+
+/* ── VERIFY SRT BUTTON ── */
+.verify-srt-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 16px;
+  margin-top: 8px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: #dc2626;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  transition: background 0.2s, opacity 0.2s;
+}
+.verify-srt-btn:hover:not(:disabled) { background: #b91c1c; }
+.verify-srt-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.verify-srt-btn.verifying {
+  background: #7f1d1d;
+  animation: verify-pulse 1.4s ease-in-out infinite;
+}
+@keyframes verify-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
 }
 
 /* ── Very small phones 480px ── */
@@ -3436,7 +3525,10 @@ const state = {
   sidebarLimit: 20,
   nextToken: '',
   hasMore: false,
-  apiHistory: []
+  apiHistory: [],
+  isSrtGenerating: false,
+  isVerifying: false,
+  generatedSrtText: ''
 };
 
 // ── JOB STATUS HELPERS ──
@@ -5262,10 +5354,11 @@ async function generateSrtWithGemini() {
     if (!res.ok) throw new Error(data.error || `SRT generation failed: HTTP ${res.status}`);
     const srtResult = String(data.srt || '').trim();
     if (!srtResult) throw new Error('Empty SRT response');
+    state.generatedSrtText = srtResult;
     const blob = new Blob([srtResult], { type: 'text/plain' });
     const srtFile = new File([blob], 'ai_generated_subtitles.srt', { type: 'text/plain' });
     handleSrtUpload(srtFile);
-    showToast('SRT generated successfully', 'success');
+    showToast('✅ SRT generated — click "Verify Subtitles" to have AI proofread it word-by-word', 'success');
   } catch (err) {
     showToast(err.message || 'SRT generation failed', 'error');
   } finally {
@@ -5292,9 +5385,10 @@ function renderSrtFileUploader() {
   const container = document.getElementById('srt-file-container');
   const leftContainer = document.getElementById('left-srt-container');
   
-  let html = '';
   if (state.selectedSrtFile) {
-    html = `
+    // Show if verify button should appear (only when SRT was generated via AI and there's a source URL)
+    const canVerify = !!(state.generatedSrtText && state.selectedUrl);
+    const pillHtml = `
       <div class="file-info-pill" style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#1b1c20;border:1px solid #2c2e35;border-radius:8px">
         <div style="display:flex;align-items:center;gap:8px;overflow:hidden">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="file-pill-icon" style="flex-shrink:0">
@@ -5309,30 +5403,86 @@ function renderSrtFileUploader() {
           <button class="file-clear-btn" onclick="clearSrtFile(event)" style="margin-left:4px">×</button>
         </div>
       </div>
+      ${canVerify ? `
+      <button id="verify-srt-btn" class="verify-srt-btn" onclick="verifySrtWithGemini()" title="Have a senior AI transcriptionist verify and fix this SRT word-by-word against the video">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" style="flex-shrink:0">
+          <path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/>
+        </svg>
+        <span id="verify-srt-text">🔍 Verify Subtitles with AI</span>
+      </button>
+      ` : ''}
     `;
-    if (container) container.innerHTML = html;
-    if (leftContainer) leftContainer.innerHTML = html;
+    if (container) container.innerHTML = pillHtml;
+    if (leftContainer) leftContainer.innerHTML = pillHtml;
   } else {
-    if (container) {
-      container.innerHTML = `
-        <button class="pill-btn generate-srt-btn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--accent-cyan);color:#000;border:1px solid transparent;" onclick="generateSrtWithGemini()">
-          <svg class="generate-srt-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-          </svg>
-          <span class="generate-srt-text">✨ Generate SRT with AI</span>
-        </button>
-      `;
-    }
-    if (leftContainer) {
-      leftContainer.innerHTML = `
-        <button class="text-action-btn generate-srt-btn" onclick="generateSrtWithGemini()">
-          <svg class="generate-srt-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-          </svg>
-          <span class="generate-srt-text">✨ Generate SRT with AI</span>
-        </button>
-      `;
-    }
+    const noSrtHtml_container = `
+      <button class="pill-btn generate-srt-btn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;background:var(--accent-cyan);color:#000;border:1px solid transparent;" onclick="generateSrtWithGemini()">
+        <svg class="generate-srt-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+        <span class="generate-srt-text">✨ Make Subtitles with AI</span>
+      </button>
+    `;
+    const noSrtHtml_left = `
+      <button class="text-action-btn generate-srt-btn" onclick="generateSrtWithGemini()">
+        <svg class="generate-srt-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+        <span class="generate-srt-text">✨ Make Subtitles with AI</span>
+      </button>
+    `;
+    if (container) container.innerHTML = noSrtHtml_container;
+    if (leftContainer) leftContainer.innerHTML = noSrtHtml_left;
+  }
+}
+
+async function verifySrtWithGemini() {
+  if (!state.generatedSrtText) {
+    showToast('No AI-generated SRT to verify. Generate subtitles first.', 'error');
+    return;
+  }
+  if (!state.selectedUrl) {
+    showToast('Verification requires a YouTube URL — paste the video URL on the settings page.', 'error');
+    return;
+  }
+  if (state.isVerifying) {
+    showToast('Verification already in progress. Please wait.', 'info');
+    return;
+  }
+  state.isVerifying = true;
+  const btn = document.getElementById('verify-srt-btn');
+  const btnText = document.getElementById('verify-srt-text');
+  if (btn) btn.disabled = true;
+  if (btnText) btnText.textContent = '⏳ Verifying word-by-word…';
+  if (btn) btn.classList.add('verifying');
+
+  try {
+    const res = await fetch('/api/heygen/verify-srt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ srt: state.generatedSrtText, url: state.selectedUrl })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Verification failed: HTTP ${res.status}`);
+    const correctedSrt = String(data.srt || '').trim();
+    if (!correctedSrt) throw new Error('Empty response from AI verification');
+
+    // Replace the SRT with the verified/corrected version
+    state.generatedSrtText = correctedSrt;
+    const blob = new Blob([correctedSrt], { type: 'text/plain' });
+    const correctedFile = new File([blob], 'verified_subtitles.srt', { type: 'text/plain' });
+    state.selectedSrtFile = correctedFile;
+    renderSrtFileUploader();
+    showToast('✅ Subtitles verified and corrected by AI', 'success');
+  } catch (err) {
+    showToast(err.message || 'SRT verification failed', 'error');
+    // Re-enable button on failure so user can retry
+    const btn2 = document.getElementById('verify-srt-btn');
+    const btnText2 = document.getElementById('verify-srt-text');
+    if (btn2) { btn2.disabled = false; btn2.classList.remove('verifying'); }
+    if (btnText2) btnText2.textContent = '🔍 Verify Subtitles with AI';
+  } finally {
+    state.isVerifying = false;
   }
 }
 
