@@ -1,0 +1,1 @@
+module.exports = function inquire(moduleName) { try { return require(moduleName); } catch(e) { return null; } };

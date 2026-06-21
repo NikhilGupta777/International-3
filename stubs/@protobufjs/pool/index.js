@@ -1,0 +1,1 @@
+module.exports = function pool(alloc, slice, size) { return alloc; };

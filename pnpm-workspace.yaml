@@ -3,6 +3,8 @@ packages:
   - lib/*
   - lib/integrations/*
   - scripts
+  - stubs/protobufjs
+  - stubs/@protobufjs/*
 
 autoInstallPeers: false
 
@@ -124,3 +126,14 @@ overrides:
   rollup>@rollup/rollup-win32-ia32-msvc: '-'
   rollup>@rollup/rollup-win32-x64-gnu: '-'
   rollup>@rollup/rollup-win32-x64-msvc: '-'
+  protobufjs: 'file:./stubs/protobufjs'
+  '@protobufjs/aspromise': 'file:./stubs/@protobufjs/aspromise'
+  '@protobufjs/base64': 'file:./stubs/@protobufjs/base64'
+  '@protobufjs/codegen': 'file:./stubs/@protobufjs/codegen'
+  '@protobufjs/eventemitter': 'file:./stubs/@protobufjs/eventemitter'
+  '@protobufjs/fetch': 'file:./stubs/@protobufjs/fetch'
+  '@protobufjs/float': 'file:./stubs/@protobufjs/float'
+  '@protobufjs/inquire': 'file:./stubs/@protobufjs/inquire'
+  '@protobufjs/path': 'file:./stubs/@protobufjs/path'
+  '@protobufjs/pool': 'file:./stubs/@protobufjs/pool'
+  '@protobufjs/utf8': 'file:./stubs/@protobufjs/utf8'

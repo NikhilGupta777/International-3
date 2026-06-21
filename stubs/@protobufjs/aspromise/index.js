@@ -1,0 +1,1 @@
+module.exports = function(fn, ctx) { return new Promise((res, rej) => fn.call(ctx, (e, v) => e ? rej(e) : res(v))); };
