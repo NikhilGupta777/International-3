@@ -1105,7 +1105,31 @@ body {
   flex-direction: column;
   gap: 16px;
   height: fit-content;
+  position: relative;
 }
+/* Title bar removed — show a small × overlay on the video's top-right corner.
+   Higher specificity than the later `.preview-header { display:flex }` rule. */
+.video-preview-card > .preview-header { display: none; }
+.close-video-overlay {
+  position: absolute;
+  top: 22px;
+  right: 22px;
+  z-index: 6;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+.close-video-overlay:hover { background: rgba(0,0,0,0.82); }
 .preview-header {
   display: flex;
   align-items: center;
@@ -1156,6 +1180,37 @@ body {
   width: 100%;
   height: 100%;
   display: block;
+}
+.preview-video-container.yt-poster { cursor: pointer; }
+.yt-poster-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+.yt-embed { width: 100%; height: 100%; border: 0; display: block; }
+.yt-play-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding-left: 3px;
+  transition: background 0.2s, transform 0.15s;
+}
+.yt-play-btn:hover {
+  background: #e50914;
+  transform: translate(-50%, -50%) scale(1.06);
 }
 .preview-actions {
   display: flex;
@@ -2471,6 +2526,14 @@ body {
     display: flex !important;
   }
 
+  /* The mobile hamburger is the ONLY sidebar control on mobile. Force-hide the
+     desktop collapse toggle even when the sidebar is collapsed — otherwise it
+     renders next to the hamburger and crowds/overlaps the topbar buttons. */
+  #topbar-sidebar-toggle-btn,
+  #sidebar.collapsed ~ #main #topbar-sidebar-toggle-btn {
+    display: none !important;
+  }
+
   /* On video-detail page, topbar is hidden so show the detail sidebar toggle as hamburger */
   #detail-sidebar-toggle-btn {
     display: flex !important;
@@ -2506,28 +2569,59 @@ body {
   .projects-row { gap: 12px; }
   .recent-project-card { width: calc(50% - 6px); }
 
-  /* Settings nav bar */
+  /* Settings nav bar — 2-column paired layout on mobile:
+       [ Source video language ] [ Translate it into ]
+       [ Engine used           ] [ Generate SRT w/ AI ]
+       [ Translate (full width)                       ]   */
   .settings-nav-bar { padding: 12px 14px; }
   .settings-nav-inner {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: end;
+    gap: 12px;
     max-width: 100%;
   }
-  .select-group { width: 100%; }
-  .flex-fill { max-width: 100%; min-width: 0; flex: 1; }
-  .lang-picker-wrap { width: 100%; }
-  .lang-pill-select { width: 100%; }
+  .select-group,
+  .srt-slot { width: auto; min-width: 0; }
+  .flex-fill { max-width: none; min-width: 0; }
+  .lang-picker-wrap,
+  .lang-pill-select,
+  .src-lang-btn,
+  .engine-select-dropdown,
+  .engine-select-btn { width: 100%; min-width: 0; }
 
-  /* Arrow between source/target */
+  /* The Generate SRT grid cell aligns its button to the bottom (label-less). */
+  .srt-slot { display: flex; flex-direction: column; justify-content: flex-end; }
+
+  /* Arrow between source/target — hide on mobile. (The arrow is wrapped in a
+     .arrow-between div, so the old `> svg[viewBox]` selector never matched it
+     and it leaked through as a stray full-width row when fields stack.) */
+  .arrow-between,
   .settings-nav-inner > svg[viewBox] { display: none; }
 
-  /* Translate button full-width */
+  /* Translate button spans both columns */
   #translate-btn {
+    grid-column: 1 / -1;
     width: 100%;
     height: 42px;
     border-radius: var(--radius-md);
   }
+
+  /* Advanced Settings reflowed under Translate — full-width row, centered. */
+  .advanced-slot {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: center;
+  }
+  .advanced-slot .text-action-btn { padding: 8px 16px; }
+
+  /* Show the video preview ABOVE the form on mobile (matches HeyGen). */
+  #settings-page.page.active { flex-direction: column; }
+  #settings-page .settings-body { order: -1; }
+  #settings-page .settings-nav-bar { order: 0; border-bottom: none; }
+  /* Both card-action buttons are reflowed into the form on mobile, so the card's
+     own actions row is empty — hide it. */
+  #settings-page .preview-actions { display: none; }
 
   /* History page */
   #history-page .page-content { padding: 14px; }
@@ -2601,28 +2695,43 @@ body {
   }
 
   /* ── Settings page post-submit area — mobile improvements ── */
-  .settings-body { padding: 12px 14px; }
+  /* Use ONE natural scroll for the whole settings page instead of a nested
+     scroll region. Previously both #settings-page and .settings-body were
+     scroll containers, so after submitting a link the video preview lived in a
+     cramped inner scroller that fought the page scroll. */
+  #settings-page.page { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+  .settings-body {
+    padding: 12px 14px 32px;
+    display: block;
+    flex: 0 0 auto;
+    overflow: visible;
+  }
+  .video-preview-card { max-width: 100%; }
 
-  /* Preview actions: stack vertically so both buttons get full width */
+  /* Preview actions: "Generate SRT with AI" is reflowed up into the form, so
+     only "Advanced Settings" remains here — show it as a centered horizontal row. */
   .preview-actions {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
     gap: 8px;
     padding-top: 12px;
     margin-top: 4px;
     border-top: 1px solid var(--border-color);
   }
 
-  /* Make "Make Subtitles with AI" text action btn full-width on mobile */
-  #left-srt-container { width: 100%; }
+  /* "Generate SRT with AI" lives in the form grid cell beside Engine — style it
+     like a form field (#left-srt-container always wraps that one button). */
+  .srt-slot #left-srt-container { width: 100%; }
   #left-srt-container .text-action-btn {
     width: 100%;
+    height: 38px;
     justify-content: center;
     border: 1px solid var(--border-color-light);
     border-radius: var(--radius-md);
-    padding: 10px 16px;
-    background: var(--bg-card);
-    min-height: 42px;
+    padding: 0 10px;
+    background: var(--bg-input);
+    font-size: 12px;
   }
 
   /* Advanced settings button full width */
@@ -2871,14 +2980,25 @@ body {
         </div>
       </div>
 
+      <!-- On mobile the "Generate SRT with AI" button is reflowed into this slot
+           so it sits beside "Engine used" (see reflowHeygenLayout). -->
+      <div id="form-srt-slot" class="srt-slot"></div>
+
       <button class="pill-btn cyan-btn" id="translate-btn" onclick="startTranslation()">Translate</button>
+
+      <!-- On mobile the "Advanced Settings" button is reflowed here, under
+           Translate (see reflowHeygenLayout). -->
+      <div id="form-advanced-slot" class="advanced-slot"></div>
       </div>
     </div>
 
     <!-- Preview Container -->
     <div class="settings-body">
       <div class="video-preview-card">
-        <div class="preview-header">
+        <!-- Title bar removed to save space; the × overlays the video corner.
+             #vid-title / #vid-thumb are kept (hidden) because JS still writes to them. -->
+        <button class="close-video-overlay" onclick="startNew()" aria-label="Remove video" title="Remove">×</button>
+        <div class="preview-header" hidden>
           <div class="preview-title-wrap">
             <img id="vid-thumb" class="preview-mini-thumb" src="" style="display:none"/>
             <div class="preview-title" id="vid-title">Loading video details...</div>
@@ -2888,7 +3008,7 @@ body {
         <div class="preview-video-container">
           <video id="vid-preview" controls></video>
         </div>
-        <div class="preview-actions">
+        <div class="preview-actions" id="preview-actions">
           <div id="left-srt-container">
             <button class="text-action-btn generate-srt-btn" onclick="generateSrtWithGemini()">
               <svg class="generate-srt-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -2897,7 +3017,7 @@ body {
               <span class="generate-srt-text">✨ Generate SRT with AI</span>
             </button>
           </div>
-          <button class="text-action-btn" onclick="openAdvancedModal()">
+          <button class="text-action-btn" id="adv-settings-btn" onclick="openAdvancedModal()">
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"/>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -3581,6 +3701,16 @@ window.addEventListener('DOMContentLoaded', () => {
 
   // Live history update poller (every 13 seconds, active jobs only)
   setInterval(pollHistoryLive, 13000);
+
+  // Full list refresh (every 45s) so newly-created/external jobs and finished
+  // jobs show up on their own — no manual page refresh needed.
+  setInterval(backgroundRefreshHistory, 45000);
+
+  // Refresh the moment the tab becomes visible again (returning from another
+  // tab/app), which is when stale recents were most noticeable.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') backgroundRefreshHistory();
+  });
 });
 
 // ── API KEY & LIVE POLLER ──
@@ -3654,6 +3784,17 @@ async function loadBrandGlossaries() {
     console.warn('Failed to load brand glossaries:', e);
     selector.innerHTML = '<option value="">🔍 None (Error loading)</option>';
   }
+}
+
+// Full list refresh that discovers NEW/external jobs and recovers from a failed
+// initial load. pollHistoryLive() only patches jobs already known to be active,
+// so without this a job created in another tab/session never appears until a
+// manual page refresh. Runs without a spinner so the visible list never flashes.
+async function backgroundRefreshHistory() {
+  if (!state.apiKey) return;
+  if (state.isHistoryLoading) return;          // don't stack concurrent loads
+  if (document.visibilityState === 'hidden') return; // skip work for hidden tabs
+  await loadHistory(false);
 }
 
 async function pollHistoryLive() {
@@ -3971,21 +4112,99 @@ function extractTitle(url) {
   } catch { return url; }
 }
 
+// On mobile, move "Generate SRT with AI" out of the video card and into the
+// form (beside "Engine used") so the post-submit controls pair up 2-per-row.
+// On desktop it lives back in the card actions row. Idempotent + re-runnable.
+function reflowHeygenLayout() {
+  const cardActions = document.getElementById('preview-actions');
+  if (!cardActions) return;
+  const mobile = window.innerWidth <= 768;
+
+  // "Generate SRT with AI" → beside Engine in the form (mobile) / card (desktop).
+  const srt = document.getElementById('left-srt-container');
+  const srtSlot = document.getElementById('form-srt-slot');
+  if (srt && srtSlot) {
+    if (mobile) { if (srt.parentElement !== srtSlot) srtSlot.appendChild(srt); }
+    else if (srt.parentElement !== cardActions) cardActions.insertBefore(srt, cardActions.firstChild);
+  }
+
+  // "Advanced Settings" → under Translate in the form (mobile) / card (desktop).
+  const adv = document.getElementById('adv-settings-btn');
+  const advSlot = document.getElementById('form-advanced-slot');
+  if (adv && advSlot) {
+    if (mobile) { if (adv.parentElement !== advSlot) advSlot.appendChild(adv); }
+    else if (adv.parentElement !== cardActions) cardActions.appendChild(adv);
+  }
+}
+window.addEventListener('resize', reflowHeygenLayout);
+window.addEventListener('DOMContentLoaded', reflowHeygenLayout);
+
+function ytIdFromUrl(url) {
+  try {
+    const u = new URL(url);
+    if (u.hostname.includes('youtu.be')) return u.pathname.split('/').filter(Boolean).pop();
+    if (u.hostname.includes('youtube')) {
+      return u.searchParams.get('v') || u.pathname.split('/').filter(Boolean).pop();
+    }
+  } catch {}
+  return null;
+}
+
 function setupSettingsPage(title, size, videoUrl, type) {
   document.getElementById('vid-title').textContent = title;
-  
+
   const previewContainer = document.querySelector('.preview-video-container');
   previewContainer.innerHTML = '';
-  
-  // Use provided videoUrl or fallback to the local input_video.mp4 to keep it interactive
-  const playableUrl = videoUrl || './input_video.mp4';
-  
+  document.getElementById('vid-thumb').style.display = 'none';
+
+  // YouTube can't play in a raw <video> tag, so show its thumbnail as the
+  // preview (matches HeyGen) instead of a broken/empty media element.
+  const ytId = type === 'url' ? ytIdFromUrl(state.selectedUrl || videoUrl || '') : null;
+  if (ytId) {
+    // Clickable poster → swaps to an autoplaying YouTube embed on click.
+    previewContainer.classList.add('yt-poster');
+    const img = document.createElement('img');
+    img.id = 'vid-preview';
+    img.alt = title;
+    img.referrerPolicy = 'no-referrer';
+    img.className = 'yt-poster-img';
+    img.src = `https://i.ytimg.com/vi/${ytId}/maxresdefault.jpg`;
+    // maxresdefault isn't always available — fall back to hqdefault (always present).
+    img.onerror = function () { this.onerror = null; this.src = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`; };
+
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.className = 'yt-play-btn';
+    play.setAttribute('aria-label', 'Play video');
+    play.innerHTML = '<svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+
+    const playVideo = function () {
+      const iframe = document.createElement('iframe');
+      iframe.className = 'yt-embed';
+      iframe.src = `https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0&playsinline=1`;
+      iframe.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
+      iframe.setAttribute('allowfullscreen', '');
+      previewContainer.classList.remove('yt-poster');
+      previewContainer.innerHTML = '';
+      previewContainer.appendChild(iframe);
+    };
+    img.addEventListener('click', playVideo);
+    play.addEventListener('click', playVideo);
+
+    previewContainer.appendChild(img);
+    previewContainer.appendChild(play);
+    reflowHeygenLayout();
+    return;
+  }
+
+  // Direct media URL or local file → playable <video>.
+  const playableUrl = videoUrl || (type === 'file' ? '' : null);
   const video = document.createElement('video');
   video.id = 'vid-preview';
   video.controls = true;
-  video.src = playableUrl;
+  if (playableUrl) video.src = playableUrl;
   previewContainer.appendChild(video);
-  document.getElementById('vid-thumb').style.display = 'none';
+  reflowHeygenLayout();
 }
 
 // ── SOURCE LANGUAGE PICKER ──
