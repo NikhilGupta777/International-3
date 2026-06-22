@@ -4666,14 +4666,29 @@ async function startTranslation() {
       title: (state.selectedFile?.name || extractTitle(state.selectedUrl)).replace(/\.[^.]+$/,'') + '-' + state.selectedLangs[0]
     };
 
-    const r = await fetch('/api/heygen/video-translations', {
+    let r = await fetch('/api/heygen/video-translations', {
       method: 'POST',
       headers: { 'x-api-key': state.apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    const d = await r.json();
+    let d = await r.json().catch(() => ({}));
     let ids = d?.data?.video_translation_ids || d?.data?.video_translation_id;
     if (!Array.isArray(ids)) ids = ids ? [ids] : [];
+
+    if (!ids.length && srtField && /custom subtitle files are only supported on enterprise plans/i.test(errorMessageFrom(d, ''))) {
+      showToast('Custom subtitle attachment skipped: HeyGen only supports custom subtitle files on Enterprise plans. Translation will continue without subtitles.', 'info');
+      showActiveToast('Submitting translation without custom subtitles...');
+      delete body.srt;
+      delete body.srt_role;
+      r = await fetch('/api/heygen/video-translations', {
+        method: 'POST',
+        headers: { 'x-api-key': state.apiKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      d = await r.json().catch(() => ({}));
+      ids = d?.data?.video_translation_ids || d?.data?.video_translation_id;
+      if (!Array.isArray(ids)) ids = ids ? [ids] : [];
+    }
 
     if (!ids.length) throw new Error(errorMessageFrom(d, 'Failed to submit translation job'));
 
