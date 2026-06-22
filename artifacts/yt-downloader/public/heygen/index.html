@@ -1393,6 +1393,36 @@ body {
   height: 100%;
   object-fit: cover;
 }
+.poster-thumb-stack {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #050607;
+}
+.poster-thumb-bg,
+.poster-thumb-main {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.poster-thumb-bg {
+  object-fit: cover;
+  filter: blur(16px);
+  transform: scale(1.12);
+  opacity: 0.58;
+}
+.poster-thumb-main {
+  object-fit: contain !important;
+  z-index: 1;
+}
+.poster-thumb-stack::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.22);
+  z-index: 0;
+}
 .hc-checkbox {
   position: absolute;
   top: 10px;
@@ -5108,12 +5138,16 @@ function thumbPlaceholderHtml(extraStyle = '') {
 function posterThumbHtml(id, hasVideo) {
   if (!hasVideo) return thumbPlaceholderHtml();
   const safeId = escapeHtml(String(id));
-  return `<img class="poster-thumb" src="/api/heygen/poster/${encodeURIComponent(safeId)}" loading="lazy" decoding="async" alt="" style="width:100%;height:100%;object-fit:cover;display:block;background:#1d2024" onerror="posterError(this)"/>`;
+  const src = `/api/heygen/poster/${encodeURIComponent(safeId)}`;
+  return `<div class="poster-thumb-stack">
+    <img class="poster-thumb-bg" src="${src}" loading="lazy" decoding="async" alt="" aria-hidden="true"/>
+    <img class="poster-thumb-main" src="${src}" loading="lazy" decoding="async" alt="" onerror="posterError(this.closest('.poster-thumb-stack'))"/>
+  </div>`;
 }
 
 // On poster load failure (not generated yet / error), swap in the placeholder.
-function posterError(img) {
-  if (img && img.parentNode) img.outerHTML = thumbPlaceholderHtml();
+function posterError(node) {
+  if (node && node.parentNode) node.outerHTML = thumbPlaceholderHtml();
 }
 
 // ── HOVER CARD TOOLTIPS FOR THUMBNAILS ──
