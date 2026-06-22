@@ -228,7 +228,7 @@ export function Sidebar({
 
       {/* Mobile hamburger */}
       <button
-        className="studio-hamburger"
+        className={cn("studio-hamburger", mode === "heygen" && "studio-hamburger-heygen")}
         onClick={toggleDrawer}
         aria-label="Open navigation"
       >

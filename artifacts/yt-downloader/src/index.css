@@ -4704,6 +4704,12 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
     transform: scale(0.96);
   }
 
+  .studio-hamburger-heygen {
+    left: 8px !important;
+    right: auto !important;
+    top: 8px !important;
+  }
+
   /* Safe-area at the top of every plain content tab so the
      hamburger no longer covers headings, search inputs, etc. */
   .studio-content-inner:not(.is-copilot) {

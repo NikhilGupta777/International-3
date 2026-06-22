@@ -2471,16 +2471,18 @@ body {
 /* ── Mobile 768px ── */
 @media (max-width: 768px) {
 
-  /* Sidebar: hidden by default, slides in as overlay */
+  /* Sidebar: hidden by default, slides in as a RIGHT-side overlay on mobile */
   #sidebar {
     position: fixed;
-    left: 0; top: 0;
+    right: 0; left: auto; top: 0;
     height: 100vh;
     width: 260px;
-    transform: translateX(-100%);
+    transform: translateX(100%);
     transition: transform 0.28s cubic-bezier(0.4,0,0.2,1);
     z-index: 400;
     will-change: transform;
+    border-right: none;
+    border-left: 1px solid var(--border-color);
   }
   #sidebar.mobile-open {
     transform: translateX(0);
@@ -2489,7 +2491,8 @@ body {
     width: 260px;
     min-width: 260px;
     overflow: auto;
-    border-right: 1px solid var(--border-color);
+    border-right: none;
+    border-left: 1px solid var(--border-color);
   }
 
   /* Sidebar overlay backdrop */
@@ -2513,17 +2516,34 @@ body {
 
   /* Topbar */
   #topbar {
-    padding: 0 12px;
-    gap: 8px;
+    padding: 0 56px 0 70px;
+    gap: 6px;
     height: 56px;
     min-height: 56px;
+    position: relative;
   }
-  .topbar-tabs { display: none; } /* hide on mobile, replaced by page nav */
+  .topbar-tabs {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .topbar-tabs .tab-pill {
+    padding: 7px 12px;
+    font-size: 13px;
+  }
   .topbar-spacer { flex: 1; }
+  #topbar > .circle-btn {
+    display: none !important;
+  }
 
   /* Mobile hamburger — show always on mobile */
   #mobile-menu-btn {
     display: flex !important;
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-left: 0;
   }
 
   /* The mobile hamburger is the ONLY sidebar control on mobile. Force-hide the
@@ -2543,6 +2563,8 @@ body {
   /* Show dedicated mobile hamburger on detail page, hide desktop toggle */
   #detail-mobile-menu-btn {
     display: flex !important;
+    order: 100;
+    margin-left: auto;
   }
   /* Hide the desktop sidebar-collapse icon on mobile detail page */
   #detail-sidebar-toggle-btn {
@@ -2796,7 +2818,8 @@ body {
   }
   .recent-project-card { width: 100%; }
   .drop-zone-card h2 { font-size: 15px; }
-  #topbar { padding: 0 10px; gap: 6px; }
+  #topbar { padding: 0 56px 0 64px; gap: 5px; }
+  .topbar-tabs .tab-pill { padding: 7px 10px; font-size: 12px; }
   .pill-btn { padding: 7px 14px; font-size: 12px; }
 }
 
@@ -3667,15 +3690,19 @@ function isFailedStatus(status) {
 }
 
 // ── INITIALIZATION ──
-window.addEventListener('DOMContentLoaded', () => {
+let heygenAppInitialized = false;
+
+async function initializeHeyGenApp() {
+  if (heygenAppInitialized) return;
+  heygenAppInitialized = true;
   // Clear any old localStorage history cache \u2014 history is now 100% API-driven
   try { localStorage.removeItem('hg_history'); } catch(e) {}
 
-  loadApiKeyFromEnv();
+  await loadApiKeyFromEnv();
   setupDragDrop();
   renderLangTags();
   renderLangDropdown('');
-  loadHistory();
+  await loadHistory();
   loadGlossary();
   setupTranscriptSync();
   
@@ -3711,13 +3738,23 @@ window.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') backgroundRefreshHistory();
   });
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  void initializeHeyGenApp();
 });
 
 // ── API KEY & LIVE POLLER ──
 async function loadApiKeyFromEnv() {
   state.apiKey = 'server-managed';
   state.geminiKeys = ['server-managed'];
-  validateApiKey();
+  await validateApiKey();
+}
+
+async function ensureApiReady() {
+  if (state.apiKey) return true;
+  await loadApiKeyFromEnv();
+  return Boolean(state.apiKey);
 }
 
 async function validateApiKey() {
@@ -4059,9 +4096,9 @@ function setupDragDrop() {
   });
 }
 
-function handleFileSelect(file) {
+async function handleFileSelect(file) {
   if (!file) return;
-  if (!state.apiKey) {
+  if (!(await ensureApiReady())) {
     showToast('Please enter and verify your API credentials first', 'error');
     toggleApiPopover();
     return;
@@ -4085,10 +4122,10 @@ function handleUrlInput(val) {
   }
 }
 
-function submitUrl() {
+async function submitUrl() {
   const url = document.getElementById('url-input').value.trim();
   if (!url) return;
-  if (!state.apiKey) {
+  if (!(await ensureApiReady())) {
     showToast('Please enter and verify your API credentials first', 'error');
     toggleApiPopover();
     return;
@@ -4418,6 +4455,7 @@ async function uploadSrtToServer(file) {
 
 // ✨ TRANSLATION PIPELINE ✨──
 async function startTranslation() {
+  await ensureApiReady();
   if (!state.apiKey) { showToast('API credentials required', 'error'); return; }
   if (!state.selectedLangs.length) { showToast('Please choose target output language', 'error'); return; }
   if (!state.videoInputType) { showToast('Please select or paste a video first', 'error'); return; }
