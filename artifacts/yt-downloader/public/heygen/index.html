@@ -1442,6 +1442,59 @@ body {
 .history-card:hover .hc-menu-dots {
   opacity: 1;
 }
+.history-action-menu {
+  position: fixed;
+  z-index: 1200;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+  border: 1px solid var(--border-color-light);
+  border-radius: 10px;
+  background: #191b1f;
+  box-shadow: 0 18px 44px rgba(0,0,0,0.42);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.history-action-menu-title {
+  padding: 7px 9px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.history-action-menu button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-white);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.history-action-menu button:hover {
+  background: rgba(255,255,255,0.07);
+}
+.history-action-menu button:disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
+  opacity: 0.55;
+}
+.history-action-menu button.danger {
+  color: var(--red-accent);
+}
+.history-action-menu button.danger:hover {
+  background: rgba(255,77,109,0.12);
+}
 .hc-status-overlay {
   position: absolute;
   inset: 0;
@@ -3156,7 +3209,7 @@ body {
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
           </button>
-          <button class="circle-btn">...</button>
+          <button class="circle-btn" onclick="event.stopPropagation(); if (state.activeDetailJob) toggleHistoryMenu(event, state.activeDetailJob.id)" title="Project actions">...</button>
         </div>
       </div>
 
@@ -3717,7 +3770,11 @@ async function initializeHeyGenApp() {
     // Engine
     const engineWrap = document.querySelector('.engine-select-dropdown');
     if (engineWrap && !engineWrap.contains(e.target)) closeEngineDropdown();
+    const actionMenu = document.getElementById('history-action-menu');
+    if (actionMenu && !actionMenu.contains(e.target)) closeHistoryActionMenu();
   });
+  window.addEventListener('resize', closeHistoryActionMenu);
+  window.addEventListener('scroll', closeHistoryActionMenu, true);
 
   // Track hover cards for recent project thumbnails
   setupHoverCardTooltips();
@@ -5857,46 +5914,149 @@ async function deleteTranslationViaApi(id) {
 
 function toggleHistoryMenu(event, id) {
   event.stopPropagation();
-  // Simple card individual action menu
-  const action = prompt(`Select action for this translation project:\n1. Rename Project\n2. Delete Project\nType '1' or '2':`);
-  if (action === '1') {
-    const newTitle = prompt('Enter new project title:');
-    if (newTitle && newTitle.trim()) {
-      renameProjectInHistory(id, newTitle.trim());
-    }
-  } else if (action === '2') {
-    if (confirm('Permanently delete this translation project? This cannot be undone.')) {
+  closeHistoryActionMenu();
+
+  const item = findTranslationById(id);
+  if (!item) {
+    showToast('Project not found. Refreshing history...', 'info');
+    loadHistory(false);
+    return;
+  }
+
+  const menu = document.createElement('div');
+  menu.id = 'history-action-menu';
+  menu.className = 'history-action-menu';
+  menu.setAttribute('role', 'menu');
+  menu.innerHTML = buildHistoryActionMenuHtml(item);
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn || btn.disabled) return;
+    e.stopPropagation();
+    handleHistoryAction(btn.dataset.action, id);
+  });
+  document.body.appendChild(menu);
+
+  const pad = 8;
+  const rect = menu.getBoundingClientRect();
+  let left = event.clientX;
+  let top = event.clientY;
+  if (left + rect.width + pad > window.innerWidth) left = window.innerWidth - rect.width - pad;
+  if (top + rect.height + pad > window.innerHeight) top = window.innerHeight - rect.height - pad;
+  menu.style.left = Math.max(pad, left) + 'px';
+  menu.style.top = Math.max(pad, top) + 'px';
+}
+
+function closeHistoryActionMenu() {
+  const existing = document.getElementById('history-action-menu');
+  if (existing) existing.remove();
+}
+
+function findTranslationById(id) {
+  return (state.history || []).find(x => x.id === id)
+    || (state.apiHistory || []).find(x => x.id === id)
+    || (state.activeDetailJob && state.activeDetailJob.id === id ? state.activeDetailJob : null);
+}
+
+function buildHistoryActionMenuHtml(item) {
+  const title = escapeHtml(item.title || item.id || 'Translation');
+  const status = item.status || 'completed';
+  const active = isActiveStatus(status);
+  const completed = isDoneStatus(status);
+  const videoDisabled = !item.video_url;
+  const audioDisabled = !item.audio_url;
+  const srtDisabled = !item.srt_caption_url;
+  const vttDisabled = !item.vtt_caption_url;
+  const removeLabel = active ? 'Cancel translation' : 'Delete project';
+
+  return `
+    <div class="history-action-menu-title" title="${title}">${title}</div>
+    ${historyMenuButton('open', active ? 'View progress' : 'Open project')}
+    ${historyMenuButton('download-video', 'Download video', videoDisabled)}
+    ${historyMenuButton('download-audio', 'Download audio', audioDisabled)}
+    ${historyMenuButton('download-srt', 'Download captions (.srt)', srtDisabled)}
+    ${historyMenuButton('download-vtt', 'Download captions (.vtt)', vttDisabled)}
+    ${historyMenuButton('copy-link', 'Copy video link', videoDisabled)}
+    ${historyMenuButton('delete', removeLabel, false, 'danger')}
+  `;
+}
+
+function historyMenuButton(action, label, disabled = false, className = '') {
+  return `<button type="button" role="menuitem" data-action="${action}" class="${className}" ${disabled ? 'disabled' : ''}>
+    <span>${escapeHtml(label)}</span>
+  </button>`;
+}
+
+async function handleHistoryAction(action, id) {
+  const item = findTranslationById(id);
+  closeHistoryActionMenu();
+  if (!item) {
+    showToast('Project not found. Refreshing history...', 'info');
+    await loadHistory(false);
+    return;
+  }
+
+  if (action === 'open') {
+    openVideoDetailById(id);
+    return;
+  }
+  if (action === 'download-video') return downloadProjectAsset(item, 'video');
+  if (action === 'download-audio') return downloadProjectAsset(item, 'audio');
+  if (action === 'download-srt') return downloadProjectAsset(item, 'srt');
+  if (action === 'download-vtt') return downloadProjectAsset(item, 'vtt');
+  if (action === 'copy-link') return copyProjectVideoLink(item);
+  if (action === 'delete') {
+    const active = isActiveStatus(item.status || 'completed');
+    const message = active
+      ? 'Cancel this in-progress translation? This removes the project from HeyGen.'
+      : 'Permanently delete this translation project? This cannot be undone.';
+    if (confirm(message)) {
       deleteSingleProject(id);
     }
   }
 }
 
-async function renameProjectInHistory(id, newTitle) {
-  const title = String(newTitle || '').trim().slice(0, 300);
-  if (!title) return;
-  try {
-    const r = await fetch('/api/heygen/video-translations/' + encodeURIComponent(id), {
-      method: 'PATCH',
-      headers: { 'x-api-key': state.apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title })
-    });
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      throw new Error(d.error || ('HTTP ' + r.status));
-    }
-    // Patch in-memory state so the rename shows instantly
-    const idx = (state.apiHistory || []).findIndex(x => x.id === id);
-    if (idx !== -1) state.apiHistory[idx] = { ...state.apiHistory[idx], title };
-    updateHistoryStateAndRender();
-    if (state.activeDetailJob && state.activeDetailJob.id === id) {
-      state.activeDetailJob.title = title;
-      const dtTitle = document.getElementById('dt-title');
-      if (dtTitle) dtTitle.textContent = title;
-    }
-    showToast('Project renamed', 'success');
-  } catch (e) {
-    showToast('Failed to rename: ' + e.message, 'error');
+function downloadProjectAsset(item, type) {
+  const urlMap = {
+    video: item.video_url,
+    audio: item.audio_url,
+    srt: item.srt_caption_url,
+    vtt: item.vtt_caption_url
+  };
+  const extMap = { video: 'mp4', audio: 'wav', srt: 'srt', vtt: 'vtt' };
+  const url = urlMap[type];
+  if (!url) {
+    showToast('This download is not available for this project yet', 'info');
+    return;
   }
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.download = projectDownloadFilename(item, extMap[type]);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function projectDownloadFilename(item, ext) {
+  const base = String(item.title || item.id || 'heygen-translation')
+    .replace(/[\\/:*?"<>|]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120) || 'heygen-translation';
+  return `${base}.${ext}`;
+}
+
+function copyProjectVideoLink(item) {
+  if (!item.video_url) {
+    showToast('No video link is available yet', 'info');
+    return;
+  }
+  navigator.clipboard.writeText(item.video_url).then(() => {
+    showToast('Video link copied', 'success');
+  }).catch(() => {
+    showToast('Could not copy video link', 'error');
+  });
 }
 
 async function deleteSingleProject(id) {
