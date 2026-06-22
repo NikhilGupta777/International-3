@@ -485,6 +485,88 @@ router.post("/assets", runUpload, async (req: Request, res: Response) => {
   }
 });
 
+// ── SRT sanitation ───────────────────────────────────────────────────────────
+// HeyGen's v3 `srt` field expects strict, parser-safe SRT: sequential numbers,
+// comma-decimal HH:MM:SS,mmm timestamps, no overlaps, no empty blocks. None of
+// our three entry points (user upload, AI generation, AI verification) produced
+// that reliably on their own — uploaded .vtt files use period-decimal timestamps
+// and a WEBVTT header but were passed straight into the `srt` field unmodified,
+// and AI output was only prompted, never checked. This single pass normalizes
+// any of those into clean SRT before it's ever sent to HeyGen.
+const SRT_TS_LINE_RE = /^\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}/;
+const SRT_MIN_ENTRY_MS = 300;
+
+function srtTimestampToMs(ts: string): number {
+  const m = ts.trim().match(/^(\d{1,2}):(\d{2}):(\d{2})[.,](\d{1,3})$/);
+  if (!m) return -1;
+  const [, h, min, s, msRaw] = m;
+  const ms = Number(msRaw.padEnd(3, "0").slice(0, 3));
+  return (Number(h) * 3600 + Number(min) * 60 + Number(s)) * 1000 + ms;
+}
+
+function msToSrtTimestamp(ms: number): string {
+  const clamped = Math.max(0, Math.round(ms));
+  const pad = (n: number, len = 2) => String(n).padStart(len, "0");
+  const h = Math.floor(clamped / 3_600_000);
+  const min = Math.floor((clamped % 3_600_000) / 60_000);
+  const s = Math.floor((clamped % 60_000) / 1000);
+  const msPart = clamped % 1000;
+  return `${pad(h)}:${pad(min)}:${pad(s)},${pad(msPart, 3)}`;
+}
+
+// Strips fences/BOM/headers, parses every block tolerantly (SRT or VTT-style),
+// fixes timestamp punctuation, drops malformed/empty/overlapping entries, and
+// renumbers sequentially. `forceSingleLine` collapses each block's text onto one
+// line — HeyGen's parser rejects multi-line blocks far more often than single-line
+// ones, so AI-generated output is held to that stricter bar; user uploads are not,
+// since multi-line SRT is technically valid and we don't want to mangle real files.
+function sanitizeSrt(raw: string, opts: { forceSingleLine?: boolean } = {}): { srt: string; entryCount: number } {
+  const text = raw
+    .replace(/^﻿/, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim()
+    .replace(/^```[a-z]*\n?/i, "")
+    .replace(/\n?```\s*$/i, "")
+    .trim();
+
+  type Entry = { startMs: number; endMs: number; lines: string[] };
+  const parsed: Entry[] = [];
+
+  for (const block of text.split(/\n\s*\n+/)) {
+    const lines = block.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length < 2) continue;
+    const idx = /^\d+$/.test(lines[0]) ? 1 : 0; // skip sequence number if present (VTT cues may omit it)
+    const tsLine = lines[idx] ?? "";
+    if (!SRT_TS_LINE_RE.test(tsLine)) continue;
+    const parts = tsLine.match(/^(.+?)\s*-->\s*(.+)$/);
+    if (!parts) continue;
+    const startMs = srtTimestampToMs(parts[1]);
+    const endMs = srtTimestampToMs(parts[2]);
+    if (startMs < 0 || endMs < 0 || startMs >= endMs) continue;
+    const textLines = lines.slice(idx + 1);
+    if (textLines.length === 0) continue;
+    parsed.push({ startMs, endMs, lines: opts.forceSingleLine ? [textLines.join(" ")] : textLines });
+  }
+
+  parsed.sort((a, b) => a.startMs - b.startMs);
+  const final: Entry[] = [];
+  for (const entry of parsed) {
+    const prev = final[final.length - 1];
+    let { startMs, endMs } = entry;
+    if (prev && startMs < prev.endMs) startMs = prev.endMs;
+    if (endMs - startMs < SRT_MIN_ENTRY_MS) endMs = startMs + SRT_MIN_ENTRY_MS;
+    if (prev && startMs >= endMs) continue;
+    final.push({ ...entry, startMs, endMs });
+  }
+
+  const srt = final
+    .map((entry, i) => `${i + 1}\n${msToSrtTimestamp(entry.startMs)} --> ${msToSrtTimestamp(entry.endMs)}\n${entry.lines.join("\n")}`)
+    .join("\n\n");
+
+  return { srt: srt ? `${srt}\n` : "", entryCount: final.length };
+}
+
 // Subtitle upload: host the SRT/VTT on our own S3 (short-lived presigned URL)
 // and return that URL for the translation request. This replaces the previous
 // browser-side upload to a third-party public host (tmpfiles.org), keeping
@@ -514,15 +596,22 @@ router.post("/srt-upload", runUpload, async (req: Request, res: Response) => {
       res.status(413).json({ error: "Subtitle file is too large (max 5 MB)." });
       return;
     }
+    // Always normalize into strict SRT before upload — the destination field is
+    // `srt` regardless of source extension, so a .vtt's period timestamps and
+    // WEBVTT header must be converted, not passed through.
+    const { srt: sanitized, entryCount } = sanitizeSrt(bytes.toString("utf8"));
+    if (entryCount === 0) {
+      res.status(422).json({ error: "This file doesn't look like a valid .srt/.vtt subtitle file — no well-formed timed entries were found." });
+      return;
+    }
     const jobId = randomUUID();
-    const safeName = (file.originalname || "subtitles.srt").replace(/[^\w.\-]+/g, "_").slice(0, 120);
-    const isVtt = ext === ".vtt";
+    const safeName = (file.originalname || "subtitles.srt").replace(/[^\w.\-]+/g, "_").replace(/\.(vtt|ass)$/i, ".srt").slice(0, 120);
     const { key, filename } = await uploadBufferToS3({
-      body: bytes,
+      body: Buffer.from(sanitized, "utf8"),
       jobId,
       namespace: "heygen-srt",
       filename: safeName,
-      contentType: isVtt ? "text/vtt" : "application/x-subrip",
+      contentType: "application/x-subrip",
     });
     // HeyGen fetches this URL server-side; a short-lived window is enough.
     const url = await getS3SignedDownloadUrl({ key, filename, expiresInSec: 6 * 60 * 60 });
@@ -537,10 +626,20 @@ router.post("/srt-upload", runUpload, async (req: Request, res: Response) => {
 const srtPrompt = `
 You are an expert professional subtitle transcriber.
 Transcribe the provided video/audio from start to end in the exact original spoken language.
-Output only valid SRT text, with no markdown, explanations, summaries, labels, or code fences.
-Use HH:MM:SS,mmm timestamps, sequential numbering, short readable subtitle blocks, and no overlapping timestamps.
 Preserve names, devotional terms, Sanskrit/Hindi words, mixed-language speech, repetitions, and spoken wording accurately.
-Do not translate unless the speaker actually changes language. Return only raw SRT.
+Do not translate unless the speaker actually changes language.
+
+Output strict, parser-safe SRT text only. Follow every rule below exactly:
+1. Sequence numbers start at 1 and increase by exactly 1 with no gaps or repeats.
+2. Timestamps use HH:MM:SS,mmm --> HH:MM:SS,mmm (comma before milliseconds, two-digit H/M/S, three-digit ms).
+3. Each block's end time must be strictly after its start time, and strictly less than or equal to the next block's start time. Never overlap.
+4. Every block must have at least 300ms duration. Never emit a zero or near-zero duration block.
+5. The final block's end time must not exceed the actual media duration.
+6. Each block's subtitle text is exactly ONE line — never split a block's text across multiple lines.
+7. Never emit an empty text line for a block.
+8. Exactly one blank line separates each block, and none inside a block.
+9. Plain UTF-8 text only — no BOM, no markdown, no code fences, no explanations, no labels, no commentary.
+Return only the raw SRT text and nothing else.
 `.trim();
 
 router.post("/generate-srt", runUpload, async (req: Request, res: Response) => {
@@ -600,11 +699,13 @@ router.post("/generate-srt", runUpload, async (req: Request, res: Response) => {
       model: HEYGEN_SRT_MODEL,
       contents: [{ role: "user", parts }],
     });
-    const text = String((result as any).text ?? "")
-      .replace(/```srt/gi, "")
-      .replace(/```/g, "")
-      .trim();
-    res.json({ srt: text });
+    const raw = String((result as any).text ?? "");
+    const { srt, entryCount } = sanitizeSrt(raw, { forceSingleLine: true });
+    if (entryCount === 0) {
+      res.status(502).json({ error: "Gemini did not return a usable SRT — please try again." });
+      return;
+    }
+    res.json({ srt });
   } catch (err) {
     proxyError(req, res, "Gemini SRT generation failed", err);
   } finally {
@@ -678,13 +779,13 @@ router.post("/verify-srt", async (req: Request, res: Response) => {
       model: HEYGEN_SRT_MODEL,
       contents: [{ role: "user", parts }],
     });
-    const text = String((result as any).text ?? "")
-      .replace(/```srt/gi, "")
-      .replace(/```/g, "")
-      .trim();
-
-    if (!text) throw new Error("Empty response from Gemini verification");
-    res.json({ srt: text });
+    const raw = String((result as any).text ?? "");
+    const { srt: cleanedSrt, entryCount } = sanitizeSrt(raw, { forceSingleLine: true });
+    if (entryCount === 0) {
+      res.status(502).json({ error: "Gemini did not return a usable SRT — please try again." });
+      return;
+    }
+    res.json({ srt: cleanedSrt });
   } catch (err) {
     proxyError(req, res, "Gemini SRT verification failed", err);
   }
