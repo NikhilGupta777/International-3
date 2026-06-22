@@ -270,7 +270,7 @@ async function pollSubtitleUntilDone(
       lastLogMsg = subtitleMsg;
     }
     if (status === "done") return { status, srtFilename };
-    if (["error", "cancelled"].includes(status)) throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
+    if (["error", "cancelled", "expired", "not_found"].includes(status)) throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
@@ -304,7 +304,7 @@ async function pollTimestampsUntilDone(
       lastLogMsg = tsMsg;
     }
     if (status === "done") return { status, timestamps };
-    if (["error", "cancelled"].includes(status)) throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
+    if (["error", "cancelled", "expired", "not_found"].includes(status)) throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
@@ -1986,6 +1986,16 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
       },
     });
     if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
+    // Guard against SSRF via open redirect — the initial URL passed isInternalHost
+    // but a 3xx redirect could land on an internal IP (e.g. AWS metadata 169.254.x.x).
+    if (r.url) {
+      try {
+        const finalHost = new URL(r.url).hostname;
+        if (isInternalHost(finalHost)) throw new Error("Redirect landed on an internal/private network host.");
+      } catch (e: any) {
+        if (e.message.includes("internal/private")) throw e;
+      }
+    }
     const contentType = r.headers.get("content-type") ?? "";
     const raw = await readResponseTextWithLimit(r, 5 * 1024 * 1024, controller);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
@@ -3139,11 +3149,28 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isInternal = sourceUrl.startsWith("/");
+      const resolvedUrl = isInternal
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "follow" });
+      // Block SSRF: external URLs must not target internal/private hosts.
+      if (!isInternal) {
+        try {
+          const parsed = new URL(resolvedUrl);
+          if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http/https source URLs are allowed.");
+          if (isInternalHost(parsed.hostname)) throw new Error("Cannot fetch from internal/private network URLs.");
+        } catch (e: any) {
+          if (e.message.includes("internal/private") || e.message.includes("Only http")) throw e;
+          throw new Error(`Invalid source URL: ${resolvedUrl}`);
+        }
+      }
+
+      // Only forward session cookies for internal requests — never leak them to external hosts.
+      const fetchHeaders: Record<string, string> = isInternal
+        ? { Cookie: req.headers.cookie ?? "" }
+        : {};
+      const r = await fetch(resolvedUrl, { headers: fetchHeaders, redirect: "follow" });
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");

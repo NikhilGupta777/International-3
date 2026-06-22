@@ -2876,7 +2876,8 @@ export function StudioCopilot({
         name: att.name,
         mimeType: att.mimeType,
         url: att.url,
-      });
+        ...(att.data ? { data: att.data } : {}),
+      } as MessagePart);
     }
     updateSession(sessionId, msgs => [...msgs, {
       id: userMsgId, role: "user",
