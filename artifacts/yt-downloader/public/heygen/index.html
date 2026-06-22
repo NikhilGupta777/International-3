@@ -4535,9 +4535,42 @@ async function uploadSrtToServer(file) {
     body: fd
   });
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d.error || ('Subtitle upload failed: HTTP ' + r.status));
+  if (!r.ok) throw new Error(errorMessageFrom(d, 'Subtitle upload failed: HTTP ' + r.status));
   if (!d.url) throw new Error('Subtitle upload returned no URL');
   return d.url;
+}
+
+function errorMessageFrom(value, fallback = 'Something went wrong') {
+  if (!value) return fallback;
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return value.message || fallback;
+  if (Array.isArray(value)) {
+    const parts = value.map(v => errorMessageFrom(v, '')).filter(Boolean);
+    return parts.length ? parts.join(', ') : fallback;
+  }
+  if (typeof value === 'object') {
+    const candidates = [
+      value.message,
+      value.error,
+      value.detail,
+      value.description,
+      value.data && value.data.message,
+      value.data && value.data.error,
+      value.data && value.data.error && value.data.error.message,
+      value.error && value.error.message,
+      value.error && value.error.detail,
+    ];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const msg = errorMessageFrom(candidate, '');
+      if (msg) return msg;
+    }
+    try {
+      const serialized = JSON.stringify(value);
+      if (serialized && serialized !== '{}') return serialized;
+    } catch {}
+  }
+  return fallback;
 }
 
 // ✨ TRANSLATION PIPELINE ✨──
@@ -4596,8 +4629,18 @@ async function startTranslation() {
     let srtField = null;
     if (state.selectedSrtFile) {
       showActiveToast('Uploading custom subtitles...');
-      const srtUrl = await uploadSrtToServer(state.selectedSrtFile);
-      srtField = { type: 'url', url: srtUrl };
+      try {
+        const srtUrl = await uploadSrtToServer(state.selectedSrtFile);
+        srtField = { type: 'url', url: srtUrl };
+      } catch (err) {
+        const subtitleError = errorMessageFrom(err, 'Could not upload custom subtitles');
+        if (/subtitle hosting is not configured|s3 required/i.test(subtitleError)) {
+          showToast('Subtitle attachment skipped: server subtitle hosting is not configured. Translation will continue without custom subtitles.', 'info');
+          showActiveToast('Subtitle hosting unavailable; submitting translation without subtitles...');
+        } else {
+          throw err;
+        }
+      }
     }
 
     setStep(1);
@@ -4632,7 +4675,7 @@ async function startTranslation() {
     let ids = d?.data?.video_translation_ids || d?.data?.video_translation_id;
     if (!Array.isArray(ids)) ids = ids ? [ids] : [];
 
-    if (!ids.length) throw new Error(d?.error || d?.message || d?.data?.error?.message || 'Failed to submit translation job');
+    if (!ids.length) throw new Error(errorMessageFrom(d, 'Failed to submit translation job'));
 
     // One job is created per target language. Track ALL of them so multi-language
     // batches show up immediately and get picked up by the live history poller.
@@ -4668,7 +4711,7 @@ async function startTranslation() {
   } catch (e) {
     state.isUploadingToHeyGen = false;
     console.error(e);
-    showToast(e.message, 'error');
+    showToast(errorMessageFrom(e, 'Failed to start translation'), 'error');
     dismissActiveToast();
     document.getElementById('translate-btn').disabled = false;
     showPage('settings');
@@ -5554,7 +5597,7 @@ function showToast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = 'toast-item ' + type;
   const icons = { success: '✓', error: '✕', info: 'ℹ' };
-  el.innerHTML = `<span style="font-weight:700">${icons[type]||''}</span> ${msg}`;
+  el.innerHTML = `<span style="font-weight:700">${icons[type]||''}</span> ${escapeHtml(errorMessageFrom(msg, 'Something went wrong'))}`;
   c.appendChild(el);
   setTimeout(() => {
     el.style.opacity = '0';
