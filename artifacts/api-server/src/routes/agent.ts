@@ -3143,7 +3143,27 @@ except Exception as exc:
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "follow" });
+      // SSRF guard: block internal/private network URLs when fetching external sources.
+      // Only internal (relative) URLs are allowed to bypass — external URLs must not
+      // reach AWS metadata, loopback, or RFC-1918 ranges.
+      const parsedSourceUrl = new URL(resolvedUrl);
+      if (!["http:", "https:"].includes(parsedSourceUrl.protocol)) throw new Error("Only http/https URLs can be saved.");
+      if (!sourceUrl.startsWith("/") && isInternalHost(parsedSourceUrl.hostname)) {
+        throw new Error("Cannot fetch from internal/private network URLs.");
+      }
+
+      // Only forward cookies for internal (relative) URLs — never to external hosts.
+      const fetchHeaders: Record<string, string> = sourceUrl.startsWith("/")
+        ? { Cookie: req.headers.cookie ?? "" }
+        : {};
+      const fetchController = new AbortController();
+      const fetchTimer = setTimeout(() => fetchController.abort(), 30000);
+      let r: globalThis.Response;
+      try {
+        r = await fetch(resolvedUrl, { headers: fetchHeaders, redirect: "follow", signal: fetchController.signal });
+      } finally {
+        clearTimeout(fetchTimer);
+      }
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
