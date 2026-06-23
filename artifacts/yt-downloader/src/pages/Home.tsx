@@ -36,7 +36,6 @@ import VideoTranslator from "./VideoTranslator";
 import HeyGenTranslator from "./HeyGenTranslator";
 import {
   saveActiveDownload,
-  loadActiveDownload,
   clearActiveDownload,
   loadCompletedDownloads as loadCompletedDownloadsForNotify,
 } from "@/lib/download-history";
@@ -415,17 +414,6 @@ export default function Home({
       replaceCurrentPath("/download");
     }
   }, [mode, jobId]);
-
-  // Restore an active download job from localStorage on page load
-  useEffect(() => {
-    if (hadInitialModeRestoreHintRef.current) return;
-    const saved = loadActiveDownload();
-    if (saved) {
-      setJobId(saved.jobId);
-      if (saved.url) setUrl(saved.url);
-      setMode("download");
-    }
-  }, []);
 
   useEffect(() => {
     try {
