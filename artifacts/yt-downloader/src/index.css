@@ -7234,9 +7234,67 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 }
 
-.copilot-wrap .gs-mobile-chat-topbar,
 .agent-history-backdrop {
   display: none;
+}
+
+/* Chat topbar — same floating pill UI on desktop and mobile:
+   a single-button "history" pill on the left, new-chat + more pill on the right.
+   On mobile the left slot is hidden — the existing nav hamburger already lives there. */
+.copilot-wrap .gs-chat-header {
+  display: none;
+}
+
+.copilot-wrap .gs-mobile-chat-topbar {
+  position: relative;
+  top: auto;
+  right: auto;
+  left: auto;
+  z-index: 55;
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: space-between;
+  padding: 20px 22px 0;
+  pointer-events: none;
+}
+
+.copilot-wrap .gs-mobile-actions-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 52px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: #212121;
+  box-shadow: 0 14px 38px rgba(0,0,0,0.42);
+  pointer-events: auto;
+  transition: opacity 0.15s;
+}
+
+/* Keep the slot in the flex layout (so the right pill doesn't jump) but
+   hide the left history pill while the history drawer covers it. */
+.copilot-wrap .gs-mobile-actions-pill-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.copilot-wrap .gs-mobile-action-btn {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  color: rgba(255,255,255,0.92);
+  background: transparent;
+  transition: background 160ms ease, transform 160ms ease, opacity 160ms ease;
+}
+
+.copilot-wrap .gs-mobile-action-btn:not(:disabled):active {
+  transform: scale(0.95);
+  background: rgba(255,255,255,0.10);
 }
 
 @media (max-width: 768px) {
@@ -7257,6 +7315,12 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
     width: 25px;
     height: 25px;
     stroke-width: 2.2;
+  }
+
+  /* The nav hamburger already occupies the left slot on mobile —
+     hide our desktop-only chat-history pill to avoid overlapping it. */
+  .copilot-wrap .gs-mobile-actions-pill-left {
+    display: none;
   }
 
   body:has(.copilot-wrap) .gs-drawer {
@@ -7281,51 +7345,8 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
   }
 
   .copilot-wrap .gs-mobile-chat-topbar {
-    position: relative;
-    top: auto;
-    right: auto;
-    left: auto;
-    z-index: 55;
-    display: flex;
-    flex: 0 0 auto;
     justify-content: flex-end;
-    padding: calc(24px + env(safe-area-inset-top)) 22px 0 88px;
-    pointer-events: none;
-  }
-
-  .copilot-wrap .gs-mobile-actions-pill {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    height: 52px;
-    padding: 5px 7px;
-    border-radius: 999px;
-    border: 1px solid rgba(255,255,255,0.18);
-    background: #212121;
-    box-shadow: 0 14px 38px rgba(0,0,0,0.42);
-    pointer-events: auto;
-  }
-
-  .copilot-wrap .gs-mobile-action-btn {
-    display: inline-flex;
-    width: 36px;
-    height: 36px;
-    align-items: center;
-    justify-content: center;
-    border: 0;
-    border-radius: 999px;
-    color: rgba(255,255,255,0.92);
-    background: transparent;
-    transition: background 160ms ease, transform 160ms ease, opacity 160ms ease;
-  }
-
-  .copilot-wrap .gs-mobile-action-btn:not(:disabled):active {
-    transform: scale(0.95);
-    background: rgba(255,255,255,0.10);
-  }
-
-  .copilot-wrap .gs-chat-header {
-    display: none;
+    padding: calc(24px + env(safe-area-inset-top)) 22px 0;
   }
 
   .copilot-wrap .copilot-messages {

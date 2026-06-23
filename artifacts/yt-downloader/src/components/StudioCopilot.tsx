@@ -10,7 +10,7 @@ import {
   Bot, Loader2, CheckCircle, ChevronRight, ChevronDown,
   Download, Scissors, Sparkles, Captions, AlarmClock,
   UploadCloud, Shield, ListVideo, X, Trash2, History, Square, Copy, Check, RotateCcw, Link,
-  ArrowLeft, Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
+  Pencil, Share2, SquarePen, Plus, Paperclip, AudioLines, Menu, ArrowUp,
   MoreVertical,
   ImagePlus, Music2, Terminal, Eye, Volume2, Film,
   FolderOpen, RefreshCw,
@@ -2789,10 +2789,6 @@ export function StudioCopilot({
     const el = thoughtContentRef.current;
     if (el && showThoughts) el.scrollTop = el.scrollHeight;
   }, [thoughtText, showThoughts]);
-  // Editable session title state
-  const [editingTitle, setEditingTitle] = useState(false);
-  const [draftTitle, setDraftTitle] = useState("");
-
   const updateSession = useCallback((sessionId: string, updater: (msgs: Message[]) => Message[]) => {
     setSessions(prev => {
       const existing = prev.find(s => s.id === sessionId);
@@ -3468,17 +3464,6 @@ export function StudioCopilot({
   const speechSupported = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
   const canSend = (input.trim().length > 0 || pendingAttachments.length > 0) && !streaming;
 
-  const currentSession = sessions.find(s => s.id === currentSessionId);
-  const sessionTitle = currentSession?.title ?? "New chat";
-
-  const commitTitle = () => {
-    const t = draftTitle.trim();
-    if (currentSessionId && t && t !== sessionTitle) {
-      setSessions(prev => prev.map(s => s.id === currentSessionId ? { ...s, title: t.slice(0, 80) } : s));
-    }
-    setEditingTitle(false);
-  };
-
   const handleShare = () => {
     const textParts = currentMessages
       .filter(m => m.role === "user")
@@ -3505,7 +3490,18 @@ export function StudioCopilot({
   return (
     <CopilotErrorBoundary onReset={handleNewChat}>
     <div className="copilot-wrap">
-      <div className="gs-mobile-chat-topbar" aria-label="Mobile chat actions">
+      <div className="gs-mobile-chat-topbar" aria-label="Chat actions">
+        <div className={cn("gs-mobile-actions-pill gs-mobile-actions-pill-left", showHistory && "gs-mobile-actions-pill-hidden")}>
+          <button
+            type="button"
+            onClick={() => setShowHistory(h => !h)}
+            className="gs-mobile-action-btn"
+            title="Chat history"
+            aria-label="Toggle history"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+        </div>
         <div className="gs-mobile-actions-pill">
           <button
             type="button"
@@ -3535,88 +3531,6 @@ export function StudioCopilot({
                 onOpenWorkspace={() => { setShowWorkspace(true); setShowMoreMenu(false); }}
                 onShare={() => { handleShare(); setShowMoreMenu(false); }}
                 onOpenHistory={() => { setShowHistory(true); setShowMoreMenu(false); }}
-              />
-            )}
-          </div>
-        </div>
-      </div>
-      {/* ── Genspark Header ── */}
-      <div className="gs-chat-header">
-        <div className="gs-chat-header-left">
-          <button
-            onClick={() => onBackToHome?.()}
-            className="gs-chat-icon-btn"
-            title="Back"
-            aria-label="Back to home"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={() => setShowHistory(h => !h)}
-            className="gs-chat-icon-btn gs-chat-history-toggle"
-            title="Chat history"
-            aria-label="Toggle history"
-          >
-            <Menu className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="gs-chat-header-title">
-          {!isEmpty && (
-            editingTitle ? (
-              <input
-                autoFocus
-                value={draftTitle}
-                onChange={e => setDraftTitle(e.target.value)}
-                onBlur={commitTitle}
-                onKeyDown={e => {
-                  if (e.key === "Enter") commitTitle();
-                  if (e.key === "Escape") setEditingTitle(false);
-                }}
-                className="gs-chat-title-input"
-                maxLength={80}
-              />
-            ) : (
-              <button
-                type="button"
-                onClick={() => { setDraftTitle(sessionTitle); setEditingTitle(true); }}
-                className="gs-chat-title-btn"
-                title="Rename chat"
-              >
-                <span className="gs-chat-title-text">{sessionTitle}</span>
-                <Pencil className="w-3 h-3 text-white/30 group-hover:text-white/60" />
-              </button>
-            )
-          )}
-        </div>
-
-        <div className="gs-chat-header-right">
-          <button
-            onClick={handleNewChat}
-            disabled={streaming}
-            className="gs-chat-icon-btn disabled:opacity-40"
-            title="New chat"
-            aria-label="New chat"
-          >
-            <SquarePen className="w-3.5 h-3.5" />
-          </button>
-          <div ref={registerMoreMenuRef} className="relative">
-            <button
-              type="button"
-              onClick={() => setShowMoreMenu(v => !v)}
-              className={cn("gs-chat-icon-btn", showMoreMenu && "gs-chat-icon-btn-active")}
-              title="More"
-              aria-label="More chat actions"
-              aria-haspopup="menu"
-              aria-expanded={showMoreMenu}
-            >
-              <MoreVertical className="w-3.5 h-3.5" />
-            </button>
-            {showMoreMenu && (
-              <ChatMoreMenu
-                isEmpty={isEmpty}
-                onOpenWorkspace={() => { setShowWorkspace(true); setShowMoreMenu(false); }}
-                onShare={() => { handleShare(); setShowMoreMenu(false); }}
               />
             )}
           </div>
