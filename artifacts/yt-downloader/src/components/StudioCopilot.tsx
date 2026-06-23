@@ -2249,7 +2249,7 @@ function ChatMoreMenu({ isEmpty, onOpenWorkspace, onShare, onOpenHistory }: { is
   );
 }
 
-function MessageBubble({ message, onNavigate, onRetry, isStreaming, onOpenWorkspace }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void; isStreaming?: boolean; onOpenWorkspace?: () => void }) {
+const MessageBubble = React.memo(function MessageBubble({ message, onNavigate, onRetry, isStreaming, onOpenWorkspace }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void; isStreaming?: boolean; onOpenWorkspace?: () => void }) {
   const isUser = message.role === "user";
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
@@ -2351,7 +2351,7 @@ function MessageBubble({ message, onNavigate, onRetry, isStreaming, onOpenWorksp
       </div>
     </motion.div>
   );
-}
+});
 
 // ── Error Boundary ───────────────────────────────────────────────────────────
 class CopilotErrorBoundary extends React.Component<
@@ -2408,6 +2408,7 @@ export function StudioCopilot({
   }, [showHistory]);
 
   const [showWorkspace, setShowWorkspace] = useState(false);
+  const openWorkspace = useCallback(() => setShowWorkspace(true), []);
 
   useEffect(() => {
     if (showWorkspace) setShowHistory(false);
@@ -3722,7 +3723,7 @@ export function StudioCopilot({
                         </AnimatePresence>
                       </motion.div>
                     )}
-                    <MessageBubble message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} onOpenWorkspace={() => setShowWorkspace(true)} />
+                    <MessageBubble message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} onOpenWorkspace={openWorkspace} />
                   </React.Fragment>
                 );
               })}
