@@ -59,8 +59,8 @@ const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "best[ext=mp4][vcodec!=none][acodec!=none]/" +
   "best[vcodec!=none][acodec!=none]";
 const TOOL_PARALLEL_LIMITS = {
-  light: 3,
-  youtube_processing: 3,
+  light: 7,
+  youtube_processing: 7,
 } as const;
 
 type ToolParallelGroup = keyof typeof TOOL_PARALLEL_LIMITS | "serial";

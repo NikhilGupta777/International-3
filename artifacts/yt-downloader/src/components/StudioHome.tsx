@@ -311,15 +311,25 @@ export function StudioHome({
       };
     });
 
+    // Cap DPR — on retina/4K screens the raw devicePixelRatio multiplies
+    // canvas pixel count (and the cost of the CSS blur applied to it) far
+    // beyond what's visible once blurred.
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+
     const resize = () => {
-      cvs.width = cvs.offsetWidth * devicePixelRatio;
-      cvs.height = cvs.offsetHeight * devicePixelRatio;
+      cvs.width = cvs.offsetWidth * dpr;
+      cvs.height = cvs.offsetHeight * dpr;
     };
     resize();
     window.addEventListener("resize", resize);
 
     let last = 0;
+    let paused = document.hidden;
+    const FRAME_INTERVAL = 1000 / 30; // throttle to ~30fps — motion is slow/ambient
+
     const draw = (t: number) => {
+      raf = requestAnimationFrame(draw);
+      if (paused || t - last < FRAME_INTERVAL) return;
       const dt = Math.min(last ? (t - last) / 1000 : 0.016, 0.05);
       last = t;
       const w = cvs.width, h = cvs.height;
@@ -348,7 +358,7 @@ export function StudioHome({
         const pulse = Math.sin(t * 0.001 * o.alphaSpeed + o.alphaPhase);
         const alpha = Math.max(0.05, o.alpha + pulse * 0.11);
         const scale = 1 + Math.sin(t * 0.001 * o.scaleSpeed + o.scalePhase) * 0.18;
-        const px = o.x * w, py = o.y * h, pr = o.r * scale * devicePixelRatio;
+        const px = o.x * w, py = o.y * h, pr = o.r * scale * dpr;
 
         const g = ctx.createRadialGradient(px, py, 0, px, py, pr);
         g.addColorStop(0, `hsla(${o.hue}, ${o.sat}%, 55%, ${alpha})`);
@@ -359,10 +369,19 @@ export function StudioHome({
         ctx.arc(px, py, pr, 0, Math.PI * 2);
         ctx.fill();
       }
-      raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener("resize", resize); };
+
+    // Stop drawing entirely while the tab is hidden — no point burning
+    // CPU/battery on an animation nobody can see.
+    const onVisibility = () => { paused = document.hidden; if (!paused) last = 0; };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   return (
