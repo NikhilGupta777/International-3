@@ -6671,6 +6671,13 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   gap: 8px;
 }
 
+/* Disable the heavy animated blur glow in the chat/agent input — it caused
+   typing lag (continuous blur(48px) repaint) on mobile and desktop.
+   Home-screen input (.gs-input-card outside .copilot-wrap) keeps the glow. */
+.copilot-wrap .gs-input-card::before {
+  display: none;
+}
+
 .copilot-wrap .agent-tool-v2,
 .copilot-wrap .agent-artifact-card {
   width: 100%;
