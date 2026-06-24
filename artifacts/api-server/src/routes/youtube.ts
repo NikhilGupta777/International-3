@@ -2638,7 +2638,7 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
       quality,
       notifyClientKey,
       log: req.log,
-      isApi: isInternalAgentRequest(req),
+      isApi: res.locals.authVia === "apikey",
     });
     res.json(started);
   } catch (err) {
@@ -2697,7 +2697,7 @@ router.post("/youtube/clip-cut/batch", clipCutRateLimiter, async (req: Request, 
         quality,
         notifyClientKey,
         log: req.log,
-        isApi: isInternalAgentRequest(req),
+        isApi: res.locals.authVia === "apikey",
       }));
     }
     res.json({ jobs, message: `Started ${jobs.length} clip cuts` });
