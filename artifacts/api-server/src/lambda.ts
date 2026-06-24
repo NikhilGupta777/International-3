@@ -18,6 +18,10 @@ import {
   type SubtitleWorkerEvent,
 } from "./routes/subtitles";
 import {
+  runClipCutWorker,
+  type ClipCutWorkerEvent,
+} from "./routes/youtube";
+import {
   ensureInternalServer,
   proxyToInternalServer,
 } from "./lib/lambda-stream";
@@ -91,6 +95,38 @@ export const handler = awslambda.streamifyResponse(
           transcript: e.transcript,
           instructions: e.instructions,
         } as TimestampWorkerEvent);
+      } finally {
+        safeEnd(responseStream);
+      }
+      return;
+    }
+
+    // ── Clip-cut Lambda worker (async invocation) ──────────────────────
+    // Fired only when an API-key clip-cut request self-invokes this Lambda
+    // to run the actual yt-dlp/ffmpeg pipeline decoupled from the response.
+    // Dashboard clip-cuts never reach this branch — they keep running
+    // in-process inside the original HTTP request invocation.
+    if (event?.source === "videomaking.clip-cut") {
+      const e = event as Partial<ClipCutWorkerEvent>;
+      if (
+        !e.jobId ||
+        typeof e.url !== "string" ||
+        typeof e.startTime !== "number" ||
+        typeof e.endTime !== "number"
+      ) {
+        safeEnd(responseStream);
+        throw new Error("Invalid clip-cut worker payload");
+      }
+      try {
+        await runClipCutWorker({
+          source: "videomaking.clip-cut",
+          jobId: e.jobId,
+          url: e.url,
+          startTime: e.startTime,
+          endTime: e.endTime,
+          quality: typeof e.quality === "string" ? e.quality : "best",
+          notifyClientKey: e.notifyClientKey ?? null,
+        });
       } finally {
         safeEnd(responseStream);
       }

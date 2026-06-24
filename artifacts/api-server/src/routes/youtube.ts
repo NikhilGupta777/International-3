@@ -7,6 +7,7 @@ import {
 } from "express";
 import { setupSse } from "../lib/sse";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
 import {
@@ -651,6 +652,20 @@ const cancelRateLimiter = createIpRateLimiter("POST /youtube/cancel/:jobId");
 const LAMBDA_CLIP_MAX_DURATION_SECONDS = Number(
   process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 10 * 60,
 );
+
+// Self-invoke worker config — used ONLY when the clip-cut request came via the
+// /api/v1 facade (API-key callers). The dashboard path is untouched and keeps
+// running clip-cut in-process. See `runClipCutWorker` and `lambda.ts`.
+const CLIPCUT_WORKER_FUNCTION_NAME =
+  process.env.CLIPCUT_WORKER_FUNCTION_NAME ??
+  process.env.AWS_LAMBDA_FUNCTION_NAME ??
+  "";
+const CLIPCUT_WORKER_REGION =
+  process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1";
+const clipCutLambdaClient =
+  CLIPCUT_WORKER_FUNCTION_NAME && process.env.AWS_LAMBDA_FUNCTION_NAME
+    ? new LambdaClient({ region: CLIPCUT_WORKER_REGION })
+    : null;
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
   "bestvideo[ext=mp4]+bestaudio[ext=m4a]/" +
@@ -2257,6 +2272,79 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   scheduleAutoDelete(jobId, jobRef);
 }
 
+/**
+ * Payload shape for the self-invoked clip-cut worker Lambda. Dispatched by
+ * `startClipCutJobInternal` when the request came through the /api/v1 facade,
+ * and handled by `runClipCutWorker` below (wired up in lambda.ts).
+ */
+export interface ClipCutWorkerEvent {
+  source: "videomaking.clip-cut";
+  jobId: string;
+  url: string;
+  startTime: number;
+  endTime: number;
+  quality: string;
+  notifyClientKey?: string | null;
+}
+
+/**
+ * Worker entry point — invoked asynchronously by Lambda when an API-key
+ * clip-cut request needs background processing decoupled from the original
+ * response Lambda. Reconstructs the same in-memory DownloadJob the inline
+ * path uses and runs the existing processClipCut pipeline unchanged. The
+ * dashboard path never reaches this — it keeps running in-process.
+ */
+export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
+  const job: DownloadJob = {
+    status: "pending",
+    percent: 0,
+    speed: null,
+    eta: null,
+    filename: null,
+    filesize: null,
+    message: "Starting clip cut...",
+    progressLine: null,
+    progressSource: null,
+    startedAt: Date.now(),
+    completedAt: null,
+    filePath: null,
+    url: e.url,
+    formatId: "clip",
+    audioOnly: false,
+    ext: "mp4",
+    clipStart: e.startTime,
+    clipEnd: e.endTime,
+    clipQuality: e.quality,
+    notifyClientKey: e.notifyClientKey ?? undefined,
+  };
+  jobs.set(e.jobId, job);
+
+  try {
+    await processClipCut(e.jobId, job);
+  } catch (err) {
+    const j = jobs.get(e.jobId);
+    if (!j) return;
+    const message = err instanceof Error ? err.message : "Clip cut failed";
+    if (message === CANCELLED_BY_USER || j.cancelled) {
+      j.status = "cancelled";
+      j.message = CANCELLED_BY_USER;
+      persistClipJobState(e.jobId, j);
+      return;
+    }
+    logger.error({ err, jobId: e.jobId }, "[clip-cut worker] Clip cut job failed");
+    j.status = "error";
+    j.message = message;
+    j.percent = 0;
+    persistClipJobState(e.jobId, j);
+    pushFailureNotification(
+      j,
+      "Clip cut failed",
+      message.slice(0, 200),
+      `clip-error:${e.jobId}`,
+    );
+  }
+}
+
 async function startClipCutJobInternal(params: {
   url: string;
   startTime: number;
@@ -2264,6 +2352,17 @@ async function startClipCutJobInternal(params: {
   quality?: string;
   notifyClientKey?: string | null;
   log?: Pick<Request["log"], "error" | "warn">;
+  /**
+   * True when the request came through the /api/v1 API-key facade (i.e.
+   * `isInternalAgentRequest(req)` was true at the route handler). In that
+   * case we dispatch the actual work to a self-invoked worker Lambda so the
+   * response Lambda is free to return immediately — without this, the
+   * fire-and-forget background task gets frozen along with the container
+   * when API clients poll instead of holding an SSE stream open, leaving
+   * jobs stuck at "downloading" forever. Dashboard (browser) requests
+   * always pass `false` here and run the original in-process path unchanged.
+   */
+  isApi?: boolean;
 }): Promise<{ jobId: string; status: string; message: string }> {
   const jobId = randomUUID();
   const normalizedUrl = normalizeInputUrl(params.url);
@@ -2282,6 +2381,51 @@ async function startClipCutJobInternal(params: {
       },
     });
     return { jobId, status: "queued", message: "Clip cut queued" };
+  }
+
+  // API-key callers (v1 facade): hand the job to a self-invoked worker Lambda
+  // so processing survives independently of how the client polls. Mirrors the
+  // pattern in routes/timestamps.ts and routes/subtitles.ts. Dashboard path
+  // is untouched — see the in-process block below.
+  if (params.isApi && clipCutLambdaClient && CLIPCUT_WORKER_FUNCTION_NAME) {
+    try {
+      await putYoutubeQueueLocalJob({
+        jobId,
+        jobType: "clip-cut",
+        sourceUrl: normalizedUrl,
+        status: "pending",
+        message: "Starting clip cut...",
+        progressPct: 0,
+        filename: null,
+        durationSecs: params.endTime - params.startTime,
+        startedAt: Date.now(),
+      });
+    } catch (err) {
+      params.log?.warn({ err, jobId }, "Failed to persist API clip-cut start state");
+    }
+
+    const workerPayload: ClipCutWorkerEvent = {
+      source: "videomaking.clip-cut",
+      jobId,
+      url: normalizedUrl,
+      startTime: params.startTime,
+      endTime: params.endTime,
+      quality,
+      notifyClientKey: params.notifyClientKey ?? null,
+    };
+
+    try {
+      await clipCutLambdaClient.send(new InvokeCommand({
+        FunctionName: CLIPCUT_WORKER_FUNCTION_NAME,
+        InvocationType: "Event",
+        Payload: Buffer.from(JSON.stringify(workerPayload)),
+      }));
+    } catch (err) {
+      params.log?.error({ err, jobId }, "Failed to invoke clip-cut worker Lambda");
+      throw err;
+    }
+
+    return { jobId, status: "pending", message: "Clip cut started" };
   }
 
   const job: DownloadJob = {
@@ -2494,6 +2638,7 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
       quality,
       notifyClientKey,
       log: req.log,
+      isApi: isInternalAgentRequest(req),
     });
     res.json(started);
   } catch (err) {
@@ -2552,6 +2697,7 @@ router.post("/youtube/clip-cut/batch", clipCutRateLimiter, async (req: Request, 
         quality,
         notifyClientKey,
         log: req.log,
+        isApi: isInternalAgentRequest(req),
       }));
     }
     res.json({ jobs, message: `Started ${jobs.length} clip cuts` });
