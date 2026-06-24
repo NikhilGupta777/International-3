@@ -33,9 +33,9 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
-type ReasoningMode = "gemini-2.5-flash" | "gemini-3.5-flash" | "gemini-3.1-pro-preview";
+type ReasoningMode = "gemini-3-flash-preview" | "gemini-3.5-flash" | "gemini-3.1-pro-preview";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "gemini-2.5-flash",        label: "2.5 Flash",  description: "Fast, everyday responses",              ultra: false },
+  { id: "gemini-3-flash-preview",  label: "3 Flash",    description: "Fast, standard reasoning",              ultra: false },
   { id: "gemini-3.5-flash",        label: "3.5 Flash",  description: "Latest fast model — agentic & coding",  ultra: false },
   { id: "gemini-3.1-pro-preview",  label: "3.1 Pro",    description: "Advanced reasoning — complex work",      ultra: true  },
 ];
@@ -44,14 +44,14 @@ function readReasoningInitial(): ReasoningMode {
   try {
     const stored = localStorage.getItem(REASONING_KEY);
     // New model IDs
-    if (stored === "gemini-2.5-flash" || stored === "gemini-3.5-flash" || stored === "gemini-3.1-pro-preview") return stored;
+    if (stored === "gemini-3-flash-preview" || stored === "gemini-3.5-flash" || stored === "gemini-3.1-pro-preview") return stored;
     // Backward compat: old keys "flash", "pro", "advanced"
-    if (stored === "flash") return "gemini-2.5-flash";
+    if (stored === "flash") return "gemini-3-flash-preview";
     if (stored === "pro") return "gemini-3.5-flash";
     if (stored === "advanced") return "gemini-3.1-pro-preview";
   } catch { /* localStorage unavailable */ }
   // Backwards compat: if only the legacy `ultra` flag exists, derive a mode
-  return readUltraInitial() ? "gemini-3.1-pro-preview" : "gemini-2.5-flash";
+  return readUltraInitial() ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
 }
 
 function getInputMaxHeight(): number {
@@ -414,12 +414,12 @@ function renderKatexNode(latex: string, displayMode: boolean, key: string): Reac
 
 const HTML_TAG_RE = /^<(sup|sub|ins|kbd|mark|s)>([^<]*)<\/(?:sup|sub|ins|kbd|mark|s)>$/;
 const HEADING_SIZES: Record<number, string> = {
-  1: "text-[18px] font-bold mt-3 mb-1.5 text-white",
-  2: "text-[16px] font-bold mt-2.5 mb-1 text-white",
-  3: "text-[14px] font-semibold mt-2 mb-1 text-white/95",
-  4: "text-[13px] font-semibold mt-1.5 mb-0.5 text-white/90",
-  5: "text-[12px] font-medium mt-1 mb-0.5 text-white/80",
-  6: "text-[11px] font-medium mt-1 mb-0.5 text-white/70",
+  1: "text-[22px] md:text-[25px] font-bold mt-5 mb-2.5 text-white tracking-tight leading-tight",
+  2: "text-[19px] md:text-[21px] font-bold mt-4.5 mb-2 text-white tracking-tight leading-tight",
+  3: "text-[17px] md:text-[18.5px] font-semibold mt-4 mb-1.5 text-white/95 tracking-tight leading-snug",
+  4: "text-[15px] md:text-[16px] font-semibold mt-3.5 mb-1 text-white/90 leading-snug",
+  5: "text-[13.5px] md:text-[14px] font-medium mt-3 mb-0.5 text-white/85",
+  6: "text-[12px] md:text-[12.5px] font-medium mt-2.5 mb-0.5 text-white/75",
 };
 
 // ── Markdown renderer ──────────────────────────────────────────────────────────
@@ -2679,8 +2679,14 @@ export function StudioCopilot({
     const isVideo = file.type.startsWith("video/");
     const isAudio = file.type.startsWith("audio/");
     const isText = file.type.startsWith("text/") || /\.(srt|vtt|txt|md|csv|json)$/i.test(file.name);
+
+    if (isVideo || isAudio) {
+      toast({ title: "Unsupported file type", description: "Video and audio files are not allowed.", variant: "destructive" });
+      return;
+    }
+
     const attachType: "image" | "video" | "audio" | "document" =
-      isImage ? "image" : isVideo ? "video" : isAudio ? "audio" : "document";
+      isImage ? "image" : "document";
 
     if (isImage) {
       // Images: read locally with FileReader — instant, no network, goes to Gemini Vision
@@ -2790,7 +2796,10 @@ export function StudioCopilot({
   useEffect(() => {
     const loaded = loadSessions();
     setSessions(loaded);
-    if (loaded.length > 0) { setCurrentSessionId(loaded[0].id); sessionIdRef.current = loaded[0].id; }
+    if (loaded.length > 0) {
+      setCurrentSessionId(null);
+      sessionIdRef.current = null;
+    }
     try {
       const stale = sessionStorage.getItem("vm-agent-last-send");
       if (stale) {
@@ -3914,7 +3923,7 @@ export function StudioCopilot({
                 type="file"
                 ref={fileInputRef}
                 className="hidden"
-                accept="image/*,video/*,audio/*,.srt,.vtt,.txt,.md,.csv,.json,.pdf,.doc,.docx"
+                accept="image/*,.srt,.vtt,.txt,.md,.csv,.json,.pdf,.doc,.docx"
                 onChange={handleFileUpload}
               />
               <div className="relative" ref={plusMenuRef}>

@@ -41,6 +41,7 @@ import {
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
 import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
+import { tryFetchSubtitlesWithApi } from "./youtube";
 
 const router: Router = Router();
 const BHAGWAT_AUTH_COOKIE_NAME = "bhagwat_auth";
@@ -3060,6 +3061,13 @@ export async function runBhagwatAnalysis(
     if (!transcript) {
       step("transcript", "running", "Downloading transcript…");
       let vttContent: string | null = null;
+
+      // Approach 0: youtube_transcript_api (fast, lightweight Python API)
+      try {
+        const fetched = await tryFetchSubtitlesWithApi(url, undefined, "webvtt");
+        if (fetched) vttContent = fetched;
+      } catch (_e) {}
+
       if (metaSubtitleUrl) {
         try {
           const raw = await fetchUrl(metaSubtitleUrl);

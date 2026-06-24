@@ -13,28 +13,50 @@ import { readdir, readFile, stat } from "fs/promises";
 import { dirname, join, relative, sep } from "path";
 import { Sandbox } from "e2b";
 import { setupSse } from "../lib/sse";
-import { createS3PresignedUpload, getS3SignedDownloadUrl, isS3StorageEnabled, uploadTextToS3, readTextFromS3 } from "../lib/s3-storage";
+import {
+  createS3PresignedUpload,
+  getS3SignedDownloadUrl,
+  isS3StorageEnabled,
+  uploadTextToS3,
+  readTextFromS3,
+} from "../lib/s3-storage";
 import { getWorkspace, WORKSPACE_LIMITS } from "../lib/workspace";
-import { isDriveConfigured, driveListFolder, driveGetFileMeta, driveDownload } from "../lib/google-drive";
-import { createGeminiClient, isGeminiConfigured, ensureVertexCredentials } from "../lib/gemini-client";
+import {
+  isDriveConfigured,
+  driveListFolder,
+  driveGetFileMeta,
+  driveDownload,
+} from "../lib/google-drive";
+import {
+  createGeminiClient,
+  isGeminiConfigured,
+  ensureVertexCredentials,
+  isVertexGeminiEnabled,
+} from "../lib/gemini-client";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { logger } from "../lib/logger";
+import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
+import {
+  uploadLocalFileToGCS,
+  downloadUrlToTempFile,
+  deleteLocalFile,
+} from "../lib/gcs-storage";
 
 const router = Router();
 
 // Model IDs verified against Gemini API catalog as of 2026-06.
-// gemini-2.5-flash / gemini-2.5-pro are the current stable models.
+// gemini-3-flash-preview is the standard fast model.
 // Environment overrides (COPILOT_MODEL etc.) take precedence in production.
 // Model catalogue with per-model configurations:
-//   gemini-2.5-flash       — fast, thinking_budget 0-24576, MEDIUM default
+//   gemini-3-flash-preview — fast, standard Gemini 3 Flash, MEDIUM default
 //   gemini-3.5-flash       — newest fast model (May 2026), MEDIUM default
 //   gemini-3.1-pro-preview — frontier reasoning, thinking_level LOW/MEDIUM/HIGH
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.5-flash";
+const AGENT_MODEL = "gemini-3-flash-preview";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.1-pro-preview";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
 const ALLOWED_MODELS = new Set([
-  "gemini-2.5-flash",
+  "gemini-3-flash-preview",
   "gemini-3.5-flash",
   "gemini-3.1-pro-preview",
 ]);
@@ -42,7 +64,10 @@ const ALLOWED_MODELS = new Set([
 // Per-model thinking configuration.
 // gemini-2.5/3.5-flash use thinkingBudget (integer token count).
 // gemini-3.1-pro uses thinkingLevel (LOW/MEDIUM/HIGH).
-function buildThinkingConfig(model: string, level: "LOW" | "MEDIUM" | "HIGH"): Record<string, any> {
+function buildThinkingConfig(
+  model: string,
+  level: "LOW" | "MEDIUM" | "HIGH",
+): Record<string, any> {
   const isProModel = model.includes("pro");
   if (isProModel) {
     // Gemini 3.1 Pro: thinkingLevel enum
@@ -55,22 +80,47 @@ function buildThinkingConfig(model: string, level: "LOW" | "MEDIUM" | "HIGH"): R
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
-const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "49", 10) || 49;
-const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
-const E2B_SANDBOX_TIMEOUT_MS = Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) || 3600000;
-const E2B_COMMAND_TIMEOUT_MS = Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
-const E2B_MAX_OUTPUT_CHARS = Number.parseInt(process.env.E2B_MAX_OUTPUT_CHARS ?? "60000", 10) || 60000;
-const E2B_MAX_FILE_CHARS = Number.parseInt(process.env.E2B_MAX_FILE_CHARS ?? "120000", 10) || 120000;
+const MAX_ITERATIONS =
+  Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "49", 10) || 49;
+const AGENT_MAX_OUTPUT_TOKENS =
+  Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) ||
+  16384;
+const E2B_SANDBOX_TIMEOUT_MS =
+  Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) ||
+  3600000;
+const E2B_COMMAND_TIMEOUT_MS =
+  Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
+const E2B_MAX_OUTPUT_CHARS =
+  Number.parseInt(process.env.E2B_MAX_OUTPUT_CHARS ?? "60000", 10) || 60000;
+const E2B_MAX_FILE_CHARS =
+  Number.parseInt(process.env.E2B_MAX_FILE_CHARS ?? "120000", 10) || 120000;
 const E2B_BOOTSTRAP_MEDIA_TOOLS = !/^(0|false|no|off)$/i.test(
   String(process.env.E2B_BOOTSTRAP_MEDIA_TOOLS ?? "true").trim(),
 );
-const E2B_BOOTSTRAP_TIMEOUT_MS = Number.parseInt(process.env.E2B_BOOTSTRAP_TIMEOUT_MS ?? "240000", 10) || 240000;
+const E2B_BOOTSTRAP_TIMEOUT_MS =
+  Number.parseInt(process.env.E2B_BOOTSTRAP_TIMEOUT_MS ?? "240000", 10) ||
+  240000;
 const E2B_PRELOAD_APP_CODE = !/^(0|false|no|off)$/i.test(
   String(process.env.E2B_PRELOAD_APP_CODE ?? "true").trim(),
 );
-const E2B_APP_CODE_MAX_FILES = Math.max(50, Math.min(3000, Number(process.env.E2B_APP_CODE_MAX_FILES ?? "900") || 900));
-const E2B_APP_CODE_MAX_FILE_CHARS = Math.max(2000, Math.min(400000, Number(process.env.E2B_APP_CODE_MAX_FILE_CHARS ?? "160000") || 160000));
-const E2B_APP_CODE_MAX_TOTAL_CHARS = Math.max(100000, Math.min(5000000, Number(process.env.E2B_APP_CODE_MAX_TOTAL_CHARS ?? "2500000") || 2500000));
+const E2B_APP_CODE_MAX_FILES = Math.max(
+  50,
+  Math.min(3000, Number(process.env.E2B_APP_CODE_MAX_FILES ?? "900") || 900),
+);
+const E2B_APP_CODE_MAX_FILE_CHARS = Math.max(
+  2000,
+  Math.min(
+    400000,
+    Number(process.env.E2B_APP_CODE_MAX_FILE_CHARS ?? "160000") || 160000,
+  ),
+);
+const E2B_APP_CODE_MAX_TOTAL_CHARS = Math.max(
+  100000,
+  Math.min(
+    5000000,
+    Number(process.env.E2B_APP_CODE_MAX_TOTAL_CHARS ?? "2500000") || 2500000,
+  ),
+);
 const ENABLE_NATIVE_AGENT_SEARCH = !/^(0|false|no|off)$/i.test(
   String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "true").trim(),
 );
@@ -125,7 +175,8 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 // http://127.0.0.1:<port> before this route runs. The fallback hardcodes
 // localhost — it must NOT read X-Forwarded-Host or Host from the client.
 function getApiBase(req: any): string {
-  if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
+  if (process.env.INTERNAL_API_BASE)
+    return process.env.INTERNAL_API_BASE + "/api";
   return `http://127.0.0.1:${process.env.PORT ?? 8080}/api`;
 }
 
@@ -133,24 +184,35 @@ function rememberAgentJob(req: any, jobId: unknown): void {
   if (!jobId) return;
   const id = String(jobId).trim();
   if (!id) return;
-  if (!(req as any).agentRunJobIds) (req as any).agentRunJobIds = new Set<string>();
+  if (!(req as any).agentRunJobIds)
+    (req as any).agentRunJobIds = new Set<string>();
   (req as any).agentRunJobIds.add(id);
 }
 
 async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
-  const ids = Array.from(((req as any).agentRunJobIds ?? new Set<string>()) as Set<string>);
+  const ids = Array.from(
+    ((req as any).agentRunJobIds ?? new Set<string>()) as Set<string>,
+  );
   if (ids.length === 0) return;
   const apiBase = getApiBase(req);
   const headers = buildInternalHeaders(req);
-  await Promise.allSettled(ids.map(async (jobId) => {
-    for (const endpoint of [`${apiBase}/youtube/cancel/${jobId}`, `${apiBase}/subtitles/cancel/${jobId}`, `${apiBase}/translator/cancel/${jobId}`]) {
-      const res = await fetch(endpoint, { method: "POST", headers }).catch(() => null);
-      if (res?.ok) {
-        console.log(`[agent] cancelled ${jobId} after ${reason}`);
-        return;
+  await Promise.allSettled(
+    ids.map(async (jobId) => {
+      for (const endpoint of [
+        `${apiBase}/youtube/cancel/${jobId}`,
+        `${apiBase}/subtitles/cancel/${jobId}`,
+        `${apiBase}/translator/cancel/${jobId}`,
+      ]) {
+        const res = await fetch(endpoint, { method: "POST", headers }).catch(
+          () => null,
+        );
+        if (res?.ok) {
+          console.log(`[agent] cancelled ${jobId} after ${reason}`);
+          return;
+        }
       }
-    }
-  }));
+    }),
+  );
 }
 
 // ── Strip model-internal tags before sending to client ─────────────────────
@@ -178,14 +240,20 @@ function stripReasoningTags(text: string, isDelta = false): string {
     .replace(/\[Artifact:[^\]]*\]/gi, "")
     // Strip raw S3 presigned URLs (long AWS URLs with signatures) — all regional formats
     .replace(/https?:\/\/[^\s"]*\.s3[.\-][^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
-    .replace(/https?:\/\/[^\s"]*\.s3\.(?:[a-z0-9-]+\.)?amazonaws\.com[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
+    .replace(
+      /https?:\/\/[^\s"]*\.s3\.(?:[a-z0-9-]+\.)?amazonaws\.com[^\s"]*(?:X-Amz-[^\s"]*)+/gi,
+      "",
+    )
     // Strip leaked tool result JSON — e.g. "| Result: {"audioUrl":"","imageUrl":""}"
     .replace(/\|\s*Result:\s*\{[^}]*\}/gi, "")
     // Strip leaked URL-field JSON objects whose values look like S3/presigned
     // URLs OR are empty strings — both are leaked tool-result residue. We
     // deliberately do NOT strip arbitrary {"url":"https://..."} so a model
     // genuinely answering with a URL inside an object still survives.
-    .replace(/\{\s*(?:"\w*[Uu]rl"\s*:\s*"(?:|https?:\/\/[^"]*\.(?:s3|amazonaws|cloudfront)[^"]*)"\s*,?\s*)+\}/g, "")
+    .replace(
+      /\{\s*(?:"\w*[Uu]rl"\s*:\s*"(?:|https?:\/\/[^"]*\.(?:s3|amazonaws|cloudfront)[^"]*)"\s*,?\s*)+\}/g,
+      "",
+    )
     // Collapse excess blank lines left by stripping
     .replace(/\n{3,}/g, "\n\n");
   // Only trim final/complete text — NOT streaming deltas, which may be
@@ -201,9 +269,13 @@ function sseEvent(res: any, payload: object) {
   const isTextEvent = type === "text" || type === "text_delta";
   const isDelta = type === "text_delta";
   // Strip reasoning traces from text events — preserve whitespace in deltas
-  const safePayload = isTextEvent && (payload as any).content
-    ? { ...(payload as any), content: stripReasoningTags((payload as any).content, isDelta) }
-    : payload;
+  const safePayload =
+    isTextEvent && (payload as any).content
+      ? {
+          ...(payload as any),
+          content: stripReasoningTags((payload as any).content, isDelta),
+        }
+      : payload;
   // Skip empty text events (after stripping) — but never skip whitespace-only
   // deltas, which are spaces between words that must be preserved
   if (isTextEvent && !(safePayload as any).content) return;
@@ -235,7 +307,8 @@ async function pollJobUntilDone(
   runId?: string,
 ): Promise<{ status: string; filename?: string; filesize?: number }> {
   const startedAt = Date.now();
-  const timeoutMs = toolName === "cut_video_clip" ? CLIP_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS;
+  const timeoutMs =
+    toolName === "cut_video_clip" ? CLIP_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS;
   const deadline = startedAt + timeoutMs;
   let lastLogMsg: string | null = null;
   while (Date.now() < deadline && isConnected()) {
@@ -244,28 +317,53 @@ async function pollJobUntilDone(
       cache: "no-store",
     });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
-    const data = await r.json() as any;
+    const data = (await r.json()) as any;
     const { status, percent, message, filename } = data;
-    const elapsedSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-    const baseMessage = message && message !== status ? message : "Cutting selected section";
+    const elapsedSeconds = Math.max(
+      0,
+      Math.round((Date.now() - startedAt) / 1000),
+    );
+    const baseMessage =
+      message && message !== status ? message : "Cutting selected section";
     let liveMessage = message ?? status;
-    if (toolName === "cut_video_clip" && !["done", "error", "cancelled", "expired", "not_found"].includes(status)) {
+    if (
+      toolName === "cut_video_clip" &&
+      !["done", "error", "cancelled", "expired", "not_found"].includes(status)
+    ) {
       liveMessage = `${baseMessage}... ${elapsedSeconds}s`;
     }
-    sseEvent(res, { type: "tool_progress", runId, toolId, name: toolName, status, percent: percent ?? null, message: liveMessage, jobId });
+    sseEvent(res, {
+      type: "tool_progress",
+      runId,
+      toolId,
+      name: toolName,
+      status,
+      percent: percent ?? null,
+      message: liveMessage,
+      jobId,
+    });
     // Only push to the Activity log when the message actually changed —
     // otherwise we spam the timeline with N identical "Cutting selected section… 5s" lines.
     if (toolName === "cut_video_clip" && baseMessage !== lastLogMsg) {
-      sseEvent(res, { type: "tool_log", runId, toolId, name: toolName, message: liveMessage, level: "info" });
+      sseEvent(res, {
+        type: "tool_log",
+        runId,
+        toolId,
+        name: toolName,
+        message: liveMessage,
+        level: "info",
+      });
       lastLogMsg = baseMessage;
     }
     if (status === "done") return { status, filename };
     if (["error", "cancelled", "expired", "not_found"].includes(status))
       throw new Error(`Job ${status}: ${message ?? ""}`);
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
-  throw new Error(`Job timed out after ${Math.round(timeoutMs / 60000)} minutes`);
+  throw new Error(
+    `Job timed out after ${Math.round(timeoutMs / 60000)} minutes`,
+  );
 }
 
 // ── Subtitle job poller ───────────────────────────────────────────────────
@@ -286,17 +384,37 @@ async function pollSubtitleUntilDone(
       cache: "no-store",
     });
     if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
-    const data = await r.json() as any;
+    const data = (await r.json()) as any;
     const { status, progressPct, message, srtFilename } = data;
-    const subtitleMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
-    sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_subtitles", status, percent: progressPct ?? null, message: subtitleMsg, jobId });
+    const subtitleMsg =
+      progressPct != null
+        ? `${message ?? status} (${progressPct}%)`
+        : (message ?? status);
+    sseEvent(res, {
+      type: "tool_progress",
+      runId,
+      toolId,
+      name: "generate_subtitles",
+      status,
+      percent: progressPct ?? null,
+      message: subtitleMsg,
+      jobId,
+    });
     if (subtitleMsg !== lastLogMsg) {
-      sseEvent(res, { type: "tool_log", runId, toolId, name: "generate_subtitles", message: subtitleMsg, level: "info" });
+      sseEvent(res, {
+        type: "tool_log",
+        runId,
+        toolId,
+        name: "generate_subtitles",
+        message: subtitleMsg,
+        level: "info",
+      });
       lastLogMsg = subtitleMsg;
     }
     if (status === "done") return { status, srtFilename };
-    if (["error", "cancelled"].includes(status)) throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    if (["error", "cancelled"].includes(status))
+      throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Subtitle job timed out after 8 minutes");
@@ -320,17 +438,37 @@ async function pollTimestampsUntilDone(
       cache: "no-store",
     });
     if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
-    const data = await r.json() as any;
+    const data = (await r.json()) as any;
     const { status, progressPct, message, timestamps } = data;
-    const tsMsg = progressPct != null ? `${message ?? status} (${progressPct}%)` : (message ?? status);
-    sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_timestamps", status, percent: progressPct ?? null, message: tsMsg, jobId });
+    const tsMsg =
+      progressPct != null
+        ? `${message ?? status} (${progressPct}%)`
+        : (message ?? status);
+    sseEvent(res, {
+      type: "tool_progress",
+      runId,
+      toolId,
+      name: "generate_timestamps",
+      status,
+      percent: progressPct ?? null,
+      message: tsMsg,
+      jobId,
+    });
     if (tsMsg !== lastLogMsg) {
-      sseEvent(res, { type: "tool_log", runId, toolId, name: "generate_timestamps", message: tsMsg, level: "info" });
+      sseEvent(res, {
+        type: "tool_log",
+        runId,
+        toolId,
+        name: "generate_timestamps",
+        message: tsMsg,
+        level: "info",
+      });
       lastLogMsg = tsMsg;
     }
     if (status === "done") return { status, timestamps };
-    if (["error", "cancelled"].includes(status)) throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
-    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    if (["error", "cancelled"].includes(status))
+      throw new Error(`Timestamps job ${status}: ${message ?? ""}`);
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
   throw new Error("Timestamp job timed out after 8 minutes");
@@ -340,8 +478,8 @@ async function pollTimestampsUntilDone(
 function parseTimestamp(ts: string): number {
   const trimmed = String(ts ?? "").trim();
   if (!trimmed) throw new Error(`Invalid timestamp: empty value`);
-  const parts = trimmed.split(":").map(s => Number(s));
-  if (parts.some(n => !Number.isFinite(n) || n < 0)) {
+  const parts = trimmed.split(":").map((s) => Number(s));
+  if (parts.some((n) => !Number.isFinite(n) || n < 0)) {
     throw new Error(`Invalid timestamp: "${ts}"`);
   }
   let result: number;
@@ -349,7 +487,8 @@ function parseTimestamp(ts: string): number {
   else if (parts.length === 2) result = parts[0] * 60 + parts[1];
   else if (parts.length === 1) result = parts[0];
   else throw new Error(`Invalid timestamp: "${ts}"`);
-  if (!Number.isFinite(result) || result < 0) throw new Error(`Invalid timestamp: "${ts}"`);
+  if (!Number.isFinite(result) || result < 0)
+    throw new Error(`Invalid timestamp: "${ts}"`);
   return result;
 }
 
@@ -357,71 +496,110 @@ function parseTimestamp(ts: string): number {
 const STUDIO_TOOLS: any[] = [
   {
     name: "get_video_info",
-    description: "Fetch metadata about a YouTube video (title, duration, uploader, view count). Always call this first if you don't already have the title.",
+    description:
+      "Fetch metadata about a YouTube video (title, duration, uploader, view count). Always call this first if you don't already have the title.",
     parameters: {
       type: Type.OBJECT,
-      properties: { url: { type: Type.STRING, description: "YouTube video URL" } },
+      properties: {
+        url: { type: Type.STRING, description: "YouTube video URL" },
+      },
       required: ["url"],
     },
   },
   {
     name: "cut_video_clip",
-    description: "Cut an exact time range from a YouTube video and deliver a download link. Provide startTime and endTime as 'MM:SS' or 'HH:MM:SS'. WAITS for completion and returns a download link.",
+    description:
+      "Cut an exact time range from a YouTube video and deliver a download link. Provide startTime and endTime as 'MM:SS' or 'HH:MM:SS'. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        startTime: { type: Type.STRING, description: "Start time e.g. '5:32' or '01:22:10'" },
-        endTime: { type: Type.STRING, description: "End time e.g. '6:23' or '01:25:00'" },
-        quality: { type: Type.STRING, description: "Output quality: '1080p', '720p', '480p', '360p'. Default: 1080p." },
+        startTime: {
+          type: Type.STRING,
+          description: "Start time e.g. '5:32' or '01:22:10'",
+        },
+        endTime: {
+          type: Type.STRING,
+          description: "End time e.g. '6:23' or '01:25:00'",
+        },
+        quality: {
+          type: Type.STRING,
+          description:
+            "Output quality: '1080p', '720p', '480p', '360p'. Default: 1080p.",
+        },
       },
       required: ["url", "startTime", "endTime"],
     },
   },
   {
     name: "download_video",
-    description: "Download a full YouTube video and deliver a download link. WAITS for completion and returns a download link.",
+    description:
+      "Download a full YouTube video and deliver a download link. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        quality: { type: Type.STRING, description: "Quality: '1080p', '720p', '480p', '360p', 'audio_only'. Default: best video." },
+        quality: {
+          type: Type.STRING,
+          description:
+            "Quality: '1080p', '720p', '480p', '360p', 'audio_only'. Default: best video.",
+        },
       },
       required: ["url"],
     },
   },
   {
     name: "generate_subtitles",
-    description: "Generate SRT subtitle file from a YouTube video, optionally translated. WAITS for completion and returns a download link.",
+    description:
+      "Generate SRT subtitle file from a YouTube video, optionally translated. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        language: { type: Type.STRING, description: "Source language code, e.g. 'hi' for Hindi. Default: auto-detect." },
-        translateTo: { type: Type.STRING, description: "Target translation language code, e.g. 'en'. Optional." },
+        language: {
+          type: Type.STRING,
+          description:
+            "Source language code, e.g. 'hi' for Hindi. Default: auto-detect.",
+        },
+        translateTo: {
+          type: Type.STRING,
+          description: "Target translation language code, e.g. 'en'. Optional.",
+        },
       },
       required: ["url"],
     },
   },
   {
     name: "find_best_clips",
-    description: "Find the most valuable segments from a long YouTube video. Polls until analysis is complete and returns a Best Clips tab artifact. Use for highlights, shorts, viral moments, best clips, or content segment discovery.",
+    description:
+      "Find the most valuable segments from a long YouTube video. Polls until analysis is complete and returns a Best Clips tab artifact. Use for highlights, shorts, viral moments, best clips, or content segment discovery.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        durationMode: { type: Type.STRING, description: "Preferred clip length: 'auto', '1m', '3m', '8m'. Default: auto." },
-        instructions: { type: Type.STRING, description: "Optional topic focus, e.g. 'focus on spiritual stories'" },
+        durationMode: {
+          type: Type.STRING,
+          description:
+            "Preferred clip length: 'auto', '1m', '3m', '8m'. Default: auto.",
+        },
+        instructions: {
+          type: Type.STRING,
+          description:
+            "Optional topic focus, e.g. 'focus on spiritual stories'",
+        },
       },
       required: ["url"],
     },
   },
   {
     name: "generate_timestamps",
-    description: "Generate YouTube chapter timestamps from a video using AI. Returns the timestamps text directly.",
+    description:
+      "Generate YouTube chapter timestamps from a video using AI. Returns the timestamps text directly.",
     parameters: {
       type: Type.OBJECT,
-      properties: { url: { type: Type.STRING, description: "YouTube video URL" } },
+      properties: {
+        url: { type: Type.STRING, description: "YouTube video URL" },
+      },
       required: ["url"],
     },
   },
@@ -430,19 +608,26 @@ const STUDIO_TOOLS: any[] = [
     description: "List files in the public share gallery.",
     parameters: {
       type: Type.OBJECT,
-      properties: { limit: { type: Type.NUMBER, description: "Max files to return. Default: 12." } },
+      properties: {
+        limit: {
+          type: Type.NUMBER,
+          description: "Max files to return. Default: 12.",
+        },
+      },
       required: [],
     },
   },
   {
     name: "navigate_to_tab",
-    description: "Switch the studio UI to a specific tool tab. Use only when the user explicitly asks to open/switch tabs.",
+    description:
+      "Switch the studio UI to a specific tool tab. Use only when the user explicitly asks to open/switch tabs.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         tab: {
           type: Type.STRING,
-          description: "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
+          description:
+            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
         },
       },
       required: ["tab"],
@@ -450,130 +635,211 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "translate_video",
-    description: "Start a video translation/dubbing job and return a jobId plus Translator tab artifact. The final translated video is produced asynchronously; do not claim the file is ready unless the result endpoint returns a videoUrl.",
+    description:
+      "Start a video translation/dubbing job and return a jobId plus Translator tab artifact. The final translated video is produced asynchronously; do not claim the file is ready unless the result endpoint returns a videoUrl.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: { type: Type.STRING, description: "YouTube video URL to translate" },
-        targetLang: { type: Type.STRING, description: "Target language name, e.g. 'Hindi', 'Spanish', 'French'. Default: Hindi." },
-        targetLangCode: { type: Type.STRING, description: "BCP-47 language code, e.g. 'hi', 'es', 'fr'. Default: hi." },
-        voiceClone: { type: Type.BOOLEAN, description: "Clone the original speaker voice (true) or use neural TTS (false). Default: true." },
-        lipSync: { type: Type.BOOLEAN, description: "Apply lip sync. Default: false." },
+        url: {
+          type: Type.STRING,
+          description: "YouTube video URL to translate",
+        },
+        targetLang: {
+          type: Type.STRING,
+          description:
+            "Target language name, e.g. 'Hindi', 'Spanish', 'French'. Default: Hindi.",
+        },
+        targetLangCode: {
+          type: Type.STRING,
+          description:
+            "BCP-47 language code, e.g. 'hi', 'es', 'fr'. Default: hi.",
+        },
+        voiceClone: {
+          type: Type.BOOLEAN,
+          description:
+            "Clone the original speaker voice (true) or use neural TTS (false). Default: true.",
+        },
+        lipSync: {
+          type: Type.BOOLEAN,
+          description: "Apply lip sync. Default: false.",
+        },
       },
       required: ["url"],
     },
   },
   {
     name: "get_youtube_captions",
-    description: "Fetch existing auto-generated or manual captions directly from YouTube. Faster than transcribing — use this first if the user just wants the original-language subtitles.",
+    description:
+      "Fetch existing auto-generated or manual captions directly from YouTube. Faster than transcribing — use this first if the user just wants the original-language subtitles.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        language: { type: Type.STRING, description: "Language code to prefer, e.g. 'en', 'hi'. Default: auto." },
+        language: {
+          type: Type.STRING,
+          description:
+            "Language code to prefer, e.g. 'en', 'hi'. Default: auto.",
+        },
       },
       required: ["url"],
     },
   },
   {
     name: "fix_subtitles",
-    description: "Fix and clean up garbled or mistimed SRT subtitle content. Pass the raw SRT as a string.",
+    description:
+      "Fix and clean up garbled or mistimed SRT subtitle content. Pass the raw SRT as a string.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        srtContent: { type: Type.STRING, description: "Raw SRT subtitle content to fix" },
-        language: { type: Type.STRING, description: "Language of the subtitles, e.g. 'en'." },
+        srtContent: {
+          type: Type.STRING,
+          description: "Raw SRT subtitle content to fix",
+        },
+        language: {
+          type: Type.STRING,
+          description: "Language of the subtitles, e.g. 'en'.",
+        },
       },
       required: ["srtContent"],
     },
   },
   {
     name: "cancel_job",
-    description: "Cancel a running or queued job. Use if the user asks to stop a download, clip cut, or subtitle job.",
+    description:
+      "Cancel a running or queued job. Use if the user asks to stop a download, clip cut, or subtitle job.",
     parameters: {
       type: Type.OBJECT,
-      properties: { jobId: { type: Type.STRING, description: "Job ID to cancel" } },
+      properties: {
+        jobId: { type: Type.STRING, description: "Job ID to cancel" },
+      },
       required: ["jobId"],
     },
   },
   {
     name: "check_job_status",
-    description: "Check status and progress of any background job by ID. Returns status, percent complete, and messages.",
+    description:
+      "Check status and progress of any background job by ID. Returns status, percent complete, and messages.",
     parameters: {
       type: Type.OBJECT,
-      properties: { jobId: { type: Type.STRING, description: "Job ID to check" } },
+      properties: {
+        jobId: { type: Type.STRING, description: "Job ID to check" },
+      },
       required: ["jobId"],
     },
   },
   {
     name: "web_search",
-    description: "Fallback structured web search. Prefer the model's native Google Search grounding for ordinary current-info questions; use this only when the user explicitly asks for raw/source-list search diagnostics, broad research results, or native grounding was insufficient. Returns a grounded synthesized answer plus source URLs. Use maxResults up to 10-20 when broad research is required.",
+    description:
+      "Fallback structured web search. Prefer the model's native Google Search grounding for ordinary current-info questions; use this only when the user explicitly asks for raw/source-list search diagnostics, broad research results, or native grounding was insufficient. Returns a grounded synthesized answer plus source URLs. Use maxResults up to 10-20 when broad research is required.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        query: { type: Type.STRING, description: "Detailed search query with names, dates, product/version, location, and exact fact needed." },
-        maxResults: { type: Type.NUMBER, description: "Max results to return (1-20). Default: 10." },
+        query: {
+          type: Type.STRING,
+          description:
+            "Detailed search query with names, dates, product/version, location, and exact fact needed.",
+        },
+        maxResults: {
+          type: Type.NUMBER,
+          description: "Max results to return (1-20). Default: 10.",
+        },
       },
       required: ["query"],
     },
   },
   {
     name: "read_web_page",
-    description: "Fetch and read the text content of a specific public web page URL. Use after web_search when snippets are not enough, when the user asks to inspect a page/article/docs, or when exact page content matters.",
+    description:
+      "Fetch and read the text content of a specific public web page URL. Use after web_search when snippets are not enough, when the user asks to inspect a page/article/docs, or when exact page content matters.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: { type: Type.STRING, description: "Public http/https URL to read." },
-        task: { type: Type.STRING, description: "What to extract or focus on from the page, e.g. pricing, docs steps, article facts, exact quote context." },
-        maxChars: { type: Type.NUMBER, description: "Maximum text characters to return to the model. Default: 20000, max: 60000." },
+        url: {
+          type: Type.STRING,
+          description: "Public http/https URL to read.",
+        },
+        task: {
+          type: Type.STRING,
+          description:
+            "What to extract or focus on from the page, e.g. pricing, docs steps, article facts, exact quote context.",
+        },
+        maxChars: {
+          type: Type.NUMBER,
+          description:
+            "Maximum text characters to return to the model. Default: 20000, max: 60000.",
+        },
       },
       required: ["url"],
     },
   },
   {
     name: "do_full_package",
-    description: "Run a complete production package for a YouTube video: metadata, download, summary, timestamps, SEO, subtitles/captions, and best clips.",
+    description:
+      "Run a complete production package for a YouTube video: metadata, download, summary, timestamps, SEO, subtitles/captions, and best clips.",
     parameters: {
       type: Type.OBJECT,
       properties: {
         url: { type: Type.STRING, description: "YouTube video URL" },
-        language: { type: Type.STRING, description: "Subtitle/caption language to prefer. Default: en." },
-        quality: { type: Type.STRING, description: "Download quality. Default: best." },
-        instructions: { type: Type.STRING, description: "Optional content focus for summary/clips/SEO." },
+        language: {
+          type: Type.STRING,
+          description: "Subtitle/caption language to prefer. Default: en.",
+        },
+        quality: {
+          type: Type.STRING,
+          description: "Download quality. Default: best.",
+        },
+        instructions: {
+          type: Type.STRING,
+          description: "Optional content focus for summary/clips/SEO.",
+        },
       },
       required: ["url"],
     },
   },
   {
     name: "repeat_last_artifact",
-    description: "Render the last download/image/tab result from conversation memory again, so the user can click it.",
+    description:
+      "Render the last download/image/tab result from conversation memory again, so the user can click it.",
     parameters: { type: Type.OBJECT, properties: {}, required: [] },
   },
   {
     name: "check_active_jobs",
-    description: "Check active jobs from IDs remembered in the conversation. Use when the user asks what is running or to continue jobs.",
+    description:
+      "Check active jobs from IDs remembered in the conversation. Use when the user asks what is running or to continue jobs.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        jobIds: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Known job IDs. If omitted, the tool scans conversation memory." },
+        jobIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description:
+            "Known job IDs. If omitted, the tool scans conversation memory.",
+        },
       },
       required: [],
     },
   },
   {
     name: "cancel_active_jobs",
-    description: "Cancel known active processing jobs from conversation memory. Use when the user asks to stop/cancel all running downloads, clips, subtitles, timestamps, best-clips, or translation jobs.",
+    description:
+      "Cancel known active processing jobs from conversation memory. Use when the user asks to stop/cancel all running downloads, clips, subtitles, timestamps, best-clips, or translation jobs.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        jobIds: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Known job IDs. If omitted, the tool scans conversation memory." },
+        jobIds: {
+          type: Type.ARRAY,
+          items: { type: Type.STRING },
+          description:
+            "Known job IDs. If omitted, the tool scans conversation memory.",
+        },
       },
       required: [],
     },
   },
   {
     name: "send_result_to_tab",
-    description: "Open the relevant tab for a result or workflow: download, clips, subtitles, clipcutter, translator, timestamps, upload.",
+    description:
+      "Open the relevant tab for a result or workflow: download, clips, subtitles, clipcutter, translator, timestamps, upload.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -584,95 +850,160 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "create_image",
-    description: "Create a new image from a text prompt. If the user attached an existing image and asks to modify/edit it, use edit_image instead. Use create_image only for generating new images from scratch. IMPORTANT: Before calling this tool, deeply understand what the user actually wants — their intent, mood, use case, and visual style. Then craft a rich, detailed prompt yourself (scene composition, lighting, color palette, style, camera angle, mood, key elements) that will produce the best possible image. Never pass the user's raw text as the prompt — always rewrite it into a production-quality image generation prompt. Choose the best aspectRatio automatically based on the use case.",
+    description:
+      "Create a new image from a text prompt. If the user attached an existing image and asks to modify/edit it, use edit_image instead. Use create_image only for generating new images from scratch. IMPORTANT: Before calling this tool, deeply understand what the user actually wants — their intent, mood, use case, and visual style. Then craft a rich, detailed prompt yourself (scene composition, lighting, color palette, style, camera angle, mood, key elements) that will produce the best possible image. Never pass the user's raw text as the prompt — always rewrite it into a production-quality image generation prompt. Choose the best aspectRatio automatically based on the use case.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        prompt: { type: Type.STRING, description: "A rich, detailed image generation prompt YOU craft. Include: subject, scene composition, lighting, color palette, art style, camera angle, mood, and key visual elements. Never pass user's raw text — always enhance it into a professional prompt." },
-        aspectRatio: { type: Type.STRING, description: "Aspect ratio: '16:9' (YouTube thumbnails, banners, desktop wallpapers), '9:16' (Instagram/YouTube stories, reels, phone wallpapers), '4:3' (presentations, classic photos), '3:2' (DSLR-style photos), '1:1' (profile pictures, social media posts, icons), '4:5' (Instagram portrait posts), '21:9' (ultrawide cinematic banners). Pick the best fit for the content and use case." },
-        imageSize: { type: Type.STRING, description: "Resolution: '1K' (standard), '2K' (high quality). Default: 1K." },
+        prompt: {
+          type: Type.STRING,
+          description:
+            "A rich, detailed image generation prompt YOU craft. Include: subject, scene composition, lighting, color palette, art style, camera angle, mood, and key visual elements. Never pass user's raw text — always enhance it into a professional prompt.",
+        },
+        aspectRatio: {
+          type: Type.STRING,
+          description:
+            "Aspect ratio: '16:9' (YouTube thumbnails, banners, desktop wallpapers), '9:16' (Instagram/YouTube stories, reels, phone wallpapers), '4:3' (presentations, classic photos), '3:2' (DSLR-style photos), '1:1' (profile pictures, social media posts, icons), '4:5' (Instagram portrait posts), '21:9' (ultrawide cinematic banners). Pick the best fit for the content and use case.",
+        },
+        imageSize: {
+          type: Type.STRING,
+          description:
+            "Resolution: '1K' (standard), '2K' (high quality). Default: 1K.",
+        },
       },
       required: ["prompt"],
     },
   },
   {
     name: "enhance_image",
-    description: "Enhance the latest attached image so it looks crystal clear and newly restored, preserving composition and identity. This is clarity enhancement, not simple pixel upscaling.",
+    description:
+      "Enhance the latest attached image so it looks crystal clear and newly restored, preserving composition and identity. This is clarity enhancement, not simple pixel upscaling.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        instructions: { type: Type.STRING, description: "Optional user intent, e.g. restore face details, sharpen text, improve lighting." },
+        instructions: {
+          type: Type.STRING,
+          description:
+            "Optional user intent, e.g. restore face details, sharpen text, improve lighting.",
+        },
       },
       required: [],
     },
   },
   {
     name: "edit_image",
-    description: "Edit the latest attached image according to user instructions while preserving the important parts of the original image. IMPORTANT: Understand what the user actually wants changed, then craft a precise, detailed editing prompt — specify exactly what to change, what to preserve, the desired visual style/mood, and any constraints. Never pass vague instructions like 'make it better'.",
+    description:
+      "Edit the latest attached image according to user instructions while preserving the important parts of the original image. IMPORTANT: Understand what the user actually wants changed, then craft a precise, detailed editing prompt — specify exactly what to change, what to preserve, the desired visual style/mood, and any constraints. Never pass vague instructions like 'make it better'.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        instructions: { type: Type.STRING, description: "A detailed editing prompt YOU craft from the user's intent. Specify: what exactly to change, what to keep untouched, desired style/mood/colors, and constraints. Be specific about visual outcomes." },
+        instructions: {
+          type: Type.STRING,
+          description:
+            "A detailed editing prompt YOU craft from the user's intent. Specify: what exactly to change, what to keep untouched, desired style/mood/colors, and constraints. Be specific about visual outcomes.",
+        },
       },
       required: ["instructions"],
     },
   },
   {
     name: "describe_image",
-    description: "Analyze the latest attached image and describe subjects, scene, visible text, composition, quality issues, and practical edit suggestions.",
+    description:
+      "Analyze the latest attached image and describe subjects, scene, visible text, composition, quality issues, and practical edit suggestions.",
     parameters: { type: Type.OBJECT, properties: {}, required: [] },
   },
   {
     name: "extract_text_from_image",
-    description: "Read visible text from the latest attached image using vision OCR, preserving line breaks when possible.",
+    description:
+      "Read visible text from the latest attached image using vision OCR, preserving line breaks when possible.",
     parameters: { type: Type.OBJECT, properties: {}, required: [] },
   },
   {
     name: "write_video_script",
-    description: "Write a production-ready video script, narration, hook, shot list, or storyboard. IMPORTANT: Before calling, deeply understand the user's vision — their target audience, platform (YouTube/Shorts/Reels/TikTok), tone, and goal. Then craft a rich topic brief with context, not just the raw topic.",
+    description:
+      "Write a production-ready video script, narration, hook, shot list, or storyboard. IMPORTANT: Before calling, deeply understand the user's vision — their target audience, platform (YouTube/Shorts/Reels/TikTok), tone, and goal. Then craft a rich topic brief with context, not just the raw topic.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        topic: { type: Type.STRING, description: "A detailed brief YOU craft from the user's idea. Include: core topic, target audience, platform context, key points to cover, desired emotional arc, and any specific requirements the user mentioned." },
-        duration: { type: Type.STRING, description: "Target duration, e.g. 30 seconds, 3 minutes, 8 minutes." },
-        language: { type: Type.STRING, description: "Output language. Default follows the user." },
-        style: { type: Type.STRING, description: "Tone/style, e.g. cinematic, devotional, news, documentary, shorts, motivational, educational, storytelling." },
+        topic: {
+          type: Type.STRING,
+          description:
+            "A detailed brief YOU craft from the user's idea. Include: core topic, target audience, platform context, key points to cover, desired emotional arc, and any specific requirements the user mentioned.",
+        },
+        duration: {
+          type: Type.STRING,
+          description:
+            "Target duration, e.g. 30 seconds, 3 minutes, 8 minutes.",
+        },
+        language: {
+          type: Type.STRING,
+          description: "Output language. Default follows the user.",
+        },
+        style: {
+          type: Type.STRING,
+          description:
+            "Tone/style, e.g. cinematic, devotional, news, documentary, shorts, motivational, educational, storytelling.",
+        },
       },
       required: ["topic"],
     },
   },
   {
     name: "generate_seo_pack",
-    description: "Generate a YouTube SEO package: title options, description, tags, hashtags, pinned comment, and thumbnail text. IMPORTANT: Before calling, understand the video's content, niche, and target audience. Craft a detailed topic brief with context — include video title, key themes, competitor context, trending angles, and the creator's goals. Never pass a bare topic like 'cooking video'.",
+    description:
+      "Generate a YouTube SEO package: title options, description, tags, hashtags, pinned comment, and thumbnail text. IMPORTANT: Before calling, understand the video's content, niche, and target audience. Craft a detailed topic brief with context — include video title, key themes, competitor context, trending angles, and the creator's goals. Never pass a bare topic like 'cooking video'.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        topic: { type: Type.STRING, description: "A detailed brief YOU craft. Include: video title/topic, key themes and talking points, target niche/audience, content style, and any competitive or trending context that would help generate better SEO." },
-        language: { type: Type.STRING, description: "Output language. Default follows the user." },
-        audience: { type: Type.STRING, description: "Target audience, niche, and platform context." },
+        topic: {
+          type: Type.STRING,
+          description:
+            "A detailed brief YOU craft. Include: video title/topic, key themes and talking points, target niche/audience, content style, and any competitive or trending context that would help generate better SEO.",
+        },
+        language: {
+          type: Type.STRING,
+          description: "Output language. Default follows the user.",
+        },
+        audience: {
+          type: Type.STRING,
+          description: "Target audience, niche, and platform context.",
+        },
       },
       required: ["topic"],
     },
   },
   {
     name: "read_uploaded_file",
-    description: "Read the latest uploaded SRT/TXT/CSV/JSON/PDF/document attachment and summarize or extract its contents.",
+    description:
+      "Read the latest uploaded SRT/TXT/CSV/JSON/PDF/document attachment and summarize or extract its contents.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        task: { type: Type.STRING, description: "What to do with the file: summarize, inspect, extract, analyze, etc." },
+        task: {
+          type: Type.STRING,
+          description:
+            "What to do with the file: summarize, inspect, extract, analyze, etc.",
+        },
       },
       required: [],
     },
   },
   {
     name: "convert_subtitles",
-    description: "Convert subtitle content between SRT, VTT, and plain TXT formats. This only converts existing timing — it does not generate real timings from plain text without timing data.",
+    description:
+      "Convert subtitle content between SRT, VTT, and plain TXT formats. This only converts existing timing — it does not generate real timings from plain text without timing data.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        content: { type: Type.STRING, description: "Subtitle content. If omitted, use latest uploaded text file." },
-        inputFormat: { type: Type.STRING, description: "srt, vtt, or txt. Default: auto." },
+        content: {
+          type: Type.STRING,
+          description:
+            "Subtitle content. If omitted, use latest uploaded text file.",
+        },
+        inputFormat: {
+          type: Type.STRING,
+          description: "srt, vtt, or txt. Default: auto.",
+        },
         outputFormat: { type: Type.STRING, description: "srt, vtt, or txt." },
         filename: { type: Type.STRING, description: "Output filename." },
       },
@@ -681,65 +1012,115 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "compare_subtitles",
-    description: "Compare two SRT/VTT/TXT subtitle files or blocks for missing lines, timing drift, text differences, and quality issues.",
+    description:
+      "Compare two SRT/VTT/TXT subtitle files or blocks for missing lines, timing drift, text differences, and quality issues.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        first: { type: Type.STRING, description: "First subtitle text. If omitted, use uploaded/context content." },
-        second: { type: Type.STRING, description: "Second subtitle text. If omitted, use uploaded/context content." },
+        first: {
+          type: Type.STRING,
+          description:
+            "First subtitle text. If omitted, use uploaded/context content.",
+        },
+        second: {
+          type: Type.STRING,
+          description:
+            "Second subtitle text. If omitted, use uploaded/context content.",
+        },
       },
       required: [],
     },
   },
   {
     name: "export_text_file",
-    description: "Export script, SEO, subtitles, notes, or any generated text as a downloadable file.",
+    description:
+      "Export script, SEO, subtitles, notes, or any generated text as a downloadable file.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        filename: { type: Type.STRING, description: "Output filename, e.g. script.txt or subtitles.srt." },
-        content: { type: Type.STRING, description: "File content. If omitted, export latest text artifact from memory." },
+        filename: {
+          type: Type.STRING,
+          description: "Output filename, e.g. script.txt or subtitles.srt.",
+        },
+        content: {
+          type: Type.STRING,
+          description:
+            "File content. If omitted, export latest text artifact from memory.",
+        },
       },
       required: ["filename"],
     },
   },
   {
     name: "run_code_analysis",
-    description: "Run sandboxed Python for CSV/JSON/text calculations, tables, charts, statistics, and data analysis. Prefer this over mental math when execution is useful. For precise tasks, provide pythonCode that reads /home/user/input.txt and /home/user/task.txt and prints the final answer. Do not use this tool just to write code for the user.",
+    description:
+      "Run sandboxed Python for CSV/JSON/text calculations, tables, charts, statistics, and data analysis. Prefer this over mental math when execution is useful. For precise tasks, provide pythonCode that reads /home/user/input.txt and /home/user/task.txt and prints the final answer. Do not use this tool just to write code for the user.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        task: { type: Type.STRING, description: "Analysis question or calculation to run." },
-        data: { type: Type.STRING, description: "CSV/JSON/text data. If omitted, use latest uploaded text file or context." },
-        pythonCode: { type: Type.STRING, description: "Optional Python code to run in the sandbox. It should read /home/user/input.txt and /home/user/task.txt, perform the requested analysis, print clear results, and write any useful files under /home/user." },
+        task: {
+          type: Type.STRING,
+          description: "Analysis question or calculation to run.",
+        },
+        data: {
+          type: Type.STRING,
+          description:
+            "CSV/JSON/text data. If omitted, use latest uploaded text file or context.",
+        },
+        pythonCode: {
+          type: Type.STRING,
+          description:
+            "Optional Python code to run in the sandbox. It should read /home/user/input.txt and /home/user/task.txt, perform the requested analysis, print clear results, and write any useful files under /home/user.",
+        },
       },
       required: ["task"],
     },
   },
   {
     name: "run_sandbox_command",
-    description: "Run an unrestricted Linux shell command inside this chat's isolated E2B sandbox. Use for real code execution, package installs, filesystem work, public internet fetches, scripts, data processing, and inspecting files created in earlier sandbox calls. This cannot access the production server filesystem.",
+    description:
+      "Run an unrestricted Linux shell command inside this chat's isolated E2B sandbox. Use for real code execution, package installs, filesystem work, public internet fetches, scripts, data processing, and inspecting files created in earlier sandbox calls. This cannot access the production server filesystem.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        command: { type: Type.STRING, description: "Shell command to execute inside the sandbox, e.g. python3 script.py, pip install pandas, ls -la, curl https://example.com." },
-        cwd: { type: Type.STRING, description: "Working directory inside the sandbox. Default: /home/user." },
-        timeoutMs: { type: Type.NUMBER, description: "Command timeout in milliseconds. Default is server configured; max 10 minutes." },
+        command: {
+          type: Type.STRING,
+          description:
+            "Shell command to execute inside the sandbox, e.g. python3 script.py, pip install pandas, ls -la, curl https://example.com.",
+        },
+        cwd: {
+          type: Type.STRING,
+          description:
+            "Working directory inside the sandbox. Default: /home/user.",
+        },
+        timeoutMs: {
+          type: Type.NUMBER,
+          description:
+            "Command timeout in milliseconds. Default is server configured; max 10 minutes.",
+        },
         writeFiles: {
           type: Type.ARRAY,
           description: "Optional files to write before running the command.",
           items: {
             type: Type.OBJECT,
             properties: {
-              path: { type: Type.STRING, description: "Absolute sandbox path, e.g. /home/user/input.csv." },
-              content: { type: Type.STRING, description: "Text content to write." },
+              path: {
+                type: Type.STRING,
+                description:
+                  "Absolute sandbox path, e.g. /home/user/input.csv.",
+              },
+              content: {
+                type: Type.STRING,
+                description: "Text content to write.",
+              },
             },
             required: ["path", "content"],
           },
         },
         readFiles: {
           type: Type.ARRAY,
-          description: "Optional text files to read after the command finishes.",
+          description:
+            "Optional text files to read after the command finishes.",
           items: { type: Type.STRING },
         },
       },
@@ -748,7 +1129,8 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "sandbox_status",
-    description: "Report whether E2B is configured and whether this chat currently has a connected sandbox. Use when the user asks what sandbox the agent has, whether it is active, or what environment is available.",
+    description:
+      "Report whether E2B is configured and whether this chat currently has a connected sandbox. Use when the user asks what sandbox the agent has, whether it is active, or what environment is available.",
     parameters: {
       type: Type.OBJECT,
       properties: {},
@@ -757,7 +1139,8 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "reset_sandbox",
-    description: "Destroy this chat's current E2B sandbox and start fresh on the next sandbox command. Use only when the user asks to reset/clear/restart the sandbox.",
+    description:
+      "Destroy this chat's current E2B sandbox and start fresh on the next sandbox command. Use only when the user asks to reset/clear/restart the sandbox.",
     parameters: {
       type: Type.OBJECT,
       properties: {},
@@ -766,26 +1149,51 @@ const STUDIO_TOOLS: any[] = [
   },
   {
     name: "generate_music",
-    description: "Generate original music using Google Lyria AI. Use for any request to create, compose, or make music/songs/soundtracks/jingles. Craft the best possible Lyria prompt based on the user's intent — describe mood, genre, instruments, tempo, energy, structure, and duration. If duration not specified ask naturally: short (~30s) or full song (~2-3 min)? Also generates matching cover art automatically.",
+    description:
+      "Generate original music using Google Lyria AI. Use for any request to create, compose, or make music/songs/soundtracks/jingles. Craft the best possible Lyria prompt based on the user's intent — describe mood, genre, instruments, tempo, energy, structure, and duration. If duration not specified ask naturally: short (~30s) or full song (~2-3 min)? Also generates matching cover art automatically.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        prompt: { type: Type.STRING, description: "Detailed Lyria music generation prompt. Include: genre, mood, tempo/BPM, instruments, energy level, structure (e.g. [0:00-0:10] soft intro...), language if vocals, and any restrictions (e.g. 'no vocals, instrumental only'). Be specific and vivid." },
-        duration: { type: Type.STRING, description: "'clip' for a polished 30-second piece (default), or 'full' for a complete song up to ~3 minutes with full song structure (intro, verse, chorus, bridge, outro)." },
-        coverArtPrompt: { type: Type.STRING, description: "Optional: describe the cover art visual. If omitted, one is auto-crafted from the music prompt. Example: 'Ancient Indian temple at sunset, cinematic lighting, mystical atmosphere'" },
-        aspectRatio: { type: Type.STRING, description: "Cover art aspect ratio: '16:9' (landscape, YouTube/desktop), '9:16' (portrait, Reels/Shorts), '1:1' (square, default). Pick based on where the music will be used." },
+        prompt: {
+          type: Type.STRING,
+          description:
+            "Detailed Lyria music generation prompt. Include: genre, mood, tempo/BPM, instruments, energy level, structure (e.g. [0:00-0:10] soft intro...), language if vocals, and any restrictions (e.g. 'no vocals, instrumental only'). Be specific and vivid.",
+        },
+        duration: {
+          type: Type.STRING,
+          description:
+            "'clip' for a polished 30-second piece (default), or 'full' for a complete song up to ~3 minutes with full song structure (intro, verse, chorus, bridge, outro).",
+        },
+        coverArtPrompt: {
+          type: Type.STRING,
+          description:
+            "Optional: describe the cover art visual. If omitted, one is auto-crafted from the music prompt. Example: 'Ancient Indian temple at sunset, cinematic lighting, mystical atmosphere'",
+        },
+        aspectRatio: {
+          type: Type.STRING,
+          description:
+            "Cover art aspect ratio: '16:9' (landscape, YouTube/desktop), '9:16' (portrait, Reels/Shorts), '1:1' (square, default). Pick based on where the music will be used.",
+        },
       },
       required: ["prompt"],
     },
   },
   {
     name: "analyze_youtube_video",
-    description: "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video. IMPORTANT: Craft a detailed, specific analytical question — not just 'summarize'. Include what aspects to focus on, what format the answer should be in, and any context from the conversation that would help produce the most useful analysis.",
+    description:
+      "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video. IMPORTANT: Craft a detailed, specific analytical question — not just 'summarize'. Include what aspects to focus on, what format the answer should be in, and any context from the conversation that would help produce the most useful analysis.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: { type: Type.STRING, description: "YouTube video URL (must be public)" },
-        question: { type: Type.STRING, description: "A detailed analytical question YOU craft. Be specific: what aspects to analyze, what format to return (bullet points, timestamps, quotes, etc.), what context matters, and what would be most useful for the user's actual goal." },
+        url: {
+          type: Type.STRING,
+          description: "YouTube video URL (must be public)",
+        },
+        question: {
+          type: Type.STRING,
+          description:
+            "A detailed analytical question YOU craft. Be specific: what aspects to analyze, what format to return (bullet points, timestamps, quotes, etc.), what context matters, and what would be most useful for the user's actual goal.",
+        },
       },
       required: ["url", "question"],
     },
@@ -793,84 +1201,142 @@ const STUDIO_TOOLS: any[] = [
   // ── Workspace tools (Phase 1: S3-backed, per-user isolated) ──────────────
   {
     name: "list_workspace_files",
-    description: "List files saved in the user's persistent workspace. Use to discover what artifacts, scripts, subtitles, images, or uploads are already saved. Optionally narrow by subdirectory.",
+    description:
+      "List files saved in the user's persistent workspace. Use to discover what artifacts, scripts, subtitles, images, or uploads are already saved. Optionally narrow by subdirectory.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        dir: { type: Type.STRING, description: "Optional workspace subdirectory, e.g. 'scripts' or 'images/2026'. Omit for root." },
-        limit: { type: Type.NUMBER, description: "Max results (1-200). Default 50." },
+        dir: {
+          type: Type.STRING,
+          description:
+            "Optional workspace subdirectory, e.g. 'scripts' or 'images/2026'. Omit for root.",
+        },
+        limit: {
+          type: Type.NUMBER,
+          description: "Max results (1-200). Default 50.",
+        },
       },
       required: [],
     },
   },
   {
     name: "read_workspace_file",
-    description: "Read a text file from the user's workspace (scripts, SRT, JSON, CSV, markdown, etc). Returns the content directly. Use after list_workspace_files to inspect a file.",
+    description:
+      "Read a text file from the user's workspace (scripts, SRT, JSON, CSV, markdown, etc). Returns the content directly. Use after list_workspace_files to inspect a file.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        path: { type: Type.STRING, description: "Workspace-relative path, e.g. 'scripts/intro.md'." },
+        path: {
+          type: Type.STRING,
+          description: "Workspace-relative path, e.g. 'scripts/intro.md'.",
+        },
       },
       required: ["path"],
     },
   },
   {
     name: "write_workspace_file",
-    description: "Save text content (script, SRT, notes, JSON, markdown) to the user's persistent workspace. Use whenever the user asks to save, store, or keep something for later. Overwrites if the path exists.",
+    description:
+      "Save text content (script, SRT, notes, JSON, markdown) to the user's persistent workspace. Use whenever the user asks to save, store, or keep something for later. Overwrites if the path exists.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        path: { type: Type.STRING, description: "Workspace-relative path. Organize sensibly, e.g. 'scripts/myvideo.md' or 'subtitles/episode-1.srt'." },
-        content: { type: Type.STRING, description: "Text content to save (up to ~5 MB)." },
-        contentType: { type: Type.STRING, description: "Optional MIME type. Inferred from extension by default." },
+        path: {
+          type: Type.STRING,
+          description:
+            "Workspace-relative path. Organize sensibly, e.g. 'scripts/myvideo.md' or 'subtitles/episode-1.srt'.",
+        },
+        content: {
+          type: Type.STRING,
+          description: "Text content to save (up to ~5 MB).",
+        },
+        contentType: {
+          type: Type.STRING,
+          description:
+            "Optional MIME type. Inferred from extension by default.",
+        },
       },
       required: ["path", "content"],
     },
   },
   {
     name: "delete_workspace_file",
-    description: "Delete a file from the user's workspace. Use only when the user explicitly asks to remove or delete a saved file.",
+    description:
+      "Delete a file from the user's workspace. Use only when the user explicitly asks to remove or delete a saved file.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        path: { type: Type.STRING, description: "Workspace-relative path of the file to delete." },
+        path: {
+          type: Type.STRING,
+          description: "Workspace-relative path of the file to delete.",
+        },
       },
       required: ["path"],
     },
   },
   {
     name: "save_artifact_to_workspace",
-    description: "Save the most recent artifact produced this turn (download, image, generated text) into the user's workspace by copying it from its share URL. Use when the user says 'save this', 'keep that', or 'add to my files'. Returns the saved workspace path.",
+    description:
+      "Save the most recent artifact produced this turn (download, image, generated text) into the user's workspace by copying it from its share URL. Use when the user says 'save this', 'keep that', or 'add to my files'. Returns the saved workspace path.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        sourceUrl: { type: Type.STRING, description: "URL of the artifact to import (typically the downloadUrl/imageUrl from the last tool result)." },
-        path: { type: Type.STRING, description: "Destination workspace path, e.g. 'images/banner.png' or 'downloads/clip.mp4'." },
+        sourceUrl: {
+          type: Type.STRING,
+          description:
+            "URL of the artifact to import (typically the downloadUrl/imageUrl from the last tool result).",
+        },
+        path: {
+          type: Type.STRING,
+          description:
+            "Destination workspace path, e.g. 'images/banner.png' or 'downloads/clip.mp4'.",
+        },
       },
       required: ["sourceUrl", "path"],
     },
   },
   {
     name: "list_drive_files",
-    description: "Browse the connected Google Drive workspace folder. Returns files and subfolders inside the allowed root (or a subfolder under it). Use to discover what's available before importing.",
+    description:
+      "Browse the connected Google Drive workspace folder. Returns files and subfolders inside the allowed root (or a subfolder under it). Use to discover what's available before importing.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        folderId: { type: Type.STRING, description: "Optional Drive folder ID. Must be inside the allowed root. Omit to list the root." },
-        query: { type: Type.STRING, description: "Optional Drive query, e.g. \"mimeType contains 'image/'\" or \"name contains 'script'\"." },
-        pageSize: { type: Type.NUMBER, description: "Max results (1-200). Default 50." },
+        folderId: {
+          type: Type.STRING,
+          description:
+            "Optional Drive folder ID. Must be inside the allowed root. Omit to list the root.",
+        },
+        query: {
+          type: Type.STRING,
+          description:
+            "Optional Drive query, e.g. \"mimeType contains 'image/'\" or \"name contains 'script'\".",
+        },
+        pageSize: {
+          type: Type.NUMBER,
+          description: "Max results (1-200). Default 50.",
+        },
       },
       required: [],
     },
   },
   {
     name: "import_from_drive",
-    description: "Import a file from the connected Google Drive workspace folder into the user's persistent workspace. Drive access is hard-restricted to one configured folder tree; any file outside is rejected. Use after list_drive_files to pick the file ID.",
+    description:
+      "Import a file from the connected Google Drive workspace folder into the user's persistent workspace. Drive access is hard-restricted to one configured folder tree; any file outside is rejected. Use after list_drive_files to pick the file ID.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        driveFileId: { type: Type.STRING, description: "Google Drive file ID (must be inside the allowed folder)." },
-        path: { type: Type.STRING, description: "Destination workspace path, e.g. 'drive-imports/source.pdf'." },
+        driveFileId: {
+          type: Type.STRING,
+          description:
+            "Google Drive file ID (must be inside the allowed folder).",
+        },
+        path: {
+          type: Type.STRING,
+          description:
+            "Destination workspace path, e.g. 'drive-imports/source.pdf'.",
+        },
       },
       required: ["driveFileId", "path"],
     },
@@ -905,7 +1371,9 @@ function buildAgentTools(includeNativeSearch: boolean): any[] {
 
 function isNativeToolConfigError(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "");
-  return /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(message);
+  return /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(
+    message,
+  );
 }
 
 const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot, an action-focused assistant inside a YouTube/video production web app.
@@ -1206,8 +1674,6 @@ Never echo tool result JSON, S3 URLs, presigned URLs, or internal API paths in y
 
 Do not include suggestions. Never output the [SUGGESTIONS: ...] marker.`;
 
-
-
 // ── Build internal headers from request ───────────────────────────────────
 function buildInternalHeaders(req: any): Record<string, string> {
   const INTERNAL_SECRET = INTERNAL_AGENT_SECRET;
@@ -1216,11 +1682,15 @@ function buildInternalHeaders(req: any): Record<string, string> {
     Cookie: req.headers.cookie ?? "",
     "x-internal-agent": INTERNAL_SECRET,
   };
-  if (req.headers["x-forwarded-for"]) headers["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
+  if (req.headers["x-forwarded-for"])
+    headers["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
   else if (req.ip) headers["x-forwarded-for"] = req.ip;
-  if (req.headers["x-notify-client"]) headers["x-notify-client"] = String(req.headers["x-notify-client"]);
-  if (req.headers["x-client-id"]) headers["x-client-id"] = String(req.headers["x-client-id"]);
-  if (req.headers["x-device-id"]) headers["x-device-id"] = String(req.headers["x-device-id"]);
+  if (req.headers["x-notify-client"])
+    headers["x-notify-client"] = String(req.headers["x-notify-client"]);
+  if (req.headers["x-client-id"])
+    headers["x-client-id"] = String(req.headers["x-client-id"]);
+  if (req.headers["x-device-id"])
+    headers["x-device-id"] = String(req.headers["x-device-id"]);
   return headers;
 }
 
@@ -1230,7 +1700,15 @@ function buildInternalHeaders(req: any): Record<string, string> {
 // We track lastUsed time and prune entries that haven't been touched for
 // longer than the sandbox's own timeout — without this, the map grew
 // unboundedly across the lifetime of the API process.
-const e2bSandboxBySession = new Map<string, { sandboxId: string; lastUsed: number; mediaToolsReady?: boolean; appCodeReady?: boolean }>();
+const e2bSandboxBySession = new Map<
+  string,
+  {
+    sandboxId: string;
+    lastUsed: number;
+    mediaToolsReady?: boolean;
+    appCodeReady?: boolean;
+  }
+>();
 const pendingSandboxCreations = new Map<string, Promise<any>>();
 const MAX_E2B_SANDBOX_ENTRIES = 20; // Prevent unbounded Map growth across Lambda warm starts
 
@@ -1241,9 +1719,9 @@ const MAX_E2B_SANDBOX_ENTRIES = 20; // Prevent unbounded Map growth across Lambd
 // user identity so each user gets their own bucket.
 const heavyOpCooldowns = new Map<string, number>(); // key → lastRan timestamp
 const HEAVY_OP_COOLDOWNS: Record<string, number> = {
-  do_full_package: 90 * 1000,        // 1.5 min
-  translate_video: 5 * 60 * 1000,    // 5 min
-  generate_music: 60 * 1000,         // 1 min
+  do_full_package: 90 * 1000, // 1.5 min
+  translate_video: 5 * 60 * 1000, // 5 min
+  generate_music: 60 * 1000, // 1 min
 };
 
 function checkHeavyOpRateLimit(req: any, opName: string): void {
@@ -1251,18 +1729,23 @@ function checkHeavyOpRateLimit(req: any, opName: string): void {
   if (!cooldownMs) return;
   const sessionId = String(req.body?.sessionId ?? "anon").slice(0, 64);
   const authCookie = req.signedCookies?.videomaking_auth ?? "";
-  const userPart = authCookie ? createHash("sha256").update(authCookie).digest("hex").slice(0, 12) : "anon";
+  const userPart = authCookie
+    ? createHash("sha256").update(authCookie).digest("hex").slice(0, 12)
+    : "anon";
   const key = `${userPart}:${opName}:${sessionId}`;
   const lastRan = heavyOpCooldowns.get(key) ?? 0;
   const elapsed = Date.now() - lastRan;
   if (elapsed < cooldownMs) {
     const waitSec = Math.ceil((cooldownMs - elapsed) / 1000);
-    throw new Error(`Rate limited: "${opName}" can be run once every ${cooldownMs / 1000}s. Please wait ${waitSec}s.`);
+    throw new Error(
+      `Rate limited: "${opName}" can be run once every ${cooldownMs / 1000}s. Please wait ${waitSec}s.`,
+    );
   }
   heavyOpCooldowns.set(key, Date.now());
   // Periodic cleanup of stale entries (every ~50th call)
   if (heavyOpCooldowns.size > 200) {
-    const cutoff = Date.now() - Math.max(...Object.values(HEAVY_OP_COOLDOWNS)) * 2;
+    const cutoff =
+      Date.now() - Math.max(...Object.values(HEAVY_OP_COOLDOWNS)) * 2;
     for (const [k, ts] of heavyOpCooldowns) {
       if (ts < cutoff) heavyOpCooldowns.delete(k);
     }
@@ -1276,15 +1759,23 @@ function pruneExpiredSandboxEntries(): void {
   }
   // Hard cap: if still over limit after expiry prune, evict oldest entries
   if (e2bSandboxBySession.size > MAX_E2B_SANDBOX_ENTRIES) {
-    const sorted = [...e2bSandboxBySession.entries()]
-      .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-    for (const [key] of sorted.slice(0, e2bSandboxBySession.size - MAX_E2B_SANDBOX_ENTRIES)) {
+    const sorted = [...e2bSandboxBySession.entries()].sort(
+      (a, b) => a[1].lastUsed - b[1].lastUsed,
+    );
+    for (const [key] of sorted.slice(
+      0,
+      e2bSandboxBySession.size - MAX_E2B_SANDBOX_ENTRIES,
+    )) {
       e2bSandboxBySession.delete(key);
     }
   }
 }
 
-function rememberSandbox(sessionKey: string, sandboxId: string, updates: Partial<{ mediaToolsReady: boolean; appCodeReady: boolean }> = {}): void {
+function rememberSandbox(
+  sessionKey: string,
+  sandboxId: string,
+  updates: Partial<{ mediaToolsReady: boolean; appCodeReady: boolean }> = {},
+): void {
   const existing = e2bSandboxBySession.get(sessionKey);
   e2bSandboxBySession.set(sessionKey, {
     sandboxId,
@@ -1299,7 +1790,10 @@ function e2bConfigured(): boolean {
   return Boolean(process.env.E2B_API_KEY?.trim());
 }
 
-async function bootstrapSandboxMediaTools(sandbox: any, sessionKey: string): Promise<void> {
+async function bootstrapSandboxMediaTools(
+  sandbox: any,
+  sessionKey: string,
+): Promise<void> {
   // Bootstrap is intentionally empty — tools are installed on-demand by the agent.
   // The system prompt instructs the model to pip install what it needs (yt-dlp,
   // ffmpeg, ripgrep, etc.) before using them in sandbox commands.
@@ -1307,26 +1801,56 @@ async function bootstrapSandboxMediaTools(sandbox: any, sessionKey: string): Pro
 }
 
 const APP_CODE_EXTENSIONS = new Set([
-  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-  ".json", ".yaml", ".yml", ".css", ".html",
-  ".md", ".txt", ".toml", ".sql",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".css",
+  ".html",
+  ".md",
+  ".txt",
+  ".toml",
+  ".sql",
 ]);
 
 function shouldPreloadAppCode(relPath: string): boolean {
   const normalized = relPath.replace(/\\/g, "/");
   const lower = normalized.toLowerCase();
   if (!normalized || normalized.startsWith("../")) return false;
-  if (/(^|\/)(node_modules|dist|build|coverage|\.git|\.vite|\.cache|\.pytest_cache|__pycache__)(\/|$)/i.test(normalized)) return false;
-  if (/(^|\/)(translator|video-translator-service)(\/|$)/i.test(lower)) return false;
+  if (
+    /(^|\/)(node_modules|dist|build|coverage|\.git|\.vite|\.cache|\.pytest_cache|__pycache__)(\/|$)/i.test(
+      normalized,
+    )
+  )
+    return false;
+  if (/(^|\/)(translator|video-translator-service)(\/|$)/i.test(lower))
+    return false;
   if (/translator/i.test(normalized)) return false;
-  if (/(^|\/)(\.env|storage-state|.*cookies.*|.*credential.*|.*secret.*)(\.|$|\/)/i.test(normalized)) return false;
-  if (/\.(mp4|mov|mkv|avi|webm|mp3|wav|m4a|aac|flac|jpg|jpeg|png|webp|gif|pdf|zip|tar|gz|7z|exe|dll|so|bin)$/i.test(normalized)) return false;
+  if (
+    /(^|\/)(\.env|storage-state|.*cookies.*|.*credential.*|.*secret.*)(\.|$|\/)/i.test(
+      normalized,
+    )
+  )
+    return false;
+  if (
+    /\.(mp4|mov|mkv|avi|webm|mp3|wav|m4a|aac|flac|jpg|jpeg|png|webp|gif|pdf|zip|tar|gz|7z|exe|dll|so|bin)$/i.test(
+      normalized,
+    )
+  )
+    return false;
   const dot = normalized.lastIndexOf(".");
   const ext = dot >= 0 ? normalized.slice(dot).toLowerCase() : "";
   return APP_CODE_EXTENSIONS.has(ext);
 }
 
-async function collectAppCodeFiles(root: string): Promise<Array<{ full: string; rel: string; size: number }>> {
+async function collectAppCodeFiles(
+  root: string,
+): Promise<Array<{ full: string; rel: string; size: number }>> {
   const out: Array<{ full: string; rel: string; size: number }> = [];
   const walk = async (dir: string) => {
     if (out.length >= E2B_APP_CODE_MAX_FILES) return;
@@ -1345,7 +1869,8 @@ async function collectAppCodeFiles(root: string): Promise<Array<{ full: string; 
         if (shouldPreloadAppCode(`${rel}/placeholder.ts`)) await walk(full);
       } else if (entry.isFile() && shouldPreloadAppCode(rel)) {
         const size = Number((await stat(full)).size || 0);
-        if (size <= E2B_APP_CODE_MAX_FILE_CHARS * 2) out.push({ full, rel, size });
+        if (size <= E2B_APP_CODE_MAX_FILE_CHARS * 2)
+          out.push({ full, rel, size });
       }
     }
   };
@@ -1353,7 +1878,10 @@ async function collectAppCodeFiles(root: string): Promise<Array<{ full: string; 
   return out;
 }
 
-async function preloadAppCodeIntoSandbox(sandbox: any, sessionKey: string): Promise<void> {
+async function preloadAppCodeIntoSandbox(
+  sandbox: any,
+  sessionKey: string,
+): Promise<void> {
   if (!E2B_PRELOAD_APP_CODE) return;
   const entry = e2bSandboxBySession.get(sessionKey);
   if (entry?.appCodeReady) return;
@@ -1370,7 +1898,11 @@ async function preloadAppCodeIntoSandbox(sandbox: any, sessionKey: string): Prom
   for (const root of sourceRoots) {
     const files = await collectAppCodeFiles(root);
     for (const file of files) {
-      if (written >= E2B_APP_CODE_MAX_FILES || totalChars >= E2B_APP_CODE_MAX_TOTAL_CHARS) break;
+      if (
+        written >= E2B_APP_CODE_MAX_FILES ||
+        totalChars >= E2B_APP_CODE_MAX_TOTAL_CHARS
+      )
+        break;
       try {
         let text = await readFile(file.full, "utf8");
         if (text.length > E2B_APP_CODE_MAX_FILE_CHARS) {
@@ -1386,21 +1918,27 @@ async function preloadAppCodeIntoSandbox(sandbox: any, sessionKey: string): Prom
         // Best-effort preload; sandbox command still works without a file.
       }
     }
-    if (written >= E2B_APP_CODE_MAX_FILES || totalChars >= E2B_APP_CODE_MAX_TOTAL_CHARS) break;
+    if (
+      written >= E2B_APP_CODE_MAX_FILES ||
+      totalChars >= E2B_APP_CODE_MAX_TOTAL_CHARS
+    )
+      break;
   }
 
-  await sandbox.files.write(
-    "/home/user/app-code/README.md",
-    [
-      "# Super Agent App Code Sandbox",
-      "",
-      "This folder contains a filtered snapshot of the main website/app code for debugging.",
-      "Translation-tab and video-translator worker files are intentionally excluded.",
-      "Use `/home/user/translation-code` only in the Translation Assistant, not here.",
-      `Files copied: ${written}`,
-      `Approx chars copied: ${totalChars}`,
-    ].join("\n"),
-  ).catch(() => {});
+  await sandbox.files
+    .write(
+      "/home/user/app-code/README.md",
+      [
+        "# Super Agent App Code Sandbox",
+        "",
+        "This folder contains a filtered snapshot of the main website/app code for debugging.",
+        "Translation-tab and video-translator worker files are intentionally excluded.",
+        "Use `/home/user/translation-code` only in the Translation Assistant, not here.",
+        `Files copied: ${written}`,
+        `Approx chars copied: ${totalChars}`,
+      ].join("\n"),
+    )
+    .catch(() => {});
   rememberSandbox(sessionKey, sandbox.sandboxId, { appCodeReady: true });
 }
 
@@ -1411,8 +1949,12 @@ function sandboxSessionKey(req: any): string {
   // A malicious user supplying a known sessionId cannot inherit another user's
   // sandbox because the hash is salted with the user's auth identity.
   const authCookie = req.signedCookies?.videomaking_auth ?? "";
-  const userIdentity = authCookie ? createHash("sha256").update(String(authCookie)).digest("hex").slice(0, 16) : "anon";
-  const sessionInput = raw ? `${userIdentity}:${raw}` : `${userIdentity}:anon-${randomUUID()}`;
+  const userIdentity = authCookie
+    ? createHash("sha256").update(String(authCookie)).digest("hex").slice(0, 16)
+    : "anon";
+  const sessionInput = raw
+    ? `${userIdentity}:${raw}`
+    : `${userIdentity}:anon-${randomUUID()}`;
   // Stripping non-alphanumeric chars in-place caused two distinct sessionIds
   // (e.g. "aaa.bbb" vs "aaabbb") to collapse onto the same sandbox. Hash the
   // raw value so the namespace is collision-resistant.
@@ -1421,7 +1963,9 @@ function sandboxSessionKey(req: any): string {
 
 async function getChatSandbox(req: any): Promise<any> {
   if (!e2bConfigured()) {
-    throw new Error("E2B sandbox is not configured. Set E2B_API_KEY on the API server.");
+    throw new Error(
+      "E2B sandbox is not configured. Set E2B_API_KEY on the API server.",
+    );
   }
 
   pruneExpiredSandboxEntries();
@@ -1432,14 +1976,19 @@ async function getChatSandbox(req: any): Promise<any> {
   const existing = e2bSandboxBySession.get(sessionKey);
   if (existing) {
     try {
-      const connected = await Sandbox.connect(existing.sandboxId, { timeoutMs: E2B_SANDBOX_TIMEOUT_MS });
+      const connected = await Sandbox.connect(existing.sandboxId, {
+        timeoutMs: E2B_SANDBOX_TIMEOUT_MS,
+      });
       await connected.setTimeout(E2B_SANDBOX_TIMEOUT_MS).catch(() => {});
       rememberSandbox(sessionKey, existing.sandboxId);
       await bootstrapSandboxMediaTools(connected, sessionKey);
       await preloadAppCodeIntoSandbox(connected, sessionKey);
       return connected;
     } catch (err) {
-      logger.warn({ err, sessionKey, existingId: existing.sandboxId }, "Could not reconnect E2B sandbox; creating a new one");
+      logger.warn(
+        { err, sessionKey, existingId: existing.sandboxId },
+        "Could not reconnect E2B sandbox; creating a new one",
+      );
       e2bSandboxBySession.delete(sessionKey);
     }
   }
@@ -1466,20 +2015,30 @@ async function getChatSandbox(req: any): Promise<any> {
   return createPromise;
 }
 
-async function resetChatSandbox(req: any): Promise<{ reset: boolean; sandboxId?: string }> {
+async function resetChatSandbox(
+  req: any,
+): Promise<{ reset: boolean; sandboxId?: string }> {
   const sessionKey = sandboxSessionKey(req);
   const entry = e2bSandboxBySession.get(sessionKey);
   const sandboxId = entry?.sandboxId;
   // SB-8 fix: Kill FIRST, then delete the map entry. If kill() throws,
   // we still have the handle and can retry — the sandbox won't be orphaned.
   if (sandboxId && e2bConfigured()) {
-    await Sandbox.kill(sandboxId).catch(err => logger.warn({ err, sandboxId }, "Could not kill E2B sandbox"));
+    await Sandbox.kill(sandboxId).catch((err) =>
+      logger.warn({ err, sandboxId }, "Could not kill E2B sandbox"),
+    );
   }
   e2bSandboxBySession.delete(sessionKey);
   return { reset: true, sandboxId };
 }
 
-async function chatSandboxStatus(req: any): Promise<{ configured: boolean; sessionKey: string; sandboxId?: string; running?: boolean; timeoutMs: number }> {
+async function chatSandboxStatus(req: any): Promise<{
+  configured: boolean;
+  sessionKey: string;
+  sandboxId?: string;
+  running?: boolean;
+  timeoutMs: number;
+}> {
   const configured = e2bConfigured();
   const sessionKey = sandboxSessionKey(req);
   const entry = e2bSandboxBySession.get(sessionKey);
@@ -1487,14 +2046,22 @@ async function chatSandboxStatus(req: any): Promise<{ configured: boolean; sessi
   let running: boolean | undefined;
   if (configured && sandboxId) {
     try {
-      const sandbox = await Sandbox.connect(sandboxId, { timeoutMs: E2B_SANDBOX_TIMEOUT_MS });
+      const sandbox = await Sandbox.connect(sandboxId, {
+        timeoutMs: E2B_SANDBOX_TIMEOUT_MS,
+      });
       running = await sandbox.isRunning();
     } catch {
       running = false;
       e2bSandboxBySession.delete(sessionKey);
     }
   }
-  return { configured, sessionKey, sandboxId, running, timeoutMs: E2B_SANDBOX_TIMEOUT_MS };
+  return {
+    configured,
+    sessionKey,
+    sandboxId,
+    running,
+    timeoutMs: E2B_SANDBOX_TIMEOUT_MS,
+  };
 }
 
 function truncateToolText(value: string, limit = E2B_MAX_OUTPUT_CHARS): string {
@@ -1504,30 +2071,45 @@ function truncateToolText(value: string, limit = E2B_MAX_OUTPUT_CHARS): string {
 
 function normalizeSandboxPath(value: unknown, fallback = "/home/user"): string {
   const path = String(value ?? fallback).trim() || fallback;
-  if (!path.startsWith("/")) throw new Error(`Sandbox paths must be absolute: ${path}`);
+  if (!path.startsWith("/"))
+    throw new Error(`Sandbox paths must be absolute: ${path}`);
   // Block directory traversal via .. segments to prevent models from
   // escaping the sandbox home directory.
-  if (path.split("/").some(seg => seg === "..")) {
+  if (path.split("/").some((seg) => seg === "..")) {
     throw new Error(`Sandbox path traversal blocked: ${path}`);
   }
   return path.replace(/\0/g, "");
 }
 
-async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: any, runId?: string, toolId?: string, name = "run_sandbox_command") {
+async function runE2BSandboxCommand(
+  req: any,
+  args: Record<string, any>,
+  res: any,
+  runId?: string,
+  toolId?: string,
+  name = "run_sandbox_command",
+) {
   const command = String(args.command ?? "").trim();
   if (!command) throw new Error("command is required.");
 
   const sandbox = await getChatSandbox(req);
   const cwd = normalizeSandboxPath(args.cwd, "/home/user");
   const timeoutMsRaw = Number(args.timeoutMs ?? E2B_COMMAND_TIMEOUT_MS);
-  const timeoutMs = Math.max(1000, Math.min(Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : E2B_COMMAND_TIMEOUT_MS, 10 * 60 * 1000));
+  const timeoutMs = Math.max(
+    1000,
+    Math.min(
+      Number.isFinite(timeoutMsRaw) ? timeoutMsRaw : E2B_COMMAND_TIMEOUT_MS,
+      10 * 60 * 1000,
+    ),
+  );
   await sandbox.files.makeDir(cwd).catch(() => {});
 
   const writeFiles = Array.isArray(args.writeFiles) ? args.writeFiles : [];
   for (const file of writeFiles.slice(0, 12)) {
     const path = normalizeSandboxPath(file?.path);
     const content = String(file?.content ?? "");
-    if (content.length > E2B_MAX_FILE_CHARS) throw new Error(`Sandbox file too large: ${path}`);
+    if (content.length > E2B_MAX_FILE_CHARS)
+      throw new Error(`Sandbox file too large: ${path}`);
     await sandbox.files.write(path, content);
   }
 
@@ -1535,7 +2117,13 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
   // are available. The E2B sandbox is fully isolated — PATH manipulation here
   // does not affect the host.
   const commandWithPath = `export PATH="/home/user/bin:/home/user/.local/bin:$PATH"\n${command}`;
-  sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Running in sandbox: ${command.slice(0, 120)}` });
+  sseEvent(res, {
+    type: "tool_progress",
+    runId,
+    toolId,
+    name,
+    message: `Running in sandbox: ${command.slice(0, 120)}`,
+  });
   let liveOut = "";
   let liveErr = "";
   const maxLiveOutputChars = 500 * 1024;
@@ -1543,10 +2131,12 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
     cwd,
     timeoutMs,
     onStdout: (data: string) => {
-      if (liveOut.length < maxLiveOutputChars) liveOut += data.slice(0, maxLiveOutputChars - liveOut.length);
+      if (liveOut.length < maxLiveOutputChars)
+        liveOut += data.slice(0, maxLiveOutputChars - liveOut.length);
     },
     onStderr: (data: string) => {
-      if (liveErr.length < maxLiveOutputChars) liveErr += data.slice(0, maxLiveOutputChars - liveErr.length);
+      if (liveErr.length < maxLiveOutputChars)
+        liveErr += data.slice(0, maxLiveOutputChars - liveErr.length);
     },
   });
 
@@ -1556,9 +2146,15 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
     const path = normalizeSandboxPath(rawPath);
     try {
       const content = await sandbox.files.read(path, { format: "text" });
-      files.push({ path, content: truncateToolText(String(content), E2B_MAX_FILE_CHARS) });
+      files.push({
+        path,
+        content: truncateToolText(String(content), E2B_MAX_FILE_CHARS),
+      });
     } catch (err: any) {
-      files.push({ path, content: `[could not read file: ${String(err?.message ?? err)}]` });
+      files.push({
+        path,
+        content: `[could not read file: ${String(err?.message ?? err)}]`,
+      });
     }
   }
 
@@ -1569,8 +2165,12 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
     `exitCode: ${result.exitCode}`,
     stdout ? `\nstdout:\n${stdout}` : "",
     stderr ? `\nstderr:\n${stderr}` : "",
-    files.length ? `\nfiles:\n${files.map(f => `--- ${f.path} ---\n${f.content}`).join("\n")}` : "",
-  ].filter(Boolean).join("\n");
+    files.length
+      ? `\nfiles:\n${files.map((f) => `--- ${f.path} ---\n${f.content}`).join("\n")}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 
   return {
     result: {
@@ -1583,17 +2183,29 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
       stderr,
       files,
     },
-    artifact: { artifactType: "text", label: "Sandbox Output", content: summary },
+    artifact: {
+      artifactType: "text",
+      label: "Sandbox Output",
+      content: summary,
+    },
   };
 }
 
-function latestImageAttachment(req: any): { data: string; mimeType: string; name: string } | null {
+function latestImageAttachment(
+  req: any,
+): { data: string; mimeType: string; name: string } | null {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   for (let i = messages.length - 1; i >= 0; i--) {
-    const attachments = Array.isArray(messages[i]?.attachments) ? messages[i].attachments : [];
+    const attachments = Array.isArray(messages[i]?.attachments)
+      ? messages[i].attachments
+      : [];
     for (let j = attachments.length - 1; j >= 0; j--) {
       const attachment = attachments[j];
-      if (attachment?.type === "image" && attachment?.data && attachment?.mimeType) {
+      if (
+        attachment?.type === "image" &&
+        attachment?.data &&
+        attachment?.mimeType
+      ) {
         return {
           data: String(attachment.data),
           mimeType: String(attachment.mimeType),
@@ -1606,7 +2218,11 @@ function latestImageAttachment(req: any): { data: string; mimeType: string; name
 }
 
 function imageFilename(mimeType: string, prefix: string): string {
-  const ext = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
+  const ext = mimeType.includes("png")
+    ? "png"
+    : mimeType.includes("webp")
+      ? "webp"
+      : "jpg";
   return `${prefix}-${Date.now()}.${ext}`;
 }
 
@@ -1617,7 +2233,10 @@ async function publishGeneratedImage(params: {
 }): Promise<{ imageUrl: string; filename: string }> {
   const filename = imageFilename(params.mimeType, params.filenamePrefix);
   if (!isS3StorageEnabled()) {
-    return { imageUrl: `data:${params.mimeType};base64,${params.data}`, filename };
+    return {
+      imageUrl: `data:${params.mimeType};base64,${params.data}`,
+      filename,
+    };
   }
 
   const upload = await createS3PresignedUpload({
@@ -1650,18 +2269,53 @@ async function generateImageArtifact(params: {
   const ai = createGeminiClient();
   const parts: any[] = [{ text: params.prompt }];
   if (params.inputImage) {
-    parts.push({ inlineData: { mimeType: params.inputImage.mimeType, data: params.inputImage.data } });
+    parts.push({
+      inlineData: {
+        mimeType: params.inputImage.mimeType,
+        data: params.inputImage.data,
+      },
+    });
   }
-  const VALID_RATIOS = new Set(["1:1","1:4","1:8","2:3","3:2","3:4","4:1","4:3","4:5","5:4","8:1","9:16","16:9","21:9"]);
-  const VALID_SIZES = new Set(["512","1K","2K","4K"]);
-  const aspectRatio = params.aspectRatio && VALID_RATIOS.has(params.aspectRatio) ? params.aspectRatio : undefined;
-  const imageSize = params.imageSize && VALID_SIZES.has(params.imageSize) ? params.imageSize : undefined;
+  const VALID_RATIOS = new Set([
+    "1:1",
+    "1:4",
+    "1:8",
+    "2:3",
+    "3:2",
+    "3:4",
+    "4:1",
+    "4:3",
+    "4:5",
+    "5:4",
+    "8:1",
+    "9:16",
+    "16:9",
+    "21:9",
+  ]);
+  const VALID_SIZES = new Set(["512", "1K", "2K", "4K"]);
+  const aspectRatio =
+    params.aspectRatio && VALID_RATIOS.has(params.aspectRatio)
+      ? params.aspectRatio
+      : undefined;
+  const imageSize =
+    params.imageSize && VALID_SIZES.has(params.imageSize)
+      ? params.imageSize
+      : undefined;
   const resp = await ai.models.generateContent({
     model: process.env.COPILOT_IMAGE_MODEL ?? "gemini-3.1-flash-image-preview",
     contents: [{ role: "user", parts }],
     config: {
       responseModalities: [Modality.TEXT, Modality.IMAGE] as any,
-      ...(aspectRatio || imageSize ? { responseFormat: { image: { ...(aspectRatio ? { aspectRatio } : {}), ...(imageSize ? { imageSize } : {}) } } } : {}),
+      ...(aspectRatio || imageSize
+        ? {
+            responseFormat: {
+              image: {
+                ...(aspectRatio ? { aspectRatio } : {}),
+                ...(imageSize ? { imageSize } : {}),
+              },
+            },
+          }
+        : {}),
     },
   } as any);
 
@@ -1679,7 +2333,9 @@ async function generateImageArtifact(params: {
       return { ...published, text: stripReasoningTags(text).trim() };
     }
   }
-  throw new Error("Image model returned no image. Try a clearer prompt or attach an image.");
+  throw new Error(
+    "Image model returned no image. Try a clearer prompt or attach an image.",
+  );
 }
 
 // ── Lyria music generation ────────────────────────────────────────────────────
@@ -1688,9 +2344,10 @@ async function generateLyriaMusic(params: {
   prompt: string;
   durationMode: "clip" | "full";
 }): Promise<{ audioUrl: string; filename: string; mimeType: string }> {
-  const model = params.durationMode === "full"
-    ? (process.env.LYRIA_FULL_MODEL ?? "lyria-3-pro-preview")
-    : (process.env.LYRIA_CLIP_MODEL ?? "lyria-3-clip-preview");
+  const model =
+    params.durationMode === "full"
+      ? (process.env.LYRIA_FULL_MODEL ?? "lyria-3-pro-preview")
+      : (process.env.LYRIA_CLIP_MODEL ?? "lyria-3-clip-preview");
 
   // Official Google notebook: use models.generateContent with responseModalities=["AUDIO","TEXT"]
   // This works with the existing Vertex AI client — no REST workaround needed.
@@ -1710,10 +2367,17 @@ async function generateLyriaMusic(params: {
       const ext = mimeType.includes("wav") ? "wav" : "mp3";
       const filename = `lyria-${Date.now()}.${ext}`;
       if (!isS3StorageEnabled()) {
-        return { audioUrl: `data:${mimeType};base64,${audioData}`, filename, mimeType };
+        return {
+          audioUrl: `data:${mimeType};base64,${audioData}`,
+          filename,
+          mimeType,
+        };
       }
       const upload = await createS3PresignedUpload({
-        jobId: randomUUID(), namespace: "agent-music", filename, contentType: mimeType,
+        jobId: randomUUID(),
+        namespace: "agent-music",
+        filename,
+        contentType: mimeType,
       });
       const put = await fetch(upload.uploadUrl, {
         method: "PUT",
@@ -1722,22 +2386,34 @@ async function generateLyriaMusic(params: {
       });
       if (!put.ok) throw new Error(`Audio upload failed: ${put.status}`);
       const audioUrl = await getS3SignedDownloadUrl({
-        key: upload.key, filename: upload.filename, expiresInSec: 7 * 24 * 60 * 60,
+        key: upload.key,
+        filename: upload.filename,
+        expiresInSec: 7 * 24 * 60 * 60,
       });
       return { audioUrl, filename: upload.filename, mimeType };
     }
   }
-  throw new Error("Lyria returned no audio. Try a different prompt or check that your Vertex AI project has Lyria 3 access.");
+  throw new Error(
+    "Lyria returned no audio. Try a different prompt or check that your Vertex AI project has Lyria 3 access.",
+  );
 }
 
-async function textModelArtifact(label: string, prompt: string): Promise<{ result: any; artifact: object }> {
+async function textModelArtifact(
+  label: string,
+  prompt: string,
+): Promise<{ result: any; artifact: object }> {
   const ai = createGeminiClient();
   const resp = await ai.models.generateContent({
     model: ULTRA_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
   });
-  const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
+  const content = stripReasoningTags(
+    (resp.candidates?.[0]?.content?.parts ?? [])
+      .map((p: any) => p.text ?? "")
+      .join("")
+      .trim(),
+  );
   if (!content) throw new Error(`${label} returned no content`);
   return {
     result: { content },
@@ -1745,13 +2421,24 @@ async function textModelArtifact(label: string, prompt: string): Promise<{ resul
   };
 }
 
-function latestNonImageAttachment(req: any): { url?: string; data?: string; mimeType: string; name: string; type?: string } | null {
+function latestNonImageAttachment(req: any): {
+  url?: string;
+  data?: string;
+  mimeType: string;
+  name: string;
+  type?: string;
+} | null {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   for (let i = messages.length - 1; i >= 0; i--) {
-    const attachments = Array.isArray(messages[i]?.attachments) ? messages[i].attachments : [];
+    const attachments = Array.isArray(messages[i]?.attachments)
+      ? messages[i].attachments
+      : [];
     for (let j = attachments.length - 1; j >= 0; j--) {
       const attachment = attachments[j];
-      if (attachment?.type !== "image" && (attachment?.url || attachment?.data)) {
+      if (
+        attachment?.type !== "image" &&
+        (attachment?.url || attachment?.data)
+      ) {
         return {
           url: attachment.url ? String(attachment.url) : undefined,
           data: attachment.data ? String(attachment.data) : undefined,
@@ -1771,10 +2458,16 @@ function conversationText(req: any): string {
     .join("\n\n");
 }
 
-async function readResponseTextWithLimit(response: globalThis.Response, limitBytes: number, abort?: AbortController): Promise<string> {
+async function readResponseTextWithLimit(
+  response: globalThis.Response,
+  limitBytes: number,
+  abort?: AbortController,
+): Promise<string> {
   const sizeHeader = response.headers.get("content-length");
   if (sizeHeader && Number(sizeHeader) > limitBytes) {
-    throw new Error(`Response too large (${sizeHeader} bytes, limit ${limitBytes} bytes).`);
+    throw new Error(
+      `Response too large (${sizeHeader} bytes, limit ${limitBytes} bytes).`,
+    );
   }
   if (!response.body) throw new Error("Response body is empty.");
 
@@ -1796,19 +2489,28 @@ async function readResponseTextWithLimit(response: globalThis.Response, limitByt
   return text;
 }
 
-async function readAttachmentText(req: any): Promise<{ content: string; name: string; mimeType: string } | null> {
+async function readAttachmentText(
+  req: any,
+): Promise<{ content: string; name: string; mimeType: string } | null> {
   const attachment = latestNonImageAttachment(req);
   if (!attachment) return null;
   if (attachment.data) {
-    return { content: Buffer.from(attachment.data, "base64").toString("utf8"), name: attachment.name, mimeType: attachment.mimeType };
+    return {
+      content: Buffer.from(attachment.data, "base64").toString("utf8"),
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+    };
   }
   const url = attachment.url ?? "";
   if (url.startsWith("data:")) {
     const comma = url.indexOf(",");
-    if (comma === -1) throw new Error(`Malformed uploaded file data URL: ${attachment.name}`);
+    if (comma === -1)
+      throw new Error(`Malformed uploaded file data URL: ${attachment.name}`);
     const meta = url.slice(0, comma);
     const body = url.slice(comma + 1);
-    const content = meta.includes(";base64") ? Buffer.from(body, "base64").toString("utf8") : decodeURIComponent(body);
+    const content = meta.includes(";base64")
+      ? Buffer.from(body, "base64").toString("utf8")
+      : decodeURIComponent(body);
     return { content, name: attachment.name, mimeType: attachment.mimeType };
   }
   if (url) {
@@ -1816,65 +2518,106 @@ async function readAttachmentText(req: any): Promise<{ content: string; name: st
     try {
       const parsedUrl = new URL(url);
       if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        throw new Error(`Unsupported protocol for attachment URL: ${parsedUrl.protocol}`);
+        throw new Error(
+          `Unsupported protocol for attachment URL: ${parsedUrl.protocol}`,
+        );
       }
       if (isInternalHost(parsedUrl.hostname)) {
-        throw new Error("Attachment URL resolves to an internal/private network address.");
+        throw new Error(
+          "Attachment URL resolves to an internal/private network address.",
+        );
       }
     } catch (err: any) {
-      if (err.message.includes("internal/private") || err.message.includes("Unsupported protocol")) throw err;
+      if (
+        err.message.includes("internal/private") ||
+        err.message.includes("Unsupported protocol")
+      )
+        throw err;
       // Invalid URL — let fetch fail naturally
     }
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 30000);
-    const r = await fetch(url, { signal: ac.signal }).finally(() => clearTimeout(timer));
+    const r = await fetch(url, { signal: ac.signal }).finally(() =>
+      clearTimeout(timer),
+    );
     if (!r.ok) throw new Error(`Could not read uploaded file: ${r.status}`);
     const contentType = r.headers.get("content-type") ?? attachment.mimeType;
     if (contentType.includes("pdf")) {
-      return { content: `[PDF attachment: ${url}]`, name: attachment.name, mimeType: contentType };
+      return {
+        content: `[PDF attachment: ${url}]`,
+        name: attachment.name,
+        mimeType: contentType,
+      };
     }
-    return { content: await readResponseTextWithLimit(r, 5 * 1024 * 1024, ac), name: attachment.name, mimeType: contentType };
+    return {
+      content: await readResponseTextWithLimit(r, 5 * 1024 * 1024, ac),
+      name: attachment.name,
+      mimeType: contentType,
+    };
   }
   return null;
 }
 
-function convertSubtitleText(content: string, inputFormat: string, outputFormat: string): string {
+function convertSubtitleText(
+  content: string,
+  inputFormat: string,
+  outputFormat: string,
+): string {
   const out = outputFormat.toLowerCase();
-  const inferred = inputFormat === "auto"
-    ? content.trimStart().startsWith("WEBVTT") ? "vtt" : /-->\s*\d\d:\d\d:\d\d,\d\d\d/.test(content) ? "srt" : "txt"
-    : inputFormat.toLowerCase();
+  const inferred =
+    inputFormat === "auto"
+      ? content.trimStart().startsWith("WEBVTT")
+        ? "vtt"
+        : /-->\s*\d\d:\d\d:\d\d,\d\d\d/.test(content)
+          ? "srt"
+          : "txt"
+      : inputFormat.toLowerCase();
   if (inferred === out) return content;
   if (out === "txt") {
     return content
       .replace(/^WEBVTT.*$/gim, "")
       .replace(/^\d+\s*$/gm, "")
-      .replace(/\d\d:\d\d:\d\d[,.]\d\d\d\s*-->\s*\d\d:\d\d:\d\d[,.]\d\d\d.*$/gm, "")
+      .replace(
+        /\d\d:\d\d:\d\d[,.]\d\d\d\s*-->\s*\d\d:\d\d:\d\d[,.]\d\d\d.*$/gm,
+        "",
+      )
       .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
   if (inferred === "srt" && out === "vtt") {
-    return "WEBVTT\n\n" + content
-      .replace(/\r/g, "")
-      .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, "$1.$2")
-      .trim() + "\n";
+    return (
+      "WEBVTT\n\n" +
+      content
+        .replace(/\r/g, "")
+        .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, "$1.$2")
+        .trim() +
+      "\n"
+    );
   }
   if (inferred === "vtt" && out === "srt") {
     let index = 1;
-    return content
-      .replace(/\r/g, "")
-      .replace(/^WEBVTT.*\n+/i, "")
-      .split(/\n\n+/)
-      .map(block => block.trim())
-      .filter(Boolean)
-      .map(block => {
-        const lines = block.split("\n").filter(line => !/^NOTE\b/i.test(line.trim()));
-        const timeIdx = lines.findIndex(line => line.includes("-->"));
-        if (timeIdx < 0) return "";
-        const time = lines[timeIdx].replace(/(\d\d:\d\d:\d\d)\.(\d\d\d)/g, "$1,$2");
-        return `${index++}\n${time}\n${lines.slice(timeIdx + 1).join("\n")}`;
-      })
-      .filter(Boolean)
-      .join("\n\n") + "\n";
+    return (
+      content
+        .replace(/\r/g, "")
+        .replace(/^WEBVTT.*\n+/i, "")
+        .split(/\n\n+/)
+        .map((block) => block.trim())
+        .filter(Boolean)
+        .map((block) => {
+          const lines = block
+            .split("\n")
+            .filter((line) => !/^NOTE\b/i.test(line.trim()));
+          const timeIdx = lines.findIndex((line) => line.includes("-->"));
+          if (timeIdx < 0) return "";
+          const time = lines[timeIdx].replace(
+            /(\d\d:\d\d:\d\d)\.(\d\d\d)/g,
+            "$1,$2",
+          );
+          return `${index++}\n${time}\n${lines.slice(timeIdx + 1).join("\n")}`;
+        })
+        .filter(Boolean)
+        .join("\n\n") + "\n"
+    );
   }
   if (out === "srt") {
     return `1\n00:00:00,000 --> 00:00:05,000\n${content.trim()}\n`;
@@ -1885,7 +2628,10 @@ function convertSubtitleText(content: string, inputFormat: string, outputFormat:
   return content;
 }
 
-async function downloadableTextArtifact(filename: string, content: string): Promise<object> {
+async function downloadableTextArtifact(
+  filename: string,
+  content: string,
+): Promise<object> {
   if (!isS3StorageEnabled()) {
     return {
       artifactType: "text",
@@ -1920,14 +2666,27 @@ function scanKnownJobIds(req: any): string[] {
     ids.add(id);
   };
   const text = conversationText(req);
-  for (const match of text.matchAll(/\bjob(?:Id)?:?\s*([a-f0-9-]{8,})\b/gi)) addId(match[1]);
-  for (const match of text.matchAll(/\/api\/(?:youtube\/file|subtitles\/status|translator\/status|translator\/result)\/([a-f0-9-]{8,})/gi)) addId(match[1]);
+  for (const match of text.matchAll(/\bjob(?:Id)?:?\s*([a-f0-9-]{8,})\b/gi))
+    addId(match[1]);
+  for (const match of text.matchAll(
+    /\/api\/(?:youtube\/file|subtitles\/status|translator\/status|translator\/result)\/([a-f0-9-]{8,})/gi,
+  ))
+    addId(match[1]);
   return [...ids].slice(-20);
 }
 
-function latestArtifactFromMemory(req: any): { artifactType: string; label: string; downloadUrl?: string; imageUrl?: string; tab?: string; jobId?: string } | null {
+function latestArtifactFromMemory(req: any): {
+  artifactType: string;
+  label: string;
+  downloadUrl?: string;
+  imageUrl?: string;
+  tab?: string;
+  jobId?: string;
+} | null {
   const text = conversationText(req);
-  const artifactLines = text.split("\n").filter(line => line.startsWith("[Artifact:"));
+  const artifactLines = text
+    .split("\n")
+    .filter((line) => line.startsWith("[Artifact:"));
   const line = artifactLines.at(-1);
   if (!line) return null;
   // Strip the leading "[" and trailing "]" so the regex doesn't have to fight them.
@@ -1962,7 +2721,10 @@ function htmlToReadableText(html: string, maxChars = 200_000): string {
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
     .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<\/(p|div|section|article|header|footer|main|li|ul|ol|h[1-6]|tr|table|br)>/gi, "\n")
+    .replace(
+      /<\/(p|div|section|article|header|footer|main|li|ul|ol|h[1-6]|tr|table|br)>/gi,
+      "\n",
+    )
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
@@ -1979,41 +2741,56 @@ function htmlToReadableText(html: string, maxChars = 200_000): string {
     result = result.slice(0, HARD_LIMIT);
   }
   if (result.length > HARD_LIMIT) {
-    result = result.slice(0, HARD_LIMIT) + `\n\n[truncated to ${HARD_LIMIT} chars]`;
+    result =
+      result.slice(0, HARD_LIMIT) + `\n\n[truncated to ${HARD_LIMIT} chars]`;
   }
   return result;
 }
 
 function isInternalHost(hostname: string): boolean {
   // Strip IPv6 brackets if present (e.g. "[::1]" → "::1").
-  const host = hostname.startsWith("[") && hostname.endsWith("]")
-    ? hostname.slice(1, -1)
-    : hostname;
+  const host =
+    hostname.startsWith("[") && hostname.endsWith("]")
+      ? hostname.slice(1, -1)
+      : hostname;
 
   // Block AWS metadata, loopback, and private RFC-1918 ranges
-  if (host === "localhost" || host === "::1" || host === "0.0.0.0" || host === "::") return true;
+  if (
+    host === "localhost" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host === "::"
+  )
+    return true;
 
   // IPv4
   const v4parts = host.split(".").map(Number);
-  if (v4parts.length === 4 && v4parts.every(n => Number.isFinite(n) && n >= 0 && n <= 255)) {
-    if (v4parts[0] === 127) return true;                              // 127.x.x.x loopback
-    if (v4parts[0] === 10) return true;                               // 10.x.x.x private
+  if (
+    v4parts.length === 4 &&
+    v4parts.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)
+  ) {
+    if (v4parts[0] === 127) return true; // 127.x.x.x loopback
+    if (v4parts[0] === 10) return true; // 10.x.x.x private
     if (v4parts[0] === 172 && v4parts[1] >= 16 && v4parts[1] <= 31) return true; // 172.16-31.x.x private
-    if (v4parts[0] === 192 && v4parts[1] === 168) return true;        // 192.168.x.x private
-    if (v4parts[0] === 169 && v4parts[1] === 254) return true;        // 169.254.x.x AWS metadata / link-local
-    if (v4parts[0] === 0) return true;                                // 0.x.x.x
-    if (v4parts[0] === 100 && v4parts[1] >= 64 && v4parts[1] <= 127) return true; // CGNAT 100.64.0.0/10
+    if (v4parts[0] === 192 && v4parts[1] === 168) return true; // 192.168.x.x private
+    if (v4parts[0] === 169 && v4parts[1] === 254) return true; // 169.254.x.x AWS metadata / link-local
+    if (v4parts[0] === 0) return true; // 0.x.x.x
+    if (v4parts[0] === 100 && v4parts[1] >= 64 && v4parts[1] <= 127)
+      return true; // CGNAT 100.64.0.0/10
     return false;
   }
 
   // IPv6 — coarse but covers the dangerous categories.
   if (host.includes(":")) {
     // Strip zone IDs (e.g. "fe80::1%eth0" or "fe80::1%25eth0")
-    const lower = host.toLowerCase().replace(/%25.*$/, "").replace(/%.*$/, "");
+    const lower = host
+      .toLowerCase()
+      .replace(/%25.*$/, "")
+      .replace(/%.*$/, "");
     // Loopback (::1) and unspecified (::) handled above.
     if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return true; // link-local
-    if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;                          // unique-local fc00::/7
-    if (lower.startsWith("ff")) return true;                                    // multicast
+    if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true; // unique-local fc00::/7
+    if (lower.startsWith("ff")) return true; // multicast
     // IPv4-mapped IPv6 (::ffff:127.0.0.1 etc): re-check the embedded v4.
     const mapped = /^::ffff:([0-9a-f.]+)$/.exec(lower);
     if (mapped) return isInternalHost(mapped[1]);
@@ -2023,10 +2800,20 @@ function isInternalHost(hostname: string): boolean {
   return false;
 }
 
-async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ title?: string; finalUrl: string; contentType: string; text: string }> {
+async function fetchReadableWebPage(
+  url: string,
+  maxChars: number,
+): Promise<{
+  title?: string;
+  finalUrl: string;
+  contentType: string;
+  text: string;
+}> {
   const parsed = new URL(url);
-  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Only http/https URLs can be read.");
-  if (isInternalHost(parsed.hostname)) throw new Error("Cannot read internal/private network URLs.");
+  if (!["http:", "https:"].includes(parsed.protocol))
+    throw new Error("Only http/https URLs can be read.");
+  if (isInternalHost(parsed.hostname))
+    throw new Error("Cannot read internal/private network URLs.");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
@@ -2035,7 +2822,8 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
       signal: controller.signal,
       headers: {
         "user-agent": "VideoMakingStudioAgent/1.0 (+https://videomaking.in)",
-        accept: "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
+        accept:
+          "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
       },
     });
     if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
@@ -2045,7 +2833,9 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
     try {
       const finalParsed = new URL(finalUrl);
       if (isInternalHost(finalParsed.hostname)) {
-        throw new Error("Redirect target resolves to an internal/private network address.");
+        throw new Error(
+          "Redirect target resolves to an internal/private network address.",
+        );
       }
     } catch (err: any) {
       if (err.message.includes("internal/private")) throw err;
@@ -2053,8 +2843,13 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
     }
     const contentType = r.headers.get("content-type") ?? "";
     const raw = await readResponseTextWithLimit(r, 5 * 1024 * 1024, controller);
-    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
-    const text = contentType.includes("html") ? htmlToReadableText(raw) : raw.trim();
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i
+      .exec(raw)?.[1]
+      ?.replace(/\s+/g, " ")
+      .trim();
+    const text = contentType.includes("html")
+      ? htmlToReadableText(raw)
+      : raw.trim();
     return {
       title,
       finalUrl,
@@ -2068,10 +2863,27 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
 
 // Known frontend tab names (must match the Mode union in Home.tsx)
 const ALLOWED_NAV_TABS = new Set([
-  "home", "download", "clips", "subtitles", "clipcutter", "bhagwat",
-  "scenefinder", "timestamps", "upload", "copilot", "translator", "heygen",
-  "findvideo", "thumbnail", "videostudio", "help", "activity", "admin",
-  "developer", "api-docs", "settings",
+  "home",
+  "download",
+  "clips",
+  "subtitles",
+  "clipcutter",
+  "bhagwat",
+  "scenefinder",
+  "timestamps",
+  "upload",
+  "copilot",
+  "translator",
+  "heygen",
+  "findvideo",
+  "thumbnail",
+  "videostudio",
+  "help",
+  "activity",
+  "admin",
+  "developer",
+  "api-docs",
+  "settings",
 ]);
 
 async function executeTool(
@@ -2086,36 +2898,59 @@ async function executeTool(
   const apiBase = getApiBase(req);
   const internalHeaders = buildInternalHeaders(req);
   const logTool = (message: string, details?: Record<string, any>) => {
-    sseEvent(res, { type: "tool_log", runId, toolId, name, message, ...(details ? { details } : {}) } as any);
+    sseEvent(res, {
+      type: "tool_log",
+      runId,
+      toolId,
+      name,
+      message,
+      ...(details ? { details } : {}),
+    } as any);
   };
 
   switch (name) {
-
     case "get_video_info": {
-      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/info" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Fetching video metadata..." });
+      logTool("Calling internal API", {
+        method: "POST",
+        endpoint: "/api/youtube/info",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Fetching video metadata...",
+      });
       const r = await fetch(`${apiBase}/youtube/info`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
-      if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Info fetch failed: ${r.status}`); }
-      const data = await r.json().catch(() => ({ error: "Failed to fetch info" })) as any;
+      if (!r.ok) {
+        const err = (await r.json().catch(() => ({}))) as any;
+        throw new Error(err.error ?? `Info fetch failed: ${r.status}`);
+      }
+      const data = (await r
+        .json()
+        .catch(() => ({ error: "Failed to fetch info" }))) as any;
       // Build a readable summary for the artifact card
       const infoLines: string[] = [];
       if (data.title) infoLines.push(data.title);
       if (data.duration) infoLines.push(`Duration: ${data.duration}`);
       if (data.uploader) infoLines.push(`Channel: ${data.uploader}`);
-      if (data.view_count != null) infoLines.push(`${Number(data.view_count).toLocaleString()} views`);
+      if (data.view_count != null)
+        infoLines.push(`${Number(data.view_count).toLocaleString()} views`);
       return {
         result: data,
-        ...(infoLines.length > 0 ? {
-          artifact: {
-            artifactType: "text",
-            label: "Video Info",
-            content: infoLines.join("\n"),
-          },
-        } : {}),
+        ...(infoLines.length > 0
+          ? {
+              artifact: {
+                artifactType: "text",
+                label: "Video Info",
+                content: infoLines.join("\n"),
+              },
+            }
+          : {}),
       };
     }
 
@@ -2123,21 +2958,37 @@ async function executeTool(
       const startSecs = parseTimestamp(String(args.startTime));
       const endSecs = parseTimestamp(String(args.endTime));
       if (endSecs <= startSecs) {
-        throw new Error(`End time (${args.endTime}) must be after start time (${args.startTime}).`);
+        throw new Error(
+          `End time (${args.endTime}) must be after start time (${args.startTime}).`,
+        );
       }
       const quality = args.quality ?? "1080p";
-      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clip-cut" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Starting clip cut (${args.startTime} → ${args.endTime})...` });
+      logTool("Calling internal API", {
+        method: "POST",
+        endpoint: "/api/youtube/clip-cut",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Starting clip cut (${args.startTime} → ${args.endTime})...`,
+      });
       const r = await fetch(`${apiBase}/youtube/clip-cut`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({ url: args.url, startTime: startSecs, endTime: endSecs, quality }),
+        body: JSON.stringify({
+          url: args.url,
+          startTime: startSecs,
+          endTime: endSecs,
+          quality,
+        }),
       });
       if (!r.ok) {
-        const err = await r.json().catch(() => ({})) as any;
+        const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Clip cut failed: ${r.status}`);
       }
-      const { jobId } = await r.json() as any;
+      const { jobId } = (await r.json()) as any;
       rememberAgentJob(req, jobId);
       logTool("Clip cut job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
@@ -2155,44 +3006,111 @@ async function executeTool(
         quality,
       } as any);
 
-      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
+      await pollJobUntilDone(
+        res,
+        name,
+        `${apiBase}/youtube/progress/${jobId}`,
+        jobId,
+        internalHeaders,
+        isConnected,
+        toolId,
+        runId,
+      );
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
-        result: { jobId, downloadUrl, startTime: args.startTime, endTime: args.endTime, url: args.url, quality },
-        artifact: { artifactType: "download", label: `Clip ready: ${args.startTime} → ${args.endTime}`, downloadUrl, jobId },
+        result: {
+          jobId,
+          downloadUrl,
+          startTime: args.startTime,
+          endTime: args.endTime,
+          url: args.url,
+          quality,
+        },
+        artifact: {
+          artifactType: "download",
+          label: `Clip ready: ${args.startTime} → ${args.endTime}`,
+          downloadUrl,
+          jobId,
+        },
       };
     }
 
     case "download_video": {
       const quality = args.quality ?? "best";
-      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/download" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Starting download (${quality})...` });
+      logTool("Calling internal API", {
+        method: "POST",
+        endpoint: "/api/youtube/download",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Starting download (${quality})...`,
+      });
       let formatId = DEFAULT_VIDEO_FORMAT_SELECTOR;
       if (quality === "audio_only") formatId = "audio:bestaudio";
-      if (quality === "1080p") formatId = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec!=none]+bestaudio[acodec!=none]/best[height<=1080][ext=mp4][vcodec!=none][acodec!=none]";
-      if (quality === "720p") formatId = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][vcodec!=none]+bestaudio[acodec!=none]/best[height<=720][ext=mp4][vcodec!=none][acodec!=none]";
-      if (quality === "480p") formatId = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480][vcodec!=none]+bestaudio[acodec!=none]/best[height<=480][ext=mp4][vcodec!=none][acodec!=none]";
-      if (quality === "360p") formatId = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360][vcodec!=none]+bestaudio[acodec!=none]/best[height<=360][ext=mp4][vcodec!=none][acodec!=none]";
+      if (quality === "1080p")
+        formatId =
+          "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080][vcodec!=none]+bestaudio[acodec!=none]/best[height<=1080][ext=mp4][vcodec!=none][acodec!=none]";
+      if (quality === "720p")
+        formatId =
+          "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720][vcodec!=none]+bestaudio[acodec!=none]/best[height<=720][ext=mp4][vcodec!=none][acodec!=none]";
+      if (quality === "480p")
+        formatId =
+          "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480][vcodec!=none]+bestaudio[acodec!=none]/best[height<=480][ext=mp4][vcodec!=none][acodec!=none]";
+      if (quality === "360p")
+        formatId =
+          "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360][vcodec!=none]+bestaudio[acodec!=none]/best[height<=360][ext=mp4][vcodec!=none][acodec!=none]";
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url, formatId }),
       });
       if (!r.ok) {
-        const err = await r.json().catch(() => ({})) as any;
+        const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Download failed: ${r.status}`);
       }
-      const { jobId } = await r.json() as any;
+      const { jobId } = (await r.json()) as any;
       rememberAgentJob(req, jobId);
       logTool("Download job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, status: "processing", message: "Starting download...", jobId, url: args.url } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        status: "processing",
+        message: "Starting download...",
+        jobId,
+        url: args.url,
+      } as any);
 
-      const final = await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
+      const final = await pollJobUntilDone(
+        res,
+        name,
+        `${apiBase}/youtube/progress/${jobId}`,
+        jobId,
+        internalHeaders,
+        isConnected,
+        toolId,
+        runId,
+      );
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
-        result: { jobId, downloadUrl, filename: final.filename, url: args.url, quality },
-        artifact: { artifactType: "download", label: `Video ready: ${final.filename ?? "video.mp4"}`, downloadUrl, jobId },
+        result: {
+          jobId,
+          downloadUrl,
+          filename: final.filename,
+          url: args.url,
+          quality,
+        },
+        artifact: {
+          artifactType: "download",
+          label: `Video ready: ${final.filename ?? "video.mp4"}`,
+          downloadUrl,
+          jobId,
+        },
       };
     }
 
@@ -2201,34 +3119,91 @@ async function executeTool(
       // Uploaded files: POST to /subtitles/generate-from-url (direct media URL → transcription).
       // YouTube URLs: POST to /subtitles/generate (yt-dlp download path).
       const inputUrl = (args.url ?? args.fileUrl ?? "") as string;
-      const isUploadedFile = !!inputUrl && !inputUrl.includes("youtube.com") && !inputUrl.includes("youtu.be") && !inputUrl.includes("youtube-nocookie.com");
-      logTool("Starting subtitle generation", { url: inputUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: isUploadedFile ? "Transcribing uploaded file..." : "Starting subtitle generation..." });
+      const isUploadedFile =
+        !!inputUrl &&
+        !inputUrl.includes("youtube.com") &&
+        !inputUrl.includes("youtu.be") &&
+        !inputUrl.includes("youtube-nocookie.com");
+      logTool("Starting subtitle generation", {
+        url: inputUrl,
+        mode: isUploadedFile ? "uploaded-file" : "youtube",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: isUploadedFile
+          ? "Transcribing uploaded file..."
+          : "Starting subtitle generation...",
+      });
 
       let subtitleJobId: string;
       if (isUploadedFile) {
         const r = await fetch(`${apiBase}/subtitles/generate-from-url`, {
-          method: "POST", headers: internalHeaders,
-          body: JSON.stringify({ fileUrl: inputUrl, language: args.language ?? "auto", translateTo: args.translateTo ?? null }),
+          method: "POST",
+          headers: internalHeaders,
+          body: JSON.stringify({
+            fileUrl: inputUrl,
+            language: args.language ?? "auto",
+            translateTo: args.translateTo ?? null,
+          }),
         });
-        if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Subtitle job failed: ${r.status}`); }
-        const d = await r.json() as any; subtitleJobId = d.id ?? d.jobId;
+        if (!r.ok) {
+          const err = (await r.json().catch(() => ({}))) as any;
+          throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
+        }
+        const d = (await r.json()) as any;
+        subtitleJobId = d.id ?? d.jobId;
       } else {
         const r = await fetch(`${apiBase}/subtitles/generate`, {
-          method: "POST", headers: internalHeaders,
-          body: JSON.stringify({ url: inputUrl, language: args.language ?? "auto", translateTo: args.translateTo ?? null, source: "url" }),
+          method: "POST",
+          headers: internalHeaders,
+          body: JSON.stringify({
+            url: inputUrl,
+            language: args.language ?? "auto",
+            translateTo: args.translateTo ?? null,
+            source: "url",
+          }),
         });
-        if (!r.ok) { const err = await r.json().catch(() => ({})) as any; throw new Error(err.error ?? `Subtitle job failed: ${r.status}`); }
-        const d = await r.json() as any; subtitleJobId = d.id ?? d.jobId;
+        if (!r.ok) {
+          const err = (await r.json().catch(() => ({}))) as any;
+          throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
+        }
+        const d = (await r.json()) as any;
+        subtitleJobId = d.id ?? d.jobId;
       }
       rememberAgentJob(req, subtitleJobId);
       logTool("Subtitles job accepted", { jobId: subtitleJobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_subtitles", status: "processing", message: "Starting subtitle generation...", jobId: subtitleJobId, url: args.url } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name: "generate_subtitles",
+        status: "processing",
+        message: "Starting subtitle generation...",
+        jobId: subtitleJobId,
+        url: args.url,
+      } as any);
 
-      const final = await pollSubtitleUntilDone(res, `${apiBase}/subtitles/status/${subtitleJobId}`, subtitleJobId, internalHeaders, isConnected, toolId, runId);
+      const final = await pollSubtitleUntilDone(
+        res,
+        `${apiBase}/subtitles/status/${subtitleJobId}`,
+        subtitleJobId,
+        internalHeaders,
+        isConnected,
+        toolId,
+        runId,
+      );
       return {
-        result: { jobId: subtitleJobId, srtFilename: final.srtFilename, url: args.url, language: args.language, translateTo: args.translateTo },
+        result: {
+          jobId: subtitleJobId,
+          srtFilename: final.srtFilename,
+          url: args.url,
+          language: args.language,
+          translateTo: args.translateTo,
+        },
         artifact: {
           artifactType: "tab_link",
           label: `Subtitles ready${args.translateTo ? ` (${args.translateTo})` : ""}: ${final.srtFilename ?? "subtitles.srt"}`,
@@ -2239,83 +3214,175 @@ async function executeTool(
     }
 
     case "find_best_clips": {
-      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/clips" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Starting best clips AI analysis..." });
+      logTool("Calling internal API", {
+        method: "POST",
+        endpoint: "/api/youtube/clips",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Starting best clips AI analysis...",
+      });
       const r = await fetch(`${apiBase}/youtube/clips`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({ url: args.url, durationMode: args.durationMode ?? "auto", instructions: args.instructions ?? "" }),
+        body: JSON.stringify({
+          url: args.url,
+          durationMode: args.durationMode ?? "auto",
+          instructions: args.instructions ?? "",
+        }),
       });
       if (!r.ok) {
-        const err = await r.json().catch(() => ({})) as any;
+        const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Best clips job failed: ${r.status}`);
       }
-      const { jobId } = await r.json() as any;
+      const { jobId } = (await r.json()) as any;
       rememberAgentJob(req, jobId);
       logTool("Best clips job accepted — polling for results...", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", runId, toolId, name: "find_best_clips", status: "processing", message: "Starting best clips analysis...", jobId, url: args.url } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name: "find_best_clips",
+        status: "processing",
+        message: "Starting best clips analysis...",
+        jobId,
+        url: args.url,
+      } as any);
 
       // Poll until analysis is done (same pattern as clip/download)
-      await pollJobUntilDone(res, name, `${apiBase}/youtube/progress/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
+      await pollJobUntilDone(
+        res,
+        name,
+        `${apiBase}/youtube/progress/${jobId}`,
+        jobId,
+        internalHeaders,
+        isConnected,
+        toolId,
+        runId,
+      );
       return {
-        result: { jobId, message: "Best clips analysis complete. View results in the Best Clips tab." },
-        artifact: { artifactType: "tab_link", label: "Best Clips ready — open tab to download", tab: "clips", jobId },
+        result: {
+          jobId,
+          message:
+            "Best clips analysis complete. View results in the Best Clips tab.",
+        },
+        artifact: {
+          artifactType: "tab_link",
+          label: "Best Clips ready — open tab to download",
+          tab: "clips",
+          jobId,
+        },
       };
     }
 
     case "generate_timestamps": {
-      logTool("Calling internal API", { method: "POST", endpoint: "/api/youtube/timestamps" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Generating timestamps..." });
+      logTool("Calling internal API", {
+        method: "POST",
+        endpoint: "/api/youtube/timestamps",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Generating timestamps...",
+      });
       const r = await fetch(`${apiBase}/youtube/timestamps`, {
         method: "POST",
         headers: internalHeaders,
         body: JSON.stringify({ url: args.url }),
       });
       if (!r.ok) {
-        const err = await r.json().catch(() => ({})) as any;
+        const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Timestamps failed: ${r.status}`);
       }
-      const { jobId } = await r.json() as any;
+      const { jobId } = (await r.json()) as any;
       rememberAgentJob(req, jobId);
       logTool("Timestamps job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", runId, toolId, name: "generate_timestamps", status: "processing", message: "Starting timestamp generation...", jobId, url: args.url } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name: "generate_timestamps",
+        status: "processing",
+        message: "Starting timestamp generation...",
+        jobId,
+        url: args.url,
+      } as any);
 
-      const final = await pollTimestampsUntilDone(res, `${apiBase}/youtube/timestamps/status/${jobId}`, jobId, internalHeaders, isConnected, toolId, runId);
+      const final = await pollTimestampsUntilDone(
+        res,
+        `${apiBase}/youtube/timestamps/status/${jobId}`,
+        jobId,
+        internalHeaders,
+        isConnected,
+        toolId,
+        runId,
+      );
       // Format timestamps as readable text
       let tsContent = "";
       if (final.timestamps) {
         if (typeof final.timestamps === "string") {
           tsContent = final.timestamps;
         } else if (Array.isArray(final.timestamps)) {
-          tsContent = final.timestamps.map((t: any) => `${t.time ?? t.timestamp ?? ""} ${t.title ?? t.label ?? t.text ?? ""}`).join("\n");
+          tsContent = final.timestamps
+            .map(
+              (t: any) =>
+                `${t.time ?? t.timestamp ?? ""} ${t.title ?? t.label ?? t.text ?? ""}`,
+            )
+            .join("\n");
         } else {
           tsContent = JSON.stringify(final.timestamps, null, 2);
         }
       }
       return {
         result: { jobId, timestamps: final.timestamps },
-        artifact: tsContent ? {
-          artifactType: "text",
-          label: "Timestamps generated",
-          content: tsContent,
-        } : undefined,
+        artifact: tsContent
+          ? {
+              artifactType: "text",
+              label: "Timestamps generated",
+              content: tsContent,
+            }
+          : undefined,
       };
     }
 
     case "list_shared_files": {
       const limit = args.limit ?? 12;
-      logTool("Calling internal API", { method: "GET", endpoint: `/api/uploads/public?limit=${limit}` });
-      const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, { headers: internalHeaders });
-      const data = await r.json().catch(() => ({ files: [] })) as any;
-      const items = Array.isArray(data.files) ? data.files : Array.isArray(data.items) ? data.items : [];
+      logTool("Calling internal API", {
+        method: "GET",
+        endpoint: `/api/uploads/public?limit=${limit}`,
+      });
+      const r = await fetch(`${apiBase}/uploads/public?limit=${limit}`, {
+        headers: internalHeaders,
+      });
+      const data = (await r.json().catch(() => ({ files: [] }))) as any;
+      const items = Array.isArray(data.files)
+        ? data.files
+        : Array.isArray(data.items)
+          ? data.items
+          : [];
       const lines = items.length
-        ? items.slice(0, 12).map((f: any) => `${f.title || f.filename || f.originalFilename || f.fileId} · ${f.size ? (f.size / 1024).toFixed(1) + " KB" : "?"}`).join("\n")
+        ? items
+            .slice(0, 12)
+            .map(
+              (f: any) =>
+                `${f.title || f.filename || f.originalFilename || f.fileId} · ${f.size ? (f.size / 1024).toFixed(1) + " KB" : "?"}`,
+            )
+            .join("\n")
         : "No public files yet.";
       return {
         result: { count: items.length, files: items },
-        artifact: { artifactType: "text", label: "Shared files", content: lines },
+        artifact: {
+          artifactType: "text",
+          label: "Shared files",
+          content: lines,
+        },
       };
     }
 
@@ -2323,7 +3390,9 @@ async function executeTool(
       // NV-2: Validate tab name against known tabs to prevent client errors
       const tab = String(args.tab ?? "").trim();
       if (!ALLOWED_NAV_TABS.has(tab)) {
-        throw new Error(`Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`);
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
       }
       sseEvent(res, { type: "navigate", runId, tab });
       return { result: { navigated: true, tab } };
@@ -2335,93 +3404,215 @@ async function executeTool(
       // Uploaded files: POST to /translator/submit-from-url — no YouTube download needed.
       // YouTube URLs: download via youtube/stream → S3 → submit.
       const videoUrl = (args.url ?? args.fileUrl ?? "") as string;
-      const isUploadedFile = !!videoUrl && !videoUrl.includes("youtube.com") && !videoUrl.includes("youtu.be") && !videoUrl.includes("youtube-nocookie.com");
-      logTool("Starting video translation job", { url: videoUrl, mode: isUploadedFile ? "uploaded-file" : "youtube" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: isUploadedFile ? "Registering uploaded file for GPU translation..." : "Downloading video for translation..." });
+      const isUploadedFile =
+        !!videoUrl &&
+        !videoUrl.includes("youtube.com") &&
+        !videoUrl.includes("youtu.be") &&
+        !videoUrl.includes("youtube-nocookie.com");
+      logTool("Starting video translation job", {
+        url: videoUrl,
+        mode: isUploadedFile ? "uploaded-file" : "youtube",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: isUploadedFile
+          ? "Registering uploaded file for GPU translation..."
+          : "Downloading video for translation...",
+      });
 
       let tvJobId: string;
       if (isUploadedFile) {
         const submitR = await fetch(`${apiBase}/translator/submit-from-url`, {
-          method: "POST", headers: internalHeaders,
+          method: "POST",
+          headers: internalHeaders,
           body: JSON.stringify({
             fileUrl: videoUrl,
             targetLang: args.targetLang ?? "Hindi",
             targetLangCode: args.targetLangCode ?? "hi",
             voiceClone: args.voiceClone ?? true,
             lipSync: args.lipSync ?? false,
-            filename: videoUrl.split("/").pop()?.split("?")[0] ?? "uploaded-video.mp4",
+            filename:
+              videoUrl.split("/").pop()?.split("?")[0] ?? "uploaded-video.mp4",
           }),
         });
-        if (!submitR.ok) { const err = await submitR.json().catch(() => ({})) as any; throw new Error(err.error ?? `Translation submit failed: ${submitR.status}`); }
-        const d = await submitR.json() as any; tvJobId = d.jobId;
+        if (!submitR.ok) {
+          const err = (await submitR.json().catch(() => ({}))) as any;
+          throw new Error(
+            err.error ?? `Translation submit failed: ${submitR.status}`,
+          );
+        }
+        const d = (await submitR.json()) as any;
+        tvJobId = d.jobId;
       } else {
-        const presignR = await fetch(`${apiBase}/translator/presign?filename=input.mp4&contentType=video/mp4`, { headers: internalHeaders });
-        if (!presignR.ok) throw new Error(`Failed to get upload URL: ${presignR.status}`);
-        const { jobId: pJobId, presignedUrl, s3Key } = await presignR.json() as any;
+        const presignR = await fetch(
+          `${apiBase}/translator/presign?filename=input.mp4&contentType=video/mp4`,
+          { headers: internalHeaders },
+        );
+        if (!presignR.ok)
+          throw new Error(`Failed to get upload URL: ${presignR.status}`);
+        const {
+          jobId: pJobId,
+          presignedUrl,
+          s3Key,
+        } = (await presignR.json()) as any;
         tvJobId = pJobId;
-        sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Uploading video to GPU worker queue..." });
-        const ytStreamR = await fetch(`${apiBase}/youtube/stream?url=${encodeURIComponent(videoUrl)}`, { headers: internalHeaders });
-        if (!ytStreamR.ok) throw new Error(`YouTube stream failed: ${ytStreamR.status}`);
-        const uploadR = await fetch(presignedUrl, { method: "PUT", headers: { "Content-Type": "video/mp4" }, body: ytStreamR.body, duplex: "half" } as any);
-        if (!uploadR.ok) throw new Error(`S3 upload failed: ${uploadR.status}`);
-        sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Submitting GPU translation job (${args.targetLang ?? "Hindi"})...` });
-        const submitR = await fetch(`${apiBase}/translator/submit`, {
-          method: "POST", headers: internalHeaders,
-          body: JSON.stringify({ jobId: tvJobId, s3Key, targetLang: args.targetLang ?? "Hindi", targetLangCode: args.targetLangCode ?? "hi", voiceClone: args.voiceClone ?? true, lipSync: args.lipSync ?? false, filename: "input.mp4" }),
+        sseEvent(res, {
+          type: "tool_progress",
+          runId,
+          toolId,
+          name,
+          message: "Uploading video to GPU worker queue...",
         });
-        if (!submitR.ok) { const err = await submitR.json().catch(() => ({})) as any; throw new Error(err.error ?? `Translation submit failed: ${submitR.status}`); }
+        const ytStreamR = await fetch(
+          `${apiBase}/youtube/stream?url=${encodeURIComponent(videoUrl)}`,
+          { headers: internalHeaders },
+        );
+        if (!ytStreamR.ok)
+          throw new Error(`YouTube stream failed: ${ytStreamR.status}`);
+        const uploadR = await fetch(presignedUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "video/mp4" },
+          body: ytStreamR.body,
+          duplex: "half",
+        } as any);
+        if (!uploadR.ok) throw new Error(`S3 upload failed: ${uploadR.status}`);
+        sseEvent(res, {
+          type: "tool_progress",
+          runId,
+          toolId,
+          name,
+          message: `Submitting GPU translation job (${args.targetLang ?? "Hindi"})...`,
+        });
+        const submitR = await fetch(`${apiBase}/translator/submit`, {
+          method: "POST",
+          headers: internalHeaders,
+          body: JSON.stringify({
+            jobId: tvJobId,
+            s3Key,
+            targetLang: args.targetLang ?? "Hindi",
+            targetLangCode: args.targetLangCode ?? "hi",
+            voiceClone: args.voiceClone ?? true,
+            lipSync: args.lipSync ?? false,
+            filename: "input.mp4",
+          }),
+        });
+        if (!submitR.ok) {
+          const err = (await submitR.json().catch(() => ({}))) as any;
+          throw new Error(
+            err.error ?? `Translation submit failed: ${submitR.status}`,
+          );
+        }
       }
       rememberAgentJob(req, tvJobId);
       logTool("Translation job submitted", { jobId: tvJobId });
       // Emit initial progress so frontend can track in Activity Panel
-      sseEvent(res, { type: "tool_progress", runId, toolId, name: "translate_video", status: "processing", message: "Job submitted to GPU worker...", jobId: tvJobId, url: videoUrl, targetLang: args.targetLang ?? "Hindi" } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name: "translate_video",
+        status: "processing",
+        message: "Job submitted to GPU worker...",
+        jobId: tvJobId,
+        url: videoUrl,
+        targetLang: args.targetLang ?? "Hindi",
+      } as any);
 
       sseEvent(res, { type: "navigate", runId, tab: "translator" });
       return {
-        result: { jobId: tvJobId, message: "Translation job queued on GPU worker. Track progress in the Translator tab." },
-        artifact: { artifactType: "tab_link", label: `Translating to ${args.targetLang ?? "Hindi"} — open Translator tab`, tab: "translator", jobId: tvJobId },
+        result: {
+          jobId: tvJobId,
+          message:
+            "Translation job queued on GPU worker. Track progress in the Translator tab.",
+        },
+        artifact: {
+          artifactType: "tab_link",
+          label: `Translating to ${args.targetLang ?? "Hindi"} — open Translator tab`,
+          tab: "translator",
+          jobId: tvJobId,
+        },
       };
     }
 
     case "get_youtube_captions": {
       logTool("Fetching YouTube captions", { url: args.url });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Fetching captions from YouTube..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Fetching captions from YouTube...",
+      });
       const language = args.language ?? "en";
       const downloadUrl = `/api/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`;
-      const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`, { headers: internalHeaders });
+      const r = await fetch(
+        `${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`,
+        { headers: internalHeaders },
+      );
       // SECURITY: Cap caption text size to prevent unbounded model context
       const MAX_CAPTION_CHARS = 270_000;
-      const rawText = await readResponseTextWithLimit(r, MAX_CAPTION_CHARS * 2, new AbortController());
+      const rawText = await readResponseTextWithLimit(
+        r,
+        MAX_CAPTION_CHARS * 2,
+        new AbortController(),
+      );
       const content = rawText.slice(0, MAX_CAPTION_CHARS);
       if (!r.ok) {
         let message = content || `Captions fetch failed: ${r.status}`;
         try {
           const parsed = JSON.parse(content) as { error?: string };
           message = parsed.error ?? message;
-        } catch { }
+        } catch {}
         throw new Error(message);
       }
       return {
-        result: { filename: "subtitles.srt", language, bytes: Buffer.byteLength(content, "utf8") },
-        artifact: { artifactType: "download", label: "YouTube captions: subtitles.srt", downloadUrl },
+        result: {
+          filename: "subtitles.srt",
+          language,
+          bytes: Buffer.byteLength(content, "utf8"),
+          content,
+        },
+        artifact: {
+          artifactType: "download",
+          label: "YouTube captions: subtitles.srt",
+          downloadUrl,
+        },
       };
     }
 
     case "fix_subtitles": {
       logTool("Fixing subtitle content");
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Fixing subtitles..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Fixing subtitles...",
+      });
       const r = await fetch(`${apiBase}/youtube/subtitles/fix`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({ srtContent: args.srtContent, language: args.language ?? "en" }),
+        body: JSON.stringify({
+          srtContent: args.srtContent,
+          language: args.language ?? "en",
+        }),
       });
       if (!r.ok) throw new Error(`Subtitle fix failed: ${r.status}`);
-      const data = await r.json() as any;
+      const data = (await r.json()) as any;
       return {
         result: data,
-        ...(data.fixed ? {
-          artifact: { artifactType: "text", label: "Fixed Subtitles (.srt)", content: data.fixed },
-        } : {}),
+        ...(data.fixed
+          ? {
+              artifact: {
+                artifactType: "text",
+                label: "Fixed Subtitles (.srt)",
+                content: data.fixed,
+              },
+            }
+          : {}),
       };
     }
 
@@ -2429,39 +3620,84 @@ async function executeTool(
       logTool("Cancelling job", { jobId: args.jobId });
       let data: any = { error: "not_found" };
       let outcome = "Job not found or already finished.";
-      for (const endpoint of [`${apiBase}/youtube/cancel/${args.jobId}`, `${apiBase}/subtitles/cancel/${args.jobId}`, `${apiBase}/translator/cancel/${args.jobId}`]) {
-        const r = await fetch(endpoint, { method: "POST", headers: internalHeaders }).catch(() => null);
-        if (r?.ok) { data = await r.json().catch(() => ({ ok: true })); outcome = `Job ${String(args.jobId).slice(0, 8)}… cancelled.`; break; }
+      for (const endpoint of [
+        `${apiBase}/youtube/cancel/${args.jobId}`,
+        `${apiBase}/subtitles/cancel/${args.jobId}`,
+        `${apiBase}/translator/cancel/${args.jobId}`,
+      ]) {
+        const r = await fetch(endpoint, {
+          method: "POST",
+          headers: internalHeaders,
+        }).catch(() => null);
+        if (r?.ok) {
+          data = await r.json().catch(() => ({ ok: true }));
+          outcome = `Job ${String(args.jobId).slice(0, 8)}… cancelled.`;
+          break;
+        }
       }
       return {
         result: data,
-        artifact: { artifactType: "text", label: "Cancel job", content: outcome },
+        artifact: {
+          artifactType: "text",
+          label: "Cancel job",
+          content: outcome,
+        },
       };
     }
 
     case "check_job_status": {
       logTool("Checking job status", { jobId: args.jobId });
       let data: any = { status: "not_found" };
-      for (const endpoint of [`${apiBase}/youtube/progress/${args.jobId}`, `${apiBase}/subtitles/status/${args.jobId}`, `${apiBase}/translator/status/${args.jobId}`]) {
-        const r = await fetch(endpoint, { headers: internalHeaders }).catch(() => null);
-        if (r?.ok) { const parsed = await r.json().catch(() => null); if (parsed) { data = parsed; break; } }
+      for (const endpoint of [
+        `${apiBase}/youtube/progress/${args.jobId}`,
+        `${apiBase}/subtitles/status/${args.jobId}`,
+        `${apiBase}/translator/status/${args.jobId}`,
+      ]) {
+        const r = await fetch(endpoint, { headers: internalHeaders }).catch(
+          () => null,
+        );
+        if (r?.ok) {
+          const parsed = await r.json().catch(() => null);
+          if (parsed) {
+            data = parsed;
+            break;
+          }
+        }
       }
-      const pct = data?.percent != null ? ` (${data.percent}%)` : data?.progressPct != null ? ` (${data.progressPct}%)` : "";
+      const pct =
+        data?.percent != null
+          ? ` (${data.percent}%)`
+          : data?.progressPct != null
+            ? ` (${data.progressPct}%)`
+            : "";
       const stage = data?.message ?? data?.step ?? data?.status ?? "unknown";
       return {
         result: data,
-        artifact: { artifactType: "text", label: `Job ${String(args.jobId).slice(0, 8)}…`, content: `${stage}${pct}` },
+        artifact: {
+          artifactType: "text",
+          label: `Job ${String(args.jobId).slice(0, 8)}…`,
+          content: `${stage}${pct}`,
+        },
       };
     }
 
     case "web_search": {
       const query = String(args.query ?? "").trim();
       const requestedMax = Number(args.maxResults ?? 10);
-      const maxResults = Math.max(1, Math.min(20, Number.isFinite(requestedMax) ? requestedMax : 10));
+      const maxResults = Math.max(
+        1,
+        Math.min(20, Number.isFinite(requestedMax) ? requestedMax : 10),
+      );
       const startedAt = Date.now();
       if (!query) throw new Error("Search query is required.");
       logTool("Searching the web", { query, maxResults });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Searching: "${query}"...` });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Searching: "${query}"...`,
+      });
 
       // Strategy: Use Gemini's native Google Search grounding tool.
       // Uses Vertex Gemini when configured, otherwise falls back to the API key provider.
@@ -2476,24 +3712,34 @@ async function executeTool(
         const searchAi = createGeminiClient();
         const searchResp = await searchAi.models.generateContent({
           model: SEARCH_MODEL,
-          contents: [{
-            role: "user", parts: [{
-              text: [
-                `Search the web for: ${query}`,
-                `Use broad coverage, compare multiple sources, and include up to ${maxResults} useful source URLs if available.`,
-                "Give enough detail to answer accurately. Do not limit yourself to three sites when more are relevant.",
-              ].join("\n")
-            }]
-          }],
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: [
+                    `Search the web for: ${query}`,
+                    `Use broad coverage, compare multiple sources, and include up to ${maxResults} useful source URLs if available.`,
+                    "Give enough detail to answer accurately. Do not limit yourself to three sites when more are relevant.",
+                  ].join("\n"),
+                },
+              ],
+            },
+          ],
           config: {
             tools: [{ googleSearch: {} }] as any,
             maxOutputTokens: Math.min(4096, AGENT_MAX_OUTPUT_TOKENS),
           },
         });
-        const groundedAnswer = (searchResp.candidates?.[0]?.content?.parts ?? [])
-          .map((p: any) => p.text ?? "").join("").trim();
+        const groundedAnswer = (
+          searchResp.candidates?.[0]?.content?.parts ?? []
+        )
+          .map((p: any) => p.text ?? "")
+          .join("")
+          .trim();
         // Extract grounding metadata citations if present
-        const groundingMeta = searchResp.candidates?.[0]?.groundingMetadata as any;
+        const groundingMeta = searchResp.candidates?.[0]
+          ?.groundingMetadata as any;
         const sources: string[] = [];
         (groundingMeta?.groundingChunks ?? []).forEach((chunk: any) => {
           const uri = chunk?.web?.uri;
@@ -2501,7 +3747,10 @@ async function executeTool(
           if (uri) sources.push(title ? `${title} — ${uri}` : uri);
         });
         const uniqueSources = [...new Set(sources)].slice(0, maxResults);
-        const sourcesText = uniqueSources.length > 0 ? `\n\nSources:\n${uniqueSources.map((s, i) => `[${i + 1}] ${s}`).join("\n")}` : "";
+        const sourcesText =
+          uniqueSources.length > 0
+            ? `\n\nSources:\n${uniqueSources.map((s, i) => `[${i + 1}] ${s}`).join("\n")}`
+            : "";
         return {
           result: {
             query,
@@ -2519,24 +3768,42 @@ async function executeTool(
           },
         };
       } catch (groundingErr: any) {
-        logTool(`Grounding failed (${groundingErr?.message}), trying fallbacks`, {});
+        logTool(
+          `Grounding failed (${groundingErr?.message}), trying fallbacks`,
+          {},
+        );
         // Fallback 1: Tavily
         const MAX_SEARCH_RESULT_CHARS = 60_000;
         if (TAVILY_KEY) {
           const r = await fetch("https://api.tavily.com/search", {
             method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${TAVILY_KEY}` },
-            body: JSON.stringify({ query, max_results: maxResults, search_depth: "advanced", include_answer: true, include_raw_content: true }),
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${TAVILY_KEY}`,
+            },
+            body: JSON.stringify({
+              query,
+              max_results: maxResults,
+              search_depth: "advanced",
+              include_answer: true,
+              include_raw_content: true,
+            }),
           });
           if (r.ok) {
-            const data = await r.json() as any;
-            const results = (data.results ?? []).slice(0, maxResults).map((item: any, i: number) =>
-              `[${i + 1}] ${item.title}\n${item.content ?? item.snippet ?? ""}\n${item.raw_content ? `Page content excerpt: ${String(item.raw_content).slice(0, 4000)}\n` : ""}Source: ${item.url}`
-            ).join("\n\n");
+            const data = (await r.json()) as any;
+            const results = (data.results ?? [])
+              .slice(0, maxResults)
+              .map(
+                (item: any, i: number) =>
+                  `[${i + 1}] ${item.title}\n${item.content ?? item.snippet ?? ""}\n${item.raw_content ? `Page content excerpt: ${String(item.raw_content).slice(0, 4000)}\n` : ""}Source: ${item.url}`,
+              )
+              .join("\n\n");
             return {
               result: {
                 query,
-                answer: ((data.answer ? `${data.answer}\n\n` : "") + results).slice(0, MAX_SEARCH_RESULT_CHARS),
+                answer: (
+                  (data.answer ? `${data.answer}\n\n` : "") + results
+                ).slice(0, MAX_SEARCH_RESULT_CHARS),
                 results: data.results?.slice(0, maxResults) ?? [],
                 elapsedMs: Date.now() - startedAt,
               },
@@ -2547,16 +3814,32 @@ async function executeTool(
         if (SERPER_KEY) {
           const r = await fetch("https://google.serper.dev/search", {
             method: "POST",
-            headers: { "Content-Type": "application/json", "X-API-KEY": SERPER_KEY },
+            headers: {
+              "Content-Type": "application/json",
+              "X-API-KEY": SERPER_KEY,
+            },
             body: JSON.stringify({ q: query, num: maxResults }),
           });
           if (r.ok) {
-            const data = await r.json() as any;
-            const organic = ((data.organic ?? []) as any[]).slice(0, maxResults);
-            const results = organic.map((item: any, i: number) =>
-              `[${i + 1}] ${item.title}\n${item.snippet ?? ""}\nSource: ${item.link}`
-            ).join("\n\n");
-            return { result: { query, answer: results.slice(0, MAX_SEARCH_RESULT_CHARS), results: organic, elapsedMs: Date.now() - startedAt } };
+            const data = (await r.json()) as any;
+            const organic = ((data.organic ?? []) as any[]).slice(
+              0,
+              maxResults,
+            );
+            const results = organic
+              .map(
+                (item: any, i: number) =>
+                  `[${i + 1}] ${item.title}\n${item.snippet ?? ""}\nSource: ${item.link}`,
+              )
+              .join("\n\n");
+            return {
+              result: {
+                query,
+                answer: results.slice(0, MAX_SEARCH_RESULT_CHARS),
+                results: organic,
+                elapsedMs: Date.now() - startedAt,
+              },
+            };
           }
         }
         // All methods failed
@@ -2570,9 +3853,19 @@ async function executeTool(
       const task = String(args.task ?? "").trim();
       const maxChars = Number(args.maxChars ?? 20000);
       logTool("Reading web page", { url, task, maxChars });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Reading page: ${url}` });
-      const page = await fetchReadableWebPage(url, Number.isFinite(maxChars) ? maxChars : 20000);
-      const preview = page.text.length > 1200 ? page.text.slice(0, 1200) + "\n…" : page.text;
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Reading page: ${url}`,
+      });
+      const page = await fetchReadableWebPage(
+        url,
+        Number.isFinite(maxChars) ? maxChars : 20000,
+      );
+      const preview =
+        page.text.length > 1200 ? page.text.slice(0, 1200) + "\n…" : page.text;
       return {
         result: {
           url,
@@ -2598,9 +3891,26 @@ async function executeTool(
       const quality = args.quality ?? "best";
       const results: Record<string, any> = {};
 
-      const runStep = async (stepName: string, stepArgs: Record<string, any>) => {
-        sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Full package: ${stepName.replace(/_/g, " ")}...` });
-        const sub = await executeTool(stepName, stepArgs, req, res, isConnected, toolId, runId);
+      const runStep = async (
+        stepName: string,
+        stepArgs: Record<string, any>,
+      ) => {
+        sseEvent(res, {
+          type: "tool_progress",
+          runId,
+          toolId,
+          name,
+          message: `Full package: ${stepName.replace(/_/g, " ")}...`,
+        });
+        const sub = await executeTool(
+          stepName,
+          stepArgs,
+          req,
+          res,
+          isConnected,
+          toolId,
+          runId,
+        );
         results[stepName] = sub.result;
         // Sub-artifacts are intentionally not re-emitted — emitting each one
         // double-stacks cards in the UI on top of the do_full_package summary.
@@ -2626,14 +3936,22 @@ async function executeTool(
           try {
             await runStep("get_youtube_captions", { url, language });
           } catch (err: any) {
-            results.get_youtube_captions = { error: err?.message ?? "Direct captions unavailable" };
+            results.get_youtube_captions = {
+              error: err?.message ?? "Direct captions unavailable",
+            };
             await runStep("generate_subtitles", { url, language });
           }
         })(),
-        runStep("find_best_clips", { url, instructions: args.instructions ?? "" }),
+        runStep("find_best_clips", {
+          url,
+          instructions: args.instructions ?? "",
+        }),
       ]);
       for (const r of phase2) {
-        if (r.status === "rejected") console.warn(`[agent] full_package step failed: ${r.reason?.message ?? r.reason}`);
+        if (r.status === "rejected")
+          console.warn(
+            `[agent] full_package step failed: ${r.reason?.message ?? r.reason}`,
+          );
       }
 
       return {
@@ -2641,66 +3959,123 @@ async function executeTool(
         artifact: {
           artifactType: "text",
           label: "Full Package Summary",
-          content: "Full package completed: metadata, download, summary, timestamps, SEO, subtitles/captions, and best-clips analysis.",
+          content:
+            "Full package completed: metadata, download, summary, timestamps, SEO, subtitles/captions, and best-clips analysis.",
         },
       };
     }
 
     case "repeat_last_artifact": {
       const artifact = latestArtifactFromMemory(req);
-      if (!artifact) throw new Error("I do not have a previous downloadable result in this chat yet.");
+      if (!artifact)
+        throw new Error(
+          "I do not have a previous downloadable result in this chat yet.",
+        );
       return { result: artifact, artifact };
     }
 
     case "check_active_jobs": {
-      const ids = Array.isArray(args.jobIds) && args.jobIds.length ? args.jobIds.map(String) : scanKnownJobIds(req);
-      if (ids.length === 0) return { result: { jobs: [], message: "No known active job IDs in this chat." } };
+      const ids =
+        Array.isArray(args.jobIds) && args.jobIds.length
+          ? args.jobIds.map(String)
+          : scanKnownJobIds(req);
+      if (ids.length === 0)
+        return {
+          result: {
+            jobs: [],
+            message: "No known active job IDs in this chat.",
+          },
+        };
       const jobs: any[] = [];
       for (const jobId of ids) {
         let status: any = null;
-        for (const endpoint of [`${apiBase}/youtube/progress/${jobId}`, `${apiBase}/subtitles/status/${jobId}`, `${apiBase}/translator/status/${jobId}`]) {
-          const r = await fetch(endpoint, { headers: internalHeaders }).catch(() => null);
-          if (r?.ok) { status = await r.json().catch(() => null); break; }
+        for (const endpoint of [
+          `${apiBase}/youtube/progress/${jobId}`,
+          `${apiBase}/subtitles/status/${jobId}`,
+          `${apiBase}/translator/status/${jobId}`,
+        ]) {
+          const r = await fetch(endpoint, { headers: internalHeaders }).catch(
+            () => null,
+          );
+          if (r?.ok) {
+            status = await r.json().catch(() => null);
+            break;
+          }
         }
         jobs.push({ jobId, status: status ?? "not_found" });
       }
       // Format as human-readable summary instead of raw JSON
       const summaryLines = jobs.map((j, i) => {
         const s = j.status;
-        if (s === "not_found") return `${i + 1}. Job ${j.jobId.slice(0, 8)}... — not found`;
+        if (s === "not_found")
+          return `${i + 1}. Job ${j.jobId.slice(0, 8)}... — not found`;
         const pct = s?.percent != null ? ` (${s.percent}%)` : "";
         const step = s?.step ?? s?.status ?? "unknown";
         return `${i + 1}. Job ${j.jobId.slice(0, 8)}... — ${step}${pct}`;
       });
       return {
         result: { jobs },
-        artifact: { artifactType: "text", label: "Active Jobs", content: summaryLines.join("\n") },
+        artifact: {
+          artifactType: "text",
+          label: "Active Jobs",
+          content: summaryLines.join("\n"),
+        },
       };
     }
 
     case "cancel_active_jobs": {
-      const ids = Array.isArray(args.jobIds) && args.jobIds.length ? args.jobIds.map(String) : scanKnownJobIds(req);
-      if (ids.length === 0) return { result: { cancelled: [], message: "No known active job IDs in this chat." } };
+      const ids =
+        Array.isArray(args.jobIds) && args.jobIds.length
+          ? args.jobIds.map(String)
+          : scanKnownJobIds(req);
+      if (ids.length === 0)
+        return {
+          result: {
+            cancelled: [],
+            message: "No known active job IDs in this chat.",
+          },
+        };
       const cancelled: any[] = [];
       // Clear per-run tracking up front so the conversation memory of
       // "active jobs" doesn't keep these around after cancellation.
       const tracked = (req as any).agentRunJobIds as Set<string> | undefined;
       for (const jobId of ids) {
         let data: any = null;
-        for (const endpoint of [`${apiBase}/youtube/cancel/${jobId}`, `${apiBase}/subtitles/cancel/${jobId}`, `${apiBase}/translator/cancel/${jobId}`]) {
-          const r = await fetch(endpoint, { method: "POST", headers: internalHeaders }).catch(() => null);
-          if (r?.ok) { data = await r.json().catch(() => ({ ok: true })); tracked?.delete(jobId); break; }
+        for (const endpoint of [
+          `${apiBase}/youtube/cancel/${jobId}`,
+          `${apiBase}/subtitles/cancel/${jobId}`,
+          `${apiBase}/translator/cancel/${jobId}`,
+        ]) {
+          const r = await fetch(endpoint, {
+            method: "POST",
+            headers: internalHeaders,
+          }).catch(() => null);
+          if (r?.ok) {
+            data = await r.json().catch(() => ({ ok: true }));
+            tracked?.delete(jobId);
+            break;
+          }
         }
-        cancelled.push({ jobId, result: data ?? "not_found_or_not_cancellable" });
+        cancelled.push({
+          jobId,
+          result: data ?? "not_found_or_not_cancellable",
+        });
       }
       // Format as human-readable summary instead of raw JSON
       const cancelLines = cancelled.map((c, i) => {
-        const outcome = c.result === "not_found_or_not_cancellable" ? "not found or already done" : "cancelled";
+        const outcome =
+          c.result === "not_found_or_not_cancellable"
+            ? "not found or already done"
+            : "cancelled";
         return `${i + 1}. Job ${c.jobId.slice(0, 8)}... — ${outcome}`;
       });
       return {
         result: { cancelled },
-        artifact: { artifactType: "text", label: "Cancelled Jobs", content: cancelLines.join("\n") },
+        artifact: {
+          artifactType: "text",
+          label: "Cancelled Jobs",
+          content: cancelLines.join("\n"),
+        },
       };
     }
 
@@ -2708,7 +4083,10 @@ async function executeTool(
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
       sseEvent(res, { type: "navigate", runId, tab });
-      return { result: { navigated: true, tab }, artifact: { artifactType: "tab_link", label: `Open ${tab}`, tab } };
+      return {
+        result: { navigated: true, tab },
+        artifact: { artifactType: "tab_link", label: `Open ${tab}`, tab },
+      };
     }
 
     case "create_image": {
@@ -2717,7 +4095,13 @@ async function executeTool(
       const aspectRatio = String(args.aspectRatio ?? "").trim() || undefined;
       const imageSize = String(args.imageSize ?? "").trim() || undefined;
       logTool("Creating image", { prompt, aspectRatio, imageSize });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Creating image..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Creating image...",
+      });
       const image = await generateImageArtifact({
         prompt,
         filenamePrefix: "created-image",
@@ -2738,10 +4122,17 @@ async function executeTool(
 
     case "enhance_image": {
       const image = latestImageAttachment(req);
-      if (!image) throw new Error("Attach an image first, then ask me to enhance it.");
+      if (!image)
+        throw new Error("Attach an image first, then ask me to enhance it.");
       const instructions = String(args.instructions ?? "").trim();
       logTool("Enhancing attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Enhancing image clarity..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Enhancing image clarity...",
+      });
       const enhanced = await generateImageArtifact({
         inputImage: image,
         filenamePrefix: "enhanced-image",
@@ -2763,11 +4154,19 @@ async function executeTool(
 
     case "edit_image": {
       const image = latestImageAttachment(req);
-      if (!image) throw new Error("Attach an image first, then describe the edit.");
+      if (!image)
+        throw new Error("Attach an image first, then describe the edit.");
       const instructions = String(args.instructions ?? "").trim();
-      if (!instructions) throw new Error("Image edit instructions are required.");
+      if (!instructions)
+        throw new Error("Image edit instructions are required.");
       logTool("Editing attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Editing image..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Editing image...",
+      });
       const edited = await generateImageArtifact({
         inputImage: image,
         filenamePrefix: "edited-image",
@@ -2787,47 +4186,85 @@ async function executeTool(
 
     case "describe_image": {
       const image = latestImageAttachment(req);
-      if (!image) throw new Error("Attach an image first, then ask me to inspect it.");
+      if (!image)
+        throw new Error("Attach an image first, then ask me to inspect it.");
       logTool("Describing attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Inspecting image..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Inspecting image...",
+      });
       const ai = createGeminiClient();
       // Flash is plenty for image description / scene tagging; reserve ULTRA
       // for genuinely heavy reasoning (analyze_youtube_video, PDF analysis).
       const resp = await ai.models.generateContent({
         model: AGENT_MODEL,
-        contents: [{
-          role: "user",
-          parts: [
-            { text: "Describe this image in detail for a video/content creator. Include scene, subjects, visible text, style, quality issues, and practical improvement ideas. Do not identify real people." },
-            { inlineData: { mimeType: image.mimeType, data: image.data } },
-          ],
-        }],
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: "Describe this image in detail for a video/content creator. Include scene, subjects, visible text, style, quality issues, and practical improvement ideas. Do not identify real people.",
+              },
+              { inlineData: { mimeType: image.mimeType, data: image.data } },
+            ],
+          },
+        ],
         config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
       });
-      const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
-      return { result: { content }, artifact: { artifactType: "text", label: "Image Description", content } };
+      const content = stripReasoningTags(
+        (resp.candidates?.[0]?.content?.parts ?? [])
+          .map((p: any) => p.text ?? "")
+          .join("")
+          .trim(),
+      );
+      return {
+        result: { content },
+        artifact: { artifactType: "text", label: "Image Description", content },
+      };
     }
 
     case "extract_text_from_image": {
       const image = latestImageAttachment(req);
-      if (!image) throw new Error("Attach an image first, then ask me to read its text.");
+      if (!image)
+        throw new Error("Attach an image first, then ask me to read its text.");
       logTool("Reading text from attached image", { image: image.name });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Reading image text..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Reading image text...",
+      });
       const ai = createGeminiClient();
       // OCR is a Flash-level task. ULTRA here was needless cost + latency.
       const resp = await ai.models.generateContent({
         model: AGENT_MODEL,
-        contents: [{
-          role: "user",
-          parts: [
-            { text: "Transcribe all visible text from this image. Preserve line breaks and indicate uncertain words with [?]. Return only the extracted text unless there is no readable text." },
-            { inlineData: { mimeType: image.mimeType, data: image.data } },
-          ],
-        }],
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: "Transcribe all visible text from this image. Preserve line breaks and indicate uncertain words with [?]. Return only the extracted text unless there is no readable text.",
+              },
+              { inlineData: { mimeType: image.mimeType, data: image.data } },
+            ],
+          },
+        ],
         config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
       });
-      const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
-      return { result: { content }, artifact: { artifactType: "text", label: "Extracted Text", content } };
+      const content = stripReasoningTags(
+        (resp.candidates?.[0]?.content?.parts ?? [])
+          .map((p: any) => p.text ?? "")
+          .join("")
+          .trim(),
+      );
+      return {
+        result: { content },
+        artifact: { artifactType: "text", label: "Extracted Text", content },
+      };
     }
 
     case "write_video_script": {
@@ -2841,7 +4278,13 @@ Style: ${args.style ?? "strong hook, clear structure, practical shot direction"}
 
 Include: hook, narration, scene/shot directions, on-screen text, pacing notes, and CTA.`;
       logTool("Writing video script", { topic });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Writing script..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Writing script...",
+      });
       return textModelArtifact("Video Script", prompt);
     }
 
@@ -2849,36 +4292,69 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
       checkHeavyOpRateLimit(req, "generate_music");
       const musicPrompt = String(args.prompt ?? "").trim();
       if (!musicPrompt) throw new Error("Music prompt is required.");
-      const durationMode = String(args.duration ?? "clip") === "full" ? "full" : "clip";
+      const durationMode =
+        String(args.duration ?? "clip") === "full" ? "full" : "clip";
       const aspect = String(args.aspectRatio ?? "1:1");
       const rawCoverPrompt = String(args.coverArtPrompt ?? "").trim();
-      const coverArtPrompt = rawCoverPrompt ||
+      const coverArtPrompt =
+        rawCoverPrompt ||
         `Music album cover art for: ${musicPrompt.slice(0, 100)}. Cinematic, professional, moody lighting, high quality digital art.`;
 
-      logTool("Generating music + cover art", { durationMode, model: durationMode === "full" ? "lyria-3-pro-preview" : "lyria-3-clip-preview" });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Composing ${durationMode === "full" ? "full song (~2-3 min)" : "30-second clip"} with Lyria AI…` });
+      logTool("Generating music + cover art", {
+        durationMode,
+        model:
+          durationMode === "full"
+            ? "lyria-3-pro-preview"
+            : "lyria-3-clip-preview",
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Composing ${durationMode === "full" ? "full song (~2-3 min)" : "30-second clip"} with Lyria AI…`,
+      });
 
       // Send progress ticks every 10s so the SSE connection stays active during
       // the Lyria generation (which can take 30-90 seconds for full songs).
       const musicProgress = setInterval(() => {
-        if (isConnected()) sseEvent(res, { type: "tool_progress", runId, toolId, name, message: durationMode === "full" ? "Composing full song… (this can take up to 90s)" : "Composing 30-second clip…" });
+        if (isConnected())
+          sseEvent(res, {
+            type: "tool_progress",
+            runId,
+            toolId,
+            name,
+            message:
+              durationMode === "full"
+                ? "Composing full song… (this can take up to 90s)"
+                : "Composing 30-second clip…",
+          });
       }, 10_000);
 
       // Run music + cover art in parallel. Cover art failure is non-fatal —
       // the audio has already been uploaded to S3 so we deliver it regardless.
       let audio: Awaited<ReturnType<typeof generateLyriaMusic>>;
-      let cover: { imageUrl: string; filename: string; text: string } | null = null;
+      let cover: { imageUrl: string; filename: string; text: string } | null =
+        null;
       try {
         const results = await Promise.allSettled([
           generateLyriaMusic({ prompt: musicPrompt, durationMode }),
-          generateImageArtifact({ prompt: coverArtPrompt, filenamePrefix: "music-cover", aspectRatio: aspect }),
+          generateImageArtifact({
+            prompt: coverArtPrompt,
+            filenamePrefix: "music-cover",
+            aspectRatio: aspect,
+          }),
         ]);
         clearInterval(musicProgress);
 
         if (results[0].status === "rejected") throw results[0].reason;
         audio = results[0].value;
         if (results[1].status === "fulfilled") cover = results[1].value;
-        else logger.warn({ err: results[1].reason }, "Cover art generation failed — delivering audio without cover");
+        else
+          logger.warn(
+            { err: results[1].reason },
+            "Cover art generation failed — delivering audio without cover",
+          );
       } catch (err) {
         clearInterval(musicProgress);
         throw err;
@@ -2886,7 +4362,12 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
 
       const label = `${durationMode === "full" ? "Full Song" : "30s Clip"} — ${musicPrompt.slice(0, 60)}${musicPrompt.length > 60 ? "…" : ""}`;
       return {
-        result: { audioUrl: audio.audioUrl, imageUrl: cover?.imageUrl ?? null, filename: audio.filename, duration: durationMode },
+        result: {
+          audioUrl: audio.audioUrl,
+          imageUrl: cover?.imageUrl ?? null,
+          filename: audio.filename,
+          duration: durationMode,
+        },
         artifact: {
           artifactType: "audio",
           label,
@@ -2908,18 +4389,43 @@ Audience: ${args.audience ?? "general YouTube audience"}
 
 Return: 8 title options, one optimized description, tags, hashtags, thumbnail text options, and a pinned comment.`;
       logTool("Generating SEO pack", { topic });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Generating SEO pack..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Generating SEO pack...",
+      });
       return textModelArtifact("YouTube SEO Pack", prompt);
     }
 
     case "read_uploaded_file": {
       const attachment = latestNonImageAttachment(req);
-      if (!attachment) throw new Error("Attach an SRT, TXT, CSV, JSON, PDF, or document first.");
-      const task = String(args.task ?? "Summarize and inspect this file.").trim();
-      logTool("Reading uploaded file", { filename: attachment.name, mimeType: attachment.mimeType });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Reading ${attachment.name}...` });
+      if (!attachment)
+        throw new Error(
+          "Attach an SRT, TXT, CSV, JSON, PDF, or document first.",
+        );
+      const task = String(
+        args.task ?? "Summarize and inspect this file.",
+      ).trim();
+      logTool("Reading uploaded file", {
+        filename: attachment.name,
+        mimeType: attachment.mimeType,
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Reading ${attachment.name}...`,
+      });
 
-      if ((attachment.mimeType.includes("pdf") || /\.pdf$/i.test(attachment.name)) && attachment.url && !attachment.url.startsWith("data:")) {
+      if (
+        (attachment.mimeType.includes("pdf") ||
+          /\.pdf$/i.test(attachment.name)) &&
+        attachment.url &&
+        !attachment.url.startsWith("data:")
+      ) {
         // SECURITY: Only pass trusted-origin URLs to Gemini fileData.
         // Restrict to known S3/CDN domains to prevent SSRF via Gemini's server-side fetch.
         const trustedFileDataOrigins = [
@@ -2934,52 +4440,100 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
         try {
           const fdUrl = new URL(attachment.url);
           fileDataOriginOk = trustedFileDataOrigins.some(
-            d => fdUrl.hostname === d || fdUrl.hostname.endsWith(`.${d}`),
+            (d) => fdUrl.hostname === d || fdUrl.hostname.endsWith(`.${d}`),
           );
-        } catch { /* invalid URL — will be rejected */ }
+        } catch {
+          /* invalid URL — will be rejected */
+        }
         if (!fileDataOriginOk) {
-          throw new Error("PDF URL is not from a trusted storage origin. Use a file uploaded through the studio.");
+          throw new Error(
+            "PDF URL is not from a trusted storage origin. Use a file uploaded through the studio.",
+          );
         }
         const ai = createGeminiClient();
         const resp = await ai.models.generateContent({
           model: ULTRA_MODEL,
-          contents: [{
-            role: "user",
-            parts: [
-              { text: `${task}\nReturn practical, concise results for a creator/editor.` },
-              { fileData: { fileUri: attachment.url, mimeType: "application/pdf" } } as any,
-            ],
-          }],
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  text: `${task}\nReturn practical, concise results for a creator/editor.`,
+                },
+                {
+                  fileData: {
+                    fileUri: attachment.url,
+                    mimeType: "application/pdf",
+                  },
+                } as any,
+              ],
+            },
+          ],
           config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
         });
-        const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
-        return { result: { filename: attachment.name, content }, artifact: { artifactType: "text", label: `Read ${attachment.name}`, content } };
+        const content = stripReasoningTags(
+          (resp.candidates?.[0]?.content?.parts ?? [])
+            .map((p: any) => p.text ?? "")
+            .join("")
+            .trim(),
+        );
+        return {
+          result: { filename: attachment.name, content },
+          artifact: {
+            artifactType: "text",
+            label: `Read ${attachment.name}`,
+            content,
+          },
+        };
       }
 
       const file = await readAttachmentText(req);
       if (!file) throw new Error("Could not read the latest uploaded file.");
       const content = file.content.slice(0, 120000);
-      if (/\.csv$/i.test(file.name) || file.mimeType.includes("csv") || /\.json$/i.test(file.name) || file.mimeType.includes("json")) {
-        const analysis = await textModelArtifact(`Read ${file.name}`, `${task}\n\nFile: ${file.name}\nContent:\n${content}`);
+      if (
+        /\.csv$/i.test(file.name) ||
+        file.mimeType.includes("csv") ||
+        /\.json$/i.test(file.name) ||
+        file.mimeType.includes("json")
+      ) {
+        const analysis = await textModelArtifact(
+          `Read ${file.name}`,
+          `${task}\n\nFile: ${file.name}\nContent:\n${content}`,
+        );
         return analysis;
       }
       return {
-        result: { filename: file.name, bytes: Buffer.byteLength(file.content, "utf8"), preview: file.content.slice(0, 4000) },
-        artifact: { artifactType: "text", label: `Read ${file.name}`, content: file.content.slice(0, 32000) },
+        result: {
+          filename: file.name,
+          bytes: Buffer.byteLength(file.content, "utf8"),
+          preview: file.content.slice(0, 4000),
+        },
+        artifact: {
+          artifactType: "text",
+          label: `Read ${file.name}`,
+          content: file.content.slice(0, 32000),
+        },
       };
     }
 
     case "convert_subtitles": {
       const outputFormat = String(args.outputFormat ?? "").toLowerCase();
-      if (!["srt", "vtt", "txt"].includes(outputFormat)) throw new Error("outputFormat must be srt, vtt, or txt.");
+      if (!["srt", "vtt", "txt"].includes(outputFormat))
+        throw new Error("outputFormat must be srt, vtt, or txt.");
       let content = String(args.content ?? "");
       if (!content.trim()) {
         const file = await readAttachmentText(req);
         content = file?.content ?? "";
       }
       if (!content.trim()) throw new Error("Subtitle content is required.");
-      const converted = convertSubtitleText(content, String(args.inputFormat ?? "auto"), outputFormat);
-      const filename = String(args.filename ?? `converted-subtitles.${outputFormat}`);
+      const converted = convertSubtitleText(
+        content,
+        String(args.inputFormat ?? "auto"),
+        outputFormat,
+      );
+      const filename = String(
+        args.filename ?? `converted-subtitles.${outputFormat}`,
+      );
       return {
         result: { filename, bytes: Buffer.byteLength(converted, "utf8") },
         artifact: await downloadableTextArtifact(filename, converted),
@@ -2998,7 +4552,13 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
         prompt = `Compare subtitle content available in this conversation/upload. If only one file is available, audit it for timing/text/format issues.\n\nUploaded file:\n${file?.content.slice(0, 60000) ?? "none"}\n\nConversation context:\n${ctx.slice(-60000)}`;
       }
       logTool("Comparing subtitles");
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Comparing subtitle files..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Comparing subtitle files...",
+      });
       return textModelArtifact("Subtitle Comparison", prompt);
     }
 
@@ -3008,8 +4568,10 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       if (!content) {
         const textArtifacts = conversationText(req)
           .split("\n")
-          .filter(line => line.startsWith("[TextArtifact:"));
-        content = textArtifacts.at(-1)?.replace(/^\[TextArtifact:[^\]]+\]\s*/i, "") ?? "";
+          .filter((line) => line.startsWith("[TextArtifact:"));
+        content =
+          textArtifacts.at(-1)?.replace(/^\[TextArtifact:[^\]]+\]\s*/i, "") ??
+          "";
       }
       if (!content) throw new Error("No text content found to export.");
       return {
@@ -3024,13 +4586,24 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
         const file = await readAttachmentText(req);
         data = file?.content ?? "";
       }
-      if (!data) throw new Error("Provide data or attach a CSV/JSON/text file first.");
+      if (!data)
+        throw new Error("Provide data or attach a CSV/JSON/text file first.");
       const task = String(args.task ?? "Analyze this data.").trim();
       const customPython = String(args.pythonCode ?? "").trim();
       logTool("Running code analysis", { task });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: e2bConfigured() ? "Running analysis in sandbox..." : "Running code analysis..." });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: e2bConfigured()
+          ? "Running analysis in sandbox..."
+          : "Running code analysis...",
+      });
       if (e2bConfigured()) {
-        const script = customPython || `from pathlib import Path
+        const script =
+          customPython ||
+          `from pathlib import Path
 import json
 
 data = Path('/home/user/input.txt').read_text(errors='replace')
@@ -3065,32 +4638,60 @@ except Exception as exc:
     except Exception:
         print('Could not auto-parse as CSV/JSON:', exc)
 `;
-        return await runE2BSandboxCommand(req, {
-          command: "python3 /home/user/analysis.py",
-          cwd: "/home/user",
-          timeoutMs: Math.min(E2B_COMMAND_TIMEOUT_MS, 180000),
-          writeFiles: [
-            { path: "/home/user/input.txt", content: data.slice(0, E2B_MAX_FILE_CHARS) },
-            { path: "/home/user/task.txt", content: task },
-            { path: "/home/user/analysis.py", content: script },
-          ],
-          readFiles: ["/home/user/result.txt", "/home/user/output.txt", "/home/user/summary.txt"],
-        }, res, runId, toolId, name);
+        return await runE2BSandboxCommand(
+          req,
+          {
+            command: "python3 /home/user/analysis.py",
+            cwd: "/home/user",
+            timeoutMs: Math.min(E2B_COMMAND_TIMEOUT_MS, 180000),
+            writeFiles: [
+              {
+                path: "/home/user/input.txt",
+                content: data.slice(0, E2B_MAX_FILE_CHARS),
+              },
+              { path: "/home/user/task.txt", content: task },
+              { path: "/home/user/analysis.py", content: script },
+            ],
+            readFiles: [
+              "/home/user/result.txt",
+              "/home/user/output.txt",
+              "/home/user/summary.txt",
+            ],
+          },
+          res,
+          runId,
+          toolId,
+          name,
+        );
       }
       const ai = createGeminiClient();
       const resp = await ai.models.generateContent({
         model: ULTRA_MODEL,
-        contents: [{
-          role: "user",
-          parts: [{ text: `${task}\n\nUse code execution when useful. Return the result, formulas, tables, and any caveats.\n\nDATA:\n${data.slice(0, 120000)}` }],
-        }],
+        contents: [
+          {
+            role: "user",
+            parts: [
+              {
+                text: `${task}\n\nUse code execution when useful. Return the result, formulas, tables, and any caveats.\n\nDATA:\n${data.slice(0, 120000)}`,
+              },
+            ],
+          },
+        ],
         config: {
           tools: [{ codeExecution: {} }] as any,
           maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192),
         },
       } as any);
-      const content = stripReasoningTags((resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim());
-      return { result: { content }, artifact: { artifactType: "text", label: "Code Analysis", content } };
+      const content = stripReasoningTags(
+        (resp.candidates?.[0]?.content?.parts ?? [])
+          .map((p: any) => p.text ?? "")
+          .join("")
+          .trim(),
+      );
+      return {
+        result: { content },
+        artifact: { artifactType: "text", label: "Code Analysis", content },
+      };
     }
 
     case "run_sandbox_command": {
@@ -3101,54 +4702,90 @@ except Exception as exc:
       const result = await chatSandboxStatus(req);
       const content = [
         `E2B configured: ${result.configured ? "yes" : "no"}`,
-        result.sandboxId ? `Sandbox ID: ${result.sandboxId}` : "Sandbox ID: none yet",
-        typeof result.running === "boolean" ? `Running: ${result.running ? "yes" : "no"}` : "",
+        result.sandboxId
+          ? `Sandbox ID: ${result.sandboxId}`
+          : "Sandbox ID: none yet",
+        typeof result.running === "boolean"
+          ? `Running: ${result.running ? "yes" : "no"}`
+          : "",
         `Session key: ${result.sessionKey}`,
         `Timeout: ${Math.round(result.timeoutMs / 1000)}s`,
         "Environment: isolated E2B Linux sandbox, persistent for this chat while alive, separate from the app server filesystem.",
-      ].filter(Boolean).join("\n");
-      return { result, artifact: { artifactType: "text", label: "Sandbox Status", content } };
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return {
+        result,
+        artifact: { artifactType: "text", label: "Sandbox Status", content },
+      };
     }
 
     case "reset_sandbox": {
       const result = await resetChatSandbox(req);
       return {
         result,
-        artifact: { artifactType: "text", label: "Sandbox Reset", content: "Sandbox reset. The next sandbox command will start a fresh isolated environment." },
+        artifact: {
+          artifactType: "text",
+          label: "Sandbox Reset",
+          content:
+            "Sandbox reset. The next sandbox command will start a fresh isolated environment.",
+        },
       };
     }
 
     case "analyze_youtube_video": {
       const videoUrl = String(args.url ?? "").trim();
-      const question = String(args.question ?? "Summarize this video comprehensively.").trim();
+      const question = String(
+        args.question ?? "Summarize this video comprehensively.",
+      ).trim();
 
       // Validate it's a YouTube URL (watch, shorts, live, embed, youtu.be, mobile/music subdomains, nocookie)
-      const isYouTubeUrl = /(?:^https?:\/\/)?(?:(?:www|m|music)\.)?(?:youtube\.com\/(?:watch(?:\?|\/)|shorts\/|live\/|embed\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/(?:embed\/|v\/))/i.test(videoUrl);
-      if (!isYouTubeUrl) throw new Error("URL must be a public YouTube video link.");
-      logTool("Analyzing YouTube video with Gemini Vision+Audio", { videoUrl, question });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Loading video... Gemini is watching and listening" });
+      const isYouTubeUrl =
+        /(?:^https?:\/\/)?(?:(?:www|m|music)\.)?(?:youtube\.com\/(?:watch(?:\?|\/)|shorts\/|live\/|embed\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/(?:embed\/|v\/))/i.test(
+          videoUrl,
+        );
+      if (!isYouTubeUrl)
+        throw new Error("URL must be a public YouTube video link.");
+      logTool("Analyzing YouTube video with Gemini Vision+Audio", {
+        videoUrl,
+        question,
+      });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Loading video... Gemini is watching and listening",
+      });
 
       // Use Gemini's native YouTube video understanding via file_data.
       // The model receives the actual video frames + audio — it truly watches the video.
       const videoAi = createGeminiClient();
       const videoResp = await videoAi.models.generateContent({
         model: ULTRA_MODEL,
-        contents: [{
-          role: "user",
-          parts: [
-            { text: question },
-            { fileData: { fileUri: videoUrl, mimeType: "video/mp4" } } as any,
-          ],
-        }],
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: question },
+              { fileData: { fileUri: videoUrl, mimeType: "video/mp4" } } as any,
+            ],
+          },
+        ],
         config: {
           maxOutputTokens: 8192,
         },
       });
 
       const analysis = (videoResp.candidates?.[0]?.content?.parts ?? [])
-        .map((p: any) => p.text ?? "").join("").trim();
+        .map((p: any) => p.text ?? "")
+        .join("")
+        .trim();
 
-      if (!analysis) throw new Error("Model returned no analysis. The video may be private or age-restricted.");
+      if (!analysis)
+        throw new Error(
+          "Model returned no analysis. The video may be private or age-restricted.",
+        );
 
       return {
         result: { url: videoUrl, question, analysis },
@@ -3163,11 +4800,22 @@ except Exception as exc:
     case "list_workspace_files": {
       const ws = getWorkspace(req);
       const dir = typeof args.dir === "string" ? args.dir : "";
-      const limit = Math.min(Math.max(Number(args.limit) || 50, 1), WORKSPACE_LIMITS.LIST_MAX);
-      logTool("Listing workspace", { dir, limit, workspaceId: ws.identity.workspaceId });
+      const limit = Math.min(
+        Math.max(Number(args.limit) || 50, 1),
+        WORKSPACE_LIMITS.LIST_MAX,
+      );
+      logTool("Listing workspace", {
+        dir,
+        limit,
+        workspaceId: ws.identity.workspaceId,
+      });
       const listing = await ws.s3.list(dir, { limit });
       return {
-        result: { files: listing.files, nextCursor: listing.nextCursor, count: listing.files.length },
+        result: {
+          files: listing.files,
+          nextCursor: listing.nextCursor,
+          count: listing.files.length,
+        },
         artifact: {
           artifactType: "workspace_listing",
           label: dir ? `Workspace · ${dir}` : "Your workspace",
@@ -3183,7 +4831,9 @@ except Exception as exc:
       if (!path) throw new Error("path is required");
       logTool("Reading workspace file", { path });
       const { content, contentType, size } = await ws.s3.readText(path);
-      const { url: downloadUrl } = await ws.s3.presignGet(path, { disposition: "attachment" });
+      const { url: downloadUrl } = await ws.s3.presignGet(path, {
+        disposition: "attachment",
+      });
       return {
         result: { path, contentType, size, content },
         artifact: {
@@ -3203,11 +4853,17 @@ except Exception as exc:
       const content = String(args.content ?? "");
       if (!path) throw new Error("path is required");
       if (!content) throw new Error("content is required");
-      logTool("Writing workspace file", { path, bytes: Buffer.byteLength(content, "utf8") });
-      const file = await ws.s3.writeText(path, content, {
-        contentType: typeof args.contentType === "string" ? args.contentType : undefined,
+      logTool("Writing workspace file", {
+        path,
+        bytes: Buffer.byteLength(content, "utf8"),
       });
-      const { url: downloadUrl } = await ws.s3.presignGet(path, { disposition: "attachment" });
+      const file = await ws.s3.writeText(path, content, {
+        contentType:
+          typeof args.contentType === "string" ? args.contentType : undefined,
+      });
+      const { url: downloadUrl } = await ws.s3.presignGet(path, {
+        disposition: "attachment",
+      });
       return {
         result: { file, downloadUrl },
         // Saved-to-workspace files render in the amber workspace_file shell, not
@@ -3252,7 +4908,9 @@ except Exception as exc:
       try {
         const parsedResolved = new URL(resolvedUrl);
         if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error("save_artifact_to_workspace URL resolves to an internal/private network address.");
+          throw new Error(
+            "save_artifact_to_workspace URL resolves to an internal/private network address.",
+          );
         }
       } catch (err: any) {
         if (err.message.includes("internal/private")) throw err;
@@ -3271,7 +4929,9 @@ except Exception as exc:
       const sizeHeader = r.headers.get("content-length");
       const size = sizeHeader ? Number(sizeHeader) : null;
       if (!size || !Number.isFinite(size)) {
-        throw new Error("source size is unknown; cannot stream artifact safely");
+        throw new Error(
+          "source size is unknown; cannot stream artifact safely",
+        );
       }
       if (size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
         throw new Error(`source too large (${size} bytes)`);
@@ -3289,8 +4949,11 @@ except Exception as exc:
           "Content-Length": String(size),
         },
       } as any);
-      if (!putRes.ok) throw new Error(`workspace upload failed: ${putRes.status}`);
-      const { url: downloadUrl } = await ws.s3.presignGet(path, { disposition: "attachment" });
+      if (!putRes.ok)
+        throw new Error(`workspace upload failed: ${putRes.status}`);
+      const { url: downloadUrl } = await ws.s3.presignGet(path, {
+        disposition: "attachment",
+      });
       return {
         result: { path, size, contentType, downloadUrl },
         artifact: {
@@ -3305,25 +4968,48 @@ except Exception as exc:
 
     case "list_drive_files": {
       if (!isDriveConfigured()) {
-        throw new Error("Google Drive connector is not configured. Ask the admin to set GOOGLE_DRIVE_WORKSPACE_FOLDER_ID and the service-account credential.");
+        throw new Error(
+          "Google Drive connector is not configured. Ask the admin to set GOOGLE_DRIVE_WORKSPACE_FOLDER_ID and the service-account credential.",
+        );
       }
-      const folderId = typeof args.folderId === "string" && args.folderId.trim() ? args.folderId : undefined;
+      const folderId =
+        typeof args.folderId === "string" && args.folderId.trim()
+          ? args.folderId
+          : undefined;
       const query = typeof args.query === "string" ? args.query : undefined;
       const pageSize = Math.min(Math.max(Number(args.pageSize) || 50, 1), 200);
-      logTool("Listing Drive folder", { folderId: folderId ?? "(root)", query });
+      logTool("Listing Drive folder", {
+        folderId: folderId ?? "(root)",
+        query,
+      });
       const listing = await driveListFolder({ folderId, query, pageSize });
       const lines = listing.files.length
-        ? listing.files.map((f) => `${f.isFolder ? "📁" : "📄"} ${f.name}  [${f.id}]${f.size ? `  (${(f.size / 1024).toFixed(1)} KB)` : ""}`).join("\n")
+        ? listing.files
+            .map(
+              (f) =>
+                `${f.isFolder ? "📁" : "📄"} ${f.name}  [${f.id}]${f.size ? `  (${(f.size / 1024).toFixed(1)} KB)` : ""}`,
+            )
+            .join("\n")
         : "(empty)";
       return {
-        result: { files: listing.files, nextPageToken: listing.nextPageToken, count: listing.files.length },
-        artifact: { artifactType: "text", label: "Drive folder", content: lines },
+        result: {
+          files: listing.files,
+          nextPageToken: listing.nextPageToken,
+          count: listing.files.length,
+        },
+        artifact: {
+          artifactType: "text",
+          label: "Drive folder",
+          content: lines,
+        },
       };
     }
 
     case "import_from_drive": {
       if (!isDriveConfigured()) {
-        throw new Error("Google Drive connector is not configured. Ask the admin to set GOOGLE_DRIVE_WORKSPACE_FOLDER_ID and the service-account credential.");
+        throw new Error(
+          "Google Drive connector is not configured. Ask the admin to set GOOGLE_DRIVE_WORKSPACE_FOLDER_ID and the service-account credential.",
+        );
       }
       const ws = getWorkspace(req);
       const driveFileId = String(args.driveFileId ?? "").trim();
@@ -3332,27 +5018,58 @@ except Exception as exc:
       if (!path) throw new Error("path is required");
 
       logTool("Importing from Drive", { driveFileId, path });
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: "Validating folder permission…" } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: "Validating folder permission…",
+      } as any);
 
       const meta = await driveGetFileMeta(driveFileId); // throws if not under allowed folder
       if (meta.isFolder) throw new Error("cannot import a folder; pick a file");
 
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Downloading "${meta.name}" from Drive…` } as any);
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Downloading "${meta.name}" from Drive…`,
+      } as any);
       const { body, mimeType, size } = await driveDownload(driveFileId);
 
-      sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Saving to workspace at ${path}…` } as any);
-      const presign = await ws.s3.presignPut(path, { size, contentType: mimeType });
+      sseEvent(res, {
+        type: "tool_progress",
+        runId,
+        toolId,
+        name,
+        message: `Saving to workspace at ${path}…`,
+      } as any);
+      const presign = await ws.s3.presignPut(path, {
+        size,
+        contentType: mimeType,
+      });
       const putRes = await fetch(presign.uploadUrl, {
         method: "PUT",
         body,
         duplex: "half",
         headers: { "Content-Type": mimeType },
       } as any);
-      if (!putRes.ok) throw new Error(`workspace upload failed: ${putRes.status}`);
+      if (!putRes.ok)
+        throw new Error(`workspace upload failed: ${putRes.status}`);
 
-      const { url: downloadUrl } = await ws.s3.presignGet(path, { disposition: "attachment" });
+      const { url: downloadUrl } = await ws.s3.presignGet(path, {
+        disposition: "attachment",
+      });
       return {
-        result: { path, driveFileId, driveName: meta.name, size, mimeType, downloadUrl },
+        result: {
+          path,
+          driveFileId,
+          driveName: meta.name,
+          size,
+          mimeType,
+          downloadUrl,
+        },
         artifact: {
           artifactType: "workspace_file",
           label: path,
@@ -3368,25 +5085,80 @@ except Exception as exc:
   }
 }
 
-
 // ── GET /api/agent/skills — list available skills ────────────────────────
 router.get("/agent/skills", (_req, res) => {
   res.json({ skills: getSkillsManifest() });
 });
 
+function isLocalUrl(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    const host = u.hostname.toLowerCase();
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "0.0.0.0" ||
+      host.startsWith("192.168.") ||
+      host.startsWith("10.") ||
+      host.startsWith("172.16.") ||
+      host.endsWith(".local")
+    );
+  } catch {
+    return true;
+  }
+}
+
+// Global cache to store S3/HTTPS URL pathname -> GCS gs:// URI mappings
+const globalUrlToGcsCache = new Map<string, string>();
+
+function getStableCacheKey(urlStr: string): string {
+  try {
+    const u = new URL(urlStr);
+    return u.hostname + u.pathname;
+  } catch {
+    return urlStr;
+  }
+}
+
+// Global cache to store Content Hash -> Vertex Context Cache name mappings
+const globalContextCacheMap = new Map<
+  string,
+  { cacheName: string; expiresAt: number }
+>();
+
+function getCacheContentHash(
+  systemInstruction: string,
+  tools: any[],
+  contents: any[],
+): string {
+  const data = JSON.stringify({ systemInstruction, tools, contents });
+  return createHash("sha256").update(data).digest("hex");
+}
+
 // ── POST /api/agent/chat ──────────────────────────────────────────────────
 router.post("/agent/chat", async (req, res) => {
   if (!isGeminiConfigured()) {
-    res.status(503).json({ error: "AI Copilot not configured - add Vertex Gemini env or GEMINI_API_KEY." });
+    res.status(503).json({
+      error:
+        "AI Copilot not configured - add Vertex Gemini env or GEMINI_API_KEY.",
+    });
     return;
   }
   // Ensure Vertex AI credentials are loaded before any model call.
   // fetchCredentialsFromS3 runs async at cold start — awaiting here guarantees
   // credentials are ready even if the first request races with the cold-start fetch.
-  try { await ensureVertexCredentials(); } catch { /* non-fatal — key may be env-based */ }
+  try {
+    await ensureVertexCredentials();
+  } catch {
+    /* non-fatal — key may be env-based */
+  }
   (req as any).agentRunJobIds = new Set<string>();
 
-  const { messages = [], model: requestedModel, skills: requestedSkills = [] } = req.body as {
+  const {
+    messages = [],
+    model: requestedModel,
+    skills: requestedSkills = [],
+  } = req.body as {
     messages: Array<{
       role: "user" | "model";
       content?: string;
@@ -3416,7 +5188,9 @@ router.post("/agent/chat", async (req, res) => {
   }
 
   const activeSkills = Array.isArray(requestedSkills)
-    ? requestedSkills.filter((skill): skill is string => typeof skill === "string")
+    ? requestedSkills.filter(
+        (skill): skill is string => typeof skill === "string",
+      )
     : [];
 
   if (!messages.length) {
@@ -3426,26 +5200,39 @@ router.post("/agent/chat", async (req, res) => {
 
   // Guard: limit incoming history to prevent excessively large payloads
   const MAX_HISTORY_MESSAGES = 80;
-  const truncatedMessages = messages.length > MAX_HISTORY_MESSAGES
-    ? messages.slice(-MAX_HISTORY_MESSAGES)
-    : messages;
+  const truncatedMessages =
+    messages.length > MAX_HISTORY_MESSAGES
+      ? messages.slice(-MAX_HISTORY_MESSAGES)
+      : messages;
 
   const normalizedMessages = truncatedMessages
-    .filter((message: any) => message && typeof message === "object" && (message.role === "user" || message.role === "model"))
+    .filter(
+      (message: any) =>
+        message &&
+        typeof message === "object" &&
+        (message.role === "user" || message.role === "model"),
+    )
     .map((message) => {
       const content =
         typeof message.content === "string"
           ? message.content
           : Array.isArray(message.parts)
             ? message.parts
-              .filter((part) => part?.kind === "text" || typeof part?.content === "string" || typeof part?.text === "string")
-              .map((part) => part?.content ?? part?.text ?? "")
-              .join("")
+                .filter(
+                  (part) =>
+                    part?.kind === "text" ||
+                    typeof part?.content === "string" ||
+                    typeof part?.text === "string",
+                )
+                .map((part) => part?.content ?? part?.text ?? "")
+                .join("")
             : "";
       return {
         ...message,
         content,
-        attachments: Array.isArray(message.attachments) ? message.attachments : [],
+        attachments: Array.isArray(message.attachments)
+          ? message.attachments
+          : [],
       };
     });
 
@@ -3455,15 +5242,24 @@ router.post("/agent/chat", async (req, res) => {
   }
 
   // Resolve model:
-  //   "flash" / "default" / undefined → AGENT_MODEL (gemini-2.5-flash), MEDIUM
+  //   "flash" / "default" / undefined → AGENT_MODEL (gemini-3-flash-preview), MEDIUM
   //   "pro" / "advanced" / "ultra"    → ULTRA_MODEL (gemini-3.1-pro-preview), HIGH
   //   Any model ID in ALLOWED_MODELS   → that exact model, MEDIUM thinking
   let activeModel = AGENT_MODEL;
   let thinkingLevel: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM";
-  if (requestedModel === "advanced" || requestedModel === "ultra" || requestedModel === "pro") {
+  if (
+    requestedModel === "advanced" ||
+    requestedModel === "ultra" ||
+    requestedModel === "pro"
+  ) {
     activeModel = ULTRA_MODEL;
     thinkingLevel = "HIGH";
-  } else if (requestedModel && requestedModel !== "default" && requestedModel !== "flash" && ALLOWED_MODELS.has(requestedModel)) {
+  } else if (
+    requestedModel &&
+    requestedModel !== "default" &&
+    requestedModel !== "flash" &&
+    ALLOWED_MODELS.has(requestedModel)
+  ) {
     activeModel = requestedModel;
     // For explicitly selected flash models, default to MEDIUM
     thinkingLevel = requestedModel.includes("pro") ? "HIGH" : "MEDIUM";
@@ -3478,57 +5274,251 @@ router.post("/agent/chat", async (req, res) => {
   // mark the client as disconnected before any streaming starts.
   let clientConnected = true;
   let runCompleted = false;
-  res.on("close", () => { clientConnected = false; });
+  res.on("close", () => {
+    clientConnected = false;
+  });
   const isConnected = () => clientConnected && !res.writableEnded;
 
   const runId = randomUUID();
-  sseEvent(res, { type: "run_start", runId, ts: Date.now(), model: activeModel, ultra: requestedModel === "ultra" });
+  sseEvent(res, {
+    type: "run_start",
+    runId,
+    ts: Date.now(),
+    model: activeModel,
+    ultra: requestedModel === "ultra",
+  });
   const skillPromptAddendum = buildSkillPrompt(activeSkills);
-  console.log(`[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${normalizedMessages.length} skills=[${activeSkills.join(",")}] skillPromptLen=${skillPromptAddendum.length}`);
+  console.log(
+    `[agent] run ${runId} model=${activeModel} requested=${requestedModel ?? "default"} msgs=${normalizedMessages.length} skills=[${activeSkills.join(",")}] skillPromptLen=${skillPromptAddendum.length}`,
+  );
 
   // Heartbeat every 8s — below ALB (60s), nginx (75s), Cloudflare (100s) idle timeouts
   const keepAlive = setInterval(() => {
-    if (clientConnected) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
+    if (clientConnected)
+      sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
   }, 8000);
 
   try {
     // Vertex AI is the primary path (checked first in createGeminiClient).
     // Gemini API key is only a fallback when Vertex is not configured.
     const GEMINI_TIMEOUT_MS = 300_000; // 5 min
-    const ai = createGeminiClient({ httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
+    const ai = createGeminiClient({
+      httpOptions: { timeout: GEMINI_TIMEOUT_MS },
+    });
 
-    // Build Gemini contents with multimodal awareness.
-    // Images: inlineData bytes (Gemini Vision sees actual pixels, same as Claude/ChatGPT).
-    // Video/audio/docs: structured [ATTACHED ...] context injected into text so tools use URL.
-    let loopContents: any[] = normalizedMessages
-      .filter(m => m.content.trim() || (m.attachments && m.attachments.length > 0))
-      .map(m => {
-        const parts: any[] = [];
-        const textContent = m.content.trim();
-        const attachments = (m as any).attachments ?? [];
-        const mediaAttachments = attachments.filter((a: any) => a.type !== 'image');
-        const imageAttachments = attachments.filter((a: any) => a.type === 'image');
+    const useVertex = isVertexGeminiEnabled();
+    let loopContents: any[] = [];
 
-        if (mediaAttachments.length > 0) {
-          const ctxLines = mediaAttachments.map((a: any) => {
-            const typeLabel = a.type === 'video' ? 'VIDEO' : a.type === 'audio' ? 'AUDIO' : 'FILE';
+    for (const m of normalizedMessages) {
+      if (!m.content.trim() && !(m.attachments && m.attachments.length > 0)) {
+        continue;
+      }
+      const parts: any[] = [];
+      const textContent = m.content.trim();
+      const attachments = (m as any).attachments ?? [];
+      const mediaAttachments = attachments.filter(
+        (a: any) => a.type !== "image",
+      );
+      const imageAttachments = attachments.filter(
+        (a: any) => a.type === "image",
+      );
+
+      if (mediaAttachments.length > 0) {
+        const ctxLines = mediaAttachments
+          .map((a: any) => {
+            const typeLabel =
+              a.type === "video"
+                ? "VIDEO"
+                : a.type === "audio"
+                  ? "AUDIO"
+                  : "FILE";
             return `[ATTACHED ${typeLabel}: "${a.name}" | URL: ${a.url} | MIME: ${a.mimeType}]\nThe user uploaded this file. Use its URL directly with tools (generate_subtitles, translate_video, etc.) - do NOT ask for a YouTube link.`;
-          }).join('\n');
-          parts.push({ text: ctxLines + (textContent ? '\n\nUser message: ' + textContent : '') });
-        } else if (textContent) {
-          parts.push({ text: textContent });
-        }
+          })
+          .join("\n");
+        parts.push({
+          text:
+            ctxLines + (textContent ? "\n\nUser message: " + textContent : ""),
+        });
 
-        for (const img of imageAttachments) {
-          if ((img as any).data) {
-            parts.push({ inlineData: { mimeType: img.mimeType, data: (img as any).data } });
+        // Natively pass media files to Gemini as fileData parts (only if it is a public, non-local URL)
+        for (const a of mediaAttachments) {
+          if (a.url && !isLocalUrl(a.url)) {
+            let finalUri = a.url;
+            if (useVertex && (a.type === "video" || a.type === "audio")) {
+              try {
+                const cacheKey = getStableCacheKey(a.url);
+                if (globalUrlToGcsCache.has(cacheKey)) {
+                  finalUri = globalUrlToGcsCache.get(cacheKey)!;
+                  console.log(
+                    `[agent] Reusing cached GCS URI: ${finalUri} for attachment: ${a.name}`,
+                  );
+                } else {
+                  console.log(
+                    `[agent] Downloading media attachment to upload to GCS: ${a.url}`,
+                  );
+                  const tempPath = await downloadUrlToTempFile(a.url);
+                  const destinationBlobName = `chat_attachments/${runId}/${randomUUID()}_${a.name || "file"}`;
+                  const gsUri = await uploadLocalFileToGCS(
+                    tempPath,
+                    destinationBlobName,
+                    a.mimeType,
+                  );
+                  await deleteLocalFile(tempPath);
+                  globalUrlToGcsCache.set(cacheKey, gsUri);
+                  finalUri = gsUri;
+                  console.log(
+                    `[agent] Uploaded attachment ${a.name} to GCS successfully: ${gsUri}`,
+                  );
+                }
+              } catch (err: any) {
+                console.error(
+                  `[agent] Failed to copy media attachment to GCS. Falling back to S3 URL:`,
+                  err.message,
+                );
+                finalUri = a.url;
+              }
+            }
+            parts.push({
+              fileData: { fileUri: finalUri, mimeType: a.mimeType },
+            } as any);
           }
         }
-        if (imageAttachments.length > 0 && !textContent && !mediaAttachments.length) {
-          parts.unshift({ text: 'The user attached the following image(s):' });
+      } else if (textContent) {
+        parts.push({ text: textContent });
+      }
+
+      // Detect YouTube URLs in user messages and pass them natively as fileData parts
+      if (m.role === "user" && textContent) {
+        const ytRegex =
+          /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
+        let match;
+        const ytUrls = new Set<string>();
+        while ((match = ytRegex.exec(textContent)) !== null) {
+          ytUrls.add(match[0]);
         }
-        return { role: m.role, parts };
+        for (const ytUrl of ytUrls) {
+          try {
+            const normalizedYt = normalizeInputUrl(ytUrl);
+            parts.push({
+              fileData: { fileUri: normalizedYt, mimeType: "video/mp4" },
+            } as any);
+          } catch {}
+        }
+      }
+
+      for (const img of imageAttachments) {
+        if ((img as any).data) {
+          parts.push({
+            inlineData: { mimeType: img.mimeType, data: (img as any).data },
+          });
+        }
+      }
+      if (
+        imageAttachments.length > 0 &&
+        !textContent &&
+        !mediaAttachments.length
+      ) {
+        parts.unshift({ text: "The user attached the following image(s):" });
+      }
+      loopContents.push({ role: m.role, parts });
+    }
+
+    // ── Context Caching Analysis ──
+    let totalTokens = 0;
+    try {
+      const tokenCountResponse = await ai.models.countTokens({
+        model: activeModel,
+        contents: loopContents,
+        config: {
+          systemInstruction: SYSTEM_PROMPT + skillPromptAddendum,
+          tools: buildAgentTools(ENABLE_NATIVE_AGENT_SEARCH),
+        },
       });
+      totalTokens = tokenCountResponse.totalTokens ?? 0;
+      console.log(`[agent] Total prompt tokens: ${totalTokens}`);
+    } catch (err: any) {
+      console.warn(`[agent] Failed to count tokens:`, err.message);
+    }
+
+    let activeCacheName: string | undefined;
+    let cachedMessageCount = 0;
+    let cachedFirstMessageTextParts: any[] = [];
+
+    let cacheThreshold = 32768;
+    if (activeModel.includes("gemini-2.")) {
+      cacheThreshold = 2048;
+    } else if (activeModel.includes("gemini-3.")) {
+      cacheThreshold = 4096;
+    }
+    if (useVertex && totalTokens >= cacheThreshold) {
+      try {
+        const sysInst = SYSTEM_PROMPT + skillPromptAddendum;
+        const toolsList = buildAgentTools(ENABLE_NATIVE_AGENT_SEARCH);
+
+        let cacheContents: any[] = [];
+        if (loopContents.length > 1) {
+          cachedMessageCount = loopContents.length - 1;
+          cacheContents = loopContents.slice(0, cachedMessageCount);
+        } else if (loopContents.length === 1) {
+          const lastMsg = loopContents[0];
+          const mediaParts = lastMsg.parts.filter((p: any) => !p.text);
+          cachedFirstMessageTextParts = lastMsg.parts.filter(
+            (p: any) => p.text,
+          );
+          if (mediaParts.length > 0) {
+            cacheContents = [{ role: lastMsg.role, parts: mediaParts }];
+          }
+        }
+
+        if (cacheContents.length > 0) {
+          const cacheHash = getCacheContentHash(
+            sysInst,
+            toolsList,
+            cacheContents,
+          );
+          const cached = globalContextCacheMap.get(cacheHash);
+          if (cached && Date.now() < cached.expiresAt) {
+            activeCacheName = cached.cacheName;
+            console.log(
+              `[agent] Reusing active Vertex Context Cache: ${activeCacheName}`,
+            );
+          } else {
+            console.log(
+              `[agent] Creating new Vertex Context Cache (${totalTokens} tokens)...`,
+            );
+            const cache = await ai.caches.create({
+              model: activeModel,
+              config: {
+                contents: cacheContents,
+                systemInstruction: sysInst,
+                tools: toolsList as any,
+                ttl: "1800s",
+                displayName: `agent_chat_cache_${runId.slice(0, 8)}`,
+              },
+            });
+            if (!cache.name) {
+              throw new Error("Created context cache has no name.");
+            }
+            activeCacheName = cache.name;
+            globalContextCacheMap.set(cacheHash, {
+              cacheName: cache.name,
+              expiresAt: Date.now() + 30 * 60 * 1000,
+            });
+            console.log(
+              `[agent] Created Vertex Context Cache: ${activeCacheName}`,
+            );
+          }
+        }
+      } catch (err: any) {
+        console.error(
+          `[agent] Failed to establish Context Cache, falling back to uncached execution:`,
+          err.message,
+        );
+        activeCacheName = undefined;
+        cachedMessageCount = 0;
+        cachedFirstMessageTextParts = [];
+      }
+    }
 
     let iterations = 0;
     let emptyResponseRetries = 0;
@@ -3538,7 +5528,13 @@ router.post("/agent/chat", async (req, res) => {
     while (iterations < MAX_ITERATIONS && isConnected()) {
       iterations++;
       const stage = iterations === 1 ? "planning" : "executing";
-      sseEvent(res, { type: "thinking", runId, stage, iteration: iterations, total: MAX_ITERATIONS });
+      sseEvent(res, {
+        type: "thinking",
+        runId,
+        stage,
+        iteration: iterations,
+        total: MAX_ITERATIONS,
+      });
 
       // ── 1. Call Gemini API — with retry on transient empty-output errors ───
       // The error 'model output must contain either output text or tool calls'
@@ -3547,35 +5543,76 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1000));
-          if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
+          if (attempt > 0)
+            await new Promise((r) => setTimeout(r, attempt * 1000));
+          if (isConnected())
+            sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
+
+          let generateContents = loopContents;
+          if (activeCacheName) {
+            if (cachedMessageCount > 0) {
+              generateContents = loopContents.slice(cachedMessageCount);
+            } else if (cachedFirstMessageTextParts.length > 0) {
+              const textParts = cachedFirstMessageTextParts;
+              generateContents = [
+                { role: loopContents[0].role, parts: textParts },
+                ...loopContents.slice(1),
+              ];
+            }
+          }
+
           stream = await ai.models.generateContentStream({
             model: activeModel,
-            contents: loopContents,
+            contents: generateContents,
             config: {
-              systemInstruction: SYSTEM_PROMPT + skillPromptAddendum,
-              tools: buildAgentTools(useNativeSearchTools),
-              toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
+              systemInstruction: activeCacheName
+                ? undefined
+                : SYSTEM_PROMPT + skillPromptAddendum,
+              tools: activeCacheName
+                ? undefined
+                : buildAgentTools(useNativeSearchTools),
+              toolConfig: activeCacheName
+                ? undefined
+                : { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
               thinkingConfig: buildThinkingConfig(activeModel, thinkingLevel),
+              cachedContent: activeCacheName,
             },
           });
           streamErr = null;
           break; // success
         } catch (e: any) {
           streamErr = e;
+          if (activeCacheName) {
+            console.warn(
+              `[agent] Cached request failed, clearing cache and retrying uncached: ${e?.message ?? e}`,
+            );
+            activeCacheName = undefined;
+            cachedMessageCount = 0;
+            cachedFirstMessageTextParts = [];
+            attempt--;
+            continue;
+          }
           if (useNativeSearchTools && isNativeToolConfigError(e)) {
-            console.warn(`[agent] native Google Search tool config failed; retrying function-only tools: ${e?.message ?? e}`);
+            console.warn(
+              `[agent] native Google Search tool config failed; retrying function-only tools: ${e?.message ?? e}`,
+            );
             useNativeSearchTools = false;
             attempt--;
             continue;
           }
-          const isEmptyOutputErr = /model output must contain|both be empty/i.test(e?.message ?? "");
-          const isResourceExhausted = /resource.?exhausted|quota.*exceeded|429/i.test(e?.message ?? "") || e?.status === 429 || e?.code === 429;
+          const isEmptyOutputErr =
+            /model output must contain|both be empty/i.test(e?.message ?? "");
+          const isResourceExhausted =
+            /resource.?exhausted|quota.*exceeded|429/i.test(e?.message ?? "") ||
+            e?.status === 429 ||
+            e?.code === 429;
           if (isResourceExhausted && attempt === 0) {
             // Single 5s backoff on rate limit — Vertex handles quota at project level
-            console.warn(`[agent] Resource exhausted (429), retrying in 5000ms (attempt 1/2)`);
-            await new Promise(r => setTimeout(r, 5000));
+            console.warn(
+              `[agent] Resource exhausted (429), retrying in 5000ms (attempt 1/2)`,
+            );
+            await new Promise((r) => setTimeout(r, 5000));
             continue;
           }
           if (!isEmptyOutputErr || attempt === 1) break; // non-retryable or max attempts
@@ -3584,7 +5621,11 @@ router.post("/agent/chat", async (req, res) => {
       if (streamErr) throw streamErr;
 
       let fullText = "";
-      const functionCalls: Array<{ id?: string; name: string; args: Record<string, any> }> = [];
+      const functionCalls: Array<{
+        id?: string;
+        name: string;
+        args: Record<string, any>;
+      }> = [];
       // ⚠️ rawFcParts preserves thought_signature — Gemini API REQUIRES this
       // to be passed back in history when thinking is active. Dropping it
       // causes INVALID_ARGUMENT: "Function call is missing a thought_signature".
@@ -3593,42 +5634,86 @@ router.post("/agent/chat", async (req, res) => {
       let streamedTextLive = false;
       let pendingTextBuf = "";
       let canvasRouteBuf = "";
-      let activeCanvas: { id: string; label: string; language: string } | null = null;
-      const parseCanvasAttrs = (raw: string): { label: string; language: string } => {
+      let activeCanvas: { id: string; label: string; language: string } | null =
+        null;
+      const parseCanvasAttrs = (
+        raw: string,
+      ): { label: string; language: string } => {
         const attrs: Record<string, string> = {};
         raw.replace(/([a-zA-Z0-9_-]+)\s*=\s*"([^"]*)"/g, (_m, key, value) => {
           attrs[String(key).toLowerCase()] = String(value);
           return "";
         });
-        const language = (attrs.language || attrs.lang || "text").replace(/[^a-zA-Z0-9+#.-]/g, "").toLowerCase() || "text";
-        const defaultExt = language === "python" ? "py" : language === "javascript" ? "js" : language === "typescript" ? "ts" : language === "markdown" ? "md" : language;
-        const label = (attrs.title || attrs.filename || `agent-canvas.${defaultExt || "txt"}`).slice(0, 120);
+        const language =
+          (attrs.language || attrs.lang || "text")
+            .replace(/[^a-zA-Z0-9+#.-]/g, "")
+            .toLowerCase() || "text";
+        const defaultExt =
+          language === "python"
+            ? "py"
+            : language === "javascript"
+              ? "js"
+              : language === "typescript"
+                ? "ts"
+                : language === "markdown"
+                  ? "md"
+                  : language;
+        const label = (
+          attrs.title ||
+          attrs.filename ||
+          `agent-canvas.${defaultExt || "txt"}`
+        ).slice(0, 120);
         return { label, language };
       };
       const emitCanvasRoutedText = (text: string, final = false) => {
         canvasRouteBuf += text;
         // Strip markdown code fences that wrap a canvas tag (model sometimes does this)
-        canvasRouteBuf = canvasRouteBuf.replace(/```[a-zA-Z]*\s*\n(\s*<canvas\b)/gi, "$1");
-        canvasRouteBuf = canvasRouteBuf.replace(/<\/canvas>\s*\n```/gi, "</canvas>");
+        canvasRouteBuf = canvasRouteBuf.replace(
+          /```[a-zA-Z]*\s*\n(\s*<canvas\b)/gi,
+          "$1",
+        );
+        canvasRouteBuf = canvasRouteBuf.replace(
+          /<\/canvas>\s*\n```/gi,
+          "</canvas>",
+        );
         // Convert standalone ```lang blocks → canvas protocol so the model's
         // markdown fallback is silently promoted into a canvas artifact instead
         // of appearing as raw code text in the chat.
         const FENCE_LANG_MAP: Record<string, string> = {
-          js: "javascript", ts: "typescript", py: "python", md: "markdown",
+          js: "javascript",
+          ts: "typescript",
+          py: "python",
+          md: "markdown",
         };
         canvasRouteBuf = canvasRouteBuf.replace(
           /```(html|css|javascript|js|typescript|ts|python|py|json|markdown|md|text|srt|vtt)\r?\n/gi,
           (_m, lang) => {
-            const norm = FENCE_LANG_MAP[lang.toLowerCase()] ?? lang.toLowerCase();
-            const ext = norm === "javascript" ? "js" : norm === "typescript" ? "ts" : norm === "python" ? "py" : norm === "markdown" ? "md" : norm;
+            const norm =
+              FENCE_LANG_MAP[lang.toLowerCase()] ?? lang.toLowerCase();
+            const ext =
+              norm === "javascript"
+                ? "js"
+                : norm === "typescript"
+                  ? "ts"
+                  : norm === "python"
+                    ? "py"
+                    : norm === "markdown"
+                      ? "md"
+                      : norm;
             return `<canvas language="${norm}" title="code.${ext}">\n`;
           },
         );
         // Convert bare closing fence only when it follows converted canvas content.
         // Otherwise normal markdown code fences (bash, mermaid, etc.) get corrupted
         // into stray </canvas> tags in the chat stream.
-        if (activeCanvas || /<canvas\b[^>]*>(?:(?!<\/canvas>)[\s\S])*$/i.test(canvasRouteBuf)) {
-          canvasRouteBuf = canvasRouteBuf.replace(/\n```[ \t]*(\r?\n|$)/g, "\n</canvas>\n");
+        if (
+          activeCanvas ||
+          /<canvas\b[^>]*>(?:(?!<\/canvas>)[\s\S])*$/i.test(canvasRouteBuf)
+        ) {
+          canvasRouteBuf = canvasRouteBuf.replace(
+            /\n```[ \t]*(\r?\n|$)/g,
+            "\n</canvas>\n",
+          );
         }
         const openRe = /<canvas\b([^>]*)>/i;
         const closeTag = "</canvas>";
@@ -3638,14 +5723,26 @@ router.post("/agent/chat", async (req, res) => {
             const closeIdx = lower.indexOf(closeTag);
             if (closeIdx === -1) {
               const keep = final ? 0 : closeTag.length - 1;
-              const emit = canvasRouteBuf.slice(0, Math.max(0, canvasRouteBuf.length - keep));
+              const emit = canvasRouteBuf.slice(
+                0,
+                Math.max(0, canvasRouteBuf.length - keep),
+              );
               if (emit) {
-                sseEvent(res, { type: "canvas_delta", runId, canvasId: activeCanvas.id, content: emit });
+                sseEvent(res, {
+                  type: "canvas_delta",
+                  runId,
+                  canvasId: activeCanvas.id,
+                  content: emit,
+                });
                 streamedTextLive = true;
               }
               canvasRouteBuf = keep ? canvasRouteBuf.slice(-keep) : "";
               if (final) {
-                sseEvent(res, { type: "canvas_done", runId, canvasId: activeCanvas.id });
+                sseEvent(res, {
+                  type: "canvas_done",
+                  runId,
+                  canvasId: activeCanvas.id,
+                });
                 streamedTextLive = true;
                 activeCanvas = null;
               }
@@ -3653,10 +5750,19 @@ router.post("/agent/chat", async (req, res) => {
             }
             const body = canvasRouteBuf.slice(0, closeIdx);
             if (body) {
-              sseEvent(res, { type: "canvas_delta", runId, canvasId: activeCanvas.id, content: body });
+              sseEvent(res, {
+                type: "canvas_delta",
+                runId,
+                canvasId: activeCanvas.id,
+                content: body,
+              });
               streamedTextLive = true;
             }
-            sseEvent(res, { type: "canvas_done", runId, canvasId: activeCanvas.id });
+            sseEvent(res, {
+              type: "canvas_done",
+              runId,
+              canvasId: activeCanvas.id,
+            });
             streamedTextLive = true;
             activeCanvas = null;
             canvasRouteBuf = canvasRouteBuf.slice(closeIdx + closeTag.length);
@@ -3667,7 +5773,11 @@ router.post("/agent/chat", async (req, res) => {
           if (!open) {
             const lower = canvasRouteBuf.toLowerCase();
             const partialIdx = lower.lastIndexOf("<canvas");
-            if (!final && partialIdx !== -1 && !canvasRouteBuf.slice(partialIdx).includes(">")) {
+            if (
+              !final &&
+              partialIdx !== -1 &&
+              !canvasRouteBuf.slice(partialIdx).includes(">")
+            ) {
               const chat = canvasRouteBuf.slice(0, partialIdx);
               if (chat) {
                 sseEvent(res, { type: "text_delta", content: chat, runId });
@@ -3676,7 +5786,11 @@ router.post("/agent/chat", async (req, res) => {
               canvasRouteBuf = canvasRouteBuf.slice(partialIdx);
               return;
             }
-            sseEvent(res, { type: "text_delta", content: canvasRouteBuf, runId });
+            sseEvent(res, {
+              type: "text_delta",
+              content: canvasRouteBuf,
+              runId,
+            });
             streamedTextLive = true;
             canvasRouteBuf = "";
             return;
@@ -3688,7 +5802,11 @@ router.post("/agent/chat", async (req, res) => {
             streamedTextLive = true;
           }
           const attrs = parseCanvasAttrs(open[1] || "");
-          activeCanvas = { id: randomUUID().slice(0, 12), label: attrs.label, language: attrs.language };
+          activeCanvas = {
+            id: randomUUID().slice(0, 12),
+            label: attrs.label,
+            language: attrs.language,
+          };
           sseEvent(res, {
             type: "canvas_start",
             runId,
@@ -3697,7 +5815,9 @@ router.post("/agent/chat", async (req, res) => {
             language: activeCanvas.language,
           });
           streamedTextLive = true;
-          canvasRouteBuf = canvasRouteBuf.slice((open.index || 0) + open[0].length);
+          canvasRouteBuf = canvasRouteBuf.slice(
+            (open.index || 0) + open[0].length,
+          );
         }
       };
       let lastGroundingMeta: any = null;
@@ -3726,7 +5846,12 @@ router.post("/agent/chat", async (req, res) => {
           // Hold back text that might be a partial internal marker.
           // Check for any marker pattern that should not reach the client:
           // [SUGGEST..., [Tool:..., [TextArtifact:..., [Artifact:...
-          const markerPatterns = ["[SUGGEST", "[Tool:", "[TextArtifact:", "[Artifact:"];
+          const markerPatterns = [
+            "[SUGGEST",
+            "[Tool:",
+            "[TextArtifact:",
+            "[Artifact:",
+          ];
           let holdIdx = -1;
           for (const pat of markerPatterns) {
             // Check for full pattern start or partial match at the end of buffer
@@ -3747,7 +5872,9 @@ router.post("/agent/chat", async (req, res) => {
           // Also hold back partial <canvas tags at the end of buffer
           const canvasTag = "<canvas";
           for (let pLen = 1; pLen <= canvasTag.length; pLen++) {
-            if (pendingTextBuf.toLowerCase().endsWith(canvasTag.slice(0, pLen))) {
+            if (
+              pendingTextBuf.toLowerCase().endsWith(canvasTag.slice(0, pLen))
+            ) {
               const partialIdx = pendingTextBuf.length - pLen;
               if (holdIdx === -1 || partialIdx < holdIdx) {
                 holdIdx = partialIdx;
@@ -3773,7 +5900,11 @@ router.post("/agent/chat", async (req, res) => {
             // PD-5: Only add function calls with a valid name — filter out
             // malformed parts where Gemini sends a functionCall with no name.
             if (p.functionCall.name) {
-              functionCalls.push({ id: p.functionCall.id, name: p.functionCall.name, args: (p.functionCall.args ?? {}) as Record<string, any> });
+              functionCalls.push({
+                id: p.functionCall.id,
+                name: p.functionCall.name,
+                args: (p.functionCall.args ?? {}) as Record<string, any>,
+              });
               rawFcParts.push(p);
             }
           }
@@ -3808,11 +5939,16 @@ router.post("/agent/chat", async (req, res) => {
         if (emptyResponseRetries < 3) {
           emptyResponseRetries++;
           iterations--; // don't count against MAX_ITERATIONS
-          await new Promise(r => setTimeout(r, emptyResponseRetries * 800));
+          await new Promise((r) => setTimeout(r, emptyResponseRetries * 800));
           continue;
         }
         // Three empty responses — give graceful message and stop
-        sseEvent(res, { type: "text", content: "I'm having trouble responding right now. Please try sending that again in a moment.", runId });
+        sseEvent(res, {
+          type: "text",
+          content:
+            "I'm having trouble responding right now. Please try sending that again in a moment.",
+          runId,
+        });
         finalAnswerSent = true;
         break;
       }
@@ -3824,8 +5960,12 @@ router.post("/agent/chat", async (req, res) => {
         // Extract [SUGGESTIONS: "a" | "b" | "c"] from the final text
         const sugMatch = fullText.match(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s);
         if (sugMatch) {
-          const items = sugMatch[1].split("|").map(s => s.trim().replace(/^"|"$/g, "")).filter(Boolean);
-          if (items.length > 0) sseEvent(res, { type: "suggestions", items, runId } as any);
+          const items = sugMatch[1]
+            .split("|")
+            .map((s) => s.trim().replace(/^"|"$/g, ""))
+            .filter(Boolean);
+          if (items.length > 0)
+            sseEvent(res, { type: "suggestions", items, runId } as any);
         }
         // Only send full text event if we didn't already stream it via text_delta
         if (!streamedTextLive) {
@@ -3836,13 +5976,21 @@ router.post("/agent/chat", async (req, res) => {
         // Sends source URLs (for [1][2] citations) + the required Google Search
         // suggestions widget HTML.
         if (lastGroundingMeta) {
-          const chunks = (lastGroundingMeta.groundingChunks ?? []).map((c: any) => ({
-            title: c.web?.title ?? "",
-            uri: c.web?.uri ?? "",
-          })).filter((c: any) => c.uri);
-          const searchEntryPoint = lastGroundingMeta.searchEntryPoint?.renderedContent ?? null;
+          const chunks = (lastGroundingMeta.groundingChunks ?? [])
+            .map((c: any) => ({
+              title: c.web?.title ?? "",
+              uri: c.web?.uri ?? "",
+            }))
+            .filter((c: any) => c.uri);
+          const searchEntryPoint =
+            lastGroundingMeta.searchEntryPoint?.renderedContent ?? null;
           if (chunks.length > 0 || searchEntryPoint) {
-            sseEvent(res, { type: "grounding_sources", runId, chunks, searchEntryPoint } as any);
+            sseEvent(res, {
+              type: "grounding_sources",
+              runId,
+              chunks,
+              searchEntryPoint,
+            } as any);
           }
         }
         break;
@@ -3853,7 +6001,7 @@ router.post("/agent/chat", async (req, res) => {
         type: "plan",
         runId,
         iteration: iterations,
-        steps: functionCalls.map(fc => ({ tool: fc.name, args: fc.args })),
+        steps: functionCalls.map((fc) => ({ tool: fc.name, args: fc.args })),
       });
 
       // ── 4. Execute tools sequentially ─────────────────────────────────────
@@ -3866,7 +6014,7 @@ router.post("/agent/chat", async (req, res) => {
           sseEvent(res, {
             type: "text_delta",
             runId,
-            content: preToolText + "\n\n"
+            content: preToolText + "\n\n",
           });
         }
       }
@@ -3877,8 +6025,22 @@ router.post("/agent/chat", async (req, res) => {
       ): Promise<{ index: number; response: any; hadError: boolean }> => {
         const toolId = randomUUID().slice(0, 8);
 
-        sseEvent(res, { type: "tool_start", runId, toolId, name: fc.name, args: fc.args, ts: Date.now() });
-        sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: "Tool execution started", level: "info" });
+        sseEvent(res, {
+          type: "tool_start",
+          runId,
+          toolId,
+          name: fc.name,
+          args: fc.args,
+          ts: Date.now(),
+        });
+        sseEvent(res, {
+          type: "tool_log",
+          runId,
+          toolId,
+          name: fc.name,
+          message: "Tool execution started",
+          level: "info",
+        });
 
         let toolResult: any;
         let toolArtifact: object | undefined;
@@ -3887,28 +6049,69 @@ router.post("/agent/chat", async (req, res) => {
         try {
           // TS-12: Spread args to prevent mutation of fc.args by executeTool.
           // If the model retries with the same fc object, args remain pristine.
-          const { result, artifact } = await executeTool(fc.name, { ...fc.args }, req, res, isConnected, toolId, runId);
+          const { result, artifact } = await executeTool(
+            fc.name,
+            { ...fc.args },
+            req,
+            res,
+            isConnected,
+            toolId,
+            runId,
+          );
           toolResult = result;
           toolArtifact = artifact;
           hadError = Boolean(toolResult?.error);
         } catch (toolErr: any) {
           hadError = true;
           toolResult = { error: toolErr?.message ?? "Tool execution failed" };
-          sseEvent(res, { type: "tool_progress", runId, toolId, name: fc.name, status: "error", message: toolErr?.message ?? "Failed" });
-          sseEvent(res, { type: "tool_log", runId, toolId, name: fc.name, message: toolErr?.message ?? "Tool failed", level: "error" });
+          sseEvent(res, {
+            type: "tool_progress",
+            runId,
+            toolId,
+            name: fc.name,
+            status: "error",
+            message: toolErr?.message ?? "Failed",
+          });
+          sseEvent(res, {
+            type: "tool_log",
+            runId,
+            toolId,
+            name: fc.name,
+            message: toolErr?.message ?? "Tool failed",
+            level: "error",
+          });
         }
 
-        sseEvent(res, { type: "tool_done", runId, toolId, name: fc.name, result: toolResult, ts: Date.now() });
-        if (toolArtifact) sseEvent(res, { type: "artifact", runId, toolId, ...(toolArtifact as object) });
+        sseEvent(res, {
+          type: "tool_done",
+          runId,
+          toolId,
+          name: fc.name,
+          result: toolResult,
+          ts: Date.now(),
+        });
+        if (toolArtifact)
+          sseEvent(res, {
+            type: "artifact",
+            runId,
+            toolId,
+            ...(toolArtifact as object),
+          });
 
         return {
           index: fcIndex,
-          response: { functionResponse: { id: fc.id, name: fc.name, response: { result: toolResult } } },
+          response: {
+            functionResponse: {
+              id: fc.id,
+              name: fc.name,
+              response: { result: toolResult },
+            },
+          },
           hadError,
         };
       };
 
-      for (let fcIndex = 0; fcIndex < functionCalls.length && isConnected();) {
+      for (let fcIndex = 0; fcIndex < functionCalls.length && isConnected(); ) {
         const group = getToolParallelGroup(functionCalls[fcIndex].name);
         if (group === "serial") {
           const completed = await runToolCall(fcIndex, functionCalls[fcIndex]);
@@ -3919,7 +6122,10 @@ router.post("/agent/chat", async (req, res) => {
         }
 
         const limit = TOOL_PARALLEL_LIMITS[group];
-        const batch: Array<{ index: number; fc: { name: string; args: Record<string, any> } }> = [];
+        const batch: Array<{
+          index: number;
+          fc: { name: string; args: Record<string, any> };
+        }> = [];
         while (
           fcIndex < functionCalls.length &&
           batch.length < limit &&
@@ -3931,9 +6137,21 @@ router.post("/agent/chat", async (req, res) => {
 
         // Use allSettled as defense-in-depth — if a runToolCall throws a JS
         // runtime error outside its try/catch, other tools still complete (H fix).
-        const completed = (await Promise.allSettled(batch.map(({ index, fc }) => runToolCall(index, fc))))
-          .filter((r): r is PromiseFulfilledResult<{ index: number; response: any; hadError: boolean }> => r.status === "fulfilled")
-          .map(r => r.value);
+        const completed = (
+          await Promise.allSettled(
+            batch.map(({ index, fc }) => runToolCall(index, fc)),
+          )
+        )
+          .filter(
+            (
+              r,
+            ): r is PromiseFulfilledResult<{
+              index: number;
+              response: any;
+              hadError: boolean;
+            }> => r.status === "fulfilled",
+          )
+          .map((r) => r.value);
         for (const item of completed) {
           toolResults[item.index] = item.response;
           iterationHadError ||= item.hadError;
@@ -3945,15 +6163,25 @@ router.post("/agent/chat", async (req, res) => {
       // ── 5. JUDGE — verify results, feed correction context to model (hidden) ──
       // Do NOT emit visible text — the tool card already shows error state.
       // Just push a hidden correction turn so the model self-heals.
-      sseEvent(res, { type: "thinking", runId, stage: "verifying", iteration: iterations, total: MAX_ITERATIONS });
+      sseEvent(res, {
+        type: "thinking",
+        runId,
+        stage: "verifying",
+        iteration: iterations,
+        total: MAX_ITERATIONS,
+      });
       if (iterationHadError) {
         const failedTools = orderedToolResults
-          .filter(tr => tr.functionResponse?.response?.result?.error)
-          .map(tr => `${tr.functionResponse.name}: ${tr.functionResponse.response.result.error}`)
+          .filter((tr) => tr.functionResponse?.response?.result?.error)
+          .map(
+            (tr) =>
+              `${tr.functionResponse.name}: ${tr.functionResponse.response.result.error}`,
+          )
           .join("; ");
-        orderedToolResults.push({ text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.` });
+        orderedToolResults.push({
+          text: `[JUDGE] Tools failed: ${failedTools}. Correct arguments and retry, or explain clearly why it cannot be done.`,
+        });
       }
-
 
       // ── 6. Build history for next iteration ───────────────────────────────
       // Use rawFcParts (not reconstructed) to preserve thought_signature
@@ -3972,7 +6200,11 @@ router.post("/agent/chat", async (req, res) => {
 
     // ── Graceful MAX_ITERATIONS exit ──────────────────────────────────────
     if (iterations >= MAX_ITERATIONS && !finalAnswerSent && isConnected()) {
-      sseEvent(res, { type: "text", content: `\n⚠️ **Note:** Reached the maximum of ${MAX_ITERATIONS} steps. The task may be partially complete — check the results above and ask me to continue if needed.\n`, runId });
+      sseEvent(res, {
+        type: "text",
+        content: `\n⚠️ **Note:** Reached the maximum of ${MAX_ITERATIONS} steps. The task may be partially complete — check the results above and ask me to continue if needed.\n`,
+        runId,
+      });
     }
 
     if (isConnected()) {
@@ -3984,7 +6216,12 @@ router.post("/agent/chat", async (req, res) => {
       let errMsg: string = err?.message ?? "Unknown copilot error";
       // Specific: Gemini 'empty output' transient error — always show clean message
       if (/model output must contain|both be empty/i.test(errMsg)) {
-        sseEvent(res, { type: "text", content: "I hit a brief connection issue — just send that again and I'll be right on it.", runId });
+        sseEvent(res, {
+          type: "text",
+          content:
+            "I hit a brief connection issue — just send that again and I'll be right on it.",
+          runId,
+        });
         sseEvent(res, { type: "done", runId, ts: Date.now() });
         runCompleted = true;
         return;
@@ -3993,14 +6230,22 @@ router.post("/agent/chat", async (req, res) => {
         const parsed = JSON.parse(errMsg);
         const inner = parsed?.error?.message ?? parsed?.message ?? errMsg;
         // Strip the long docs URL reference
-        errMsg = String(inner).split(/\.?\s*Please refer to https?:\/\//).shift()!.trim();
-      } catch { /* not JSON, use as-is */ }
+        errMsg = String(inner)
+          .split(/\.?\s*Please refer to https?:\/\//)
+          .shift()!
+          .trim();
+      } catch {
+        /* not JSON, use as-is */
+      }
       // Also sanitize other known internal Gemini error patterns
       errMsg = errMsg
         .replace(/\[JUDGE\][^\]]*\]/gi, "")
         .replace(/thought_signature/gi, "")
         .trim();
-      sseEvent(res, { type: "error", message: errMsg || "Something went wrong — please try again." });
+      sseEvent(res, {
+        type: "error",
+        message: errMsg || "Something went wrong — please try again.",
+      });
     }
   } finally {
     clearInterval(keepAlive);
@@ -4027,27 +6272,54 @@ const MUSIC_SHARE_SITE_URL = (
 ).replace(/\/+$/, "");
 
 function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    // Apostrophe must be escaped too — without it, a title containing `'`
-    // can break out of HTML attribute contexts in the share page.
-    .replace(/'/g, "&#39;");
+  return (
+    s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      // Apostrophe must be escaped too — without it, a title containing `'`
+      // can break out of HTML attribute contexts in the share page.
+      .replace(/'/g, "&#39;")
+  );
 }
 
 router.post("/agent/music-share", async (req: Request, res: Response) => {
   try {
-    const { audioUrl, imageUrl, title } = req.body as { audioUrl?: string; imageUrl?: string; title?: string };
-    if (typeof audioUrl !== "string" || !audioUrl) return void res.status(400).json({ error: "audioUrl is required" });
+    const { audioUrl, imageUrl, title } = req.body as {
+      audioUrl?: string;
+      imageUrl?: string;
+      title?: string;
+    };
+    if (typeof audioUrl !== "string" || !audioUrl)
+      return void res.status(400).json({ error: "audioUrl is required" });
     // Only allow HTTPS URLs — blocks javascript: / data: XSS vectors in the share HTML
-    if (!audioUrl.startsWith("https://")) return void res.status(400).json({ error: "audioUrl must be an HTTPS URL" });
-    if (imageUrl != null && typeof imageUrl !== "string") return void res.status(400).json({ error: "imageUrl must be an HTTPS URL" });
-    if (imageUrl && !imageUrl.startsWith("https://")) return void res.status(400).json({ error: "imageUrl must be an HTTPS URL" });
+    if (!audioUrl.startsWith("https://"))
+      return void res
+        .status(400)
+        .json({ error: "audioUrl must be an HTTPS URL" });
+    if (imageUrl != null && typeof imageUrl !== "string")
+      return void res
+        .status(400)
+        .json({ error: "imageUrl must be an HTTPS URL" });
+    if (imageUrl && !imageUrl.startsWith("https://"))
+      return void res
+        .status(400)
+        .json({ error: "imageUrl must be an HTTPS URL" });
     const shareId = randomUUID().replace(/-/g, "").slice(0, 16);
-    const payload = JSON.stringify({ audioUrl, imageUrl: imageUrl ?? null, title: title ?? "Generated Music", createdAt: Date.now() });
-    const upload = await uploadTextToS3({ body: payload, jobId: shareId, namespace: "music-shares", filename: "share.json", contentType: "application/json" });
+    const payload = JSON.stringify({
+      audioUrl,
+      imageUrl: imageUrl ?? null,
+      title: title ?? "Generated Music",
+      createdAt: Date.now(),
+    });
+    const upload = await uploadTextToS3({
+      body: payload,
+      jobId: shareId,
+      namespace: "music-shares",
+      filename: "share.json",
+      contentType: "application/json",
+    });
     const token = Buffer.from(upload.key).toString("base64url");
     const shareUrl = `${MUSIC_SHARE_SITE_URL}/api/agent/music-share/${token}`;
     res.json({ shareId: token, shareUrl });
@@ -4056,27 +6328,48 @@ router.post("/agent/music-share", async (req: Request, res: Response) => {
   }
 });
 
-router.get("/agent/music-share/:shareId", async (req: Request, res: Response) => {
-  try {
-    const token = String(req.params.shareId).replace(/[^a-zA-Z0-9_\-]/g, "");
-    if (!token) return void res.status(400).json({ error: "Invalid share ID" });
-    // Decode the base64url token back to the S3 key
-    let key: string;
-    try { key = Buffer.from(token, "base64url").toString("utf8"); } catch { return void res.status(400).json({ error: "Invalid share ID" }); }
-    if (!key.includes("/music-shares/")) return void res.status(400).json({ error: "Invalid share ID" });
-    let payload: { audioUrl: string; imageUrl?: string | null; title: string; createdAt: number };
+router.get(
+  "/agent/music-share/:shareId",
+  async (req: Request, res: Response) => {
     try {
-      payload = JSON.parse(await readTextFromS3(key));
-    } catch {
-      return void res.status(404).send("Music track not found or has expired.");
-    }
-    const { audioUrl, imageUrl, title } = payload;
-    const safeTitle = escapeHtml(title ?? "Generated Music");
-    // Filesystem-safe filename for download: alphanum + hyphen/underscore only
-    const safeFilename = (title ?? "Generated Music").replace(/[^a-zA-Z0-9\s\-_]/g, "").replace(/\s+/g, "_").slice(0, 80) + ".mp3";
-    const appUrl = MUSIC_SHARE_SITE_URL;
-    const sharePageUrl = escapeHtml(`${appUrl}/api/agent/music-share/${token}`);
-    const html = `<!DOCTYPE html>
+      const token = String(req.params.shareId).replace(/[^a-zA-Z0-9_\-]/g, "");
+      if (!token)
+        return void res.status(400).json({ error: "Invalid share ID" });
+      // Decode the base64url token back to the S3 key
+      let key: string;
+      try {
+        key = Buffer.from(token, "base64url").toString("utf8");
+      } catch {
+        return void res.status(400).json({ error: "Invalid share ID" });
+      }
+      if (!key.includes("/music-shares/"))
+        return void res.status(400).json({ error: "Invalid share ID" });
+      let payload: {
+        audioUrl: string;
+        imageUrl?: string | null;
+        title: string;
+        createdAt: number;
+      };
+      try {
+        payload = JSON.parse(await readTextFromS3(key));
+      } catch {
+        return void res
+          .status(404)
+          .send("Music track not found or has expired.");
+      }
+      const { audioUrl, imageUrl, title } = payload;
+      const safeTitle = escapeHtml(title ?? "Generated Music");
+      // Filesystem-safe filename for download: alphanum + hyphen/underscore only
+      const safeFilename =
+        (title ?? "Generated Music")
+          .replace(/[^a-zA-Z0-9\s\-_]/g, "")
+          .replace(/\s+/g, "_")
+          .slice(0, 80) + ".mp3";
+      const appUrl = MUSIC_SHARE_SITE_URL;
+      const sharePageUrl = escapeHtml(
+        `${appUrl}/api/agent/music-share/${token}`,
+      );
+      const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -4087,9 +6380,13 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   <meta property="og:url" content="${sharePageUrl}">
   <meta property="og:site_name" content="VideoMaking Studio">
   <meta property="og:type" content="music.song">
-  ${imageUrl ? `<meta property="og:image" content="${escapeHtml(imageUrl)}">
+  ${
+    imageUrl
+      ? `<meta property="og:image" content="${escapeHtml(imageUrl)}">
   <meta property="og:image:width" content="1024">
-  <meta property="og:image:height" content="1024">` : ""}
+  <meta property="og:image:height" content="1024">`
+      : ""
+  }
   <meta name="twitter:card" content="${imageUrl ? "summary_large_image" : "summary"}">
   <meta name="twitter:title" content="${safeTitle}">
   <meta name="twitter:description" content="🎵 AI-generated music. Listen and create your own at VideoMaking Studio.">
@@ -4144,12 +6441,13 @@ router.get("/agent/music-share/:shareId", async (req: Request, res: Response) =>
   </script>
 </body>
 </html>`;
-    res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Cache-Control", "public, max-age=3600");
-    res.send(html);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.send(html);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
 
 export default router;

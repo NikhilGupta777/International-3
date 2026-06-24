@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --break-system-packages --upgrade \
     "yt-dlp[default,curl-cffi]" \
     bgutil-ytdlp-pot-provider
+    bgutil-ytdlp-pot-provider \
+    youtube-transcript-api
+
 
 RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 

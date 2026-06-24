@@ -1296,14 +1296,14 @@ function csvModels(value: string | undefined, fallback: string[]): string[] {
 
 const VIDEO_TRANSCRIPTION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_TRANSCRIPTION_MODELS, [
   "gemini-3.5-flash",
-  "gemini-2.5-flash",
+  "gemini-3-flash-preview",
 ]);
 
 const VIDEO_VERIFICATION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_VERIFICATION_MODELS, [
   "gemini-3.1-pro-preview",
   "gemini-3-pro-preview",
   "gemini-3.5-flash",
-  "gemini-2.5-flash",
+  "gemini-3-flash-preview",
 ]);
 
 async function generateWithPreferredModels(

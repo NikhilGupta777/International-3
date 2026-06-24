@@ -4,7 +4,8 @@ FROM public.ecr.aws/lambda/nodejs:22
 # through a Lambda-local helper. Browser login is not installed here; production
 # receives NOTEBOOKLM_AUTH_JSON from environment/secret config.
 RUN dnf install -y python3.11 python3.11-pip \
-    && LD_LIBRARY_PATH=/usr/lib64:/lib64 python3.11 -m pip install --no-cache-dir notebooklm-py==0.3.4 \
+    && LD_LIBRARY_PATH=/usr/lib64:/lib64 python3.11 -m pip install --no-cache-dir notebooklm-py==0.3.4 youtube-transcript-api \
+
     && LD_LIBRARY_PATH=/usr/lib64:/lib64 python3.11 -c "from notebooklm import NotebookLMClient; print('notebooklm-py import ok', NotebookLMClient)"
 
 # Pin yt-dlp version for stable Docker layer caching.

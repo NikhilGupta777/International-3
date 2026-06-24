@@ -32,6 +32,7 @@ import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { readTextFromS3 } from "../lib/s3-storage";
 import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { tryFetchSubtitlesWithApi } from "./youtube";
 
 const router = Router();
 
@@ -758,6 +759,19 @@ async function fetchTranscript(
 
     // 3. yt-dlp subtitle download
     try {
+      // Approach 1.5: youtube_transcript_api (fast, lightweight Python API)
+      try {
+        const fetched = await tryFetchSubtitlesWithApi(url, videoLang, "webvtt");
+        if (fetched) {
+          const cues = parseVtt(fetched);
+          const deduped: VttCue[] = [];
+          for (const cue of cues) {
+            if (!deduped.length || deduped[deduped.length - 1].text !== cue.text) deduped.push(cue);
+          }
+          if (deduped.length > 0) return { transcript: chapterHints + cuesToText(deduped), source: "youtube" };
+        }
+      } catch (_e) {}
+
       mkdirSync(subDir, { recursive: true });
       const subBase = join(subDir, "sub");
       await runYtDlpForSubs(["--write-subs", "--write-auto-subs", "--sub-lang", "hi.*,en.*", "--sub-format", "vtt", "--skip-download", "--no-warnings", "--no-playlist", "-o", subBase, url]).catch(() => {});

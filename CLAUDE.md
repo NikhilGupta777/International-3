@@ -326,7 +326,7 @@ Single PUT for < 50 MB; 10 MB multipart parts for >= 50 MB. 7-day DynamoDB TTL. 
 
 SSE event stream: `run_start` → `text` / `tool_start` / `tool_progress` / `tool_log` / `tool_done` / `artifact` / `navigate` → `done`. Heartbeat every 8 seconds to keep connection alive.
 
-Models: `COPILOT_MODEL` (default `gemini-3-flash-preview`), ultra mode → `gemini-2.5-pro`, search → `gemini-2.5-flash`. Max iterations: 24 (`COPILOT_MAX_ITERATIONS`). Max output tokens: 16,384.
+Models: `COPILOT_MODEL` (default `gemini-3-flash-preview`), ultra mode → `gemini-3.1-pro-preview`, search → `gemini-3.5-flash`. Max iterations: 24 (`COPILOT_MAX_ITERATIONS`). Max output tokens: 16,384.
 
 Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-stream.ts` in production) to hit the same Express instance without a network round-trip.
 
@@ -595,8 +595,8 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `TRANSLATOR_MAX_VIDEO_SIZE_BYTES` | | `2147483648` | Max upload size (2 GB) |
 | `TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS` | | `1` | Allow HF/ModelScope downloads in worker |
 | `COPILOT_MODEL` | | `gemini-3-flash-preview` | Default agent model |
-| `COPILOT_ULTRA_MODEL` | | `gemini-2.5-pro` | Ultra mode model |
-| `COPILOT_SEARCH_MODEL` | | `gemini-2.5-flash` | Web search model |
+| `COPILOT_ULTRA_MODEL` | | `gemini-3.1-pro-preview` | Ultra mode model |
+| `COPILOT_SEARCH_MODEL` | | `gemini-3.5-flash` | Web search model |
 | `COPILOT_MAX_ITERATIONS` | | `24` | Max agent tool calls per turn |
 | `COPILOT_MAX_OUTPUT_TOKENS` | | `16384` | Max agent response tokens |
 | `INTERNAL_API_BASE` | | auto-detected | Base URL for agent's internal API calls (set by lambda-stream.ts) |

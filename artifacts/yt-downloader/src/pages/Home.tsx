@@ -1219,6 +1219,7 @@ export default function Home({
                         return;
                       }
                       setPendingCopilotPrompt(prompt);
+                      setCopilotResetKey(k => k + 1);
                       switchMode("copilot");
                     }}
                   />

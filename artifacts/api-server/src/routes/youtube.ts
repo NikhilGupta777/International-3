@@ -896,7 +896,7 @@ function getYtdlpCookieArgs(): string[] {
   }
 }
 
-function isYouTubeUrl(url: string): boolean {
+export function isYouTubeUrl(url: string): boolean {
   try {
     const u = new URL(url);
     return /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(u.hostname);
@@ -1339,6 +1339,57 @@ function runYtDlpForSubs(args: string[]): Promise<void> {
   });
 }
 
+export async function tryFetchSubtitlesWithApi(
+  url: string,
+  lang?: string,
+  format: "webvtt" | "srt" = "webvtt",
+): Promise<string | null> {
+  try {
+    const videoId = extractVideoId(url);
+    if (!videoId) return null;
+
+    const languages: string[] = [];
+    if (lang) {
+      const parts = lang.split(",").map(p => p.split(".")[0].trim()).filter(Boolean);
+      languages.push(...parts);
+    }
+    languages.push("hi", "en");
+    const targetLangs = Array.from(new Set(languages));
+
+    const result = await new Promise<string>((resolve, reject) => {
+      const proc = spawn(
+        "youtube_transcript_api",
+        [videoId, "--languages", ...targetLangs, "--format", format],
+        {
+          env: { ...PYTHON_ENV, PYTHONIOENCODING: "utf-8" },
+        },
+      );
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", (data) => {
+        stdout += data.toString();
+      });
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+      proc.on("close", (code) => {
+        if (code === 0) resolve(stdout);
+        else reject(new Error(stderr || `youtube_transcript_api exited with code ${code}`));
+      });
+      proc.on("error", (err) => {
+        reject(err);
+      });
+    });
+
+    if (result && (result.includes("WEBVTT") || result.includes("-->"))) {
+      return result;
+    }
+  } catch (err: any) {
+    logger.warn({ err, url, lang }, "youtube_transcript_api fetch failed, falling back");
+  }
+  return null;
+}
+
 function extractVideoId(url: string): string | null {
   try {
     const u = new URL(url);
@@ -1358,7 +1409,7 @@ function extractVideoId(url: string): string | null {
   return null;
 }
 
-function normalizeInputUrl(raw: string): string {
+export function normalizeInputUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
   const candidate =
@@ -3782,6 +3833,12 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
 
     let vttContent: string | null = null;
 
+    // Approach 0: youtube_transcript_api (fast, lightweight Python API)
+    try {
+      const fetched = await tryFetchSubtitlesWithApi(normalizedUrl, lang, "webvtt");
+      if (fetched) vttContent = fetched;
+    } catch (_e) {}
+
     // Approach 1: dump-json to get subtitle URL directly (faster, no extra yt-dlp download)
     try {
       const metaJson = await runYtDlp([
@@ -3958,6 +4015,12 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
     mkdirSync(subDir, { recursive: true });
     const subBase = join(subDir, "sub");
     let vttContent: string | null = null;
+
+    // Approach 0: youtube_transcript_api (fast, lightweight Python API)
+    try {
+      const fetched = await tryFetchSubtitlesWithApi(normalizedUrl, undefined, "webvtt");
+      if (fetched) vttContent = fetched;
+    } catch (_e) {}
 
     try {
       const metaJson = await runYtDlp(["--dump-json", "--no-playlist", "--no-warnings", normalizedUrl]);
@@ -4770,6 +4833,12 @@ export async function runClipAnalysis(
     if (!transcript) {
       step("transcript", "running", "Downloading transcript...");
       let vttContent: string | null = null;
+
+      // Approach 0: youtube_transcript_api (fast, lightweight Python API)
+      try {
+        const fetched = await tryFetchSubtitlesWithApi(url, undefined, "webvtt");
+        if (fetched) vttContent = fetched;
+      } catch (_e) {}
 
       // Approach 1: Direct URL fetch from metadata subtitle map (fastest, no extra yt-dlp)
       if (metaSubtitleUrl && !vttContent) {

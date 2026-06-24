@@ -12,9 +12,12 @@ import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
 import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
-import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb } from "../lib/youtube-queue";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
+import { uploadLocalFileToGCS, deleteLocalFile } from "../lib/gcs-storage";
+import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
+
 
 const VIDEO_EDITOR_QUEUE_ENABLED =
   (process.env.VIDEO_EDITOR_BATCH_ENABLED || "").toLowerCase() === "true";
@@ -2432,6 +2435,9 @@ function snapshotRecipeSummary(project: EditorProject): string {
   return `aspect=${r.aspectRatio}, crop=${r.cropMode}, trim=${r.trim.start}->${r.trim.end ?? "end"}, intro=${r.intro.enabled}, outro=${r.outro.enabled}, transitions=${r.transitions?.fade === false ? "cut" : "fade"}, overlays=[${ov}]`;
 }
 
+// Global cache map to store workspace sourceVideo -> GCS gs:// URI mappings for the project chat
+const globalUrlToGcsCache = new Map<string, string>();
+
 router.post("/projects/:projectId/chat", async (req: Request, res: Response): Promise<void> => {
   // Use a non-throwing scope so we can persist defensively in error paths
   // without losing the user message or any tool progress on a Gemini failure
@@ -2564,11 +2570,72 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
 
     const projectContext = `Current project:\n- sourceVideo: ${project.sourceVideo ?? "(none)"}\n- assets.logo: ${project.assets.logo ?? "(none)"}\n- assets.intro: ${project.assets.intro ?? "(none)"}\n- assets.outro: ${project.assets.outro ?? "(none)"}\n- recipe: ${snapshotRecipeSummary(project)}`;
 
+    let resolvedVideoUri: string | null = null;
+    let resolvedMimeType = "video/mp4";
+    const useVertex = isVertexGeminiEnabled();
+
+    if (useVertex && project.sourceVideo) {
+      if (isYouTubeUrl(project.sourceVideo)) {
+        try {
+          const normalizedYt = normalizeInputUrl(project.sourceVideo);
+          resolvedVideoUri = normalizedYt;
+          resolvedMimeType = "video/mp4";
+        } catch (err: any) {
+          logger.warn({ url: project.sourceVideo, err: err.message }, "[video-editor] Failed to normalize YouTube URL for chat");
+        }
+      } else {
+        const cacheKey = `${ws.identity.workspaceId}:${project.sourceVideo}`;
+        if (globalUrlToGcsCache.has(cacheKey)) {
+          resolvedVideoUri = globalUrlToGcsCache.get(cacheKey)!;
+          // Determine mime type from extension
+          const ext = extname(project.sourceVideo).toLowerCase();
+          if (ext === ".mp3") resolvedMimeType = "audio/mp3";
+          else if (ext === ".wav") resolvedMimeType = "audio/wav";
+          else if (ext === ".m4a") resolvedMimeType = "audio/x-m4a";
+          else if (ext === ".mov") resolvedMimeType = "video/quicktime";
+          else if (ext === ".avi") resolvedMimeType = "video/x-msvideo";
+          else if (ext === ".mkv") resolvedMimeType = "video/x-matroska";
+          logger.info({ sourceVideo: project.sourceVideo, resolvedVideoUri }, "[video-editor] Reusing cached GCS URI for sourceVideo");
+        } else {
+          try {
+            const localTempPath = join(tmpdir(), `vms-editor-chat-${randomUUID()}${extname(project.sourceVideo) || ".mp4"}`);
+            logger.info({ sourceVideo: project.sourceVideo, localTempPath }, "[video-editor] Downloading workspace sourceVideo to upload to GCS");
+            await downloadWorkspaceFile(ws, project.sourceVideo, localTempPath);
+
+            const destinationBlobName = `editor_attachments/${projectId}/${randomUUID()}_${extname(project.sourceVideo) ? project.sourceVideo.split("/").pop() : "sourceVideo.mp4"}`;
+            // Determine mime type from extension
+            const ext = extname(project.sourceVideo).toLowerCase();
+            if (ext === ".mp3") resolvedMimeType = "audio/mp3";
+            else if (ext === ".wav") resolvedMimeType = "audio/wav";
+            else if (ext === ".m4a") resolvedMimeType = "audio/x-m4a";
+            else if (ext === ".mov") resolvedMimeType = "video/quicktime";
+            else if (ext === ".avi") resolvedMimeType = "video/x-msvideo";
+            else if (ext === ".mkv") resolvedMimeType = "video/x-matroska";
+
+            const gsUri = await uploadLocalFileToGCS(localTempPath, destinationBlobName, resolvedMimeType);
+            await deleteLocalFile(localTempPath);
+
+            globalUrlToGcsCache.set(cacheKey, gsUri);
+            resolvedVideoUri = gsUri;
+            logger.info({ sourceVideo: project.sourceVideo, gsUri }, "[video-editor] Uploaded sourceVideo to GCS successfully");
+          } catch (err: any) {
+            logger.error({ sourceVideo: project.sourceVideo, err: err.message }, "[video-editor] Failed to download/upload workspace sourceVideo to GCS");
+          }
+        }
+      }
+    }
+
+    const projectContextParts: any[] = [{ text: projectContext }];
+    if (resolvedVideoUri) {
+      projectContextParts.push({ fileData: { fileUri: resolvedVideoUri, mimeType: resolvedMimeType } });
+    }
+
     const contents: any[] = history.slice(-12).map((m) => ({
       role: m.role === "assistant" ? "model" : "user",
       parts: [{ text: m.content || (m.tool ? `(tool ${m.tool.name})` : "") }],
     }));
-    contents.unshift({ role: "user", parts: [{ text: projectContext }] });
+    contents.unshift({ role: "user", parts: projectContextParts });
+
 
     let iterations = 0;
     const maxIterations = 6;
