@@ -485,22 +485,6 @@ function escapeDrawText(text: string): string {
     .replace(/\]/g, "\\]");
 }
 
-function baseVideoFilter(recipe: EditRecipe, width: number, height: number): string {
-  if (recipe.cropMode === "contain") {
-    return `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`;
-  }
-  return `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1`;
-}
-
-function overlayPosition(position: LogoPosition, margin: number): string {
-  switch (position) {
-    case "top-left": return `${margin}:${margin}`;
-    case "bottom-right": return `W-w-${margin}:H-h-${margin}`;
-    case "bottom-left": return `${margin}:H-h-${margin}`;
-    case "top-right": return `W-w-${margin}:${margin}`;
-  }
-}
-
 function overlayPositionAny(position: string, margin: number): string {
   switch (position) {
     case "top-left": return `${margin}:${margin}`;
@@ -518,107 +502,6 @@ function timelineEnable(clipStart: number, clipEnd: number): string {
   if (!(clipEnd > clipStart)) return "";
   return `:enable='between(t,${Math.max(0, clipStart).toFixed(3)},${clipEnd.toFixed(3)})'`;
 }
-
-function buildFfmpegArgs(params: {
-  sourcePath: string;
-  logoPath?: string | null;
-  outputPath: string;
-  recipe: EditRecipe;
-  preview: boolean;
-}): string[] {
-  const { width, height } = targetSize(params.recipe.aspectRatio);
-  const args = ["-y"];
-  const duration = params.preview ? 8 : null;
-  if (params.recipe.trim.start > 0) args.push("-ss", String(params.recipe.trim.start));
-  if (duration) args.push("-t", String(duration));
-  else if (params.recipe.trim.end != null && params.recipe.trim.end > params.recipe.trim.start) {
-    args.push("-t", String(params.recipe.trim.end - params.recipe.trim.start));
-  }
-  args.push("-i", params.sourcePath);
-
-  const logoOverlay = params.recipe.overlays.find((item) => item.type === "logo" && params.logoPath) as
-    | Extract<EditRecipe["overlays"][number], { type: "logo" }>
-    | undefined;
-  if (logoOverlay && params.logoPath) args.push("-i", params.logoPath);
-
-  const filters: string[] = [];
-  if (params.recipe.cropMode === "fit-blur") {
-    filters.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},boxblur=24:2[bg]`);
-    filters.push(`[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos[fg]`);
-    filters.push(`[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[v0]`);
-  } else {
-    filters.push(`[0:v]${baseVideoFilter(params.recipe, width, height)}[v0]`);
-  }
-  let current = "v0";
-  let step = 1;
-
-  if (logoOverlay) {
-    const logoWidth = Math.max(48, Math.round(width * (logoOverlay.widthPercent / 100)));
-    const margin = Math.round(width * 0.045);
-    // Tighter keying with a soft alpha edge so fringe doesn't ring on dark scenes.
-    const keyFilter =
-      logoOverlay.key === "auto-white"
-        ? "format=rgba,colorkey=0xffffff:0.30:0.20,"
-        : logoOverlay.key === "auto-black"
-          ? "format=rgba,colorkey=0x000000:0.30:0.20,"
-          : "";
-    filters.push(`[1:v]${keyFilter}scale=${logoWidth}:-1:flags=lanczos[logo]`);
-    filters.push(`[${current}][logo]overlay=${overlayPosition(logoOverlay.position, margin)}:format=auto[v${step}]`);
-    current = `v${step}`;
-    step += 1;
-  }
-
-  for (const overlay of params.recipe.overlays) {
-    if (overlay.type !== "text") continue;
-    const fontSize = Math.max(34, Math.round(width * 0.055));
-    const y = overlay.position === "top-left" ? Math.round(height * 0.08) : Math.round(height * 0.88);
-    const x = overlay.position === "bottom-right" ? `w-text_w-${Math.round(width * 0.06)}` : "(w-text_w)/2";
-    filters.push(
-      `[${current}]drawtext=text='${escapeDrawText(overlay.text)}':fontcolor=white:fontsize=${fontSize}:borderw=3:bordercolor=black@0.65:x=${x}:y=${y}[v${step}]`,
-    );
-    current = `v${step}`;
-    step += 1;
-  }
-
-  const colorFilter = colorPresetFilter(params.recipe.colorPreset);
-  if (colorFilter) {
-    filters.push(`[${current}]${colorFilter}[v${step}]`);
-    current = `v${step}`;
-    step += 1;
-  }
-
-  const speed = Math.min(4, Math.max(0.25, params.recipe.speed || 1));
-  let audioMap: string[] = ["-map", "0:a?"];
-  if (Math.abs(speed - 1) > 0.001) {
-    filters.push(`[${current}]setpts=${(1 / speed).toFixed(4)}*PTS[v${step}]`);
-    current = `v${step}`;
-    step += 1;
-    // atempo accepts 0.5–2 per filter; chain for extreme speeds.
-    const atempoChain: string[] = [];
-    let remaining = speed;
-    while (remaining > 2.0001) { atempoChain.push("atempo=2.0"); remaining /= 2; }
-    while (remaining < 0.5 - 0.0001) { atempoChain.push("atempo=0.5"); remaining /= 0.5; }
-    atempoChain.push(`atempo=${remaining.toFixed(4)}`);
-    filters.push(`[0:a]${atempoChain.join(",")}[a0]`);
-    audioMap = ["-map", "[a0]"];
-  }
-
-  args.push(
-    "-filter_complex", filters.join(";"),
-    "-map", `[${current}]`,
-    ...audioMap,
-    "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", params.preview ? "28" : "22",
-    "-c:a", "aac",
-    "-b:a", "160k",
-    "-movflags", "+faststart",
-    "-shortest",
-    params.outputPath,
-  );
-  return args;
-}
-
 function colorPresetFilter(preset: ColorPreset): string | null {
   switch (preset) {
     case "vivid": return "eq=saturation=1.35:contrast=1.08";
@@ -736,32 +619,6 @@ function ffmpegStageProgress(
       if (next > job.progress) job.progress = Math.min(toPct, next);
     },
   };
-}
-
-async function normalizeClip(input: string, output: string, width: number, height: number, fade: boolean, fadeIn: boolean, fadeOut: boolean): Promise<void> {
-  // Probe duration for fade-out positioning.
-  const dur = await probeDuration(input).catch(() => 0);
-  const filters: string[] = [
-    `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
-    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
-    `setsar=1`,
-  ];
-  if (fade && fadeIn) filters.push(`fade=t=in:st=0:d=0.4`);
-  if (fade && fadeOut && dur > 0.5) filters.push(`fade=t=out:st=${Math.max(0, dur - 0.4).toFixed(2)}:d=0.4`);
-  const audioFilters: string[] = [];
-  if (fade && fadeIn) audioFilters.push(`afade=t=in:st=0:d=0.4`);
-  if (fade && fadeOut && dur > 0.5) audioFilters.push(`afade=t=out:st=${Math.max(0, dur - 0.4).toFixed(2)}:d=0.4`);
-  const args = [
-    "-y", "-i", input,
-    "-vf", filters.join(","),
-    ...(audioFilters.length ? ["-af", audioFilters.join(",")] : []),
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
-    "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-ac", "2",
-    "-pix_fmt", "yuv420p",
-    "-movflags", "+faststart",
-    output,
-  ];
-  await runFfmpegRaw(args);
 }
 
 async function probeMetadata(input: string): Promise<{ duration: number; width: number; height: number; hasAudio: boolean }> {
@@ -933,34 +790,6 @@ async function uploadWorkspaceFile(ws: ReturnType<typeof getWorkspace>, source: 
   if (!res.ok) throw new Error(`Could not upload render: ${res.status}`);
 }
 
-function runFfmpeg(args: string[], job: EditorJob): Promise<void> {
-  return new Promise((resolve, reject) => {
-    try { assertRenderNotCancelled(job); } catch (err) { reject(err); return; }
-    job.status = "running";
-    job.progress = Math.max(job.progress, 25);
-    job.message = "Rendering video...";
-    const proc = spawn(FFMPEG_BIN, args);
-    activeRenderProcesses.set(job.jobId, proc);
-    let stderr = "";
-    proc.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-      if (stderr.length > 12000) stderr = stderr.slice(-12000);
-      if (job.status === "running") job.progress = Math.min(88, job.progress + 2);
-    });
-    proc.on("error", (err) => {
-      activeRenderProcesses.delete(job.jobId);
-      if (job.status === "cancelled") return reject(new Error("render cancelled"));
-      return reject(new Error(`Failed to start FFmpeg: ${err.message}`));
-    });
-    proc.on("close", (code) => {
-      activeRenderProcesses.delete(job.jobId);
-      if (job.status === "cancelled") return reject(new Error("render cancelled"));
-      if (code === 0) resolve();
-      else reject(new Error(stderr.slice(-1200) || `FFmpeg exited with code ${code}`));
-    });
-  });
-}
-
 async function persistJobToProject(ws: ReturnType<typeof getWorkspace>, projectId: string, job: EditorJob): Promise<void> {
   const latest = await readProjectFromWorkspace(ws, projectId);
   await writeProjectToWorkspace(ws, {
@@ -1128,7 +957,7 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
     const tl = project.timeline ?? undefined;
     const hasV2Clips = tl && tl.tracks.video.length > 0;
 
-    if (!hasV2Clips && !project.sourceVideo) throw new Error("No video clips to render.");
+    if (!hasV2Clips) throw new Error("No timeline clips to render. Use the agent to add clips first.");
 
     const outputPath = join(dir, `${job.kind}.mp4`);
     const workspaceOutput = `editor/renders/${projectId}/${job.kind}-${job.jobId}.mp4`;
@@ -1352,25 +1181,7 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         await (await import("fs/promises")).rename(currentPath, outputPath);
       }
     } else {
-      // ═══ Legacy single-source render (fallback) ═══
-      const sourcePath = join(dir, `source${extname(project.sourceVideo!) || ".mp4"}`);
-      const logoOverlay = project.recipe.overlays.find((item) => item.type === "logo") as
-        | Extract<EditRecipe["overlays"][number], { type: "logo" }>
-        | undefined;
-      const logoPath = logoOverlay?.asset ? join(dir, `logo${extname(logoOverlay.asset) || ".png"}`) : null;
-      const mainPath = join(dir, `main.mp4`);
-
-      job.message = "Downloading source assets...";
-      job.progress = 10;
-      await downloadWorkspaceFile(ws, project.sourceVideo!, sourcePath);
-      if (logoOverlay?.asset && logoPath) await downloadWorkspaceFile(ws, logoOverlay.asset, logoPath);
-
-      await runFfmpeg(buildFfmpegArgs({
-        sourcePath, logoPath, outputPath: mainPath, recipe: project.recipe, preview: job.kind === "preview",
-      }), job);
-      assertRenderNotCancelled(job);
-      if (!statSync(mainPath).size) throw new Error("Render produced an empty file");
-      await (await import("fs/promises")).rename(mainPath, outputPath);
+      throw new Error("No timeline clips to render. Use the agent to add clips first.");
     }
 
     assertRenderNotCancelled(job);
@@ -1459,31 +1270,6 @@ router.get("/projects/:projectId", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/projects/:projectId/agent", async (req: Request, res: Response) => {
-  try {
-    const project = await readProject(req, routeParam(req.params.projectId, "projectId"));
-    const prompt = typeof req.body?.prompt === "string" ? req.body.prompt.trim() : project.prompt;
-    const sourceVideo = cleanWorkspacePath(req.body?.sourceVideo) ?? project.sourceVideo;
-    const assets: EditorAssets = {
-      logo: cleanWorkspacePath(req.body?.assets?.logo) ?? project.assets.logo ?? null,
-      intro: cleanWorkspacePath(req.body?.assets?.intro) ?? project.assets.intro ?? null,
-      outro: cleanWorkspacePath(req.body?.assets?.outro) ?? project.assets.outro ?? null,
-    };
-    const next = await writeProject(req, {
-      ...project,
-      prompt,
-      sourceVideo,
-      assets,
-      recipe: generateRecipe(prompt, sourceVideo, assets),
-    });
-    return res.json({
-      project: next,
-      message: "Created a renderable edit recipe for the current v1 finishing tools.",
-    });
-  } catch (err) {
-    return fail(res, err);
-  }
-});
 
 router.post("/projects/:projectId/preview", async (req: Request, res: Response) => {
   return startRender(req, res, "preview");
@@ -1608,73 +1394,6 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
 }
-
-function normalizeRecipePatch(current: EditRecipe, patch: any): EditRecipe {
-  if (!patch || typeof patch !== "object") return current;
-  const next: EditRecipe = JSON.parse(JSON.stringify(current));
-  if (patch.aspectRatio && ["original", "9:16", "16:9", "1:1"].includes(patch.aspectRatio)) {
-    next.aspectRatio = patch.aspectRatio;
-  }
-  if (patch.cropMode && ["smart", "fit-blur", "contain"].includes(patch.cropMode)) {
-    next.cropMode = patch.cropMode;
-  }
-  if (patch.trim && typeof patch.trim === "object") {
-    next.trim = {
-      start: clampNumber(patch.trim.start, 0, 86400, next.trim.start || 0),
-      end: patch.trim.end == null ? null : clampNumber(patch.trim.end, 0, 86400, next.trim.end ?? 0),
-    };
-  }
-  if (patch.speed != null) next.speed = clampNumber(patch.speed, 0.25, 4, 1);
-  if (typeof patch.colorPreset === "string" && ["none", "vivid", "muted", "bw", "warm", "cool"].includes(patch.colorPreset)) {
-    next.colorPreset = patch.colorPreset;
-  }
-  if (patch.intro && typeof patch.intro === "object") {
-    next.intro = { enabled: Boolean(patch.intro.enabled), asset: patch.intro.asset ?? next.intro.asset };
-  }
-  if (patch.outro && typeof patch.outro === "object") {
-    next.outro = { enabled: Boolean(patch.outro.enabled), asset: patch.outro.asset ?? next.outro.asset };
-  }
-  if (patch.transitions && typeof patch.transitions === "object") {
-    next.transitions = { fade: Boolean(patch.transitions.fade) };
-  }
-  if (Array.isArray(patch.overlays)) {
-    const cleaned: EditRecipe["overlays"] = [];
-    for (const item of patch.overlays) {
-      if (!item || typeof item !== "object") continue;
-      if (item.type === "logo" && typeof item.asset === "string") {
-        cleaned.push({
-          type: "logo",
-          asset: item.asset,
-          position: ["top-right", "top-left", "bottom-right", "bottom-left"].includes(item.position) ? item.position : "top-right",
-          widthPercent: clampNumber(item.widthPercent, 3, 25, 8),
-          key: ["none", "auto-white", "auto-black"].includes(item.key) ? item.key : "none",
-        });
-      } else if (item.type === "text" && typeof item.text === "string") {
-        cleaned.push({
-          type: "text",
-          text: String(item.text).slice(0, 200),
-          position: ["bottom-center", "bottom-right", "top-left"].includes(item.position) ? item.position : "bottom-center",
-          style: item.style === "headline" ? "headline" : "bold-clean",
-        });
-      }
-    }
-    next.overlays = cleaned;
-  }
-  return next;
-}
-
-router.patch("/projects/:projectId/recipe", async (req: Request, res: Response) => {
-  try {
-    const project = await readProject(req, routeParam(req.params.projectId, "projectId"));
-    // Accept either { recipe: {...} } or the patch directly.
-    const patch = req.body && typeof req.body.recipe === "object" ? req.body.recipe : req.body;
-    const recipe = normalizeRecipePatch(project.recipe, patch);
-    const next = await writeProject(req, { ...project, recipe });
-    return res.json({ project: next });
-  } catch (err) {
-    return fail(res, err);
-  }
-});
 
 router.patch("/projects/:projectId/timeline", async (req: Request, res: Response) => {
   try {

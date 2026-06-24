@@ -17,7 +17,6 @@ import {
   removeActiveVideoStudioRender,
   saveVideoStudioRenderHistory,
 } from "@/lib/video-studio-history";
-import { VisualTimelineEditor } from "./VisualTimelineEditor";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ViewState = "landing" | "chat" | "artifact";
@@ -161,7 +160,7 @@ function SliderIcon() {
   );
 }
 
-/** Right-side chat-header action icons (open-link, share, split-view). */
+/** Right-side chat-header action icons (open-link, share). */
 function IconOpenLink() {
   return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -174,14 +173,6 @@ function IconShare() {
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <circle cx="12" cy="12" r="9" />
     <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
-  </svg>);
-}
-function IconSplit() {
-  return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <rect x="3" y="4" width="18" height="16" rx="2" />
-    <line x1="12" y1="4" x2="12" y2="20" />
-    <line x1="14" y1="8" x2="20" y2="8" /><line x1="14" y1="12" x2="20" y2="12" /><line x1="14" y1="16" x2="20" y2="16" />
   </svg>);
 }
 function IconHistory() {
@@ -549,7 +540,6 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
   // workspace asset attaches it to the prompt without uploading again.
   const [showAssetsModal, setShowAssetsModal] = useState(false);
   const [assetsModalTab, setAssetsModalTab] = useState<"upload" | "assets">("upload");
-  const [showEditor, setShowEditor] = useState(true);
   const [historySearch, setHistorySearch] = useState("");
   // Per-artifact thumb feedback, stored in localStorage so it survives
   // refresh. Map<jobId, "up" | "down" | undefined>.
@@ -1688,30 +1678,6 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
     }
   }, [projectId]);
 
-  const handleTriggerPreview = useCallback(async () => {
-    if (!projectId) return;
-    try {
-      const { project: updatedProject, job } = await videoEditorApi.startPreview(projectId);
-      setProject(updatedProject);
-      startRenderPollingRef.current(projectId, job);
-    } catch (err) {
-      console.error("Preview failed:", err);
-      alert(`Preview failed: ${(err as Error).message}`);
-    }
-  }, [projectId]);
-
-  const handleTriggerFinalRender = useCallback(async () => {
-    if (!projectId) return;
-    try {
-      const { project: updatedProject, job } = await videoEditorApi.startRender(projectId);
-      setProject(updatedProject);
-      startRenderPollingRef.current(projectId, job);
-    } catch (err) {
-      console.error("Render failed:", err);
-      alert(`Render failed: ${(err as Error).message}`);
-    }
-  }, [projectId]);
-
   // ─── Key Handling ──────────────────────────────────────────────────────────
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2078,17 +2044,6 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
             >
               <IconShare />
             </button>
-            {project && (
-              <button
-                type="button"
-                className={`ai-video-studio__action-circle ${showEditor ? "ai-video-studio__action-circle--active" : ""}`}
-                title={showEditor ? "Hide Visual Editor" : "Show Visual Editor"}
-                aria-label={showEditor ? "Hide Visual Editor" : "Show Visual Editor"}
-                onClick={() => setShowEditor(!showEditor)}
-              >
-                <IconSplit />
-              </button>
-            )}
             <button
               type="button"
               className="ai-video-studio__action-circle"
@@ -2146,7 +2101,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
           }
         />
 
-        <div className={`ai-video-studio__workspace ${project && showEditor ? "ai-video-studio__workspace--has-project" : ""}`}>
+        <div className="ai-video-studio__workspace">
           {/* Left Column: Chat Assistant */}
           <div className="ai-video-studio__chat-column">
             {/* Messages */}
@@ -2304,29 +2259,6 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
             </div>
           </div>
 
-          {/* Right Column: Visual Timeline Editor */}
-          {project && showEditor && (() => {
-            const pendingProposal = [...bubbles].reverse().find(
-              (b) => b.kind === "proposal" && (!b.status || b.status === "pending")
-            ) as any;
-            const activeTimeline = project.timeline?.tracks?.video?.length
-              ? project.timeline
-              : pendingProposal?.proposal?.timeline;
-            const projectForEditor = {
-              ...project,
-              timeline: activeTimeline || project.timeline,
-            };
-            return (
-              <div className="ai-video-studio__editor-column">
-                <VisualTimelineEditor
-                  project={projectForEditor}
-                  onUpdateProject={setProject}
-                  onTriggerPreview={handleTriggerPreview}
-                  onTriggerFinalRender={handleTriggerFinalRender}
-                />
-              </div>
-            );
-          })()}
         </div>
 
         <input

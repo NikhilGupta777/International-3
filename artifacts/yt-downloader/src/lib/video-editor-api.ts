@@ -170,12 +170,6 @@ export const videoEditorApi = {
   deleteProject: (projectId: string) =>
     req<{ ok: boolean }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" }),
 
-  generateRecipe: (projectId: string, body: { prompt: string; sourceVideo?: string | null; assets?: EditorAssets }) =>
-    req<{ project: EditorProject; message: string }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/agent`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-
   startPreview: (projectId: string) =>
     req<{ project: EditorProject; job: EditorJobSummary }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/preview`, {
       method: "POST",
@@ -200,12 +194,6 @@ export const videoEditorApi = {
     const safeName = file.name.replace(/[^\w.\-() ]+/g, "_").slice(-120) || `${role}.bin`;
     return workspaceApi.uploadFile(`editor/uploads/${projectId}/${role}/${safeName}`, file, onProgress);
   },
-
-  patchRecipe: (projectId: string, recipe: Partial<EditRecipe>) =>
-    req<{ project: EditorProject }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/recipe`, {
-      method: "PATCH",
-      body: JSON.stringify({ recipe }),
-    }),
 
   patchTimeline: (projectId: string, timeline: Timeline) =>
     req<{ project: EditorProject }>(`/api/video-editor/projects/${encodeURIComponent(projectId)}/timeline`, {

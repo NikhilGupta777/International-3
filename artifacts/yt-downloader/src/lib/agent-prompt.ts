@@ -1,6 +1,7 @@
 export function generateAgentPrompt(apiKey: string | null = null): string {
-  const keyToUse = apiKey || "vms_live_YOUR_KEY";
-  
+  // SECURITY: Use a generic placeholder, never a key-like string.
+  const keyToUse = apiKey || "YOUR_API_KEY";
+
   return `You are an AI agent or Copilot. The user has provided you with access to the VideoMaking Studio API.
 Your task is to use the API to accomplish the user's video-related goals (downloading, cutting clips, translating, transcribing, etc.).
 

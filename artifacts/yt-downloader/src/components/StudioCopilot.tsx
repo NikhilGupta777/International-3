@@ -33,21 +33,25 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
-type ReasoningMode = "flash" | "pro" | "advanced";
+type ReasoningMode = "gemini-2.5-flash" | "gemini-3.5-flash" | "gemini-3.1-pro-preview";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "flash",    label: "3.5 Flash",    description: "Fast everyday responses",              ultra: false },
-  { id: "pro",      label: "3.5 Flash Pro", description: "Deeper thinking, same fast model",    ultra: false },
-  { id: "advanced", label: "3.1 Pro",       description: "Most capable — complex creative work", ultra: true  },
+  { id: "gemini-2.5-flash",        label: "2.5 Flash",  description: "Fast, everyday responses",              ultra: false },
+  { id: "gemini-3.5-flash",        label: "3.5 Flash",  description: "Latest fast model — agentic & coding",  ultra: false },
+  { id: "gemini-3.1-pro-preview",  label: "3.1 Pro",    description: "Advanced reasoning — complex work",      ultra: true  },
 ];
 
 function readReasoningInitial(): ReasoningMode {
   try {
     const stored = localStorage.getItem(REASONING_KEY);
-    if (stored === "flash" || stored === "pro" || stored === "advanced") return stored;
+    // New model IDs
+    if (stored === "gemini-2.5-flash" || stored === "gemini-3.5-flash" || stored === "gemini-3.1-pro-preview") return stored;
+    // Backward compat: old keys "flash", "pro", "advanced"
+    if (stored === "flash") return "gemini-2.5-flash";
+    if (stored === "pro") return "gemini-3.5-flash";
+    if (stored === "advanced") return "gemini-3.1-pro-preview";
   } catch { /* localStorage unavailable */ }
   // Backwards compat: if only the legacy `ultra` flag exists, derive a mode
-  // from it. `ultra=1` → advanced; otherwise → flash.
-  return readUltraInitial() ? "advanced" : "flash";
+  return readUltraInitial() ? "gemini-3.1-pro-preview" : "gemini-2.5-flash";
 }
 
 function getInputMaxHeight(): number {
@@ -561,7 +565,9 @@ function MarkdownContent({
 }
 
 function renderMd(text: string, sources?: Array<{ title: string; uri: string }>): React.ReactNode {
-  return <MarkdownContent text={text} sources={sources} />;
+  // Known issue #1 fix: removed early return to MarkdownContent so that
+  // completed markdown uses the same custom parser as streaming markdown,
+  // ensuring consistent rendering between streaming and final views.
   const lines = text.split("\n");
   const result: React.ReactNode[] = [];
   const inline = (str: string, key: string): React.ReactNode => {
@@ -1053,16 +1059,39 @@ function sanitizeSearchEntryPoint(html: string): string {
   return template.innerHTML;
 }
 
+// SECURITY: Inject a restrictive CSP meta tag into canvas HTML to prevent
+// model-generated scripts from exfiltrating data via fetch() or navigating
+// the top window (CR-1 fix).
+function injectContentSecurityPolicy(html: string): string {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: https:; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none';">`;
+  const headMatch = /<head[^>]*>/i.exec(html);
+  if (headMatch) {
+    return html.slice(0, headMatch.index + headMatch[0].length) + csp + html.slice(headMatch.index + headMatch[0].length);
+  }
+  // No <head> — inject at the very beginning
+  return csp + html;
+}
+
 function extractCanvasCandidate(text: string): CanvasCandidate | null {
   const closed = Array.from(text.matchAll(/```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*?)```/g));
   let match: RegExpMatchArray | null = null;
   let live = false;
 
+  // Known issue #7 fix: Count total backtick-fence occurrences in the text.
+  // If the count is odd, an unclosed (live) fence exists — prioritize it over
+  // closed blocks so streaming code isn't hidden behind a previously-closed block.
+  const fenceCount = (text.match(/```/g) || []).length;
+
   const open = text.match(/```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*)$/);
   if (open && isHtmlCanvas(open[1] || "", open[2] || "")) {
-    match = open;
-    live = true;
-  } else if (closed.length > 0) {
+    // If there's an unclosed fence (odd count) OR no closed blocks, use the live block
+    if (fenceCount % 2 === 1 || closed.length === 0) {
+      match = open;
+      live = true;
+    }
+  }
+  // Fall back to largest closed block only when no live canvas should take priority
+  if (!match && closed.length > 0) {
     match = closed.reduce((best, item) => (item[2].length > best[2].length ? item : best), closed[0]);
   }
 
@@ -1521,9 +1550,9 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
               {canPreview && view === "preview" ? (
                 <iframe
                   title={downloadName}
-                  sandbox="allow-scripts allow-forms"
+                  sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
-                  srcDoc={content}
+                  srcDoc={injectContentSecurityPolicy(content)}
                   className="flex-1 w-full bg-white"
                 />
               ) : canRenderMarkdown && view === "preview" ? (
@@ -2446,6 +2475,7 @@ export function StudioCopilot({
   const [reconnectBanner, setReconnectBanner] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const currentRunIdRef = useRef<string | null>(null);
   const [thinking, setThinking] = useState(false);
   const [agentStage, setAgentStage] = useState<"idle" | "planning" | "executing" | "verifying">("idle");
   const [agentIteration, setAgentIteration] = useState(0);
@@ -2743,13 +2773,20 @@ export function StudioCopilot({
   const recognitionRef = useRef<any>(null);
   const sessionIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
+  const streamingRef = useRef(false); // Synchronous guard for concurrent send prevention (H2 fix)
   const streamingAssistantIdRef = useRef<string | null>(null);
   const lastUserTextRef = useRef<string>("");
   const lastUserAttachmentsRef = useRef<Array<{ type: string; name: string; mimeType: string; data?: string; url?: string; previewUrl?: string }>>([]);
 
 
-  // Load sessions on mount; also restore reconnect banner if a stream was
-  // interrupted by a page refresh (sessionStorage survives refresh but not tab close).
+  const currentMessages = sessions.find(s => s.id === currentSessionId)?.messages ?? [];
+
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { sessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => { messagesRef.current = currentMessages; }, [currentMessages]);
+
+  // Load sessions on mount; runs AFTER the ref-sync effects above so
+  // sessionIdRef.current isn't overwritten with null from the initial state.
   useEffect(() => {
     const loaded = loadSessions();
     setSessions(loaded);
@@ -2764,11 +2801,6 @@ export function StudioCopilot({
     } catch { /* ignore storage errors */ }
   }, []);
 
-  const currentMessages = sessions.find(s => s.id === currentSessionId)?.messages ?? [];
-
-  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
-  useEffect(() => { sessionIdRef.current = currentSessionId; }, [currentSessionId]);
-  useEffect(() => { messagesRef.current = currentMessages; }, [currentMessages]);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (sessions.length === 0) return;
@@ -2781,9 +2813,15 @@ export function StudioCopilot({
     const el = messagesContainerRef.current;
     if (!el) return;
     requestAnimationFrame(() => {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      // Use instant scroll during live streaming to prevent visual jumps from
+      // smooth-scroll competing with content reflow (H19 fix).
+      if (streaming) {
+        el.scrollTop = el.scrollHeight;
+      } else {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      }
     });
-  }, [currentMessages]);
+  }, [currentMessages, streaming]);
   // Auto-scroll thought content to bottom as new thoughts stream in
   useEffect(() => {
     const el = thoughtContentRef.current;
@@ -2837,7 +2875,7 @@ export function StudioCopilot({
     const parsedCommand = consumeLeadingSkillCommand(text);
     const messageText = parsedCommand.text;
     const snapshotSkills = parsedCommand.skills;
-    if (streaming) return;
+    if (streaming || streamingRef.current) return;
     if (!messageText.trim() && snapshotAttachments.length === 0) {
       if (parsedCommand.consumed) {
         activeSkillsRef.current = snapshotSkills;
@@ -2882,6 +2920,7 @@ export function StudioCopilot({
     }]);
 
     upsertMsg(sessionId, assistantMsgId, m => m);
+    streamingRef.current = true;
     setStreaming(true);
     setReconnectBanner(null);
     setThinking(true);
@@ -3009,7 +3048,7 @@ export function StudioCopilot({
         return true;
       } catch (err) {
         surfaceStreamParseError(err, raw);
-        if (isTrailing && !sawDoneEvent) {
+        if (isTrailing && !sawDoneEvent && !abortRef.current?.signal.aborted) {
           patchAssistant(m => ({
             ...m,
             parts: [
@@ -3026,7 +3065,17 @@ export function StudioCopilot({
     };
 
     const handleEvent = (evt: SseEvent) => {
-      if (evt.type === "run_start") { setCurrentRunId(evt.runId); return; }
+      // SECURITY: Gate by runId to prevent stale stream events from corrupting
+      // the active message after abort + new send (H1 fix).
+      if (evt.type === "run_start") {
+        setCurrentRunId(evt.runId);
+        currentRunIdRef.current = evt.runId;
+        return;
+      }
+      // Drop events from a previous run (aborted stream trailing frames)
+      if ((evt as any).runId && currentRunIdRef.current && (evt as any).runId !== currentRunIdRef.current) return;
+      // Drop events after the user aborted
+      if (abortRef.current?.signal.aborted && evt.type !== "done") return;
       if (evt.type === "heartbeat") return;
       if (evt.type === "thinking") {
         setThinking(true);
@@ -3316,6 +3365,15 @@ export function StudioCopilot({
       }
       if (evt.type === "error") {
         setThinking(false); setAgentStage("idle");
+        // ED-1 fix: Mark any in-flight tool cards as done/cancelled so they
+        // don't show "Running..." forever after the agent errors out.
+        patchAssistant(m => ({
+          ...m,
+          parts: m.parts.map(p =>
+            p.kind === "tool_start" && !(p as any).done
+              ? { ...p, done: true, cancelled: true, progress: null, progressMsg: "Agent error", result: { error: "Run encountered an error" } }
+              : p),
+        }));
         // Clean the error message — parse JSON if server forwarded raw API error
         let cleanMsg = evt.message ?? "Something went wrong";
         try {
@@ -3326,7 +3384,7 @@ export function StudioCopilot({
         patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: `Error: ${cleanMsg}` }] }));
         return;
       }
-      if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ } }
+      if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ } return; }
       if (evt.type === "suggestions") { setSuggestions((evt as any).items ?? []); }
     };
 
@@ -3369,6 +3427,7 @@ export function StudioCopilot({
       }
       try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ }
     } finally {
+      streamingRef.current = false;
       setStreaming(false);
       setThinking(false);
       setAgentStage("idle");
@@ -3397,10 +3456,14 @@ export function StudioCopilot({
     if (aId && sId) {
       upsertMsg(sId, aId, m => ({
         ...m,
-        parts: m.parts.map(p =>
+        parts: [
+          ...m.parts.map(p =>
           p.kind === "tool_start" && !(p as any).done
             ? { ...p, done: true, cancelled: true, progress: null, progressMsg: "Stopped", result: { error: "Stopped by user" } }
             : p),
+          // Append a system note so the user has a visible record they stopped the response
+          { kind: "text", content: "⏹ _Response stopped by you._" },
+        ],
       }));
     }
     streamingAssistantIdRef.current = null;

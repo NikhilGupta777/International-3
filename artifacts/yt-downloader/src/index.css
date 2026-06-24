@@ -3957,9 +3957,10 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 }
 .gs-send-active:hover { background: #38bdf8; }
 .gs-send-disabled {
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.20);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.35);
   cursor: not-allowed;
+  border: 1px solid rgba(255,255,255,0.05);
 }
 .gs-stop-btn {
   width: 34px; height: 34px;
@@ -6802,8 +6803,9 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
 }
 
 .copilot-wrap .gs-send-disabled {
-  background: rgba(255,255,255,0.08);
-  color: rgba(255,255,255,0.28);
+  background: rgba(255,255,255,0.10);
+  color: rgba(255,255,255,0.40);
+  border: 1px solid rgba(255,255,255,0.06);
 }
 
 .copilot-wrap .gs-stop-btn {
@@ -10790,20 +10792,6 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   background: #ffffff;
 }
 
-.ai-video-studio__workspace--has-project .ai-video-studio__chat-column {
-  width: 35%;
-  border-right: 1px solid rgba(0, 0, 0, 0.05);
-}
-
-.ai-video-studio__editor-column {
-  width: 65%;
-  height: 100%;
-  overflow: hidden;
-  background: #09090b;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-}
 
 @media (max-width: 1024px) {
   .ai-video-studio__workspace {
@@ -10816,140 +10804,8 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
     border-right: none !important;
     border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   }
-  .ai-video-studio__workspace--has-project .ai-video-studio__chat-column {
-    width: 100%;
-  }
-  .ai-video-studio__editor-column {
-    width: 100% !important;
-    height: auto;
-  }
 }
 
-/* ─── Visual Timeline Editor Light Mode Theme Overrides ───────────────────── */
-html.studio-light-mode .ai-video-studio__editor-column {
-  background: #ffffff;
-  border-left: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-html.studio-light-mode .visual-timeline-editor {
-  color: #1f2937;
-}
-
-html.studio-light-mode .visual-timeline-editor__toolbar select {
-  background: #ffffff !important;
-  color: #1f2937 !important;
-  border-color: #e4e4e7 !important;
-}
-
-html.studio-light-mode .visual-timeline-editor__preview {
-  border-color: #e4e4e7;
-  background: #f4f4f5;
-}
-
-html.studio-light-mode .visual-timeline-editor__timeline {
-  background: #fafafa;
-  border-color: #e4e4e7;
-}
-
-html.studio-light-mode .visual-timeline-editor__timeline .bg-zinc-900\/40,
-html.studio-light-mode .visual-timeline-editor__timeline .bg-zinc-950\/20,
-html.studio-light-mode .visual-timeline-editor__timeline .bg-zinc-950\/40,
-html.studio-light-mode .visual-timeline-editor__timeline .bg-zinc-100\/40,
-html.studio-light-mode .visual-timeline-editor__timeline .bg-zinc-50\/20 {
-  background-color: #f4f4f5;
-}
-
-html.studio-light-mode .visual-timeline-editor__timeline .border-zinc-200,
-html.studio-light-mode .visual-timeline-editor__timeline .border-zinc-850,
-html.studio-light-mode .visual-timeline-editor__timeline .border-r,
-html.studio-light-mode .visual-timeline-editor__timeline .border-b {
-  border-color: #e4e4e7;
-}
-
-html.studio-light-mode .visual-timeline-editor__timeline .text-zinc-700 {
-  color: #27272a;
-}
-html.studio-light-mode .visual-timeline-editor__timeline .text-zinc-300 {
-  color: #3f3f46;
-}
-
-/* Scrollbar overrides for light mode */
-html.studio-light-mode .visual-timeline-editor__timeline .scrollbar-thumb-zinc-800 {
-  --scrollbar-thumb: #d4d4d8;
-}
-html.studio-light-mode .visual-timeline-editor__timeline ::-webkit-scrollbar-thumb {
-  background: #d4d4d8;
-}
-
-/* Video Clips light mode */
-html.studio-light-mode .visual-timeline-editor__timeline .bg-sky-50 {
-  background-color: #f0f9ff;
-  border-color: #38bdf8;
-}
-html.studio-light-mode .visual-timeline-editor__timeline .bg-white.border-zinc-200 {
-  background-color: #f0fdfa; /* Clean teal tint */
-  border-color: #ccfbf1;
-}
-html.studio-light-mode .visual-timeline-editor__timeline .text-zinc-800 {
-  color: #115e59;
-}
-html.studio-light-mode .visual-timeline-editor__timeline .text-sky-550 {
-  color: #0d9488;
-}
-
-/* Overlay image clips light mode */
-html.studio-light-mode .visual-timeline-editor__timeline .bg-pink-50 {
-  background-color: #fdf2f8;
-  border-color: #fbcfe8;
-}
-html.studio-light-mode .visual-timeline-editor__timeline .text-zinc-850 {
-  color: #9d174d;
-}
-
-/* Audio clips light mode */
-html.studio-light-mode .visual-timeline-editor__timeline .bg-emerald-55\/80 {
-  background-color: #ecfdf5;
-  border-color: #a7f3d0;
-}
-html.studio-light-mode .visual-timeline-editor__timeline .text-zinc-850 {
-  color: #065f46;
-}
-
-/* Inspector form light mode */
-html.studio-light-mode .visual-timeline-editor__timeline input,
-html.studio-light-mode .visual-timeline-editor__timeline select,
-html.studio-light-mode .visual-timeline-editor .bg-zinc-50 {
-  background-color: #ffffff !important;
-  color: #1f2937 !important;
-  border-color: #e4e4e7 !important;
-}
-
-html.studio-light-mode .visual-timeline-editor__timeline button {
-  color: #4b5563;
-}
-html.studio-light-mode .visual-timeline-editor__timeline button:hover {
-  color: #1f2937;
-}
-
-html.studio-light-mode .visual-timeline-editor__toolbar .text-zinc-700 {
-  color: #1f2937;
-}
-
-html.studio-light-mode .visual-timeline-editor__timeline .text-zinc-400 {
-  color: #71717a;
-}
-
-/* Active split view layout toggle button highlight */
-.ai-video-studio__action-circle--active {
-  background: rgba(20, 184, 166, 0.1) !important;
-  border-color: rgba(20, 184, 166, 0.3) !important;
-  color: #0d9488 !important;
-}
-html.studio-light-mode .ai-video-studio__action-circle--active {
-  background: rgba(20, 184, 166, 0.1) !important;
-  border-color: rgba(20, 184, 166, 0.3) !important;
-  color: #0d9488 !important;
-}
 
 /* ─── End History Panel light mode overrides ────────────────────────────── */
 

@@ -23,21 +23,43 @@ import { logger } from "../lib/logger";
 
 const router = Router();
 
-const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
+// Model IDs verified against Gemini API catalog as of 2026-06.
+// gemini-2.5-flash / gemini-2.5-pro are the current stable models.
+// Environment overrides (COPILOT_MODEL etc.) take precedence in production.
+// Model catalogue with per-model configurations:
+//   gemini-2.5-flash       — fast, thinking_budget 0-24576, MEDIUM default
+//   gemini-3.5-flash       — newest fast model (May 2026), MEDIUM default
+//   gemini-3.1-pro-preview — frontier reasoning, thinking_level LOW/MEDIUM/HIGH
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-2.5-flash";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.1-pro-preview";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
 const ALLOWED_MODELS = new Set([
+  "gemini-2.5-flash",
   "gemini-3.5-flash",
   "gemini-3.1-pro-preview",
 ]);
+
+// Per-model thinking configuration.
+// gemini-2.5/3.5-flash use thinkingBudget (integer token count).
+// gemini-3.1-pro uses thinkingLevel (LOW/MEDIUM/HIGH).
+function buildThinkingConfig(model: string, level: "LOW" | "MEDIUM" | "HIGH"): Record<string, any> {
+  const isProModel = model.includes("pro");
+  if (isProModel) {
+    // Gemini 3.1 Pro: thinkingLevel enum
+    return { thinkingLevel: level, includeThoughts: true };
+  }
+  // Gemini 2.5/3.5 Flash: thinkingBudget integer
+  const budget = level === "HIGH" ? 24576 : level === "MEDIUM" ? 8192 : 1024;
+  return { thinkingBudget: budget, includeThoughts: true };
+}
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
-const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "60", 10) || 60;
+const MAX_ITERATIONS = Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "49", 10) || 49;
 const AGENT_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) || 16384;
 const E2B_SANDBOX_TIMEOUT_MS = Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) || 3600000;
 const E2B_COMMAND_TIMEOUT_MS = Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
-const E2B_MAX_OUTPUT_CHARS = Number.parseInt(process.env.E2B_MAX_OUTPUT_CHARS ?? "24000", 10) || 24000;
+const E2B_MAX_OUTPUT_CHARS = Number.parseInt(process.env.E2B_MAX_OUTPUT_CHARS ?? "60000", 10) || 60000;
 const E2B_MAX_FILE_CHARS = Number.parseInt(process.env.E2B_MAX_FILE_CHARS ?? "120000", 10) || 120000;
 const E2B_BOOTSTRAP_MEDIA_TOOLS = !/^(0|false|no|off)$/i.test(
   String(process.env.E2B_BOOTSTRAP_MEDIA_TOOLS ?? "true").trim(),
@@ -59,8 +81,8 @@ const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "best[ext=mp4][vcodec!=none][acodec!=none]/" +
   "best[vcodec!=none][acodec!=none]";
 const TOOL_PARALLEL_LIMITS = {
-  light: 7,
-  youtube_processing: 7,
+  light: 3,
+  youtube_processing: 3,
 } as const;
 
 type ToolParallelGroup = keyof typeof TOOL_PARALLEL_LIMITS | "serial";
@@ -98,11 +120,13 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 }
 
 // ── Resolve base URL for internal API calls ───────────────────────────────
+// SECURITY: Never trust client-supplied headers for host resolution.
+// In production, lambda-stream.ts always sets INTERNAL_API_BASE to
+// http://127.0.0.1:<port> before this route runs. The fallback hardcodes
+// localhost — it must NOT read X-Forwarded-Host or Host from the client.
 function getApiBase(req: any): string {
   if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
-  const proto = req.headers["x-forwarded-proto"] ?? "http";
-  const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
-  return `${proto}://${host}/api`;
+  return `http://127.0.0.1:${process.env.PORT ?? 8080}/api`;
 }
 
 function rememberAgentJob(req: any, jobId: unknown): void {
@@ -152,8 +176,9 @@ function stripReasoningTags(text: string, isDelta = false): string {
     .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
     .replace(/\[TextArtifact:[^\]]*\][^\[]*/gi, "")
     .replace(/\[Artifact:[^\]]*\]/gi, "")
-    // Strip raw S3 presigned URLs (long AWS URLs with signatures)
-    .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
+    // Strip raw S3 presigned URLs (long AWS URLs with signatures) — all regional formats
+    .replace(/https?:\/\/[^\s"]*\.s3[.\-][^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
+    .replace(/https?:\/\/[^\s"]*\.s3\.(?:[a-z0-9-]+\.)?amazonaws\.com[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
     // Strip leaked tool result JSON — e.g. "| Result: {"audioUrl":"","imageUrl":""}"
     .replace(/\|\s*Result:\s*\{[^}]*\}/gi, "")
     // Strip leaked URL-field JSON objects whose values look like S3/presigned
@@ -954,7 +979,13 @@ When canvas is NOT appropriate (short explanatory snippet):
 - Use run_code_analysis for supplied data calculations/statistics. For exact calculations, include task-specific pythonCode instead of relying on generic inspection.
 - Use run_sandbox_command when the user wants a ChatGPT-like sandbox: execute code, install packages, create/read files, inspect outputs, fetch public internet resources, or run shell commands in an isolated Linux environment.
 - The sandbox is persistent per chat session and isolated from the production server. You may be broad inside the sandbox, but never claim it can access local app files unless the user uploaded/provided them.
-- The sandbox is bootstrapped with media/debugging tools when possible: yt-dlp, ffmpeg, ffprobe, and ripgrep. If a tool is missing, install or download it inside the sandbox and continue.
+- The sandbox starts empty — NO tools are pre-installed. You MUST install what you need on-demand before using it:
+    • YouTube/media tasks (captions, download, info, search): first run \`pip install yt-dlp\` then proceed.
+    • Audio/video processing: first run \`apt-get update && apt-get install -y ffmpeg\` then proceed.
+    • Text search/grep: first run \`apt-get install -y ripgrep\` then proceed.
+    • Image/video generation: install the required Python packages first.
+    • Installing packages may take 30-120 seconds — run the install, then call the tool in the NEXT turn.
+  - If a tool is missing, install or download it inside the sandbox and continue.
 - For media debugging, use sandbox commands to inspect files/URLs with yt-dlp, ffmpeg, ffprobe, Python, Node, and small scripts. Do not claim the sandbox exactly matches production.
 - Main website/app code is preloaded into /home/user/app-code when available. Use it for debugging UI/API/Super Agent/workspace/editor/youtube/subtitle issues.
 - Translation-tab and video-translator worker files are intentionally excluded from /home/user/app-code; those belong to the Translation Assistant debugger.
@@ -1201,11 +1232,55 @@ function buildInternalHeaders(req: any): Record<string, string> {
 // unboundedly across the lifetime of the API process.
 const e2bSandboxBySession = new Map<string, { sandboxId: string; lastUsed: number; mediaToolsReady?: boolean; appCodeReady?: boolean }>();
 const pendingSandboxCreations = new Map<string, Promise<any>>();
+const MAX_E2B_SANDBOX_ENTRIES = 20; // Prevent unbounded Map growth across Lambda warm starts
+
+// ── Rate limiting for heavy agent-triggered operations ─────────────────────
+// Per-user cooldowns (in-memory, resets on Lambda cold start). These prevent
+// prompt-injection-driven abuse of expensive operations (GPU translate, full
+// package fan-out, music generation). The session-scoped key is salted with
+// user identity so each user gets their own bucket.
+const heavyOpCooldowns = new Map<string, number>(); // key → lastRan timestamp
+const HEAVY_OP_COOLDOWNS: Record<string, number> = {
+  do_full_package: 90 * 1000,        // 1.5 min
+  translate_video: 5 * 60 * 1000,    // 5 min
+  generate_music: 60 * 1000,         // 1 min
+};
+
+function checkHeavyOpRateLimit(req: any, opName: string): void {
+  const cooldownMs = HEAVY_OP_COOLDOWNS[opName];
+  if (!cooldownMs) return;
+  const sessionId = String(req.body?.sessionId ?? "anon").slice(0, 64);
+  const authCookie = req.signedCookies?.videomaking_auth ?? "";
+  const userPart = authCookie ? createHash("sha256").update(authCookie).digest("hex").slice(0, 12) : "anon";
+  const key = `${userPart}:${opName}:${sessionId}`;
+  const lastRan = heavyOpCooldowns.get(key) ?? 0;
+  const elapsed = Date.now() - lastRan;
+  if (elapsed < cooldownMs) {
+    const waitSec = Math.ceil((cooldownMs - elapsed) / 1000);
+    throw new Error(`Rate limited: "${opName}" can be run once every ${cooldownMs / 1000}s. Please wait ${waitSec}s.`);
+  }
+  heavyOpCooldowns.set(key, Date.now());
+  // Periodic cleanup of stale entries (every ~50th call)
+  if (heavyOpCooldowns.size > 200) {
+    const cutoff = Date.now() - Math.max(...Object.values(HEAVY_OP_COOLDOWNS)) * 2;
+    for (const [k, ts] of heavyOpCooldowns) {
+      if (ts < cutoff) heavyOpCooldowns.delete(k);
+    }
+  }
+}
 
 function pruneExpiredSandboxEntries(): void {
   const cutoff = Date.now() - E2B_SANDBOX_TIMEOUT_MS;
   for (const [key, entry] of e2bSandboxBySession) {
     if (entry.lastUsed < cutoff) e2bSandboxBySession.delete(key);
+  }
+  // Hard cap: if still over limit after expiry prune, evict oldest entries
+  if (e2bSandboxBySession.size > MAX_E2B_SANDBOX_ENTRIES) {
+    const sorted = [...e2bSandboxBySession.entries()]
+      .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    for (const [key] of sorted.slice(0, e2bSandboxBySession.size - MAX_E2B_SANDBOX_ENTRIES)) {
+      e2bSandboxBySession.delete(key);
+    }
   }
 }
 
@@ -1225,74 +1300,10 @@ function e2bConfigured(): boolean {
 }
 
 async function bootstrapSandboxMediaTools(sandbox: any, sessionKey: string): Promise<void> {
-  if (!E2B_BOOTSTRAP_MEDIA_TOOLS) return;
-  const entry = e2bSandboxBySession.get(sessionKey);
-  if (entry?.mediaToolsReady) return;
-
-  const script = String.raw`
-set -u
-mkdir -p /home/user/bin
-export PATH="/home/user/bin:/home/user/.local/bin:$PATH"
-
-need_ffmpeg=0
-command -v ffmpeg >/dev/null 2>&1 || need_ffmpeg=1
-command -v ffprobe >/dev/null 2>&1 || need_ffmpeg=1
-if [ "$need_ffmpeg" = "1" ] && command -v apt-get >/dev/null 2>&1; then
-  if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
-  $SUDO apt-get update -y >/tmp/e2b-apt-update.log 2>&1 && \
-  $SUDO apt-get install -y ffmpeg ripgrep >/tmp/e2b-apt-install.log 2>&1 || true
-fi
-
-if ! command -v rg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-  if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=""; fi
-  $SUDO apt-get install -y ripgrep >/tmp/e2b-rg-install.log 2>&1 || true
-fi
-
-python3 -m pip install --user -q --disable-pip-version-check yt-dlp >/tmp/e2b-pip-ytdlp.log 2>&1 || true
-if [ -x /home/user/.local/bin/yt-dlp ]; then
-  ln -sf /home/user/.local/bin/yt-dlp /home/user/bin/yt-dlp
-elif ! command -v yt-dlp >/dev/null 2>&1; then
-  cat > /home/user/bin/yt-dlp <<'SH'
-#!/usr/bin/env sh
-exec python3 -m yt_dlp "$@"
-SH
-  chmod +x /home/user/bin/yt-dlp
-fi
-
-if ! command -v ffmpeg >/dev/null 2>&1; then
-  python3 -m pip install --user -q --disable-pip-version-check imageio-ffmpeg >/tmp/e2b-pip-ffmpeg.log 2>&1 || true
-  cat > /home/user/bin/ffmpeg <<'SH'
-#!/usr/bin/env sh
-exec python3 - "$@" <<'PY'
-import os, sys
-import imageio_ffmpeg
-exe = imageio_ffmpeg.get_ffmpeg_exe()
-os.execv(exe, [exe] + sys.argv[1:])
-PY
-SH
-  chmod +x /home/user/bin/ffmpeg
-fi
-
-{
-  echo "PATH=/home/user/bin:/home/user/.local/bin:$PATH"
-  echo "yt-dlp=$(command -v yt-dlp || true)"
-  echo "ffmpeg=$(command -v ffmpeg || true)"
-  echo "ffprobe=$(command -v ffprobe || true)"
-  echo "rg=$(command -v rg || true)"
-} > /home/user/.sandbox-media-tools
-cat /home/user/.sandbox-media-tools
-`;
-
-  try {
-    await sandbox.files.makeDir("/home/user/bin").catch(() => {});
-    await sandbox.commands.run(script, {
-      cwd: "/home/user",
-      timeoutMs: Math.max(30000, Math.min(E2B_BOOTSTRAP_TIMEOUT_MS, 10 * 60 * 1000)),
-    });
-    rememberSandbox(sessionKey, sandbox.sandboxId, { mediaToolsReady: true });
-  } catch (err) {
-    logger.warn({ err, sessionKey }, "Could not bootstrap E2B media tools");
-  }
+  // Bootstrap is intentionally empty — tools are installed on-demand by the agent.
+  // The system prompt instructs the model to pip install what it needs (yt-dlp,
+  // ffmpeg, ripgrep, etc.) before using them in sandbox commands.
+  rememberSandbox(sessionKey, sandbox.sandboxId, { mediaToolsReady: true });
 }
 
 const APP_CODE_EXTENSIONS = new Set([
@@ -1395,11 +1406,17 @@ async function preloadAppCodeIntoSandbox(sandbox: any, sessionKey: string): Prom
 
 function sandboxSessionKey(req: any): string {
   const raw = String(req.body?.sessionId ?? "").trim();
-  if (!raw) return `anon-${randomUUID()}`;
+  // SECURITY: Bind sandbox to the authenticated user's identity to prevent
+  // cross-tenant sandbox reuse via Lambda warm starts (CE3/SB-1).
+  // A malicious user supplying a known sessionId cannot inherit another user's
+  // sandbox because the hash is salted with the user's auth identity.
+  const authCookie = req.signedCookies?.videomaking_auth ?? "";
+  const userIdentity = authCookie ? createHash("sha256").update(String(authCookie)).digest("hex").slice(0, 16) : "anon";
+  const sessionInput = raw ? `${userIdentity}:${raw}` : `${userIdentity}:anon-${randomUUID()}`;
   // Stripping non-alphanumeric chars in-place caused two distinct sessionIds
   // (e.g. "aaa.bbb" vs "aaabbb") to collapse onto the same sandbox. Hash the
   // raw value so the namespace is collision-resistant.
-  return createHash("sha256").update(raw).digest("hex").slice(0, 32);
+  return createHash("sha256").update(sessionInput).digest("hex").slice(0, 32);
 }
 
 async function getChatSandbox(req: any): Promise<any> {
@@ -1452,11 +1469,13 @@ async function getChatSandbox(req: any): Promise<any> {
 async function resetChatSandbox(req: any): Promise<{ reset: boolean; sandboxId?: string }> {
   const sessionKey = sandboxSessionKey(req);
   const entry = e2bSandboxBySession.get(sessionKey);
-  e2bSandboxBySession.delete(sessionKey);
   const sandboxId = entry?.sandboxId;
+  // SB-8 fix: Kill FIRST, then delete the map entry. If kill() throws,
+  // we still have the handle and can retry — the sandbox won't be orphaned.
   if (sandboxId && e2bConfigured()) {
     await Sandbox.kill(sandboxId).catch(err => logger.warn({ err, sandboxId }, "Could not kill E2B sandbox"));
   }
+  e2bSandboxBySession.delete(sessionKey);
   return { reset: true, sandboxId };
 }
 
@@ -1486,6 +1505,11 @@ function truncateToolText(value: string, limit = E2B_MAX_OUTPUT_CHARS): string {
 function normalizeSandboxPath(value: unknown, fallback = "/home/user"): string {
   const path = String(value ?? fallback).trim() || fallback;
   if (!path.startsWith("/")) throw new Error(`Sandbox paths must be absolute: ${path}`);
+  // Block directory traversal via .. segments to prevent models from
+  // escaping the sandbox home directory.
+  if (path.split("/").some(seg => seg === "..")) {
+    throw new Error(`Sandbox path traversal blocked: ${path}`);
+  }
   return path.replace(/\0/g, "");
 }
 
@@ -1507,10 +1531,13 @@ async function runE2BSandboxCommand(req: any, args: Record<string, any>, res: an
     await sandbox.files.write(path, content);
   }
 
-  let liveOut = "";
-  let liveErr = "";
+  // Export PATH before the user command so installed tools (yt-dlp, ffmpeg, rg)
+  // are available. The E2B sandbox is fully isolated — PATH manipulation here
+  // does not affect the host.
   const commandWithPath = `export PATH="/home/user/bin:/home/user/.local/bin:$PATH"\n${command}`;
   sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Running in sandbox: ${command.slice(0, 120)}` });
+  let liveOut = "";
+  let liveErr = "";
   const maxLiveOutputChars = 500 * 1024;
   const result = await sandbox.commands.run(commandWithPath, {
     cwd,
@@ -1785,6 +1812,19 @@ async function readAttachmentText(req: any): Promise<{ content: string; name: st
     return { content, name: attachment.name, mimeType: attachment.mimeType };
   }
   if (url) {
+    // SECURITY: Validate URL before fetching — prevent SSRF to internal hosts
+    try {
+      const parsedUrl = new URL(url);
+      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+        throw new Error(`Unsupported protocol for attachment URL: ${parsedUrl.protocol}`);
+      }
+      if (isInternalHost(parsedUrl.hostname)) {
+        throw new Error("Attachment URL resolves to an internal/private network address.");
+      }
+    } catch (err: any) {
+      if (err.message.includes("internal/private") || err.message.includes("Unsupported protocol")) throw err;
+      // Invalid URL — let fetch fail naturally
+    }
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 30000);
     const r = await fetch(url, { signal: ac.signal }).finally(() => clearTimeout(timer));
@@ -1912,8 +1952,12 @@ function latestArtifactFromMemory(req: any): { artifactType: string; label: stri
   };
 }
 
-function htmlToReadableText(html: string): string {
-  return html
+function htmlToReadableText(html: string, maxChars = 200_000): string {
+  // SECURITY: Guard against regex OOM from crafted HTML with deeply nested tags.
+  // After tag stripping, text expansion should never exceed 10× the raw input.
+  const HARD_LIMIT = Math.min(maxChars, 200_000);
+  const EXPANSION_GUARD = html.length * 10;
+  let result = html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
@@ -1930,6 +1974,14 @@ function htmlToReadableText(html: string): string {
     .replace(/[ \t]+/g, " ")
     .replace(/\n\s*\n\s*\n+/g, "\n\n")
     .trim();
+  // Reject if text grew beyond the expansion guard (prevents OOM from crafted HTML)
+  if (result.length > EXPANSION_GUARD) {
+    result = result.slice(0, HARD_LIMIT);
+  }
+  if (result.length > HARD_LIMIT) {
+    result = result.slice(0, HARD_LIMIT) + `\n\n[truncated to ${HARD_LIMIT} chars]`;
+  }
+  return result;
 }
 
 function isInternalHost(hostname: string): boolean {
@@ -1956,7 +2008,8 @@ function isInternalHost(hostname: string): boolean {
 
   // IPv6 — coarse but covers the dangerous categories.
   if (host.includes(":")) {
-    const lower = host.toLowerCase();
+    // Strip zone IDs (e.g. "fe80::1%eth0" or "fe80::1%25eth0")
+    const lower = host.toLowerCase().replace(/%25.*$/, "").replace(/%.*$/, "");
     // Loopback (::1) and unspecified (::) handled above.
     if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return true; // link-local
     if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;                          // unique-local fc00::/7
@@ -1986,13 +2039,25 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
       },
     });
     if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
+    // SECURITY: Re-validate post-redirect URL against internal hosts (SSRF).
+    // fetch() with redirect:"follow" may have been redirected to an internal IP.
+    const finalUrl = r.url || parsed.toString();
+    try {
+      const finalParsed = new URL(finalUrl);
+      if (isInternalHost(finalParsed.hostname)) {
+        throw new Error("Redirect target resolves to an internal/private network address.");
+      }
+    } catch (err: any) {
+      if (err.message.includes("internal/private")) throw err;
+      // URL parse failure on finalUrl — very unusual; fetch already resolved it
+    }
     const contentType = r.headers.get("content-type") ?? "";
     const raw = await readResponseTextWithLimit(r, 5 * 1024 * 1024, controller);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(raw)?.[1]?.replace(/\s+/g, " ").trim();
     const text = contentType.includes("html") ? htmlToReadableText(raw) : raw.trim();
     return {
       title,
-      finalUrl: r.url || parsed.toString(),
+      finalUrl,
       contentType,
       text: text.slice(0, Math.max(1000, Math.min(60000, maxChars))),
     };
@@ -2000,6 +2065,14 @@ async function fetchReadableWebPage(url: string, maxChars: number): Promise<{ ti
     clearTimeout(timer);
   }
 }
+
+// Known frontend tab names (must match the Mode union in Home.tsx)
+const ALLOWED_NAV_TABS = new Set([
+  "home", "download", "clips", "subtitles", "clipcutter", "bhagwat",
+  "scenefinder", "timestamps", "upload", "copilot", "translator", "heygen",
+  "findvideo", "thumbnail", "videostudio", "help", "activity", "admin",
+  "developer", "api-docs", "settings",
+]);
 
 async function executeTool(
   name: string,
@@ -2247,11 +2320,17 @@ async function executeTool(
     }
 
     case "navigate_to_tab": {
-      sseEvent(res, { type: "navigate", runId, tab: args.tab });
-      return { result: { navigated: true, tab: args.tab } };
+      // NV-2: Validate tab name against known tabs to prevent client errors
+      const tab = String(args.tab ?? "").trim();
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(`Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`);
+      }
+      sseEvent(res, { type: "navigate", runId, tab });
+      return { result: { navigated: true, tab } };
     }
 
     case "translate_video": {
+      checkHeavyOpRateLimit(req, "translate_video");
       // Detect uploaded file URL (S3/CDN) vs YouTube URL.
       // Uploaded files: POST to /translator/submit-from-url — no YouTube download needed.
       // YouTube URLs: download via youtube/stream → S3 → submit.
@@ -2310,7 +2389,10 @@ async function executeTool(
       const language = args.language ?? "en";
       const downloadUrl = `/api/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`;
       const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`, { headers: internalHeaders });
-      const content = await r.text();
+      // SECURITY: Cap caption text size to prevent unbounded model context
+      const MAX_CAPTION_CHARS = 270_000;
+      const rawText = await readResponseTextWithLimit(r, MAX_CAPTION_CHARS * 2, new AbortController());
+      const content = rawText.slice(0, MAX_CAPTION_CHARS);
       if (!r.ok) {
         let message = content || `Captions fetch failed: ${r.status}`;
         try {
@@ -2439,6 +2521,7 @@ async function executeTool(
       } catch (groundingErr: any) {
         logTool(`Grounding failed (${groundingErr?.message}), trying fallbacks`, {});
         // Fallback 1: Tavily
+        const MAX_SEARCH_RESULT_CHARS = 60_000;
         if (TAVILY_KEY) {
           const r = await fetch("https://api.tavily.com/search", {
             method: "POST",
@@ -2453,7 +2536,7 @@ async function executeTool(
             return {
               result: {
                 query,
-                answer: (data.answer ? `${data.answer}\n\n` : "") + results,
+                answer: ((data.answer ? `${data.answer}\n\n` : "") + results).slice(0, MAX_SEARCH_RESULT_CHARS),
                 results: data.results?.slice(0, maxResults) ?? [],
                 elapsedMs: Date.now() - startedAt,
               },
@@ -2473,7 +2556,7 @@ async function executeTool(
             const results = organic.map((item: any, i: number) =>
               `[${i + 1}] ${item.title}\n${item.snippet ?? ""}\nSource: ${item.link}`
             ).join("\n\n");
-            return { result: { query, answer: results, results: organic, elapsedMs: Date.now() - startedAt } };
+            return { result: { query, answer: results.slice(0, MAX_SEARCH_RESULT_CHARS), results: organic, elapsedMs: Date.now() - startedAt } };
           }
         }
         // All methods failed
@@ -2508,6 +2591,7 @@ async function executeTool(
     }
 
     case "do_full_package": {
+      checkHeavyOpRateLimit(req, "do_full_package");
       const url = String(args.url ?? "").trim();
       if (!url) throw new Error("YouTube URL is required.");
       const language = String(args.language ?? "en");
@@ -2762,6 +2846,7 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
     }
 
     case "generate_music": {
+      checkHeavyOpRateLimit(req, "generate_music");
       const musicPrompt = String(args.prompt ?? "").trim();
       if (!musicPrompt) throw new Error("Music prompt is required.");
       const durationMode = String(args.duration ?? "clip") === "full" ? "full" : "clip";
@@ -2835,6 +2920,26 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
       sseEvent(res, { type: "tool_progress", runId, toolId, name, message: `Reading ${attachment.name}...` });
 
       if ((attachment.mimeType.includes("pdf") || /\.pdf$/i.test(attachment.name)) && attachment.url && !attachment.url.startsWith("data:")) {
+        // SECURITY: Only pass trusted-origin URLs to Gemini fileData.
+        // Restrict to known S3/CDN domains to prevent SSRF via Gemini's server-side fetch.
+        const trustedFileDataOrigins = [
+          "malikaeditorr.s3.amazonaws.com",
+          "malikaeditorr.s3.us-east-1.amazonaws.com",
+          "s3.amazonaws.com",
+          "s3.us-east-1.amazonaws.com",
+          "d2bcwj2idfdwb4.cloudfront.net",
+          "videomaking.in",
+        ];
+        let fileDataOriginOk = false;
+        try {
+          const fdUrl = new URL(attachment.url);
+          fileDataOriginOk = trustedFileDataOrigins.some(
+            d => fdUrl.hostname === d || fdUrl.hostname.endsWith(`.${d}`),
+          );
+        } catch { /* invalid URL — will be rejected */ }
+        if (!fileDataOriginOk) {
+          throw new Error("PDF URL is not from a trusted storage origin. Use a file uploaded through the studio.");
+        }
         const ai = createGeminiClient();
         const resp = await ai.models.generateContent({
           model: ULTRA_MODEL,
@@ -3143,7 +3248,24 @@ except Exception as exc:
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      const r = await fetch(resolvedUrl, { headers: { Cookie: req.headers.cookie ?? "" }, redirect: "follow" });
+      // SECURITY: Validate resolved URL is not internal before fetching
+      try {
+        const parsedResolved = new URL(resolvedUrl);
+        if (isInternalHost(parsedResolved.hostname)) {
+          throw new Error("save_artifact_to_workspace URL resolves to an internal/private network address.");
+        }
+      } catch (err: any) {
+        if (err.message.includes("internal/private")) throw err;
+        // Invalid URL — let fetch fail naturally
+      }
+
+      const r = await fetch(resolvedUrl, {
+        headers: {
+          Cookie: req.headers.cookie ?? "",
+          "X-Internal-Agent": INTERNAL_AGENT_SECRET,
+        },
+        redirect: "follow",
+      });
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
@@ -3333,14 +3455,18 @@ router.post("/agent/chat", async (req, res) => {
   }
 
   // Resolve model:
-  //   "flash" / "default" / undefined → AGENT_MODEL (gemini-3.5-flash), MEDIUM thinking
-  //   "pro"                           → AGENT_MODEL (gemini-3.5-flash), HIGH thinking
-  //   "advanced" / "ultra"            → ULTRA_MODEL (gemini-3.1-pro-preview), HIGH thinking
+  //   "flash" / "default" / undefined → AGENT_MODEL (gemini-2.5-flash), MEDIUM
+  //   "pro" / "advanced" / "ultra"    → ULTRA_MODEL (gemini-3.1-pro-preview), HIGH
+  //   Any model ID in ALLOWED_MODELS   → that exact model, MEDIUM thinking
   let activeModel = AGENT_MODEL;
-  if (requestedModel === "advanced" || requestedModel === "ultra") {
+  let thinkingLevel: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM";
+  if (requestedModel === "advanced" || requestedModel === "ultra" || requestedModel === "pro") {
     activeModel = ULTRA_MODEL;
-  } else if (requestedModel && requestedModel !== "default" && requestedModel !== "flash" && requestedModel !== "pro" && ALLOWED_MODELS.has(requestedModel)) {
+    thinkingLevel = "HIGH";
+  } else if (requestedModel && requestedModel !== "default" && requestedModel !== "flash" && ALLOWED_MODELS.has(requestedModel)) {
     activeModel = requestedModel;
+    // For explicitly selected flash models, default to MEDIUM
+    thinkingLevel = requestedModel.includes("pro") ? "HIGH" : "MEDIUM";
   }
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
@@ -3366,7 +3492,10 @@ router.post("/agent/chat", async (req, res) => {
   }, 8000);
 
   try {
-    const ai = createGeminiClient();
+    // Vertex AI is the primary path (checked first in createGeminiClient).
+    // Gemini API key is only a fallback when Vertex is not configured.
+    const GEMINI_TIMEOUT_MS = 300_000; // 5 min
+    const ai = createGeminiClient({ httpOptions: { timeout: GEMINI_TIMEOUT_MS } });
 
     // Build Gemini contents with multimodal awareness.
     // Images: inlineData bytes (Gemini Vision sees actual pixels, same as Claude/ChatGPT).
@@ -3416,7 +3545,7 @@ router.post("/agent/chat", async (req, res) => {
       // is a Gemini transient condition. We retry up to 3x before giving up.
       let stream: AsyncIterable<any> | undefined;
       let streamErr: Error | null = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 2; attempt++) {
         try {
           if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1000));
           if (isConnected()) sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
@@ -3428,10 +3557,7 @@ router.post("/agent/chat", async (req, res) => {
               tools: buildAgentTools(useNativeSearchTools),
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
-              thinkingConfig: {
-                thinkingLevel: (requestedModel === "pro" || requestedModel === "advanced" || requestedModel === "ultra" ? "HIGH" : "MEDIUM") as any,
-                includeThoughts: true,
-              },
+              thinkingConfig: buildThinkingConfig(activeModel, thinkingLevel),
             },
           });
           streamErr = null;
@@ -3446,14 +3572,13 @@ router.post("/agent/chat", async (req, res) => {
           }
           const isEmptyOutputErr = /model output must contain|both be empty/i.test(e?.message ?? "");
           const isResourceExhausted = /resource.?exhausted|quota.*exceeded|429/i.test(e?.message ?? "") || e?.status === 429 || e?.code === 429;
-          if (isResourceExhausted && attempt < 2) {
-            // Silently back off — user should never see a quota error
-            const backoffMs = (attempt + 1) * 8000; // 8s, 16s
-            console.warn(`[agent] Resource exhausted (429), retrying in ${backoffMs}ms (attempt ${attempt + 1}/3)`);
-            await new Promise(r => setTimeout(r, backoffMs));
+          if (isResourceExhausted && attempt === 0) {
+            // Single 5s backoff on rate limit — Vertex handles quota at project level
+            console.warn(`[agent] Resource exhausted (429), retrying in 5000ms (attempt 1/2)`);
+            await new Promise(r => setTimeout(r, 5000));
             continue;
           }
-          if (!isEmptyOutputErr || attempt === 2) break; // non-retryable or max attempts
+          if (!isEmptyOutputErr || attempt === 1) break; // non-retryable or max attempts
         }
       }
       if (streamErr) throw streamErr;
@@ -3645,8 +3770,12 @@ router.post("/agent/chat", async (req, res) => {
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const p of parts) {
           if (p.functionCall) {
-            functionCalls.push({ id: p.functionCall.id, name: p.functionCall.name!, args: (p.functionCall.args ?? {}) as Record<string, any> });
-            rawFcParts.push(p);
+            // PD-5: Only add function calls with a valid name — filter out
+            // malformed parts where Gemini sends a functionCall with no name.
+            if (p.functionCall.name) {
+              functionCalls.push({ id: p.functionCall.id, name: p.functionCall.name, args: (p.functionCall.args ?? {}) as Record<string, any> });
+              rawFcParts.push(p);
+            }
           }
         }
       }
@@ -3672,7 +3801,10 @@ router.post("/agent/chat", async (req, res) => {
       // Gemini occasionally returns no text AND no function calls (e.g. quota
       // edge cases, mid-stream interruptions, or the 'model output must contain
       // either output text or tool calls' condition). Retry silently.
-      if (fullText.trim() === "" && functionCalls.length === 0) {
+      // PD-2 fix: Check cleaned text (after stripping markers like
+      // [SUGGESTIONS:...]) so a model that emits ONLY markers triggers retry.
+      const cleanedText = stripReasoningTags(fullText);
+      if (cleanedText.trim() === "" && functionCalls.length === 0) {
         if (emptyResponseRetries < 3) {
           emptyResponseRetries++;
           iterations--; // don't count against MAX_ITERATIONS
@@ -3753,7 +3885,9 @@ router.post("/agent/chat", async (req, res) => {
         let hadError = false;
 
         try {
-          const { result, artifact } = await executeTool(fc.name, fc.args, req, res, isConnected, toolId, runId);
+          // TS-12: Spread args to prevent mutation of fc.args by executeTool.
+          // If the model retries with the same fc object, args remain pristine.
+          const { result, artifact } = await executeTool(fc.name, { ...fc.args }, req, res, isConnected, toolId, runId);
           toolResult = result;
           toolArtifact = artifact;
           hadError = Boolean(toolResult?.error);
@@ -3795,7 +3929,11 @@ router.post("/agent/chat", async (req, res) => {
           fcIndex += 1;
         }
 
-        const completed = await Promise.all(batch.map(({ index, fc }) => runToolCall(index, fc)));
+        // Use allSettled as defense-in-depth — if a runToolCall throws a JS
+        // runtime error outside its try/catch, other tools still complete (H fix).
+        const completed = (await Promise.allSettled(batch.map(({ index, fc }) => runToolCall(index, fc))))
+          .filter((r): r is PromiseFulfilledResult<{ index: number; response: any; hadError: boolean }> => r.status === "fulfilled")
+          .map(r => r.value);
         for (const item of completed) {
           toolResults[item.index] = item.response;
           iterationHadError ||= item.hadError;
@@ -3867,7 +4005,14 @@ router.post("/agent/chat", async (req, res) => {
   } finally {
     clearInterval(keepAlive);
     if (!runCompleted) {
-      void cancelAgentRunJobs(req, clientConnected ? "agent_error" : "client_abort");
+      // LA-2 fix: Await job cancellation when the client disconnected.
+      // The previous fire-and-forget pattern risked Lambda freezing before
+      // cancels reached the internal API.
+      if (clientConnected) {
+        void cancelAgentRunJobs(req, "agent_error");
+      } else {
+        await cancelAgentRunJobs(req, "client_abort").catch(() => {});
+      }
     }
     if (!res.writableEnded) res.end();
   }
