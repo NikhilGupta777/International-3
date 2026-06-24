@@ -2919,6 +2919,7 @@ export function StudioCopilot({
         type: att.type,
         name: att.name,
         mimeType: att.mimeType,
+        data: att.data,
         url: att.url,
       });
     }
@@ -2948,9 +2949,18 @@ export function StudioCopilot({
     // Build history — include completed tool results as text so the agent
     // has full multi-turn memory of what tools ran and what they returned.
     const allMsgs = [...(messagesRef.current), { id: userMsgId, role: "user" as const, parts: userParts, timestamp: new Date() }];
+    
+    // Find the index of the latest user message that has an image attachment with data
+    let latestImageMsgIdx = -1;
+    for (let i = allMsgs.length - 1; i >= 0; i--) {
+      if (allMsgs[i].role === "user" && allMsgs[i].parts.some((p: any) => p.kind === "attachment" && p.type === "image" && p.data)) {
+        latestImageMsgIdx = i;
+        break;
+      }
+    }
+
     const history = allMsgs
       .map((m, idx) => {
-        const isLatestUserMsg = idx === allMsgs.length - 1;
         const textParts = m.parts
           .filter((p: any) => p.kind === "text")
           .map((p: any) => p.content)
@@ -2986,13 +2996,14 @@ export function StudioCopilot({
             .join("\n")
           : "";
         const content = [textParts, toolSummary, artifactSummary].filter(Boolean).join("\n").trim();
-        // Only include full attachment data (base64 images) for the latest user message.
-        // Older messages get a lightweight reference to avoid huge payloads.
+        // Include full attachment data (base64 images) for the latest image in the conversation.
+        // Older images get lightweight reference to avoid huge payloads.
         const msgAttachments = m.role === "user"
           ? m.parts
             .filter((p: any) => p.kind === "attachment")
             .map((p: any) => {
-              if (!isLatestUserMsg && p.type === "image") {
+              const isLatestImage = idx === latestImageMsgIdx;
+              if (!isLatestImage && p.type === "image") {
                 return { type: p.type, name: p.name, mimeType: p.mimeType };
               }
               return { type: p.type, name: p.name, mimeType: p.mimeType, data: p.data, url: p.url };

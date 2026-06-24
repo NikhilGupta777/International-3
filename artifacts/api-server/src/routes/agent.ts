@@ -1181,7 +1181,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "analyze_youtube_video",
     description:
-      "Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video. IMPORTANT: Craft a detailed, specific analytical question — not just 'summarize'. Include what aspects to focus on, what format the answer should be in, and any context from the conversation that would help produce the most useful analysis.",
+      "[TESTING ONLY] Do not use this tool for general YouTube analysis, as you have native YouTube capabilities. ONLY use this tool if explicitly asked to test it by the user. Directly analyze a YouTube video by having Gemini watch and listen to it. Can answer ANY question about the video: summarize content, find specific moments, extract quotes, analyze emotions, describe scenes, review quality, translate what is being said, identify speakers, get key points, etc. Works on any public YouTube video. Much more powerful than just reading captions — the model actually sees and hears the video. IMPORTANT: Craft a detailed, specific analytical question — not just 'summarize'. Include what aspects to focus on, what format the answer should be in, and any context from the conversation that would help produce the most useful analysis.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1464,9 +1464,11 @@ When canvas is NOT appropriate (short explanatory snippet):
 
 # AVOID BAD AUTOMATION
 
+You natively support watching and analyzing YouTube videos when given a YouTube URL. Do NOT use the analyze_youtube_video tool to process videos natively. ONLY use the analyze_youtube_video tool if the user explicitly instructs you to test it.
+
 Do not run a heavy tool just because a URL exists in context:
 - User asks for title/metadata only → get_video_info only, not analyze_youtube_video
-- User asks for summary/quotes/moments → analyze_youtube_video, not download + transcribe
+- User asks for summary/quotes/moments → answer directly using native YouTube capabilities, do NOT use analyze_youtube_video
 - User asks for existing YouTube captions → get_youtube_captions first, not generate_subtitles
 - User gives exact clip times → cut_video_clip directly, not web_search first
 - User asks for SEO/title/script from their own idea → answer directly unless they ask for export/download
@@ -1513,7 +1515,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | User wants | Use |
 |---|---|
 | "what's this video about / who made it" | get_video_info (metadata only — fast) |
-| "summarize / explain / find the moment when / quote what they said" | analyze_youtube_video (AI watches + listens) |
+| "summarize / explain / find the moment when / quote what they said" | Answer directly using native YouTube capabilities (DO NOT use analyze_youtube_video) |
 | "give me the captions / subtitles already on YouTube" | get_youtube_captions (instant, no transcription) |
 | "transcribe / generate subtitles / translate subtitles" | generate_subtitles |
 | "fix / clean pasted SRT/VTT/TXT" | answer directly with cleaned text; use canvas for long subtitle output |
@@ -1570,9 +1572,9 @@ Do not run generate_subtitles if YouTube captions would suffice.
 # MULTI-STEP REASONING
 
 You can chain up to ${MAX_ITERATIONS} tool calls per turn:
-- "summarize the video and then pull the best 3 clips" → analyze_youtube_video, then find_best_clips.
+- "summarize the video and then pull the best 3 clips" → answer directly, then find_best_clips.
 - "transcribe and translate to English" → generate_subtitles with translateTo='en'.
-- "what does the host say about X at minute 10" → analyze_youtube_video (NOT generate_subtitles — much faster).
+- "what does the host say about X at minute 10" → answer directly using native capabilities.
 - If a tool result contains "video unavailable", "private", or "no captions found", stop retrying and tell the user plainly.
 
 When multiple requested actions are independent, call the tools together in the same turn. Keep dependent chains in order.
