@@ -81,7 +81,6 @@ async function buildAll() {
       "@swc/*",
       "@azure/*",
       "@opentelemetry/*",
-      "@google-cloud/*",
       "googleapis",
       "firebase-admin",
       "@parcel/watcher",
