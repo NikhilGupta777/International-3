@@ -74,6 +74,8 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "check_job_status":
     case "check_active_jobs":
     case "repeat_last_artifact":
+    case "read_uploaded_file":
+    case "describe_image":
     case "extract_text_from_image":
     case "write_video_script":
     case "generate_seo_pack":
@@ -98,11 +100,10 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 }
 
 // ── Resolve base URL for internal API calls ───────────────────────────────
-function getApiBase(req: any): string {
+function getApiBase(_req: any): string {
   if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
-  const proto = req.headers["x-forwarded-proto"] ?? "http";
-  const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000";
-  return `${proto}://${host}/api`;
+  const port = process.env.PORT ?? "8080";
+  return `http://127.0.0.1:${port}/api`;
 }
 
 function rememberAgentJob(req: any, jobId: unknown): void {
@@ -220,7 +221,7 @@ async function pollJobUntilDone(
     });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
     const data = await r.json() as any;
-    const { status, percent, message, filename } = data;
+    const { status, percent, message, filename, filesize } = data;
     const elapsedSeconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
     const baseMessage = message && message !== status ? message : "Cutting selected section";
     let liveMessage = message ?? status;
@@ -234,7 +235,7 @@ async function pollJobUntilDone(
       sseEvent(res, { type: "tool_log", runId, toolId, name: toolName, message: liveMessage, level: "info" });
       lastLogMsg = baseMessage;
     }
-    if (status === "done") return { status, filename };
+    if (status === "done") return { status, filename, ...(filesize != null ? { filesize: Number(filesize) } : {}) };
     if (["error", "cancelled", "expired", "not_found"].includes(status))
       throw new Error(`Job ${status}: ${message ?? ""}`);
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
@@ -3148,25 +3149,53 @@ except Exception as exc:
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
       const size = sizeHeader ? Number(sizeHeader) : null;
-      if (!size || !Number.isFinite(size)) {
-        throw new Error("source size is unknown; cannot stream artifact safely");
-      }
-      if (size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
+      if (size && Number.isFinite(size) && size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
         throw new Error(`source too large (${size} bytes)`);
       }
 
-      // Stream into a presigned PUT so we never buffer huge files through Lambda heap.
       if (!r.body) throw new Error("source response body is empty");
-      const presign = await ws.s3.presignPut(path, { size, contentType });
-      const putRes = await fetch(presign.uploadUrl, {
-        method: "PUT",
-        body: r.body,
-        duplex: "half",
-        headers: {
-          ...(contentType ? { "Content-Type": contentType } : {}),
-          "Content-Length": String(size),
-        },
-      } as any);
+
+      let putRes: globalThis.Response;
+      if (size && Number.isFinite(size)) {
+        // Known size: stream directly into a presigned PUT
+        const presign = await ws.s3.presignPut(path, { size, contentType });
+        putRes = await fetch(presign.uploadUrl, {
+          method: "PUT",
+          body: r.body,
+          duplex: "half",
+          headers: {
+            ...(contentType ? { "Content-Type": contentType } : {}),
+            "Content-Length": String(size),
+          },
+        } as any);
+      } else {
+        // Unknown size (chunked/streamed response): buffer with a cap, then upload
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        const reader = r.body.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          totalBytes += value.byteLength;
+          if (totalBytes > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
+            reader.cancel();
+            throw new Error(`source too large (>${WORKSPACE_LIMITS.MAX_FILE_BYTES} bytes)`);
+          }
+          chunks.push(value);
+        }
+        const body = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+        const presign = await ws.s3.presignPut(path, { size: totalBytes, contentType });
+        putRes = await fetch(presign.uploadUrl, {
+          method: "PUT",
+          body: body,
+          headers: {
+            ...(contentType ? { "Content-Type": contentType } : {}),
+            "Content-Length": String(totalBytes),
+          },
+        });
+      }
       if (!putRes.ok) throw new Error(`workspace upload failed: ${putRes.status}`);
       const { url: downloadUrl } = await ws.s3.presignGet(path, { disposition: "attachment" });
       return {

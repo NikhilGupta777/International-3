@@ -140,12 +140,11 @@ const OPERATIONS: Operation[] = [
 const OP_BY_NAME = new Map(OPERATIONS.map((o) => [o.op, o]));
 
 // ── Internal call helpers (same-process localhost; bypasses the key gate) ────
-function internalBase(req: Request): string {
+function internalBase(_req: Request): string {
   const env = (process.env.INTERNAL_API_BASE ?? "").trim();
   if (env) return env.replace(/\/+$/, "");
-  const proto = String(req.headers["x-forwarded-proto"] ?? req.protocol ?? "http");
-  const host = String(req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3000");
-  return `${proto}://${host}`;
+  const port = process.env.PORT ?? "8080";
+  return `http://127.0.0.1:${port}`;
 }
 
 async function internalCall(

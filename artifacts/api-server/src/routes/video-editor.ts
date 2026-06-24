@@ -2653,11 +2653,10 @@ function buildToolDispatcherV2(
 }
 
 // ── Helper: get API base for internal calls ────────────────────────────────
-function getVideoEditorApiBase(req: Request): string {
+function getVideoEditorApiBase(_req: Request): string {
   if (process.env.INTERNAL_API_BASE) return process.env.INTERNAL_API_BASE + "/api";
-  const proto = req.headers["x-forwarded-proto"] ?? "http";
-  const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:8080";
-  return `${proto}://${host}/api`;
+  const port = process.env.PORT ?? "8080";
+  return `http://127.0.0.1:${port}/api`;
 }
 
 function buildVideoEditorInternalHeaders(req: Request): Record<string, string> {
