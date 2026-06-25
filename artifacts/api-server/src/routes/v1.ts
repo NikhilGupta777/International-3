@@ -250,8 +250,18 @@ function normalizeStatus(op: Operation | undefined, jobId: string, raw: any, ori
         };
         break;
       case "subtitles":
+        // The upstream /subtitles/status handler returns the SRT content
+        // INLINE under `r.srt` (not as a hosted URL). The previous shape
+        // only checked `srtUrl` and so always surfaced nulls — clients
+        // saw "Done, but couldn't format" instead of the actual subtitle
+        // file. Inline `srt` (and the optional VTT) directly so the bot's
+        // formatter — which already reads `result.srt` — can render the
+        // .srt document.
         result = {
           type: "subtitles",
+          srt: r.srt ?? r.result?.srt ?? null,
+          vtt: r.vtt ?? r.result?.vtt ?? null,
+          filename: r.filename ?? r.result?.filename ?? null,
           srtUrl: r.srtUrl ?? r.result?.srtUrl ?? null,
           text: r.text ?? r.transcript ?? r.result?.text ?? null,
         };
