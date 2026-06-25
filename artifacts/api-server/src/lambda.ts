@@ -21,6 +21,7 @@ import {
   runClipCutWorker,
   type ClipCutWorkerEvent,
 } from "./routes/youtube";
+import { runEditorRenderWorker } from "./routes/video-editor";
 import {
   ensureInternalServer,
   proxyToInternalServer,
@@ -154,6 +155,26 @@ export const handler = awslambda.streamifyResponse(
           translateTo: e.translateTo,
           notifyClientKey: e.notifyClientKey ?? null,
         } as SubtitleWorkerEvent);
+      } finally {
+        safeEnd(responseStream);
+      }
+      return;
+    }
+
+    // ── Editor render Lambda worker (async self-invoke, fast path) ──────
+    if (event?.source === "videomaking.editor") {
+      const e = event as { jobId?: string; workspaceId?: string; projectId?: string; kind?: "preview" | "final" };
+      if (!e.jobId || !e.workspaceId || !e.projectId) {
+        safeEnd(responseStream);
+        throw new Error("Invalid editor render worker payload: missing jobId/workspaceId/projectId");
+      }
+      try {
+        await runEditorRenderWorker({
+          jobId: e.jobId,
+          workspaceId: e.workspaceId,
+          projectId: e.projectId,
+          kind: e.kind === "preview" ? "preview" : "final",
+        });
       } finally {
         safeEnd(responseStream);
       }

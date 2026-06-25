@@ -12,15 +12,34 @@ import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
 import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
-import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
-import { submitEditorRenderJob, getJobStatusFromDdb } from "../lib/youtube-queue";
+import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { submitEditorRenderJob, getJobStatusFromDdb, putEditorJobQueued, updateEditorJobStatus, isEditorDdbConfigured } from "../lib/youtube-queue";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
-import { uploadLocalFileToGCS, deleteLocalFile } from "../lib/gcs-storage";
 import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 
 
 const VIDEO_EDITOR_QUEUE_ENABLED =
   (process.env.VIDEO_EDITOR_BATCH_ENABLED || "").toLowerCase() === "true";
+
+// Model used by the watch_youtube_video tool to actually watch+listen to a
+// YouTube video (vision+audio). Mirrors agent.ts's primary AGENT_MODEL.
+const EDITOR_WATCH_MODEL = (process.env.EDITOR_WATCH_MODEL || "gemini-3-flash-preview").trim();
+
+// ── Render routing ────────────────────────────────────────────────────────────
+// Fast path: self-invoke a worker Lambda (near-instant start, 15-min budget) for
+// renders whose expected output is short. Heavy path: AWS Batch/Fargate for long
+// renders (no 15-min cap) when the expected output exceeds the threshold.
+const EDITOR_WORKER_FUNCTION_NAME = (
+  process.env.VIDEO_EDITOR_WORKER_FUNCTION_NAME || process.env.AWS_LAMBDA_FUNCTION_NAME || ""
+).trim();
+const EDITOR_RENDER_FARGATE_THRESHOLD_SEC = Math.max(
+  60,
+  Number.parseInt(process.env.VIDEO_EDITOR_FARGATE_THRESHOLD_SEC ?? "600", 10) || 600,
+);
+const editorLambdaClient = EDITOR_WORKER_FUNCTION_NAME
+  ? new LambdaClient({ region: process.env.AWS_REGION || process.env.YOUTUBE_QUEUE_REGION || "us-east-1" })
+  : null;
 
 type AspectRatio = "original" | "9:16" | "16:9" | "1:1";
 type CropMode = "smart" | "fit-blur" | "contain";
@@ -86,6 +105,8 @@ type TimedOverlay = {
   tlStart: number;
   tlEnd: number;       // 0 = full duration
   position: string;    // "top-right", "bottom-center", etc.
+  xPct?: number;       // optional free position: overlay CENTER x as 0..1 of frame
+  yPct?: number;       // optional free position: overlay CENTER y as 0..1 of frame
   style: Record<string, any>;
 };
 
@@ -488,6 +509,71 @@ function escapeDrawText(text: string): string {
     .replace(/\]/g, "\\]");
 }
 
+// ─── Multimodal helpers (vision + transcript) ─────────────────────────────────
+const EDITOR_IMAGE_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+  ".bmp": "image/bmp",
+};
+
+function imageMimeForExt(path: string): string | null {
+  return EDITOR_IMAGE_MIME[extname(path || "").toLowerCase()] ?? null;
+}
+
+/**
+ * Download a workspace image and return it as a downscaled JPEG base64 inline
+ * part for Gemini vision. Images are read DIRECTLY by Gemini in both API-key
+ * and Vertex modes — they never need GCS (unlike video/audio). Downscaling to
+ * 1024px keeps token cost low and avoids shipping multi-MB originals. Falls
+ * back to the original bytes if ffmpeg can't process the format.
+ */
+async function loadWorkspaceImageInline(
+  ws: ReturnType<typeof getWorkspace>,
+  path: string,
+): Promise<{ mimeType: string; data: string } | null> {
+  const srcMime = imageMimeForExt(path);
+  if (!srcMime) return null;
+  const dir = join(tmpdir(), `editor-img-${randomUUID()}`);
+  await mkdir(dir, { recursive: true });
+  try {
+    const local = join(dir, `img${extname(path) || ".png"}`);
+    await downloadWorkspaceFile(ws, path, local);
+    const scaled = join(dir, "scaled.jpg");
+    try {
+      await runFfmpegRaw(["-y", "-i", local, "-vf", "scale='min(1024,iw)':-2", "-frames:v", "1", "-q:v", "5", scaled]);
+      const bytes = await readFile(scaled);
+      if (bytes.length > 0) return { mimeType: "image/jpeg", data: bytes.toString("base64") };
+    } catch { /* fall back to original bytes below */ }
+    const raw = await readFile(local);
+    if (raw.length > 8_000_000) return null; // don't blow up the request with a huge original
+    return { mimeType: srcMime, data: raw.toString("base64") };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Keep only SRT cues overlapping [startSec, endSec] so the agent can be handed
+ * a time-bounded slice of a transcript instead of the whole file.
+ */
+function filterSrtByRange(srt: string, startSec: number, endSec: number): string {
+  const toSec = (ts: string): number => {
+    const m = ts.trim().match(/(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})/);
+    if (!m) return 0;
+    return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000;
+  };
+  const kept: string[] = [];
+  for (const block of srt.split(/\r?\n\r?\n/)) {
+    const tl = block.match(/(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}[,.]\d{1,3})/);
+    if (!tl) continue;
+    if (toSec(tl[2]) >= startSec && toSec(tl[1]) <= endSec) kept.push(block.trim());
+  }
+  return kept.join("\n\n");
+}
+
 function overlayPositionAny(position: string, margin: number): string {
   switch (position) {
     case "top-left": return `${margin}:${margin}`;
@@ -862,52 +948,82 @@ async function markRenderDispatchError(
   });
 }
 
+async function trySubmitEditorBatch(ws: ReturnType<typeof getWorkspace>, projectId: string, job: EditorJob): Promise<boolean> {
+  try {
+    const batchId = await submitEditorRenderJob({
+      jobId: job.jobId,
+      workspaceId: ws.identity.workspaceId,
+      projectId,
+      kind: job.kind,
+    });
+    if (batchId) { jobs.delete(job.jobId); return true; }
+    return false;
+  } catch (err) {
+    logger.error({ err, jobId: job.jobId }, "[video-editor] batch submit failed");
+    return false;
+  }
+}
+
+async function tryInvokeEditorWorker(ws: ReturnType<typeof getWorkspace>, projectId: string, job: EditorJob): Promise<boolean> {
+  if (!editorLambdaClient || !EDITOR_WORKER_FUNCTION_NAME || !isEditorDdbConfigured()) return false;
+  try {
+    await putEditorJobQueued(job.jobId, projectId, job.kind);
+    await editorLambdaClient.send(new InvokeCommand({
+      FunctionName: EDITOR_WORKER_FUNCTION_NAME,
+      InvocationType: "Event",
+      Payload: Buffer.from(JSON.stringify({
+        source: "videomaking.editor",
+        jobId: job.jobId,
+        workspaceId: ws.identity.workspaceId,
+        projectId,
+        kind: job.kind,
+      })),
+    }));
+    // Status now lives in DynamoDB — drop the in-memory entry so polling
+    // falls through to the worker's DDB progress writes.
+    jobs.delete(job.jobId);
+    return true;
+  } catch (err) {
+    logger.error({ err, jobId: job.jobId }, "[video-editor] worker Lambda invoke failed");
+    return false;
+  }
+}
+
 async function dispatchRenderJob(
   ws: ReturnType<typeof getWorkspace>,
   projectId: string,
   job: EditorJob,
 ): Promise<void> {
+  // Estimate the output length to choose Lambda (fast, ≤ threshold) vs
+  // Fargate/Batch (heavy, > threshold, no 15-min cap).
+  let expectedSec = 0;
+  try {
+    const p = await readProjectFromWorkspace(ws, projectId) as EditorProjectV2;
+    if (p.timeline) expectedSec = computeTimelineDuration(p.timeline);
+  } catch { /* best-effort */ }
+  const isLong = expectedSec > EDITOR_RENDER_FARGATE_THRESHOLD_SEC;
+
+  // 1) Long renders → Fargate/Batch first (no 15-min Lambda cap).
+  if (isLong && VIDEO_EDITOR_QUEUE_ENABLED) {
+    if (await trySubmitEditorBatch(ws, projectId, job)) return;
+  }
+  // 2) Default fast path → self-invoke worker Lambda (near-instant start).
+  if (await tryInvokeEditorWorker(ws, projectId, job)) return;
+  // 3) Batch fallback (short render w/o worker, or worker invoke failed).
   if (VIDEO_EDITOR_QUEUE_ENABLED) {
-    try {
-      const batchId = await submitEditorRenderJob({
-        jobId: job.jobId,
-        workspaceId: ws.identity.workspaceId,
-        projectId,
-        kind: job.kind,
-      });
-      if (batchId) {
-        jobs.delete(job.jobId);
-        return;
-      }
-      const message = "Render queue is enabled but Batch submission was unavailable.";
-      logger.error({ jobId: job.jobId }, `[video-editor] ${message}`);
-      if (IS_LAMBDA && job.kind === "final") {
-        await markRenderDispatchError(ws, projectId, job, message);
-        return;
-      }
-      job.message = "Queued (Batch unavailable - falling back locally)";
-    } catch (err) {
-      logger.error({ err, jobId: job.jobId }, "[video-editor] batch submit failed");
-      if (IS_LAMBDA && job.kind === "final") {
-        await markRenderDispatchError(
-          ws,
-          projectId,
-          job,
-          err instanceof Error ? `Render queue submission failed: ${err.message}` : "Render queue submission failed.",
-        );
-        return;
-      }
-    }
-  } else if (IS_LAMBDA && job.kind === "final") {
+    if (await trySubmitEditorBatch(ws, projectId, job)) return;
+  }
+  // 4) Inline — local/dev only. In Lambda a fire-and-forget final render
+  //    would be frozen after the response, so error clearly instead.
+  if (IS_LAMBDA && job.kind === "final") {
     await markRenderDispatchError(
       ws,
       projectId,
       job,
-      "AI Studio final renders require the background render queue in production.",
+      "AI Studio final renders need the worker Lambda (VIDEO_EDITOR_WORKER_FUNCTION_NAME) or the Batch queue in production.",
     );
     return;
   }
-
   if (RUN_RENDER_INLINE) await processRenderJob(ws, projectId, job);
   else void processRenderJob(ws, projectId, job);
 }
@@ -950,6 +1066,42 @@ export async function runEditorRenderStandalone(params: {
   if (ephemeralJob.status === "error") throw new Error(ephemeralJob.error || "render failed");
   await params.onProgress?.({ status: ephemeralJob.status, progress: ephemeralJob.progress, message: ephemeralJob.message, outputPath: ephemeralJob.outputPath, error: null });
   return { outputPath: ephemeralJob.outputPath || "" };
+}
+
+/**
+ * Worker-Lambda entry for editor renders (async self-invoke). Runs the render
+ * and reports progress through the DynamoDB jobs table so the frontend polls
+ * GET /jobs/:id identically whether the render ran here or on Batch.
+ */
+export async function runEditorRenderWorker(params: {
+  workspaceId: string;
+  projectId: string;
+  jobId: string;
+  kind: "preview" | "final";
+}): Promise<void> {
+  await updateEditorJobStatus(params.jobId, { status: "running", message: "Rendering...", progressPct: 5 }).catch(() => {});
+  try {
+    const { outputPath } = await runEditorRenderStandalone({
+      workspaceId: params.workspaceId,
+      projectId: params.projectId,
+      jobId: params.jobId,
+      kind: params.kind,
+      onProgress: async (state) => {
+        await updateEditorJobStatus(params.jobId, {
+          // "done" from the renderer means the file is written; keep the DDB
+          // record "running" until the upload completes below.
+          status: state.status === "done" ? "running" : state.status,
+          message: state.message,
+          progressPct: state.progress,
+          ...(state.outputPath ? { s3Key: state.outputPath } : {}),
+        }).catch(() => {});
+      },
+    });
+    await updateEditorJobStatus(params.jobId, { status: "done", message: "Render complete", progressPct: 100, s3Key: outputPath }).catch(() => {});
+  } catch (err) {
+    await updateEditorJobStatus(params.jobId, { status: "error", message: err instanceof Error ? err.message : "render failed", progressPct: 0 }).catch(() => {});
+    throw err;
+  }
 }
 
 async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: string, job: EditorJob): Promise<void> {
@@ -1106,6 +1258,9 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
         let step = 0;
 
         for (const ov of overlays) {
+          const hasCoords = typeof ov.xPct === "number" && typeof ov.yPct === "number";
+          const px = Math.max(0, Math.min(1, ov.xPct ?? 0));
+          const py = Math.max(0, Math.min(1, ov.yPct ?? 0));
           if (ov.type === "logo" || ov.type === "image") {
             const imageLocal = join(dir, `${ov.type}-${ov.id}${extname(ov.content) || ".png"}`);
             await downloadWorkspaceFile(ws, ov.content, imageLocal);
@@ -1115,15 +1270,28 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
             const margin = Math.round(width * 0.045);
             const keyFilter = ov.style?.key === "auto-white" ? "format=rgba,colorkey=0xffffff:0.30:0.20," : ov.style?.key === "auto-black" ? "format=rgba,colorkey=0x000000:0.30:0.20," : "";
             const enable = timelineEnable(ov.tlStart || 0, ov.tlEnd || 0);
+            // Free coordinates (overlay CENTER at px,py) take precedence over
+            // the named anchor when present — clamped so the center stays
+            // on-frame. Otherwise fall back to the 6 named anchors.
+            const pos = hasCoords
+              ? `(W*${px.toFixed(4)}-w/2):(H*${py.toFixed(4)}-h/2)`
+              : overlayPositionAny(ov.position || "top-right", margin);
             oFilters.push(`[${inputIdx}:v]${keyFilter}scale=${imageWidth}:-1:flags=lanczos[image${step}]`);
-            oFilters.push(`[${current}][image${step}]overlay=${overlayPositionAny(ov.position || "top-right", margin)}:format=auto${enable}[v${step}]`);
+            oFilters.push(`[${current}][image${step}]overlay=${pos}:format=auto${enable}[v${step}]`);
             current = `v${step}`;
             step++;
             inputIdx++;
           } else if (ov.type === "text") {
             const fontSize = Math.max(34, Math.round(width * 0.055));
-            const y = ov.position === "top-left" ? Math.round(height * 0.08) : Math.round(height * 0.88);
-            const x = ov.position === "bottom-right" ? `w-text_w-${Math.round(width * 0.06)}` : "(w-text_w)/2";
+            let x: string;
+            let y: string;
+            if (hasCoords) {
+              x = `(w*${px.toFixed(4)}-text_w/2)`;
+              y = `(h*${py.toFixed(4)}-text_h/2)`;
+            } else {
+              y = String(ov.position === "top-left" ? Math.round(height * 0.08) : Math.round(height * 0.88));
+              x = ov.position === "bottom-right" ? `w-text_w-${Math.round(width * 0.06)}` : "(w-text_w)/2";
+            }
             const enable = timelineEnable(ov.tlStart || 0, ov.tlEnd || 0);
             oFilters.push(`[${current}]drawtext=text='${escapeDrawText(ov.content)}':fontcolor=white:fontsize=${fontSize}:borderw=3:bordercolor=black@0.65:x=${x}:y=${y}${enable}[v${step}]`);
             current = `v${step}`;
@@ -1572,59 +1740,7 @@ async function enqueueRender(ws: ReturnType<typeof getWorkspace>, project: Edito
         ...latest.renders,
       ].slice(0, 20),
     });
-    if (VIDEO_EDITOR_QUEUE_ENABLED) {
-      try {
-        const batchId = await submitEditorRenderJob({
-          jobId: job.jobId,
-          workspaceId: ws.identity.workspaceId,
-          projectId: project.projectId,
-          kind: job.kind,
-        });
-        if (batchId) {
-          // Hand status off to DynamoDB — remove the in-memory entry so
-          // GET /jobs/:jobId falls through to the DDB-backed worker progress.
-          jobs.delete(job.jobId);
-        } else {
-          job.message = "Queued (Batch not available — falling back)";
-          if (IS_LAMBDA && job.kind === "final") {
-            await markRenderDispatchError(
-              ws,
-              project.projectId,
-              job,
-              "Render queue is enabled but Batch submission was unavailable.",
-            );
-            return;
-          }
-          if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
-          else void processRenderJob(ws, project.projectId, job);
-        }
-      } catch (err) {
-        logger.error({ err, jobId: job.jobId }, "[video-editor] batch submit failed; falling back to in-process");
-        if (IS_LAMBDA && job.kind === "final") {
-          await markRenderDispatchError(
-            ws,
-            project.projectId,
-            job,
-            err instanceof Error ? `Render queue submission failed: ${err.message}` : "Render queue submission failed.",
-          );
-          return;
-        }
-        if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
-        else void processRenderJob(ws, project.projectId, job);
-      }
-    } else {
-      if (IS_LAMBDA && job.kind === "final") {
-        await markRenderDispatchError(
-          ws,
-          project.projectId,
-          job,
-          "AI Studio final renders require the background render queue in production.",
-        );
-        return;
-      }
-      if (RUN_RENDER_INLINE) await processRenderJob(ws, project.projectId, job);
-      else void processRenderJob(ws, project.projectId, job);
-    }
+    await dispatchRenderJob(ws, project.projectId, job);
   })();
   return job;
 }
@@ -1661,12 +1777,14 @@ const AGENT_TOOL_DECLARATIONS_V2 = [
     transitionType: { type: Type.STRING, description: "none | fade | crossfade | blur | dip-to-black | wipe" },
     duration: { type: Type.NUMBER, description: "Transition duration in seconds (0.1-2.0, default 0.4)" },
   }, required: ["clipId", "boundary", "transitionType"] } },
-  { name: "add_overlay", description: "Add a timed overlay (logo, text, or image) to the timeline.", parameters: { type: Type.OBJECT, properties: {
+  { name: "add_overlay", description: "Add a timed overlay (logo, text, or image) to the timeline. Position it either with a named anchor (position) OR with exact coordinates x,y (0..1, the overlay's CENTER as a fraction of the frame). Use coordinates to place a logo/text ANYWHERE — e.g. after analyze_video tells you where a safe empty area is.", parameters: { type: Type.OBJECT, properties: {
     overlayType: { type: Type.STRING, description: "logo | text | image" },
     content: { type: Type.STRING, description: "Text string or asset path" },
     tlStart: { type: Type.NUMBER, description: "Start time on timeline (default 0)" },
     tlEnd: { type: Type.NUMBER, description: "End time on timeline (0 = full duration)" },
-    position: { type: Type.STRING, description: "top-right | top-left | bottom-right | bottom-left | bottom-center | top-center" },
+    position: { type: Type.STRING, description: "Named anchor: top-right | top-left | bottom-right | bottom-left | bottom-center | top-center. Ignored if x/y given." },
+    x: { type: Type.NUMBER, description: "Optional exact CENTER x as 0..1 (0=left edge, 1=right edge). Overrides position." },
+    y: { type: Type.NUMBER, description: "Optional exact CENTER y as 0..1 (0=top, 1=bottom). Overrides position." },
     style: { type: Type.STRING, description: "JSON string of style options. For logo: {widthPercent, key}. For text: {style: bold-clean|headline}" },
   }, required: ["overlayType", "content"] } },
   { name: "remove_overlay", description: "Remove an overlay by ID.", parameters: { type: Type.OBJECT, properties: {
@@ -1734,6 +1852,29 @@ const AGENT_TOOL_DECLARATIONS_V2 = [
   { name: "generate_timestamps", description: "Generate YouTube chapter timestamps from a video using AI.", parameters: { type: Type.OBJECT, properties: {
     url: { type: Type.STRING, description: "YouTube video URL" },
   }, required: ["url"] } },
+  { name: "analyze_video", description: "SEE the actual content of an uploaded/local video by sampling frames (NOT for YouTube — watch those directly or use get_transcript). Fast: extracts a few frames and looks at them. Use to understand what's visually in a clip — scene, subjects, on-screen text/logo burned in, quality, where action happens. Provide a focused question.", parameters: { type: Type.OBJECT, properties: {
+    asset: { type: Type.STRING, description: "Workspace path to the video. Omit to use the project source video." },
+    clipId: { type: Type.STRING, description: "Optional timeline clip ID — analyzes that clip's source within its trim range." },
+    question: { type: Type.STRING, description: "What to look for, e.g. 'is there a watermark? what's in the first 5s?'" },
+    startTime: { type: Type.NUMBER, description: "Optional window start in seconds." },
+    endTime: { type: Type.NUMBER, description: "Optional window end in seconds." },
+    timestamps: { type: Type.ARRAY, items: { type: Type.NUMBER }, description: "Optional explicit seconds to grab frames at. Overrides startTime/endTime/frameCount." },
+    frameCount: { type: Type.NUMBER, description: "How many frames to sample across the window (1-8, default 3)." },
+  } } },
+  { name: "get_transcript", description: "Get what is SAID in a video as text. For a YouTube URL this fetches existing captions instantly (optionally a time range). For an uploaded/local video or audio asset it transcribes the media (slower). Use only when the user asks about spoken content / wants subtitles-level understanding.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube URL (uses captions, instant)." },
+    asset: { type: Type.STRING, description: "Workspace path to a local video/audio to transcribe. Omit url+asset to use the project source." },
+    startTime: { type: Type.NUMBER, description: "Optional range start in seconds (filters the transcript)." },
+    endTime: { type: Type.NUMBER, description: "Optional range end in seconds." },
+    language: { type: Type.STRING, description: "Source language code, e.g. 'hi'. Default auto." },
+    translateTo: { type: Type.STRING, description: "Optional target language code for translation (local transcription only)." },
+  } } },
+  { name: "watch_youtube_video", description: "WATCH & LISTEN to a YouTube video with Gemini vision+audio — the model actually sees the frames and hears the audio. EXPENSIVE and slow: use ONLY when the user explicitly needs visual/audio understanding that captions can't give (e.g. 'what's shown on screen', 'describe the visuals', 'what happens at 2:00'). For plain 'what is said' / summary, prefer get_transcript. NOT for local uploads — use analyze_video for those.", parameters: { type: Type.OBJECT, properties: {
+    url: { type: Type.STRING, description: "YouTube URL. Omit to use the project source video if it's a YouTube link." },
+    question: { type: Type.STRING, description: "Specific, detailed question about the video's visuals/audio/content." },
+    startTime: { type: Type.NUMBER, description: "Optional window start in seconds (watch only this part)." },
+    endTime: { type: Type.NUMBER, description: "Optional window end in seconds." },
+  }, required: ["question"] } },
 ];
 
 const AGENT_SYSTEM_PROMPT_V2 = `You are the AI Video Agent — a professional video editor that works through conversation. Users upload videos, logos, music, and other assets, then describe what they want in natural language. You analyze their request, build an edit plan using timeline operations, and present it for approval before rendering.
@@ -1749,6 +1890,13 @@ FILE HANDLING:
 - When users upload files, the paths appear in the message as [Uploaded video: filename → workspace_path] or [Uploaded image: filename → workspace_path].
 - Use these EXACT workspace paths in add_clip(asset: ...) and add_overlay(content: ...).
 - The project's sourceVideo and assets.logo fields are also auto-set from uploads.
+
+WHAT YOU CAN SEE AND HEAR (vision + audio):
+- You CAN see uploaded images directly — the logo, overlay images, and intro/outro stills are attached to your context as actual images. Look at them. If asked "what is the logo / can you read it", describe what you actually see (text, colors, shape) — do NOT say you can only see the filename.
+- To UNDERSTAND a YouTube video (what it's about, what's said, topics, finding a moment), call get_transcript — it returns the full captions instantly (optionally a startTime/endTime range). This is your DEFAULT way to understand YouTube content. YouTube videos are NOT auto-given to you to watch.
+- To actually WATCH & LISTEN to a YouTube video (the visuals, on-screen text, what is shown at a moment, audio cues) call watch_youtube_video. It is expensive and slow — use it ONLY when the transcript genuinely can't answer (e.g. the user asks what's visually on screen). Always prefer get_transcript first.
+- For UPLOADED / local videos and timeline clips you do NOT watch the whole video. Use analyze_video to sample frames (fast) and see what's visually in them, and get_transcript to transcribe the speech (only when the user asks about spoken content).
+- Be efficient: don't analyze_video / get_transcript / watch_youtube_video unless the task needs it. A simple "add my logo top-right" needs none of them.
 
 YOUTUBE CAPABILITIES:
 - If a user pastes a YouTube URL, use fetch_video_info first to get metadata.
@@ -1768,6 +1916,7 @@ BEHAVIOR RULES:
 - For "shorts"/"reels"/"vertical" → set_export 9:16, smart crop.
 - For dates/text overlays, detect date formats in the user's message and use them.
 - If a logo is uploaded, call detect_logo_background to pick the right key.
+- Overlays can go ANYWHERE: pass exact x,y (0..1, the overlay's center) to add_overlay instead of a named corner. To place a logo/text in a specific empty area, call analyze_video first to see the frame, then add_overlay with those coordinates.
 - If the user says "render"/"do it"/"go"/"approved" and there's an approved plan, start_render final.
 - Refuse non-video tasks in one short sentence.
 
@@ -1790,6 +1939,9 @@ ADVANCED TOOLS:
 - generate_subtitles: Generate SRT subtitles from a YouTube URL (with optional translation). Use when user wants subtitles/captions.
 - find_best_clips: AI analysis to find the best moments/highlights from a YouTube video.
 - generate_timestamps: Generate YouTube chapter timestamps from a video.
+- analyze_video: See inside an uploaded/local video by sampling frames (scene, on-screen text, watermark, where action is). Not for YouTube.
+- get_transcript: Get spoken content as text — instant captions for YouTube, transcription for local media. Default way to understand a YouTube video.
+- watch_youtube_video: Actually watch+listen to a YouTube video with vision+audio. Expensive/slow — only when the transcript isn't enough (visual questions).
 
 MULTI-CLIP EDITING:
 - You can add multiple clips from different sources. They render in timeline order with optional crossfades.
@@ -1894,9 +2046,17 @@ function buildToolDispatcherV2(
         position: args.position || (overlayType === "logo" ? "top-right" : "bottom-center"),
         style,
       };
+      // Exact coordinates (center, 0..1) override the named anchor.
+      const hasX = args.x != null && Number.isFinite(Number(args.x));
+      const hasY = args.y != null && Number.isFinite(Number(args.y));
+      if (hasX && hasY) {
+        overlay.xPct = clampNumber(args.x, 0, 1, 0.5);
+        overlay.yPct = clampNumber(args.y, 0, 1, 0.5);
+      }
       if (overlay.tlEnd > 0 && overlay.tlEnd <= overlay.tlStart) throw new Error("Overlay end must be after start.");
       pendingTimeline.tracks.overlays.push(overlay);
-      return { message: `Added ${overlay.type} overlay "${overlay.content.slice(0, 40)}" at ${overlay.position}.` };
+      const where = overlay.xPct != null ? `x=${overlay.xPct.toFixed(2)}, y=${overlay.yPct!.toFixed(2)}` : overlay.position;
+      return { message: `Added ${overlay.type} overlay "${overlay.content.slice(0, 40)}" at ${where}.` };
     },
     remove_overlay: async (args) => {
       const idx = pendingTimeline.tracks.overlays.findIndex(o => o.id === args.overlayId);
@@ -2371,6 +2531,198 @@ function buildToolDispatcherV2(
       }
       throw new Error("Timestamp generation timed out.");
     },
+
+    analyze_video: async (args) => {
+      const ws = getWorkspace(req);
+      let asset: string | null = typeof args?.asset === "string" && args.asset.trim() ? args.asset.trim() : null;
+      let winStart = 0;
+      let winEnd = 0;
+      if (args?.clipId) {
+        const clip = pendingTimeline.tracks.video.find(c => c.id === args.clipId);
+        if (!clip) throw new Error("Clip not found.");
+        asset = clip.asset;
+        winStart = clip.srcIn || 0;
+        winEnd = clip.srcOut > clip.srcIn ? clip.srcOut : 0;
+      }
+      if (!asset) asset = getProject().sourceVideo;
+      if (!asset) throw new Error("No video to analyze — pass asset/clipId or set a source video.");
+      if (isYouTubeUrl(asset)) throw new Error("That's a YouTube URL — I can watch it directly or use get_transcript. analyze_video is for uploaded/clip assets.");
+      if (!isGeminiConfigured()) return { message: "Vision model not configured." };
+      sendSse({ type: "tool_progress", name: "analyze_video", message: "Extracting frames..." });
+      const dir = join(tmpdir(), `editor-analyze-${randomUUID()}`);
+      await mkdir(dir, { recursive: true });
+      try {
+        const local = join(dir, `src${extname(asset) || ".mp4"}`);
+        await downloadWorkspaceFile(ws, asset, local);
+        const meta = await probeMetadata(local);
+        const dur = meta.duration || 0;
+        let lo = winStart > 0 ? winStart : 0;
+        let hi = winEnd > lo ? winEnd : (dur || 0);
+        if (args?.startTime != null && Number.isFinite(Number(args.startTime))) lo = Math.max(0, Number(args.startTime));
+        if (args?.endTime != null && Number(args.endTime) > lo) hi = Number(args.endTime);
+        if (!(hi > lo)) hi = dur > lo ? dur : lo + 1;
+        let points: number[] = [];
+        if (Array.isArray(args?.timestamps) && args.timestamps.length) {
+          points = args.timestamps
+            .map((t: any) => Number(t))
+            .filter((t: number) => Number.isFinite(t))
+            .map((t: number) => Math.max(lo, Math.min(hi, t)));
+        }
+        if (!points.length) {
+          const n = Math.max(1, Math.min(8, Math.round(Number(args?.frameCount) || 3)));
+          if (n === 1) points = [lo + (hi - lo) / 2];
+          else for (let i = 0; i < n; i++) points.push(lo + (hi - lo) * (i / (n - 1)));
+        }
+        // Input-seek (`-ss` before `-i`) + single frame = very fast; run in parallel.
+        const frames = await Promise.all(points.map(async (t, i) => {
+          const out = join(dir, `f${i}.jpg`);
+          await runFfmpegRaw(["-y", "-ss", String(Math.max(0, t)), "-i", local, "-frames:v", "1", "-q:v", "5", "-vf", "scale='min(1024,iw)':-2", out]).catch(() => {});
+          try { const b = await readFile(out); return b.length ? { t, data: b.toString("base64") } : null; } catch { return null; }
+        }));
+        const got = frames.filter((f): f is { t: number; data: string } => Boolean(f));
+        if (!got.length) throw new Error("Could not extract frames from the video.");
+        const question = typeof args?.question === "string" && args.question.trim()
+          ? args.question.trim()
+          : "Describe what's happening: scene, subjects, any on-screen text or logos, and visual quality.";
+        const ai = createGeminiClient();
+        const parts: any[] = [{
+          text: `${got.length} frame(s) sampled from a video at ${got.map(g => g.t.toFixed(1) + "s").join(", ")} (window ${lo.toFixed(1)}s–${hi.toFixed(1)}s). ${question}\nAnswer concisely for a video editor. Do not identify real people.`,
+        }];
+        for (const g of got) parts.push({ inlineData: { mimeType: "image/jpeg", data: g.data } });
+        const resp: any = await ai.models.generateContent({
+          model: (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim(),
+          contents: [{ role: "user", parts }],
+          config: { maxOutputTokens: 1024, thinkingConfig: { thinkingLevel: "LOW" as any } },
+        });
+        const text = String(resp?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "").trim();
+        return { message: `Looked at frames @ ${got.map(g => g.t.toFixed(1) + "s").join(", ")}:\n${text || "(no description returned)"}` };
+      } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+    },
+
+    get_transcript: async (args) => {
+      const apiBase = getVideoEditorApiBase(req);
+      const headers = buildVideoEditorInternalHeaders(req);
+      const project = getProject();
+      let url: string | null = typeof args?.url === "string" && args.url.trim() ? args.url.trim() : null;
+      let asset: string | null = typeof args?.asset === "string" && args.asset.trim() ? args.asset.trim() : null;
+      if (!url && !asset && project.sourceVideo) {
+        if (isYouTubeUrl(project.sourceVideo)) url = project.sourceVideo;
+        else asset = project.sourceVideo;
+      }
+      const startSecs = args?.startTime != null ? parseEditorTimestamp(String(args.startTime)) : null;
+      const endSecs = args?.endTime != null ? parseEditorTimestamp(String(args.endTime)) : null;
+      const sliceRange = (srt: string): string =>
+        (startSecs != null || endSecs != null) ? filterSrtByRange(srt, startSecs ?? 0, endSecs ?? Number.MAX_SAFE_INTEGER) : srt;
+
+      if (url && isYouTubeUrl(url)) {
+        sendSse({ type: "tool_progress", name: "get_transcript", message: "Fetching YouTube captions..." });
+        const lang = args?.language ?? "en";
+        const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(url)}&lang=${encodeURIComponent(lang)}&format=srt`, { headers });
+        const text = await r.text();
+        if (!r.ok) { let m = text; try { m = (JSON.parse(text) as any).error || m; } catch {} throw new Error(m || `Captions failed: ${r.status}`); }
+        const srt = sliceRange(text).slice(0, 24000);
+        return { message: `Transcript (YouTube captions${startSecs != null ? `, ${startSecs}s–${endSecs ?? "end"}s` : ""}):\n${srt || "(no captions in range)"}` };
+      }
+
+      if (!asset) throw new Error("Provide a YouTube url or a local video/audio asset to transcribe.");
+      if (isYouTubeUrl(asset)) throw new Error("Pass a YouTube link via 'url', not 'asset'.");
+      // Production path: extract a compact mono 16kHz MP3 first instead of
+      // shipping the whole video to AssemblyAI. A 10-min talk → ~1MB upload
+      // (vs hundreds of MB), so transcription starts far faster and cheaper.
+      sendSse({ type: "tool_progress", name: "get_transcript", message: "Extracting audio..." });
+      const ws = getWorkspace(req);
+      const dir = join(tmpdir(), `editor-tx-${randomUUID()}`);
+      await mkdir(dir, { recursive: true });
+      let transcribeUrl: string;
+      try {
+        const srcLocal = join(dir, `src${extname(asset) || ".mp4"}`);
+        await downloadWorkspaceFile(ws, asset, srcLocal);
+        let uploadPath: string;
+        let uploadBytes: Buffer;
+        let uploadMime: string;
+        try {
+          const audioLocal = join(dir, "audio.mp3");
+          await runFfmpegRaw(["-y", "-i", srcLocal, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k", audioLocal]);
+          uploadBytes = await readFile(audioLocal);
+          if (!uploadBytes.length) throw new Error("empty audio");
+          uploadPath = `editor/uploads/${getProject().projectId}/transcribe/${randomUUID()}.mp3`;
+          uploadMime = "audio/mpeg";
+        } catch {
+          // No audio track / exotic container — fall back to the original file.
+          uploadBytes = await readFile(srcLocal);
+          uploadPath = `editor/uploads/${getProject().projectId}/transcribe/${randomUUID()}${extname(asset) || ".mp4"}`;
+          uploadMime = imageMimeForExt(asset) ?? "video/mp4";
+        }
+        const presignPut = await ws.s3.presignPut(uploadPath, { size: uploadBytes.length, contentType: uploadMime });
+        const putRes = await fetch(presignPut.uploadUrl, { method: "PUT", headers: { "Content-Type": uploadMime }, body: uploadBytes });
+        if (!putRes.ok) throw new Error(`audio upload failed: ${putRes.status}`);
+        transcribeUrl = (await ws.s3.presignGet(uploadPath, { disposition: "inline" })).url;
+      } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      }
+      sendSse({ type: "tool_progress", name: "get_transcript", message: "Transcribing..." });
+      const r = await fetch(`${apiBase}/subtitles/generate-from-url`, {
+        method: "POST", headers,
+        body: JSON.stringify({ fileUrl: transcribeUrl, language: args?.language ?? "auto", translateTo: args?.translateTo ?? null }),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})) as any; throw new Error(e.error ?? `Transcription failed: ${r.status}`); }
+      const { id: jobId } = await r.json() as any;
+      const maxWait = 10 * 60 * 1000;
+      const start = Date.now();
+      let lastMsg = "";
+      while (Date.now() - start < maxWait) {
+        await new Promise(res => setTimeout(res, 4000));
+        const sr = await fetch(`${apiBase}/subtitles/status/${jobId}`, { headers }).catch(() => null);
+        if (!sr || !sr.ok) continue;
+        const sd = await sr.json() as any;
+        const msg = sd.message || sd.stage || "";
+        if (msg && msg !== lastMsg) { sendSse({ type: "tool_progress", name: "get_transcript", message: msg, percent: sd.progressPct }); lastMsg = msg; }
+        if (sd.status === "done" || sd.status === "completed") {
+          const srt = String(sd.srt || sd.originalSrt || "");
+          if (!srt) return { message: "Transcription finished but returned no text." };
+          return { message: `Transcript${startSecs != null ? ` (${startSecs}s–${endSecs ?? "end"}s)` : ""}:\n${sliceRange(srt).slice(0, 24000)}` };
+        }
+        if (sd.status === "error" || sd.status === "failed") throw new Error(sd.error || "Transcription failed.");
+      }
+      throw new Error("Transcription timed out.");
+    },
+
+    watch_youtube_video: async (args) => {
+      let url: string | null = typeof args?.url === "string" && args.url.trim() ? args.url.trim() : null;
+      const src = getProject().sourceVideo;
+      if (!url && src && isYouTubeUrl(src)) url = src;
+      if (!url) throw new Error("Provide a YouTube url (or set a YouTube source video). For uploaded/local videos use analyze_video instead.");
+      if (!isYouTubeUrl(url)) throw new Error("watch_youtube_video is YouTube-only. For uploaded/local videos use analyze_video.");
+      if (!isGeminiConfigured()) return { message: "Vision model not configured." };
+      let fileUri: string;
+      try { fileUri = normalizeInputUrl(url); } catch { fileUri = url; }
+      const question = typeof args?.question === "string" && args.question.trim()
+        ? args.question.trim()
+        : "Describe what happens in this video — visuals, audio, on-screen text, and key moments with timestamps.";
+      const startSecs = args?.startTime != null && Number.isFinite(Number(args.startTime)) ? Math.max(0, Number(args.startTime)) : null;
+      const endSecs = args?.endTime != null && Number(args.endTime) > (startSecs ?? 0) ? Number(args.endTime) : null;
+      sendSse({ type: "tool_progress", name: "watch_youtube_video", message: "Watching the video (vision + audio)..." });
+      const videoPart: any = { fileData: { fileUri, mimeType: "video/mp4" } };
+      if (startSecs != null || endSecs != null) {
+        videoPart.videoMetadata = {};
+        if (startSecs != null) videoPart.videoMetadata.startOffset = `${Math.round(startSecs)}s`;
+        if (endSecs != null) videoPart.videoMetadata.endOffset = `${Math.round(endSecs)}s`;
+      }
+      const ai = createGeminiClient();
+      const resp: any = await ai.models.generateContent({
+        model: EDITOR_WATCH_MODEL,
+        contents: [{ role: "user", parts: [
+          { text: `${question}\nAnswer concisely for a video editor. Include timestamps where useful. Do not identify real people.` },
+          videoPart,
+        ] }],
+        config: { maxOutputTokens: 8192 },
+      });
+      const text = String(resp?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "").trim();
+      if (!text) throw new Error("The model returned no analysis — the video may be private, age-restricted, or unavailable.");
+      return { message: `Watched the video${startSecs != null ? ` (${startSecs}s–${endSecs ?? "end"}s)` : ""}:\n${text}` };
+    },
   };
 }
 
@@ -2434,9 +2786,6 @@ function snapshotRecipeSummary(project: EditorProject): string {
   const ov = r.overlays.map((o) => o.type === "logo" ? `logo@${o.position}` : `text:"${o.text}"@${o.position}`).join(", ") || "no overlays";
   return `aspect=${r.aspectRatio}, crop=${r.cropMode}, trim=${r.trim.start}->${r.trim.end ?? "end"}, intro=${r.intro.enabled}, outro=${r.outro.enabled}, transitions=${r.transitions?.fade === false ? "cut" : "fade"}, overlays=[${ov}]`;
 }
-
-// Global cache map to store workspace sourceVideo -> GCS gs:// URI mappings for the project chat
-const globalUrlToGcsCache = new Map<string, string>();
 
 router.post("/projects/:projectId/chat", async (req: Request, res: Response): Promise<void> => {
   // Use a non-throwing scope so we can persist defensively in error paths
@@ -2570,64 +2919,43 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
 
     const projectContext = `Current project:\n- sourceVideo: ${project.sourceVideo ?? "(none)"}\n- assets.logo: ${project.assets.logo ?? "(none)"}\n- assets.intro: ${project.assets.intro ?? "(none)"}\n- assets.outro: ${project.assets.outro ?? "(none)"}\n- recipe: ${snapshotRecipeSummary(project)}`;
 
-    let resolvedVideoUri: string | null = null;
-    let resolvedMimeType = "video/mp4";
-    const useVertex = isVertexGeminiEnabled();
+    // ── Multimodal context: the agent must SEE its inputs ─────────────────
+    // Images (logo, intro/outro stills, overlay images) are sent inline as
+    // base64 — Gemini reads images DIRECTLY in both API-key and Vertex modes,
+    // no GCS needed. This is what fixes "I can't read the logo".
+    // Video/audio is NOT attached for full model-watching by default (slow +
+    // costly). For understanding a YouTube video the agent calls get_transcript
+    // (full captions = full context); to actually watch/listen to it it calls
+    // watch_youtube_video on demand. For local clips it uses analyze_video
+    // (frame sampling) + get_transcript.
+    const projectContextParts: any[] = [{ text: projectContext }];
 
-    if (useVertex && project.sourceVideo) {
-      if (isYouTubeUrl(project.sourceVideo)) {
-        try {
-          const normalizedYt = normalizeInputUrl(project.sourceVideo);
-          resolvedVideoUri = normalizedYt;
-          resolvedMimeType = "video/mp4";
-        } catch (err: any) {
-          logger.warn({ url: project.sourceVideo, err: err.message }, "[video-editor] Failed to normalize YouTube URL for chat");
-        }
-      } else {
-        const cacheKey = `${ws.identity.workspaceId}:${project.sourceVideo}`;
-        if (globalUrlToGcsCache.has(cacheKey)) {
-          resolvedVideoUri = globalUrlToGcsCache.get(cacheKey)!;
-          // Determine mime type from extension
-          const ext = extname(project.sourceVideo).toLowerCase();
-          if (ext === ".mp3") resolvedMimeType = "audio/mp3";
-          else if (ext === ".wav") resolvedMimeType = "audio/wav";
-          else if (ext === ".m4a") resolvedMimeType = "audio/x-m4a";
-          else if (ext === ".mov") resolvedMimeType = "video/quicktime";
-          else if (ext === ".avi") resolvedMimeType = "video/x-msvideo";
-          else if (ext === ".mkv") resolvedMimeType = "video/x-matroska";
-          logger.info({ sourceVideo: project.sourceVideo, resolvedVideoUri }, "[video-editor] Reusing cached GCS URI for sourceVideo");
-        } else {
-          try {
-            const localTempPath = join(tmpdir(), `vms-editor-chat-${randomUUID()}${extname(project.sourceVideo) || ".mp4"}`);
-            logger.info({ sourceVideo: project.sourceVideo, localTempPath }, "[video-editor] Downloading workspace sourceVideo to upload to GCS");
-            await downloadWorkspaceFile(ws, project.sourceVideo, localTempPath);
-
-            const destinationBlobName = `editor_attachments/${projectId}/${randomUUID()}_${extname(project.sourceVideo) ? project.sourceVideo.split("/").pop() : "sourceVideo.mp4"}`;
-            // Determine mime type from extension
-            const ext = extname(project.sourceVideo).toLowerCase();
-            if (ext === ".mp3") resolvedMimeType = "audio/mp3";
-            else if (ext === ".wav") resolvedMimeType = "audio/wav";
-            else if (ext === ".m4a") resolvedMimeType = "audio/x-m4a";
-            else if (ext === ".mov") resolvedMimeType = "video/quicktime";
-            else if (ext === ".avi") resolvedMimeType = "video/x-msvideo";
-            else if (ext === ".mkv") resolvedMimeType = "video/x-matroska";
-
-            const gsUri = await uploadLocalFileToGCS(localTempPath, destinationBlobName, resolvedMimeType);
-            await deleteLocalFile(localTempPath);
-
-            globalUrlToGcsCache.set(cacheKey, gsUri);
-            resolvedVideoUri = gsUri;
-            logger.info({ sourceVideo: project.sourceVideo, gsUri }, "[video-editor] Uploaded sourceVideo to GCS successfully");
-          } catch (err: any) {
-            logger.error({ sourceVideo: project.sourceVideo, err: err.message }, "[video-editor] Failed to download/upload workspace sourceVideo to GCS");
-          }
+    // Attach uploaded/timeline IMAGES inline so the agent can actually see them
+    // (logo, overlay images, intro/outro stills, image source). Deduped + capped.
+    try {
+      const imageCandidates: Array<{ label: string; path: string }> = [];
+      if (project.assets.logo) imageCandidates.push({ label: "logo", path: project.assets.logo });
+      if (project.assets.intro && imageMimeForExt(project.assets.intro)) imageCandidates.push({ label: "intro image", path: project.assets.intro });
+      if (project.assets.outro && imageMimeForExt(project.assets.outro)) imageCandidates.push({ label: "outro image", path: project.assets.outro });
+      if (project.sourceVideo && imageMimeForExt(project.sourceVideo)) imageCandidates.push({ label: "source image", path: project.sourceVideo });
+      for (const ov of pendingTimeline.tracks.overlays) {
+        if ((ov.type === "logo" || ov.type === "image") && imageMimeForExt(ov.content)) {
+          imageCandidates.push({ label: `${ov.type} overlay`, path: ov.content });
         }
       }
-    }
-
-    const projectContextParts: any[] = [{ text: projectContext }];
-    if (resolvedVideoUri) {
-      projectContextParts.push({ fileData: { fileUri: resolvedVideoUri, mimeType: resolvedMimeType } });
+      const seenImg = new Set<string>();
+      for (const cand of imageCandidates) {
+        if (seenImg.has(cand.path)) continue;
+        seenImg.add(cand.path);
+        if (seenImg.size > 6) break;
+        const inline = await loadWorkspaceImageInline(ws, cand.path).catch(() => null);
+        if (inline) {
+          projectContextParts.push({ text: `[Visible ${cand.label} → ${cand.path}]` });
+          projectContextParts.push({ inlineData: inline });
+        }
+      }
+    } catch (imgErr) {
+      logger.warn({ err: imgErr }, "[video-editor] failed to attach inline image assets");
     }
 
     const contents: any[] = history.slice(-12).map((m) => ({
@@ -2638,7 +2966,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
 
 
     let iterations = 0;
-    const maxIterations = 6;
+    const maxIterations = 8;
     // Track whether the agent mutated the timeline this run and whether it
     // made the result durable via propose() / start_render(). If it mutated
     // but didn't persist, we auto-snapshot at the end so a refresh restores
@@ -2888,6 +3216,120 @@ router.get("/projects/:projectId/renders/:jobId/thumb", async (req: Request, res
   }
 });
 
+// ─── Source-asset frame thumbnail (for the visual editor preview) ─────────────
+// Returns a single JPEG frame from a workspace VIDEO asset at time `t` (sec),
+// or the image itself for image assets. Used by the review editor to show clip
+// posters + the preview composite WITHOUT rendering. Same LRU cache as renders.
+router.get("/projects/:projectId/asset-frame", async (req: Request, res: Response) => {
+  try {
+    const projectId = routeParam(req.params.projectId, "projectId");
+    const rawPath = typeof req.query.path === "string" ? req.query.path : "";
+    const path = rawPath.trim().replace(/^\/+/, "");
+    // Only allow workspace editor paths — never arbitrary URLs or traversal.
+    if (!path || path.includes("..") || !/^editor\/[A-Za-z0-9/_.()\- ]+$/.test(path)) {
+      return bad(res, 400, "invalid asset path");
+    }
+    const ws = getWorkspace(req);
+
+    // Image asset → just hand back a presigned URL (302), no re-encode.
+    if (imageMimeForExt(path)) {
+      const { url } = await ws.s3.presignGet(path, { disposition: "inline" });
+      res.setHeader("Cache-Control", "private, max-age=600");
+      return res.redirect(302, url);
+    }
+
+    const t = Math.max(0, Number(req.query.t) || 0);
+    const cacheKey = `frame:${projectId}:${path}:${t.toFixed(2)}`;
+    const cachedBuf = thumbCacheGet(cacheKey);
+    if (cachedBuf) {
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=1800");
+      return res.end(cachedBuf);
+    }
+    const dir = join(tmpdir(), `editor-frame-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    const srcPath = join(dir, `src${extname(path) || ".mp4"}`);
+    const framePath = join(dir, "frame.jpg");
+    try {
+      await downloadWorkspaceFile(ws, path, srcPath);
+      // Input-seek (fast) + single frame, downscaled poster.
+      await runFfmpegRaw([
+        "-y", "-ss", String(t), "-i", srcPath,
+        "-frames:v", "1", "-q:v", "4", "-vf", "scale=480:-2:flags=lanczos",
+        framePath,
+      ]);
+      const buffer = await readFile(framePath);
+      thumbCacheSet(cacheKey, buffer);
+      res.setHeader("Content-Type", "image/jpeg");
+      res.setHeader("Cache-Control", "public, max-age=1800");
+      return res.end(buffer);
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
+// ─── Source-asset metadata (duration/resolution) for the editor ───────────────
+const assetMetaCache = new Map<string, { value: { duration: number; width: number; height: number; hasAudio: boolean }; at: number }>();
+const ASSET_META_TTL_MS = 30 * 60 * 1000;
+router.get("/projects/:projectId/asset-meta", async (req: Request, res: Response) => {
+  try {
+    routeParam(req.params.projectId, "projectId");
+    const rawPath = typeof req.query.path === "string" ? req.query.path : "";
+    const path = rawPath.trim().replace(/^\/+/, "");
+    if (!path || path.includes("..") || !/^editor\/[A-Za-z0-9/_.()\- ]+$/.test(path)) {
+      return bad(res, 400, "invalid asset path");
+    }
+    const cached = assetMetaCache.get(path);
+    if (cached && Date.now() - cached.at < ASSET_META_TTL_MS) {
+      res.setHeader("Cache-Control", "public, max-age=900");
+      return res.json(cached.value);
+    }
+    const ws = getWorkspace(req);
+    const dir = join(tmpdir(), `editor-meta-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    const local = join(dir, `src${extname(path) || ".mp4"}`);
+    try {
+      await downloadWorkspaceFile(ws, path, local);
+      const meta = await probeMetadata(local);
+      assetMetaCache.set(path, { value: meta, at: Date.now() });
+      if (assetMetaCache.size > 512) {
+        const oldest = assetMetaCache.keys().next().value;
+        if (oldest) assetMetaCache.delete(oldest);
+      }
+      res.setHeader("Cache-Control", "public, max-age=900");
+      return res.json(meta);
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
+// ─── Presigned stream URL for an asset (editor playback fallback) ─────────────
+// The editor plays local files directly (blob URL); when it doesn't have the
+// local file (reload / other device / YouTube-downloaded clip) it streams the
+// uploaded copy via this presigned GET, which <video> can range-request.
+router.get("/projects/:projectId/asset-url", async (req: Request, res: Response) => {
+  try {
+    routeParam(req.params.projectId, "projectId");
+    const rawPath = typeof req.query.path === "string" ? req.query.path : "";
+    const path = rawPath.trim().replace(/^\/+/, "");
+    if (!path || path.includes("..") || !/^editor\/[A-Za-z0-9/_.()\- ]+$/.test(path)) {
+      return bad(res, 400, "invalid asset path");
+    }
+    const ws = getWorkspace(req);
+    const { url } = await ws.s3.presignGet(path, { disposition: "inline" });
+    res.setHeader("Cache-Control", "private, max-age=300");
+    return res.json({ url });
+  } catch (err) {
+    return fail(res, err);
+  }
+});
+
 // ─── Proposal endpoints ───────────────────────────────────────────────────────
 router.post("/projects/:projectId/proposals/:proposalId/apply", async (req: Request, res: Response) => {
   try {
@@ -2940,3 +3382,4 @@ router.get("/projects/:projectId/proposals", async (req: Request, res: Response)
 });
 
 export default router;
+  

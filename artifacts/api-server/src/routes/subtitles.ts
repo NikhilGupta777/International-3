@@ -3450,13 +3450,18 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
 // Transcribes the media using AssemblyAI (works with any public audio/video URL)
 // without needing yt-dlp. Used by the agent when user uploads a file directly.
 router.post("/subtitles/generate-from-url", subtitlesGenerateRateLimiter, async (req: Request, res: Response) => {
-  const { fileUrl, language = "auto", translateTo = null } = req.body as {
+  // Accept both `fileUrl` (canonical) and `url` (what some callers send).
+  const { fileUrl, url, language = "auto", translateTo = null } = req.body as {
     fileUrl?: string;
+    url?: string;
     language?: string;
     translateTo?: string | null;
   };
+  const mediaUrl = (typeof fileUrl === "string" && fileUrl.trim()) ? fileUrl.trim()
+    : (typeof url === "string" && url.trim()) ? url.trim()
+    : "";
 
-  if (!fileUrl || typeof fileUrl !== "string") {
+  if (!mediaUrl) {
     return res.status(400).json({ error: "fileUrl is required" });
   }
   if (!ASSEMBLYAI_API_KEY) {
@@ -3464,7 +3469,12 @@ router.post("/subtitles/generate-from-url", subtitlesGenerateRateLimiter, async 
   }
 
   const jobId = randomUUID();
-  const urlObj = new URL(fileUrl);
+  let urlObj: URL;
+  try {
+    urlObj = new URL(mediaUrl);
+  } catch {
+    return res.status(400).json({ error: "fileUrl is not a valid URL" });
+  }
   const rawName = urlObj.pathname.split("/").pop() ?? "upload";
   const baseName = rawName.split("?")[0];
   const jobFilename = baseName.endsWith(".srt") ? baseName.replace(".srt", ".txt") : baseName;
@@ -3477,9 +3487,9 @@ router.post("/subtitles/generate-from-url", subtitlesGenerateRateLimiter, async 
     translateTo: translateTo ?? undefined,
   });
 
-  return res.status(202).json({ id: jobId });
-
-  // Run transcription in background
+  // Run transcription in the background. NOTE: this MUST be scheduled before
+  // we send the 202 response — the previous order placed it after `return`,
+  // which made it unreachable dead code so jobs never actually ran.
   void enqueueSubtitleJob(jobId, async () => {
     try {
       job.status = "audio";
@@ -3490,7 +3500,7 @@ router.post("/subtitles/generate-from-url", subtitlesGenerateRateLimiter, async 
         method: "POST",
         headers: { "authorization": ASSEMBLYAI_API_KEY, "content-type": "application/json" },
         body: JSON.stringify({
-          audio_url: fileUrl,
+          audio_url: mediaUrl,
           language_code: language === "auto" ? undefined : language,
           language_detection: language === "auto",
           punctuate: true,
@@ -3588,6 +3598,8 @@ router.post("/subtitles/generate-from-url", subtitlesGenerateRateLimiter, async 
       job.completedAt = Date.now();
     }
   });
+
+  return res.status(202).json({ id: jobId });
 });
 
 

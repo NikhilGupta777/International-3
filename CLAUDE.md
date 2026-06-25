@@ -6,7 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**VideoMaking Studio** — private single-user media workspace at `videomaking.in`. Processes YouTube content through six core features: Download, Clip Cut, Best Clips (AI), Subtitles (AI), Timestamps (AI), Bhagwat AI Video Editor, Video Translator (GPU dubbing), and Find Video (NotebookLM). Hosted on AWS serverless infrastructure (Lambda + Batch/Fargate + S3 + CloudFront).
+**VideoMaking Studio** — private single-user media workspace at `videomaking.in`. Originally built around six core features (Download, Clip Cut, Best Clips AI, Subtitles AI, Timestamps AI, Bhagwat AI Video Editor) plus Video Translator (GPU dubbing) and Find Video (NotebookLM). Hosted on AWS serverless infrastructure (Lambda + Batch/Fargate + S3 + CloudFront).
+
+> **⚠️ This "six core features" framing is now incomplete.** A 2026-06-25 file-structure audit found several
+> additional backend routes and frontend pages with **no behavioral documentation anywhere in this file**
+> — they were added after the original sections below were written and never backfilled. Their existence,
+> file locations, and (for some) Mode/component names are confirmed and do appear elsewhere in this file
+> (e.g. the Navigation Modes table); what's missing is everything else — request/response shapes, env vars,
+> job lifecycle, gotchas. Known undocumented surface, by file (verify behavior before relying on any of
+> this — only existence/location is confirmed so far):
+> - **Pitaji** — a near-standalone sub-app: `routes/pitaji.ts` + `lib/pitaji-{auth,store,analysis,audio-pipeline,prompts,thumbnail,url,stream-parser}.ts` on the backend; `pages/PitajiLogin.tsx`, `pages/PitajiHome.tsx`, `components/pitaji/{PitajiSidebar,PitajiSettings,PitajiHistory,PitajiClipDetail,PitajiToast,PitajiLiveAgent}.tsx` on the frontend. Has its own `pitaji_auth` cookie scope (confirmed in app.ts), bypassing main site auth entirely.
+> - **Thumbnail generation** — `routes/thumbnail.ts` + `lib/thumbnail-preset-store.ts` + `lib/pitaji-thumbnail.ts`; frontend `components/Thumbnail.tsx` + `components/ThumbnailPresets.tsx`.
+> - **HeyGen Translator** — `routes/heygen.ts`; frontend `pages/HeyGenTranslator.tsx`. Note `HeyGenApiKey` already exists as a CloudFormation parameter (see Production Infrastructure) but was never mentioned in the env var table below.
+> - **Workspace** — `routes/workspace.ts` + `lib/workspace.ts`; frontend `components/WorkspacePanel.tsx` + `lib/workspace-api.ts`. Related Copilot tools (`list_workspace_files`, `read_workspace_file`, `write_workspace_file`, `delete_workspace_file`) are mentioned in the agent.ts tool list but the feature itself has no standalone section.
+> - **AI Video Editor** — `routes/video-editor.ts`; frontend `lib/video-editor-api.ts` + `lib/video-studio-history.ts`. **NOW DOCUMENTED** — see the `/api/video-editor/*` route section below and the `feature_video_editor` memory note. Key caveats: (1) the frontend UI component appears **missing/unwired** — nothing imports `videoEditorApi`; (2) in Lambda prod, `final` renders require `VIDEO_EDITOR_BATCH_ENABLED=true` or they hard-error. Backed by the `"editor-render"` queue-worker job type (`runEditorRenderStandalone`).
+> - **Developer / API Keys platform** — `routes/keys.ts` + `lib/api-key-auth.ts` + `lib/webhooks.ts` + `lib/idempotency.ts` + `lib/public-jobs.ts`; frontend `components/DeveloperPanel.tsx` + `components/ApiDocumentationPage.tsx`. The API-key auth bypass (`vms_live_...` bearer tokens) is mentioned once in passing under Auth System but this whole platform around it (issuing keys, webhooks, idempotency) is undocumented.
+> - **Google Drive integration** — `lib/google-drive.ts` (Copilot has `list_drive_files`/`import_from_drive` tools per agent.ts).
+> - **Skills system** — `skills/index.ts` + `skills/skill-hyperframes.ts` (unclear scope, not investigated yet).
+> - **`routes/v1.ts`** — referenced by `app.ts`'s `/v1` in-process re-dispatch guard comments (the `_metricsHooked`/`_apiKeyMetered` flags exist specifically to avoid double-counting metrics/quota when a request re-dispatches through `/v1`), but the route's purpose isn't documented.
+> - **GCS storage** (`lib/gcs-storage.ts`) exists alongside `lib/s3-storage.ts` — unclear when GCS is used vs S3, not investigated.
+>
+> Treat all of the above as "exists, location confirmed, behavior NOT yet documented" — don't assume parity
+> with the documented features' patterns (auth, job lifecycle, etc.) until each is actually read.
 
 ---
 
@@ -16,26 +37,75 @@ pnpm workspace. **Must use `pnpm` — `npm`/`yarn` are blocked by a `preinstall`
 
 ```
 artifacts/
-  yt-downloader/          # React 19 + Vite frontend (served as SPA)
-  api-server/             # Express.js API — deployed as AWS Lambda container
-  queue-worker/           # Fargate worker (download/clip/subtitles/best-clips)
-  video-translator-service/ # Python GPU Batch worker (CosyVoice 3.0 + LatentSync)
-  mockup-sandbox/         # UI component prototyping sandbox (not deployed)
+  yt-downloader/                  # React 19 + Vite frontend (served as SPA)
+    src/
+      pages/                      # Top-level routed pages — only ~5 features live here (most live in components/, see below)
+        Home.tsx, not-found.tsx, VideoTranslator.tsx, HeyGenTranslator.tsx,
+        PitajiLogin.tsx, PitajiHome.tsx
+      components/                 # Most feature UIs actually live flat in components/, NOT pages/
+        ClipCutter.tsx, BhagwatVideos.tsx, BestClips.tsx, GetSubtitles.tsx,
+        Timestamps.tsx, KathaSceneFinder.tsx, FileUpload.tsx, FindVideo.tsx,
+        AdminPanel.tsx, DeveloperPanel.tsx, ApiDocumentationPage.tsx,
+        WorkspacePanel.tsx, SettingsPanel.tsx, HelpPanel.tsx, ActivityPanel.tsx,
+        FloatingActivityPanel.tsx, GlobalHistoryPanel.tsx, ActiveDownload.tsx,
+        Thumbnail.tsx, ThumbnailPresets.tsx, BhavishyaClips.tsx, StudioHome.tsx,
+        VideoPlayer.tsx, InstallBanner.tsx, ErrorBoundary.tsx, AppErrorBoundary.tsx
+        katha/                    # AddReferenceForm, LibraryList, Lightbox, IdentifyTab (KathaSceneFinder sub-parts)
+        pitaji/                   # PitajiSidebar, PitajiSettings, PitajiHistory, PitajiClipDetail, PitajiToast, PitajiLiveAgent
+        layout/                   # Sidebar.tsx (main nav rail/drawer)
+        ui/                       # shadcn/ui primitives (button, dialog, sheet, sidebar, etc. — ~50 files, do not hand-roll these)
+      hooks/                      # use-activity-feed.ts, use-mobile.tsx, use-install-prompt.ts, use-object-urls.ts, use-toast.ts
+      lib/                        # Per-feature history stores (download/clip/subtitle/translator/best-clips/music/timestamps/video-studio-history.ts),
+                                   # session-history.ts, workspace-api.ts, video-editor-api.ts, pitaji-api.ts, agent-prompt.ts,
+                                   # cost-estimate.ts, image-utils.ts, push-notifications.ts, user-preferences.ts, katha-types.ts
+      integrations/supabase/      # client.ts + generated types.ts (used by KathaSceneFinder)
+      App.tsx, main.tsx           # App root + entry
+  api-server/                     # Express.js API — deployed as AWS Lambda container
+    src/
+      routes/                    # health, auth (in app.ts), youtube, subtitles, timestamps, bhagwat, translator,
+                                  # uploads, agent, notebook, admin, notifications, ops, workspace, video-editor,
+                                  # thumbnail, heygen, pitaji, keys, v1
+      lib/                       # lambda-stream, sse, gemini-client, load-env, auth-access, api-key-auth, webhooks,
+                                  # idempotency, internal-agent, public-jobs, youtube-queue, s3-storage, gcs-storage,
+                                  # admin-features, ops-metrics, logger, push-notifications, email-submissions,
+                                  # google-drive, workspace, thumbnail-preset-store, api-error,
+                                  # pitaji-{auth,store,analysis,audio-pipeline,prompts,thumbnail,url,stream-parser}
+      skills/                    # index.ts, skill-hyperframes.ts (not yet investigated)
+      app.ts, index.ts, lambda.ts # Express app, local entrypoint, Lambda handler
+  queue-worker/src/index.ts       # Fargate worker — single file, handles all job types (download/clip/subtitles/best-clips/bhagwat/editor-render)
+  video-translator-service/       # Python GPU Batch worker (CosyVoice 3.0 + LatentSync)
+                                   #   worker.py                      — main pipeline (one-shot CLI, no HTTP server)
+                                   #   runtime_deps.py                 — runtime dependency bootstrap
+                                   #   test_worker_guards.py           — routing/normalizer/prompt guard tests
+                                   #   test_runtime_deps.py, test_phase{1_pacing,2_translation,3_cloning,4_5_mixing}.py — per-phase tests
+                                   #     (filenames imply the pipeline was built/refactored in distinct phases — pacing, then
+                                   #     translation, then voice cloning, then audio/video mixing — useful when debugging a stage)
+                                   #   Dockerfile (GPU) / Dockerfile.base (the ~20GB CUDA+model layer) / Dockerfile.cpu (no-GPU Fargate variant)
+                                   #   requirements.txt / requirements.cpu.txt / constraints.txt
+  mockup-sandbox/                 # Standalone Vite+React UI prototyping sandbox (own package.json, not part of the deployed app)
 lib/
-  api-spec/               # OpenAPI 3.1 YAML — source of truth for API contracts
-  api-zod/                # Generated Zod schemas (do not hand-edit src/generated/)
-  api-client-react/       # Generated React Query hooks (do not hand-edit src/generated/)
-  db/                     # Drizzle ORM + PostgreSQL schema (conversations + messages)
-  integrations-gemini-ai/ # Gemini AI client wrapper (Replit integration variant)
+  api-spec/               # openapi.yaml + orval.config.ts — source of truth for API contracts
+  api-zod/                # Generated Zod schemas (src/generated/ — do not hand-edit)
+  api-client-react/       # Generated React Query hooks (src/generated/ — do not hand-edit) + custom-fetch.ts
+  db/                     # Drizzle ORM + PostgreSQL schema: src/schema/{conversations,messages}.ts (Notebook feature only)
+  integrations-gemini-ai/ # Separate Gemini client (Replit integration variant): client.ts, image/client.ts, batch/utils.ts
 deploy/
-  aws-serverless/         # CloudFormation template + PowerShell deploy scripts
-  aws-queue/              # Worker image build + Batch resource scripts
-  ec2/                    # Production env file location (.env.green — gitignored)
-scripts/                  # Workspace tooling scripts (enforce-pnpm, patch scripts)
+  aws-serverless/         # template.yml (CloudFormation), deploy-serverless.ps1, push-api-lambda-image.ps1,
+                          # build-translator-ami.ps1, ecr-lifecycle-policy.json, DNS_CUTOVER_CHECKLIST.md, YTDLP_COOKIES_RUNBOOK.md
+  aws-queue/              # create-phase-a-{resources,batch}.ps1, push-worker-image.ps1, create-alarms.ps1, submit-test-job.ps1
+  ec2/                    # .env.green / .env.production (gitignored) + .example templates — production env file location
+scripts/                  # enforce-pnpm.mjs, optional-uv-sync.mjs, scan-apps-malware.ps1, sanitize-heygen-prototype.ps1,
+                          # patch-*.mjs (one-off codemods: timestamps-prompt, timestamps-ui, ts-unlimit, upload-tab, studio-ui)
 supabase/
-  functions/identify-katha/ # Deno edge function for image matching (KathaSceneFinder)
-  migrations/             # Supabase SQL migrations
+  functions/identify-katha/  # index.ts (HTTP handler + shortlist/rank orchestration), gemini.ts (key rotation + retry), prompts.ts (system prompt + tool schemas)
+  migrations/                # Single SQL migration (katha_references table)
 ```
+
+**Frontend "pages vs components" gotcha:** despite the directory being named `pages/`, most routed
+features actually live flat under `components/` (e.g. `ClipCutter.tsx`, `BhagwatVideos.tsx`) and are
+switched via the `Mode` union in `Home.tsx`, not via a router. Only `VideoTranslator.tsx`,
+`HeyGenTranslator.tsx`, `PitajiLogin.tsx`, `PitajiHome.tsx`, and `not-found.tsx` are genuinely under
+`pages/`. Don't assume a feature file lives in `pages/` just because it's a top-level feature.
 
 ---
 
@@ -113,7 +183,7 @@ Browser → CloudFront (videomaking.in / d2bcwj2idfdwb4.cloudfront.net)
                DynamoDB (job state) + S3 (files) + AWS Batch (heavy jobs)
 ```
 
-**Why Lambda Function URL instead of API Gateway:** API Gateway buffers the entire Lambda response and enforces a hard 30 s timeout — this kills SSE streaming. The Lambda Function URL with `InvokeMode: RESPONSE_STREAM` streams chunks as they are written. `artifacts/api-server/src/lib/lambda-stream.ts` implements the Express↔Lambda streaming bridge: it spins up a `http.createServer(app)` bound to `127.0.0.1:0` on cold start, then per invocation translates the Function URL event into a real `http.request()` and pipes response chunks straight into `awslambda.HttpResponseStream`. **CloudFront `/api*` behavior must have `Compress: false`** — gzip would re-buffer the entire stream.
+**Why Lambda Function URL instead of API Gateway:** API Gateway buffers the entire Lambda response and enforces a hard 30 s timeout — this kills SSE streaming. The Lambda Function URL with `InvokeMode: RESPONSE_STREAM` streams chunks as they are written. `artifacts/api-server/src/lib/lambda-stream.ts` implements the Express↔Lambda streaming bridge: it spins up a `http.createServer(app)` bound to `127.0.0.1:0` on cold start (localhost-only, not externally routable), explicitly sets `requestTimeout: 0` to disable Node's default ~120s request timeout (essential for multi-minute SSE), then per invocation translates the Function URL event into a real `http.request()` and pipes response chunks straight into `awslambda.HttpResponseStream`. `set-cookie` response headers are split into a separate `cookies` array, as required by that API. `INTERNAL_API_BASE` is set once per cold start to `http://127.0.0.1:{port}` — this is how the Copilot agent's internal tool calls avoid recursively invoking the Lambda itself. **CloudFront `/api*` behavior must have `Compress: false`** — gzip would re-buffer the entire stream. `OriginReadTimeout` is bumped to 60s (from CloudFront's 30s default) to survive multi-minute agent SSE runs.
 
 ### Job Lifecycle (all heavy jobs)
 
@@ -143,10 +213,13 @@ Two independent auth layers:
 - Signed cookie: `videomaking_auth` (30-day max age, `httpOnly`, `secure`, `sameSite: lax`)
 - Cookie value: `"1"` (legacy password) or base64url-encoded JSON `{ method, role, email, name, picture }`
 - Login: `POST /api/auth/login` (username + password) or `POST /api/auth/google` (Google ID token)
-- Protected: all `/api/*` except `/api/healthz`, `/api/auth/*`, public share URLs (`/uploads/file/*`, `/translator/share/*`)
-- Internal server-to-server calls bypass cookie auth via `X-Internal-Agent: <INTERNAL_AGENT_SECRET>` header
-- `AUTH_USER` default: `"kalki_avatar"` (override with `WEBSITE_AUTH_USER`)
+- Protected: all `/api/*` except `/api/healthz`, `/api/auth/*`, public share GETs (`/uploads/file/*`, `/translator/share/*`, `/agent/music-share/*`), and `/api/pitaji/*` (its own independent `pitaji_auth` cookie scope, unrelated to main or Bhagwat auth)
+- `/api/admin/*` additionally requires a same-origin check (`isSameOriginAdminMutation`) comparing the Origin header against `x-forwarded-host`/`PUBLIC_SITE_URL`, on top of the admin-role check
+- Internal server-to-server calls bypass cookie auth via `X-Internal-Agent: <INTERNAL_AGENT_SECRET>` header — secret is env var or crypto-random per process, never a hardcoded default
+- A separate **API key auth path** also exists (`Authorization: Bearer vms_live_...` or `X-API-Key`): validates the key, blocks `/admin` and key-management paths via an allowlist, scopes the request via `x-client-id: key:{keyId}` (reusing the same owner-isolation as logged-in users), and meters rate limit/monthly quota only on the first external request (an internal `_apiKeyMetered` flag prevents double-counting on in-process re-dispatches)
+- Login username default: `"kalki_avatar"` (env var `WEBSITE_AUTH_USER`, not "AUTH_USER")
 - `ADMIN_PANEL_ENABLED` env flag gates `/api/admin/*` to admin-role sessions only
+- Email allowlists (`lib/auth-access.ts`) enforce mutual exclusion between user/admin sets — promoting a user to admin removes them from the user set first; DynamoDB sync to `ACCESS_TABLE` is best-effort, env vars are always the fallback of record
 
 **Bhagwat auth** (`bhagwat.ts`):
 - Separate signed cookie: `bhagwat_auth` (30-day max age)
@@ -176,7 +249,9 @@ Supports two modes controlled by env:
 
 Vertex credentials can be provided as: `GOOGLE_APPLICATION_CREDENTIALS_JSON` (inline JSON), `GOOGLE_APPLICATION_CREDENTIALS_BASE64` (base64), or `GOOGLE_APPLICATION_CREDENTIALS_S3_KEY` (S3 path — fetched on cold start and written to `/tmp`).
 
-`isGeminiConfigured()` returns false if no key/credentials — AI features degrade gracefully.
+`isGeminiConfigured()` returns false if no key/credentials — AI features degrade gracefully. Vertex credential resolution order is inline JSON → base64 → S3 key (fetched once per cold start, cached, written to `/tmp/google-vertex-credentials.json` with `0o600` perms — the "fetched" flag is only set true *after* the write succeeds, so a partial failure retries on the next request rather than silently using a missing file). Vertex location defaults to `"global"`, not a regional default. No multi-key rotation exists for Vertex service-account credentials (unlike the `_2`..`_10` API-key rotation) — only one service account is supported.
+
+Note: `lib/integrations-gemini-ai` (used by Bhagwat's priority-1 image path) has its **own separate** Gemini client with its own env vars (`AI_INTEGRATIONS_GEMINI_BASE_URL`/`_API_KEY`) — it is not the same client as `lib/gemini-client.ts` and does not share key rotation.
 
 ### YouTube Cookie Management
 
@@ -197,6 +272,12 @@ No Lambda restart needed — worker fetches fresh on every job.
 ## API Routes Reference
 
 All routes are under `/api`. Auth middleware is applied in `app.ts` before the router; only `/healthz`, `/auth/*`, and public share GET endpoints are unauthenticated.
+
+**This section is not exhaustive.** `routes/workspace.ts`, `routes/thumbnail.ts`,
+`routes/heygen.ts`, `routes/pitaji.ts`, `routes/keys.ts`, and `routes/v1.ts` all exist (see Monorepo
+Structure above) but have no route table here — their individual endpoints haven't been documented yet.
+Don't assume an endpoint doesn't exist just because it's missing from the tables below.
+(`routes/video-editor.ts` is now documented — see its section below.)
 
 ### `/api/youtube/*` (`routes/youtube.ts`)
 
@@ -221,7 +302,9 @@ All routes are under `/api`. Auth middleware is applied in `app.ts` before the r
 
 Key env vars: `YTDLP_*` (cookies, proxy, po_token, visitor_data), `GEMINI_API_KEY`, `S3_BUCKET`, `YOUTUBE_QUEUE_*`, `LAMBDA_CLIP_MAX_DURATION_SECONDS`, `LAMBDA_CLIP_COMMAND_TIMEOUT_MS`.
 
-Metadata cached 5 minutes per video ID; CDN stream URLs cached 25 minutes. Rate limiters on download and clips endpoints. Clips/downloads auto-delete from S3 after 2 hours.
+Metadata cached 5 min per video ID (`extractVideoId()` means `youtube.com/watch?v=ID` and `youtu.be/ID` share a cache entry); CDN stream URLs cached 25 min, keyed including `formatId` (underlying CDN URLs expire ~6h). Stream proxy requires `Referer: https://www.youtube.com/` + `Origin` headers or YouTube CDN returns 403. Per-IP per-minute rate limits: clip-cut 8/min, download 5/min, best-clips 5/min, cancel 180/min — bypass via `RATE_LIMIT_BYPASS_IPS` (CSV) or `X-Internal-Agent` header. **Clips/downloads auto-delete from S3 after 7 days** (`AUTO_DELETE_MS` constant in `youtube.ts` — corrected from a previous "2 hours" note in this file, verified against source).
+
+Clip-cut has two execution paths: direct Lambda ffmpeg trim via `--download-sections` (clip ≤120s AND source ≤1h), or full-source-download + `-c copy` trim (clip >120s or source >1h; needs keyframes at cut points, optional `--force-keyframes-at-cuts`). A deadline system (`clipDeadlineAt = now + LAMBDA_CLIP_COMMAND_TIMEOUT_MS`) is checked before each retry to avoid overrunning Lambda's 15-min limit. yt-dlp player-client fallback cascade: web → web_embedded → tv_embedded → android_vr (tv_embedded is least bot-checked from server IPs). Best Clips job results live only in an in-memory map (`clipJobsState`) — lost on Lambda restart, no DynamoDB persistence of the analysis itself (only job status). The queue worker (`queue-worker/src/index.ts`) handles one `WorkerPayload.jobType` per invocation (`"download"|"clip-cut"|"subtitles"|"best-clips"|"bhagwat-analyze"|"bhagwat-render"|"editor-render"`); its Best Clips handler dynamically imports `runClipAnalysis` from api-server at runtime — this is why the worker image must also have api-server installed (see Docker Images section). See [[feature_download_clipcutter_bestclips]] memory for more.
 
 ### `/api/subtitles/*` (`routes/subtitles.ts`)
 
@@ -235,7 +318,9 @@ Metadata cached 5 minutes per video ID; CDN stream URLs cached 25 minutes. Rate 
 | POST | `/subtitles/cancel/:jobId` | Cancel subtitle job |
 | GET | `/subtitles/status/:jobId` | Poll subtitle job status |
 
-Two-pass approach: AssemblyAI (audio transcription) → Gemini (text cleanup + translation). Key env vars: `ASSEMBLYAI_API_KEY`, `GEMINI_API_KEY` (+ `_2` through `_10` for rotation), `SUBTITLES_FORCE_LAMBDA`, `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS`, `SUBTITLES_WORKER_FUNCTION_NAME`.
+Actually a multi-pass pipeline, not strictly two-pass: (1) transcription — AssemblyAI if duration >600s, else yt-dlp audio + Gemini (`gemini-3.1-pro-preview` primary, `gemini-3.5-flash` fallback, 5-min per-key timeout); (2) correction — enforces ≤6 words per SRT entry, explicitly told to add MISSING ENTRIES for speech after the last existing entry; (3) translation (optional) — strict "do not reshape timestamps" rule, per-language script rules (e.g. Devanagari for Hindi, no romanization); (4) verification (optional, video-based only) — checks SRT against actual video playback. Both `srt` (final) and `originalSrt` (pre-translation) are returned when translation runs.
+
+Key env vars: `ASSEMBLYAI_API_KEY`, `GEMINI_API_KEY` (+ `_2` through `_10` for rotation), `SUBTITLES_FORCE_LAMBDA` (default **true**, not false — gates whether long videos route to a separate Lambda worker via queue), `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS` (default 600s), `SUBTITLES_GEMINI_VIDEO_ENABLED` (default true, direct video→Gemini path for short videos), `SUBTITLES_WORKER_FUNCTION_NAME`. In-memory job map cleans up 2h after completion (1h if still running); S3 cleanup sweep every 30 min, 7-day TTL on subtitles/subtitles-original/subtitles-uploads namespaces. Max 3 concurrent subtitle jobs server-side. See [[feature_subtitles_timestamps]] memory for more.
 
 ### `/api/youtube/timestamps*` (`routes/timestamps.ts`)
 
@@ -245,7 +330,7 @@ Two-pass approach: AssemblyAI (audio transcription) → Gemini (text cleanup + t
 | GET | `/youtube/timestamps/stream/:jobId` | SSE progress + results stream |
 | GET | `/youtube/timestamps/status/:jobId` | Poll job status |
 
-Uses Gemini 2.5 Pro with a domain-specific system prompt for Bhagwat Katha (devotional discourse) chapter generation. Requires "EVERY distinct topic" — no merging, no max count. Entry 0 must start at 0; labels in video's original language. Worker invoked via self-invoke Lambda (`TIMESTAMPS_WORKER_FUNCTION_NAME`). Transcript capped at 120K chars for token limits.
+System prompt for Bhagwat Katha (devotional discourse) chapter generation requires exactly one entry per distinct topic — no merging, no max/min count. First entry MUST start at 0; each `endSec` = next entry's `startSec` (last entry's endSec = video duration); if Gemini returns a non-zero first entry with a >5s gap, the backend injects a synthetic `{startSec:0, label:"शुरुआत / Start"}` entry. Labels in the video's original language. Transcript source cascade: existing YouTube chapters (hint only) → metadata subtitle URL (VTT) → `youtube_transcript_api` → yt-dlp subtitle download → AssemblyAI fallback → title+description as last resort. Transcript capped at 120K chars (`MAX_TRANSCRIPT_CHARS`) — longer transcripts are evenly sampled, not truncated from the end. AssemblyAI poll has its own 30-min timeout, separate from yt-dlp/Gemini timeouts. Two deployment modes: Lambda mode (full pipeline runs inside the async-invoked worker — an earlier version that tried doing yt-dlp metadata fetch via `setImmediate` before invoking the worker was broken, since the Lambda container freezes right after the HTTP response returns) vs inline mode (local/ECS, EventEmitter SSE). Worker invoked via self-invoke Lambda (`TIMESTAMPS_WORKER_FUNCTION_NAME`). See [[feature_subtitles_timestamps]] memory for more.
 
 ### `/api/bhagwat/*` (`routes/bhagwat.ts`)
 
@@ -275,11 +360,11 @@ Protected by a separate `bhagwat_auth` cookie.
 
 **TimelineSegment** shape: `{ startSec, endSec, isBhajan, imageChangeEvery, description, imagePrompt }`.
 
-Image generation priority: Replit Gemini integration (`gemini-2.5-flash-image`) → personal `GEMINI_API_KEY` (`gemini-3.1-flash-image-preview`) → colored scene card fallback.
+Image generation priority chain: (1) Replit integration (`generateImageViaReplit`, model list `BHAGWAT_IMAGE_MODELS` defaults `gemini-3.1-flash-image` → `gemini-2.5-flash-image` → `gemini-3.1-flash-image-preview`, 16:9 forced) → (2) own `GEMINI_API_KEY`(+`_2`..`_10`) × all models, Vertex-aware → (3) `withTimeout()` at 90s (`IMAGE_GEN_TIMEOUT_MS`), retried up to 5x with 7s between attempts → (4) colored fallback scene cards (FFmpeg text cards, 5 palettes hashed by prompt) — but fallback is only allowed for *transient* failures (safety refusal, overload) and gated by `BHAGWAT_ALLOW_FALLBACK_VISUALS` (default false); account-wide failures (quota/billing/expired key) throw hard with no fallback. `BHAGWAT_MAX_IMAGES_PER_JOB` (default 100) caps total images per render; tail segments are trimmed first if the budget is exceeded. `imageChangeEvery` is clamped (bhajan 20-40s, katha 8-12s) — actual on-screen image-change cadence is `segDur / imageCount`, not the literal `imageChangeEvery` value.
 
-Security guards in bhagwat.ts: `pickSafeBhagwatId` (regex `[A-Za-z0-9_-]{1,128}`) for path traversal prevention; `safeFsArg` prepends `./` when a path starts with `-` to prevent CLI flag injection.
+Security guards in bhagwat.ts: `pickSafeBhagwatId` (regex `^[A-Za-z0-9_-]{1,128}$`) for path traversal prevention; `safeFsArg` prepends `./` when a path starts with `-` to prevent CLI flag injection; `bhagwat_auth` cookie is compared with `timingSafeEqual()` to resist timing attacks.
 
-In-memory state auto-cleanup: temp files deleted after 2 hours, cleanup runs every 30 minutes. `renderJobs` and `analysisJobs` Maps are wiped on Lambda restart — restart-resilience is handled by `persistRenderMetaStart` / `persistAnalysisMetaStart` writing S3 meta markers at start, then `hydrateInterruptedAnalysis` reading them on boot.
+In-memory state auto-cleanup: render files scheduled for deletion 60 min after first download (not immediately on render), directory sweep every 12h. `renderJobs` and `analysisJobs` Maps are wiped on Lambda restart — restart-resilience is handled by `persistRenderMetaStart` / `persistAnalysisMetaStart` writing **local disk** meta markers (`_analysis_meta/{jobId}.json`, not S3) at job start, then `hydrateInterruptedAnalysis` / `ensureRenderJob` reading them on boot/on-demand to convert orphaned "running" jobs into proper "interrupted by server restart" errors instead of leaving the UI stuck. See [[feature_bhagwat_scenefinder]] memory for full detail (FFmpeg batching, TimelineSegment flow, KathaSceneFinder/identify-katha algorithm).
 
 ### `/api/translator/*` (`routes/translator.ts`)
 
@@ -313,7 +398,7 @@ Owner isolation via `X-Client-ID` header or SHA256(IP|UserAgent). Rate limit: 20
 | GET | `/uploads/public` | List public files (paginated, max 100) |
 | DELETE | `/uploads/file/:fileId` | Delete file |
 
-Single PUT for < 50 MB; 10 MB multipart parts for >= 50 MB. 7-day DynamoDB TTL. `UPLOADS_TABLE` env var required for persistence; falls back to in-memory for dev.
+Single PUT for < 50 MB; 10 MB multipart parts for >= 50 MB; hard max 3 GB (`MAX_BYTES` — distinct from the Bhagwat audio-upload 5 GB limit, don't conflate the two). Presigned upload URL TTL is 2h, but presigned download URL TTL is 7 days — a stalled upload past 2h will hit an expired presign mid-transfer. Rate limit: 20 uploads/hour/IP, checked at presign time. `UPLOADS_TABLE` env var required for DynamoDB persistence; falls back to in-memory for dev (lost on restart).
 
 ### `/api/agent/chat` (`routes/agent.ts`)
 
@@ -324,11 +409,48 @@ Single PUT for < 50 MB; 10 MB multipart parts for >= 50 MB. 7-day DynamoDB TTL. 
 - **youtube_processing** (≤3 concurrent): `cut_video_clip`, `download_video`, `generate_subtitles`, `find_best_clips`, `generate_timestamps`
 - **serial**: all others (image gen, translate_video, navigate_to_tab, etc.)
 
-SSE event stream: `run_start` → `text` / `tool_start` / `tool_progress` / `tool_log` / `tool_done` / `artifact` / `navigate` → `done`. Heartbeat every 8 seconds to keep connection alive.
+SSE event stream: `run_start` → `text` / `tool_start` / `tool_progress` / `tool_log` / `tool_done` / `artifact` / `navigate` → `done`. Heartbeat every 8 seconds to keep connection alive. Streamed text deltas preserve all whitespace; the final complete-message text is trimmed — necessary for correct word spacing during token-by-token rendering. Text stripping also removes leaked S3 presigned URLs and leaked tool-result JSON from visible output, which can occasionally eat an intentional share link the model tried to print.
 
-Models: `COPILOT_MODEL` (default `gemini-3-flash-preview`), ultra mode → `gemini-3.1-pro-preview`, search → `gemini-3.5-flash`. Max iterations: 24 (`COPILOT_MAX_ITERATIONS`). Max output tokens: 16,384.
+**Models — verified against source, corrected from previous doc:** the main agentic loop uses a **hardcoded** `AGENT_MODEL = "gemini-3-flash-preview"` constant in `agent.ts` — despite an inline comment claiming "environment overrides take precedence in production," **`COPILOT_MODEL` is not actually read anywhere in the loop**. Only Ultra mode (`COPILOT_ULTRA_MODEL`, default `gemini-3.1-pro-preview`) and Search mode (`COPILOT_SEARCH_MODEL`, default `gemini-3.5-flash`) genuinely read their env vars. Max iterations default is **49**, not 24 (`COPILOT_MAX_ITERATIONS` ?? `"49"`). Max output tokens: 16,384 (`COPILOT_MAX_OUTPUT_TOKENS`), but most individual Gemini calls clamp to `Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192)`. `cut_video_clip` gets a 15-min job-poll timeout vs 8-min standard for other job-backed tools. Per-user cooldowns on heavy ops: `do_full_package` 90s, `translate_video` 5 min, `generate_music` 1 min.
 
-Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-stream.ts` in production) to hit the same Express instance without a network round-trip.
+Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-stream.ts` in production) to hit the same Express instance without a network round-trip — `getApiBase()` deliberately ignores `X-Forwarded-Host`/`Host` request headers to prevent header-injection redirecting internal calls. E2B sandboxes are keyed per sessionId (not per user) — same user in two tabs gets two separate, non-sharing sandboxes; max 20 concurrent sandbox entries. See [[feature_copilot_uploads_admin]] memory for full tool-by-tool detail.
+
+### `/api/video-editor/*` (`routes/video-editor.ts`)
+
+The **AI Video Editor / AI Video Studio** — "upload clips, describe the edit, get the video." A conversational, timeline-based editor. **Distinct** from the Bhagwat AI Video Editor (devotional image-timeline) and the Studio Copilot (general site assistant).
+
+> **Frontend caveat:** the backend route + API client (`lib/video-editor-api.ts`) + history store (`lib/video-studio-history.ts`) are complete, but **no React component imports `videoEditorApi`** — the UI for this feature appears missing/unwired in the current tree (the `videostudio` Mode in `Home.tsx` has no confirmed component). Backend-complete, UI absent.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/video-editor/projects` | List projects (max 40, newest first) |
+| POST | `/video-editor/projects` | Create project (title, prompt, sourceVideo, assets) |
+| GET | `/video-editor/projects/:id` | Read full project (timeline, proposals, renders) |
+| DELETE | `/video-editor/projects/:id` | Delete project + chat + uploads + renders trees |
+| POST | `/video-editor/projects/:id/preview` | Start fast/low-quality preview render |
+| POST | `/video-editor/projects/:id/render` | Start full-quality final render |
+| GET | `/video-editor/jobs/:jobId` | Render job status (falls back to DynamoDB for Batch jobs) |
+| POST | `/video-editor/jobs/:jobId/cancel` | Cancel a render (SIGTERM the ffmpeg process) |
+| PATCH | `/video-editor/projects/:id/timeline` | Overwrite the timeline directly |
+| POST | `/video-editor/projects/:id/probe` | ffprobe source, auto-fill trim.end |
+| GET | `/video-editor/projects/:id/chat` | Read chat transcript (last 80 messages) |
+| POST | `/video-editor/projects/:id/chat` | **SSE** — run the AI editing agent |
+| GET | `/video-editor/projects/:id/proposals` | List edit proposals |
+| POST | `/video-editor/projects/:id/proposals/:pid/apply` | Apply a proposal (commit its timeline) |
+| POST | `/video-editor/projects/:id/proposals/:pid/reject` | Reject a proposal |
+| GET | `/video-editor/projects/:id/renders/:jobId/thumb` | JPEG thumbnail of a finished render (LRU-cached) |
+
+**State lives in workspace S3, not DynamoDB:** `editor/projects/<id>.json` (project), `editor/projects/<id>.chat.json` (chat), `editor/uploads/<id>/<role>/...` (assets), `editor/renders/<id>/<kind>-<jobId>.mp4` (outputs). `projectId` is validated against `^[a-f0-9-]{20,80}$`.
+
+**Timeline model (v2):** three tracks — `video[]` clips (`srcIn/srcOut/tlStart/speed/transitions/colorPreset`), `overlays[]` (logo/text/image with `tlStart..tlEnd` windows), `audio[]` (volumeDb/fade/duck). `export` carries aspectRatio/cropMode/colorPreset. The legacy `recipe` (regex-derived) is the v1 fallback, migrated to a timeline on first chat.
+
+**Chat agent:** Gemini loop, model `EDITOR_AGENT_MODEL` (default `gemini-3.1-pro-preview`), **hardcoded maxIterations=8**, ~31 tools (`add_clip`, `trim_clip`, `split_clip`, `reorder_clips`, `set_transition`, `add_overlay`, `add_audio`, `set_export`, `detect_logo_background` via Gemini vision, `propose`, `start_render`, YouTube tools `fetch_video_info`/`download_youtube`/`clip_cut_youtube`, `generate_subtitles`/`find_best_clips`/`generate_timestamps`, plus `analyze_video`, `get_transcript`, and `watch_youtube_video`). Workflow: read_timeline → build edit → **`propose()` (mandatory before render)** → user approves → `start_render`.
+
+**Multimodal (reworked 2026-06-25):** image assets (logo, overlay images, intro/outro stills, image source) are attached to the agent's context **inline as base64** (downscaled JPEG) so Gemini sees them directly — no GCS, both API-key and Vertex modes. This fixes "I can't read the logo". Video is NOT auto-attached for watching: to understand a YouTube video the agent calls `get_transcript` (full captions, optional time range) by default; to actually watch/listen it calls `watch_youtube_video` (Gemini vision+audio via `fileData`, model `EDITOR_WATCH_MODEL` default `gemini-3-flash-preview`, optional start/end `videoMetadata` offsets) — flagged expensive/visual-only. Local videos/clips use `analyze_video` (fast ffmpeg frame sampling → Gemini vision) and `get_transcript` (AssemblyAI via `/subtitles/generate-from-url`). `pendingTimeline` is request-scoped — if the agent mutates but never proposes/renders, an **auto-snapshot proposal** is written at end-of-turn so edits survive a refresh. Offline (no Gemini key) falls back to the regex `generateRecipe()` parser.
+
+**Render pipeline (FFmpeg, `processRenderJob`):** per-clip normalize (scale/crop/speed/color, 5→45%) → join via xfade `crossfadeClips` or `concatClips` (45→65%) → overlays (65→78%) → audio mix, final only (78→88%) → upload (92→100%). Preview = CRF 28 with an 8s budget across clips; final = CRF 22.
+
+**Execution modes (production gotcha):** `VIDEO_EDITOR_BATCH_ENABLED=true` routes renders to AWS Batch (`submitEditorRenderJob`, DDB-tracked; worker `handleEditorRender` dyn-imports `runEditorRenderStandalone` from the co-installed api-server). With the queue **disabled in Lambda, `final` renders hard-error** ("AI Studio final renders require the background render queue in production") because Lambda freezes after the response — only inline preview works. Local/ECS runs renders in-process. See [[feature_video_editor]] memory for full detail (timeline helpers, stage progress math, idempotency/stale-job handling, GCS video upload, SSE safety nets).
 
 ### Other Routes
 
@@ -344,9 +466,10 @@ Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-st
 
 ## Frontend Structure (`artifacts/yt-downloader/src/`)
 
-### Navigation Modes (14)
+### Navigation Modes (21 — corrected from a stale "14" count)
 
-Defined as `Mode` union in `pages/Home.tsx`:
+Verified directly from the `Mode` union in `pages/Home.tsx` (line 63):
+`"home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings"`
 
 | Mode | Component | Description |
 |------|-----------|-------------|
@@ -360,11 +483,22 @@ Defined as `Mode` union in `pages/Home.tsx`:
 | `scenefinder` | `KathaSceneFinder.tsx` | Find Sabha / Katha scene search |
 | `timestamps` | `Timestamps.tsx` | Chapter timestamp generation |
 | `upload` | `FileUpload.tsx` | File sharing |
-| `translator` | `VideoTranslator.tsx` | Video translation/dubbing |
+| `translator` | `pages/VideoTranslator.tsx` | Video translation/dubbing |
+| `heygen` | `pages/HeyGenTranslator.tsx` | **Undocumented elsewhere** — HeyGen-based translation/dubbing, see `routes/heygen.ts` |
 | `findvideo` | `FindVideo.tsx` | NotebookLM-powered video search |
+| `thumbnail` | `Thumbnail.tsx` + `ThumbnailPresets.tsx` | **Undocumented elsewhere** — thumbnail generation, see `routes/thumbnail.ts` |
+| `videostudio` | **No confirmed component — UI appears missing/unwired** | **AI Video Editor** ("upload clips, describe the edit, get the video"), backend `routes/video-editor.ts` + client `lib/video-editor-api.ts` + history `lib/video-studio-history.ts`. The backend is complete but no React component imports `videoEditorApi`, so this mode currently has no working screen. Drives the `"editor-render"` job type. See the `/api/video-editor/*` section and `feature_video_editor` memory. |
 | `help` | `HelpPanel.tsx` | Help sidebar tab |
 | `activity` | `ActivityPanel.tsx` | Job activity sidebar tab |
 | `admin` | `AdminPanel.tsx` | Admin panel (admin role only) |
+| `developer` | `DeveloperPanel.tsx` | **Undocumented elsewhere** — API key management, see `routes/keys.ts` |
+| `api-docs` | `ApiDocumentationPage.tsx` | **Undocumented elsewhere** — public API docs for issued keys |
+| `settings` | `SettingsPanel.tsx` | User preferences (`lib/user-preferences.ts`) |
+
+**Pitaji is NOT in this Mode union at all** — `PitajiLogin.tsx`/`PitajiHome.tsx` are routed separately
+(its own `pitaji_auth` cookie scope per `app.ts`), not switched via `Home.tsx`'s mode state like
+everything else. Treat Pitaji as effectively a second mini-app bolted onto the same frontend bundle,
+not just another tab.
 
 Sidebar (`components/layout/Sidebar.tsx`) drives navigation. Desktop: 70px rail (`gs-rail`). Mobile: hamburger → slide-in drawer (`gs-drawer`).
 
@@ -585,7 +719,7 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `LAMBDA_CLIP_COMMAND_TIMEOUT_MS` | | `840000` | Clip-cut command timeout |
 | `LAMBDA_CLIP_STALL_TIMEOUT_MS` | | `60000` | Clip-cut stall detection |
 | `MAX_CONCURRENT_CLIP_JOBS` | | `3` | Parallel in-process clip jobs |
-| `SUBTITLES_FORCE_LAMBDA` | | `false` | Force subtitles to run in Lambda (not Batch) |
+| `SUBTITLES_FORCE_LAMBDA` | | `true` | Force subtitles to run in Lambda (not Batch) — default verified `true` in source, corrected from prior `false` |
 | `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS` | | `600` | Subtitle in-Lambda max duration |
 | `SUBTITLES_WORKER_FUNCTION_NAME` | | — | Lambda function name for subtitle worker self-invoke |
 | `TIMESTAMPS_WORKER_FUNCTION_NAME` | | — | Lambda function name for timestamps worker self-invoke |
@@ -594,11 +728,17 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `TRANSLATOR_BATCH_TIMEOUT_SECONDS` | | `3000` | GPU job timeout (50 min) |
 | `TRANSLATOR_MAX_VIDEO_SIZE_BYTES` | | `2147483648` | Max upload size (2 GB) |
 | `TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS` | | `1` | Allow HF/ModelScope downloads in worker |
-| `COPILOT_MODEL` | | `gemini-3-flash-preview` | Default agent model |
-| `COPILOT_ULTRA_MODEL` | | `gemini-3.1-pro-preview` | Ultra mode model |
-| `COPILOT_SEARCH_MODEL` | | `gemini-3.5-flash` | Web search model |
-| `COPILOT_MAX_ITERATIONS` | | `24` | Max agent tool calls per turn |
+| `COPILOT_MODEL` | | n/a | **Dead env var** — `AGENT_MODEL` is hardcoded to `"gemini-3-flash-preview"` in `agent.ts`; this var is not read despite a misleading inline comment |
+| `COPILOT_ULTRA_MODEL` | | `gemini-3.1-pro-preview` | Ultra mode model (genuinely read from env) |
+| `COPILOT_SEARCH_MODEL` | | `gemini-3.5-flash` | Web search model (genuinely read from env) |
+| `COPILOT_MAX_ITERATIONS` | | `49` | Max agent tool calls per turn — corrected from prior `24` |
 | `COPILOT_MAX_OUTPUT_TOKENS` | | `16384` | Max agent response tokens |
+| `VIDEO_EDITOR_BATCH_ENABLED` | | `false` | Route AI Video Editor renders to AWS Batch. **Required `true` in Lambda prod** or final renders hard-error |
+| `EDITOR_AGENT_MODEL` | | `gemini-3.1-pro-preview` | AI Video Editor chat agent + logo-background/frame vision model |
+| `EDITOR_WATCH_MODEL` | | `gemini-3-flash-preview` | Model for `watch_youtube_video` (full vision+audio watch) |
+| `VIDEO_EDITOR_WORKER_FUNCTION_NAME` | | `AWS_LAMBDA_FUNCTION_NAME` | Lambda self-invoked for editor renders (fast path). Defaults to the API function itself; routed via `event.source==="videomaking.editor"` in `lambda.ts` → `runEditorRenderWorker` |
+| `VIDEO_EDITOR_FARGATE_THRESHOLD_SEC` | | `600` | Renders with expected output longer than this go to Batch/Fargate instead of the worker Lambda |
+| `EDITOR_AGENT_THINKING_BUDGET` | | `MEDIUM` | AI Video Editor agent thinking level |
 | `INTERNAL_API_BASE` | | auto-detected | Base URL for agent's internal API calls (set by lambda-stream.ts) |
 | `INTERNAL_AGENT_SECRET` | | auto-generated | Header secret for server-to-server auth bypass. Random per-process when unset (never a known default); set explicitly to share across processes |
 | `NOTEBOOKLM_ENABLED` | | `false` | Enable NotebookLM / Find Video feature |
@@ -659,8 +799,26 @@ No test runner is configured. Use `pnpm run typecheck` to verify type correctnes
 
 **Cookie security.** `SESSION_SECRET` signs all cookies. Do not rotate it in production — it invalidates all active sessions. The YouTube cookies in S3 are the most sensitive credential — they grant access to the YouTube account.
 
-**S3 output files.** Auto-deleted after 2 hours via cleanup logic in `youtube.ts` and `bhagwat.ts`. If a user needs longer retention, `S3_SIGNED_URL_TTL_SEC` extends the download link, not the file lifetime.
+**S3 output files.** YouTube downloads/clips auto-delete after **7 days** (`AUTO_DELETE_MS` in `youtube.ts`, verified against source — earlier versions of this doc said 2 hours, which was wrong). Bhagwat render files are deleted 60 min after first download, with a 12h sweep for anything orphaned. Subtitles/translator namespaces use a separate 7-day S3 cleanup sweep. If a user needs longer retention, `S3_SIGNED_URL_TTL_SEC` extends the download *link*, not the file's actual lifetime — these are independent.
 
 **Translator image size.** The GPU translator Dockerfile produces a ~20 GB image (PyTorch + CosyVoice + LatentSync + models). CI skips rebuilding it unless the relevant files change. To force a rebuild, use `workflow_dispatch` with `rebuild_translator: "true"`.
 
 **pnpm workspace `catalog:` entries.** Package versions in `pnpm-workspace.yaml` under `catalog:` provide shared version pinning across packages. Use `catalog:` in `package.json` dependencies to reference catalog entries.
+
+---
+
+## Deep-Dive Reference (Claude memory, not checked into git)
+
+This file covers architecture and routes at a glance. For line-level implementation detail (exact
+timeouts, retry counts, prompt rules, restart-resilience mechanisms) on a specific feature, Claude's
+persistent memory has six deep-dive notes — read the relevant one before making non-trivial changes
+to that area, since these capture gotchas this file intentionally omits for brevity:
+- Download / Clip Cut / Best Clips
+- Subtitles / Timestamps
+- Bhagwat AI Video Editor / Katha Scene Finder
+- Studio Copilot agent / Uploads / NotebookLM / Admin
+- Auth middleware / Lambda streaming bridge / Gemini client / CI-CD internals
+- AI Video Editor / AI Video Studio (timeline agent, FFmpeg render, Batch-required-for-final gotcha)
+
+These were last verified 2026-06-25 against the source in this repo at that commit — re-verify
+specific claims (especially line numbers) if the relevant file has changed since.

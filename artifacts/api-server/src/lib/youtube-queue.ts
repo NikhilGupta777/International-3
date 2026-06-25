@@ -376,6 +376,55 @@ export async function submitEditorRenderJob(input: {
   return submitEditorRenderJobDurable(input);
 }
 
+// ─── Editor render via Lambda self-invoke worker (fast path) ──────────────────
+// These let the editor run renders on a worker Lambda (near-instant start) and
+// report progress through the same DynamoDB jobs table that getJobStatusFromDdb
+// reads — so the frontend polls identically whether the render ran on Lambda or
+// Batch. Returns false when DDB isn't configured (local dev → in-process render).
+export function isEditorDdbConfigured(): boolean {
+  return !!(ddb && JOB_TABLE);
+}
+
+export async function putEditorJobQueued(jobId: string, projectId: string, kind: "preview" | "final"): Promise<boolean> {
+  if (!ddb || !JOB_TABLE) return false;
+  const now = Date.now();
+  await ddb.send(new PutItemCommand({
+    TableName: JOB_TABLE,
+    Item: {
+      jobId: { S: jobId },
+      jobType: { S: "editor-render" },
+      sourceUrl: { S: `editor://${projectId}/${kind}` },
+      status: { S: "queued" },
+      message: { S: "Starting render..." },
+      progressPct: { N: "1" },
+      createdAt: { N: String(now) },
+      updatedAt: { N: String(now) },
+    },
+  }));
+  return true;
+}
+
+export async function updateEditorJobStatus(
+  jobId: string,
+  patch: { status?: string; message?: string; progressPct?: number; s3Key?: string },
+): Promise<void> {
+  if (!ddb || !JOB_TABLE) return;
+  const sets: string[] = ["updatedAt = :updatedAt"];
+  const names: Record<string, string> = {};
+  const values: Record<string, any> = { ":updatedAt": { N: String(Date.now()) } };
+  if (patch.status !== undefined) { sets.push("#s = :s"); names["#s"] = "status"; values[":s"] = { S: patch.status }; }
+  if (patch.message !== undefined) { sets.push("#m = :m"); names["#m"] = "message"; values[":m"] = { S: patch.message }; }
+  if (patch.progressPct !== undefined) { sets.push("progressPct = :p"); values[":p"] = { N: String(Math.round(patch.progressPct)) }; }
+  if (patch.s3Key !== undefined) { sets.push("s3Key = :k"); values[":k"] = { S: patch.s3Key }; }
+  await ddb.send(new UpdateItemCommand({
+    TableName: JOB_TABLE,
+    Key: { jobId: { S: jobId } },
+    UpdateExpression: `SET ${sets.join(", ")}`,
+    ...(Object.keys(names).length ? { ExpressionAttributeNames: names } : {}),
+    ExpressionAttributeValues: values,
+  }));
+}
+
 export async function getJobStatusFromDdb(jobId: string): Promise<{
   status: string;
   message: string;

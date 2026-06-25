@@ -32,6 +32,8 @@ export type TimedOverlay = {
   tlStart: number;
   tlEnd: number;
   position: string;
+  xPct?: number;
+  yPct?: number;
   style: Record<string, any>;
 };
 
@@ -316,6 +318,25 @@ export const videoEditorApi = {
   getProposals: (projectId: string) =>
     req<{ proposals: Proposal[] }>(
       `/api/video-editor/projects/${encodeURIComponent(projectId)}/proposals`
+    ),
+
+  // URL for a single poster frame of a workspace asset (video frame at `t`
+  // seconds, or the image itself). Used by the review editor preview/timeline.
+  assetFrameUrl: (projectId: string, assetPath: string, t = 0): string =>
+    `/api/video-editor/projects/${encodeURIComponent(projectId)}/asset-frame?path=${encodeURIComponent(assetPath)}&t=${encodeURIComponent(String(t))}`,
+
+  // Probe an asset's duration/resolution/hasAudio (cached server-side). Used
+  // by the editor to lay out clips and bound trim handles.
+  getAssetMeta: (projectId: string, assetPath: string) =>
+    req<{ duration: number; width: number; height: number; hasAudio: boolean }>(
+      `/api/video-editor/projects/${encodeURIComponent(projectId)}/asset-meta?path=${encodeURIComponent(assetPath)}`,
+    ),
+
+  // Presigned stream URL for an asset — used as the editor's playback fallback
+  // when the local File isn't available this session.
+  getAssetUrl: (projectId: string, assetPath: string) =>
+    req<{ url: string }>(
+      `/api/video-editor/projects/${encodeURIComponent(projectId)}/asset-url?path=${encodeURIComponent(assetPath)}`,
     ),
 };
 

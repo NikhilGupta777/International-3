@@ -17,6 +17,8 @@ import {
   removeActiveVideoStudioRender,
   saveVideoStudioRenderHistory,
 } from "@/lib/video-studio-history";
+import { VideoStudioReviewEditor } from "@/components/VideoStudioReviewEditor";
+import { registerLocalMedia } from "@/lib/local-media-cache";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 type ViewState = "landing" | "chat" | "artifact";
@@ -106,6 +108,42 @@ function fileTypeFromFile(file: File): AttachedAsset["type"] {
   if (["mp3", "wav", "m4a", "aac", "ogg", "flac"].includes(ext)) return "audio";
   if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext)) return "image";
   return "image";
+}
+
+/** Compact attached-asset chip: live local thumbnail (video first-frame /
+ *  image), truncated name, upload progress, and a remove button. */
+function AssetChip({ asset, onRemove }: { asset: AttachedAsset; onRemove: () => void }) {
+  const [thumb, setThumb] = useState<string | null>(null);
+  useEffect(() => {
+    if (!asset.file || (asset.type !== "image" && asset.type !== "video")) return;
+    const url = URL.createObjectURL(asset.file);
+    setThumb(url);
+    return () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
+  }, [asset.file, asset.type]);
+  const uploading = asset.uploadProgress !== undefined && asset.uploadProgress < 1;
+  const pct = Math.round((asset.uploadProgress ?? 0) * 100);
+  const ready = asset.path != null && !uploading;
+  const shortName = asset.name.length > 16 ? `${asset.name.slice(0, 13)}…` : asset.name;
+  return (
+    <div className={`avs-chip ${asset.uploadError ? "avs-chip--error" : ""}`} title={asset.name}>
+      <span className="avs-chip-thumb">
+        {thumb && asset.type === "image" ? (
+          <img src={thumb} alt="" />
+        ) : thumb && asset.type === "video" ? (
+          <video src={thumb} muted playsInline preload="metadata" />
+        ) : (
+          <span className="avs-chip-emoji">{asset.type === "audio" ? "🎵" : "🎬"}</span>
+        )}
+        {uploading && <span className="avs-chip-prog"><span style={{ width: `${pct}%` }} /></span>}
+        {ready && <span className="avs-chip-ready">✓</span>}
+      </span>
+      <span className="avs-chip-meta">
+        <span className="avs-chip-name">{shortName}</span>
+        <span className="avs-chip-sub">{asset.uploadError ? "failed" : uploading ? `${pct}%` : asset.type}</span>
+      </span>
+      <button type="button" className="avs-chip-x" onClick={onRemove} aria-label={`Remove ${asset.name}`}>×</button>
+    </div>
+  );
 }
 
 const FEATURE_TILES = [
@@ -523,6 +561,8 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
   const [attachedAssets, setAttachedAssets] = useState<AttachedAsset[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [applyingProposalId, setApplyingProposalId] = useState<string | null>(null);
+  // Review editor overlay — opened from a proposal card / header button.
+  const [editorState, setEditorState] = useState<{ timeline: Timeline; proposalId: string | null; title?: string } | null>(null);
   const [showAttachPopover, setShowAttachPopover] = useState(false);
   const [artifactView, setArtifactView] = useState<{
     jobId: string;
@@ -866,7 +906,19 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
   }, [inputText, adjustTextarea]);
 
   // ─── File Handling ──────────────────────────────────────────────────────────
-  const handleFileAttach = useCallback((files: FileList | File[]) => {
+  // Tracks in-flight uploads started at attach-time so Send can reuse them
+  // instead of re-uploading. Keyed by asset id; resolves to the workspace path.
+  const uploadsRef = useRef<Map<string, { promise: Promise<string> }>>(new Map());
+
+  // Patch one staged (pre-send) asset in the input card by id.
+  const patchStagedAsset = useCallback((id: string, patch: Partial<AttachedAsset>) => {
+    setAttachedAssets((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  }, []);
+
+  // Upload begins the moment a file is attached (not on Send), so the wait is
+  // hidden behind the time the user spends typing the prompt. Send then just
+  // awaits whatever is still in flight.
+  const handleFileAttach = useCallback(async (files: FileList | File[]) => {
     const arr = Array.from(files).filter((f): f is File => Boolean(f) && f.size > 0);
     if (arr.length === 0) return;
     const newAssets: AttachedAsset[] = arr.map((f) => ({
@@ -877,12 +929,51 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
     }));
     setAttachedAssets((prev) => [...prev, ...newAssets]);
     setShowAttachPopover(false);
-    // Reset native input value so the user can re-pick the same file later.
     if (fileInputRef.current) fileInputRef.current.value = "";
-  }, []);
+
+    // Ensure a project exists so we can upload right away.
+    let pid = projectId;
+    if (!pid) {
+      try {
+        const { project } = await videoEditorApi.createProject({ title: "New Edit" });
+        pid = project.projectId;
+        setProjectId(pid);
+        setProject(project);
+      } catch {
+        // Project creation failed — leave uploads for Send to handle.
+        return;
+      }
+    }
+
+    for (const asset of newAssets) {
+      if (!asset.file) continue;
+      patchStagedAsset(asset.id, { uploadProgress: 0, uploadError: undefined });
+      const role = asset.type === "video" ? "source" : asset.type === "audio" ? "audio" : "logo";
+      const file = asset.file;
+      const targetPid = pid;
+      const promise = (async (): Promise<string> => {
+        let lastReported = 0;
+        const result = await videoEditorApi.uploadAsset(targetPid, role, file, (fraction) => {
+          const pct = Math.min(0.99, Math.max(0, fraction));
+          if (pct - lastReported >= 0.05 || pct >= 0.99) {
+            lastReported = pct;
+            patchStagedAsset(asset.id, { uploadProgress: pct });
+          }
+        });
+        registerLocalMedia(result.path, file);
+        patchStagedAsset(asset.id, { uploadProgress: 1, path: result.path });
+        return result.path;
+      })();
+      promise.catch((err) => {
+        patchStagedAsset(asset.id, { uploadProgress: undefined, uploadError: err instanceof Error ? err.message : "Upload failed" });
+      });
+      uploadsRef.current.set(asset.id, { promise });
+    }
+  }, [projectId, patchStagedAsset]);
 
   const removeAsset = useCallback((id: string) => {
     setAttachedAssets((prev) => prev.filter((a) => a.id !== id));
+    uploadsRef.current.delete(id);
   }, []);
 
   // ─── Drag and Drop ─────────────────────────────────────────────────────────
@@ -976,8 +1067,8 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
         );
       };
 
-      // Upload attached files in parallel — sequential uploads on a 5-clip
-      // request blocked the chat round-trip for tens of seconds.
+      // Resolve uploads: reuse the upload already started at attach-time when
+      // possible; only upload-now as a fallback (e.g. no project existed yet).
       const uploaded: AttachedAsset[] = stagedAssets.map((a) => ({ ...a }));
       await Promise.all(
         uploaded.map(async (asset) => {
@@ -985,10 +1076,20 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
             patchAsset(asset.id, { uploadProgress: 1 });
             return;
           }
-          const role = asset.type === "video" ? "source" : asset.type === "audio" ? "audio" : "logo";
           try {
-            // Throttle progress updates to every 5% to avoid bombarding
-            // React with a setState per network packet on huge uploads.
+            if (asset.path) {
+              patchAsset(asset.id, { uploadProgress: 1, path: asset.path });
+              return;
+            }
+            const inflight = uploadsRef.current.get(asset.id);
+            if (inflight) {
+              const path = await inflight.promise;
+              asset.path = path;
+              patchAsset(asset.id, { uploadProgress: 1, path });
+              return;
+            }
+            // Fallback upload (attach-time upload didn't run).
+            const role = asset.type === "video" ? "source" : asset.type === "audio" ? "audio" : "logo";
             let lastReported = 0;
             const result = await videoEditorApi.uploadAsset(
               pid!,
@@ -1004,12 +1105,13 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
             );
             asset.path = result.path;
             patchAsset(asset.id, { uploadProgress: 1, path: result.path });
+            registerLocalMedia(result.path, asset.file);
           } catch (uploadErr) {
             const msg = uploadErr instanceof Error ? uploadErr.message : "Upload failed";
             patchAsset(asset.id, { uploadProgress: undefined, uploadError: msg });
-            // Re-throw so Promise.all rejects and the outer catch restores
-            // the staged list + input text for retry.
             throw uploadErr;
+          } finally {
+            uploadsRef.current.delete(asset.id);
           }
         })
       );
@@ -1362,6 +1464,47 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
         inputRef.current?.focus();
       } catch (err) {
         console.error("Reject error:", err);
+      }
+    },
+    [projectId]
+  );
+
+  // Render the (already-PATCHed) edited timeline from the visual editor. The
+  // editor persists via patchTimeline before calling this, so we just kick off
+  // the render + polling and reflect status in the chat.
+  const handleEditorRender = useCallback(
+    async (_timeline: Timeline, propId: string | null) => {
+      if (!projectId) return;
+      setEditorState(null);
+      if (propId) {
+        setBubbles((prev) =>
+          prev.map((b) =>
+            b.kind === "proposal" && b.proposal.proposalId === propId
+              ? { ...b, status: "approved" as const }
+              : b
+          )
+        );
+      }
+      setBubbles((prev) => [
+        ...prev,
+        { kind: "system" as const, id: safeUuid(), text: "✅ Starting render from your edits..." },
+      ]);
+      try {
+        const existing = projectRef.current?.renders?.find(
+          (r) => r.status === "pending" || r.status === "running"
+        );
+        if (existing) {
+          startRenderPollingRef.current(projectId, existing);
+        } else {
+          const { project: rp, job } = await videoEditorApi.startRender(projectId);
+          setProject(rp);
+          startRenderPollingRef.current(projectId, job);
+        }
+      } catch (err) {
+        setBubbles((prev) => [
+          ...prev,
+          { kind: "assistant" as const, id: safeUuid(), text: `Could not start render: ${(err as Error).message}` },
+        ]);
       }
     },
     [projectId]
@@ -2101,6 +2244,20 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
           }
         />
 
+        {/* Review editor overlay — opened from a proposal card */}
+        {editorState && projectId && (
+          <VideoStudioReviewEditor
+            projectId={projectId}
+            initialTimeline={editorState.timeline}
+            title={editorState.title}
+            proposalId={editorState.proposalId}
+            busy={isStreaming || (editorState.proposalId != null && applyingProposalId === editorState.proposalId)}
+            onClose={() => setEditorState(null)}
+            onChangePlan={() => { setEditorState(null); inputRef.current?.focus(); }}
+            onRender={(timeline) => { void handleEditorRender(timeline, editorState.proposalId); }}
+          />
+        )}
+
         <div className="ai-video-studio__workspace">
           {/* Left Column: Chat Assistant */}
           <div className="ai-video-studio__chat-column">
@@ -2173,15 +2330,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
               {attachedAssets.length > 0 && (
                 <div className="ai-video-studio__input-assets">
                   {attachedAssets.map((a) => (
-                    <div key={a.id} className="ai-video-studio__asset-chip">
-                      <span className="ai-video-studio__asset-chip-icon">
-                        {a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "🖼"}
-                      </span>
-                      <span className="ai-video-studio__asset-chip-name">{a.name}</span>
-                      <button className="ai-video-studio__asset-chip-remove" onClick={() => removeAsset(a.id)}>
-                        ×
-                      </button>
-                    </div>
+                    <AssetChip key={a.id} asset={a} onRemove={() => removeAsset(a.id)} />
                   ))}
                 </div>
               )}
@@ -2351,41 +2500,13 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
               slot into the same row to mirror HeyGen's flow where uploading
               a file scrolls the Auto pills off-screen-left and surfaces a
               chip with the file in their place. */}
-          <div className="ai-video-studio__cap-pills">
-            {CAPABILITY_PILLS.map((pill) => (
-              <button
-                key={pill.key}
-                type="button"
-                className={`ai-video-studio__cap-pill ${activeCapabilities.has(pill.key) ? "ai-video-studio__cap-pill--active" : ""}`}
-                aria-pressed={activeCapabilities.has(pill.key)}
-                onClick={() =>
-                  setActiveCapabilities((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(pill.key)) next.delete(pill.key); else next.add(pill.key);
-                    return next;
-                  })
-                }
-              >
-                <span className="ai-video-studio__cap-pill-icon" aria-hidden="true">{pill.icon}</span>
-                <span className="ai-video-studio__cap-pill-label">
-                  <span>{pill.label}</span>
-                  <span className="ai-video-studio__cap-pill-sub">{pill.sub}</span>
-                </span>
-              </button>
-            ))}
-            {attachedAssets.map((a) => (
-              <div key={a.id} className="ai-video-studio__asset-chip">
-                <span className="ai-video-studio__asset-chip-icon">
-                  {a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "🖼"}
-                </span>
-                <span className="ai-video-studio__asset-chip-name">{a.name}</span>
-                <span className="ai-video-studio__asset-chip-type">{a.type}</span>
-                <button className="ai-video-studio__asset-chip-remove" onClick={() => removeAsset(a.id)}>
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
+          {attachedAssets.length > 0 && (
+            <div className="ai-video-studio__cap-pills ai-video-studio__cap-pills--assets">
+              {attachedAssets.map((a) => (
+                <AssetChip key={a.id} asset={a} onRemove={() => removeAsset(a.id)} />
+              ))}
+            </div>
+          )}
 
           {/* Textarea */}
           <textarea
@@ -2678,11 +2799,37 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                   ✓ Looks good, render it
                 </button>
                 <button
+                  className="ai-video-studio__proposal-editor"
+                  onClick={() => setEditorState({
+                    timeline: bubble.proposal.timeline,
+                    proposalId: bubble.proposal.proposalId,
+                    title: bubble.proposal.summary,
+                  })}
+                  disabled={isStreaming}
+                >
+                  🎬 Open editor
+                </button>
+                <button
                   className="ai-video-studio__proposal-refine"
                   onClick={() => handleRefineProposal(bubble.proposal.proposalId)}
                   disabled={isStreaming}
                 >
                   ✏ Change plan
+                </button>
+              </div>
+            )}
+            {/* Already-acted proposals stay reviewable in the visual editor. */}
+            {isDone && (
+              <div className="ai-video-studio__proposal-actions">
+                <button
+                  className="ai-video-studio__proposal-editor"
+                  onClick={() => setEditorState({
+                    timeline: bubble.proposal.timeline,
+                    proposalId: null,
+                    title: bubble.proposal.summary,
+                  })}
+                >
+                  🎬 Open editor
                 </button>
               </div>
             )}
