@@ -109,11 +109,17 @@ const OPERATIONS: Operation[] = [
   },
   {
     op: "subtitles",
-    target: "/api/subtitles/generate-from-url",
-    urlKey: "fileUrl",
-    input: "media",
+    // Route to /generate (the YouTube-aware handler that dispatches to the
+    // subtitles worker Lambda) — NOT /generate-from-url, which was for
+    // direct-media URLs (it'd pass a YouTube watch page straight to
+    // AssemblyAI's `audio_url`, where it can't extract audio). /generate
+    // takes the YouTube URL via yt-dlp inside runSubtitleUrlJob and runs
+    // off the response Lambda, so it doesn't freeze mid-transcription.
+    target: "/api/subtitles/generate",
+    urlKey: "url",
+    input: "youtube",
     resultKind: "subtitles",
-    summary: "Transcribe a publicly-accessible media URL into subtitles.",
+    summary: "Generate subtitles for a YouTube video.",
     statusUrl: (id) => `/api/subtitles/status/${id}`,
     cancelUrl: (id) => `/api/subtitles/cancel/${id}`,
     fields: { language: "BCP-47 code or 'auto'", translateTo: "target language code" },
