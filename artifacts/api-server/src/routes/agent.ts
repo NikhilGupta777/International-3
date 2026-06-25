@@ -2543,6 +2543,17 @@ async function readAttachmentText(
       clearTimeout(timer),
     );
     if (!r.ok) throw new Error(`Could not read uploaded file: ${r.status}`);
+    // SECURITY: Re-validate post-redirect URL against internal hosts (SSRF).
+    const finalAttachUrl = r.url || url;
+    try {
+      if (isInternalHost(new URL(finalAttachUrl).hostname)) {
+        throw new Error(
+          "Attachment URL redirected to an internal/private network address.",
+        );
+      }
+    } catch (err: any) {
+      if (err.message.includes("internal/private")) throw err;
+    }
     const contentType = r.headers.get("content-type") ?? attachment.mimeType;
     if (contentType.includes("pdf")) {
       return {
@@ -4919,14 +4930,29 @@ except Exception as exc:
         // Invalid URL — let fetch fail naturally
       }
 
+      const isInternalRequest = sourceUrl.startsWith("/");
+      const fetchHeaders: Record<string, string> = {};
+      if (isInternalRequest) {
+        fetchHeaders["Cookie"] = req.headers.cookie ?? "";
+        fetchHeaders["X-Internal-Agent"] = INTERNAL_AGENT_SECRET;
+      }
       const r = await fetch(resolvedUrl, {
-        headers: {
-          Cookie: req.headers.cookie ?? "",
-          "X-Internal-Agent": INTERNAL_AGENT_SECRET,
-        },
+        headers: fetchHeaders,
         redirect: "follow",
       });
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
+      // SECURITY: Re-validate post-redirect URL against internal hosts (SSRF).
+      const finalFetchUrl = r.url || resolvedUrl;
+      try {
+        const finalHost = new URL(finalFetchUrl).hostname;
+        if (!isInternalRequest && isInternalHost(finalHost)) {
+          throw new Error(
+            "Redirect target resolves to an internal/private network address.",
+          );
+        }
+      } catch (err: any) {
+        if (err.message.includes("internal/private")) throw err;
+      }
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
       const size = sizeHeader ? Number(sizeHeader) : null;
@@ -5095,16 +5121,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname);
   } catch {
     return true;
   }
@@ -5112,6 +5129,17 @@ function isLocalUrl(urlStr: string): boolean {
 
 // Global cache to store S3/HTTPS URL pathname -> GCS gs:// URI mappings
 const globalUrlToGcsCache = new Map<string, string>();
+const GLOBAL_CACHE_MAX_ENTRIES = 500;
+
+function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
+  if (map.size <= maxSize) return;
+  const excess = map.size - maxSize;
+  const iter = map.keys();
+  for (let i = 0; i < excess; i++) {
+    const key = iter.next().value;
+    if (key !== undefined) map.delete(key);
+  }
+}
 
 function getStableCacheKey(urlStr: string): string {
   try {
@@ -5127,6 +5155,13 @@ const globalContextCacheMap = new Map<
   string,
   { cacheName: string; expiresAt: number }
 >();
+
+function pruneExpiredContextCaches(): void {
+  const now = Date.now();
+  for (const [key, val] of globalContextCacheMap) {
+    if (now >= val.expiresAt) globalContextCacheMap.delete(key);
+  }
+}
 
 function getCacheContentHash(
   systemInstruction: string,
@@ -5367,6 +5402,7 @@ router.post("/agent/chat", async (req, res) => {
                   );
                   await deleteLocalFile(tempPath);
                   globalUrlToGcsCache.set(cacheKey, gsUri);
+                  evictOldestEntries(globalUrlToGcsCache, GLOBAL_CACHE_MAX_ENTRIES);
                   finalUri = gsUri;
                   console.log(
                     `[agent] Uploaded attachment ${a.name} to GCS successfully: ${gsUri}`,
@@ -5479,6 +5515,7 @@ router.post("/agent/chat", async (req, res) => {
             cacheContents,
           );
           const cached = globalContextCacheMap.get(cacheHash);
+          pruneExpiredContextCaches();
           if (cached && Date.now() < cached.expiresAt) {
             activeCacheName = cached.cacheName;
             console.log(
@@ -5506,6 +5543,7 @@ router.post("/agent/chat", async (req, res) => {
               cacheName: cache.name,
               expiresAt: Date.now() + 30 * 60 * 1000,
             });
+            evictOldestEntries(globalContextCacheMap, GLOBAL_CACHE_MAX_ENTRIES);
             console.log(
               `[agent] Created Vertex Context Cache: ${activeCacheName}`,
             );
