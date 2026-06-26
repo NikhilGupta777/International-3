@@ -3,6 +3,12 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { GoogleGenAI } from "@google/genai";
 
+// Explicitly delete Vertex AI environment flags to prevent the @google/genai SDK
+// from automatically routing requests to the Vertex AI endpoints.
+delete process.env.GOOGLE_GENAI_USE_VERTEXAI;
+delete process.env.GEMINI_USE_VERTEXAI;
+delete process.env.VERTEX_AI_ENABLED;
+
 type HttpOptions = {
   timeout?: number;
   apiVersion?: string;
@@ -25,11 +31,7 @@ function envFlag(value: string | undefined): boolean {
 }
 
 export function isVertexGeminiEnabled(): boolean {
-  return (
-    envFlag(process.env.GOOGLE_GENAI_USE_VERTEXAI) ||
-    envFlag(process.env.GEMINI_USE_VERTEXAI) ||
-    envFlag(process.env.VERTEX_AI_ENABLED)
-  );
+  return false;
 }
 
 export function getVertexProject(): string {
@@ -131,6 +133,27 @@ if (isVertexGeminiEnabled() && (process.env.GOOGLE_APPLICATION_CREDENTIALS_S3_KE
   });
 }
 
+export function getPersonalGeminiApiKeysList(): string[] {
+  const keys: string[] = [];
+  const first = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
+  if (first) keys.push(first);
+  for (let index = 2; index <= 13; index += 1) {
+    const envName = `GEMINI_API_KEY_${index}` as keyof NodeJS.ProcessEnv;
+    const value = process.env[envName];
+    if (value?.trim()) keys.push(value.trim());
+  }
+  return Array.from(new Set(keys));
+}
+
+let nextKeyIndex = 0;
+export function getRotatedGeminiApiKey(): string {
+  const keys = getPersonalGeminiApiKeysList();
+  if (keys.length === 0) return "";
+  const key = keys[nextKeyIndex % keys.length];
+  nextKeyIndex = (nextKeyIndex + 1) % keys.length;
+  return key;
+}
+
 export function getPrimaryGeminiApiKey(): string {
   return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
 }
@@ -139,7 +162,8 @@ export function isGeminiConfigured(): boolean {
   if (isVertexGeminiEnabled()) {
     return !!getVertexProject() && !!getVertexLocation();
   }
-  return !!getPrimaryGeminiApiKey();
+  const keys = getPersonalGeminiApiKeysList();
+  return keys.length > 0;
 }
 
 export function geminiProviderLabel(): "vertex" | "api-key" {
@@ -147,6 +171,7 @@ export function geminiProviderLabel(): "vertex" | "api-key" {
 }
 
 export async function ensureVertexCredentials(): Promise<void> {
+  if (!isVertexGeminiEnabled()) return;
   await fetchCredentialsFromS3();
   hydrateGoogleCredentials();
 }
@@ -166,7 +191,81 @@ export function createGeminiClient(options: GeminiClientOptions = {}): GoogleGen
     });
   }
 
-  const apiKey = (options.apiKey || getPrimaryGeminiApiKey()).trim();
+  const apiKey = (options.apiKey || getRotatedGeminiApiKey()).trim();
   if (!apiKey) throw new Error("Gemini API key is not configured.");
   return new GoogleGenAI({ apiKey, httpOptions: options.httpOptions });
+}
+
+export function buildThinkingConfig(
+  model: string,
+  level: "LOW" | "MEDIUM" | "HIGH" | string,
+): Record<string, any> {
+  const normalizedLevel = level === "LOW" || level === "MEDIUM" || level === "HIGH" ? level : "MEDIUM";
+  if (model.includes("2.5")) {
+    const budget = normalizedLevel === "HIGH" ? 24576 : normalizedLevel === "MEDIUM" ? 8192 : 1024;
+    return { thinkingBudget: budget };
+  }
+  return { thinkingLevel: normalizedLevel };
+}
+
+function isRetryableGeminiError(err: any): boolean {
+  const message = String(err?.message ?? err ?? "");
+  const status = err?.status ?? err?.code;
+  return (
+    status === 429 ||
+    status === 500 ||
+    status === 503 ||
+    /resource.?exhausted|quota.*exceeded|rate.?limit|429|503|unavailable|overloaded|high demand|timeout|deadline|fetch failed|ECONNRESET|internal|500/i.test(message)
+  );
+}
+
+export async function generateContentWithRotation(
+  params: {
+    model: string;
+    fallbackModels?: string[];
+    contents: any;
+    config?: any;
+  },
+  options: GeminiClientOptions = {},
+): Promise<any> {
+  if (isVertexGeminiEnabled()) {
+    const client = createGeminiClient(options);
+    return client.models.generateContent(params);
+  }
+
+  const keys = getPersonalGeminiApiKeysList();
+  if (keys.length === 0) {
+    throw new Error("No Gemini API key configured.");
+  }
+
+  let lastErr: any = null;
+  const models = Array.from(new Set([params.model, ...(params.fallbackModels ?? [])].filter(Boolean)));
+  const totalAttempts = Math.min(keys.length, 13) * models.length;
+  let attempt = 0;
+  for (const model of models) {
+    for (let keyAttempt = 0; keyAttempt < Math.min(keys.length, 13); keyAttempt++) {
+      attempt++;
+      const apiKey = getRotatedGeminiApiKey();
+      try {
+        const client = new GoogleGenAI({ apiKey, httpOptions: options.httpOptions });
+        const result = await client.models.generateContent({
+          model,
+          contents: params.contents,
+          config: params.config,
+        });
+        return result;
+      } catch (err: any) {
+        lastErr = err;
+        const errMsg = err?.message ?? String(err);
+        console.warn(
+          `[Gemini Rotation] Attempt ${attempt}/${totalAttempts} failed on ${model} using key suffix ...${apiKey.slice(-6)}: ${errMsg}. Trying next key/model...`
+        );
+        if (isRetryableGeminiError(err)) {
+          await new Promise((r) => setTimeout(r, 200 + Math.random() * 100));
+        }
+      }
+    }
+  }
+
+  throw lastErr ?? new Error("Gemini call failed on all keys in rotation.");
 }

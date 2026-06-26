@@ -102,6 +102,34 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  GeminiApiKey7:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey8:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey9:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey10:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey11:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey12:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GeminiApiKey13:
+    Type: String
+    NoEcho: true
+    Default: ""
   HeyGenApiKey:
     Type: String
     NoEcho: true
@@ -499,6 +527,18 @@ Resources:
           PITAJI_FEATURE_ENABLED: !Ref PitajiFeatureEnabled
           BHAGWAT_PASSWORD: !Ref BhagwatPassword
           GEMINI_API_KEY: !Ref GeminiApiKey
+          GEMINI_API_KEY_2: !Ref GeminiApiKey2
+          GEMINI_API_KEY_3: !Ref GeminiApiKey3
+          GEMINI_API_KEY_4: !Ref GeminiApiKey4
+          GEMINI_API_KEY_5: !Ref GeminiApiKey5
+          GEMINI_API_KEY_6: !Ref GeminiApiKey6
+          GEMINI_API_KEY_7: !Ref GeminiApiKey7
+          GEMINI_API_KEY_8: !Ref GeminiApiKey8
+          GEMINI_API_KEY_9: !Ref GeminiApiKey9
+          GEMINI_API_KEY_10: !Ref GeminiApiKey10
+          GEMINI_API_KEY_11: !Ref GeminiApiKey11
+          GEMINI_API_KEY_12: !Ref GeminiApiKey12
+          GEMINI_API_KEY_13: !Ref GeminiApiKey13
           HEYGEN_API_KEY: !Ref HeyGenApiKey
           HEYGEN_UPLOAD_MAX_BYTES: !Ref HeyGenUploadMaxBytes
           HEYGEN_SRT_MODEL: !Ref HeyGenSrtModel

@@ -17,7 +17,7 @@ import { writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import crypto from "crypto";
 import { GoogleGenAI, Modality } from "@google/genai";
-import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "./gemini-client";
+import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList } from "./gemini-client";
 import { uploadFileToS3, isS3StorageEnabled, readBufferFromS3 } from "./s3-storage";
 import {
   getSettings,
@@ -157,14 +157,7 @@ function buildThumbnailPrompt(masterPrompt: string, clip: PitajiClip): string {
 
 function getPersonalGeminiApiKeys(): string[] {
   if (isVertexGeminiEnabled()) return ["__vertex__"];
-  const keys: string[] = [];
-  const primary = (process.env.GEMINI_API_KEY ?? "").trim();
-  if (primary) keys.push(primary);
-  for (let i = 2; i <= 10; i++) {
-    const k = (process.env[`GEMINI_API_KEY_${i}`] ?? "").trim();
-    if (k) keys.push(k);
-  }
-  return keys;
+  return getPersonalGeminiApiKeysList();
 }
 
 async function generateImageBytes(

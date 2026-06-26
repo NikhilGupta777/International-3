@@ -12,7 +12,7 @@ import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
 import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
-import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, buildThinkingConfig } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb, putEditorJobQueued, updateEditorJobStatus, isEditorDdbConfigured } from "../lib/youtube-queue";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
@@ -2243,14 +2243,15 @@ function buildToolDispatcherV2(
         await downloadWorkspaceFile(ws, cur.assets.logo, localPath);
         const bytes = await readFile(localPath);
         const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
+        const activeModel = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
         const ai = createGeminiClient();
         const resp: any = await ai.models.generateContent({
-          model: (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim(),
+          model: activeModel,
           contents: [{ role: "user", parts: [
             { text: 'Look at this logo. Reply with ONLY one word: "transparent", "white", "black", or "none". No punctuation.' },
             { inlineData: { mimeType: mime, data: bytes.toString("base64") } },
           ]}],
-          config: { maxOutputTokens: 16, thinkingConfig: { thinkingLevel: "LOW" as any } },
+          config: { maxOutputTokens: 16, thinkingConfig: buildThinkingConfig(activeModel, "LOW") },
         });
         const text: string = String(resp?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p.text === "string")?.text || "").trim().toLowerCase().replace(/[^a-z]/g, "");
         const decision = text === "white" ? "auto-white" : text === "black" ? "auto-black" : "none";
@@ -2584,15 +2585,16 @@ function buildToolDispatcherV2(
         const question = typeof args?.question === "string" && args.question.trim()
           ? args.question.trim()
           : "Describe what's happening: scene, subjects, any on-screen text or logos, and visual quality.";
+        const activeModel = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
         const ai = createGeminiClient();
         const parts: any[] = [{
           text: `${got.length} frame(s) sampled from a video at ${got.map(g => g.t.toFixed(1) + "s").join(", ")} (window ${lo.toFixed(1)}s–${hi.toFixed(1)}s). ${question}\nAnswer concisely for a video editor. Do not identify real people.`,
         }];
         for (const g of got) parts.push({ inlineData: { mimeType: "image/jpeg", data: g.data } });
         const resp: any = await ai.models.generateContent({
-          model: (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim(),
+          model: activeModel,
           contents: [{ role: "user", parts }],
-          config: { maxOutputTokens: 1024, thinkingConfig: { thinkingLevel: "LOW" as any } },
+          config: { maxOutputTokens: 1024, thinkingConfig: buildThinkingConfig(activeModel, "LOW") },
         });
         const text = String(resp?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "").trim();
         return { message: `Looked at frames @ ${got.map(g => g.t.toFixed(1) + "s").join(", ")}:\n${text || "(no description returned)"}` };
@@ -2914,7 +2916,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
     }
 
     const ai = createGeminiClient();
-    const model = (process.env.EDITOR_AGENT_MODEL || "gemini-3.1-pro-preview").trim();
+    const model = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
     const thinkingBudget = process.env.EDITOR_AGENT_THINKING_BUDGET || "MEDIUM";
 
     const projectContext = `Current project:\n- sourceVideo: ${project.sourceVideo ?? "(none)"}\n- assets.logo: ${project.assets.logo ?? "(none)"}\n- assets.intro: ${project.assets.intro ?? "(none)"}\n- assets.outro: ${project.assets.outro ?? "(none)"}\n- recipe: ${snapshotRecipeSummary(project)}`;
@@ -2993,7 +2995,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
           tools: [{ functionDeclarations: AGENT_TOOL_DECLARATIONS_V2 as any }],
           toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
           maxOutputTokens: 4096,
-          thinkingConfig: { thinkingLevel: thinkingBudget as any },
+          thinkingConfig: buildThinkingConfig(model, thinkingBudget),
         },
       });
 

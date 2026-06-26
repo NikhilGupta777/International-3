@@ -1,5 +1,5 @@
 /**
- * Timestamps route — YouTube chapter timestamp generation with Gemini 2.5 Pro.
+ * Timestamps route — YouTube chapter timestamp generation with Gemini 3.5 Flash.
  *
  * Deployment modes:
  *  - Local / ECS (persistent server): analysis runs inline with EventEmitter-based SSE.
@@ -31,7 +31,7 @@ import {
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { readTextFromS3 } from "../lib/s3-storage";
-import { createGeminiClient, isGeminiConfigured } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, generateContentWithRotation, buildThinkingConfig } from "../lib/gemini-client";
 import { tryFetchSubtitlesWithApi } from "./youtube";
 
 const router = Router();
@@ -585,6 +585,7 @@ REFERENCE EXAMPLE B — Pune Sabha Day 4 (~2 hr): "PUNE SABHA DAY 4"
 
 
 async function callGemini(videoTitle: string, videoDuration: number, transcript: string, instructions?: string): Promise<string> {
+  const geminiTimeoutMs = Number.parseInt(process.env.TIMESTAMPS_GEMINI_TIMEOUT_MS ?? "180000", 10) || 180000;
   const userContent = `VIDEO TITLE: ${videoTitle}
 VIDEO DURATION: ${formatTime(videoDuration)}
 ${instructions ? `\nCUSTOM INSTRUCTIONS: ${instructions}\n` : ""}
@@ -598,13 +599,19 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
 
   if (baseUrl && integrationKey) {
     try {
-      const client = new GoogleGenAI({ apiKey: integrationKey, httpOptions: { apiVersion: "", baseUrl } });
+      const client = new GoogleGenAI({ apiKey: integrationKey, httpOptions: { apiVersion: "", baseUrl, timeout: geminiTimeoutMs } });
       const result = await client.models.generateContent({
         model: "gemini-3.5-flash",
         contents: [{ role: "user", parts: [{ text: userContent }] }],
-        config: { systemInstruction: SYSTEM_PROMPT },
+        config: {
+          systemInstruction: SYSTEM_PROMPT,
+          thinkingConfig: buildThinkingConfig("gemini-3.5-flash", "MEDIUM"),
+          maxOutputTokens: 16384,
+        },
       });
-      return (result as any).text ?? "";
+      const text = ((result as any).text ?? "").trim();
+      if (!text) throw new Error("Gemini returned empty text");
+      return text;
     } catch (err) {
       logger.warn({ err }, "[timestamps] Replit Gemini integration failed, trying own key");
     }
@@ -613,16 +620,28 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
   if (!isGeminiConfigured()) throw new Error("No Gemini provider configured. Set Vertex Gemini env or GEMINI_API_KEY.");
 
   try {
-    const client = createGeminiClient();
-    const result = await client.models.generateContent({
+    const result = await generateContentWithRotation({
       model: "gemini-3.5-flash",
+      fallbackModels: ["gemini-3-flash-preview"],
       contents: [{ role: "user", parts: [{ text: userContent }] }],
-      config: { systemInstruction: SYSTEM_PROMPT },
-    });
-    return (result as any).text ?? "";
-  } catch (err) {
-    logger.warn({ err }, "[timestamps] Gemini 2.5 Pro failed");
-    throw new Error("Gemini timestamp generation failed. Check Vertex Gemini env or GEMINI_API_KEY and try again.");
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        thinkingConfig: buildThinkingConfig("gemini-3.5-flash", "MEDIUM"),
+        maxOutputTokens: 16384,
+      },
+    }, { httpOptions: { timeout: geminiTimeoutMs } });
+    const text = ((result as any).text ?? "").trim();
+    if (!text) throw new Error("Gemini returned empty text");
+    return text;
+  } catch (err: any) {
+    const realMessage =
+      err?.message ||
+      err?.error?.message ||
+      JSON.stringify(err);
+
+    logger.warn({ err }, "[timestamps] Gemini 3.5 Flash/3 Flash with rotation failed");
+
+    throw new Error(`Gemini timestamp generation failed: ${realMessage}`);
   }
 }
 
@@ -889,7 +908,7 @@ async function runTimestampAnalysis(
     job.transcriptSource = source ?? undefined;
 
     // Step 3: Gemini
-    step("ai", "running", "Generating timestamps with Gemini 2.5 Pro...");
+    step("ai", "running", "Generating timestamps with Gemini 3.5 Flash (medium)...");
     const sampled = sampleTranscript(transcript, MAX_TRANSCRIPT_CHARS);
     let rawResponse: string;
     try {
@@ -989,7 +1008,7 @@ async function runTimestampPipelineFromUrl(
   logger.info({ jobId, source, transcriptChars: finalTranscript.length }, "[timestamps] transcript ready");
 
   // 3. Gemini
-  await ddbUpdateJob(jobId, "running", "Generating timestamps with Gemini 2.5 Pro...", { progressPct: 65 });
+  await ddbUpdateJob(jobId, "running", "Generating timestamps with Gemini 3.5 Flash (medium)...", { progressPct: 65 });
   const sampled = sampleTranscript(finalTranscript, MAX_TRANSCRIPT_CHARS);
   const rawResponse = await callGemini(videoTitle, videoDuration, sampled, instructions);
 

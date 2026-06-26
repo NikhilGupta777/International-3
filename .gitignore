@@ -101,6 +101,11 @@ storage-state.json
 
 # Local secrets and temporary work files
 *.local-secrets.bak
+testgeminiapi.py
+gemini_response.txt
+GEMINI_CODE_FLOW_MAP.md
+GEMINI_USAGE_QUICK_REFERENCE.md
+GEMINI_VS_VERTEX_USAGE_ANALYSIS.md
 transcript_*.txt
 transcript_*.json
 run-timestamps.mjs

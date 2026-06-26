@@ -40,7 +40,7 @@ import {
   createS3PresignedUpload,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
-import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
+import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList } from "../lib/gemini-client";
 import { tryFetchSubtitlesWithApi } from "./youtube";
 
 const router: Router = Router();
@@ -804,15 +804,7 @@ const BHAGWAT_REVIEW_TIMEOUT_MS = Number(
 
 function getPersonalGeminiApiKeys(): string[] {
   if (isVertexGeminiEnabled()) return ["__vertex__"];
-  const keys: string[] = [];
-  const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (first?.trim()) keys.push(first.trim());
-  for (let index = 2; index <= 10; index += 1) {
-    const envName = `GEMINI_API_KEY_${index}` as keyof NodeJS.ProcessEnv;
-    const value = process.env[envName];
-    if (value?.trim()) keys.push(value.trim());
-  }
-  return Array.from(new Set(keys));
+  return getPersonalGeminiApiKeysList();
 }
 
 function shouldRetryWithLighterGeminiModel(err: unknown): boolean {

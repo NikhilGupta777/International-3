@@ -59,9 +59,14 @@ const BATCH_JOB_DEF = process.env.TRANSLATOR_BATCH_JOB_DEFINITION!;
 // Falls back to GPU queue if not configured.
 const CPU_BATCH_QUEUE   = process.env.TRANSLATOR_CPU_BATCH_JOB_QUEUE ?? "";
 const CPU_BATCH_JOB_DEF = process.env.TRANSLATOR_CPU_BATCH_JOB_DEFINITION ?? "";
-const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? "";
-const GEMINI_KEY_2 = process.env.GEMINI_API_KEY_2 ?? "";
-const GEMINI_KEY_3 = process.env.GEMINI_API_KEY_3 ?? "";
+const GEMINI_KEYS_LIST: { name: string; value: string }[] = [];
+const firstKey = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
+GEMINI_KEYS_LIST.push({ name: "GEMINI_API_KEY", value: firstKey });
+for (let i = 2; i <= 13; i++) {
+  const envName = `GEMINI_API_KEY_${i}`;
+  const val = (process.env[envName] || "").trim();
+  GEMINI_KEYS_LIST.push({ name: envName, value: val });
+}
 const ASSEMBLYAI_KEY = process.env.ASSEMBLYAI_API_KEY ?? "";
 const PUBLIC_SITE_URL = (
   process.env.PUBLIC_SITE_URL ||
@@ -96,7 +101,7 @@ const GEMINI_TRANSCRIBE_MAX_SECONDS = Math.max(
   60,
   Number(process.env.GEMINI_TRANSCRIBE_MAX_SECONDS ?? "1020") || 1020,
 );
-const GEMINI_TRANSCRIBE_MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || "gemini-3.1-pro-preview";
+const GEMINI_TRANSCRIBE_MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || "gemini-3.5-flash";
 // Thinking level for transcription. MEDIUM keeps Pro quality while avoiding max-latency ASR calls.
 const GEMINI_TRANSCRIBE_THINKING = (process.env.GEMINI_TRANSCRIBE_THINKING || "MEDIUM").toUpperCase();
 const GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS = Math.max(
@@ -107,7 +112,7 @@ const ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK = /^(1|true|yes|on)$/i.test(
   process.env.ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK ?? "false",
 );
 // Model for the in-tab Translation Assistant debugger.
-const TRANSLATOR_ASSISTANT_MODEL = process.env.TRANSLATOR_ASSISTANT_MODEL || "gemini-3.1-pro-preview";
+const TRANSLATOR_ASSISTANT_MODEL = process.env.TRANSLATOR_ASSISTANT_MODEL || "gemini-3.5-flash";
 const TRANSLATOR_ASSISTANT_SEARCH_ENABLED = /^(1|true|yes|on)$/i.test(
   process.env.TRANSLATOR_ASSISTANT_SEARCH ?? "false",
 );
@@ -691,9 +696,7 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "S3_OUTPUT_PREFIX",  value: `translator-jobs/${jobId}` },
     { name: "DYNAMODB_TABLE",    value: DDB_TABLE },
     { name: "DYNAMODB_REGION",   value: REGION },
-    { name: "GEMINI_API_KEY",    value: GEMINI_KEY },
-    { name: "GEMINI_API_KEY_2",  value: GEMINI_KEY_2 },
-    { name: "GEMINI_API_KEY_3",  value: GEMINI_KEY_3 },
+    ...GEMINI_KEYS_LIST,
     ...VERTEX_ENV_NAMES.map((name) => ({ name, value: process.env[name] ?? "" })),
     { name: "TARGET_LANG",       value: options.targetLang },
     { name: "TARGET_LANG_CODE",  value: options.targetLangCode },
@@ -716,7 +719,7 @@ function buildBatchEnvironment(jobId: string, s3Key: string, options: Translator
     { name: "GEMINI_TRANSCRIBE_MAX_SECONDS", value: process.env.GEMINI_TRANSCRIBE_MAX_SECONDS ?? "1020" },
     { name: "GEMINI_TRANSCRIBE_CHUNK_SECONDS", value: process.env.GEMINI_TRANSCRIBE_CHUNK_SECONDS ?? "600" },
     { name: "GEMINI_TRANSCRIBE_MIN_COVERAGE", value: process.env.GEMINI_TRANSCRIBE_MIN_COVERAGE ?? "0.9" },
-    { name: "GEMINI_TRANSCRIBE_MODEL", value: process.env.GEMINI_TRANSCRIBE_MODEL ?? process.env.GEMINI_MODEL ?? "gemini-3.1-pro-preview" },
+    { name: "GEMINI_TRANSCRIBE_MODEL", value: process.env.GEMINI_TRANSCRIBE_MODEL ?? process.env.GEMINI_MODEL ?? "gemini-3.5-flash" },
     { name: "GEMINI_TRANSCRIBE_THINKING", value: process.env.GEMINI_TRANSCRIBE_THINKING ?? "MEDIUM" },
     { name: "GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS", value: process.env.GEMINI_TRANSCRIBE_MAX_SEGMENT_SECONDS ?? "15" },
     { name: "ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK", value: process.env.ALLOW_ASSEMBLYAI_TRANSCRIBE_FALLBACK ?? "false" },

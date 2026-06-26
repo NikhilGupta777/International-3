@@ -63,7 +63,7 @@ def _env_int(name: str, default: int) -> int:
         log.warning("Invalid integer env %s=%r; using %s", name, os.environ.get(name), default)
         return default
 
-# â”€â”€ Environment config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Environment config ───────────────────────────────────────────────────────
 JOB_ID              = os.environ.get("JOB_ID", "")        # empty in bulk mode (per-video from manifest)
 S3_BUCKET           = os.environ["S3_BUCKET"]
 S3_INPUT_KEY        = os.environ.get("S3_INPUT_KEY", "")  # empty in bulk mode (per-video from manifest)
@@ -73,9 +73,17 @@ S3_OUTPUT_PREFIX    = os.environ.get("S3_OUTPUT_PREFIX", f"translator-jobs/{JOB_
 BULK_MANIFEST_KEY   = os.environ.get("BULK_MANIFEST_KEY", "").strip()
 DYNAMODB_TABLE      = os.environ["DYNAMODB_TABLE"]
 DYNAMODB_REGION     = os.environ.get("DYNAMODB_REGION", "us-east-1")
-GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_API_KEY_2    = os.environ.get("GEMINI_API_KEY_2", "")
-GEMINI_API_KEY_3    = os.environ.get("GEMINI_API_KEY_3", "")
+# Gather all 13 keys from environment variables
+GEMINI_KEYS_ENV = []
+_first_key = os.environ.get("GEMINI_API_KEY", "").strip() or os.environ.get("GOOGLE_API_KEY", "").strip()
+if _first_key:
+    GEMINI_KEYS_ENV.append(_first_key)
+for _i in range(2, 14):
+    _key = os.environ.get(f"GEMINI_API_KEY_{_i}", "").strip()
+    if _key:
+        GEMINI_KEYS_ENV.append(_key)
+_seen_keys = set()
+GEMINI_KEYS = [k for k in GEMINI_KEYS_ENV if not (k in _seen_keys or _seen_keys.add(k))]
 GOOGLE_GENAI_USE_VERTEXAI = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("1", "true", "yes", "on")
 GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("VERTEX_AI_PROJECT", "")
 GOOGLE_CLOUD_LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION") or os.environ.get("VERTEX_AI_LOCATION", "global")
@@ -148,10 +156,9 @@ GEMINI_TRANSCRIBE_MAX_SECONDS = float(os.environ.get("GEMINI_TRANSCRIBE_MAX_SECO
 GEMINI_TRANSCRIBE_MODEL = (
     os.environ.get("GEMINI_TRANSCRIBE_MODEL", "").strip()
     or os.environ.get("GEMINI_MODEL", "").strip()
-    or "gemini-3.1-pro-preview"
+    or "gemini-3.5-flash"
 )
-# Thinking level for transcription. MEDIUM keeps Pro quality while avoiding the
-# latency/cost of maximum reasoning on every ASR call.
+# Thinking level for transcription. Use HIGH only when the audio needs extra repair.
 GEMINI_TRANSCRIBE_THINKING = (os.environ.get("GEMINI_TRANSCRIBE_THINKING", "MEDIUM").strip().upper() or "MEDIUM")
 # Audio longer than this is split into windows and transcribed by Gemini chunk-by-chunk
 # (instead of falling back to AssemblyAI), then stitched. Keep each window comfortably
@@ -976,7 +983,7 @@ def _audio_mime_type(audio_path: Path) -> str:
 
 
 def _transcribe_gemini_once(audio_path: Path, audio_duration_seconds: Optional[float], repair: bool = False) -> list[dict]:
-    """One Gemini transcription call for a single audio window. No retry/chunking."""
+    """One Gemini transcription call for a single audio window. Internal key rotation and retries."""
     global SOURCE_LANG_CODE
     prompt = build_gemini_transcription_prompt(
         source_lang=SOURCE_LANG_CODE or SOURCE_LANG or "auto",
@@ -985,48 +992,80 @@ def _transcribe_gemini_once(audio_path: Path, audio_duration_seconds: Optional[f
         multi_speaker=MULTI_SPEAKER,
         repair=repair,
     )
-    client = _get_gemini_client()
-    mime_type = _audio_mime_type(audio_path)
-    cfg = {
-        "temperature": 0.0,
-        "response_mime_type": "application/json",
-        "max_output_tokens": 65536,
-        "thinking_config": {"thinking_level": GEMINI_TRANSCRIBE_THINKING},
-    }
 
     if GOOGLE_GENAI_USE_VERTEXAI:
+        client = _get_gemini_client()
+        mime_type = _audio_mime_type(audio_path)
+        cfg = {
+            "temperature": 0.0,
+            "response_mime_type": "application/json",
+            "max_output_tokens": 65536,
+            "thinking_config": {"thinking_level": GEMINI_TRANSCRIBE_THINKING},
+        }
         from google.genai import types
         contents = [
             types.Part.from_bytes(data=audio_path.read_bytes(), mime_type=mime_type),
             prompt,
         ]
         response = client.models.generate_content(model=GEMINI_TRANSCRIBE_MODEL, contents=contents, config=cfg)
-    else:
-        uploaded = client.files.upload(file=str(audio_path))
+        payload = _extract_json_object(getattr(response, "text", "") or "")
+        if isinstance(payload, dict) and payload.get("languageCode"):
+            SOURCE_LANG_CODE = str(payload.get("languageCode") or SOURCE_LANG_CODE).strip() or SOURCE_LANG_CODE
+        return normalize_gemini_transcript_payload(payload, audio_duration_seconds)
+
+    if not GEMINI_KEYS:
+        raise RuntimeError("No Gemini provider configured. Set Vertex Gemini env or GEMINI_API_KEY.")
+
+    max_attempts = min(len(GEMINI_KEYS) * 2, 15)
+    last_err = None
+    for attempt in range(max_attempts):
+        client = _get_gemini_client() # This automatically rotates the key
+        key = GEMINI_KEYS[(_gemini_key_idx - 1) % len(GEMINI_KEYS)] # Key used by _get_gemini_client
         try:
-            file_name = getattr(uploaded, "name", None)
-            file_state = getattr(uploaded, "state", None)
-            attempts = 0
-            while file_name and str(file_state).upper().endswith("PROCESSING") and attempts < 90:
-                time.sleep(2.0)
-                uploaded = client.files.get(name=file_name)
-                file_state = getattr(uploaded, "state", None)
-                attempts += 1
-            if file_state and str(file_state).upper().endswith("FAILED"):
-                raise RuntimeError(f"Gemini file processing failed for {audio_path.name}")
-            response = client.models.generate_content(model=GEMINI_TRANSCRIBE_MODEL, contents=[uploaded, prompt], config=cfg)
-        finally:
+            mime_type = _audio_mime_type(audio_path)
+            cfg = {
+                "temperature": 0.0,
+                "response_mime_type": "application/json",
+                "max_output_tokens": 65536,
+                "thinking_config": {"thinking_level": GEMINI_TRANSCRIBE_THINKING},
+            }
+            uploaded = client.files.upload(file=str(audio_path))
             try:
                 file_name = getattr(uploaded, "name", None)
-                if file_name:
-                    client.files.delete(name=file_name)
-            except Exception as cleanup_err:
-                log.debug("[Gemini-ASR] File cleanup skipped: %s", cleanup_err)
+                file_state = getattr(uploaded, "state", None)
+                attempts = 0
+                while file_name and str(file_state).upper().endswith("PROCESSING") and attempts < 90:
+                    time.sleep(2.0)
+                    uploaded = client.files.get(name=file_name)
+                    file_state = getattr(uploaded, "state", None)
+                    attempts += 1
+                if file_state and str(file_state).upper().endswith("FAILED"):
+                    raise RuntimeError(f"Gemini file processing failed for {audio_path.name}")
+                response = client.models.generate_content(model=GEMINI_TRANSCRIBE_MODEL, contents=[uploaded, prompt], config=cfg)
+            finally:
+                try:
+                    file_name = getattr(uploaded, "name", None)
+                    if file_name:
+                        client.files.delete(name=file_name)
+                except Exception as cleanup_err:
+                    log.debug("[Gemini-ASR] File cleanup skipped: %s", cleanup_err)
 
-    payload = _extract_json_object(getattr(response, "text", "") or "")
-    if isinstance(payload, dict) and payload.get("languageCode"):
-        SOURCE_LANG_CODE = str(payload.get("languageCode") or SOURCE_LANG_CODE).strip() or SOURCE_LANG_CODE
-    return normalize_gemini_transcript_payload(payload, audio_duration_seconds)
+            payload = _extract_json_object(getattr(response, "text", "") or "")
+            if isinstance(payload, dict) and payload.get("languageCode"):
+                SOURCE_LANG_CODE = str(payload.get("languageCode") or SOURCE_LANG_CODE).strip() or SOURCE_LANG_CODE
+            return normalize_gemini_transcript_payload(payload, audio_duration_seconds)
+
+        except Exception as e:
+            last_err = e
+            log.warning(
+                f"[Gemini-ASR] Attempt {attempt + 1}/{max_attempts} failed using key suffix ...{key[-6:] if len(key) > 6 else key}: {e}. Rotating key..."
+            )
+            if not _is_retryable_gemini_error(e):
+                raise
+            import random
+            time.sleep(0.5 + random.uniform(0, 0.5))
+
+    raise last_err or RuntimeError(f"Gemini transcription failed on all keys after {max_attempts} attempts.")
 
 
 def _coverage_ok(segments: list[dict], duration: Optional[float]) -> bool:
@@ -2597,7 +2636,6 @@ def wait_for_cosyvoice_preload():
 # Stage 3: Translation (Gemini dubbing-aware)
 # â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-GEMINI_KEYS = [k for k in [GEMINI_API_KEY, GEMINI_API_KEY_2, GEMINI_API_KEY_3] if k]
 _gemini_key_idx = 0
 
 def _hydrate_google_credentials():
@@ -2648,6 +2686,83 @@ def _get_gemini_client():
     _gemini_key_idx += 1
     return genai.Client(api_key=key)
 
+def _is_retryable_gemini_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "429",
+            "500",
+            "503",
+            "quota",
+            "rate_limit",
+            "resource_exhausted",
+            "unavailable",
+            "overloaded",
+            "high demand",
+            "timeout",
+            "deadline",
+            "connection",
+            "internal",
+        )
+    )
+
+def _generate_content_with_rotation(
+    model: str,
+    contents: any,
+    config: dict = None,
+    system_instruction: str = None,
+    temperature: float = None,
+    response_mime_type: str = None,
+) -> any:
+    """Generate content with automatic key rotation and retries across all personal keys."""
+    global _gemini_key_idx
+    from google import genai
+
+    if GOOGLE_GENAI_USE_VERTEXAI:
+        client = _get_gemini_client()
+        cfg = dict(config) if config else {}
+        if system_instruction is not None:
+            cfg["system_instruction"] = system_instruction
+        if temperature is not None:
+            cfg["temperature"] = temperature
+        if response_mime_type is not None:
+            cfg["response_mime_type"] = response_mime_type
+        return client.models.generate_content(model=model, contents=contents, config=cfg)
+
+    if not GEMINI_KEYS:
+        raise RuntimeError("No Gemini provider configured. Set Vertex Gemini env or GEMINI_API_KEY.")
+
+    max_attempts = min(len(GEMINI_KEYS) * 2, 15)
+    last_err = None
+    for attempt in range(max_attempts):
+        key = GEMINI_KEYS[_gemini_key_idx % len(GEMINI_KEYS)]
+        _gemini_key_idx += 1
+
+        try:
+            client = genai.Client(api_key=key)
+            cfg = dict(config) if config else {}
+            if system_instruction is not None:
+                cfg["system_instruction"] = system_instruction
+            if temperature is not None:
+                cfg["temperature"] = temperature
+            if response_mime_type is not None:
+                cfg["response_mime_type"] = response_mime_type
+
+            return client.models.generate_content(model=model, contents=contents, config=cfg)
+        except Exception as e:
+            last_err = e
+            log.warning(
+                f"[Gemini-Rotation] Call to model {model} failed on attempt {attempt + 1}/{max_attempts} "
+                f"using key suffix ...{key[-6:] if len(key) > 6 else key}: {e}. Retrying with next key..."
+            )
+            if not _is_retryable_gemini_error(e):
+                raise
+            import random
+            time.sleep(0.5 + random.uniform(0, 0.5))
+
+    raise last_err or RuntimeError(f"Gemini call to model {model} failed on all keys after {max_attempts} attempts.")
+
 def _gemini_model_for_mode(mode: str) -> str:
     """Return the Gemini model name for translation.
 
@@ -2663,10 +2778,10 @@ def _gemini_model_for_mode(mode: str) -> str:
 
 
 def _gemini_fallback_model() -> str:
-    """Return the stronger model used for QA retries (native-script failures).
+    """Return the model used for QA retries (native-script failures).
 
-    Uses Pro for maximum translation quality on the handful of segments
-    that fail the script gate.
+    Defaults to Gemini 3.5 Flash. Optional: set TRANSLATION_MODEL_FALLBACK
+    to a Pro model if you deliberately want a slower/stronger repair pass.
     """
     env_override = os.environ.get("TRANSLATION_MODEL_FALLBACK", "").strip()
     if env_override:
@@ -2929,19 +3044,16 @@ def classify_chant_segments(segments: list[dict]) -> int:
         f"SEGMENTS:\n{json.dumps(payload, ensure_ascii=False)}"
     )
     try:
-        client = _get_gemini_client()
         model = os.environ.get("PRESERVE_CHANTS_MODEL", "").strip() or _gemini_model_for_mode("default")
-        response = client.models.generate_content(
+        response = _generate_content_with_rotation(
             model=model,
             contents=prompt,
-            config={
-                "system_instruction": (
-                    "You label transcript segments for a dubbing pipeline. You never "
-                    "translate. You only return the requested JSON object."
-                ),
-                "temperature": 0.0,
-                "response_mime_type": "application/json",
-            },
+            system_instruction=(
+                "You label transcript segments for a dubbing pipeline. You never "
+                "translate. You only return the requested JSON object."
+            ),
+            temperature=0.0,
+            response_mime_type="application/json",
         )
         marks = _parse_chant_indices(getattr(response, "text", "") or "", len(segments))
     except Exception as e:
@@ -3102,15 +3214,12 @@ def translate_segments(segments: list[dict]) -> list[dict]:
         while total_attempts < TRANSLATION_MAX_ATTEMPTS:
             total_attempts += 1
             try:
-                client = _get_gemini_client()
-                response = client.models.generate_content(
+                response = _generate_content_with_rotation(
                     model=model,
                     contents=user_prompt,
-                    config={
-                        "system_instruction": TRANSLATION_SYSTEM_PROMPT,
-                        "temperature": 0.3,
-                        "response_mime_type": "application/json",
-                    },
+                    system_instruction=TRANSLATION_SYSTEM_PROMPT,
+                    temperature=0.3,
+                    response_mime_type="application/json",
                 )
                 result = _normalise_translation_response(json.loads(response.text))
                 # Validate every segment ID is present
@@ -3139,20 +3248,7 @@ def translate_segments(segments: list[dict]) -> list[dict]:
                 return result
             except Exception as e:
                 last_error = e
-                err_str = str(e).lower()
-                # Immediate key rotation on quota/rate errors
-                is_rate_limit = any(
-                    kw in err_str for kw in ("429", "quota", "rate_limit", "resource_exhausted")
-                )
-                if is_rate_limit:
-                    log.warning(
-                        f"[Gemini] Chunk {chunk_idx} attempt {total_attempts}: "
-                        f"rate limit, rotating key."
-                    )
-                    # _get_gemini_client() already rotates; just retry quickly.
-                    time.sleep(0.5 + random.uniform(0, 0.5))
-                    continue
-                # Backoff with jitter for other errors
+                # Backoff with jitter for retries
                 backoff = min(30.0, (2 ** total_attempts) + random.uniform(0, 1))
                 log.warning(
                     f"[Gemini] Chunk {chunk_idx} attempt {total_attempts} failed: {e}. "
@@ -3388,15 +3484,12 @@ def _qa_native_script(segments: list[dict], target_cps: float) -> list[dict]:
         )
 
         try:
-            client = _get_gemini_client()
-            response = client.models.generate_content(
+            response = _generate_content_with_rotation(
                 model=fallback_model,
                 contents=retry_prompt,
-                config={
-                    "system_instruction": TRANSLATION_SYSTEM_PROMPT,
-                    "temperature": 0.2,
-                    "response_mime_type": "application/json",
-                },
+                system_instruction=TRANSLATION_SYSTEM_PROMPT,
+                temperature=0.2,
+                response_mime_type="application/json",
             )
             result = _normalise_translation_response(json.loads(response.text))
             if result and result[0].get("id") == seg["id"]:
@@ -3486,15 +3579,12 @@ def _qa_duration_overshoot(segments: list[dict], target_cps: float) -> list[dict
         )
 
         try:
-            client = _get_gemini_client()
-            response = client.models.generate_content(
+            response = _generate_content_with_rotation(
                 model=model,
                 contents=shorten_prompt,
-                config={
-                    "system_instruction": "You are a translation editor. Shorten the text to fit the time budget. Return only valid JSON.",
-                    "temperature": 0.2,
-                    "response_mime_type": "application/json",
-                },
+                system_instruction="You are a translation editor. Shorten the text to fit the time budget. Return only valid JSON.",
+                temperature=0.2,
+                response_mime_type="application/json",
             )
             result = json.loads(response.text)
             if isinstance(result, list) and result:

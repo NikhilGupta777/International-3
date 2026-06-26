@@ -16,7 +16,7 @@ import {
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
-import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
+import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig } from "../lib/gemini-client";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
@@ -1226,17 +1226,9 @@ function getGenAI(): GoogleGenAI | null {
 }
 
 // Returns all configured personal API keys in order:
-// GEMINI_API_KEY (or GOOGLE_API_KEY fallback), GEMINI_API_KEY_2..GEMINI_API_KEY_10.
+// GEMINI_API_KEY (or GOOGLE_API_KEY fallback), GEMINI_API_KEY_2..GEMINI_API_KEY_13.
 function getAllPersonalGeminiKeys(): string[] {
-  const keys: string[] = [];
-  const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (first) keys.push(first);
-  for (let index = 2; index <= 10; index += 1) {
-    const envName = `GEMINI_API_KEY_${index}` as keyof NodeJS.ProcessEnv;
-    const value = process.env[envName];
-    if (value && value.trim().length > 0) keys.push(value.trim());
-  }
-  return Array.from(new Set(keys));
+  return getPersonalGeminiApiKeysList();
 }
 
 // Returns all configured personal API key clients in order.
@@ -1279,10 +1271,9 @@ function getReplitGenAI(): GoogleGenAI | null {
 }
 
 // Passes 1 & 2 (audio-dependent): use personal keys only with key rotation.
-// gemini-3.1-pro-preview is primary for higher quality transcription.
-// Falls back to gemini-3.5-flash on rate limits. Rotates to the next key on 429.
+// Gemini 3.5 Flash is primary for subtitle generation.
+// Falls back across configured keys/models on rate limits and transient failures.
 const KEY_ROTATION_MODELS = [
-  "gemini-3.1-pro-preview",
   "gemini-3.5-flash",
 ];
 
@@ -1300,8 +1291,6 @@ const VIDEO_TRANSCRIPTION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_TRANSCR
 ]);
 
 const VIDEO_VERIFICATION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_VERIFICATION_MODELS, [
-  "gemini-3.1-pro-preview",
-  "gemini-3-pro-preview",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
 ]);
@@ -2437,7 +2426,7 @@ async function processYoutubeVideoSrt(
         contents: [{ role: "user", parts: [videoPart, { text: buildVideoSrtPrompt(language, durationSrt) }] }],
         config: {
           maxOutputTokens: 65536,
-          thinkingConfig: { thinkingBudget: -1 },
+          thinkingConfig: buildThinkingConfig(model, "HIGH"),
         },
       }),
       "YouTube video subtitle transcription",
@@ -2467,7 +2456,7 @@ async function processYoutubeVideoSrt(
           contents: [{ role: "user", parts: [{ text: buildTranslationPrompt(correctedFinalSrt, language, translateTo) }] }],
           config: {
             maxOutputTokens: 65536,
-            thinkingConfig: { thinkingBudget: -1 },
+            thinkingConfig: buildThinkingConfig(model, "HIGH"),
           },
         }),
         "YouTube subtitle translation",
@@ -2506,7 +2495,7 @@ async function processYoutubeVideoSrt(
             ],
             config: {
               maxOutputTokens: 65536,
-              thinkingConfig: { thinkingBudget: 8192 },
+              thinkingConfig: buildThinkingConfig(model, "MEDIUM"),
             },
           }),
           "YouTube translated subtitle verification",
@@ -2542,7 +2531,7 @@ async function processYoutubeVideoSrt(
             ],
             config: {
               maxOutputTokens: 65536,
-              thinkingConfig: { thinkingBudget: 8192 },
+              thinkingConfig: buildThinkingConfig(model, "MEDIUM"),
             },
           }),
           "YouTube subtitle verification",
@@ -2648,7 +2637,10 @@ async function processAudio(
             (model) => ({
               model,
               contents: [{ role: "user", parts: [{ text: buildTextOnlyCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
-              config: { maxOutputTokens: 65536 },
+              config: {
+                maxOutputTokens: 65536,
+                thinkingConfig: buildThinkingConfig(model, "HIGH"),
+              },
             }),
             "SRT text correction (AssemblyAI path)",
           );
@@ -2871,7 +2863,7 @@ async function processAudio(
       job.message = `Translating subtitles to ${translateTo}...`;
 
       const translatedRaw = await generateWithReplitFirst(
-        "gemini-3.1-pro-preview",
+        "gemini-3.5-flash",
         (model) => ({
           model,
           contents: [
@@ -2882,6 +2874,7 @@ async function processAudio(
           ],
           config: {
             maxOutputTokens: 65536,
+            thinkingConfig: buildThinkingConfig(model, "HIGH"),
           },
         }),
         "Subtitle translation pass",
@@ -2910,6 +2903,7 @@ async function processAudio(
           ],
           config: {
             maxOutputTokens: 65536,
+            thinkingConfig: buildThinkingConfig(model, "HIGH"),
           },
         }),
         "Subtitle verification pass",
@@ -3576,6 +3570,7 @@ router.post("/subtitles/generate-from-url", subtitlesGenerateRateLimiter, async 
             (model) => ({
               model,
               contents: [{ role: "user", parts: [{ text: `Translate this SRT file to ${translateTo}. Keep ALL timestamps exactly as-is. Only translate the subtitle text lines. Return the complete SRT file.\n\n${job.srt}` }] }],
+              config: { thinkingConfig: buildThinkingConfig(model, "HIGH") },
             }),
             `translate-from-url-to-${translateTo}`,
           );

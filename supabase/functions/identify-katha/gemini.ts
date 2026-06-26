@@ -6,7 +6,7 @@ function getGeminiKeys(): string[] {
   const keys: string[] = [];
   const primary = Deno.env.get("GEMINI_API_KEY") || Deno.env.get("GOOGLE_API_KEY");
   if (primary?.trim()) keys.push(primary.trim());
-  for (let i = 2; i <= 10; i += 1) {
+  for (let i = 2; i <= 13; i += 1) {
     const key = Deno.env.get(`GEMINI_API_KEY_${i}`);
     if (key?.trim()) keys.push(key.trim());
   }

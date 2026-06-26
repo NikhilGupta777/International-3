@@ -33,25 +33,25 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
-type ReasoningMode = "gemini-3-flash-preview" | "gemini-3.5-flash" | "gemini-3.1-pro-preview";
+type ReasoningMode = "gemini-3-flash-preview" | "gemini-3.5-flash" | "gemini-3.5-flash-high";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
   { id: "gemini-3-flash-preview",  label: "3 Flash",    description: "Fast, standard reasoning",              ultra: false },
   { id: "gemini-3.5-flash",        label: "3.5 Flash",  description: "Latest fast model — agentic & coding",  ultra: false },
-  { id: "gemini-3.1-pro-preview",  label: "3.1 Pro",    description: "Advanced reasoning — complex work",      ultra: true  },
+  { id: "gemini-3.5-flash-high",   label: "3.5 Flash (High)", description: "High-thinking reasoning — complex work", ultra: true  },
 ];
 
 function readReasoningInitial(): ReasoningMode {
   try {
     const stored = localStorage.getItem(REASONING_KEY);
     // New model IDs
-    if (stored === "gemini-3-flash-preview" || stored === "gemini-3.5-flash" || stored === "gemini-3.1-pro-preview") return stored;
+    if (stored === "gemini-3-flash-preview" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high") return stored;
     // Backward compat: old keys "flash", "pro", "advanced"
     if (stored === "flash") return "gemini-3-flash-preview";
     if (stored === "pro") return "gemini-3.5-flash";
-    if (stored === "advanced") return "gemini-3.1-pro-preview";
+    if (stored === "advanced") return "gemini-3.5-flash-high";
   } catch { /* localStorage unavailable */ }
   // Backwards compat: if only the legacy `ultra` flag exists, derive a mode
-  return readUltraInitial() ? "gemini-3.1-pro-preview" : "gemini-3-flash-preview";
+  return readUltraInitial() ? "gemini-3.5-flash-high" : "gemini-3-flash-preview";
 }
 
 function getInputMaxHeight(): number {

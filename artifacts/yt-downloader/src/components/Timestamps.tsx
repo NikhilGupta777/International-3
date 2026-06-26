@@ -56,7 +56,7 @@ function loadActiveTimestampJobs(): ActiveTimestampJob[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return (parsed as ActiveTimestampJob[]).filter((j) => j.status !== "done");
+    return parsed as ActiveTimestampJob[];
   } catch {
     return [];
   }
@@ -301,10 +301,8 @@ export function Timestamps({ initialJobId = null }: { initialJobId?: string | nu
           return nextJob;
         });
 
-        // Filter out completed ("done") jobs so they instantly move to recent history
-        const filtered = updated.filter((j) => j.status !== "done");
-        persistActiveJobs(filtered);
-        return filtered;
+        persistActiveJobs(updated);
+        return updated;
       });
 
       if (historyEntry) {
@@ -805,12 +803,11 @@ export function Timestamps({ initialJobId = null }: { initialJobId?: string | nu
       </form>
 
       {/* Active / Recent Job Cards */}
-      {!viewingJob && jobs.filter((job) => job.status !== "done").length > 0 && (
+      {!viewingJob && jobs.length > 0 && (
         <div className="space-y-4 w-full">
           <div className="text-sm font-semibold text-zinc-400">Current Jobs</div>
           <div className="flex flex-col gap-4 w-full">
             {jobs
-              .filter((job) => job.status !== "done")
               .map((job) => (
                 <TimestampJobCard
                   key={job.jobId}

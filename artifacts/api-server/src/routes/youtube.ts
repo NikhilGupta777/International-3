@@ -42,7 +42,7 @@ import {
   uploadFileToS3,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
-import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled, buildThinkingConfig, getPersonalGeminiApiKeysList, generateContentWithRotation } from "../lib/gemini-client";
 import {
   getNotifyClientKey,
   notifyClientPush,
@@ -276,6 +276,9 @@ if (!existsSync(DOWNLOAD_DIR)) {
 
 // Clean up files older than 7 days every 30 minutes (auto-delete is the primary cleanup path)
 const MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// Full video downloads expire sooner than clips — they're typically larger and re-downloadable on demand
+const DOWNLOAD_MAX_FILE_AGE_MS = 1 * 24 * 60 * 60 * 1000;
+const CLIP_MAX_FILE_AGE_MS = 4 * 24 * 60 * 60 * 1000;
 function cleanupOldFiles() {
   try {
     const now = Date.now();
@@ -300,37 +303,37 @@ cleanupOldFiles();
 if (isS3StorageEnabled()) {
   void cleanupOldS3Objects({
     namespace: "youtube/downloads",
-    maxAgeMs: MAX_FILE_AGE_MS,
+    maxAgeMs: DOWNLOAD_MAX_FILE_AGE_MS,
   }).catch((err) => {
     logger.warn({ err }, "Failed initial S3 stale cleanup (youtube/downloads)");
   });
   void cleanupOldS3Objects({
     namespace: "youtube/clips",
-    maxAgeMs: MAX_FILE_AGE_MS,
+    maxAgeMs: CLIP_MAX_FILE_AGE_MS,
   }).catch((err) => {
     logger.warn({ err }, "Failed initial S3 stale cleanup (youtube/clips)");
   });
   setInterval(() => {
     void cleanupOldS3Objects({
       namespace: "youtube/downloads",
-      maxAgeMs: MAX_FILE_AGE_MS,
+      maxAgeMs: DOWNLOAD_MAX_FILE_AGE_MS,
     }).catch((err) => {
       logger.warn({ err }, "Failed S3 stale cleanup (youtube/downloads)");
     });
     void cleanupOldS3Objects({
       namespace: "youtube/clips",
-      maxAgeMs: MAX_FILE_AGE_MS,
+      maxAgeMs: CLIP_MAX_FILE_AGE_MS,
     }).catch((err) => {
       logger.warn({ err }, "Failed S3 stale cleanup (youtube/clips)");
     });
   }, 30 * 60 * 1000);
 }
 
-// Auto-delete a job's file 7 days after it's ready
-const AUTO_DELETE_MS = 7 * 24 * 60 * 60 * 1000;
+// Auto-delete a job's file after it's ready — downloads expire sooner than clips
 function scheduleAutoDelete(
   jobId: string,
   jobRef: DownloadJob,
+  ttlMs: number = CLIP_MAX_FILE_AGE_MS,
 ) {
   setTimeout(() => {
     void (async () => {
@@ -347,7 +350,7 @@ function scheduleAutoDelete(
       jobRef.status = "expired";
       setTimeout(() => jobs.delete(jobId), 60_000);
     })();
-  }, AUTO_DELETE_MS);
+  }, ttlMs);
 }
 
 interface VideoFormatOut {
@@ -2559,8 +2562,7 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
   }
 
   try {
-    const client = createGeminiClient();
-    const result = await client.models.generateContent({
+    const result = await generateContentWithRotation({
       model: process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.5-flash",
       contents: [{ role: "user", parts: [{ text: cleanPrompt }] }],
       config: {
@@ -2578,10 +2580,7 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
           "Do not start any chat. Do not include markdown.",
         ].join("\n"),
         responseMimeType: "application/json",
-        thinkingConfig: {
-          thinkingLevel: "MEDIUM" as any,
-          includeThoughts: false,
-        } as any,
+        thinkingConfig: buildThinkingConfig(process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.5-flash", "MEDIUM"),
       } as any,
     });
 
@@ -3171,7 +3170,7 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
     jobRef.filename ?? "Your video download is ready.",
     `download:${jobId}`,
   );
-  scheduleAutoDelete(jobId, jobRef);
+  scheduleAutoDelete(jobId, jobRef, DOWNLOAD_MAX_FILE_AGE_MS);
 }
 
 function buildProgressPayload(jobId: string, job: DownloadJob) {
@@ -3932,15 +3931,7 @@ function audioMimeType(ext: string): string {
 
 function getPersonalGeminiApiKeys(): string[] {
   if (isVertexGeminiEnabled()) return ["__vertex__"];
-  const keys: string[] = [];
-  const first = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
-  if (first) keys.push(first);
-  for (let index = 2; index <= 10; index += 1) {
-    const envName = `GEMINI_API_KEY_${index}` as keyof NodeJS.ProcessEnv;
-    const value = process.env[envName];
-    if (value && value.trim().length > 0) keys.push(value.trim());
-  }
-  return Array.from(new Set(keys));
+  return getPersonalGeminiApiKeysList();
 }
 
 function isQuotaLikeGeminiError(message: string): boolean {
@@ -3960,7 +3951,7 @@ async function generateWithPersonalKeyRotation(
   const keys = getPersonalGeminiApiKeys();
   if (keys.length === 0) {
     throw new Error(
-      "No Gemini key configured — add GEMINI_API_KEY (or GEMINI_API_KEY_2/_3/_4)",
+      "No Gemini key configured — add GEMINI_API_KEY (or GEMINI_API_KEY_2..GEMINI_API_KEY_13)",
     );
   }
 

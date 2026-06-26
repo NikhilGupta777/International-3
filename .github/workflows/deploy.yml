@@ -622,6 +622,16 @@ jobs:
           GEMINI_API_KEY_SECRET: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_KEY_2_SECRET: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3_SECRET: ${{ secrets.GEMINI_API_KEY_3 }}
+          GEMINI_API_KEY_4_SECRET: ${{ secrets.GEMINI_API_KEY_4 }}
+          GEMINI_API_KEY_5_SECRET: ${{ secrets.GEMINI_API_KEY_5 }}
+          GEMINI_API_KEY_6_SECRET: ${{ secrets.GEMINI_API_KEY_6 }}
+          GEMINI_API_KEY_7_SECRET: ${{ secrets.GEMINI_API_KEY_7 }}
+          GEMINI_API_KEY_8_SECRET: ${{ secrets.GEMINI_API_KEY_8 }}
+          GEMINI_API_KEY_9_SECRET: ${{ secrets.GEMINI_API_KEY_9 }}
+          GEMINI_API_KEY_10_SECRET: ${{ secrets.GEMINI_API_KEY_10 }}
+          GEMINI_API_KEY_11_SECRET: ${{ secrets.GEMINI_API_KEY_11 }}
+          GEMINI_API_KEY_12_SECRET: ${{ secrets.GEMINI_API_KEY_12 }}
+          GEMINI_API_KEY_13_SECRET: ${{ secrets.GEMINI_API_KEY_13 }}
           HEYGEN_API_KEY_SECRET: ${{ secrets.HEYGEN_API_KEY }}
           WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
           BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
@@ -654,6 +664,16 @@ jobs:
           upsert_env "GEMINI_API_KEY" "$GEMINI_API_KEY_SECRET"
           upsert_env "GEMINI_API_KEY_2" "$GEMINI_API_KEY_2_SECRET"
           upsert_env "GEMINI_API_KEY_3" "$GEMINI_API_KEY_3_SECRET"
+          upsert_env "GEMINI_API_KEY_4" "$GEMINI_API_KEY_4_SECRET"
+          upsert_env "GEMINI_API_KEY_5" "$GEMINI_API_KEY_5_SECRET"
+          upsert_env "GEMINI_API_KEY_6" "$GEMINI_API_KEY_6_SECRET"
+          upsert_env "GEMINI_API_KEY_7" "$GEMINI_API_KEY_7_SECRET"
+          upsert_env "GEMINI_API_KEY_8" "$GEMINI_API_KEY_8_SECRET"
+          upsert_env "GEMINI_API_KEY_9" "$GEMINI_API_KEY_9_SECRET"
+          upsert_env "GEMINI_API_KEY_10" "$GEMINI_API_KEY_10_SECRET"
+          upsert_env "GEMINI_API_KEY_11" "$GEMINI_API_KEY_11_SECRET"
+          upsert_env "GEMINI_API_KEY_12" "$GEMINI_API_KEY_12_SECRET"
+          upsert_env "GEMINI_API_KEY_13" "$GEMINI_API_KEY_13_SECRET"
           upsert_env "HEYGEN_API_KEY" "$HEYGEN_API_KEY_SECRET"
           upsert_env "HEYGEN_UPLOAD_MAX_BYTES" "5242880"
           upsert_env "HEYGEN_REQUEST_TIMEOUT_MS" "60000"

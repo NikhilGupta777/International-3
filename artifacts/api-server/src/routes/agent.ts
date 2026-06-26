@@ -32,6 +32,9 @@ import {
   isGeminiConfigured,
   ensureVertexCredentials,
   isVertexGeminiEnabled,
+  buildThinkingConfig,
+  generateContentWithRotation,
+  getPersonalGeminiApiKeysList,
 } from "../lib/gemini-client";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
@@ -50,33 +53,17 @@ const router = Router();
 // Environment overrides (COPILOT_MODEL etc.) take precedence in production.
 // Model catalogue with per-model configurations:
 //   gemini-3-flash-preview — fast, standard Gemini 3 Flash, MEDIUM default
-//   gemini-3.5-flash       — newest fast model (May 2026), MEDIUM default
-//   gemini-3.1-pro-preview — frontier reasoning, thinking_level LOW/MEDIUM/HIGH
-const AGENT_MODEL = "gemini-3-flash-preview";
-const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.1-pro-preview";
+//   gemini-3.5-flash       — fast + stronger, MEDIUM/HIGH thinking
+// Optional, not default: set COPILOT_ULTRA_MODEL=gemini-3.1-pro-preview if you want Pro.
+const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
+const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.5-flash";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
 const ALLOWED_MODELS = new Set([
   "gemini-3-flash-preview",
   "gemini-3.5-flash",
-  "gemini-3.1-pro-preview",
 ]);
 
-// Per-model thinking configuration.
-// gemini-2.5/3.5-flash use thinkingBudget (integer token count).
-// gemini-3.1-pro uses thinkingLevel (LOW/MEDIUM/HIGH).
-function buildThinkingConfig(
-  model: string,
-  level: "LOW" | "MEDIUM" | "HIGH",
-): Record<string, any> {
-  const isProModel = model.includes("pro");
-  if (isProModel) {
-    // Gemini 3.1 Pro: thinkingLevel enum
-    return { thinkingLevel: level, includeThoughts: true };
-  }
-  // Gemini 2.5/3.5 Flash: thinkingBudget integer
-  const budget = level === "HIGH" ? 24576 : level === "MEDIUM" ? 8192 : 1024;
-  return { thinkingBudget: budget, includeThoughts: true };
-}
+// buildThinkingConfig imported from gemini-client.ts
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
@@ -122,7 +109,7 @@ const E2B_APP_CODE_MAX_TOTAL_CHARS = Math.max(
   ),
 );
 const ENABLE_NATIVE_AGENT_SEARCH = !/^(0|false|no|off)$/i.test(
-  String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "true").trim(),
+  String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "false").trim(),
 );
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
@@ -2252,7 +2239,7 @@ async function publishGeneratedImage(params: {
     headers: { "Content-Type": params.mimeType },
     body: Buffer.from(params.data, "base64"),
   });
-  if (!put.ok) throw new Error(`Image upload failed: ${put.status}`);
+  if (!put.ok) throw new Error(`Agent image upload failed: ${put.status}`);
   const imageUrl = await getS3SignedDownloadUrl({
     key: upload.key,
     filename: upload.filename,
@@ -2268,7 +2255,6 @@ async function generateImageArtifact(params: {
   aspectRatio?: string;
   imageSize?: string;
 }): Promise<{ imageUrl: string; filename: string; text: string }> {
-  const ai = createGeminiClient();
   const parts: any[] = [{ text: params.prompt }];
   if (params.inputImage) {
     parts.push({
@@ -2303,7 +2289,7 @@ async function generateImageArtifact(params: {
     params.imageSize && VALID_SIZES.has(params.imageSize)
       ? params.imageSize
       : undefined;
-  const resp = await ai.models.generateContent({
+  const resp = await generateContentWithRotation({
     model: process.env.COPILOT_IMAGE_MODEL ?? "gemini-3.1-flash-image-preview",
     contents: [{ role: "user", parts }],
     config: {
@@ -2319,7 +2305,7 @@ async function generateImageArtifact(params: {
           }
         : {}),
     },
-  } as any);
+  });
 
   let text = "";
   for (const part of resp.candidates?.[0]?.content?.parts ?? []) {
@@ -2404,8 +2390,7 @@ async function textModelArtifact(
   label: string,
   prompt: string,
 ): Promise<{ result: any; artifact: object }> {
-  const ai = createGeminiClient();
-  const resp = await ai.models.generateContent({
+  const resp = await generateContentWithRotation({
     model: ULTRA_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
     config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
@@ -4198,10 +4183,9 @@ async function executeTool(
         name,
         message: "Inspecting image...",
       });
-      const ai = createGeminiClient();
       // Flash is plenty for image description / scene tagging; reserve ULTRA
       // for genuinely heavy reasoning (analyze_youtube_video, PDF analysis).
-      const resp = await ai.models.generateContent({
+      const resp = await generateContentWithRotation({
         model: AGENT_MODEL,
         contents: [
           {
@@ -4240,9 +4224,8 @@ async function executeTool(
         name,
         message: "Reading image text...",
       });
-      const ai = createGeminiClient();
       // OCR is a Flash-level task. ULTRA here was needless cost + latency.
-      const resp = await ai.models.generateContent({
+      const resp = await generateContentWithRotation({
         model: AGENT_MODEL,
         contents: [
           {
@@ -4762,8 +4745,7 @@ except Exception as exc:
 
       // Use Gemini's native YouTube video understanding via file_data.
       // The model receives the actual video frames + audio — it truly watches the video.
-      const videoAi = createGeminiClient();
-      const videoResp = await videoAi.models.generateContent({
+      const videoResp = await generateContentWithRotation({
         model: ULTRA_MODEL,
         contents: [
           {
@@ -5162,7 +5144,7 @@ router.post("/agent/chat", async (req, res) => {
     skills: requestedSkills = [],
   } = req.body as {
     messages: Array<{
-      role: "user" | "model";
+      role: "user" | "model" | "assistant";
       content?: string;
       parts?: Array<{
         kind?: string;
@@ -5207,36 +5189,72 @@ router.post("/agent/chat", async (req, res) => {
       ? messages.slice(-MAX_HISTORY_MESSAGES)
       : messages;
 
-  const normalizedMessages = truncatedMessages
-    .filter(
-      (message: any) =>
-        message &&
-        typeof message === "object" &&
-        (message.role === "user" || message.role === "model"),
-    )
-    .map((message) => {
+  const normalizeGeminiRole = (role: unknown): "user" | "model" | null => {
+    if (role === "user") return "user";
+    if (role === "model" || role === "assistant") return "model";
+    return null;
+  };
+
+  const normalizedMessagesRaw = truncatedMessages
+    .map((message: any) => {
+      const role = normalizeGeminiRole(message?.role);
+      if (!role) return null;
+
       const content =
         typeof message.content === "string"
           ? message.content
           : Array.isArray(message.parts)
             ? message.parts
                 .filter(
-                  (part) =>
+                  (part: any) =>
                     part?.kind === "text" ||
                     typeof part?.content === "string" ||
                     typeof part?.text === "string",
                 )
-                .map((part) => part?.content ?? part?.text ?? "")
+                .map((part: any) => part?.content ?? part?.text ?? "")
                 .join("")
             : "";
+
       return {
         ...message,
+        role,
         content,
         attachments: Array.isArray(message.attachments)
           ? message.attachments
           : [],
       };
-    });
+    })
+    .filter(Boolean) as Array<{
+      role: "user" | "model";
+      content: string;
+      attachments: any[];
+    }>;
+
+  const normalizedMessages: typeof normalizedMessagesRaw = [];
+
+  for (const msg of normalizedMessagesRaw) {
+    const text = String(msg.content ?? "").trim();
+    const hasAttachments =
+      Array.isArray(msg.attachments) && msg.attachments.length > 0;
+
+    if (!text && !hasAttachments) continue;
+
+    const last = normalizedMessages.at(-1);
+
+    if (
+      last &&
+      last.role === msg.role &&
+      !hasAttachments &&
+      (!last.attachments || last.attachments.length === 0)
+    ) {
+      last.content = `${last.content}\n\n${text}`.trim();
+    } else {
+      normalizedMessages.push({
+        ...msg,
+        content: text,
+      });
+    }
+  }
 
   if (!normalizedMessages.length) {
     res.status(400).json({ error: "messages array has no valid messages" });
@@ -5245,7 +5263,7 @@ router.post("/agent/chat", async (req, res) => {
 
   // Resolve model:
   //   "flash" / "default" / undefined → AGENT_MODEL (gemini-3-flash-preview), MEDIUM
-  //   "pro" / "advanced" / "ultra"    → ULTRA_MODEL (gemini-3.1-pro-preview), HIGH
+  //   "pro" / "advanced" / "ultra"    → ULTRA_MODEL, HIGH thinking (defaults to gemini-3.5-flash)
   //   Any model ID in ALLOWED_MODELS   → that exact model, MEDIUM thinking
   let activeModel = AGENT_MODEL;
   let thinkingLevel: "LOW" | "MEDIUM" | "HIGH" = "MEDIUM";
@@ -5256,6 +5274,12 @@ router.post("/agent/chat", async (req, res) => {
   ) {
     activeModel = ULTRA_MODEL;
     thinkingLevel = "HIGH";
+  } else if (requestedModel === "gemini-3.5-flash-high") {
+    activeModel = "gemini-3.5-flash";
+    thinkingLevel = "HIGH";
+  } else if (requestedModel === "gemini-3.5-flash") {
+    activeModel = "gemini-3.5-flash";
+    thinkingLevel = "MEDIUM";
   } else if (
     requestedModel &&
     requestedModel !== "default" &&
@@ -5266,6 +5290,7 @@ router.post("/agent/chat", async (req, res) => {
     // For explicitly selected flash models, default to MEDIUM
     thinkingLevel = requestedModel.includes("pro") ? "HIGH" : "MEDIUM";
   }
+
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
   setupSse(res);
@@ -5287,7 +5312,7 @@ router.post("/agent/chat", async (req, res) => {
     runId,
     ts: Date.now(),
     model: activeModel,
-    ultra: requestedModel === "ultra",
+    ultra: requestedModel === "ultra" || requestedModel === "gemini-3.5-flash-high",
   });
   const skillPromptAddendum = buildSkillPrompt(activeSkills);
   console.log(
@@ -5304,7 +5329,7 @@ router.post("/agent/chat", async (req, res) => {
     // Vertex AI is the primary path (checked first in createGeminiClient).
     // Gemini API key is only a fallback when Vertex is not configured.
     const GEMINI_TIMEOUT_MS = 300_000; // 5 min
-    const ai = createGeminiClient({
+    let ai = createGeminiClient({
       httpOptions: { timeout: GEMINI_TIMEOUT_MS },
     });
 
@@ -5425,102 +5450,11 @@ router.post("/agent/chat", async (req, res) => {
       loopContents.push({ role: m.role, parts });
     }
 
-    // ── Context Caching Analysis ──
-    let totalTokens = 0;
-    try {
-      const tokenCountResponse = await ai.models.countTokens({
-        model: activeModel,
-        contents: loopContents,
-        config: {
-          systemInstruction: SYSTEM_PROMPT + skillPromptAddendum,
-          tools: buildAgentTools(ENABLE_NATIVE_AGENT_SEARCH),
-        },
-      });
-      totalTokens = tokenCountResponse.totalTokens ?? 0;
-      console.log(`[agent] Total prompt tokens: ${totalTokens}`);
-    } catch (err: any) {
-      console.warn(`[agent] Failed to count tokens:`, err.message);
-    }
-
-    let activeCacheName: string | undefined;
+    // Context cache disabled in API-key mode.
+    // Vertex is disabled in gemini-client.ts, so countTokens/cache preflight is skipped.
+    let activeCacheName: string | undefined = undefined;
     let cachedMessageCount = 0;
     let cachedFirstMessageTextParts: any[] = [];
-
-    let cacheThreshold = 32768;
-    if (activeModel.includes("gemini-2.")) {
-      cacheThreshold = 2048;
-    } else if (activeModel.includes("gemini-3.")) {
-      cacheThreshold = 4096;
-    }
-    if (useVertex && totalTokens >= cacheThreshold) {
-      try {
-        const sysInst = SYSTEM_PROMPT + skillPromptAddendum;
-        const toolsList = buildAgentTools(ENABLE_NATIVE_AGENT_SEARCH);
-
-        let cacheContents: any[] = [];
-        if (loopContents.length > 1) {
-          cachedMessageCount = loopContents.length - 1;
-          cacheContents = loopContents.slice(0, cachedMessageCount);
-        } else if (loopContents.length === 1) {
-          const lastMsg = loopContents[0];
-          const mediaParts = lastMsg.parts.filter((p: any) => !p.text);
-          cachedFirstMessageTextParts = lastMsg.parts.filter(
-            (p: any) => p.text,
-          );
-          if (mediaParts.length > 0) {
-            cacheContents = [{ role: lastMsg.role, parts: mediaParts }];
-          }
-        }
-
-        if (cacheContents.length > 0) {
-          const cacheHash = getCacheContentHash(
-            sysInst,
-            toolsList,
-            cacheContents,
-          );
-          const cached = globalContextCacheMap.get(cacheHash);
-          if (cached && Date.now() < cached.expiresAt) {
-            activeCacheName = cached.cacheName;
-            console.log(
-              `[agent] Reusing active Vertex Context Cache: ${activeCacheName}`,
-            );
-          } else {
-            console.log(
-              `[agent] Creating new Vertex Context Cache (${totalTokens} tokens)...`,
-            );
-            const cache = await ai.caches.create({
-              model: activeModel,
-              config: {
-                contents: cacheContents,
-                systemInstruction: sysInst,
-                tools: toolsList as any,
-                ttl: "1800s",
-                displayName: `agent_chat_cache_${runId.slice(0, 8)}`,
-              },
-            });
-            if (!cache.name) {
-              throw new Error("Created context cache has no name.");
-            }
-            activeCacheName = cache.name;
-            globalContextCacheMap.set(cacheHash, {
-              cacheName: cache.name,
-              expiresAt: Date.now() + 30 * 60 * 1000,
-            });
-            console.log(
-              `[agent] Created Vertex Context Cache: ${activeCacheName}`,
-            );
-          }
-        }
-      } catch (err: any) {
-        console.error(
-          `[agent] Failed to establish Context Cache, falling back to uncached execution:`,
-          err.message,
-        );
-        activeCacheName = undefined;
-        cachedMessageCount = 0;
-        cachedFirstMessageTextParts = [];
-      }
-    }
 
     let iterations = 0;
     let emptyResponseRetries = 0;
@@ -5538,15 +5472,34 @@ router.post("/agent/chat", async (req, res) => {
         total: MAX_ITERATIONS,
       });
 
-      // ── 1. Call Gemini API — with retry on transient empty-output errors ───
-      // The error 'model output must contain either output text or tool calls'
-      // is a Gemini transient condition. We retry up to 3x before giving up.
-      let stream: AsyncIterable<any> | undefined;
+      // ── 1. Call Gemini API — retry both stream creation and stream reads ───
+      // Gemini can accept the request and then fail while the async stream is
+      // being consumed (503 high demand, 429 quota, transport reset). Buffering
+      // the chunks inside the retry loop prevents those mid-stream failures from
+      // leaking to the UI before all keys/models have been tried.
+      let stream: AsyncIterable<any> | Iterable<any> | undefined;
       let streamErr: Error | null = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      const streamFallbackModels = Array.from(
+        new Set([
+          activeModel,
+          activeModel === "gemini-3.5-flash" ? "gemini-3-flash-preview" : "gemini-3.5-flash",
+        ]),
+      );
+      const keyCount = Math.max(1, Math.min(getPersonalGeminiApiKeysList().length || 1, 13));
+      const MAX_STREAM_ATTEMPTS = Math.max(2, keyCount * streamFallbackModels.length);
+      for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
         try {
-          if (attempt > 0)
-            await new Promise((r) => setTimeout(r, attempt * 1000));
+          const streamModel = streamFallbackModels[Math.min(
+            streamFallbackModels.length - 1,
+            Math.floor(attempt / keyCount),
+          )];
+          if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, 150 + Math.random() * 100));
+            // Rotate the API key on retry
+            ai = createGeminiClient({
+              httpOptions: { timeout: GEMINI_TIMEOUT_MS },
+            });
+          }
           if (isConnected())
             sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
 
@@ -5563,24 +5516,35 @@ router.post("/agent/chat", async (req, res) => {
             }
           }
 
-          stream = await ai.models.generateContentStream({
-            model: activeModel,
+          const candidateStream = await ai.models.generateContentStream({
+            model: streamModel,
             contents: generateContents,
             config: {
               systemInstruction: activeCacheName
                 ? undefined
                 : SYSTEM_PROMPT + skillPromptAddendum,
+
               tools: activeCacheName
                 ? undefined
                 : buildAgentTools(useNativeSearchTools),
-              toolConfig: activeCacheName
+
+toolConfig: activeCacheName
                 ? undefined
                 : { functionCallingConfig: { mode: "AUTO" as any } },
-              maxOutputTokens: AGENT_MAX_OUTPUT_TOKENS,
-              thinkingConfig: buildThinkingConfig(activeModel, thinkingLevel),
+
+              maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192),
+
+              thinkingConfig: buildThinkingConfig(streamModel, thinkingLevel),
+
               cachedContent: activeCacheName,
             },
           });
+          const bufferedChunks: any[] = [];
+          for await (const chunk of candidateStream) {
+            if (!isConnected()) break;
+            bufferedChunks.push(chunk);
+          }
+          stream = bufferedChunks;
           streamErr = null;
           break; // success
         } catch (e: any) {
@@ -5603,21 +5567,29 @@ router.post("/agent/chat", async (req, res) => {
             attempt--;
             continue;
           }
-          const isEmptyOutputErr =
-            /model output must contain|both be empty/i.test(e?.message ?? "");
+
           const isResourceExhausted =
             /resource.?exhausted|quota.*exceeded|429/i.test(e?.message ?? "") ||
             e?.status === 429 ||
             e?.code === 429;
-          if (isResourceExhausted && attempt === 0) {
-            // Single 5s backoff on rate limit — Vertex handles quota at project level
-            console.warn(
-              `[agent] Resource exhausted (429), retrying in 5000ms (attempt 1/2)`,
-            );
-            await new Promise((r) => setTimeout(r, 5000));
-            continue;
+          const isDemandSpike =
+            /experiencing high demand|spikes in demand|503/i.test(e?.message ?? "") ||
+            e?.status === 503 ||
+            e?.code === 503;
+
+          const errMsg = e?.message ?? String(e);
+          console.warn(
+            `[agent] Chat stream failed on attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS}: ${errMsg}`
+          );
+
+          if (isResourceExhausted) {
+            await new Promise((r) => setTimeout(r, 350 + Math.random() * 150));
+          } else if (isDemandSpike) {
+            await new Promise((r) => setTimeout(r, 250 + Math.random() * 150));
+          } else {
+            await new Promise((r) => setTimeout(r, 100));
           }
-          if (!isEmptyOutputErr || attempt === 1) break; // non-retryable or max attempts
+          continue;
         }
       }
       if (streamErr) throw streamErr;

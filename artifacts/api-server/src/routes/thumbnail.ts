@@ -25,6 +25,7 @@ import {
   createGeminiClient,
   isGeminiConfigured,
   ensureVertexCredentials,
+  buildThinkingConfig,
 } from "../lib/gemini-client";
 import {
   isPresetStoreEnabled,
@@ -415,7 +416,7 @@ router.post("/thumbnail/chat", async (req, res) => {
               tools: [{ functionDeclarations: THUMB_TOOLS as any }],
               toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
               maxOutputTokens: THUMB_MAX_OUTPUT_TOKENS,
-              thinkingConfig: { thinkingLevel: "MEDIUM" as any, includeThoughts: true },
+              thinkingConfig: buildThinkingConfig(THUMB_CHAT_MODEL, "MEDIUM"),
             },
           });
           break;
