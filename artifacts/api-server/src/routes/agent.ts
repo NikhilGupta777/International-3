@@ -1371,9 +1371,9 @@ function buildAgentTools(includeNativeSearch: boolean): any[] {
 
 function isNativeToolConfigError(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "");
-  return /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(
+  return /googleSearch|google_search|functionDeclarations|function_declarations/i.test(
     message,
-  );
+  ) || (/INVALID_ARGUMENT/i.test(message) && /google.?search|native.?search|grounding/i.test(message));
 }
 
 const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot, an action-focused assistant inside a YouTube/video production web app.
@@ -4902,30 +4902,39 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isRelativeApi = sourceUrl.startsWith("/");
+      const resolvedUrl = isRelativeApi
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: For external URLs, validate the target is not internal.
+      // Relative /api/... URLs are intentionally internal (our own API).
+      if (!isRelativeApi) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private")) throw err;
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
+      // Internal URLs get auth headers; external URLs do NOT (prevents credential leaking).
+      // External URLs use redirect: "manual" to prevent SSRF via open redirects.
+      const fetchHeaders: Record<string, string> = isRelativeApi
+        ? { Cookie: req.headers.cookie ?? "", "X-Internal-Agent": INTERNAL_AGENT_SECRET }
+        : {};
       const r = await fetch(resolvedUrl, {
-        headers: {
-          Cookie: req.headers.cookie ?? "",
-          "X-Internal-Agent": INTERNAL_AGENT_SECRET,
-        },
-        redirect: "follow",
+        headers: fetchHeaders,
+        redirect: isRelativeApi ? "follow" : "manual",
       });
+      // SECURITY: Block redirect responses from external URLs (SSRF prevention).
+      if (!isRelativeApi && r.status >= 300 && r.status < 400) {
+        throw new Error("External URL returned a redirect; blocked for SSRF safety.");
+      }
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
@@ -5095,16 +5104,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname);
   } catch {
     return true;
   }
@@ -5112,6 +5112,15 @@ function isLocalUrl(urlStr: string): boolean {
 
 // Global cache to store S3/HTTPS URL pathname -> GCS gs:// URI mappings
 const globalUrlToGcsCache = new Map<string, string>();
+const MAX_GCS_CACHE_ENTRIES = 500;
+
+function pruneGcsCache(): void {
+  if (globalUrlToGcsCache.size <= MAX_GCS_CACHE_ENTRIES) return;
+  const keys = [...globalUrlToGcsCache.keys()];
+  for (let i = 0; i < keys.length - MAX_GCS_CACHE_ENTRIES; i++) {
+    globalUrlToGcsCache.delete(keys[i]);
+  }
+}
 
 function getStableCacheKey(urlStr: string): string {
   try {
@@ -5127,6 +5136,19 @@ const globalContextCacheMap = new Map<
   string,
   { cacheName: string; expiresAt: number }
 >();
+const MAX_CONTEXT_CACHE_ENTRIES = 200;
+
+function pruneContextCache(): void {
+  const now = Date.now();
+  for (const [k, v] of globalContextCacheMap) {
+    if (v.expiresAt < now) globalContextCacheMap.delete(k);
+  }
+  if (globalContextCacheMap.size <= MAX_CONTEXT_CACHE_ENTRIES) return;
+  const keys = [...globalContextCacheMap.keys()];
+  for (let i = 0; i < keys.length - MAX_CONTEXT_CACHE_ENTRIES; i++) {
+    globalContextCacheMap.delete(keys[i]);
+  }
+}
 
 function getCacheContentHash(
   systemInstruction: string,
@@ -5366,6 +5388,7 @@ router.post("/agent/chat", async (req, res) => {
                     a.mimeType,
                   );
                   await deleteLocalFile(tempPath);
+                  pruneGcsCache();
                   globalUrlToGcsCache.set(cacheKey, gsUri);
                   finalUri = gsUri;
                   console.log(
@@ -5502,6 +5525,7 @@ router.post("/agent/chat", async (req, res) => {
               throw new Error("Created context cache has no name.");
             }
             activeCacheName = cache.name;
+            pruneContextCache();
             globalContextCacheMap.set(cacheHash, {
               cacheName: cache.name,
               expiresAt: Date.now() + 30 * 60 * 1000,

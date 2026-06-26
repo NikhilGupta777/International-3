@@ -18,6 +18,7 @@ import {
 import {
   loadActiveDownload,
   clearActiveDownload,
+  saveCompletedDownload,
   loadCompletedDownloads,
   deleteCompletedDownload,
   clearCompletedDownloads,
@@ -317,9 +318,17 @@ async function syncActiveWithServer() {
           clearActiveDownload();
         }
       } else if (res.ok) {
-        const data = (await res.json()) as { status?: string };
-        if (
-          data.status === "done" ||
+        const data = (await res.json()) as { status?: string; filename?: string; filesize?: number };
+        if (data.status === "done") {
+          saveCompletedDownload({
+            jobId: downloadJob.jobId,
+            url: downloadJob.url,
+            filename: data.filename ?? "video.mp4",
+            filesize: data.filesize ?? null,
+            createdAt: Date.now(),
+          });
+          clearActiveDownload();
+        } else if (
           data.status === "error" ||
           data.status === "cancelled" ||
           data.status === "expired"
