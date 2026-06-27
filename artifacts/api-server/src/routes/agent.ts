@@ -3910,10 +3910,6 @@ async function executeTool(
       // Phase 2: run independent heavy tasks in parallel
       const phase2 = await Promise.allSettled([
         runStep("download_video", { url, quality }),
-        runStep("analyze_youtube_video", {
-          url,
-          question: `Summarize this video for a creator. Include key points, emotional hooks, reusable quotes, and content opportunities.${args.instructions ? ` Focus: ${args.instructions}` : ""}`,
-        }),
         runStep("generate_timestamps", { url }),
         runStep("generate_seo_pack", {
           topic: results.get_video_info?.title ?? url,
@@ -4069,6 +4065,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -5084,7 +5085,8 @@ function isLocalUrl(urlStr: string): boolean {
       host === "0.0.0.0" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      host === "169.254.169.254" ||
       host.endsWith(".local")
     );
   } catch {
@@ -5093,6 +5095,7 @@ function isLocalUrl(urlStr: string): boolean {
 }
 
 // Global cache to store S3/HTTPS URL pathname -> GCS gs:// URI mappings
+const GCS_CACHE_MAX = 500;
 const globalUrlToGcsCache = new Map<string, string>();
 
 function getStableCacheKey(urlStr: string): string {
@@ -5102,21 +5105,6 @@ function getStableCacheKey(urlStr: string): string {
   } catch {
     return urlStr;
   }
-}
-
-// Global cache to store Content Hash -> Vertex Context Cache name mappings
-const globalContextCacheMap = new Map<
-  string,
-  { cacheName: string; expiresAt: number }
->();
-
-function getCacheContentHash(
-  systemInstruction: string,
-  tools: any[],
-  contents: any[],
-): string {
-  const data = JSON.stringify({ systemInstruction, tools, contents });
-  return createHash("sha256").update(data).digest("hex");
 }
 
 // ── POST /api/agent/chat ──────────────────────────────────────────────────
@@ -5391,6 +5379,10 @@ router.post("/agent/chat", async (req, res) => {
                     a.mimeType,
                   );
                   await deleteLocalFile(tempPath);
+                  if (globalUrlToGcsCache.size >= GCS_CACHE_MAX) {
+                    const oldest = globalUrlToGcsCache.keys().next().value!;
+                    globalUrlToGcsCache.delete(oldest);
+                  }
                   globalUrlToGcsCache.set(cacheKey, gsUri);
                   finalUri = gsUri;
                   console.log(
