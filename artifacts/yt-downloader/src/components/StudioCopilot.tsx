@@ -111,6 +111,10 @@ function slimSessionsForStorage(sessions: ChatSession[]): ChatSession[] {
           const { data: _data, ...rest } = p as any;
           return rest;
         }
+        if (p.kind === "attachment" && (p as any).url && (p as any).url.startsWith("data:")) {
+          const { url: _url, ...rest } = p as any;
+          return rest;
+        }
         return p;
       }),
     })),
@@ -3487,6 +3491,7 @@ export function StudioCopilot({
       }));
     }
     streamingAssistantIdRef.current = null;
+    streamingRef.current = false;
     setStreaming(false); setThinking(false); setAgentStage("idle"); setAgentIteration(0);
   };
 

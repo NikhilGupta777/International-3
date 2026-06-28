@@ -4884,21 +4884,25 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isRelativeUrl = sourceUrl.startsWith("/");
+      const resolvedUrl = isRelativeUrl
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: Validate resolved URL is not internal before fetching.
+      // Skip when the URL was relative — it came from the agent itself (not
+      // user input) and resolves to the internal API by design.
+      if (!isRelativeUrl) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private")) throw err;
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
       const r = await fetch(resolvedUrl, {
@@ -4911,22 +4915,32 @@ except Exception as exc:
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
-      const size = sizeHeader ? Number(sizeHeader) : null;
-      if (!size || !Number.isFinite(size)) {
-        throw new Error(
-          "source size is unknown; cannot stream artifact safely",
-        );
-      }
-      if (size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
+      let size = sizeHeader ? Number(sizeHeader) : null;
+      if (size && !Number.isFinite(size)) size = null;
+      if (size && size > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
         throw new Error(`source too large (${size} bytes)`);
       }
 
-      // Stream into a presigned PUT so we never buffer huge files through Lambda heap.
       if (!r.body) throw new Error("source response body is empty");
+
+      let uploadBody: ReadableStream | Buffer | ArrayBuffer;
+      if (size) {
+        // Known size — stream directly to avoid buffering.
+        uploadBody = r.body;
+      } else {
+        // Chunked/unknown Content-Length — buffer with a size cap.
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.byteLength > WORKSPACE_LIMITS.MAX_FILE_BYTES) {
+          throw new Error(`source too large (${buf.byteLength} bytes)`);
+        }
+        size = buf.byteLength;
+        uploadBody = buf;
+      }
+
       const presign = await ws.s3.presignPut(path, { size, contentType });
       const putRes = await fetch(presign.uploadUrl, {
         method: "PUT",
-        body: r.body,
+        body: uploadBody,
         duplex: "half",
         headers: {
           ...(contentType ? { "Content-Type": contentType } : {}),
