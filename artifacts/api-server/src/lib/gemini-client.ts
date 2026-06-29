@@ -21,7 +21,7 @@ type HttpOptions = {
 export type GeminiClientOptions = {
   apiKey?: string;
   httpOptions?: HttpOptions;
-  caller?: "agent" | "subtitles" | "timestamps" | "video-editor" | "fast-subtitles" | string;
+  caller?: "agent" | "subtitles" | "timestamps" | "video-editor" | "fast-subtitles" | "clip-cut" | string;
 };
 
 let credentialsHydrated = false;
@@ -158,14 +158,14 @@ export function getPersonalKeysForCaller(caller?: string): string[] {
   const baseKeys = getPersonalGeminiApiKeysList();
   if (baseKeys.length === 0) return [];
 
-  // Timestamp tab: use from key 7 (index 6) going back to 1
+  // Timestamp tab: use from key 5 (index 4) going back to 1, then 6 → 13
   if (caller === "timestamps") {
-    const startIndex = Math.min(baseKeys.length - 1, 6);
+    const startIndex = Math.min(baseKeys.length - 1, 4);
     const ordered: string[] = [];
     for (let i = startIndex; i >= 0; i--) {
       ordered.push(baseKeys[i]);
     }
-    for (let i = 7; i < baseKeys.length; i++) {
+    for (let i = 5; i < baseKeys.length; i++) {
       ordered.push(baseKeys[i]);
     }
     return ordered;
@@ -195,14 +195,26 @@ export function getPersonalKeysForCaller(caller?: string): string[] {
     return ordered;
   }
 
-  // AI Studio / Video Editor: use from 7th key (index 6) going back to 1
+  // AI Studio / Video Editor: use from key 5 (index 4) going back to 1, then 6 → 13
   if (caller === "video-editor") {
-    const startIndex = Math.min(baseKeys.length - 1, 6);
+    const startIndex = Math.min(baseKeys.length - 1, 4);
     const ordered: string[] = [];
     for (let i = startIndex; i >= 0; i--) {
       ordered.push(baseKeys[i]);
     }
-    for (let i = 7; i < baseKeys.length; i++) {
+    for (let i = 5; i < baseKeys.length; i++) {
+      ordered.push(baseKeys[i]);
+    }
+    return ordered;
+  }
+
+  // Clip Cut tab: use from key 7 (index 6) forward to 13, then 6 → 1
+  if (caller === "clip-cut") {
+    const ordered: string[] = [];
+    for (let i = 6; i < baseKeys.length; i++) {
+      ordered.push(baseKeys[i]);
+    }
+    for (let i = Math.min(baseKeys.length - 1, 5); i >= 0; i--) {
       ordered.push(baseKeys[i]);
     }
     return ordered;

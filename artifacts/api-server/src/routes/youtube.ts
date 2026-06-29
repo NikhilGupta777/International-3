@@ -2586,7 +2586,7 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
         responseMimeType: "application/json",
         thinkingConfig: buildThinkingConfig(process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.1-flash-lite", "MEDIUM"),
       } as any,
-    });
+    }, { caller: "clip-cut" });
 
     const raw = ((result as any).text ?? "").trim();
     const parsed = extractJsonObject(raw);
