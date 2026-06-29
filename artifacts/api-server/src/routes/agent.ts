@@ -57,7 +57,7 @@ const router = Router();
 // Optional, not default: set COPILOT_ULTRA_MODEL=gemini-3.1-pro-preview if you want Pro.
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.5-flash";
-const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
+const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash";
 const ALLOWED_MODELS = new Set([
   "gemini-2.5-flash",
   "gemini-3.5-flash",
@@ -1361,9 +1361,12 @@ function buildAgentTools(includeNativeSearch: boolean): any[] {
 }
 
 function isNativeToolConfigError(error: unknown): boolean {
-  const message = String((error as any)?.message ?? error ?? "");
-  return /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(
-    message,
+  const message = String((error as any)?.message ?? error ?? "").toLowerCase();
+  const status = Number((error as any)?.status ?? (error as any)?.code ?? 0);
+  return (
+    /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(message) ||
+    status === 429 ||
+    /429|resource.?exhausted|quota|billing/i.test(message)
   );
 }
 
@@ -1488,7 +1491,7 @@ Every tool call must have complete, specific arguments. Preserve the user's impo
 
 For tools with prompt/question/instructions fields, write a production-quality instruction with: user goal, source/context, output format, language, quality bar, constraints, and what to avoid. Never pass vague prompts like "summarize", "fix this", or "make SEO".
 
-Native Google Search grounding is available in your normal answer path. For ordinary current-information or web-search questions, answer directly with native grounding instead of calling web_search first. Use web_search only when the user explicitly asks for raw search diagnostics/source lists, broad result collection, or the native grounded answer is insufficient. Use read_web_page only for exact URLs or after choosing a high-value deep page; avoid reading bare homepages unless the homepage itself is the target.
+For ordinary current-information, facts, or web-search questions, ALWAYS call the \`web_search\` tool first (which connects you to a high-capacity web search engine) instead of relying on native search. Use \`read_web_page\` only for exact URLs or after choosing a high-value deep page; avoid reading bare homepages unless the homepage itself is the target.
 
 # WHEN TO ACT VS ASK
 
