@@ -27,6 +27,19 @@ const VIDEO_EDITOR_QUEUE_ENABLED =
 // YouTube video (vision+audio). Mirrors agent.ts's primary AGENT_MODEL.
 const EDITOR_WATCH_MODEL = (process.env.EDITOR_WATCH_MODEL || "gemini-2.5-flash").trim();
 
+function isGeminiKeyRetryableError(err: any): boolean {
+  const message = String(err?.message ?? err ?? "");
+  const status = Number(err?.status ?? err?.code ?? 0);
+  return (
+    status === 429 ||
+    status === 401 ||
+    status === 403 ||
+    status === 500 ||
+    status === 503 ||
+    /resource.?exhausted|quota.*exceeded|rate.?limit|429|401|403|api.?key|auth|permission|503|unavailable|overloaded|high demand|timeout|deadline|fetch failed|ECONNRESET|internal|500/i.test(message)
+  );
+}
+
 // ── Render routing ────────────────────────────────────────────────────────────
 // Fast path: self-invoke a worker Lambda (near-instant start, 15-min budget) for
 // renders whose expected output is short. Heavy path: AWS Batch/Fargate for long
@@ -3044,6 +3057,9 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
           const failedApiKey = getGeminiApiKeyForAttempt("video-editor", attempt);
           if (failedApiKey) recordKeyFailure(failedApiKey, streamErr).catch(() => {});
           console.warn(`[video-editor] generateContentStream attempt ${attempt + 1} failed: ${streamErr.message || streamErr}`);
+          if (!isGeminiKeyRetryableError(streamErr)) {
+            break;
+          }
         }
       }
       if (!streamSuccess) {

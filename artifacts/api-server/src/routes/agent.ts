@@ -81,6 +81,19 @@ const AGENT_MAX_OUTPUT_TOKENS =
 const E2B_SANDBOX_TIMEOUT_MS =
   Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) ||
   3600000;
+
+function isGeminiKeyRetryableError(err: any): boolean {
+  const message = String(err?.message ?? err ?? "");
+  const status = Number(err?.status ?? err?.code ?? 0);
+  return (
+    status === 429 ||
+    status === 401 ||
+    status === 403 ||
+    status === 500 ||
+    status === 503 ||
+    /resource.?exhausted|quota.*exceeded|rate.?limit|429|401|403|api.?key|auth|permission|503|unavailable|overloaded|high demand|timeout|deadline|fetch failed|ECONNRESET|internal|500/i.test(message)
+  );
+}
 const E2B_COMMAND_TIMEOUT_MS =
   Number.parseInt(process.env.E2B_COMMAND_TIMEOUT_MS ?? "120000", 10) || 120000;
 const E2B_MAX_OUTPUT_CHARS =
@@ -5614,7 +5627,11 @@ toolConfig: activeCacheName
           console.warn(
             `[agent] Chat stream failed on attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS}: ${errMsg}`
           );
+          const shouldRetryWithNextKey = isGeminiKeyRetryableError(e);
           if (currentApiKey) recordKeyFailure(currentApiKey, e).catch(() => {});
+          if (!shouldRetryWithNextKey) {
+            throw e;
+          }
 
           if (isResourceExhausted) {
             await new Promise((r) => setTimeout(r, 350 + Math.random() * 150));

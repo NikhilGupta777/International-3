@@ -305,9 +305,11 @@ function isRetryableGeminiError(err: any): boolean {
   const status = err?.status ?? err?.code;
   return (
     status === 429 ||
+    status === 401 ||
+    status === 403 ||
     status === 500 ||
     status === 503 ||
-    /resource.?exhausted|quota.*exceeded|rate.?limit|429|503|unavailable|overloaded|high demand|timeout|deadline|fetch failed|ECONNRESET|internal|500/i.test(message)
+    /resource.?exhausted|quota.*exceeded|rate.?limit|429|401|403|api.?key|auth|permission|503|unavailable|overloaded|high demand|timeout|deadline|fetch failed|ECONNRESET|internal|500/i.test(message)
   );
 }
 
@@ -354,15 +356,17 @@ export async function generateContentWithRotation(
       } catch (err: any) {
         lastErr = err;
         const errMsg = err?.message ?? String(err);
+        const shouldRetry = isRetryableGeminiError(err);
         console.warn(
-          `[Gemini Rotation] Attempt ${attempt}/${totalAttempts} failed on ${model} using key suffix ...${apiKey.slice(-6)}: ${errMsg}. Trying next key/model...`
+          `[Gemini Rotation] Attempt ${attempt}/${totalAttempts} failed on ${model} using key suffix ...${apiKey.slice(-6)}: ${errMsg}.${shouldRetry ? " Trying next key/model..." : " Not retrying across keys."}`
         );
         // Asynchronously report the key failure to the circuit breaker
         recordKeyFailure(apiKey, err).catch(() => {});
 
-        if (isRetryableGeminiError(err)) {
-          await new Promise((r) => setTimeout(r, 200 + Math.random() * 100));
+        if (!shouldRetry) {
+          throw err;
         }
+        await new Promise((r) => setTimeout(r, 200 + Math.random() * 100));
       }
     }
   }

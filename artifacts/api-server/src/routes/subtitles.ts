@@ -16,7 +16,7 @@ import {
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
-import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig, getNextKeyIndex, setNextKeyIndex, getPersonalKeysForCaller } from "../lib/gemini-client";
+import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig, getPersonalKeysForCaller } from "../lib/gemini-client";
 import { isKeyCooledDown, recordKeyFailure } from "../utils/key-circuit-breaker";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
@@ -1261,7 +1261,15 @@ function getSubtitleVideoGenAIClients(): Array<{ client: GoogleGenAI; keyLabel: 
 
 function isGeminiRetryableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? "");
-  return /resource_exhausted|quota|429|rate.?limit|unavailable|503|deadline|timeout|internal|500|overloaded|try again later/i.test(msg);
+  const status = Number((err as any)?.status ?? (err as any)?.code ?? 0);
+  return (
+    status === 429 ||
+    status === 401 ||
+    status === 403 ||
+    status === 500 ||
+    status === 503 ||
+    /resource_exhausted|quota|429|401|403|api.?key|auth|permission|rate.?limit|unavailable|503|deadline|timeout|internal|500|overloaded|try again later/i.test(msg)
+  );
 }
 
 function getReplitGenAI(): GoogleGenAI | null {
@@ -1312,14 +1320,12 @@ async function generateWithPreferredModels(
   }
 
   let lastErr: unknown;
-  const startIndex = getNextKeyIndex();
   const hasAvailableKey = clients.some(({ apiKey }) => !apiKey || !isKeyCooledDown(apiKey));
   for (const model of models) {
     for (let offset = 0; offset < clients.length; offset++) {
-      const i = (startIndex + offset) % clients.length;
+      const i = offset;
       const { client, keyLabel, apiKey } = clients[i];
       if (apiKey && hasAvailableKey && isKeyCooledDown(apiKey)) {
-        setNextKeyIndex((i + 1) % clients.length);
         logger.info({ keyLabel, label }, `${label} skipping cooled-down Gemini key`);
         continue;
       }
@@ -1335,12 +1341,12 @@ async function generateWithPreferredModels(
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
-        setNextKeyIndex((i + 1) % clients.length);
         if (apiKey) recordKeyFailure(apiKey, err).catch(() => {});
         if (isGeminiRetryableError(err)) {
           logger.warn({ model, keyLabel, label }, `${label} retryable failure - trying next Gemini client/model`);
         } else {
-          logger.warn({ err, model, keyLabel, label }, `${label} failed - trying next Gemini client/model`);
+          logger.warn({ err, model, keyLabel, label }, `${label} non-retryable Gemini failure`);
+          throw err;
         }
       }
     }
@@ -1373,15 +1379,13 @@ async function generateWithKeyRotation(
   }
 
   let lastErr: unknown;
-  const startIndex = getNextKeyIndex();
   const hasAvailableKey = apiKeys.length === 0 || apiKeys.some((apiKey) => !isKeyCooledDown(apiKey));
   // Outer loop: model. Inner loop: key.
   for (const model of KEY_ROTATION_MODELS) {
     for (let offset = 0; offset < clients.length; offset++) {
-      const i = (startIndex + offset) % clients.length;
+      const i = offset;
       const keyLabel = `key ${i + 1}`;
       if (apiKeys[i] && hasAvailableKey && isKeyCooledDown(apiKeys[i])) {
-        setNextKeyIndex((i + 1) % clients.length);
         logger.info({ model, keyLabel, label }, `${label} skipping cooled-down Gemini key`);
         continue;
       }
@@ -1391,14 +1395,13 @@ async function generateWithKeyRotation(
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
-        setNextKeyIndex((i + 1) % clients.length);
         if (apiKeys[i]) recordKeyFailure(apiKeys[i], err).catch(() => {});
         const isQuota = isGeminiRetryableError(err);
         if (isQuota) {
           logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited on ${model} — trying next`);
         } else {
-          // Keep rotating across keys/models even on non-quota failures.
-          logger.warn({ err, model, keyLabel, label }, `${label} ${keyLabel} failed (non-quota error) — trying next`);
+          logger.warn({ err, model, keyLabel, label }, `${label} ${keyLabel} non-retryable Gemini failure`);
+          throw err;
         }
       }
     }
@@ -2638,14 +2641,12 @@ async function processFastAudioPipeline(params: {
   job.progressPct = 25;
   job.message = "Pass 1: AI is transcribing audio and writing subtitles...";
 
-  const startIndex = getNextKeyIndex();
   for (let offset = 0; offset < clients.length; offset++) {
-    const ki = (startIndex + offset) % clients.length;
+    const ki = offset;
     const client = clients[ki];
     const keyLabel = `key ${ki + 1}`;
     geminiFileName = null;
     if (apiKeys[ki] && hasAvailableKey && isKeyCooledDown(apiKeys[ki])) {
-      setNextKeyIndex((ki + 1) % clients.length);
       logger.info({ keyLabel }, "Pass 1: skipping cooled-down Gemini key");
       continue;
     }
@@ -2692,8 +2693,11 @@ async function processFastAudioPipeline(params: {
       }
     } catch (err) {
       lastPass1Err = err;
-      setNextKeyIndex((ki + 1) % clients.length);
       if (apiKeys[ki]) recordKeyFailure(apiKeys[ki], err).catch(() => {});
+      if (!isGeminiRetryableError(err)) {
+        logger.warn({ keyLabel, err }, `Pass 1: ${keyLabel} non-retryable Gemini failure`);
+        throw err;
+      }
       logger.warn({ keyLabel, err }, `Pass 1: Key ${keyLabel} failed, trying next key...`);
     } finally {
       if (geminiFileName) {
@@ -2727,15 +2731,12 @@ async function processFastAudioPipeline(params: {
 
   let correctedFinalSrt = "";
   let lastPass2Err: unknown = null;
-  const pass2StartIndex = getNextKeyIndex();
-
   for (let offset = 0; offset < clients.length; offset++) {
-    const ki = (pass2StartIndex + offset) % clients.length;
+    const ki = offset;
     const client = clients[ki];
     const keyLabel = `key ${ki + 1}`;
     geminiFileName = null;
     if (apiKeys[ki] && hasAvailableKey && isKeyCooledDown(apiKeys[ki])) {
-      setNextKeyIndex((ki + 1) % clients.length);
       logger.info({ keyLabel }, "Pass 2: skipping cooled-down Gemini key");
       continue;
     }
@@ -2783,16 +2784,20 @@ async function processFastAudioPipeline(params: {
       let pass2Output = result.text?.trim() ?? "";
       if (pass2Output) {
         pass2Output = stripFences(pass2Output);
-        
-        // Always restore original draft timestamps if Gemini garbles them during translation
-        correctedFinalSrt = restoreTimestamps(draftSrt, pass2Output);
+
+        correctedFinalSrt = params.translateTo && params.translateTo !== "none"
+          ? restoreTimestamps(draftSrt, pass2Output)
+          : pass2Output;
         logger.info({ keyLabel }, "Pass 2: Subtitle verification and translation completed");
         break; // Pass 2 succeeded!
       }
     } catch (err) {
       lastPass2Err = err;
-      setNextKeyIndex((ki + 1) % clients.length);
       if (apiKeys[ki]) recordKeyFailure(apiKeys[ki], err).catch(() => {});
+      if (!isGeminiRetryableError(err)) {
+        logger.warn({ keyLabel, err }, `Pass 2: ${keyLabel} non-retryable Gemini failure`);
+        break;
+      }
       logger.warn({ keyLabel, err }, `Pass 2: Key ${keyLabel} failed, trying next key...`);
     } finally {
       if (geminiFileName) {
@@ -2918,9 +2923,6 @@ async function processAudio(
         filename,
         cleanup,
       });
-      if (preprocessCleanup) {
-        try { preprocessCleanup(); } catch {}
-      }
       return;
     }
 
@@ -3051,16 +3053,14 @@ async function processAudio(
         }
       } else {
         let lastKeyErr: unknown;
-        const startIndex = getNextKeyIndex();
         const hasAvailableKey = apiKeys.length === 0 || apiKeys.some((apiKey) => !isKeyCooledDown(apiKey));
 
       for (let offset = 0; offset < clients.length; offset++) {
-        const ki = (startIndex + offset) % clients.length;
+        const ki = offset;
         const client = clients[ki];
         const keyLabel = `key ${ki + 1}`;
         let geminiFileName: string | null = null;
         if (apiKeys[ki] && hasAvailableKey && isKeyCooledDown(apiKeys[ki])) {
-          setNextKeyIndex((ki + 1) % clients.length);
           logger.info({ keyLabel }, "Gemini audio path skipping cooled-down key");
           continue;
         }
@@ -3135,13 +3135,13 @@ async function processAudio(
 
         } catch (err) {
           lastKeyErr = err;
-          setNextKeyIndex((ki + 1) % clients.length);
           if (apiKeys[ki]) recordKeyFailure(apiKeys[ki], err).catch(() => {});
           const isQuota = isGeminiRetryableError(err);
           if (isQuota && ki < clients.length - 1) {
             logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
           } else if (!isQuota && ki < clients.length - 1) {
-            logger.warn({ err, keyLabel }, `${keyLabel} failed (non-quota) — trying next key`);
+            logger.warn({ err, keyLabel }, `${keyLabel} non-retryable Gemini failure`);
+            break;
           } else {
             logger.warn({ err, keyLabel }, `${keyLabel} failed - using fallback after key rotation`);
           }
