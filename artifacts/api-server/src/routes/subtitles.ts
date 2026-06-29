@@ -16,7 +16,7 @@ import {
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
-import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig, getNextKeyIndex, setNextKeyIndex } from "../lib/gemini-client";
+import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig, getNextKeyIndex, setNextKeyIndex, getPersonalKeysForCaller } from "../lib/gemini-client";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
@@ -1228,7 +1228,7 @@ function getGenAI(): GoogleGenAI | null {
 // Returns all configured personal API keys in order:
 // GEMINI_API_KEY (or GOOGLE_API_KEY fallback), GEMINI_API_KEY_2..GEMINI_API_KEY_13.
 function getAllPersonalGeminiKeys(): string[] {
-  return getPersonalGeminiApiKeysList();
+  return getPersonalKeysForCaller("subtitles");
 }
 
 // Returns all configured personal API key clients in order.

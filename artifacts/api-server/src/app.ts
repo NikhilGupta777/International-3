@@ -21,6 +21,7 @@ import { INTERNAL_AGENT_SECRET } from "./lib/internal-agent";
 import { sendApiError } from "./lib/api-error";
 import { saveEmailSubmission } from "./lib/email-submissions";
 import { canUseSuperAgent, canUseTranslator, canUseTranslatorLipSync } from "./lib/admin-features";
+import { startCooldownSyncLoop } from "./utils/key-circuit-breaker";
 import {
   getHttpMetricsSnapshot,
   getSystemMetricsSnapshot,
@@ -55,6 +56,9 @@ if (!AUTH_COOKIE_SECRET) {
 const allowlistHydrationPromise = hydrateAllowlistFromDdb().catch((err) => {
   console.warn("[app] allowlist hydration failed:", err);
 });
+
+// Start central API key circuit breaker synchronization loop
+startCooldownSyncLoop();
 
 app.use(async (_req: Request, _res: Response, next: NextFunction) => {
   try {

@@ -12,7 +12,7 @@ import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
 import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
-import { createGeminiClient, isGeminiConfigured, buildThinkingConfig, getPersonalGeminiApiKeysList } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, buildThinkingConfig, getPersonalGeminiApiKeysList, getPersonalKeysForCaller } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb, putEditorJobQueued, updateEditorJobStatus, isEditorDdbConfigured } from "../lib/youtube-queue";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
@@ -2244,7 +2244,7 @@ function buildToolDispatcherV2(
         const bytes = await readFile(localPath);
         const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
         const activeModel = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
-        const ai = createGeminiClient();
+        const ai = createGeminiClient({ caller: "video-editor" });
         const resp: any = await ai.models.generateContent({
           model: activeModel,
           contents: [{ role: "user", parts: [
@@ -2586,7 +2586,7 @@ function buildToolDispatcherV2(
           ? args.question.trim()
           : "Describe what's happening: scene, subjects, any on-screen text or logos, and visual quality.";
         const activeModel = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
-        const ai = createGeminiClient();
+        const ai = createGeminiClient({ caller: "video-editor" });
         const parts: any[] = [{
           text: `${got.length} frame(s) sampled from a video at ${got.map(g => g.t.toFixed(1) + "s").join(", ")} (window ${lo.toFixed(1)}s–${hi.toFixed(1)}s). ${question}\nAnswer concisely for a video editor. Do not identify real people.`,
         }];
@@ -2712,7 +2712,7 @@ function buildToolDispatcherV2(
         if (startSecs != null) videoPart.videoMetadata.startOffset = `${Math.round(startSecs)}s`;
         if (endSecs != null) videoPart.videoMetadata.endOffset = `${Math.round(endSecs)}s`;
       }
-      const ai = createGeminiClient();
+      const ai = createGeminiClient({ caller: "video-editor" });
       const resp: any = await ai.models.generateContent({
         model: EDITOR_WATCH_MODEL,
         contents: [{ role: "user", parts: [
@@ -2918,7 +2918,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
       return;
     }
 
-    const ai = createGeminiClient();
+    const ai = createGeminiClient({ caller: "video-editor" });
     const model = (process.env.EDITOR_AGENT_MODEL || "gemma-4-31b-it").trim();
     const thinkingBudget = process.env.EDITOR_AGENT_THINKING_BUDGET || "MEDIUM";
 
@@ -2992,7 +2992,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
       send({ type: "thinking", iteration: iterations, total: maxIterations });
       let stream: any;
       const streamFallbackModels = Array.from(new Set([model, "gemini-2.5-flash", "gemini-3.5-flash"]));
-      const keysList = getPersonalGeminiApiKeysList();
+      const keysList = getPersonalKeysForCaller("video-editor");
       const keyCount = Math.max(1, Math.min(keysList.length || 1, 13));
       const maxStreamAttempts = Math.max(2, keyCount * streamFallbackModels.length);
       let streamSuccess = false;
@@ -3012,7 +3012,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
             streamFallbackModels.length - 1,
             Math.floor(attempt / keyCount),
           )];
-          let currentAi = createGeminiClient();
+          let currentAi = createGeminiClient({ caller: "video-editor" });
           if (attempt > 0) {
             await new Promise((r) => setTimeout(r, 150 + Math.random() * 100));
           }

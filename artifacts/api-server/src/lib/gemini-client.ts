@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { GoogleGenAI } from "@google/genai";
+import { getNextAvailableKey, recordKeyFailure } from "../utils/key-circuit-breaker";
 
 // Explicitly delete Vertex AI environment flags to prevent the @google/genai SDK
 // from automatically routing requests to the Vertex AI endpoints.
@@ -15,9 +16,12 @@ type HttpOptions = {
   baseUrl?: string;
 };
 
-type GeminiClientOptions = {
+
+
+export type GeminiClientOptions = {
   apiKey?: string;
   httpOptions?: HttpOptions;
+  caller?: "agent" | "subtitles" | "timestamps" | "video-editor" | string;
 };
 
 let credentialsHydrated = false;
@@ -150,6 +154,49 @@ export function getPersonalGeminiApiKeysList(): string[] {
   return Array.from(new Set(keys));
 }
 
+export function getPersonalKeysForCaller(caller?: string): string[] {
+  const baseKeys = getPersonalGeminiApiKeysList();
+  if (baseKeys.length === 0) return [];
+
+  // Timestamp tab: use from key 7 (index 6) going back to 1
+  if (caller === "timestamps") {
+    const startIndex = Math.min(baseKeys.length - 1, 6);
+    const ordered: string[] = [];
+    for (let i = startIndex; i >= 0; i--) {
+      ordered.push(baseKeys[i]);
+    }
+    for (let i = 7; i < baseKeys.length; i++) {
+      ordered.push(baseKeys[i]);
+    }
+    return ordered;
+  }
+
+  // Subtitles tab: use from last key (13th key, index 12) going back to 1
+  if (caller === "subtitles") {
+    const ordered: string[] = [];
+    for (let i = baseKeys.length - 1; i >= 0; i--) {
+      ordered.push(baseKeys[i]);
+    }
+    return ordered;
+  }
+
+  // AI Studio / Video Editor: use from 8th key (index 7) going back to 1
+  if (caller === "video-editor") {
+    const startIndex = Math.min(baseKeys.length - 1, 7);
+    const ordered: string[] = [];
+    for (let i = startIndex; i >= 0; i--) {
+      ordered.push(baseKeys[i]);
+    }
+    for (let i = 8; i < baseKeys.length; i++) {
+      ordered.push(baseKeys[i]);
+    }
+    return ordered;
+  }
+
+  // Agent / Copilot / Default: standard forward order (Key 1 to Key 13)
+  return baseKeys;
+}
+
 let nextKeyIndex = 0;
 export function getNextKeyIndex(): number {
   return nextKeyIndex;
@@ -157,12 +204,12 @@ export function getNextKeyIndex(): number {
 export function setNextKeyIndex(index: number): void {
   nextKeyIndex = index;
 }
-export function getRotatedGeminiApiKey(): string {
-  const keys = getPersonalGeminiApiKeysList();
+export function getRotatedGeminiApiKey(caller?: string): string {
+  const keys = getPersonalKeysForCaller(caller);
   if (keys.length === 0) return "";
-  const key = keys[nextKeyIndex % keys.length];
-  nextKeyIndex = (nextKeyIndex + 1) % keys.length;
-  return key;
+  const result = getNextAvailableKey(keys, nextKeyIndex);
+  nextKeyIndex = result.index;
+  return result.key;
 }
 
 export function getPrimaryGeminiApiKey(): string {
@@ -202,7 +249,7 @@ export function createGeminiClient(options: GeminiClientOptions = {}): GoogleGen
     });
   }
 
-  const apiKey = (options.apiKey || getRotatedGeminiApiKey()).trim();
+  const apiKey = (options.apiKey || getRotatedGeminiApiKey(options.caller)).trim();
   if (!apiKey) throw new Error("Gemini API key is not configured.");
   return new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "v1beta", ...options.httpOptions } });
 }
@@ -244,7 +291,7 @@ export async function generateContentWithRotation(
     return client.models.generateContent(params);
   }
 
-  const keys = getPersonalGeminiApiKeysList();
+  const keys = getPersonalKeysForCaller(options.caller);
   if (keys.length === 0) {
     throw new Error("No Gemini API key configured.");
   }
@@ -256,7 +303,7 @@ export async function generateContentWithRotation(
   for (const model of models) {
     for (let keyAttempt = 0; keyAttempt < Math.min(keys.length, 13); keyAttempt++) {
       attempt++;
-      const apiKey = getRotatedGeminiApiKey();
+      const apiKey = getRotatedGeminiApiKey(options.caller);
       try {
         const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "v1beta", ...options.httpOptions } });
         const result = await client.models.generateContent({
@@ -271,6 +318,9 @@ export async function generateContentWithRotation(
         console.warn(
           `[Gemini Rotation] Attempt ${attempt}/${totalAttempts} failed on ${model} using key suffix ...${apiKey.slice(-6)}: ${errMsg}. Trying next key/model...`
         );
+        // Asynchronously report the key failure to the circuit breaker
+        recordKeyFailure(apiKey, err).catch(() => {});
+
         if (isRetryableGeminiError(err)) {
           await new Promise((r) => setTimeout(r, 200 + Math.random() * 100));
         }

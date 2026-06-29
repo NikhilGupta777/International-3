@@ -629,7 +629,7 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
         thinkingConfig: buildThinkingConfig("gemini-3.5-flash", "MEDIUM"),
         maxOutputTokens: 16384,
       },
-    }, { httpOptions: { timeout: geminiTimeoutMs } });
+    }, { httpOptions: { timeout: geminiTimeoutMs }, caller: "timestamps" });
     const text = ((result as any).text ?? "").trim();
     if (!text) throw new Error("Gemini returned empty text");
     return text;
