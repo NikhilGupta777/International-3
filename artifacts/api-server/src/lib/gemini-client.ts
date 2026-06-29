@@ -21,7 +21,7 @@ type HttpOptions = {
 export type GeminiClientOptions = {
   apiKey?: string;
   httpOptions?: HttpOptions;
-  caller?: "agent" | "subtitles" | "timestamps" | "video-editor" | string;
+  caller?: "agent" | "subtitles" | "timestamps" | "video-editor" | "fast-subtitles" | string;
 };
 
 let credentialsHydrated = false;
@@ -175,6 +175,21 @@ export function getPersonalKeysForCaller(caller?: string): string[] {
   if (caller === "subtitles") {
     const ordered: string[] = [];
     for (let i = baseKeys.length - 1; i >= 0; i--) {
+      ordered.push(baseKeys[i]);
+    }
+    return ordered;
+  }
+
+  // Fast Subtitles tab: use from 9th key (index 8) to 13th key (index 12), then remaining keys backwards
+  if (caller === "fast-subtitles") {
+    const ordered: string[] = [];
+    for (let i = 8; i < Math.min(baseKeys.length, 13); i++) {
+      ordered.push(baseKeys[i]);
+    }
+    for (let i = Math.min(baseKeys.length - 1, 7); i >= 0; i--) {
+      ordered.push(baseKeys[i]);
+    }
+    for (let i = 13; i < baseKeys.length; i++) {
       ordered.push(baseKeys[i]);
     }
     return ordered;

@@ -630,6 +630,7 @@ export interface SrtJob {
   qualityWarnings?: string[];
   notifyClientKey?: string | null;
   errorNotified?: boolean;
+  isFastPipeline?: boolean;
 }
 const jobs = new Map<string, SrtJob>();
 const CANCELLED_BY_USER = "Cancelled by user";
@@ -1227,16 +1228,16 @@ function getGenAI(): GoogleGenAI | null {
 
 // Returns all configured personal API keys in order:
 // GEMINI_API_KEY (or GOOGLE_API_KEY fallback), GEMINI_API_KEY_2..GEMINI_API_KEY_13.
-function getAllPersonalGeminiKeys(): string[] {
-  return getPersonalKeysForCaller("subtitles");
+function getAllPersonalGeminiKeys(caller: string = "subtitles"): string[] {
+  return getPersonalKeysForCaller(caller);
 }
 
 // Returns all configured personal API key clients in order.
-function getAllPersonalGenAIClients(): GoogleGenAI[] {
+function getAllPersonalGenAIClients(caller: string = "subtitles"): GoogleGenAI[] {
   if (isVertexGeminiEnabled()) {
     return [createGeminiClient({ httpOptions: { timeout: GEMINI_TIMEOUT_MS } })];
   }
-  return getAllPersonalGeminiKeys()
+  return getAllPersonalGeminiKeys(caller)
     .map((apiKey) => createGeminiClient({ apiKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } }));
 }
 
@@ -2562,6 +2563,270 @@ async function processYoutubeVideoSrt(
   }
 }
 
+function buildFastPass2Prompt(params: {
+  draftSrt: string;
+  language: string;
+  translateTo?: string;
+  durationSrt: string;
+}): string {
+  const isTranslation = params.translateTo && params.translateTo !== "none";
+  const actionNote = isTranslation
+    ? `Verify the timing and correctness of the draft subtitles, translate them from ${params.language} to ${params.translateTo}, and improve their quality.`
+    : `Verify the timing and correctness of the draft subtitles against the actual audio, fix any misheard words, correct timing alignments, and return the improved subtitles.`;
+
+  return `You are a professional subtitle editor and translator. I am giving you a draft SRT file.
+Your job is to:
+1. Watch/listen to the actual audio/video deeply.
+2. Cross-reference the draft SRT against the spoken audio.
+3. ${actionNote}
+4. Ensure each entry has NO MORE THAN 6 words. Split long entries if needed.
+5. All timestamps must be in HH:MM:SS,mmm format and must fit within the audio duration of ${params.durationSrt}.
+6. Keep the formatting clean and valid.
+7. Return ONLY the final corrected/translated SRT content (no markdown, no fences, no chat intro).
+
+DRAFT SRT:
+---
+${params.draftSrt}
+---
+
+Return the improved SRT:`;
+}
+
+async function processFastAudioPipeline(params: {
+  jobId: string;
+  processedPath: string;
+  mimeType: string;
+  durationSecs: number;
+  durationSrt: string;
+  language: string;
+  translateTo?: string;
+  filename: string;
+  cleanup?: () => void;
+}): Promise<void> {
+  const job = jobs.get(params.jobId);
+  if (!job) return;
+
+  const caller = "fast-subtitles";
+  const clients = getAllPersonalGenAIClients(caller);
+  if (clients.length === 0) {
+    throw new Error("No Gemini API key configured");
+  }
+
+  let draftSrt = "";
+  let geminiFileName: string | null = null;
+  let lastPass1Err: unknown = null;
+
+  // PASS 1: Transcription / Watch and Transcribe
+  job.status = "generating";
+  job.progressPct = 25;
+  job.message = "Pass 1: AI is transcribing audio and writing subtitles...";
+
+  const startIndex = getNextKeyIndex();
+  for (let offset = 0; offset < clients.length; offset++) {
+    const ki = (startIndex + offset) % clients.length;
+    const client = clients[ki];
+    const keyLabel = `key ${ki + 1}`;
+    geminiFileName = null;
+
+    try {
+      // Upload the preprocessed file to Gemini File API
+      const uploadResult = await client.files.upload({
+        file: params.processedPath,
+        config: { mimeType: params.mimeType, displayName: params.filename },
+      });
+      geminiFileName = uploadResult.name!;
+
+      // Poll until ACTIVE
+      let fileInfo: any = uploadResult;
+      let attempts = 0;
+      while (fileInfo.state === "PROCESSING" && attempts < 90) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+        fileInfo = await client.files.get({ name: geminiFileName });
+        attempts++;
+      }
+      if (fileInfo.state !== "ACTIVE") throw new Error("Audio processing timed out");
+
+      const fileUri: string = fileInfo.uri;
+
+      // Ask Gemini 3.5 Flash to transcribe into SRT using the precise transcription rules
+      const result = await client.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: [
+          { fileData: { mimeType: params.mimeType, fileUri } },
+          { text: buildSrtPrompt(params.language, params.durationSrt) }
+        ],
+        config: {
+          maxOutputTokens: 65536,
+          thinkingConfig: buildThinkingConfig("gemini-3.5-flash", "HIGH"),
+        },
+      });
+
+      draftSrt = result.text?.trim() ?? "";
+      if (draftSrt) {
+        draftSrt = stripFences(draftSrt);
+        logger.info({ keyLabel }, "Pass 1: Subtitle transcription completed");
+        setNextKeyIndex(ki);
+        break; // Pass 1 succeeded!
+      }
+    } catch (err) {
+      lastPass1Err = err;
+      setNextKeyIndex((ki + 1) % clients.length);
+      logger.warn({ keyLabel, err }, `Pass 1: Key ${keyLabel} failed, trying next key...`);
+    } finally {
+      if (geminiFileName) {
+        try { await client.files.delete({ name: geminiFileName }); } catch {}
+      }
+    }
+  }
+
+  if (!draftSrt) {
+    throw lastPass1Err instanceof Error ? lastPass1Err : new Error("All API keys exhausted on transcription");
+  }
+
+  // Pre-clean Pass 1 output
+  draftSrt = normalizeSrtTimestamps(draftSrt);
+  draftSrt = cleanupHallucinatedEntries(draftSrt);
+  draftSrt = strictFilterMalformedTimestamps(draftSrt);
+  draftSrt = filterOutOfBoundsEntries(draftSrt, params.durationSecs);
+
+  // Validate we got something readable
+  if (!validateSrt(draftSrt)) {
+    throw new Error("AI returned invalid subtitles from Pass 1");
+  }
+
+  // PASS 2: Verification, correction, and optional translation
+  if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+  job.status = "verifying";
+  job.progressPct = 65;
+  job.message = params.translateTo && params.translateTo !== "none"
+    ? `Pass 2: AI is verifying and translating subtitles to ${params.translateTo}...`
+    : "Pass 2: AI is re-watching video to verify and correct subtitles...";
+
+  let correctedFinalSrt = "";
+  let lastPass2Err: unknown = null;
+  const pass2StartIndex = getNextKeyIndex();
+
+  for (let offset = 0; offset < clients.length; offset++) {
+    const ki = (pass2StartIndex + offset) % clients.length;
+    const client = clients[ki];
+    const keyLabel = `key ${ki + 1}`;
+    geminiFileName = null;
+
+    try {
+      // Re-upload video/audio for deep Pass 2 analysis
+      const uploadResult = await client.files.upload({
+        file: params.processedPath,
+        config: { mimeType: params.mimeType, displayName: params.filename },
+      });
+      geminiFileName = uploadResult.name!;
+
+      // Poll until ACTIVE
+      let fileInfo: any = uploadResult;
+      let attempts = 0;
+      while (fileInfo.state === "PROCESSING" && attempts < 90) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+        fileInfo = await client.files.get({ name: geminiFileName });
+        attempts++;
+      }
+      if (fileInfo.state !== "ACTIVE") throw new Error("Audio processing timed out");
+
+      const fileUri: string = fileInfo.uri;
+
+      // Call Pass 2 prompt
+      const result = await client.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: [
+          { fileData: { mimeType: params.mimeType, fileUri } },
+          { text: buildFastPass2Prompt({
+              draftSrt,
+              language: params.language,
+              translateTo: params.translateTo,
+              durationSrt: params.durationSrt,
+            })
+          }
+        ],
+        config: {
+          maxOutputTokens: 65536,
+          thinkingConfig: buildThinkingConfig("gemini-3.5-flash", "HIGH"),
+        },
+      });
+
+      let pass2Output = result.text?.trim() ?? "";
+      if (pass2Output) {
+        pass2Output = stripFences(pass2Output);
+        
+        // Always restore original draft timestamps if Gemini garbles them during translation
+        correctedFinalSrt = restoreTimestamps(draftSrt, pass2Output);
+        logger.info({ keyLabel }, "Pass 2: Subtitle verification and translation completed");
+        setNextKeyIndex(ki);
+        break; // Pass 2 succeeded!
+      }
+    } catch (err) {
+      lastPass2Err = err;
+      setNextKeyIndex((ki + 1) % clients.length);
+      logger.warn({ keyLabel, err }, `Pass 2: Key ${keyLabel} failed, trying next key...`);
+    } finally {
+      if (geminiFileName) {
+        try { await client.files.delete({ name: geminiFileName }); } catch {}
+      }
+    }
+  }
+
+  // Resilient fallback: if Pass 2 fails, DO NOT drop the subtitles generated by Pass 1!
+  if (!correctedFinalSrt) {
+    logger.warn({ err: lastPass2Err }, "Pass 2 failed. Falling back to cleaned Pass 1 draft subtitles");
+    
+    // If translation was requested, we should perform a simple text-only translation of the Pass 1 draft
+    if (params.translateTo && params.translateTo !== "none") {
+      const targetLang = params.translateTo;
+      try {
+        logger.info({}, "Attempting text-only translation fallback for Pass 1 draft");
+        // We can use generateWithPreferredModels or a simple loop to translate
+        const translatedRaw = await generateWithPreferredModels(
+          ["gemini-3.5-flash"],
+          (model) => ({
+            model,
+            contents: [{ role: "user", parts: [{ text: buildTranslationPrompt(draftSrt, params.language, targetLang) }] }],
+            config: {
+              maxOutputTokens: 65536,
+              thinkingConfig: buildThinkingConfig(model, "HIGH"),
+            },
+          }),
+          "Fast subtitle translation fallback",
+        );
+        correctedFinalSrt = restoreTimestamps(draftSrt, stripFences(translatedRaw));
+      } catch (transErr) {
+        logger.error({ err: transErr }, "Text-only translation fallback failed, using untranslated Pass 1 draft");
+        correctedFinalSrt = draftSrt;
+      }
+    } else {
+      correctedFinalSrt = draftSrt;
+    }
+  }
+
+  // Final cleanup and formatting
+  correctedFinalSrt = strictFilterMalformedTimestamps(cleanupHallucinatedEntries(normalizeSrtTimestamps(correctedFinalSrt)));
+
+  // Assert quality
+  try {
+    job.qualityWarnings = assertSubtitleQuality(
+      correctedFinalSrt,
+      params.durationSecs,
+      params.translateTo && params.translateTo !== "none" ? "translated" : "generated"
+    );
+  } catch (err) {
+    logger.warn({ err }, "Fast subtitle quality assertion failed, bypassing to ensure delivery");
+  }
+
+  job.status = "done";
+  job.progressPct = 100;
+  job.message = "Subtitles ready!";
+  job.srt = correctedFinalSrt;
+  notifySubtitleReady(params.jobId, job);
+}
+
 async function processAudio(
   jobId: string,
   audioPath: string,
@@ -2570,6 +2835,7 @@ async function processAudio(
   translateTo?: string,
   cleanup?: () => void,
   precomputedWav?: { path: string; mimeType: string; durationSecs: number },
+  isFastPipeline?: boolean,
 ) {
   const job = jobs.get(jobId);
   if (!job) return;
@@ -2611,6 +2877,24 @@ async function processAudio(
     logger.info({ durationSecs, durationSrt }, "Audio duration measured");
 
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+
+    if (isFastPipeline) {
+      await processFastAudioPipeline({
+        jobId,
+        processedPath,
+        mimeType,
+        durationSecs,
+        durationSrt,
+        language,
+        translateTo,
+        filename,
+        cleanup,
+      });
+      if (preprocessCleanup) {
+        try { preprocessCleanup(); } catch {}
+      }
+      return;
+    }
 
     let correctedFinalSrt: string | null = null;
 
@@ -2993,6 +3277,7 @@ export type SubtitleWorkerEvent = {
   language?: string;
   translateTo?: string;
   notifyClientKey?: string | null;
+  isFastPipeline?: boolean;
 };
 
 async function runSubtitleUrlJob(params: {
@@ -3001,6 +3286,7 @@ async function runSubtitleUrlJob(params: {
   language: string;
   translateLang?: string;
   notifyClientKey?: string | null;
+  isFastPipeline?: boolean;
 }): Promise<void> {
   let job = jobs.get(params.jobId);
   if (!job) {
@@ -3012,6 +3298,7 @@ async function runSubtitleUrlJob(params: {
       translateTo: params.translateLang,
       progressPct: 0,
       notifyClientKey: params.notifyClientKey ?? null,
+      isFastPipeline: params.isFastPipeline,
     });
   }
 
@@ -3145,6 +3432,7 @@ async function runSubtitleUploadJob(params: {
   language: string;
   translateLang?: string;
   notifyClientKey?: string | null;
+  isFastPipeline?: boolean;
 }): Promise<void> {
   const srtFilename = `${sanitizeUploadBaseName(params.originalFilename)}.srt`;
 
@@ -3158,6 +3446,7 @@ async function runSubtitleUploadJob(params: {
       translateTo: params.translateLang,
       progressPct: 0,
       notifyClientKey: params.notifyClientKey ?? null,
+      isFastPipeline: params.isFastPipeline,
     });
   }
 
@@ -3212,6 +3501,7 @@ export async function runSubtitleWorker(event: SubtitleWorkerEvent): Promise<voi
       language: event.language ?? "auto",
       translateLang: event.translateTo,
       notifyClientKey: event.notifyClientKey ?? null,
+      isFastPipeline: event.isFastPipeline,
     });
     return;
   }
@@ -3225,12 +3515,18 @@ export async function runSubtitleWorker(event: SubtitleWorkerEvent): Promise<voi
     language: event.language ?? "auto",
     translateLang: event.translateTo,
     notifyClientKey: event.notifyClientKey ?? null,
+    isFastPipeline: event.isFastPipeline,
   });
 }
 
 // ── Route: Generate from YouTube URL ────────────────────────────────────────
 router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Request, res: Response) => {
-  const { url, language = "auto", translateTo } = req.body as { url: string; language?: string; translateTo?: string };
+  const { url, language = "auto", translateTo, isFastPipeline } = req.body as {
+    url: string;
+    language?: string;
+    translateTo?: string;
+    isFastPipeline?: boolean;
+  };
 
   if (!url?.trim()) {
     res.status(400).json({ error: "url is required" });
@@ -3259,6 +3555,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
           notifyClientKey: notifyClientKey ?? null,
           inputMode: "url",
           durationSecs: null,
+          isFastPipeline,
         },
       });
       res.json({ jobId, status: "queued", message: "Subtitle generation queued" });
@@ -3279,6 +3576,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
       translateTo: translateLang,
       progressPct: 5,
       notifyClientKey,
+      isFastPipeline,
     });
     markSubtitleLambdaStillStarting(jobId);
     try {
@@ -3292,6 +3590,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
           language,
           translateTo: translateLang,
           notifyClientKey: notifyClientKey ?? null,
+          isFastPipeline,
         } satisfies SubtitleWorkerEvent)),
       }));
       res.json({ jobId, mode: "lambda" });
@@ -3316,6 +3615,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
     translateTo: translateLang,
     progressPct: 0,
     notifyClientKey,
+    isFastPipeline,
   });
 
   res.json({ jobId });
@@ -3328,6 +3628,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
       language,
       translateLang,
       notifyClientKey,
+      isFastPipeline,
     });
     return;
 
@@ -3659,11 +3960,12 @@ router.post("/subtitles/upload/init", subtitlesUploadRateLimiter, async (req: Re
 });
 
 router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: Request, res: Response) => {
-  const { uploadKey, originalFilename, language = "auto", translateTo } = req.body as {
+  const { uploadKey, originalFilename, language = "auto", translateTo, isFastPipeline } = req.body as {
     uploadKey?: string;
     originalFilename?: string;
     language?: string;
     translateTo?: string;
+    isFastPipeline?: boolean;
   };
 
   if (!uploadKey || typeof uploadKey !== "string") {
@@ -3698,6 +4000,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
           language,
           translateTo: translateLang ?? null,
           notifyClientKey: notifyClientKey ?? null,
+          isFastPipeline,
         },
       });
       res.json({ jobId, status: "queued", message: "Subtitle generation queued" });
@@ -3726,6 +4029,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
       translateTo: translateLang,
       progressPct: 5,
       notifyClientKey,
+      isFastPipeline,
     });
     markSubtitleLambdaStillStarting(jobId);
     try {
@@ -3741,6 +4045,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
           language,
           translateTo: translateLang,
           notifyClientKey: notifyClientKey ?? null,
+          isFastPipeline,
         } satisfies SubtitleWorkerEvent)),
       }));
       res.json({ jobId, mode: "lambda" });
@@ -3765,6 +4070,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
     translateTo: translateLang,
     progressPct: 0,
     notifyClientKey,
+    isFastPipeline,
   });
 
   res.json({ jobId });
@@ -3777,7 +4083,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
       void deleteS3Object(uploadKey);
       await processAudio(jobId, tempPath, language, srtFilename, translateLang, () => {
         try { rmSync(tempPath); } catch {}
-      });
+      }, undefined, isFastPipeline);
     } catch (err) {
       try { rmSync(tempPath); } catch {}
       const job = jobs.get(jobId);

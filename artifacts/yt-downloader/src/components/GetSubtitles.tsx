@@ -164,6 +164,7 @@ export function GetSubtitles() {
   const [emptyError, setEmptyError] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
+  const [isFastPipeline, setIsFastPipeline] = useState(false);
   const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => {
     const loaded = loadHistory();
     if (loaded.length === 0) {
@@ -227,9 +228,15 @@ export function GetSubtitles() {
 
   const { toast } = useToast();
 
-  // Build step order using the JOB's actual mode/translateTo, not current UI state
-  const jobStepBase = jobInputModeRef.current === "url" ? BASE_STEPS_URL : BASE_STEPS_FILE;
-  const jobStepOrder = jobTranslateToRef.current !== "none"
+  // Track if fast pipeline was used for THIS job
+  const jobIsFastPipelineRef = useRef<boolean>(false);
+
+  // Dynamic step order calculation based on whether the active job is fast or standard accuracy
+  const jobStepBase = jobIsFastPipelineRef.current
+    ? (jobInputModeRef.current === "url" ? ["audio", "uploading", "generating", "verifying"] : ["uploading", "generating", "verifying"])
+    : (jobInputModeRef.current === "url" ? BASE_STEPS_URL : BASE_STEPS_FILE);
+
+  const jobStepOrder = !jobIsFastPipelineRef.current && jobTranslateToRef.current !== "none"
     ? [...jobStepBase, ...TRANSLATE_STEPS, "done"]
     : [...jobStepBase, "done"];
 
@@ -242,6 +249,7 @@ export function GetSubtitles() {
     // Restore refs so the done-handler can save the correct history entry
     jobInputModeRef.current = active.mode;
     jobTranslateToRef.current = active.translateTo;
+    jobIsFastPipelineRef.current = !!active.isFastPipeline;
     lastUrlRef.current = active.url ?? "";
     lastLangRef.current = active.language;
     lastTranslateRef.current = active.translateTo;
@@ -458,6 +466,7 @@ export function GetSubtitles() {
     // Snapshot the job's mode and translateTo for step tracker
     jobInputModeRef.current = mode;
     jobTranslateToRef.current = trans;
+    jobIsFastPipelineRef.current = isFastPipeline;
 
     // Save for retry
     lastUrlRef.current = urlVal;
@@ -472,7 +481,7 @@ export function GetSubtitles() {
         const res = await fetch(`${BASE()}/api/subtitles/generate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: urlVal.trim(), language: lang, translateTo: trans }),
+          body: JSON.stringify({ url: urlVal.trim(), language: lang, translateTo: trans, isFastPipeline }),
         });
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || "Failed to start job");
@@ -512,6 +521,7 @@ export function GetSubtitles() {
               originalFilename: fileVal!.name,
               language: lang,
               translateTo: trans,
+              isFastPipeline,
             }),
           });
           const startBody = await startRes.json();
@@ -531,6 +541,7 @@ export function GetSubtitles() {
           formData.append("file", fileVal!);
           formData.append("language", lang);
           if (trans !== "none") formData.append("translateTo", trans);
+          formData.append("isFastPipeline", String(isFastPipeline));
           const res = await fetch(`${BASE()}/api/subtitles/upload`, {
             method: "POST",
             body: formData,
@@ -553,6 +564,7 @@ export function GetSubtitles() {
         language: lang,
         translateTo: trans,
         startedAt: Date.now(),
+        isFastPipeline,
       });
 
       // If cancel was clicked while the initial fetch was in-flight, cancel the server job now
@@ -763,6 +775,46 @@ export function GetSubtitles() {
         <p className="mt-3 text-base text-zinc-400 leading-relaxed">
           Generate accurate SRT subtitles from YouTube links, videos, or audio.
         </p>
+      </div>
+
+      {/* Pipeline Toggle Tabs */}
+      <div className="flex bg-[#09090b]/80 border border-zinc-800 rounded-xl p-1 mb-4 select-none self-start relative">
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => setIsFastPipeline(false)}
+          className={cn(
+            "relative px-4 py-2 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
+            !isFastPipeline ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+          )}
+        >
+          {!isFastPipeline && (
+            <motion.div
+              layoutId="activeSubTab"
+              className="absolute inset-0 bg-zinc-800 rounded-lg -z-10"
+              transition={{ type: "spring", stiffness: 380, damping: 30 }}
+            />
+          )}
+          High Accuracy (5-Pass)
+        </button>
+        <button
+          type="button"
+          disabled={loading}
+          onClick={() => setIsFastPipeline(true)}
+          className={cn(
+            "relative px-4 py-2 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
+            isFastPipeline ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+          )}
+        >
+          {isFastPipeline && (
+            <motion.div
+              layoutId="activeSubTab"
+              className="absolute inset-0 bg-zinc-800 rounded-lg -z-10"
+              transition={{ type: "spring", stiffness: 380, damping: 30 }}
+            />
+          )}
+          Fast Subtitles (2-Pass)
+        </button>
       </div>
 
       {/* Unified Input Card with RGB Glow */}

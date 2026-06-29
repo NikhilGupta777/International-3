@@ -68,6 +68,7 @@ export interface ActiveJobRecord {
   language: string;
   translateTo: string;
   startedAt: number;
+  isFastPipeline?: boolean;
 }
 
 export function saveActiveJob(record: ActiveJobRecord): void {
