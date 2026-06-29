@@ -734,9 +734,12 @@ export function GetSubtitles() {
 
   const effectiveStatus = ["error", "cancelled"].includes(jobStatus ?? "")
     ? lastGoodStepRef.current ?? jobStepOrder[0]
+    // Treat server-side queuing states as step 1 so we never show "Step 0"
+    : ["pending", "queued"].includes(jobStatus ?? "") ? jobStepOrder[0]
     : jobStatus;
 
-  const currentStepIdx = jobStepOrder.indexOf(effectiveStatus ?? "");
+  // Clamp to 0 so unknown statuses show "Step 1" not "Step 0"
+  const currentStepIdx = Math.max(0, jobStepOrder.indexOf(effectiveStatus ?? ""));
 
   const handleGenerateSubtitles = () => {
     if (!command.trim() && !file) {
