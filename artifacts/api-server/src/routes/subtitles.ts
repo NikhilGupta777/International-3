@@ -1940,31 +1940,61 @@ function restoreTimestamps(originalSrt: string, translatedSrt: string): string {
     return srt.trim().split(/\n\n+/).map((block) => {
       const lines = block.trim().split("\n");
       if (lines.length < 3) return null;
-      const num = parseInt(lines[0].trim(), 10);
-      if (isNaN(num)) return null;
-      return { num, timestamp: lines[1].trim(), text: lines.slice(2).join("\n") };
-    }).filter((e): e is { num: number; timestamp: string; text: string } => e !== null);
+      if (!/^\d+$/.test(lines[0].trim())) return null;
+      const timestamp = lines[1].trim();
+      if (!/-->/.test(timestamp)) return null;
+      return { timestamp, text: lines.slice(2).join("\n").trim() };
+    }).filter((e): e is { timestamp: string; text: string } => e !== null);
   };
 
   const origEntries = parseEntries(originalSrt);
   const transEntries = parseEntries(translatedSrt);
 
+  if (origEntries.length === 0) return translatedSrt;
+  if (transEntries.length === 0) return originalSrt;
+
+  // Align by POSITION, not by the model's entry numbers. The translation step is
+  // required to be strictly 1:1 (no split/merge/add/remove), so the i-th
+  // translated entry corresponds to the i-th original entry. Mapping by entry
+  // number is NOT desync-proof: any split/merge the model makes renumbers every
+  // following entry, so the old code silently attached translated text to the
+  // wrong timestamp for the entire tail of the file.
   if (origEntries.length !== transEntries.length) {
     logger.warn(
       { origCount: origEntries.length, transCount: transEntries.length },
-      "Entry count mismatch between original and translated SRT — timestamps may be misaligned"
+      "Entry count mismatch between original and translated SRT — aligning by position, padding/truncating to original timing",
     );
   }
 
-  const timestampMap = new Map<number, string>();
-  for (const e of origEntries) timestampMap.set(e.num, e.timestamp);
-
-  const restored = transEntries.map((e) => {
-    const ts = timestampMap.get(e.num) ?? e.timestamp;
-    return `${e.num}\n${ts}\n${e.text}`;
-  });
+  const restored: string[] = [];
+  const paired = Math.min(origEntries.length, transEntries.length);
+  for (let i = 0; i < paired; i++) {
+    restored.push(`${i + 1}\n${origEntries[i].timestamp}\n${transEntries[i].text}`);
+  }
+  // Translation dropped trailing entries → keep the original-language tail so we
+  // never lose timing/coverage (better a few untranslated lines than desync).
+  for (let i = paired; i < origEntries.length; i++) {
+    restored.push(`${i + 1}\n${origEntries[i].timestamp}\n${origEntries[i].text}`);
+  }
+  // Extra translated entries beyond the original count are discarded — they have
+  // no trustworthy timestamp and would only desync the result.
 
   return restored.join("\n\n") + "\n";
+}
+
+// Detect a Pass 2 result that covers materially less than the Pass 1 draft
+// (token-limit truncation or dropped trailing speech). Used to avoid silently
+// replacing a complete draft with a regressed verification pass.
+function isPass2Regressed(draftSrt: string, pass2Srt: string): boolean {
+  const draft = parseSrtEntries(draftSrt);
+  const p2 = parseSrtEntries(pass2Srt);
+  if (draft.length === 0) return false;
+  if (p2.length === 0) return true;
+  const draftLastEnd = Math.max(...draft.map((e) => e.endMs));
+  const p2LastEnd = Math.max(...p2.map((e) => e.endMs));
+  if (p2.length < draft.length * 0.6) return true;
+  if (draftLastEnd > 0 && p2LastEnd < draftLastEnd * 0.85) return true;
+  return false;
 }
 
 type ParsedSrtEntry = {
@@ -2588,19 +2618,40 @@ function buildFastPass2Prompt(params: {
   durationSrt: string;
 }): string {
   const isTranslation = params.translateTo && params.translateTo !== "none";
-  const actionNote = isTranslation
-    ? `Verify the timing and correctness of the draft subtitles, translate them from ${params.language} to ${params.translateTo}, and improve their quality.`
-    : `Verify the timing and correctness of the draft subtitles against the actual audio, fix any misheard words, correct timing alignments, and return the improved subtitles.`;
 
-  return `You are a professional subtitle editor and translator. I am giving you a draft SRT file.
+  if (isTranslation) {
+    // Strict 1:1 translation. The segmentation is already final in the draft, so
+    // the model must NOT re-segment — splitting/merging here would renumber
+    // entries and desync the timestamps we restore afterward by position.
+    return `You are a professional subtitle translator. I am giving you a draft SRT file in ${params.language}.
 Your job is to:
-1. Watch/listen to the actual audio/video deeply.
-2. Cross-reference the draft SRT against the spoken audio.
-3. ${actionNote}
-4. Ensure each entry has NO MORE THAN 6 words. Split long entries if needed.
-5. All timestamps must be in HH:MM:SS,mmm format and must fit within the audio duration of ${params.durationSrt}.
-6. Keep the formatting clean and valid.
-7. Return ONLY the final corrected/translated SRT content (no markdown, no fences, no chat intro).
+1. Watch/listen to the actual audio/video to understand context, tone, and real meaning.
+2. Translate the text of EACH entry into ${params.translateTo}, conveying what the speaker MEANS in context (not word-for-word).
+
+STRICT STRUCTURE RULES (critical — never break these):
+- Return EXACTLY ONE translated entry for every input entry — same count, same order.
+- DO NOT split, merge, add, or remove entries.
+- DO NOT change any timestamp or entry number.
+- Translate ONLY the text; keep each entry concise.
+- Return ONLY the SRT content (no markdown, no fences, no chat intro).
+
+DRAFT SRT:
+---
+${params.draftSrt}
+---
+
+Return the translated SRT (same number of entries, same timestamps):`;
+  }
+
+  return `You are a professional subtitle editor. I am giving you a draft SRT file.
+Your job is to:
+1. Watch/listen to the actual audio/video deeply, start to finish.
+2. Cross-reference the draft SRT against the spoken audio, fix misheard words, and correct timing so each line is aligned to when it is actually spoken.
+3. Transcribe EVERY spoken word from 00:00:00 to ${params.durationSrt} — do not stop early and do not drop trailing speech.
+4. Every entry must contain 1 to 8 words. Split longer entries into multiple entries with proportional timestamps.
+5. Do NOT create entries for silence, music, or non-speech — only actual spoken words.
+6. All timestamps must be HH:MM:SS,mmm format and fit within the audio duration of ${params.durationSrt}.
+7. Return ONLY the final corrected SRT content (no markdown, no fences, no chat intro).
 
 DRAFT SRT:
 ---
@@ -2724,11 +2775,11 @@ async function processFastAudioPipeline(params: {
     throw lastPass1Err instanceof Error ? lastPass1Err : new Error("All API keys exhausted on transcription");
   }
 
-  // Pre-clean Pass 1 output
-  draftSrt = normalizeSrtTimestamps(draftSrt);
-  draftSrt = cleanupHallucinatedEntries(draftSrt);
-  draftSrt = strictFilterMalformedTimestamps(draftSrt);
-  draftSrt = filterOutOfBoundsEntries(draftSrt, params.durationSecs);
+  // Pre-clean Pass 1 output — full finalizer: normalize timestamps, drop
+  // hallucinated/silent/empty entries, strict-filter malformed timestamps,
+  // clamp out-of-bounds entries, and split any entry to 1-8 words with
+  // proportional timestamps (skips segments with no spoken words).
+  draftSrt = cleanGeneratedSrt(draftSrt, params.durationSecs);
 
   // Validate we got something readable
   if (!validateSrt(draftSrt)) {
@@ -2811,12 +2862,32 @@ async function processFastAudioPipeline(params: {
       if (pass2Output) {
         pass2Output = stripFences(pass2Output);
 
-        correctedFinalSrt = params.translateTo && params.translateTo !== "none"
-          ? restoreTimestamps(draftSrt, pass2Output)
-          : pass2Output;
-        pass2Succeeded = true;
-        logger.info({ keyLabel }, "Pass 2: Subtitle verification and translation completed");
-        break; // Pass 2 succeeded!
+        if (params.translateTo && params.translateTo !== "none") {
+          // Strict 1:1 translation → force exact original timestamps by position
+          // (desync-proof). The 1-8 word split is applied later in the final
+          // cleanup so the translated text never reshapes the timeline.
+          correctedFinalSrt = restoreTimestamps(draftSrt, pass2Output);
+          pass2Succeeded = true;
+          logger.info({ keyLabel }, "Pass 2: Subtitle translation completed");
+          break;
+        }
+
+        // Non-translate: Pass 2 may freely re-segment. Finalize it, then guard
+        // against a truncated/regressed Pass 2 silently replacing a complete
+        // Pass 1 draft (token-limit cutoff, dropped trailing speech).
+        const finalizedPass2 = cleanGeneratedSrt(pass2Output, params.durationSecs);
+        if (isPass2Regressed(draftSrt, finalizedPass2)) {
+          logger.warn(
+            { keyLabel },
+            "Pass 2: result covers far less than Pass 1 draft — keeping the Pass 1 draft instead",
+          );
+          correctedFinalSrt = draftSrt; // already finalized; pass2Succeeded stays false → user warned
+        } else {
+          correctedFinalSrt = finalizedPass2;
+          pass2Succeeded = true;
+          logger.info({ keyLabel }, "Pass 2: Subtitle verification completed");
+        }
+        break; // got a usable result either way
       }
     } catch (err) {
       lastPass2Err = err;
@@ -2840,6 +2911,17 @@ async function processFastAudioPipeline(params: {
         pass1FileUri = null; // Prevent double-delete
       }
     }
+  }
+
+  // Safety net: if the preserved Pass 1 file was never cleaned up inside the loop
+  // (e.g. the offset-0 key was cooled down so the in-loop cleanup branch never
+  // ran), delete it now so we don't leak Gemini File API uploads.
+  if (pass1FileUri && pass1ClientIdx !== null) {
+    const pass1FileName = pass1FileUri.split("/").pop();
+    if (pass1FileName) {
+      try { await clients[pass1ClientIdx].files.delete({ name: pass1FileName }); } catch {}
+    }
+    pass1FileUri = null;
   }
 
   // Resilient fallback: if Pass 2 fails, DO NOT drop the subtitles generated by Pass 1!
@@ -2873,8 +2955,10 @@ async function processFastAudioPipeline(params: {
     }
   }
 
-  // Final cleanup and formatting
-  correctedFinalSrt = strictFilterMalformedTimestamps(cleanupHallucinatedEntries(normalizeSrtTimestamps(correctedFinalSrt)));
+  // Final cleanup and formatting — full finalizer: normalize timestamps, drop
+  // hallucinated/silent/empty entries, strict-filter malformed timestamps, clamp
+  // out-of-bounds entries, and enforce 1-8 words per entry (proportional split).
+  correctedFinalSrt = cleanGeneratedSrt(correctedFinalSrt, params.durationSecs);
 
   // Assert quality
   try {
