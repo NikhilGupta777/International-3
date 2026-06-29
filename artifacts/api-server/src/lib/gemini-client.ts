@@ -2,7 +2,7 @@ import { existsSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { GoogleGenAI } from "@google/genai";
-import { getNextAvailableKey, recordKeyFailure } from "../utils/key-circuit-breaker";
+import { getNextAvailableKey, isKeyCooledDown, recordKeyFailure } from "../utils/key-circuit-breaker";
 
 // Explicitly delete Vertex AI environment flags to prevent the @google/genai SDK
 // from automatically routing requests to the Vertex AI endpoints.
@@ -227,6 +227,23 @@ export function getRotatedGeminiApiKey(caller?: string): string {
   return result.key;
 }
 
+export function getPreferredGeminiApiKey(caller?: string): string {
+  const keys = getPersonalKeysForCaller(caller);
+  if (keys.length === 0) return "";
+  return keys.find((key) => !isKeyCooledDown(key)) ?? keys[0];
+}
+
+export function getGeminiApiKeyForAttempt(caller: string | undefined, attempt: number): string {
+  const keys = getPersonalKeysForCaller(caller);
+  if (keys.length === 0) return "";
+  const startIndex = Math.max(0, attempt) % keys.length;
+  for (let i = 0; i < keys.length; i++) {
+    const candidate = keys[(startIndex + i) % keys.length];
+    if (!isKeyCooledDown(candidate)) return candidate;
+  }
+  return keys[startIndex];
+}
+
 export function getPrimaryGeminiApiKey(): string {
   return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "").trim();
 }
@@ -264,7 +281,7 @@ export function createGeminiClient(options: GeminiClientOptions = {}): GoogleGen
     });
   }
 
-  const apiKey = (options.apiKey || getRotatedGeminiApiKey(options.caller)).trim();
+  const apiKey = (options.apiKey || getPreferredGeminiApiKey(options.caller)).trim();
   if (!apiKey) throw new Error("Gemini API key is not configured.");
 
   const baseKeys = getPersonalGeminiApiKeysList();

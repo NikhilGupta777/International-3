@@ -34,6 +34,7 @@ import {
   isVertexGeminiEnabled,
   buildThinkingConfig,
   generateContentWithRotation,
+  getGeminiApiKeyForAttempt,
   getPersonalGeminiApiKeysList,
 } from "../lib/gemini-client";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
@@ -45,6 +46,7 @@ import {
   downloadUrlToTempFile,
   deleteLocalFile,
 } from "../lib/gcs-storage";
+import { recordKeyFailure } from "../utils/key-circuit-breaker";
 
 const router = Router();
 
@@ -5339,7 +5341,9 @@ router.post("/agent/chat", async (req, res) => {
     // Vertex AI is the primary path (checked first in createGeminiClient).
     // Gemini API key is only a fallback when Vertex is not configured.
     const GEMINI_TIMEOUT_MS = 300_000; // 5 min
+    let currentApiKey = getGeminiApiKeyForAttempt(undefined, 0);
     let ai = createGeminiClient({
+      apiKey: currentApiKey,
       httpOptions: { timeout: GEMINI_TIMEOUT_MS },
     });
 
@@ -5514,8 +5518,10 @@ router.post("/agent/chat", async (req, res) => {
           )];
           if (attempt > 0) {
             await new Promise((r) => setTimeout(r, 150 + Math.random() * 100));
-            // Rotate the API key on retry
+            // Retry attempts move to the next healthy API key; normal requests stay on the preferred key.
+            currentApiKey = getGeminiApiKeyForAttempt(undefined, attempt);
             ai = createGeminiClient({
+              apiKey: currentApiKey,
               httpOptions: { timeout: GEMINI_TIMEOUT_MS },
             });
           }
@@ -5608,6 +5614,7 @@ toolConfig: activeCacheName
           console.warn(
             `[agent] Chat stream failed on attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS}: ${errMsg}`
           );
+          if (currentApiKey) recordKeyFailure(currentApiKey, e).catch(() => {});
 
           if (isResourceExhausted) {
             await new Promise((r) => setTimeout(r, 350 + Math.random() * 150));
