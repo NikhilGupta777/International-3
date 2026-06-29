@@ -251,6 +251,11 @@ export function createGeminiClient(options: GeminiClientOptions = {}): GoogleGen
 
   const apiKey = (options.apiKey || getRotatedGeminiApiKey(options.caller)).trim();
   if (!apiKey) throw new Error("Gemini API key is not configured.");
+
+  const baseKeys = getPersonalGeminiApiKeysList();
+  const indexInBase = baseKeys.indexOf(apiKey);
+  console.log(`[Gemini Keys] Client instantiated with key ...${apiKey.slice(-6)} (key ${indexInBase + 1}) for ${options.caller ?? "default"}`);
+
   return new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "v1beta", ...options.httpOptions } });
 }
 
@@ -304,6 +309,11 @@ export async function generateContentWithRotation(
     for (let keyAttempt = 0; keyAttempt < Math.min(keys.length, 13); keyAttempt++) {
       attempt++;
       const apiKey = getRotatedGeminiApiKey(options.caller);
+
+      const baseKeys = getPersonalGeminiApiKeysList();
+      const indexInBase = baseKeys.indexOf(apiKey);
+      console.log(`[Gemini Keys] Rotation attempt ${attempt}/${totalAttempts} using key ...${apiKey.slice(-6)} (key ${indexInBase + 1}) on model ${model} for ${options.caller ?? "default"}`);
+
       try {
         const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "v1beta", ...options.httpOptions } });
         const result = await client.models.generateContent({
