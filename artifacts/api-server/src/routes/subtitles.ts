@@ -2661,6 +2661,112 @@ ${params.draftSrt}
 Return the improved SRT:`;
 }
 
+// Fast 2-pass subtitles for a YouTube URL using the video URL directly as
+// Gemini fileData (no download, no files.upload) — the same mechanism the
+// High Accuracy path uses, so it never touches the file-upload code that was
+// crashing with "Cannot convert argument to a ByteString" on non-ASCII titles.
+// Returns true if it produced subtitles; false to let the caller fall back to
+// the audio download+upload pipeline.
+async function processFastYoutubeVideoSrt(
+  jobId: string,
+  videoUrl: string,
+  language: string,
+  filename: string,
+  translateTo?: string,
+  durationSecs?: number | null,
+): Promise<boolean> {
+  const job = jobs.get(jobId);
+  if (!job) return false;
+  if (!SUBTITLES_GEMINI_VIDEO_ENABLED) return false;
+
+  const durationSrt = durationSecs && durationSecs > 0 ? secondsToSrtTime(durationSecs) : "99:59:59";
+  const videoPart = { fileData: { mimeType: "video/mp4", fileUri: videoUrl } };
+  const isTranslation = !!translateTo && translateTo !== "none";
+
+  try {
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+
+    // ── PASS 1: watch + transcribe ───────────────────────────────────────────
+    job.status = "generating";
+    job.progressPct = 25;
+    job.durationSecs = durationSecs ?? undefined;
+    job.message = "Pass 1: AI is watching the video and writing subtitles...";
+
+    const rawSrt = await generateWithPreferredModels(
+      VIDEO_TRANSCRIPTION_MODELS,
+      (model) => ({
+        model,
+        contents: [{ role: "user", parts: [videoPart, { text: buildSrtPrompt(language, durationSrt) }] }],
+        config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
+      }),
+      "Fast YouTube subtitle transcription",
+    );
+
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+
+    const draftSrt = cleanGeneratedSrt(rawSrt, durationSecs ?? undefined);
+    if (!validateSrt(draftSrt)) throw new Error("AI returned invalid subtitles from Pass 1");
+
+    // ── PASS 2: re-watch verify (+ optional translate) ───────────────────────
+    job.status = "verifying";
+    job.progressPct = 65;
+    job.message = isTranslation
+      ? `Pass 2: AI is verifying and translating subtitles to ${translateTo}...`
+      : "Pass 2: AI is re-watching video to verify and correct subtitles...";
+
+    let correctedFinalSrt = "";
+    try {
+      const pass2Raw = await generateWithPreferredModels(
+        VIDEO_VERIFICATION_MODELS,
+        (model) => ({
+          model,
+          contents: [{ role: "user", parts: [videoPart, { text: buildFastPass2Prompt({ draftSrt, language, translateTo, durationSrt }) }] }],
+          config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
+        }),
+        "Fast YouTube subtitle verification",
+      );
+      const pass2Clean = stripFences(pass2Raw ?? "").trim();
+      if (pass2Clean) {
+        if (isTranslation) {
+          // Strict 1:1 translation → restore original timing by position.
+          job.originalSrt = draftSrt;
+          job.originalFilename = filename.replace(/\.srt$/i, "-original.srt");
+          correctedFinalSrt = restoreTimestamps(draftSrt, pass2Clean);
+        } else {
+          const finalizedPass2 = cleanGeneratedSrt(pass2Clean, durationSecs ?? undefined);
+          correctedFinalSrt = isPass2Regressed(draftSrt, finalizedPass2) ? draftSrt : finalizedPass2;
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, jobId }, "Fast YouTube Pass 2 failed; delivering Pass 1 draft");
+    }
+
+    if (!correctedFinalSrt) correctedFinalSrt = draftSrt;
+    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+
+    correctedFinalSrt = cleanGeneratedSrt(correctedFinalSrt, durationSecs ?? undefined);
+    try {
+      job.qualityWarnings = assertSubtitleQuality(
+        correctedFinalSrt,
+        durationSecs,
+        isTranslation ? "translated" : "generated",
+      );
+    } catch (err) {
+      logger.warn({ err }, "Fast YouTube quality assertion failed, bypassing to ensure delivery");
+    }
+
+    job.status = "done";
+    job.progressPct = 100;
+    job.message = "Subtitles ready!";
+    job.srt = correctedFinalSrt;
+    notifySubtitleReady(jobId, job);
+    return true;
+  } catch (err) {
+    logger.warn({ err, jobId }, "Fast YouTube video SRT path failed; falling back to audio download pipeline");
+    return false;
+  }
+}
+
 async function processFastAudioPipeline(params: {
   jobId: string;
   processedPath: string;
@@ -3480,6 +3586,26 @@ async function runSubtitleUrlJob(params: {
 
   if (durationSecs != null) {
     job.durationSecs = durationSecs;
+  }
+
+  // Fast pipeline + YouTube URL → use the video URL directly as Gemini fileData
+  // (no download, no files.upload), mirroring the High Accuracy path. This avoids
+  // the file-upload code that crashes on non-ASCII (e.g. Hindi) video titles.
+  const isYouTubeUrl = /(?:youtube\.com|youtu\.be)/i.test(params.normalizedUrl);
+  if (params.isFastPipeline && isYouTubeUrl) {
+    const completedFast = await processFastYoutubeVideoSrt(
+      params.jobId,
+      params.normalizedUrl,
+      params.language,
+      job.filename,
+      params.translateLang,
+      durationSecs,
+    );
+    if (completedFast) return;
+    logger.info(
+      { jobId: params.jobId },
+      "Fast YouTube video path did not complete; falling back to audio download pipeline",
+    );
   }
 
   if (!params.isFastPipeline && (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS)) {
