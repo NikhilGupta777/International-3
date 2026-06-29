@@ -34,6 +34,11 @@ export function isVertexGeminiEnabled(): boolean {
   return false;
 }
 
+if (!isVertexGeminiEnabled()) {
+  delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  delete process.env.GOOGLE_CLOUD_PROJECT;
+}
+
 export function getVertexProject(): string {
   return (
     process.env.GOOGLE_CLOUD_PROJECT ||
@@ -146,6 +151,12 @@ export function getPersonalGeminiApiKeysList(): string[] {
 }
 
 let nextKeyIndex = 0;
+export function getNextKeyIndex(): number {
+  return nextKeyIndex;
+}
+export function setNextKeyIndex(index: number): void {
+  nextKeyIndex = index;
+}
 export function getRotatedGeminiApiKey(): string {
   const keys = getPersonalGeminiApiKeysList();
   if (keys.length === 0) return "";
@@ -187,20 +198,20 @@ export function createGeminiClient(options: GeminiClientOptions = {}): GoogleGen
       vertexai: true,
       project,
       location,
-      httpOptions: options.httpOptions,
+      httpOptions: { apiVersion: "v1beta", ...options.httpOptions },
     });
   }
 
   const apiKey = (options.apiKey || getRotatedGeminiApiKey()).trim();
   if (!apiKey) throw new Error("Gemini API key is not configured.");
-  return new GoogleGenAI({ apiKey, httpOptions: options.httpOptions });
+  return new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "v1beta", ...options.httpOptions } });
 }
 
 export function buildThinkingConfig(
   model: string,
-  level: "LOW" | "MEDIUM" | "HIGH" | string,
+  level: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH" | string,
 ): Record<string, any> {
-  const normalizedLevel = level === "LOW" || level === "MEDIUM" || level === "HIGH" ? level : "MEDIUM";
+  const normalizedLevel = level === "MINIMAL" || level === "LOW" || level === "MEDIUM" || level === "HIGH" ? level : "MEDIUM";
   if (model.includes("2.5")) {
     const budget = normalizedLevel === "HIGH" ? 24576 : normalizedLevel === "MEDIUM" ? 8192 : 1024;
     return { thinkingBudget: budget };
@@ -247,7 +258,7 @@ export async function generateContentWithRotation(
       attempt++;
       const apiKey = getRotatedGeminiApiKey();
       try {
-        const client = new GoogleGenAI({ apiKey, httpOptions: options.httpOptions });
+        const client = new GoogleGenAI({ apiKey, httpOptions: { apiVersion: "v1beta", ...options.httpOptions } });
         const result = await client.models.generateContent({
           model,
           contents: params.contents,

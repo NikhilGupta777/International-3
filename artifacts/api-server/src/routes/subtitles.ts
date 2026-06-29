@@ -16,7 +16,7 @@ import {
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
-import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig } from "../lib/gemini-client";
+import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig, getNextKeyIndex, setNextKeyIndex } from "../lib/gemini-client";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
@@ -1243,7 +1243,7 @@ function getAllPersonalGenAIClients(): GoogleGenAI[] {
 function getSubtitleVideoGenAIClients(): Array<{ client: GoogleGenAI; keyLabel: string }> {
   const clients: Array<{ client: GoogleGenAI; keyLabel: string }> = [];
   const apiKeyClients = getAllPersonalGeminiKeys().map((apiKey, index) => ({
-    client: new GoogleGenAI({ apiKey, vertexai: false, httpOptions: { timeout: SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS } }),
+    client: new GoogleGenAI({ apiKey, vertexai: false, httpOptions: { apiVersion: "v1beta", timeout: SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS } }),
     keyLabel: `api-key ${index + 1}`,
   }));
 
@@ -1287,12 +1287,12 @@ function csvModels(value: string | undefined, fallback: string[]): string[] {
 
 const VIDEO_TRANSCRIPTION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_TRANSCRIPTION_MODELS, [
   "gemini-3.5-flash",
-  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
 ]);
 
 const VIDEO_VERIFICATION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_VERIFICATION_MODELS, [
   "gemini-3.5-flash",
-  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
 ]);
 
 async function generateWithPreferredModels(
@@ -1309,8 +1309,10 @@ async function generateWithPreferredModels(
   }
 
   let lastErr: unknown;
+  const startIndex = getNextKeyIndex();
   for (const model of models) {
-    for (let i = 0; i < clients.length; i++) {
+    for (let offset = 0; offset < clients.length; offset++) {
+      const i = (startIndex + offset) % clients.length;
       const { client, keyLabel } = clients[i];
       try {
         const generation = client.models.generateContent(requestFactory(model));
@@ -1321,9 +1323,11 @@ async function generateWithPreferredModels(
           `${label} timed out on ${keyLabel} ${model}`,
         );
         logger.info({ model, keyLabel, label }, `${label} completed`);
+        setNextKeyIndex(i);
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
+        setNextKeyIndex((i + 1) % clients.length);
         if (isGeminiRetryableError(err)) {
           logger.warn({ model, keyLabel, label }, `${label} retryable failure - trying next Gemini client/model`);
         } else {
@@ -1359,18 +1363,20 @@ async function generateWithKeyRotation(
   }
 
   let lastErr: unknown;
-
+  const startIndex = getNextKeyIndex();
   // Outer loop: model. Inner loop: key.
-  // All 4 keys are tried for each model before falling to the next model.
   for (const model of KEY_ROTATION_MODELS) {
-    for (let i = 0; i < clients.length; i++) {
+    for (let offset = 0; offset < clients.length; offset++) {
+      const i = (startIndex + offset) % clients.length;
       const keyLabel = `key ${i + 1}`;
       try {
         const result = await clients[i].models.generateContent(requestFactory(model));
         logger.info({ model, keyLabel, label }, `${label} completed via personal ${keyLabel}`);
+        setNextKeyIndex(i);
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
+        setNextKeyIndex((i + 1) % clients.length);
         const isQuota = isGeminiRetryableError(err);
         if (isQuota) {
           logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited on ${model} — trying next`);
@@ -2733,8 +2739,10 @@ async function processAudio(
         }
       } else {
         let lastKeyErr: unknown;
+        const startIndex = getNextKeyIndex();
 
-      for (let ki = 0; ki < clients.length; ki++) {
+      for (let offset = 0; offset < clients.length; offset++) {
+        const ki = (startIndex + offset) % clients.length;
         const client = clients[ki];
         const keyLabel = `key ${ki + 1}`;
         let geminiFileName: string | null = null;
@@ -2804,11 +2812,13 @@ async function processAudio(
           const deduped = cleanupHallucinatedEntries(normalized);
           const strictFiltered = strictFilterMalformedTimestamps(deduped);
           correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
-
+          
+          setNextKeyIndex(ki);
           break; // Transcription and cleanup succeeded - exit key loop
 
         } catch (err) {
           lastKeyErr = err;
+          setNextKeyIndex((ki + 1) % clients.length);
           const isQuota = isGeminiRetryableError(err);
           if (isQuota && ki < clients.length - 1) {
             logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);

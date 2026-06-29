@@ -8,6 +8,10 @@
  * `responseStream` is discarded by the runtime, so we just close it.
  */
 
+import dns from "dns";
+// Fix Node.js 18+ Windows IPv6 hanging issue with fetch
+dns.setDefaultResultOrder("ipv4first");
+
 import app from "./app";
 import {
   runTimestampWorker,

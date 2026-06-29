@@ -12,7 +12,7 @@ import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
 import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
-import { createGeminiClient, isGeminiConfigured, buildThinkingConfig } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, buildThinkingConfig, getPersonalGeminiApiKeysList } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb, putEditorJobQueued, updateEditorJobStatus, isEditorDdbConfigured } from "../lib/youtube-queue";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
@@ -24,7 +24,7 @@ const VIDEO_EDITOR_QUEUE_ENABLED =
 
 // Model used by the watch_youtube_video tool to actually watch+listen to a
 // YouTube video (vision+audio). Mirrors agent.ts's primary AGENT_MODEL.
-const EDITOR_WATCH_MODEL = (process.env.EDITOR_WATCH_MODEL || "gemini-3-flash-preview").trim();
+const EDITOR_WATCH_MODEL = (process.env.EDITOR_WATCH_MODEL || "gemini-2.5-flash").trim();
 
 // ── Render routing ────────────────────────────────────────────────────────────
 // Fast path: self-invoke a worker Lambda (near-instant start, 15-min budget) for
@@ -2719,7 +2719,10 @@ function buildToolDispatcherV2(
           { text: `${question}\nAnswer concisely for a video editor. Include timestamps where useful. Do not identify real people.` },
           videoPart,
         ] }],
-        config: { maxOutputTokens: 8192 },
+        config: {
+          maxOutputTokens: 8192,
+          thinkingConfig: buildThinkingConfig(EDITOR_WATCH_MODEL, "MEDIUM"),
+        },
       });
       const text = String(resp?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "").trim();
       if (!text) throw new Error("The model returned no analysis — the video may be private, age-restricted, or unavailable.");
@@ -2916,7 +2919,7 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
     }
 
     const ai = createGeminiClient();
-    const model = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
+    const model = (process.env.EDITOR_AGENT_MODEL || "gemma-4-31b-it").trim();
     const thinkingBudget = process.env.EDITOR_AGENT_THINKING_BUDGET || "MEDIUM";
 
     const projectContext = `Current project:\n- sourceVideo: ${project.sourceVideo ?? "(none)"}\n- assets.logo: ${project.assets.logo ?? "(none)"}\n- assets.intro: ${project.assets.intro ?? "(none)"}\n- assets.outro: ${project.assets.outro ?? "(none)"}\n- recipe: ${snapshotRecipeSummary(project)}`;
@@ -2987,23 +2990,73 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
     while (iterations < maxIterations && !closed) {
       iterations += 1;
       send({ type: "thinking", iteration: iterations, total: maxIterations });
-      const stream: any = await ai.models.generateContentStream({
-        model,
-        contents,
-        config: {
-          systemInstruction: AGENT_SYSTEM_PROMPT_V2,
-          tools: [{ functionDeclarations: AGENT_TOOL_DECLARATIONS_V2 as any }],
-          toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
-          maxOutputTokens: 4096,
-          thinkingConfig: buildThinkingConfig(model, thinkingBudget),
-        },
-      });
+      let stream: any;
+      const streamFallbackModels = Array.from(new Set([model, "gemini-2.5-flash", "gemini-3.5-flash"]));
+      const keysList = getPersonalGeminiApiKeysList();
+      const keyCount = Math.max(1, Math.min(keysList.length || 1, 13));
+      const maxStreamAttempts = Math.max(2, keyCount * streamFallbackModels.length);
+      let streamSuccess = false;
+      let lastStreamErr: any = null;
+      let timeoutId: NodeJS.Timeout | null = null;
+      let controller: AbortController | null = null;
+      for (let attempt = 0; attempt < maxStreamAttempts; attempt++) {
+        if (timeoutId) clearTimeout(timeoutId);
+        controller = new AbortController();
+        const currentController = controller;
+        timeoutId = setTimeout(() => {
+          console.warn(`[video-editor] Stream attempt ${attempt + 1}/${maxStreamAttempts} timed out after 10s. Aborting...`);
+          currentController.abort();
+        }, 10000);
+        try {
+          const currentModel = streamFallbackModels[Math.min(
+            streamFallbackModels.length - 1,
+            Math.floor(attempt / keyCount),
+          )];
+          let currentAi = createGeminiClient();
+          if (attempt > 0) {
+            await new Promise((r) => setTimeout(r, 150 + Math.random() * 100));
+          }
+          const configObj: any = {
+            abortSignal: controller.signal,
+            systemInstruction: AGENT_SYSTEM_PROMPT_V2,
+            tools: [{ functionDeclarations: AGENT_TOOL_DECLARATIONS_V2 as any }],
+            toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
+            maxOutputTokens: 4096,
+            thinkingConfig: buildThinkingConfig(currentModel, currentModel === "gemma-4-31b-it" ? "HIGH" : thinkingBudget),
+          };
+          if (currentModel === "gemma-4-31b-it") {
+            configObj.temperature = 1.0;
+            configObj.topP = 0.95;
+            configObj.topK = 64;
+          }
+          stream = await currentAi.models.generateContentStream({
+            model: currentModel,
+            contents,
+            config: configObj,
+          });
+          streamSuccess = true;
+          break;
+        } catch (streamErr: any) {
+          if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+          lastStreamErr = streamErr;
+          console.warn(`[video-editor] generateContentStream attempt ${attempt + 1} failed: ${streamErr.message || streamErr}`);
+        }
+      }
+      if (!streamSuccess) {
+        if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+        throw lastStreamErr ?? new Error("Gemini stream call failed on all keys and fallback models.");
+      }
 
       const aggregatedParts: any[] = [];
       const fnCalls: any[] = [];
       let text = "";
+      let firstChunkReceived = false;
       try {
         for await (const chunk of stream) {
+          if (!firstChunkReceived) {
+            firstChunkReceived = true;
+            if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+          }
           // Bail out fast if the client disconnected — the agent can still
           // continue to mutate state but we stop pushing more network IO.
           if (closed) break;
@@ -3019,6 +3072,8 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
         }
       } catch (err) {
         logger.warn({ err }, "[video-editor] stream chunk failed");
+      } finally {
+        if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
       }
 
       contents.push({ role: "model", parts: aggregatedParts });

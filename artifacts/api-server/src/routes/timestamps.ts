@@ -622,7 +622,7 @@ Generate topic-level timestamps — one entry for EVERY distinct topic, bhajan, 
   try {
     const result = await generateContentWithRotation({
       model: "gemini-3.5-flash",
-      fallbackModels: ["gemini-3-flash-preview"],
+      fallbackModels: ["gemini-2.5-flash"],
       contents: [{ role: "user", parts: [{ text: userContent }] }],
       config: {
         systemInstruction: SYSTEM_PROMPT,

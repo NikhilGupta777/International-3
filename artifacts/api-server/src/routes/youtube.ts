@@ -2563,7 +2563,8 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
 
   try {
     const result = await generateContentWithRotation({
-      model: process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.5-flash",
+      model: process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.1-flash-lite",
+      fallbackModels: ["gemini-3.5-flash"],
       contents: [{ role: "user", parts: [{ text: cleanPrompt }] }],
       config: {
         systemInstruction: [
@@ -2579,8 +2580,11 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
           "If the end time is not after the start time, return {\"error\":\"...\"}.",
           "Do not start any chat. Do not include markdown.",
         ].join("\n"),
+        temperature: 0.1,
+        topP: 0.8,
+        maxOutputTokens: 4096,
         responseMimeType: "application/json",
-        thinkingConfig: buildThinkingConfig(process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.5-flash", "MEDIUM"),
+        thinkingConfig: buildThinkingConfig(process.env.CLIP_CUT_INTENT_MODEL ?? "gemini-3.1-flash-lite", "MEDIUM"),
       } as any,
     });
 
@@ -3960,7 +3964,7 @@ async function generateWithPersonalKeyRotation(
     for (let i = 0; i < keys.length; i++) {
       const keyLabel = `key ${i + 1}`;
       try {
-        const client = isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: keys[i] });
+        const client = createGeminiClient({ apiKey: keys[i] });
         const result = await client.models.generateContent({
           model,
           contents: [{ role: "user", parts: [{ text: userContent }] }],
@@ -3999,7 +4003,7 @@ router.post("/youtube/subtitles/fix", async (req: Request, res: Response) => {
   const subDir = join(DOWNLOAD_DIR, `subs-fix-${sessionId}`);
   let geminiFileName: string | null = null;
   const primaryKey = getPersonalGeminiApiKeys()[0] ?? null;
-  const genAI = primaryKey ? (isVertexGeminiEnabled() ? createGeminiClient() : new GoogleGenAI({ apiKey: primaryKey })) : null;
+  const genAI = primaryKey ? createGeminiClient({ apiKey: primaryKey }) : null;
 
   try {
     // ── Step 1: Fetch raw subtitle VTT ──

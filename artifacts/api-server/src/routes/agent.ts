@@ -59,8 +59,12 @@ const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
 const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.5-flash";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-3.5-flash";
 const ALLOWED_MODELS = new Set([
-  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
   "gemini-3.5-flash",
+  "gemini-3.5-flash-high",
+  "gemini-3.1-flash-lite",
+  "gemini-3.1-flash-lite-low",
+  "gemini-3.1-flash-lite-high",
 ]);
 
 // buildThinkingConfig imported from gemini-client.ts
@@ -109,7 +113,7 @@ const E2B_APP_CODE_MAX_TOTAL_CHARS = Math.max(
   ),
 );
 const ENABLE_NATIVE_AGENT_SEARCH = !/^(0|false|no|off)$/i.test(
-  String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "false").trim(),
+  String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "true").trim(),
 );
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
@@ -3696,8 +3700,7 @@ async function executeTool(
         // Fallback structured search path. The main agent turn also receives
         // native Google Search; this tool is for explicit source-list/debug use
         // or when the model needs a structured search artifact.
-        const searchAi = createGeminiClient();
-        const searchResp = await searchAi.models.generateContent({
+        const searchResp = await generateContentWithRotation({
           model: SEARCH_MODEL,
           contents: [
             {
@@ -4435,8 +4438,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
             "PDF URL is not from a trusted storage origin. Use a file uploaded through the studio.",
           );
         }
-        const ai = createGeminiClient();
-        const resp = await ai.models.generateContent({
+        const resp = await generateContentWithRotation({
           model: ULTRA_MODEL,
           contents: [
             {
@@ -4649,8 +4651,7 @@ except Exception as exc:
           name,
         );
       }
-      const ai = createGeminiClient();
-      const resp = await ai.models.generateContent({
+      const resp = await generateContentWithRotation({
         model: ULTRA_MODEL,
         contents: [
           {
@@ -5280,6 +5281,12 @@ router.post("/agent/chat", async (req, res) => {
   } else if (requestedModel === "gemini-3.5-flash") {
     activeModel = "gemini-3.5-flash";
     thinkingLevel = "MEDIUM";
+  } else if (requestedModel === "gemini-3.1-flash-lite" || requestedModel === "gemini-3.1-flash-lite-low") {
+    activeModel = "gemini-3.1-flash-lite";
+    thinkingLevel = "LOW";
+  } else if (requestedModel === "gemini-3.1-flash-lite-high") {
+    activeModel = "gemini-3.1-flash-lite";
+    thinkingLevel = "HIGH";
   } else if (
     requestedModel &&
     requestedModel !== "default" &&
@@ -5479,15 +5486,24 @@ router.post("/agent/chat", async (req, res) => {
       // leaking to the UI before all keys/models have been tried.
       let stream: AsyncIterable<any> | Iterable<any> | undefined;
       let streamErr: Error | null = null;
+      let timeoutId: NodeJS.Timeout | null = null;
+      let controller: AbortController | null = null;
       const streamFallbackModels = Array.from(
         new Set([
           activeModel,
-          activeModel === "gemini-3.5-flash" ? "gemini-3-flash-preview" : "gemini-3.5-flash",
+          activeModel === "gemini-3.5-flash" ? "gemini-2.5-flash" : "gemini-3.5-flash",
         ]),
       );
       const keyCount = Math.max(1, Math.min(getPersonalGeminiApiKeysList().length || 1, 13));
       const MAX_STREAM_ATTEMPTS = Math.max(2, keyCount * streamFallbackModels.length);
       for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
+        if (timeoutId) clearTimeout(timeoutId);
+        controller = new AbortController();
+        const currentController = controller;
+        timeoutId = setTimeout(() => {
+          console.warn(`[agent] Stream attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS} timed out after 10s. Aborting...`);
+          currentController.abort();
+        }, 10000);
         try {
           const streamModel = streamFallbackModels[Math.min(
             streamFallbackModels.length - 1,
@@ -5520,6 +5536,7 @@ router.post("/agent/chat", async (req, res) => {
             model: streamModel,
             contents: generateContents,
             config: {
+              abortSignal: controller.signal,
               systemInstruction: activeCacheName
                 ? undefined
                 : SYSTEM_PROMPT + skillPromptAddendum,
@@ -5537,17 +5554,14 @@ toolConfig: activeCacheName
               thinkingConfig: buildThinkingConfig(streamModel, thinkingLevel),
 
               cachedContent: activeCacheName,
-            },
+            } as any,
           });
-          const bufferedChunks: any[] = [];
-          for await (const chunk of candidateStream) {
-            if (!isConnected()) break;
-            bufferedChunks.push(chunk);
-          }
-          stream = bufferedChunks;
+          if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+          stream = candidateStream;
           streamErr = null;
           break; // success
         } catch (e: any) {
+          if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
           streamErr = e;
           if (activeCacheName) {
             console.warn(
@@ -5795,7 +5809,13 @@ toolConfig: activeCacheName
         }
       };
       let lastGroundingMeta: any = null;
+      let firstChunkReceived = false;
+      try {
       for await (const chunk of stream!) {
+        if (!firstChunkReceived) {
+          firstChunkReceived = true;
+          if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+        }
         if (!isConnected()) break;
 
         // ── Extract thought summaries from Gemini's thinking mode ────────
@@ -5883,6 +5903,9 @@ toolConfig: activeCacheName
             }
           }
         }
+      }
+      } finally {
+        if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
       }
       // Flush remaining buffered text (strip internal markers if present)
       if (pendingTextBuf) {
