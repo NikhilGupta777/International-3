@@ -2528,6 +2528,18 @@ async function readAttachmentText(
       clearTimeout(timer),
     );
     if (!r.ok) throw new Error(`Could not read uploaded file: ${r.status}`);
+    // SECURITY: Re-validate post-redirect URL against internal hosts (SSRF).
+    const postRedirectUrl = r.url || url;
+    try {
+      const postRedirectParsed = new URL(postRedirectUrl);
+      if (isInternalHost(postRedirectParsed.hostname)) {
+        throw new Error(
+          "Attachment URL redirect resolves to an internal/private network address.",
+        );
+      }
+    } catch (err: any) {
+      if (err.message.includes("internal/private")) throw err;
+    }
     const contentType = r.headers.get("content-type") ?? attachment.mimeType;
     if (contentType.includes("pdf")) {
       return {
@@ -4884,30 +4896,56 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isInternalFetch = sourceUrl.startsWith("/");
+      const resolvedUrl = isInternalFetch
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: For external URLs, validate against SSRF before fetching.
+      // Internal (relative) URLs are intentionally allowed — they are the
+      // primary use case (saving agent-produced artifacts from /api/...).
+      if (!isInternalFetch) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private")) throw err;
+          // Invalid URL — let fetch fail naturally
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
-      const r = await fetch(resolvedUrl, {
-        headers: {
-          Cookie: req.headers.cookie ?? "",
-          "X-Internal-Agent": INTERNAL_AGENT_SECRET,
-        },
-        redirect: "follow",
-      });
+      // Only send auth headers for internal fetches; never leak secrets to
+      // external servers. Use redirect:"manual" for external URLs to prevent
+      // SSRF via redirect to internal hosts.
+      const fetchArtifact = async (): Promise<globalThis.Response> => {
+        if (isInternalFetch) {
+          return fetch(resolvedUrl, {
+            headers: {
+              Cookie: req.headers.cookie ?? "",
+              "X-Internal-Agent": INTERNAL_AGENT_SECRET,
+            },
+            redirect: "follow",
+          });
+        }
+        const initial = await fetch(resolvedUrl, { redirect: "manual" });
+        if (initial.status >= 300 && initial.status < 400) {
+          const location = initial.headers.get("location");
+          if (!location) throw new Error("Redirect with no Location header");
+          const redirectUrl = new URL(location, resolvedUrl);
+          if (isInternalHost(redirectUrl.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace redirect target resolves to an internal/private network address.",
+            );
+          }
+          return fetch(redirectUrl.toString(), { redirect: "follow" });
+        }
+        return initial;
+      };
+      const r = await fetchArtifact();
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
@@ -5077,16 +5115,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname.toLowerCase());
   } catch {
     return true;
   }
@@ -5384,13 +5413,17 @@ router.post("/agent/chat", async (req, res) => {
                     `[agent] Downloading media attachment to upload to GCS: ${a.url}`,
                   );
                   const tempPath = await downloadUrlToTempFile(a.url);
-                  const destinationBlobName = `chat_attachments/${runId}/${randomUUID()}_${a.name || "file"}`;
-                  const gsUri = await uploadLocalFileToGCS(
-                    tempPath,
-                    destinationBlobName,
-                    a.mimeType,
-                  );
-                  await deleteLocalFile(tempPath);
+                  let gsUri: string;
+                  try {
+                    const destinationBlobName = `chat_attachments/${runId}/${randomUUID()}_${a.name || "file"}`;
+                    gsUri = await uploadLocalFileToGCS(
+                      tempPath,
+                      destinationBlobName,
+                      a.mimeType,
+                    );
+                  } finally {
+                    await deleteLocalFile(tempPath).catch(() => {});
+                  }
                   globalUrlToGcsCache.set(cacheKey, gsUri);
                   finalUri = gsUri;
                   console.log(
@@ -6224,14 +6257,10 @@ toolConfig: activeCacheName
   } finally {
     clearInterval(keepAlive);
     if (!runCompleted) {
-      // LA-2 fix: Await job cancellation when the client disconnected.
-      // The previous fire-and-forget pattern risked Lambda freezing before
-      // cancels reached the internal API.
-      if (clientConnected) {
-        void cancelAgentRunJobs(req, "agent_error");
-      } else {
-        await cancelAgentRunJobs(req, "client_abort").catch(() => {});
-      }
+      // Always await job cancellation — fire-and-forget risks Lambda freezing
+      // before cancels reach the internal API.
+      const reason = clientConnected ? "agent_error" : "client_abort";
+      await cancelAgentRunJobs(req, reason).catch(() => {});
     }
     if (!res.writableEnded) res.end();
   }
