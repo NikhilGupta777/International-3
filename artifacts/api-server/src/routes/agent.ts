@@ -113,7 +113,7 @@ const E2B_APP_CODE_MAX_TOTAL_CHARS = Math.max(
   ),
 );
 const ENABLE_NATIVE_AGENT_SEARCH = !/^(0|false|no|off)$/i.test(
-  String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "true").trim(),
+  String(process.env.COPILOT_NATIVE_GOOGLE_SEARCH ?? "false").trim(),
 );
 const DEFAULT_VIDEO_FORMAT_SELECTOR =
   "bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[ext=m4a]/" +
