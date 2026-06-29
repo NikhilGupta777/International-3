@@ -3018,9 +3018,9 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
         controller = new AbortController();
         const currentController = controller;
         timeoutId = setTimeout(() => {
-          console.warn(`[video-editor] Stream attempt ${attempt + 1}/${maxStreamAttempts} timed out after 10s. Aborting...`);
+          console.warn(`[video-editor] Stream attempt ${attempt + 1}/${maxStreamAttempts} timed out after 20s. Aborting...`);
           currentController.abort();
-        }, 10000);
+        }, 20000);
         try {
           const currentModel = streamFallbackModels[Math.min(
             streamFallbackModels.length - 1,
@@ -3085,8 +3085,12 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
             aggregatedParts.push(part);
             if (part.functionCall) fnCalls.push(part.functionCall);
             if (typeof part.text === "string" && part.text) {
-              text += part.text;
-              send({ type: "text", content: part.text });
+              if (part.thought === true) {
+                send({ type: "thought", content: part.text });
+              } else {
+                text += part.text;
+                send({ type: "text", content: part.text });
+              }
             }
           }
         }

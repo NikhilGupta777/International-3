@@ -356,6 +356,7 @@ export type EditorChatEvent =
   | { type: "user_message"; message: EditorChatMessage }
   | { type: "assistant_message"; message: EditorChatMessage }
   | { type: "text"; content: string }
+  | { type: "thought"; content: string }
   | { type: "tool_start"; name: string; args: any; toolCallId?: string }
   | { type: "tool_progress"; name: string; message?: string; percent?: number }
   | { type: "tool_done"; name: string; ok: boolean; message?: string; error?: string; project?: EditorProject; job?: EditorJobSummary; toolCallId?: string }

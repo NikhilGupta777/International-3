@@ -33,24 +33,25 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
-type ReasoningMode = "gemini-3.1-flash-lite-low" | "gemini-3.1-flash-lite-high";
+type ReasoningMode = "gemini-3.1-flash-lite-low" | "gemini-3.1-flash-lite-high" | "gemma-4-31b-it";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "gemini-3.1-flash-lite-low",   label: "⚡ Fast",      description: "Flash Lite — low thinking, cheap & fast", ultra: false },
-  { id: "gemini-3.1-flash-lite-high",  label: "🧠 Thinking",  description: "Flash Lite — high thinking, deeper reasoning", ultra: false },
+  { id: "gemini-3.1-flash-lite-low",   label: "⚡ Fast",      description: "Low thinking, cheap & fast", ultra: false },
+  { id: "gemini-3.1-flash-lite-high",  label: "🧠 Thinking",  description: "High thinking, deeper reasoning", ultra: false },
+  { id: "gemma-4-31b-it",              label: "🧠🧠🧠 Ultra",  description: "Highest thinking, deepest reasoning", ultra: true },
 ];
 
 function readReasoningInitial(): ReasoningMode {
   try {
     const stored = localStorage.getItem(REASONING_KEY);
     // New model IDs
-    if (stored === "gemini-3.1-flash-lite-low" || stored === "gemini-3.1-flash-lite-high") return stored;
+    if (stored === "gemini-3.1-flash-lite-low" || stored === "gemini-3.1-flash-lite-high" || stored === "gemma-4-31b-it") return stored;
     // Backward compat: old keys map to new flash-lite modes
     if (stored === "flash" || stored === "gemini-3-flash-preview" || stored === "gemini-2.5-flash") return "gemini-3.1-flash-lite-low";
-    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high") return "gemini-3.1-flash-lite-high";
+    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high") return "gemma-4-31b-it";
     if (stored === "gemini-3.1-flash-lite") return "gemini-3.1-flash-lite-low";
   } catch { /* localStorage unavailable */ }
-  // Backwards compat: if only the legacy `ultra` flag exists, derive a mode
-  return readUltraInitial() ? "gemini-3.1-flash-lite-high" : "gemini-3.1-flash-lite-low";
+  // Default is now gemma-4-31b-it (Ultra)!
+  return "gemma-4-31b-it";
 }
 
 function getInputMaxHeight(): number {

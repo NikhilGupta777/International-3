@@ -1,6 +1,31 @@
 import React, { useState, useRef, useEffect, useCallback, forwardRef, useImperativeHandle, type KeyboardEvent, type DragEvent } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
+  Film,
+  Music,
+  Wand2,
+  Palette,
+  Smartphone,
+  Link2,
+  History,
+  Plus,
+  Trash2,
+  ChevronLeft,
+  Send,
+  Globe,
+  Sparkles,
+  Play,
+  Check,
+  AlertCircle,
+  X,
+  ChevronRight,
+  ChevronDown,
+  Download,
+  ThumbsUp,
+  ThumbsDown,
+  FolderOpen
+} from "lucide-react";
+import {
   videoEditorApi,
   type EditorProject,
   type EditorProjectSummary,
@@ -42,7 +67,7 @@ type AttachedAsset = {
 type ChatBubble =
   | { kind: "user"; id: string; text: string; assets: AttachedAsset[] }
   | { kind: "assistant"; id: string; text: string }
-  | { kind: "thinking"; id: string; steps: string[] }
+  | { kind: "thinking"; id: string; steps: string[]; thoughts?: string; status?: "active" | "done"; duration?: number }
   | { kind: "system"; id: string; text: string }
   | { kind: "render-progress"; id: string; jobId: string; progress: number; message: string; status: string }
   | {
@@ -132,26 +157,37 @@ function AssetChip({ asset, onRemove }: { asset: AttachedAsset; onRemove: () => 
         ) : thumb && asset.type === "video" ? (
           <video src={thumb} muted playsInline preload="metadata" />
         ) : (
-          <span className="avs-chip-emoji">{asset.type === "audio" ? "🎵" : "🎬"}</span>
+          <span className="avs-chip-emoji">{asset.type === "audio" ? <Music className="w-4 h-4 text-indigo-400 inline-block align-middle" /> : <Film className="w-4 h-4 text-teal-400 inline-block align-middle" />}</span>
         )}
         {uploading && <span className="avs-chip-prog"><span style={{ width: `${pct}%` }} /></span>}
-        {ready && <span className="avs-chip-ready">✓</span>}
+        {ready && <span className="avs-chip-ready"><Check className="w-3 h-3 text-teal-500 inline-block align-middle" /></span>}
       </span>
       <span className="avs-chip-meta">
         <span className="avs-chip-name">{shortName}</span>
         <span className="avs-chip-sub">{asset.uploadError ? "failed" : uploading ? `${pct}%` : asset.type}</span>
       </span>
-      <button type="button" className="avs-chip-x" onClick={onRemove} aria-label={`Remove ${asset.name}`}>×</button>
+      <button type="button" className="avs-chip-x" onClick={onRemove} aria-label={`Remove ${asset.name}`}><X className="w-3 h-3 m-auto" /></button>
     </div>
   );
 }
 
+function renderTileIcon(iconName: string) {
+  switch (iconName) {
+    case "film": return <Film className="w-5 h-5" />;
+    case "wand": return <Wand2 className="w-5 h-5" />;
+    case "palette": return <Palette className="w-5 h-5" />;
+    case "phone": return <Smartphone className="w-5 h-5" />;
+    case "link": return <Link2 className="w-5 h-5" />;
+    default: return null;
+  }
+}
+
 const FEATURE_TILES = [
-  { icon: "🎬", title: "Cut & Join Clips", desc: "Go to clips →", prefill: "I'll help you cut and join video clips. Upload your videos to start." },
-  { icon: "🪄", title: "Speech Cleanup", desc: "Create now →", prefill: "Upload a video and I'll clean it up — trim dead air, fix audio, color grade." },
-  { icon: "🎨", title: "Add Branding", desc: "Go to branding →", prefill: "Upload your video and logo — I'll add branding and polish it." },
-  { icon: "📱", title: "Make Reels", desc: "Reformat now →", prefill: "Upload your video — I'll make it vertical for Instagram Reels or YouTube Shorts." },
-  { icon: "🔗", title: "From YouTube", desc: "Paste a link →", prefill: "" },
+  { icon: "film", title: "Cut & Join Clips", desc: "Cut, trim, and join multiple video clips", prefill: "I'll help you cut and join video clips. Upload your videos to start." },
+  { icon: "wand", title: "Speech Cleanup", desc: "Remove silence and polish speech audio", prefill: "Upload a video and I'll clean it up — trim dead air, fix audio, color grade." },
+  { icon: "palette", title: "Add Branding", desc: "Add logo watermarks and brand intro/outros", prefill: "Upload your video and logo — I'll add branding and polish it." },
+  { icon: "phone", title: "Make Reels", desc: "Convert landscape video to vertical 9:16 reels", prefill: "Upload your video — I'll make it vertical for Instagram Reels or YouTube Shorts." },
+  { icon: "link", title: "From YouTube", desc: "Import source footage directly from YouTube", prefill: "" },
 ];
 
 const CAPABILITY_PILLS: Array<{ key: string; icon: string; label: string; sub: string }> = [
@@ -166,21 +202,22 @@ const CAPABILITY_PILLS: Array<{ key: string; icon: string; label: string; sub: s
 function CharacterAvatar() {
   return (
     <span className="ai-video-studio__chr-avatar" aria-hidden="true">
-      <svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+      <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
         <defs>
-          <linearGradient id="aiv-chr-body" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#5eead4" />
-            <stop offset="100%" stopColor="#0ea5e9" />
+          <linearGradient id="avatar-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#2563eb" />
+            <stop offset="50%" stopColor="#8b5cf6" />
+            <stop offset="100%" stopColor="#ec4899" />
           </linearGradient>
+          <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+            <feGaussianBlur stdDeviation="1.5" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
         </defs>
-        <path d="M18 3 C 26 12, 30 18, 30 23 A 12 12 0 0 1 6 23 C 6 18, 10 12, 18 3 Z"
-              fill="url(#aiv-chr-body)" />
-        <ellipse cx="14" cy="22" rx="2.4" ry="3" fill="#0d1117" />
-        <ellipse cx="22" cy="22" rx="2.4" ry="3" fill="#0d1117" />
-        <ellipse cx="15" cy="21" rx="0.7" ry="0.9" fill="#ffffff" />
-        <ellipse cx="23" cy="21" rx="0.7" ry="0.9" fill="#ffffff" />
-        <path d="M11 7 L 13 11 L 9 10 Z" fill="#34d399" opacity="0.85" />
-        <path d="M25 7 L 27 11 L 23 10 Z" fill="#34d399" opacity="0.85" transform="scale(-1,1) translate(-50,0)" />
+        <circle cx="20" cy="20" r="18" stroke="url(#avatar-grad)" strokeWidth="1.2" opacity="0.4" />
+        <circle cx="20" cy="20" r="15" fill="url(#avatar-grad)" filter="url(#glow)" />
+        <path d="M20 12L22.2 17.8L28 20L22.2 22.2L20 28L17.8 22.2L12 20L17.8 17.8L20 12Z" fill="#ffffff" />
+        <circle cx="20" cy="20" r="2.2" fill="#ffffff" opacity="0.9" />
       </svg>
     </span>
   );
@@ -318,7 +355,7 @@ function ChooseAssetsModal({
             className="ai-video-studio__modal-close"
             onClick={onClose}
             aria-label="Close"
-          >×</button>
+          ><X className="w-4 h-4 m-auto" /></button>
         </div>
         <div className="ai-video-studio__modal-tabs" role="tablist">
           <button
@@ -398,7 +435,7 @@ function ChooseAssetsModal({
                   onClick={() => { onSelectAsset({ path: a.path, name, type }); onClose(); }}
                 >
                   <div className="ai-video-studio__modal-asset-item-name">
-                    {type === "video" ? "🎬 " : type === "audio" ? "🎵 " : "🖼 "}{name}
+                    {type === "video" ? <Film className="w-3.5 h-3.5 mr-1.5 inline-block align-middle text-teal-600" /> : type === "audio" ? <Music className="w-3.5 h-3.5 mr-1.5 inline-block align-middle text-indigo-500" /> : <Palette className="w-3.5 h-3.5 mr-1.5 inline-block align-middle text-pink-500" />}{name}
                   </div>
                   <div className="ai-video-studio__modal-asset-item-meta">{(a.size / 1024 / 1024).toFixed(1)} MB</div>
                 </button>
@@ -1156,6 +1193,8 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
       let thinkingSteps: string[] = ["Thinking..."];
       let assistantId: string | null = null;
       let assistantText = "";
+      let thoughtText = "";
+      let iterationCount = 0;
       // Track the start of this run so the completed-summary bubble can
       // surface a human-readable elapsed time matching what HeyGen shows
       // ("Completed 462s"). Also collect the unique completed tools so we
@@ -1164,7 +1203,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
       const completedLabels = new Set<string>();
 
       // Optimistically push the thinking bubble immediately so the user gets instant visual feedback
-      setBubbles((prev) => [...prev, { kind: "thinking", id: thinkingId!, steps: [...thinkingSteps] }]);
+      setBubbles((prev) => [...prev, { kind: "thinking", id: thinkingId!, steps: [...thinkingSteps], status: "active" }]);
 
       const dropThinkingBubble = () => {
         if (thinkingId) {
@@ -1173,6 +1212,21 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
           thinkingId = null;
         }
         thinkingSteps = [];
+      };
+      const markThinkingDone = () => {
+        if (thinkingId) {
+          const hasThoughts = thoughtText.trim().length > 0;
+          const hasTools = thinkingSteps.filter((s) => s !== "Thinking...").length > 0;
+          if (!hasThoughts && !hasTools) {
+            dropThinkingBubble();
+          } else {
+            const tid = thinkingId;
+            const elapsedSec = (Date.now() - runStartedAt) / 1000;
+            setBubbles((prev) =>
+              prev.map((b) => (b.id === tid && b.kind === "thinking" ? { ...b, status: "done", duration: elapsedSec } : b))
+            );
+          }
+        }
       };
       const startNewAssistantStream = () => {
         // Reset assistant accumulator so the next `text` event creates a
@@ -1186,21 +1240,24 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
         onEvent: (event: EditorChatEvent) => {
           switch (event.type) {
             case "thinking":
-              // New iteration boundary — drop the previous iteration's
-              // thinking bubble so its now-stale step list doesn't bleed
-              // into the new pass, and ensure the next `text` chunk opens
-              // a fresh assistant bubble.
-              dropThinkingBubble();
+              iterationCount++;
+              if (iterationCount > 1) {
+                thinkingSteps.push("Planning next actions...");
+                if (thinkingId) {
+                  const tid = thinkingId;
+                  const steps = [...thinkingSteps];
+                  setBubbles((prev) =>
+                    prev.map((b) => (b.id === tid && b.kind === "thinking" ? { ...b, steps, status: "active" } : b))
+                  );
+                }
+              }
               startNewAssistantStream();
-              thinkingId = safeUuid();
-              thinkingSteps = ["Thinking..."];
-              setBubbles((prev) => [...prev, { kind: "thinking", id: thinkingId!, steps: [...thinkingSteps] }]);
               break;
 
             case "text":
               if (!assistantId) {
                 assistantId = safeUuid();
-                dropThinkingBubble();
+                markThinkingDone();
                 assistantText = event.content;
                 const newId = assistantId;
                 setBubbles((prev) => [...prev, { kind: "assistant", id: newId, text: assistantText }]);
@@ -1209,6 +1266,17 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                 const idForUpdate = assistantId;
                 setBubbles((prev) =>
                   prev.map((b) => (b.id === idForUpdate ? { ...b, text: assistantText } : b))
+                );
+              }
+              break;
+
+            case "thought":
+              thoughtText += event.content;
+              if (thinkingId) {
+                const idForUpdate = thinkingId;
+                const txt = thoughtText;
+                setBubbles((prev) =>
+                  prev.map((b) => (b.id === idForUpdate ? { ...b, thoughts: txt } : b))
                 );
               }
               break;
@@ -1292,7 +1360,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
               break;
 
             case "proposal":
-              dropThinkingBubble();
+              markThinkingDone();
               startNewAssistantStream();
               setBubbles((prev) => [
                 ...prev,
@@ -1316,25 +1384,13 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
               break;
 
             case "done":
-              dropThinkingBubble();
+              markThinkingDone();
               setIsStreaming(false);
-              // Push a "Completed Xs" summary card with the list of tools
-              // that ran during this turn. This mirrors the collapsible
-              // summary HeyGen shows under the assistant message and lets
-              // the user inspect what the agent actually did.
-              if (completedLabels.size > 0) {
-                const elapsedSec = (Date.now() - runStartedAt) / 1000;
-                const stepsArr = Array.from(completedLabels);
-                setBubbles((prev) => [
-                  ...prev,
-                  { kind: "summary" as const, id: safeUuid(), elapsedSec, steps: stepsArr },
-                ]);
-              }
               checkForCompletedRender(pid);
               break;
 
             case "error":
-              dropThinkingBubble();
+              markThinkingDone();
               setIsStreaming(false);
               setBubbles((prev) => [
                 ...prev,
@@ -2342,7 +2398,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                     aria-expanded={showAttachPopover}
                     aria-label="Add asset or knowledge"
                   >
-                    ＋
+                    <Plus className="w-5 h-5 m-auto" />
                   </button>
                   <AnimatePresence>
                     {showAttachPopover && (
@@ -2359,7 +2415,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                             setShowAttachPopover(false);
                           }}
                         >
-                          🖼 Assets
+                          <FolderOpen className="w-4 h-4 mr-2 text-teal-600 align-middle" />Assets
                         </button>
                         <button
                           onClick={() => {
@@ -2368,7 +2424,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                             setShowAttachPopover(false);
                           }}
                         >
-                          📖 Knowledge
+                          <Globe className="w-4 h-4 mr-2 text-indigo-600 align-middle" />Knowledge
                         </button>
                       </motion.div>
                     )}
@@ -2441,7 +2497,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
             exit={{ opacity: 0 }}
           >
             <div className="ai-video-studio__drag-content">
-              <span className="ai-video-studio__drag-icon">📁</span>
+              <FolderOpen className="w-10 h-10 text-teal-500 mb-1" />
               <span>Drop files to add</span>
             </div>
           </motion.div>
@@ -2476,7 +2532,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
           transition={{ duration: 0.5 }}
         >
           <h1 className="ai-video-studio__hero-title">
-            <span className="ai-video-studio__hero-sparkle">✨</span> Edit it with AI
+            <Sparkles className="w-8 h-8 inline-block mr-2 text-yellow-400 align-middle" />Edit it with AI
           </h1>
           <p className="ai-video-studio__hero-subtitle">
             Your AI video editor. Upload clips, describe the edit, get the video.
@@ -2485,7 +2541,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
             className="ai-video-studio__history-toggle"
             onClick={openHistoryPanel}
           >
-            📋 Recent Projects
+            <History className="w-4 h-4 mr-1.5 inline-block align-middle" />Recent Projects
           </button>
         </motion.div>
 
@@ -2529,7 +2585,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                   aria-expanded={showAttachPopover}
                   aria-label="Add asset or knowledge"
                 >
-                  ＋
+                  <Plus className="w-5 h-5 m-auto" />
                 </button>
                 <AnimatePresence>
                   {showAttachPopover && (
@@ -2546,7 +2602,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                           setShowAttachPopover(false);
                         }}
                       >
-                        🖼 Assets
+                        <FolderOpen className="w-4 h-4 mr-2 text-teal-600 align-middle" />Assets
                       </button>
                       <button
                         onClick={() => {
@@ -2555,7 +2611,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                           setShowAttachPopover(false);
                         }}
                       >
-                        📖 Knowledge
+                        <Globe className="w-4 h-4 mr-2 text-indigo-600 align-middle" />Knowledge
                       </button>
                     </motion.div>
                   )}
@@ -2596,10 +2652,14 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
               onClick={() => handleTileClick(tile)}
               aria-label={`${tile.title}: ${tile.desc}`}
             >
-              <span className="ai-video-studio__tile-icon" aria-hidden="true">{tile.icon}</span>
+              <span className="ai-video-studio__tile-icon" aria-hidden="true">
+                {renderTileIcon(tile.icon)}
+              </span>
               <span className="ai-video-studio__tile-title">{tile.title}</span>
               <span className="ai-video-studio__tile-desc">{tile.desc}</span>
-              <span className="ai-video-studio__tile-arrow" aria-hidden="true">→</span>
+              <span className="ai-video-studio__tile-arrow" aria-hidden="true">
+                <ChevronRight className="w-5 h-5" />
+              </span>
             </button>
           ))}
         </motion.div>
@@ -2639,7 +2699,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                       title={failed ? a.uploadError : undefined}
                     >
                       <span className="ai-video-studio__asset-chip-icon">
-                        {a.type === "video" ? "▶" : a.type === "audio" ? "♪" : "🖼"}
+                        {a.type === "video" ? <Film className="w-3.5 h-3.5 text-teal-600 inline-block align-middle" /> : a.type === "audio" ? <Music className="w-3.5 h-3.5 text-indigo-500 inline-block align-middle" /> : <Palette className="w-3.5 h-3.5 text-pink-500 inline-block align-middle" />}
                       </span>
                       <div>
                         <div className="ai-video-studio__msg-asset-name">{a.name}</div>
@@ -2683,24 +2743,56 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
           <div className="ai-video-studio__think-row">
             <CharacterAvatar />
             <div className="ai-video-studio__think-body">
-              <div className="ai-video-studio__think-header">
-                Thinking
-                <span className="ai-video-studio__think-dots">
-                  <span>.</span><span>.</span><span>.</span>
-                </span>
-              </div>
-              {bubble.steps.length > 0 && (
-                <ul className="ai-video-studio__think-bullets">
-                  {bubble.steps.map((step, i) => (
-                    <li
-                      key={i}
-                      className={step.startsWith("✓") ? "ai-video-studio__think-bullet--done" : ""}
-                    >
-                      {step.replace(/^✓ /, "")}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <details
+                className={`ai-video-studio__think-dropdown ${bubble.status === "done" ? "ai-video-studio__think-dropdown--done" : ""}`}
+                {...({ defaultOpen: true } as any)}
+              >
+                <summary className="ai-video-studio__think-dropdown-header">
+                  <div className="ai-video-studio__think-dropdown-title-wrap">
+                    {bubble.status === "done" ? (
+                      <Check className="w-3.5 h-3.5 text-teal-500 inline-block align-middle mr-1.5" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5 text-purple-500 animate-pulse inline-block align-middle mr-1.5" />
+                    )}
+                    <span className="ai-video-studio__think-dropdown-title">
+                      {bubble.status === "done"
+                        ? bubble.duration
+                          ? `Thought Process (${Math.round(bubble.duration)}s)`
+                          : "Thought Process"
+                        : "Thinking"}
+                    </span>
+                    {bubble.status !== "done" && (
+                      <span className="ai-video-studio__think-dots">
+                        <span>.</span><span>.</span><span>.</span>
+                      </span>
+                    )}
+                  </div>
+                  <ChevronDown className="ai-video-studio__think-chevron w-4 h-4 text-gray-400 transition-transform" />
+                </summary>
+
+                <div className="ai-video-studio__think-dropdown-content">
+                  {bubble.steps.filter((step) => step !== "Thinking...").length > 0 && (
+                    <ul className="ai-video-studio__think-bullets">
+                      {bubble.steps
+                        .filter((step) => step !== "Thinking...")
+                        .map((step, i) => (
+                          <li
+                            key={i}
+                            className={step.startsWith("✓") ? "ai-video-studio__think-bullet--done" : ""}
+                          >
+                            {step.replace(/^✓ /, "")}
+                          </li>
+                        ))}
+                    </ul>
+                  )}
+                  {bubble.thoughts && (
+                    <div className="ai-video-studio__think-raw-thoughts">
+                      <div className="ai-video-studio__think-raw-thoughts-header">Gemini Reasoning Stream</div>
+                      <div className="ai-video-studio__think-raw-thoughts-body">{bubble.thoughts}</div>
+                    </div>
+                  )}
+                </div>
+              </details>
             </div>
           </div>
         );
@@ -2796,7 +2888,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                   onClick={() => handleApplyProposal(bubble.proposal.proposalId)}
                   disabled={isStreaming || applyingProposalId === bubble.proposal.proposalId}
                 >
-                  ✓ Looks good, render it
+                  <Check className="w-4 h-4 mr-1.5 inline-block align-middle" />Looks good, render it
                 </button>
                 <button
                   className="ai-video-studio__proposal-editor"
@@ -2807,14 +2899,14 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                   })}
                   disabled={isStreaming}
                 >
-                  🎬 Open editor
+                  <Film className="w-4 h-4 mr-1.5 inline-block align-middle" />Open editor
                 </button>
                 <button
                   className="ai-video-studio__proposal-refine"
                   onClick={() => handleRefineProposal(bubble.proposal.proposalId)}
                   disabled={isStreaming}
                 >
-                  ✏ Change plan
+                  <Wand2 className="w-4 h-4 mr-1.5 inline-block align-middle" />Change plan
                 </button>
               </div>
             )}
@@ -2829,7 +2921,7 @@ export const AiVideoStudio = forwardRef(function AiVideoStudio({
                     title: bubble.proposal.summary,
                   })}
                 >
-                  🎬 Open editor
+                  <Film className="w-4 h-4 mr-1.5 inline-block align-middle" />Open editor
                 </button>
               </div>
             )}

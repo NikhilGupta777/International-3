@@ -67,6 +67,7 @@ const ALLOWED_MODELS = new Set([
   "gemini-3.1-flash-lite",
   "gemini-3.1-flash-lite-low",
   "gemini-3.1-flash-lite-high",
+  "gemma-4-31b-it",
 ]);
 
 // buildThinkingConfig imported from gemini-client.ts
@@ -5305,6 +5306,9 @@ router.post("/agent/chat", async (req, res) => {
   } else if (requestedModel === "gemini-3.1-flash-lite-high") {
     activeModel = "gemini-3.1-flash-lite";
     thinkingLevel = "HIGH";
+  } else if (requestedModel === "gemma-4-31b-it") {
+    activeModel = "gemma-4-31b-it";
+    thinkingLevel = "HIGH";
   } else if (
     requestedModel &&
     requestedModel !== "default" &&
@@ -5521,9 +5525,9 @@ router.post("/agent/chat", async (req, res) => {
         controller = new AbortController();
         const currentController = controller;
         timeoutId = setTimeout(() => {
-          console.warn(`[agent] Stream attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS} timed out after 10s. Aborting...`);
+          console.warn(`[agent] Stream attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS} timed out after 20s. Aborting...`);
           currentController.abort();
-        }, 10000);
+        }, 20000);
         try {
           const streamModel = streamFallbackModels[Math.min(
             streamFallbackModels.length - 1,
@@ -5578,18 +5582,8 @@ toolConfig: activeCacheName
               cachedContent: activeCacheName,
             } as any,
           });
-          const bufferedChunks: any[] = [];
-          let firstCandidateChunkReceived = false;
-          for await (const chunk of candidateStream) {
-            if (!firstCandidateChunkReceived) {
-              firstCandidateChunkReceived = true;
-              if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
-            }
-            if (!isConnected()) break;
-            bufferedChunks.push(chunk);
-          }
-          if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
-          stream = bufferedChunks;
+          // Stream live chunks directly to the client instead of blocking/buffering them
+          stream = candidateStream;
           streamErr = null;
           break; // success
         } catch (e: any) {
@@ -5859,18 +5853,19 @@ toolConfig: activeCacheName
         // When includeThoughts is true, parts with thought===true contain
         // the model's reasoning summary. Stream these to the client so
         // users can see what the agent is thinking in real time.
+        let chunkText = "";
         const chunkParts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const tp of chunkParts) {
           if (tp.thought && tp.text) {
             sseEvent(res, { type: "thought_delta", runId, content: tp.text });
+          } else if (tp.text) {
+            chunkText += tp.text;
           }
         }
 
         // ── Track grounding metadata from native Google Search grounding ─
         const gm = chunk.candidates?.[0]?.groundingMetadata as any;
         if (gm) lastGroundingMeta = gm;
-
-        const chunkText = chunk.text;
         if (chunkText) {
           fullText += chunkText;
           pendingTextBuf += chunkText;
