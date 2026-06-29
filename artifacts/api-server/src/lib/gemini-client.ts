@@ -236,12 +236,9 @@ export function getPreferredGeminiApiKey(caller?: string): string {
 export function getGeminiApiKeyForAttempt(caller: string | undefined, attempt: number): string {
   const keys = getPersonalKeysForCaller(caller);
   if (keys.length === 0) return "";
-  const startIndex = Math.max(0, attempt) % keys.length;
-  for (let i = 0; i < keys.length; i++) {
-    const candidate = keys[(startIndex + i) % keys.length];
-    if (!isKeyCooledDown(candidate)) return candidate;
-  }
-  return keys[startIndex];
+  const healthyKeys = keys.filter((key) => !isKeyCooledDown(key));
+  const candidates = healthyKeys.length > 0 ? healthyKeys : keys;
+  return candidates[Math.max(0, attempt) % candidates.length];
 }
 
 export function getPrimaryGeminiApiKey(): string {
@@ -340,7 +337,7 @@ export async function generateContentWithRotation(
   for (const model of models) {
     for (let keyAttempt = 0; keyAttempt < Math.min(keys.length, 13); keyAttempt++) {
       attempt++;
-      const apiKey = getRotatedGeminiApiKey(options.caller);
+      const apiKey = getGeminiApiKeyForAttempt(options.caller, keyAttempt);
 
       const baseKeys = getPersonalGeminiApiKeysList();
       const indexInBase = baseKeys.indexOf(apiKey);

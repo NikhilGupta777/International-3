@@ -12,11 +12,12 @@ import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
 import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
-import { createGeminiClient, isGeminiConfigured, buildThinkingConfig, getPersonalGeminiApiKeysList, getPersonalKeysForCaller } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, buildThinkingConfig, getGeminiApiKeyForAttempt, getPersonalGeminiApiKeysList, getPersonalKeysForCaller } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb, putEditorJobQueued, updateEditorJobStatus, isEditorDdbConfigured } from "../lib/youtube-queue";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { recordKeyFailure } from "../utils/key-circuit-breaker";
 
 
 const VIDEO_EDITOR_QUEUE_ENABLED =
@@ -3012,7 +3013,8 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
             streamFallbackModels.length - 1,
             Math.floor(attempt / keyCount),
           )];
-          let currentAi = createGeminiClient({ caller: "video-editor" });
+          const currentApiKey = getGeminiApiKeyForAttempt("video-editor", attempt);
+          let currentAi = createGeminiClient({ caller: "video-editor", apiKey: currentApiKey });
           if (attempt > 0) {
             await new Promise((r) => setTimeout(r, 150 + Math.random() * 100));
           }
@@ -3039,6 +3041,8 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
         } catch (streamErr: any) {
           if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
           lastStreamErr = streamErr;
+          const failedApiKey = getGeminiApiKeyForAttempt("video-editor", attempt);
+          if (failedApiKey) recordKeyFailure(failedApiKey, streamErr).catch(() => {});
           console.warn(`[video-editor] generateContentStream attempt ${attempt + 1} failed: ${streamErr.message || streamErr}`);
         }
       }
@@ -3439,4 +3443,3 @@ router.get("/projects/:projectId/proposals", async (req: Request, res: Response)
 });
 
 export default router;
-  

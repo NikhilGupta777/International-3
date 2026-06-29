@@ -1332,7 +1332,6 @@ async function generateWithPreferredModels(
           `${label} timed out on ${keyLabel} ${model}`,
         );
         logger.info({ model, keyLabel, label }, `${label} completed`);
-        setNextKeyIndex((i + 1) % clients.length);
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
@@ -1389,7 +1388,6 @@ async function generateWithKeyRotation(
       try {
         const result = await clients[i].models.generateContent(requestFactory(model));
         logger.info({ model, keyLabel, label }, `${label} completed via personal ${keyLabel}`);
-        setNextKeyIndex((i + 1) % clients.length);
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
@@ -2690,7 +2688,6 @@ async function processFastAudioPipeline(params: {
       if (draftSrt) {
         draftSrt = stripFences(draftSrt);
         logger.info({ keyLabel }, "Pass 1: Subtitle transcription completed");
-        setNextKeyIndex((ki + 1) % clients.length);
         break; // Pass 1 succeeded!
       }
     } catch (err) {
@@ -2790,7 +2787,6 @@ async function processFastAudioPipeline(params: {
         // Always restore original draft timestamps if Gemini garbles them during translation
         correctedFinalSrt = restoreTimestamps(draftSrt, pass2Output);
         logger.info({ keyLabel }, "Pass 2: Subtitle verification and translation completed");
-        setNextKeyIndex((ki + 1) % clients.length);
         break; // Pass 2 succeeded!
       }
     } catch (err) {
@@ -3135,7 +3131,6 @@ async function processAudio(
           const strictFiltered = strictFilterMalformedTimestamps(deduped);
           correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
           
-          setNextKeyIndex((ki + 1) % clients.length);
           break; // Transcription and cleanup succeeded - exit key loop
 
         } catch (err) {
