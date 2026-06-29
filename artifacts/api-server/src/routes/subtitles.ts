@@ -2631,7 +2631,14 @@ async function processFastAudioPipeline(params: {
     throw new Error("No Gemini API key configured");
   }
 
+  // FIX 1: Sanitize filename to ASCII to avoid ByteString crash when Gemini
+  // file upload sends displayName as an HTTP header (non-ASCII chars > 255 crash Node fetch).
+  const safeDisplayName = params.filename.replace(/[^\x00-\x7F]/g, "_") || "audio.wav";
+
   let draftSrt = "";
+  // pass1FileUri preserved so Pass 2 can reuse the already-uploaded file (avoid double-upload).
+  let pass1FileUri: string | null = null;
+  let pass1ClientIdx: number | null = null;
   let geminiFileName: string | null = null;
   let lastPass1Err: unknown = null;
   const hasAvailableKey = apiKeys.length === 0 || apiKeys.some((apiKey) => !isKeyCooledDown(apiKey));
@@ -2655,7 +2662,8 @@ async function processFastAudioPipeline(params: {
       // Upload the preprocessed file to Gemini File API
       const uploadResult = await client.files.upload({
         file: params.processedPath,
-        config: { mimeType: params.mimeType, displayName: params.filename },
+        // FIX 1: use sanitized ASCII-only displayName
+        config: { mimeType: params.mimeType, displayName: safeDisplayName },
       });
       geminiFileName = uploadResult.name!;
 
@@ -2688,7 +2696,12 @@ async function processFastAudioPipeline(params: {
       draftSrt = result.text?.trim() ?? "";
       if (draftSrt) {
         draftSrt = stripFences(draftSrt);
-        logger.info({ keyLabel }, "Pass 1: Subtitle transcription completed");
+        // FIX 3: Preserve the uploaded file URI and client index so Pass 2 can reuse it.
+        pass1FileUri = fileUri;
+        pass1ClientIdx = ki;
+        // Don't delete the file yet — Pass 2 will reuse it
+        geminiFileName = null;
+        logger.info({ keyLabel }, "Pass 1: Subtitle transcription completed — preserving file for Pass 2");
         break; // Pass 1 succeeded!
       }
     } catch (err) {
@@ -2700,6 +2713,7 @@ async function processFastAudioPipeline(params: {
       }
       logger.warn({ keyLabel, err }, `Pass 1: Key ${keyLabel} failed, trying next key...`);
     } finally {
+      // Only delete if geminiFileName is still set (i.e., Pass 1 failed or returned empty)
       if (geminiFileName) {
         try { await client.files.delete({ name: geminiFileName }); } catch {}
       }
@@ -2731,36 +2745,48 @@ async function processFastAudioPipeline(params: {
 
   let correctedFinalSrt = "";
   let lastPass2Err: unknown = null;
+  let pass2Succeeded = false;
+
+  // FIX 3: Try to reuse the Pass 1 uploaded file first before falling back to re-uploading.
+  const pass2StartOffset = pass1ClientIdx ?? 0;
+
   for (let offset = 0; offset < clients.length; offset++) {
-    const ki = offset;
+    const ki = (pass2StartOffset + offset) % clients.length;
     const client = clients[ki];
     const keyLabel = `key ${ki + 1}`;
-    geminiFileName = null;
+    let pass2GeminiFileName: string | null = null;
     if (apiKeys[ki] && hasAvailableKey && isKeyCooledDown(apiKeys[ki])) {
       logger.info({ keyLabel }, "Pass 2: skipping cooled-down Gemini key");
       continue;
     }
 
     try {
-      // Re-upload video/audio for deep Pass 2 analysis
-      const uploadResult = await client.files.upload({
-        file: params.processedPath,
-        config: { mimeType: params.mimeType, displayName: params.filename },
-      });
-      geminiFileName = uploadResult.name!;
+      let fileUri: string;
 
-      // Poll until ACTIVE
-      let fileInfo: any = uploadResult;
-      let attempts = 0;
-      while (fileInfo.state === "PROCESSING" && attempts < 90) {
-        await new Promise((r) => setTimeout(r, 2000));
-        if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
-        fileInfo = await client.files.get({ name: geminiFileName });
-        attempts++;
+      // FIX 3: Reuse the Pass 1 file if we're on the same key that uploaded it.
+      if (offset === 0 && pass1FileUri !== null && pass1ClientIdx === ki) {
+        fileUri = pass1FileUri;
+        logger.info({ keyLabel }, "Pass 2: Reusing Pass 1 uploaded file (no re-upload needed)");
+      } else {
+        // Different key than Pass 1 used — must re-upload for that key's auth context
+        const uploadResult = await client.files.upload({
+          file: params.processedPath,
+          // FIX 1: use sanitized ASCII-only displayName
+          config: { mimeType: params.mimeType, displayName: safeDisplayName },
+        });
+        pass2GeminiFileName = uploadResult.name!;
+
+        let fileInfo: any = uploadResult;
+        let attempts = 0;
+        while (fileInfo.state === "PROCESSING" && attempts < 90) {
+          await new Promise((r) => setTimeout(r, 2000));
+          if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
+          fileInfo = await client.files.get({ name: pass2GeminiFileName });
+          attempts++;
+        }
+        if (fileInfo.state !== "ACTIVE") throw new Error("Audio processing timed out");
+        fileUri = fileInfo.uri;
       }
-      if (fileInfo.state !== "ACTIVE") throw new Error("Audio processing timed out");
-
-      const fileUri: string = fileInfo.uri;
 
       // Call Pass 2 prompt
       const result = await client.models.generateContent({
@@ -2788,6 +2814,7 @@ async function processFastAudioPipeline(params: {
         correctedFinalSrt = params.translateTo && params.translateTo !== "none"
           ? restoreTimestamps(draftSrt, pass2Output)
           : pass2Output;
+        pass2Succeeded = true;
         logger.info({ keyLabel }, "Pass 2: Subtitle verification and translation completed");
         break; // Pass 2 succeeded!
       }
@@ -2800,8 +2827,17 @@ async function processFastAudioPipeline(params: {
       }
       logger.warn({ keyLabel, err }, `Pass 2: Key ${keyLabel} failed, trying next key...`);
     } finally {
-      if (geminiFileName) {
-        try { await client.files.delete({ name: geminiFileName }); } catch {}
+      // Clean up any file uploaded specifically for Pass 2
+      if (pass2GeminiFileName) {
+        try { await clients[ki].files.delete({ name: pass2GeminiFileName }); } catch {}
+      }
+      // Clean up the preserved Pass 1 file after the first Pass 2 attempt (whether it succeeded or not)
+      if (offset === 0 && pass1FileUri && pass1ClientIdx !== null) {
+        const pass1FileName = pass1FileUri.split("/").pop();
+        if (pass1FileName) {
+          try { await clients[pass1ClientIdx].files.delete({ name: pass1FileName }); } catch {}
+        }
+        pass1FileUri = null; // Prevent double-delete
       }
     }
   }
@@ -2809,13 +2845,12 @@ async function processFastAudioPipeline(params: {
   // Resilient fallback: if Pass 2 fails, DO NOT drop the subtitles generated by Pass 1!
   if (!correctedFinalSrt) {
     logger.warn({ err: lastPass2Err }, "Pass 2 failed. Falling back to cleaned Pass 1 draft subtitles");
-    
+
     // If translation was requested, we should perform a simple text-only translation of the Pass 1 draft
     if (params.translateTo && params.translateTo !== "none") {
       const targetLang = params.translateTo;
       try {
         logger.info({}, "Attempting text-only translation fallback for Pass 1 draft");
-        // We can use generateWithPreferredModels or a simple loop to translate
         const translatedRaw = await generateWithPreferredModels(
           ["gemini-3.5-flash"],
           (model) => ({
@@ -2850,6 +2885,14 @@ async function processFastAudioPipeline(params: {
     );
   } catch (err) {
     logger.warn({ err }, "Fast subtitle quality assertion failed, bypassing to ensure delivery");
+  }
+
+  // FIX 5: If Pass 2 failed and we're delivering a Pass 1 draft, warn the user.
+  if (!pass2Succeeded) {
+    job.qualityWarnings = [
+      ...(job.qualityWarnings ?? []),
+      "Verification pass failed — subtitles may contain timing or transcription errors (Pass 1 draft delivered)",
+    ];
   }
 
   job.status = "done";

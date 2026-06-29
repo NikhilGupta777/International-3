@@ -116,8 +116,15 @@ const BASE_STEPS_FILE = ["uploading", "generating", "correcting"];
 const TRANSLATE_STEPS = ["translating", "verifying"];
 const SUBTITLE_JOB_MISSING_GRACE_MS = 2 * 60 * 1000;
 
-/** Rough time estimate: audioDuration * 0.15s per pass + overheads */
-function estimateSeconds(durationSecs: number, hasTranslation: boolean): number {
+/** Rough time estimate per pipeline mode */
+function estimateSeconds(durationSecs: number, hasTranslation: boolean, isFast: boolean): number {
+  if (isFast) {
+    // Fast 2-pass: ~0.08s per second of audio per pass + smaller overhead
+    const perPassSecs = Math.ceil(durationSecs * 0.08);
+    const translationSecs = hasTranslation ? 45 : 0;
+    return Math.max(20, perPassSecs * 2 + translationSecs + 15);
+  }
+  // Standard 5-pass: ~0.15s per second per pass + larger overhead
   const perPassSecs = Math.ceil(durationSecs * 0.15);
   const twoPassSecs = perPassSecs * 2;
   const translationSecs = hasTranslation ? 90 : 0;
@@ -165,6 +172,9 @@ export function GetSubtitles() {
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
   const [isFastPipeline, setIsFastPipeline] = useState(false);
+  // Mirrors jobIsFastPipelineRef as state so render logic stays in sync.
+  // The ref is needed for closures (poll callbacks); state triggers re-renders.
+  const [jobIsFastPipelineState, setJobIsFastPipelineState] = useState(false);
   const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => {
     const loaded = loadHistory();
     if (loaded.length === 0) {
@@ -231,12 +241,14 @@ export function GetSubtitles() {
   // Track if fast pipeline was used for THIS job
   const jobIsFastPipelineRef = useRef<boolean>(false);
 
-  // Dynamic step order calculation based on whether the active job is fast or standard accuracy
-  const jobStepBase = jobIsFastPipelineRef.current
+  // FIX 2 & 4: Derive step order from state (not ref) so the component re-renders
+  // when a new job starts. jobIsFastPipelineState mirrors jobIsFastPipelineRef for rendering.
+  const jobStepBase = jobIsFastPipelineState
     ? (jobInputModeRef.current === "url" ? ["audio", "uploading", "generating", "verifying"] : ["uploading", "generating", "verifying"])
     : (jobInputModeRef.current === "url" ? BASE_STEPS_URL : BASE_STEPS_FILE);
 
-  const jobStepOrder = !jobIsFastPipelineRef.current && jobTranslateToRef.current !== "none"
+  // FIX 4: Fast pipeline also shows translate step when translation is requested.
+  const jobStepOrder = jobTranslateToRef.current !== "none"
     ? [...jobStepBase, ...TRANSLATE_STEPS, "done"]
     : [...jobStepBase, "done"];
 
@@ -250,6 +262,8 @@ export function GetSubtitles() {
     jobInputModeRef.current = active.mode;
     jobTranslateToRef.current = active.translateTo;
     jobIsFastPipelineRef.current = !!active.isFastPipeline;
+    // FIX 2: Also sync state so step tracker re-renders correctly on reconnect
+    setJobIsFastPipelineState(!!active.isFastPipeline);
     lastUrlRef.current = active.url ?? "";
     lastLangRef.current = active.language;
     lastTranslateRef.current = active.translateTo;
@@ -467,6 +481,8 @@ export function GetSubtitles() {
     jobInputModeRef.current = mode;
     jobTranslateToRef.current = trans;
     jobIsFastPipelineRef.current = isFastPipeline;
+    // FIX 2: Sync to state so jobStepOrder re-computes and re-renders immediately
+    setJobIsFastPipelineState(isFastPipeline);
 
     // Save for retry
     lastUrlRef.current = urlVal;
@@ -695,7 +711,7 @@ export function GetSubtitles() {
   const isRunning = loading && jobStatus && !["done", "error", "cancelled"].includes(jobStatus);
 
   // Time estimate — uses `tick` so it updates every second smoothly
-  const estimatedTotal = durationSecs != null ? estimateSeconds(durationSecs, jobTranslateToRef.current !== "none") : null;
+  const estimatedTotal = durationSecs != null ? estimateSeconds(durationSecs, jobTranslateToRef.current !== "none", jobIsFastPipelineRef.current) : null;
   const elapsed = jobStartedAt ? Math.floor((Date.now() - jobStartedAt) / 1000) : 0;
   // suppress tick warning — it's intentionally used to trigger re-render
   void tick;
@@ -1133,7 +1149,7 @@ export function GetSubtitles() {
                             ? `${durationLabel} · ${remainingLabel}`
                             : durationLabel
                               ? `${durationLabel} · Estimating time...`
-                              : "Transcribing audio..."}
+                              : jobIsFastPipelineState ? "Fast 2-Pass processing..." : "Transcribing audio..."}
                         </p>
                       </div>
                       <button
