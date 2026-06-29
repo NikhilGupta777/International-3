@@ -1380,7 +1380,9 @@ function isNativeToolConfigError(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "").toLowerCase();
   const status = Number((error as any)?.status ?? (error as any)?.code ?? 0);
   return (
-    /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|400/i.test(message) ||
+    /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|INTERNAL|400|500/i.test(message) ||
+    status === 400 ||
+    status === 500 ||
     status === 429 ||
     /429|resource.?exhausted|quota|billing/i.test(message)
   );
@@ -5489,7 +5491,7 @@ router.post("/agent/chat", async (req, res) => {
 
     let iterations = 0;
     let emptyResponseRetries = 0;
-    let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH;
+    let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH && activeModel !== "gemma-4-31b-it";
     let finalAnswerSent = false;
 
     while (iterations < MAX_ITERATIONS && isConnected()) {
