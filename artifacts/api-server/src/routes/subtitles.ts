@@ -17,6 +17,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { logger } from "../lib/logger";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { createGeminiClient, ensureVertexCredentials, isGeminiConfigured as isVertexOrKeyGeminiConfigured, isVertexGeminiEnabled, getPersonalGeminiApiKeysList, buildThinkingConfig, getNextKeyIndex, setNextKeyIndex, getPersonalKeysForCaller } from "../lib/gemini-client";
+import { isKeyCooledDown, recordKeyFailure } from "../utils/key-circuit-breaker";
 import ffmpegStatic from "ffmpeg-static";
 import { getNotifyClientKey, notifyClientPush } from "../lib/push-notifications";
 import {
@@ -1241,11 +1242,12 @@ function getAllPersonalGenAIClients(caller: string = "subtitles"): GoogleGenAI[]
     .map((apiKey) => createGeminiClient({ apiKey, httpOptions: { timeout: GEMINI_TIMEOUT_MS } }));
 }
 
-function getSubtitleVideoGenAIClients(): Array<{ client: GoogleGenAI; keyLabel: string }> {
-  const clients: Array<{ client: GoogleGenAI; keyLabel: string }> = [];
+function getSubtitleVideoGenAIClients(): Array<{ client: GoogleGenAI; keyLabel: string; apiKey?: string }> {
+  const clients: Array<{ client: GoogleGenAI; keyLabel: string; apiKey?: string }> = [];
   const apiKeyClients = getAllPersonalGeminiKeys().map((apiKey, index) => ({
     client: new GoogleGenAI({ apiKey, vertexai: false, httpOptions: { apiVersion: "v1beta", timeout: SUBTITLES_GEMINI_VIDEO_TIMEOUT_MS } }),
     keyLabel: `api-key ${index + 1}`,
+    apiKey,
   }));
 
   if (isVertexGeminiEnabled()) {
@@ -1311,10 +1313,16 @@ async function generateWithPreferredModels(
 
   let lastErr: unknown;
   const startIndex = getNextKeyIndex();
+  const hasAvailableKey = clients.some(({ apiKey }) => !apiKey || !isKeyCooledDown(apiKey));
   for (const model of models) {
     for (let offset = 0; offset < clients.length; offset++) {
       const i = (startIndex + offset) % clients.length;
-      const { client, keyLabel } = clients[i];
+      const { client, keyLabel, apiKey } = clients[i];
+      if (apiKey && hasAvailableKey && isKeyCooledDown(apiKey)) {
+        setNextKeyIndex((i + 1) % clients.length);
+        logger.info({ keyLabel, label }, `${label} skipping cooled-down Gemini key`);
+        continue;
+      }
       try {
         const generation = client.models.generateContent(requestFactory(model));
         generation.catch(() => {});
@@ -1324,11 +1332,12 @@ async function generateWithPreferredModels(
           `${label} timed out on ${keyLabel} ${model}`,
         );
         logger.info({ model, keyLabel, label }, `${label} completed`);
-        setNextKeyIndex(i);
+        setNextKeyIndex((i + 1) % clients.length);
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
         setNextKeyIndex((i + 1) % clients.length);
+        if (apiKey) recordKeyFailure(apiKey, err).catch(() => {});
         if (isGeminiRetryableError(err)) {
           logger.warn({ model, keyLabel, label }, `${label} retryable failure - trying next Gemini client/model`);
         } else {
@@ -1359,25 +1368,33 @@ async function generateWithKeyRotation(
     await ensureVertexCredentials();
   }
   const clients = getAllPersonalGenAIClients();
+  const apiKeys = isVertexGeminiEnabled() ? [] : getAllPersonalGeminiKeys();
   if (clients.length === 0) {
     throw new Error("No Gemini API key configured — add GEMINI_API_KEY");
   }
 
   let lastErr: unknown;
   const startIndex = getNextKeyIndex();
+  const hasAvailableKey = apiKeys.length === 0 || apiKeys.some((apiKey) => !isKeyCooledDown(apiKey));
   // Outer loop: model. Inner loop: key.
   for (const model of KEY_ROTATION_MODELS) {
     for (let offset = 0; offset < clients.length; offset++) {
       const i = (startIndex + offset) % clients.length;
       const keyLabel = `key ${i + 1}`;
+      if (apiKeys[i] && hasAvailableKey && isKeyCooledDown(apiKeys[i])) {
+        setNextKeyIndex((i + 1) % clients.length);
+        logger.info({ model, keyLabel, label }, `${label} skipping cooled-down Gemini key`);
+        continue;
+      }
       try {
         const result = await clients[i].models.generateContent(requestFactory(model));
         logger.info({ model, keyLabel, label }, `${label} completed via personal ${keyLabel}`);
-        setNextKeyIndex(i);
+        setNextKeyIndex((i + 1) % clients.length);
         return result.text?.trim() ?? "";
       } catch (err) {
         lastErr = err;
         setNextKeyIndex((i + 1) % clients.length);
+        if (apiKeys[i]) recordKeyFailure(apiKeys[i], err).catch(() => {});
         const isQuota = isGeminiRetryableError(err);
         if (isQuota) {
           logger.warn({ model, keyLabel, label }, `${label} ${keyLabel} rate limited on ${model} — trying next`);
@@ -2608,6 +2625,7 @@ async function processFastAudioPipeline(params: {
 
   const caller = "fast-subtitles";
   const clients = getAllPersonalGenAIClients(caller);
+  const apiKeys = isVertexGeminiEnabled() ? [] : getAllPersonalGeminiKeys(caller);
   if (clients.length === 0) {
     throw new Error("No Gemini API key configured");
   }
@@ -2615,6 +2633,7 @@ async function processFastAudioPipeline(params: {
   let draftSrt = "";
   let geminiFileName: string | null = null;
   let lastPass1Err: unknown = null;
+  const hasAvailableKey = apiKeys.length === 0 || apiKeys.some((apiKey) => !isKeyCooledDown(apiKey));
 
   // PASS 1: Transcription / Watch and Transcribe
   job.status = "generating";
@@ -2627,6 +2646,11 @@ async function processFastAudioPipeline(params: {
     const client = clients[ki];
     const keyLabel = `key ${ki + 1}`;
     geminiFileName = null;
+    if (apiKeys[ki] && hasAvailableKey && isKeyCooledDown(apiKeys[ki])) {
+      setNextKeyIndex((ki + 1) % clients.length);
+      logger.info({ keyLabel }, "Pass 1: skipping cooled-down Gemini key");
+      continue;
+    }
 
     try {
       // Upload the preprocessed file to Gemini File API
@@ -2666,12 +2690,13 @@ async function processFastAudioPipeline(params: {
       if (draftSrt) {
         draftSrt = stripFences(draftSrt);
         logger.info({ keyLabel }, "Pass 1: Subtitle transcription completed");
-        setNextKeyIndex(ki);
+        setNextKeyIndex((ki + 1) % clients.length);
         break; // Pass 1 succeeded!
       }
     } catch (err) {
       lastPass1Err = err;
       setNextKeyIndex((ki + 1) % clients.length);
+      if (apiKeys[ki]) recordKeyFailure(apiKeys[ki], err).catch(() => {});
       logger.warn({ keyLabel, err }, `Pass 1: Key ${keyLabel} failed, trying next key...`);
     } finally {
       if (geminiFileName) {
@@ -2712,6 +2737,11 @@ async function processFastAudioPipeline(params: {
     const client = clients[ki];
     const keyLabel = `key ${ki + 1}`;
     geminiFileName = null;
+    if (apiKeys[ki] && hasAvailableKey && isKeyCooledDown(apiKeys[ki])) {
+      setNextKeyIndex((ki + 1) % clients.length);
+      logger.info({ keyLabel }, "Pass 2: skipping cooled-down Gemini key");
+      continue;
+    }
 
     try {
       // Re-upload video/audio for deep Pass 2 analysis
@@ -2760,12 +2790,13 @@ async function processFastAudioPipeline(params: {
         // Always restore original draft timestamps if Gemini garbles them during translation
         correctedFinalSrt = restoreTimestamps(draftSrt, pass2Output);
         logger.info({ keyLabel }, "Pass 2: Subtitle verification and translation completed");
-        setNextKeyIndex(ki);
+        setNextKeyIndex((ki + 1) % clients.length);
         break; // Pass 2 succeeded!
       }
     } catch (err) {
       lastPass2Err = err;
       setNextKeyIndex((ki + 1) % clients.length);
+      if (apiKeys[ki]) recordKeyFailure(apiKeys[ki], err).catch(() => {});
       logger.warn({ keyLabel, err }, `Pass 2: Key ${keyLabel} failed, trying next key...`);
     } finally {
       if (geminiFileName) {
@@ -2841,6 +2872,7 @@ async function processAudio(
   if (!job) return;
 
   const clients = getAllPersonalGenAIClients();
+  const apiKeys = isVertexGeminiEnabled() ? [] : getAllPersonalGeminiKeys();
   if (clients.length === 0) {
     job.status = "error";
     job.completedAt = Date.now();
@@ -3024,12 +3056,18 @@ async function processAudio(
       } else {
         let lastKeyErr: unknown;
         const startIndex = getNextKeyIndex();
+        const hasAvailableKey = apiKeys.length === 0 || apiKeys.some((apiKey) => !isKeyCooledDown(apiKey));
 
       for (let offset = 0; offset < clients.length; offset++) {
         const ki = (startIndex + offset) % clients.length;
         const client = clients[ki];
         const keyLabel = `key ${ki + 1}`;
         let geminiFileName: string | null = null;
+        if (apiKeys[ki] && hasAvailableKey && isKeyCooledDown(apiKeys[ki])) {
+          setNextKeyIndex((ki + 1) % clients.length);
+          logger.info({ keyLabel }, "Gemini audio path skipping cooled-down key");
+          continue;
+        }
 
         try {
           // Upload with this key's client
@@ -3097,12 +3135,13 @@ async function processAudio(
           const strictFiltered = strictFilterMalformedTimestamps(deduped);
           correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
           
-          setNextKeyIndex(ki);
+          setNextKeyIndex((ki + 1) % clients.length);
           break; // Transcription and cleanup succeeded - exit key loop
 
         } catch (err) {
           lastKeyErr = err;
           setNextKeyIndex((ki + 1) % clients.length);
+          if (apiKeys[ki]) recordKeyFailure(apiKeys[ki], err).catch(() => {});
           const isQuota = isGeminiRetryableError(err);
           if (isQuota && ki < clients.length - 1) {
             logger.warn({ keyLabel }, `${keyLabel} quota exhausted — trying next key`);
@@ -3316,7 +3355,7 @@ async function runSubtitleUrlJob(params: {
     job.durationSecs = durationSecs;
   }
 
-  if (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS) {
+  if (!params.isFastPipeline && (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS)) {
     const completedViaVideo = await processYoutubeVideoSrt(
       params.jobId,
       params.normalizedUrl,
@@ -3343,7 +3382,7 @@ async function runSubtitleUrlJob(params: {
       path: cached.wavPath,
       mimeType: cached.mimeType,
       durationSecs: cached.durationSecs,
-    });
+    }, params.isFastPipeline);
     return;
   }
 
@@ -3408,6 +3447,7 @@ async function runSubtitleUrlJob(params: {
         try { rmSync(audioDir, { recursive: true, force: true }); } catch {}
       },
       { path: preprocessed.path, mimeType, durationSecs },
+      params.isFastPipeline,
     );
   } catch (err: any) {
     logger.error({ err }, "SRT YouTube download error");
@@ -3464,7 +3504,7 @@ async function runSubtitleUploadJob(params: {
 
     await processAudio(params.jobId, tempPath, params.language, srtFilename, params.translateLang, () => {
       try { rmSync(tempPath); } catch {}
-    });
+    }, undefined, params.isFastPipeline);
   } catch (err: any) {
     try { rmSync(tempPath); } catch {}
     const message = err instanceof Error ? err.message : "Subtitle upload processing failed";
@@ -4126,6 +4166,7 @@ router.post(
 
     const language: string = (req.body as any).language ?? "auto";
     const translateTo: string | undefined = (req.body as any).translateTo;
+    const isFastPipeline = String((req.body as any).isFastPipeline ?? "").toLowerCase() === "true";
     const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
     const srtFilename = `${sanitizeUploadBaseName(req.file.originalname)}.srt`;
     const jobId = randomUUID();
@@ -4157,6 +4198,7 @@ router.post(
           translateTo: translateLang,
           progressPct: 5,
           notifyClientKey,
+          isFastPipeline,
         });
         markSubtitleLambdaStillStarting(jobId);
         await lambdaClient!.send(new InvokeCommand({
@@ -4171,6 +4213,7 @@ router.post(
             language,
             translateTo: translateLang,
             notifyClientKey: notifyClientKey ?? null,
+            isFastPipeline,
           } satisfies SubtitleWorkerEvent)),
         }));
         res.json({ jobId, mode: "lambda" });
@@ -4193,6 +4236,7 @@ router.post(
       translateTo: translateLang,
       progressPct: 0,
       notifyClientKey,
+      isFastPipeline,
     });
 
     res.json({ jobId });
@@ -4201,7 +4245,7 @@ router.post(
     enqueueSubtitleJob(jobId, async () => {
       await processAudio(jobId, req.file!.path, language, srtFilename, translateLang, () => {
         try { rmSync(req.file!.path); } catch {}
-      });
+      }, undefined, isFastPipeline);
     }).catch((err) => {
       try { rmSync(req.file!.path); } catch {}
       const job = jobs.get(jobId);
@@ -4558,8 +4602,9 @@ export async function processSubtitleAudio(
   translateTo?: string,
   cleanup?: () => void,
   precomputedWav?: { path: string; mimeType: string; durationSecs: number },
+  isFastPipeline?: boolean,
 ) {
-  return processAudio(jobId, audioPath, language, filename, translateTo, cleanup, precomputedWav);
+  return processAudio(jobId, audioPath, language, filename, translateTo, cleanup, precomputedWav, isFastPipeline);
 }
 
 export async function downloadSubtitleSourceAudio(

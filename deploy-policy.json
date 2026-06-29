@@ -39,6 +39,21 @@
     {
       "Effect": "Allow",
       "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:UpdateTable",
+        "dynamodb:DeleteTable",
+        "dynamodb:UpdateTimeToLive",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:TagResource",
+        "dynamodb:UntagResource",
+        "dynamodb:ListTagsOfResource"
+      ],
+      "Resource": "arn:aws:dynamodb:us-east-1:596596146505:table/ytgrabber-green-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
         "lambda:GetFunctionConfiguration",
         "lambda:UpdateFunctionCode",
         "lambda:UpdateFunctionConfiguration"
@@ -83,7 +98,13 @@
       "Effect": "Allow",
       "Action": [
         "iam:PassRole",
-        "iam:GetRole"
+        "iam:GetRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:UpdateAssumeRolePolicy"
       ],
       "Resource": "arn:aws:iam::596596146505:role/ytgrabber-green-*"
     }

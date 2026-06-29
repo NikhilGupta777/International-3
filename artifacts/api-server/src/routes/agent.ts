@@ -5559,8 +5559,18 @@ toolConfig: activeCacheName
               cachedContent: activeCacheName,
             } as any,
           });
+          const bufferedChunks: any[] = [];
+          let firstCandidateChunkReceived = false;
+          for await (const chunk of candidateStream) {
+            if (!firstCandidateChunkReceived) {
+              firstCandidateChunkReceived = true;
+              if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+            }
+            if (!isConnected()) break;
+            bufferedChunks.push(chunk);
+          }
           if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
-          stream = candidateStream;
+          stream = bufferedChunks;
           streamErr = null;
           break; // success
         } catch (e: any) {

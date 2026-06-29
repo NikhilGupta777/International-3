@@ -107,28 +107,34 @@ export function startCooldownSyncLoop(): void {
 
   const sync = async () => {
     try {
-      const out = await ddb.send(
-        new ScanCommand({
-          TableName: TABLE_NAME,
-        })
-      );
-
       const nowMs = Date.now();
       const currentHashes = new Set<string>();
+      let lastEvaluatedKey: Record<string, any> | undefined;
 
-      (out.Items || []).forEach((item) => {
-        const pk = item.pk?.S || "";
-        const expiresAtSec = Number(item.expiresAt?.N || 0);
-        if (pk.startsWith("cooldown#") && expiresAtSec) {
-          const hash = pk.replace("cooldown#", "");
-          const expiresAtMs = expiresAtSec * 1000;
-          
-          if (expiresAtMs > nowMs) {
-            localCooldownCache.set(hash, expiresAtMs);
-            currentHashes.add(hash);
+      do {
+        const out = await ddb.send(
+          new ScanCommand({
+            TableName: TABLE_NAME,
+            ExclusiveStartKey: lastEvaluatedKey,
+          })
+        );
+
+        (out.Items || []).forEach((item) => {
+          const pk = item.pk?.S || "";
+          const expiresAtSec = Number(item.expiresAt?.N || 0);
+          if (pk.startsWith("cooldown#") && expiresAtSec) {
+            const hash = pk.replace("cooldown#", "");
+            const expiresAtMs = expiresAtSec * 1000;
+
+            if (expiresAtMs > nowMs) {
+              localCooldownCache.set(hash, expiresAtMs);
+              currentHashes.add(hash);
+            }
           }
-        }
-      });
+        });
+
+        lastEvaluatedKey = out.LastEvaluatedKey;
+      } while (lastEvaluatedKey);
 
       // Clear local keys that have expired in DB
       for (const [hash] of localCooldownCache.entries()) {

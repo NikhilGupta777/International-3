@@ -1032,6 +1032,7 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
   const notifyClientKey = getMetaString(payload.meta, "notifyClientKey");
   const originalFilename = getMetaString(payload.meta, "originalFilename");
   const uploadS3Key = getMetaString(payload.meta, "uploadS3Key");
+  const isFastPipeline = getMetaBool(payload.meta, "isFastPipeline");
 
   const job = createSubtitleJobState(payload.jobId, {
     status: "pending",
@@ -1041,6 +1042,7 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
     translateTo,
     progressPct: 0,
     notifyClientKey,
+    isFastPipeline,
   });
 
   const syncTimer = setInterval(() => {
@@ -1066,7 +1068,7 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
       cleanupPaths.push(localPath);
       await processSubtitleAudio(payload.jobId, localPath, language, job.filename, translateTo, () => {
         cleanupFile(localPath);
-      });
+      }, undefined, isFastPipeline);
     } else {
       const audioDir = join(tmpdir(), `srt-yt-${payload.jobId}`);
       cleanupPaths.push(audioDir);
@@ -1105,7 +1107,7 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
         try {
           rmSync(audioDir, { recursive: true, force: true });
         } catch {}
-      });
+      }, undefined, isFastPipeline);
     }
 
     if (job.status === "cancelled") {

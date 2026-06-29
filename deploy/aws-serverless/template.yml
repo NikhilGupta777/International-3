@@ -346,6 +346,21 @@ Conditions:
     - "www"
 
 Resources:
+  CooldownsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Prefix}-cooldowns"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
   StaticSiteBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -434,6 +449,7 @@ Resources:
                     - UseApiKeysTable
                     - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${ApiKeysTable}"
                     - !Ref AWS::NoValue
+                  - !GetAtt CooldownsTable.Arn
               - Effect: Allow
                 Action:
                   - batch:SubmitJob
@@ -572,6 +588,7 @@ Resources:
           VIDEO_EDITOR_FARGATE_THRESHOLD_SEC: !Ref VideoEditorFargateThresholdSec
           YOUTUBE_QUEUE_REGION: !Ref YoutubeQueueRegion
           YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable
+          COOLDOWNS_TABLE: !Ref CooldownsTable
           YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue
           YOUTUBE_BATCH_JOB_DEFINITION: !Ref YoutubeBatchJobDefinition
           TRANSLATOR_LIP_SYNC_ENABLED: !Ref TranslatorLipSyncEnabled

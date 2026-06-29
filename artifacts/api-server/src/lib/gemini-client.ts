@@ -195,14 +195,14 @@ export function getPersonalKeysForCaller(caller?: string): string[] {
     return ordered;
   }
 
-  // AI Studio / Video Editor: use from 8th key (index 7) going back to 1
+  // AI Studio / Video Editor: use from 7th key (index 6) going back to 1
   if (caller === "video-editor") {
-    const startIndex = Math.min(baseKeys.length - 1, 7);
+    const startIndex = Math.min(baseKeys.length - 1, 6);
     const ordered: string[] = [];
     for (let i = startIndex; i >= 0; i--) {
       ordered.push(baseKeys[i]);
     }
-    for (let i = 8; i < baseKeys.length; i++) {
+    for (let i = 7; i < baseKeys.length; i++) {
       ordered.push(baseKeys[i]);
     }
     return ordered;

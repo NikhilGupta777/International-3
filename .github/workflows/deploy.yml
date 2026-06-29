@@ -247,12 +247,14 @@ jobs:
                | map(select(
                    .name != "SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS" and
                    .name != "SUBTITLES_YTDLP_PROBE_TIMEOUT_MS" and
-                   .name != "SUBTITLES_MAX_YTDLP_ATTEMPTS"
+                   .name != "SUBTITLES_MAX_YTDLP_ATTEMPTS" and
+                   .name != "COOLDOWNS_TABLE"
                  ))
                + [
                  {"name":"SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS","value":"600000"},
                  {"name":"SUBTITLES_YTDLP_PROBE_TIMEOUT_MS","value":"45000"},
-                 {"name":"SUBTITLES_MAX_YTDLP_ATTEMPTS","value":"5"}
+                 {"name":"SUBTITLES_MAX_YTDLP_ATTEMPTS","value":"5"},
+                 {"name":"COOLDOWNS_TABLE","value":"${{ env.CF_STACK_PREFIX }}-cooldowns"}
                ]
              )')
           # Register it
