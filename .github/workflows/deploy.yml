@@ -95,7 +95,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
-          fetch-depth: 0   # no submodules needed for API build
+          fetch-depth: 0 # no submodules needed for API build
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -225,6 +225,21 @@ jobs:
 
       - name: Register new Batch job definition
         id: register
+        env:
+          GEMINI_API_KEY_SECRET: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2_SECRET: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3_SECRET: ${{ secrets.GEMINI_API_KEY_3 }}
+          GEMINI_API_KEY_4_SECRET: ${{ secrets.GEMINI_API_KEY_4 }}
+          GEMINI_API_KEY_5_SECRET: ${{ secrets.GEMINI_API_KEY_5 }}
+          GEMINI_API_KEY_6_SECRET: ${{ secrets.GEMINI_API_KEY_6 }}
+          GEMINI_API_KEY_7_SECRET: ${{ secrets.GEMINI_API_KEY_7 }}
+          GEMINI_API_KEY_8_SECRET: ${{ secrets.GEMINI_API_KEY_8 }}
+          GEMINI_API_KEY_9_SECRET: ${{ secrets.GEMINI_API_KEY_9 }}
+          GEMINI_API_KEY_10_SECRET: ${{ secrets.GEMINI_API_KEY_10 }}
+          GEMINI_API_KEY_11_SECRET: ${{ secrets.GEMINI_API_KEY_11 }}
+          GEMINI_API_KEY_12_SECRET: ${{ secrets.GEMINI_API_KEY_12 }}
+          GEMINI_API_KEY_13_SECRET: ${{ secrets.GEMINI_API_KEY_13 }}
+          GOOGLE_GENAI_USE_VERTEXAI_SECRET: ${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}
         run: |
           WORKER_URI="${{ steps.push.outputs.image_uri }}"
 
@@ -245,15 +260,34 @@ jobs:
              .containerProperties.environment = (
                (.containerProperties.environment // [])
                | map(select(
-                   .name != "SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS" and
-                   .name != "SUBTITLES_YTDLP_PROBE_TIMEOUT_MS" and
-                   .name != "SUBTITLES_MAX_YTDLP_ATTEMPTS" and
-                   .name != "COOLDOWNS_TABLE"
-                 ))
-               + [
-                 {"name":"SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS","value":"600000"},
-                 {"name":"SUBTITLES_YTDLP_PROBE_TIMEOUT_MS","value":"45000"},
-                 {"name":"SUBTITLES_MAX_YTDLP_ATTEMPTS","value":"5"},
+                    (.name | test("^GEMINI_API_KEY(_[0-9]+)?$") | not) and
+                    .name != "GOOGLE_API_KEY" and
+                    .name != "GOOGLE_GENAI_USE_VERTEXAI" and
+                    .name != "GEMINI_USE_VERTEXAI" and
+                    .name != "VERTEX_AI_ENABLED" and
+                    .name != "SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS" and
+                    .name != "SUBTITLES_YTDLP_PROBE_TIMEOUT_MS" and
+                    .name != "SUBTITLES_MAX_YTDLP_ATTEMPTS" and
+                    .name != "COOLDOWNS_TABLE"
+                  ))
+                + [
+                  {"name":"GEMINI_API_KEY","value":env.GEMINI_API_KEY_SECRET},
+                  {"name":"GEMINI_API_KEY_2","value":env.GEMINI_API_KEY_2_SECRET},
+                  {"name":"GEMINI_API_KEY_3","value":env.GEMINI_API_KEY_3_SECRET},
+                  {"name":"GEMINI_API_KEY_4","value":env.GEMINI_API_KEY_4_SECRET},
+                  {"name":"GEMINI_API_KEY_5","value":env.GEMINI_API_KEY_5_SECRET},
+                  {"name":"GEMINI_API_KEY_6","value":env.GEMINI_API_KEY_6_SECRET},
+                  {"name":"GEMINI_API_KEY_7","value":env.GEMINI_API_KEY_7_SECRET},
+                  {"name":"GEMINI_API_KEY_8","value":env.GEMINI_API_KEY_8_SECRET},
+                  {"name":"GEMINI_API_KEY_9","value":env.GEMINI_API_KEY_9_SECRET},
+                  {"name":"GEMINI_API_KEY_10","value":env.GEMINI_API_KEY_10_SECRET},
+                  {"name":"GEMINI_API_KEY_11","value":env.GEMINI_API_KEY_11_SECRET},
+                  {"name":"GEMINI_API_KEY_12","value":env.GEMINI_API_KEY_12_SECRET},
+                  {"name":"GEMINI_API_KEY_13","value":env.GEMINI_API_KEY_13_SECRET},
+                  {"name":"GOOGLE_GENAI_USE_VERTEXAI","value":(if env.GOOGLE_GENAI_USE_VERTEXAI_SECRET == "" then "false" else (env.GOOGLE_GENAI_USE_VERTEXAI_SECRET // "false") end)},
+                  {"name":"SUBTITLES_YTDLP_COMMAND_TIMEOUT_MS","value":"600000"},
+                  {"name":"SUBTITLES_YTDLP_PROBE_TIMEOUT_MS","value":"45000"},
+                  {"name":"SUBTITLES_MAX_YTDLP_ATTEMPTS","value":"5"},
                  {"name":"COOLDOWNS_TABLE","value":"${{ env.CF_STACK_PREFIX }}-cooldowns"}
                ]
              )')
@@ -291,7 +325,7 @@ jobs:
     needs: [detect-translator-changes]
     if: ${{ needs.detect-translator-changes.outputs.changed == 'true' }}
     outputs:
-      image_uri:    ${{ steps.slim_push.outputs.image_uri }}
+      image_uri: ${{ steps.slim_push.outputs.image_uri }}
       batch_job_def: ${{ steps.register.outputs.batch_job_def }}
       base_changed: ${{ steps.detect_base.outputs.base_changed }}
     steps:
@@ -532,7 +566,7 @@ jobs:
     name: Build CPU Translator Image
     runs-on: ubuntu-latest
     outputs:
-      image_uri:    ${{ steps.push.outputs.image_uri }}
+      image_uri: ${{ steps.push.outputs.image_uri }}
       batch_job_def: ${{ steps.register.outputs.batch_job_def }}
     steps:
       - uses: actions/checkout@v4
@@ -591,7 +625,14 @@ jobs:
   deploy:
     name: Deploy to AWS
     runs-on: ubuntu-latest
-    needs: [build-api, build-worker, build-translator, resolve-translator, build-translator-cpu]
+    needs:
+      [
+        build-api,
+        build-worker,
+        build-translator,
+        resolve-translator,
+        build-translator-cpu,
+      ]
     if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' && (needs.build-translator.result == 'success' || needs.build-translator.result == 'skipped') && (needs.build-translator.result == 'success' || needs.resolve-translator.result == 'success') && needs.build-translator-cpu.result == 'success' }}
     # No environment gate — secrets are repo-level, no approval required
     steps:
