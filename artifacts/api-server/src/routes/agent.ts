@@ -702,7 +702,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "get_youtube_captions",
     description:
-      "Fetch existing auto-generated or manual captions directly from YouTube. Faster than transcribing — use this first if the user just wants the original-language subtitles.",
+      "Fetch the fullest existing auto-generated or manual captions directly from YouTube. Use this for YouTube subtitle/SRT/transcription requests unless the user explicitly asks to run generate_subtitles.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1506,7 +1506,7 @@ You natively support watching and analyzing YouTube videos when given a YouTube 
 Do not run a heavy tool just because a URL exists in context:
 - User asks for title/metadata only → get_video_info only, not analyze_youtube_video
 - User asks for summary/quotes/moments → answer directly using native YouTube capabilities, do NOT use analyze_youtube_video
-- User asks for existing YouTube captions → get_youtube_captions first, not generate_subtitles
+- User asks for existing YouTube captions, an SRT file, a transcript, or "transcribe this YouTube video" → get_youtube_captions first, not generate_subtitles
 - User gives exact clip times → cut_video_clip directly, not web_search first
 - User asks for SEO/title/script from their own idea → answer directly unless they ask for export/download
 - User asks for visible text from image in chat → answer directly unless they need the text extracted as a file
@@ -1554,7 +1554,9 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "what's this video about / who made it" | get_video_info (metadata only — fast) |
 | "summarize / explain / find the moment when / quote what they said" | Answer directly using native YouTube capabilities (DO NOT use analyze_youtube_video) |
 | "give me the captions / subtitles already on YouTube" | get_youtube_captions (instant, no transcription) |
-| "transcribe / generate subtitles / translate subtitles" | generate_subtitles |
+| "transcribe / give SRT for this YouTube video" | get_youtube_captions, then clean terminology if needed while preserving all indexes and timestamps |
+| "translate this existing SRT / translate these captions" | Use the SRT already in context from get_youtube_captions; do not call get_youtube_captions again unless no SRT is available |
+| "generate subtitles with the generate_subtitles tool / test generated subtitles" | generate_subtitles |
 | "fix / clean pasted SRT/VTT/TXT" | answer directly with cleaned text; use canvas for long subtitle output |
 | "cut from X to Y / make a clip" | cut_video_clip |
 | "download the whole video / get the audio" | download_video (use quality='audio_only' for audio) |
@@ -1600,17 +1602,18 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 
 # CAPTION VS TRANSCRIPTION
 
-- Existing YouTube captions → get_youtube_captions with language='hi' by default (instant, uses YouTube's own captions)
-- New transcription from audio / translated SRT / no captions available → generate_subtitles
+- Existing YouTube captions or YouTube URL → get_youtube_captions with language='hi' by default (instant, uses YouTube's own captions). Treat the returned SRT content as the source file for this turn.
+- Do not run generate_subtitles unless the user explicitly asks to use/test the generate_subtitles tool. If YouTube has no captions, say that full YouTube captions were not available instead of silently transcribing.
+- If the user asks for an SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, and similar names/terms inferred from context. Do not rewrite meaning.
+- If the user asks to translate captions/SRT after captions were already fetched, translate from the existing full SRT in context. Do not call get_youtube_captions again unless the caption content is missing.
+- For long SRT output, provide the complete cleaned or translated SRT as a text artifact/canvas/downloadable file, not only a short chat excerpt. For multiple target languages, create one complete SRT artifact per language.
 - Fix pasted SRT/VTT/text → answer directly; use canvas for long subtitle output
-
-Do not run generate_subtitles if YouTube captions would suffice.
 
 # MULTI-STEP REASONING
 
 You can chain up to ${MAX_ITERATIONS} tool calls per turn:
 - "summarize the video and then pull the best 3 clips" → answer directly, then find_best_clips.
-- "transcribe and translate to English" → generate_subtitles with language='hi' and translateTo='en' unless the user explicitly says the source speech is another language.
+- "transcribe and translate this YouTube video to English" → get_youtube_captions with language='hi', then translate the returned SRT text to English while preserving indexes and timestamps.
 - "what does the host say about X at minute 10" → answer directly using native capabilities.
 - If a tool result contains "video unavailable", "private", or "no captions found", stop retrying and tell the user plainly.
 
@@ -3589,11 +3592,11 @@ async function executeTool(
         `${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`,
         { headers: internalHeaders },
       );
-      // SECURITY: Cap caption text size to prevent unbounded model context
-      const MAX_CAPTION_CHARS = 270_000;
+      // SECURITY: Cap caption text size while still allowing long SRT files in model context.
+      const MAX_CAPTION_CHARS = 1_200_000;
       const rawText = await readResponseTextWithLimit(
         r,
-        MAX_CAPTION_CHARS * 2,
+        MAX_CAPTION_CHARS * 3,
         new AbortController(),
       );
       const content = rawText.slice(0, MAX_CAPTION_CHARS);
@@ -3609,7 +3612,12 @@ async function executeTool(
         result: {
           filename: "subtitles.srt",
           language,
-          bytes: Buffer.byteLength(content, "utf8"),
+          bytes: Buffer.byteLength(rawText, "utf8"),
+          contentBytes: Buffer.byteLength(content, "utf8"),
+          fullContentInContext: rawText.length <= MAX_CAPTION_CHARS,
+          subtitleSource: r.headers.get("x-subtitle-source") ?? undefined,
+          subtitleCoverageEndSec: Number(r.headers.get("x-subtitle-coverage-end") ?? "") || undefined,
+          videoDurationSec: Number(r.headers.get("x-video-duration") ?? "") || undefined,
           content,
         },
         artifact: {

@@ -1292,6 +1292,50 @@ function pickBestSubtitleUrl(
   return null;
 }
 
+function collectPreferredSubtitleUrls(
+  subtitles: Record<string, any[]>,
+  automaticCaptions: Record<string, any[]>,
+  videoLanguage?: string,
+  preferredLanguage?: string,
+): string[] {
+  const findVttUrl = (tracks: any[]): string | null => {
+    if (!Array.isArray(tracks)) return null;
+    const vtt =
+      tracks.find((t: any) => t.ext === "vtt") ??
+      tracks.find(
+        (t: any) => typeof t.url === "string" && t.url.includes("fmt=vtt"),
+      );
+    return typeof vtt?.url === "string" ? vtt.url : null;
+  };
+
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const addUrl = (url: string | null) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    urls.push(url);
+  };
+  const preferredLangs = [
+    ...(preferredLanguage ? [preferredLanguage, `${preferredLanguage}-orig`] : []),
+    ...(videoLanguage ? [videoLanguage, `${videoLanguage}-orig`] : []),
+    "hi",
+    "hi-IN",
+    "hi-Latn",
+    "hi-orig",
+    "en",
+    "en-US",
+    "en-GB",
+    "en-orig",
+  ];
+
+  for (const lang of preferredLangs) addUrl(findVttUrl(subtitles[lang] ?? []));
+  for (const tracks of Object.values(subtitles)) addUrl(findVttUrl(tracks));
+  for (const lang of preferredLangs) addUrl(findVttUrl(automaticCaptions[lang] ?? []));
+  for (const tracks of Object.values(automaticCaptions)) addUrl(findVttUrl(tracks));
+
+  return urls;
+}
+
 // Subtitle-safe yt-dlp args with default client selection and anti-bot
 // headers/retry settings.
 const SUBS_YTDLP_ARGS = [
@@ -3759,6 +3803,59 @@ function msToSrtTime(ms: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(f).padStart(3, "0")}`;
 }
 
+type SubtitleFetchCandidate = {
+  source: string;
+  content: string;
+  coverageEndSec: number;
+  bytes: number;
+};
+
+function captionTimestampToSeconds(raw: string): number | null {
+  const parts = raw.trim().replace(",", ".").split(":");
+  if (parts.length === 2) parts.unshift("00");
+  if (parts.length !== 3) return null;
+  const [h, m, s] = parts;
+  const total = Number(h) * 3600 + Number(m) * 60 + Number(s);
+  return Number.isFinite(total) ? total : null;
+}
+
+function subtitleCoverageEndSec(content: string): number {
+  const timestampPattern =
+    /(?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3}\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{3})/g;
+  let match: RegExpExecArray | null;
+  let maxEnd = 0;
+  while ((match = timestampPattern.exec(content)) !== null) {
+    const endSec = captionTimestampToSeconds(match[1] ?? "");
+    if (endSec != null && endSec > maxEnd) maxEnd = endSec;
+  }
+  return maxEnd;
+}
+
+function makeSubtitleCandidate(
+  source: string,
+  content: string,
+): SubtitleFetchCandidate | null {
+  if (!content || !(content.includes("WEBVTT") || content.includes("-->"))) return null;
+  return {
+    source,
+    content,
+    coverageEndSec: subtitleCoverageEndSec(content),
+    bytes: Buffer.byteLength(content, "utf8"),
+  };
+}
+
+function pickFullestSubtitleCandidate(
+  candidates: SubtitleFetchCandidate[],
+): SubtitleFetchCandidate | null {
+  if (!candidates.length) return null;
+  return [...candidates].sort((a, b) => {
+    if (a.coverageEndSec !== b.coverageEndSec) {
+      return b.coverageEndSec - a.coverageEndSec;
+    }
+    return b.bytes - a.bytes;
+  })[0];
+}
+
 function vttToSrt(vtt: string): string {
   // Remove WEBVTT header and any NOTE/STYLE/Kind/Language metadata lines
   const cleaned = vtt
@@ -3834,34 +3931,44 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
     mkdirSync(subDir, { recursive: true });
     const subBase = join(subDir, "sub");
 
-    let vttContent: string | null = null;
+    const candidates: SubtitleFetchCandidate[] = [];
+    let videoDurationSec: number | null = null;
+    const addCandidate = (source: string, content: string) => {
+      const candidate = makeSubtitleCandidate(source, content);
+      if (candidate) candidates.push(candidate);
+    };
 
     // Approach 0: youtube_transcript_api (fast, lightweight Python API)
     try {
       const fetched = await tryFetchSubtitlesWithApi(normalizedUrl, lang, "webvtt");
-      if (fetched) vttContent = fetched;
+      if (fetched) addCandidate("youtube_transcript_api", fetched);
     } catch (_e) {}
 
-    // Approach 1: dump-json to get subtitle URL directly (faster, no extra yt-dlp download)
+    // Approach 1: dump-json to get subtitle URLs directly (faster, no extra yt-dlp download)
     try {
-      const metaJson = await runYtDlp([
-        "--dump-json",
-        "--no-playlist",
-        "--no-warnings",
-        normalizedUrl,
-      ]);
-      const meta = JSON.parse(metaJson);
+      const meta = await runYtDlpMetadata(normalizedUrl);
+      const duration = Number(meta.duration);
+      videoDurationSec = Number.isFinite(duration) && duration > 0 ? duration : null;
       const subs: Record<string, any[]> = meta.subtitles ?? {};
       const autoCaps: Record<string, any[]> = meta.automatic_captions ?? {};
-      const directUrl = pickBestSubtitleUrl(subs, autoCaps, meta.language, lang);
-      if (directUrl) {
-        const raw = await fetchUrl(directUrl);
-        if (raw.includes("WEBVTT") || raw.includes("-->")) vttContent = raw;
+      const directUrls = collectPreferredSubtitleUrls(subs, autoCaps, meta.language, lang);
+      for (const directUrl of directUrls.slice(0, 12)) {
+        try {
+          const raw = await fetchUrl(directUrl);
+          addCandidate("yt_dlp_direct", raw);
+        } catch {}
       }
     } catch (_e) {}
 
     // Approach 2: yt-dlp write-subs
-    if (!vttContent) {
+    const bestBeforeFiles = pickFullestSubtitleCandidate(candidates);
+    const shouldTryFiles =
+      !bestBeforeFiles ||
+      (videoDurationSec != null &&
+        bestBeforeFiles.coverageEndSec > 0 &&
+        bestBeforeFiles.coverageEndSec < videoDurationSec * 0.8 &&
+        videoDurationSec - bestBeforeFiles.coverageEndSec > 60);
+    if (shouldTryFiles) {
       await runYtDlpForSubs([
         "--write-subs",
         "--write-auto-subs",
@@ -3889,10 +3996,16 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
 
       if (existsSync(subDir)) {
         const files = readdirSync(subDir);
-        const vttFile = files.map((f) => join(subDir, f)).find((f) => f.endsWith(".vtt"));
-        if (vttFile) vttContent = readFileSync(vttFile, "utf8");
+        for (const file of files) {
+          if (!file.endsWith(".vtt")) continue;
+          const vttFile = join(subDir, file);
+          addCandidate(`yt_dlp_file:${file}`, readFileSync(vttFile, "utf8"));
+        }
       }
     }
+
+    const bestCandidate = pickFullestSubtitleCandidate(candidates);
+    const vttContent = bestCandidate?.content ?? null;
 
     if (!vttContent) {
       res.status(404).json({ error: "No subtitles found for this video" });
@@ -3903,6 +4016,13 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
     const filename = `subtitles.${outputFormat}`;
     const contentType = outputFormat === "vtt" ? "text/vtt" : "application/x-subrip";
 
+    if (bestCandidate) {
+      res.setHeader("X-Subtitle-Source", bestCandidate.source);
+      res.setHeader("X-Subtitle-Coverage-End", String(bestCandidate.coverageEndSec));
+    }
+    if (videoDurationSec != null) {
+      res.setHeader("X-Video-Duration", String(videoDurationSec));
+    }
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.setHeader("Content-Type", `${contentType}; charset=utf-8`);
     res.send(content);
