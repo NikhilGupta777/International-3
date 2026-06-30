@@ -37,6 +37,7 @@ import {
   isYoutubeQueuePrimaryEnabledFor,
   submitYoutubeQueuePrimaryJob,
 } from "../lib/youtube-queue";
+import { safeGeminiDisplayName } from "../lib/gemini-upload";
 
 const router = Router();
 
@@ -2788,9 +2789,7 @@ async function processFastAudioPipeline(params: {
     throw new Error("No Gemini API key configured");
   }
 
-  // FIX 1: Sanitize filename to ASCII to avoid ByteString crash when Gemini
-  // file upload sends displayName as an HTTP header (non-ASCII chars > 255 crash Node fetch).
-  const safeDisplayName = params.filename.replace(/[^\x00-\x7F]/g, "_") || "audio.wav";
+  const safeDisplayName = safeGeminiDisplayName(params.filename, "audio.wav");
 
   let draftSrt = "";
   // pass1FileUri preserved so Pass 2 can reuse the already-uploaded file (avoid double-upload).
@@ -3304,11 +3303,7 @@ async function processAudio(
           job.progressPct = 20;
           job.message = ki === 0 ? "Uploading audio to AI..." : `Uploading audio to AI (${keyLabel})...`;
 
-          // Sanitize displayName to ASCII (same as FIX 1 in the fast pipeline):
-          // Gemini sends displayName as an HTTP header, and a non-ASCII title
-          // (e.g. a Hindi/Devanagari video title from yt-dlp's "%(title)s")
-          // crashes Node fetch with "Cannot convert argument to a ByteString".
-          const safeDisplayName = filename.replace(/[^\x00-\x7F]/g, "_") || "audio.wav";
+          const safeDisplayName = safeGeminiDisplayName(filename, "audio.wav");
           const uploadResult = await client.files.upload({
             file: processedPath,
             config: { mimeType, displayName: safeDisplayName },

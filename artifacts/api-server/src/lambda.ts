@@ -52,6 +52,7 @@ type WorkerEvent = {
   language?: string;
   translateTo?: string;
   notifyClientKey?: string | null;
+  isFastPipeline?: boolean;
 };
 
 function isHttpEvent(event: any): boolean {
@@ -158,6 +159,7 @@ export const handler = awslambda.streamifyResponse(
           language: e.language,
           translateTo: e.translateTo,
           notifyClientKey: e.notifyClientKey ?? null,
+          isFastPipeline: e.isFastPipeline,
         } as SubtitleWorkerEvent);
       } finally {
         safeEnd(responseStream);

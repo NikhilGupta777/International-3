@@ -10,6 +10,7 @@ import { tmpdir } from "os";
 import { isIP } from "net";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import { isS3StorageEnabled, uploadBufferToS3, getS3SignedDownloadUrl, readBufferFromS3, putBufferAtKey } from "../lib/s3-storage";
+import { safeGeminiDisplayName } from "../lib/gemini-upload";
 
 const router = Router();
 
@@ -669,7 +670,7 @@ router.post("/generate-srt", runUpload, async (req: Request, res: Response) => {
       } else {
         const uploaded = await ai.files.upload({
           file: file.path,
-          config: { mimeType, displayName: file.originalname || basename(file.path) },
+          config: { mimeType, displayName: safeGeminiDisplayName(file.originalname || basename(file.path), "media-upload") },
         });
         uploadedName = uploaded.name;
         let fileInfo: any = uploaded;

@@ -46,6 +46,7 @@ import { spawn } from "child_process";
 import { pipeline } from "stream/promises";
 import { Readable, Transform } from "stream";
 import { canUseTranslatorLipSync } from "../lib/admin-features";
+import { safeGeminiDisplayName } from "../lib/gemini-upload";
 
 const router = Router();
 
@@ -1419,7 +1420,7 @@ async function transcribeFastAudioGemini(
     // API-key mode: upload via the Files API, poll until ACTIVE, then reuse the URI.
     const uploaded = await ai.files.upload({
       file: audioPath,
-      config: { mimeType: "audio/wav", displayName: basename(audioPath) },
+      config: { mimeType: "audio/wav", displayName: safeGeminiDisplayName(basename(audioPath), "audio.wav") },
     });
     const fileName: string | undefined = uploaded.name;
     try {

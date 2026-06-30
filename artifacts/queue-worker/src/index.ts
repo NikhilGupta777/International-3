@@ -1023,9 +1023,9 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
   const {
     createSubtitleJobState,
     deleteSubtitleJobState,
-    downloadSubtitleSourceAudio,
     getSubtitleJobState,
     processSubtitleAudio,
+    runSubtitleWorker,
   } = await import("../../api-server/src/routes/subtitles");
   const language = getMetaString(payload.meta, "language") ?? "auto";
   const translateTo = getMetaString(payload.meta, "translateTo") ?? undefined;
@@ -1070,44 +1070,16 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
         cleanupFile(localPath);
       }, undefined, isFastPipeline);
     } else {
-      const audioDir = join(tmpdir(), `srt-yt-${payload.jobId}`);
-      cleanupPaths.push(audioDir);
-      mkdirSync(audioDir, { recursive: true });
-      const audioPattern = join(audioDir, "%(title)s.%(ext)s");
-      await updateJobState(payload.jobId, "audio", "Downloading audio from YouTube...", { progressPct: 5 });
-      await downloadSubtitleSourceAudio(
-        [
-          "-f", "bestaudio/best",
-          "--no-playlist", "--no-warnings",
-          "-o", audioPattern, payload.sourceUrl,
-        ],
-        job,
-      );
-
-      if (job.cancelled) {
-        await updateJobState(payload.jobId, "cancelled", "Cancelled by user", { progressPct: job.progressPct ?? 0 });
-        return;
-      }
-
-      const audioFiles = existsSync(audioDir) ? readdirSync(audioDir) : [];
-      const audioFile = audioFiles
-        .map((name) => join(audioDir, name))
-        .find((name) => /\.(m4a|mp4|webm|ogg|opus|mp3|flac|wav|aac)$/i.test(name));
-
-      if (!audioFile) {
-        throw new Error("Could not download audio for subtitles");
-      }
-
-      const rawFilename = basename(audioFile);
-      const videoTitle =
-        rawFilename.replace(/\.[^.]+$/, "").replace(/[<>:"/\\|?*]/g, "-").trim() || "subtitles";
-      job.filename = `${videoTitle}.srt`;
-
-      await processSubtitleAudio(payload.jobId, audioFile, language, job.filename, translateTo, () => {
-        try {
-          rmSync(audioDir, { recursive: true, force: true });
-        } catch {}
-      }, undefined, isFastPipeline);
+      await runSubtitleWorker({
+        source: "videomaking.subtitles",
+        jobId: payload.jobId,
+        inputMode: "url",
+        url: payload.sourceUrl,
+        language,
+        translateTo,
+        notifyClientKey,
+        isFastPipeline,
+      });
     }
 
     if (job.status === "cancelled") {
