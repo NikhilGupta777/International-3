@@ -12,7 +12,7 @@ import { Type } from "@google/genai";
 import { getWorkspace } from "../lib/workspace";
 import { logger } from "../lib/logger";
 import { setupSse, sseFlush } from "../lib/sse";
-import { createGeminiClient, isGeminiConfigured, buildThinkingConfig, getGeminiApiKeyForAttempt, getPersonalGeminiApiKeysList, getPersonalKeysForCaller } from "../lib/gemini-client";
+import { createGeminiClient, isGeminiConfigured, buildThinkingConfig, getGeminiApiKeyForAttempt, getPersonalGeminiApiKeysList, getPersonalKeysForCaller, generateContentWithRotation } from "../lib/gemini-client";
 import { submitEditorRenderJob, getJobStatusFromDdb, putEditorJobQueued, updateEditorJobStatus, isEditorDdbConfigured } from "../lib/youtube-queue";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
@@ -2258,15 +2258,15 @@ function buildToolDispatcherV2(
         const bytes = await readFile(localPath);
         const mime = ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".webp" ? "image/webp" : "image/png";
         const activeModel = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
-        const ai = createGeminiClient({ caller: "video-editor" });
-        const resp: any = await ai.models.generateContent({
+        const resp: any = await generateContentWithRotation({
           model: activeModel,
+          fallbackModels: ["gemini-2.5-flash", "gemini-3.5-flash"],
           contents: [{ role: "user", parts: [
             { text: 'Look at this logo. Reply with ONLY one word: "transparent", "white", "black", or "none". No punctuation.' },
             { inlineData: { mimeType: mime, data: bytes.toString("base64") } },
           ]}],
           config: { maxOutputTokens: 16, thinkingConfig: buildThinkingConfig(activeModel, "LOW") },
-        });
+        }, { caller: "video-editor" });
         const text: string = String(resp?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p.text === "string")?.text || "").trim().toLowerCase().replace(/[^a-z]/g, "");
         const decision = text === "white" ? "auto-white" : text === "black" ? "auto-black" : "none";
         for (const ov of pendingTimeline.tracks.overlays) {
@@ -2600,16 +2600,16 @@ function buildToolDispatcherV2(
           ? args.question.trim()
           : "Describe what's happening: scene, subjects, any on-screen text or logos, and visual quality.";
         const activeModel = (process.env.EDITOR_AGENT_MODEL || "gemini-3.5-flash").trim();
-        const ai = createGeminiClient({ caller: "video-editor" });
         const parts: any[] = [{
           text: `${got.length} frame(s) sampled from a video at ${got.map(g => g.t.toFixed(1) + "s").join(", ")} (window ${lo.toFixed(1)}s–${hi.toFixed(1)}s). ${question}\nAnswer concisely for a video editor. Do not identify real people.`,
         }];
         for (const g of got) parts.push({ inlineData: { mimeType: "image/jpeg", data: g.data } });
-        const resp: any = await ai.models.generateContent({
+        const resp: any = await generateContentWithRotation({
           model: activeModel,
+          fallbackModels: ["gemini-2.5-flash", "gemini-3.5-flash"],
           contents: [{ role: "user", parts }],
           config: { maxOutputTokens: 1024, thinkingConfig: buildThinkingConfig(activeModel, "LOW") },
-        });
+        }, { caller: "video-editor" });
         const text = String(resp?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "").trim();
         return { message: `Looked at frames @ ${got.map(g => g.t.toFixed(1) + "s").join(", ")}:\n${text || "(no description returned)"}` };
       } finally {
@@ -2726,9 +2726,9 @@ function buildToolDispatcherV2(
         if (startSecs != null) videoPart.videoMetadata.startOffset = `${Math.round(startSecs)}s`;
         if (endSecs != null) videoPart.videoMetadata.endOffset = `${Math.round(endSecs)}s`;
       }
-      const ai = createGeminiClient({ caller: "video-editor" });
-      const resp: any = await ai.models.generateContent({
+      const resp: any = await generateContentWithRotation({
         model: EDITOR_WATCH_MODEL,
+        fallbackModels: ["gemini-2.5-flash", "gemini-3.5-flash"],
         contents: [{ role: "user", parts: [
           { text: `${question}\nAnswer concisely for a video editor. Include timestamps where useful. Do not identify real people.` },
           videoPart,
@@ -2737,7 +2737,7 @@ function buildToolDispatcherV2(
           maxOutputTokens: 8192,
           thinkingConfig: buildThinkingConfig(EDITOR_WATCH_MODEL, "MEDIUM"),
         },
-      });
+      }, { caller: "video-editor" });
       const text = String(resp?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("") || "").trim();
       if (!text) throw new Error("The model returned no analysis — the video may be private, age-restricted, or unavailable.");
       return { message: `Watched the video${startSecs != null ? ` (${startSecs}s–${endSecs ?? "end"}s)` : ""}:\n${text}` };
@@ -2932,7 +2932,6 @@ router.post("/projects/:projectId/chat", async (req: Request, res: Response): Pr
       return;
     }
 
-    const ai = createGeminiClient({ caller: "video-editor" });
     const model = (process.env.EDITOR_AGENT_MODEL || "gemma-4-31b-it").trim();
     const thinkingBudget = process.env.EDITOR_AGENT_THINKING_BUDGET || "MEDIUM";
 
