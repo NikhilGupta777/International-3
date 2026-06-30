@@ -826,7 +826,7 @@ jobs:
                 $before = "HEAD~1"
               }
               $changed = git diff --name-only $before "${{ github.sha }}"
-              $requiresServerless = $changed | Select-String -Pattern '^(artifacts/api-server/|deploy/aws-serverless/|Dockerfile\.api-lambda|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)'
+              $requiresServerless = $changed | Select-String -Pattern '^(\.github/workflows/deploy\.yml|artifacts/api-server/|artifacts/queue-worker/|deploy/aws-queue/|deploy/aws-serverless/|Dockerfile\.api-lambda|package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)'
               if (-not $requiresServerless) {
                 Write-Host "No API/serverless inputs changed; deploying static frontend only."
                 $stack = aws cloudformation describe-stacks `
