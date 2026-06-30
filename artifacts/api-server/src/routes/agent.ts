@@ -70,6 +70,10 @@ const ALLOWED_MODELS = new Set([
   "gemma-4-31b-it",
 ]);
 
+function supportsNativeMediaInput(model: string): boolean {
+  return !model.toLowerCase().startsWith("gemma-");
+}
+
 // buildThinkingConfig imported from gemini-client.ts
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -5322,6 +5326,7 @@ router.post("/agent/chat", async (req, res) => {
     thinkingLevel = requestedModel.includes("pro") ? "HIGH" : "MEDIUM";
   }
 
+  const activeModelSupportsNativeMedia = supportsNativeMediaInput(activeModel);
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
   setupSse(res);
@@ -5400,9 +5405,10 @@ router.post("/agent/chat", async (req, res) => {
             ctxLines + (textContent ? "\n\nUser message: " + textContent : ""),
         });
 
-        // Natively pass media files to Gemini as fileData parts (only if it is a public, non-local URL)
+        // Natively pass media files only to models that support video/audio input.
+        // Gemma is text/tool-only here; keep media URLs in text so tools can use them.
         for (const a of mediaAttachments) {
-          if (a.url && !isLocalUrl(a.url)) {
+          if (activeModelSupportsNativeMedia && a.url && !isLocalUrl(a.url)) {
             let finalUri = a.url;
             if (useVertex && (a.type === "video" || a.type === "audio")) {
               try {
@@ -5448,7 +5454,8 @@ router.post("/agent/chat", async (req, res) => {
       }
 
       // Detect YouTube URLs in user messages and pass them natively as fileData parts
-      if (m.role === "user" && textContent) {
+      // only for models that support video/audio input. Gemma should use tools/text.
+      if (activeModelSupportsNativeMedia && m.role === "user" && textContent) {
         const ytRegex =
           /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/g;
         let match;
@@ -5514,12 +5521,14 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       let timeoutId: NodeJS.Timeout | null = null;
       let controller: AbortController | null = null;
-      const streamFallbackModels = Array.from(
-        new Set([
-          activeModel,
-          activeModel === "gemini-3.5-flash" ? "gemini-2.5-flash" : "gemini-3.5-flash",
-        ]),
-      );
+      const streamFallbackModels = activeModel === "gemma-4-31b-it"
+        ? [activeModel]
+        : Array.from(
+            new Set([
+              activeModel,
+              activeModel === "gemini-3.5-flash" ? "gemini-2.5-flash" : "gemini-3.5-flash",
+            ]),
+          );
       const keyCount = Math.max(1, Math.min(getPersonalGeminiApiKeysList().length || 1, 13));
       const MAX_STREAM_ATTEMPTS = Math.max(2, keyCount * streamFallbackModels.length);
       for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
