@@ -74,6 +74,25 @@ function supportsNativeMediaInput(model: string): boolean {
   return !model.toLowerCase().startsWith("gemma-");
 }
 
+function looksLikeUnexecutedActionPromise(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    /\b(i['’]?ll|i will|let me|going to)\b/.test(normalized) &&
+    /\b(right now|now|for you|i will|i['’]?ll)\b/.test(normalized) &&
+    /\b(get|fetch|generate|create|make|download|translate|transcribe|cut|save|open|check|run|find)\b/.test(normalized)
+  );
+}
+
+function looksLikeActionRequest(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    /https?:\/\/|youtu\.be|youtube\.com/.test(normalized) ||
+    /\b(get|fetch|give|generate|create|make|download|translate|transcribe|caption|captions|subtitle|subtitles|cut|clip|save|open|check|run|find)\b/.test(normalized)
+  );
+}
+
 // buildThinkingConfig imported from gemini-client.ts
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -5327,6 +5346,10 @@ router.post("/agent/chat", async (req, res) => {
   }
 
   const activeModelSupportsNativeMedia = supportsNativeMediaInput(activeModel);
+  const latestUserActionText = [...normalizedMessages]
+    .reverse()
+    .find((message) => message.role === "user")
+    ?.content ?? "";
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
   setupSse(res);
@@ -5498,6 +5521,7 @@ router.post("/agent/chat", async (req, res) => {
 
     let iterations = 0;
     let emptyResponseRetries = 0;
+    let unexecutedActionRetries = 0;
     let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH && activeModel !== "gemma-4-31b-it";
     let finalAnswerSent = false;
 
@@ -5997,6 +6021,26 @@ toolConfig: activeCacheName
 
       // ── 2b. No function calls → final answer, parse suggestions, done ─────
       if (functionCalls.length === 0) {
+        if (
+          unexecutedActionRetries < 2 &&
+          looksLikeActionRequest(latestUserActionText) &&
+          looksLikeUnexecutedActionPromise(cleanedText)
+        ) {
+          unexecutedActionRetries++;
+          loopContents.push({
+            role: "model" as const,
+            parts: [{ text: fullText }],
+          });
+          loopContents.push({
+            role: "user" as const,
+            parts: [{
+              text:
+                "You just promised to perform an app action, but you did not call any tool. Do not repeat the promise. If the user requested a real app action and the inputs are available from the chat/tool history, call the correct function now. If no action is possible, give one concise final answer explaining the exact blocker.",
+            }],
+          });
+          continue;
+        }
+
         // Extract [SUGGESTIONS: "a" | "b" | "c"] from the final text
         const sugMatch = fullText.match(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s);
         if (sugMatch) {
