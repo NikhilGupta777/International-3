@@ -3243,18 +3243,33 @@ export function StudioCopilot({
       }
       if (evt.type === "tool_done") {
         setActiveToolLabel(null);
-        let matchedFallbackTool = false;
-        patchAssistant(m => ({
-          ...m, parts: m.parts.map(p => {
+        patchAssistant(m => {
+          let matchedTool = false;
+          let matchedFallbackTool = false;
+          const parts = m.parts.map(p => {
             if (p.kind !== "tool_start") return p;
             const toolPart = p as any;
             const exactMatch = Boolean(evt.toolId && toolPart.toolId === evt.toolId);
             const fallbackMatch = !evt.toolId && !matchedFallbackTool && toolPart.name === evt.name && !toolPart.done;
             if (!exactMatch && !fallbackMatch) return p;
             if (fallbackMatch) matchedFallbackTool = true;
+            matchedTool = true;
             return { ...p, done: true, result: evt.result, progress: 100 };
-          }),
-        }));
+          });
+          if (!matchedTool) {
+            parts.push({
+              kind: "tool_start",
+              toolId: evt.toolId,
+              name: evt.name,
+              args: {},
+              done: true,
+              result: evt.result,
+              progress: 100,
+              logs: [{ ts: Date.now(), msg: "Tool completed", level: "info" as const }],
+            });
+          }
+          return { ...m, parts };
+        });
 
         // Sync to Activity History
         if (evt.name === "cut_video_clip" && evt.result?.jobId) {
@@ -3302,10 +3317,11 @@ export function StudioCopilot({
           const isInformational = informationalTypes.has(evt.artifactType);
           const evtToolId = (evt as any).toolId as string | undefined;
           if (isInformational && evtToolId) {
-            patchAssistant(m => ({
-              ...m,
-              parts: m.parts.map(p => {
+            patchAssistant(m => {
+              let matchedTool = false;
+              const parts = m.parts.map(p => {
                 if (!(p.kind === "tool_start" && (p as any).toolId === evtToolId)) return p;
+                matchedTool = true;
                 return {
                   ...p,
                   inlineArtifact: {
@@ -3319,8 +3335,12 @@ export function StudioCopilot({
                     downloadUrl: evt.downloadUrl,
                   },
                 } as MessagePart;
-              }),
-            }));
+              });
+              if (!matchedTool) {
+                parts.push({ kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, audioUrl: evt.audioUrl, content: evt.content, files: evt.files, dir: evt.dir, contentType: evt.contentType, size: evt.size });
+              }
+              return { ...m, parts };
+            });
           } else {
             patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "artifact", artifactType: evt.artifactType, label: evt.label, tab: evt.tab, jobId: evt.jobId, downloadUrl: evt.downloadUrl, imageUrl: evt.imageUrl, audioUrl: evt.audioUrl, content: evt.content, files: evt.files, dir: evt.dir, contentType: evt.contentType, size: evt.size }] }));
           }
