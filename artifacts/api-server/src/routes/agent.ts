@@ -70,6 +70,8 @@ const ALLOWED_MODELS = new Set([
   "gemma-4-31b-it",
 ]);
 
+const DEFAULT_CAPTION_LANGUAGE = "hi";
+
 function supportsNativeMediaInput(model: string): boolean {
   return !model.toLowerCase().startsWith("gemma-");
 }
@@ -708,7 +710,7 @@ const STUDIO_TOOLS: any[] = [
         language: {
           type: Type.STRING,
           description:
-            "Language code to prefer, e.g. 'en', 'hi'. Default: auto.",
+            "Language code to prefer, e.g. 'hi' for Hindi or 'en' for English. Default: hi because most studio videos are Hindi. Use en only when the user asks for English or the video is clearly English.",
         },
       },
       required: ["url"],
@@ -727,7 +729,7 @@ const STUDIO_TOOLS: any[] = [
         },
         language: {
           type: Type.STRING,
-          description: "Language of the subtitles, e.g. 'en'.",
+          description: "Language of the subtitles, e.g. 'hi' or 'en'. Default: hi.",
         },
       },
       required: ["srtContent"],
@@ -812,7 +814,7 @@ const STUDIO_TOOLS: any[] = [
         url: { type: Type.STRING, description: "YouTube video URL" },
         language: {
           type: Type.STRING,
-          description: "Subtitle/caption language to prefer. Default: en.",
+          description: "Subtitle/caption language to prefer. Default: hi. Use en only when the user asks for English.",
         },
         quality: {
           type: Type.STRING,
@@ -1598,7 +1600,7 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 
 # CAPTION VS TRANSCRIPTION
 
-- Existing YouTube captions → get_youtube_captions (instant, uses YouTube's own captions)
+- Existing YouTube captions → get_youtube_captions with language='hi' by default (instant, uses YouTube's own captions)
 - New transcription from audio / translated SRT / no captions available → generate_subtitles
 - Fix pasted SRT/VTT/text → answer directly; use canvas for long subtitle output
 
@@ -1608,7 +1610,7 @@ Do not run generate_subtitles if YouTube captions would suffice.
 
 You can chain up to ${MAX_ITERATIONS} tool calls per turn:
 - "summarize the video and then pull the best 3 clips" → answer directly, then find_best_clips.
-- "transcribe and translate to English" → generate_subtitles with translateTo='en'.
+- "transcribe and translate to English" → generate_subtitles with language='hi' and translateTo='en' unless the user explicitly says the source speech is another language.
 - "what does the host say about X at minute 10" → answer directly using native capabilities.
 - If a tool result contains "video unavailable", "private", or "no captions found", stop retrying and tell the user plainly.
 
@@ -3581,7 +3583,7 @@ async function executeTool(
         name,
         message: "Fetching captions from YouTube...",
       });
-      const language = args.language ?? "en";
+      const language = args.language ?? DEFAULT_CAPTION_LANGUAGE;
       const downloadUrl = `/api/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`;
       const r = await fetch(
         `${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`,
@@ -3921,7 +3923,7 @@ async function executeTool(
       checkHeavyOpRateLimit(req, "do_full_package");
       const url = String(args.url ?? "").trim();
       if (!url) throw new Error("YouTube URL is required.");
-      const language = String(args.language ?? "en");
+      const language = String(args.language ?? DEFAULT_CAPTION_LANGUAGE);
       const quality = args.quality ?? "best";
       const results: Record<string, any> = {};
 
