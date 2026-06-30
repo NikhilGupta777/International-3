@@ -5132,16 +5132,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname.toLowerCase());
   } catch {
     return true;
   }
@@ -6280,7 +6271,7 @@ toolConfig: activeCacheName
       // ── 6. Build history for next iteration ───────────────────────────────
       // Use rawFcParts (not reconstructed) to preserve thought_signature
       const modelParts: any[] = [];
-      if (fullText) modelParts.push({ text: fullText });
+      if (fullText) modelParts.push({ text: stripReasoningTags(fullText) });
       for (const rawFc of rawFcParts) modelParts.push(rawFc);
 
       loopContents = [
