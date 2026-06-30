@@ -10,7 +10,6 @@ import { GoogleGenAI } from "@google/genai";
 import {
   DynamoDBClient,
   GetItemCommand,
-  PutItemCommand,
   UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
@@ -682,23 +681,62 @@ async function persistSubtitleJob(jobId: string, job: SrtJob): Promise<void> {
   }
 
   const now = Date.now();
-  const item: Record<string, any> = {
-    jobId: { S: jobId },
-    status: { S: job.status },
-    message: { S: job.status === "error" ? (job.error ?? job.message ?? "Subtitle generation failed") : (job.message ?? job.status) },
-    filename: { S: job.filename },
-    createdAt: { N: String(job.createdAt || now) },
-    updatedAt: { N: String(now) },
-    progressPct: { N: String(job.status === "done" ? 100 : (job.progressPct ?? 0)) },
+  const names: Record<string, string> = {
+    "#s": "status",
+    "#m": "message",
+    "#f": "filename",
+    "#c": "createdAt",
+    "#u": "updatedAt",
+    "#p": "progressPct",
   };
-  if (job.completedAt) item.completedAt = { N: String(job.completedAt) };
-  if (job.durationSecs != null) item.durationSecs = { N: String(job.durationSecs) };
-  if (job.qualityWarnings?.length) item.qualityWarnings = { S: JSON.stringify(job.qualityWarnings.slice(0, 5)) };
-  if (s3Key) item.s3Key = { S: s3Key };
-  if (originalS3Key) item.originalS3Key = { S: originalS3Key };
-  if (job.originalFilename) item.originalFilename = { S: job.originalFilename };
+  const values: Record<string, any> = {
+    ":s": { S: job.status },
+    ":m": { S: job.status === "error" ? (job.error ?? job.message ?? "Subtitle generation failed") : (job.message ?? job.status) },
+    ":f": { S: job.filename },
+    ":c": { N: String(job.createdAt || now) },
+    ":u": { N: String(now) },
+    ":p": { N: String(job.status === "done" ? 100 : (job.progressPct ?? 0)) },
+  };
+  const sets = [
+    "#s = :s",
+    "#m = :m",
+    "#f = :f",
+    "#c = if_not_exists(#c, :c)",
+    "#u = :u",
+    "#p = :p",
+  ];
 
-  await ddb.send(new PutItemCommand({ TableName: JOB_TABLE, Item: item }));
+  const addNumber = (name: string, value: number | undefined) => {
+    if (value == null || !Number.isFinite(value)) return;
+    const key = `#${name}`;
+    const val = `:${name}`;
+    names[key] = name;
+    values[val] = { N: String(value) };
+    sets.push(`${key} = ${val}`);
+  };
+  const addString = (name: string, value: string | undefined) => {
+    if (!value) return;
+    const key = `#${name}`;
+    const val = `:${name}`;
+    names[key] = name;
+    values[val] = { S: value };
+    sets.push(`${key} = ${val}`);
+  };
+
+  addNumber("completedAt", job.completedAt);
+  addNumber("durationSecs", job.durationSecs);
+  if (job.qualityWarnings?.length) addString("qualityWarnings", JSON.stringify(job.qualityWarnings.slice(0, 5)));
+  addString("s3Key", s3Key);
+  addString("originalS3Key", originalS3Key);
+  addString("originalFilename", job.originalFilename);
+
+  await ddb.send(new UpdateItemCommand({
+    TableName: JOB_TABLE,
+    Key: { jobId: { S: jobId } },
+    UpdateExpression: `SET ${sets.join(", ")}`,
+    ExpressionAttributeNames: names,
+    ExpressionAttributeValues: values,
+  }));
 }
 
 function schedulePersistSubtitleJob(jobId: string, job: SrtJob): void {

@@ -116,6 +116,23 @@ const BASE_STEPS_FILE = ["uploading", "generating", "correcting"];
 const TRANSLATE_STEPS = ["translating", "verifying"];
 const SUBTITLE_JOB_MISSING_GRACE_MS = 2 * 60 * 1000;
 
+function inferSubtitleStepFromProgress(status: string | null, message: string, progressPct: number, isFast: boolean): string | null {
+  if (status !== "running") return status;
+  const lower = message.toLowerCase();
+  if (lower.includes("verif")) return "verifying";
+  if (lower.includes("translat")) return "translating";
+  if (lower.includes("correct") || lower.includes("clean")) return isFast ? "verifying" : "correcting";
+  if (lower.includes("generat") || lower.includes("transcrib") || lower.includes("pass 1") || lower.includes("pass 2")) {
+    return lower.includes("pass 2") ? "verifying" : "generating";
+  }
+  if (lower.includes("upload") || lower.includes("fetch")) return "uploading";
+  if (lower.includes("download") || lower.includes("audio") || lower.includes("queue")) return "audio";
+  if (progressPct >= 65) return isFast ? "verifying" : "correcting";
+  if (progressPct >= 25) return "generating";
+  if (progressPct >= 10) return "uploading";
+  return "audio";
+}
+
 /** Rough time estimate per pipeline mode */
 function estimateSeconds(durationSecs: number, hasTranslation: boolean, isFast: boolean): number {
   if (isFast) {
@@ -378,7 +395,12 @@ export function GetSubtitles() {
 
         // Track last known good step for correct step-tracker rendering on error/cancel
         if (data.status && !["error", "cancelled", "done"].includes(data.status)) {
-          lastGoodStepRef.current = data.status;
+          lastGoodStepRef.current = inferSubtitleStepFromProgress(
+            data.status,
+            data.message ?? "",
+            typeof data.progressPct === "number" ? data.progressPct : 0,
+            jobIsFastPipelineRef.current,
+          );
         }
 
         if (data.status === "done") {
@@ -736,7 +758,7 @@ export function GetSubtitles() {
     ? lastGoodStepRef.current ?? jobStepOrder[0]
     // Treat server-side queuing states as step 1 so we never show "Step 0"
     : ["pending", "queued"].includes(jobStatus ?? "") ? jobStepOrder[0]
-    : jobStatus;
+    : inferSubtitleStepFromProgress(jobStatus, jobMessage, progressPct, jobIsFastPipelineRef.current);
 
   // Clamp to 0 so unknown statuses show "Step 1" not "Step 0"
   const currentStepIdx = Math.max(0, jobStepOrder.indexOf(effectiveStatus ?? ""));

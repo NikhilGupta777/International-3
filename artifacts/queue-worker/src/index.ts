@@ -1048,7 +1048,7 @@ async function handleSubtitles(payload: WorkerPayload): Promise<void> {
   const syncTimer = setInterval(() => {
     const state = getSubtitleJobState(payload.jobId);
     if (!state) return;
-    const status = state.status === "done" ? "done" : state.status === "error" ? "error" : state.status === "cancelled" ? "cancelled" : "running";
+    const status = state.status;
     const message = state.error ?? state.message ?? status;
     void updateJobState(payload.jobId, status, message, {
       ...(typeof state.progressPct === "number" ? { progressPct: state.progressPct } : {}),
