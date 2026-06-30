@@ -191,7 +191,6 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 
     case "cut_video_clip":
     case "download_video":
-    case "generate_subtitles":
     case "find_best_clips":
     case "generate_timestamps":
       return "youtube_processing";
@@ -581,27 +580,6 @@ const STUDIO_TOOLS: any[] = [
     },
   },
   {
-    name: "generate_subtitles",
-    description:
-      "Generate SRT subtitle file from a YouTube video, optionally translated. WAITS for completion and returns a download link.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        url: { type: Type.STRING, description: "YouTube video URL" },
-        language: {
-          type: Type.STRING,
-          description:
-            "Source language code, e.g. 'hi' for Hindi. Default: auto-detect.",
-        },
-        translateTo: {
-          type: Type.STRING,
-          description: "Target translation language code, e.g. 'en'. Optional.",
-        },
-      },
-      required: ["url"],
-    },
-  },
-  {
     name: "find_best_clips",
     description:
       "Find the most valuable segments from a long YouTube video. Polls until analysis is complete and returns a Best Clips tab artifact. Use for highlights, shorts, viral moments, best clips, or content segment discovery.",
@@ -702,7 +680,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "get_youtube_captions",
     description:
-      "Fetch the fullest existing auto-generated or manual captions directly from YouTube. Use this for YouTube subtitle/SRT/transcription requests unless the user explicitly asks to run generate_subtitles.",
+      "Fetch the fullest existing auto-generated or manual captions directly from YouTube. Use this for YouTube subtitle, SRT, transcript, cleanup, and translation requests.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1506,7 +1484,7 @@ You natively support watching and analyzing YouTube videos when given a YouTube 
 Do not run a heavy tool just because a URL exists in context:
 - User asks for title/metadata only → get_video_info only, not analyze_youtube_video
 - User asks for summary/quotes/moments → answer directly using native YouTube capabilities, do NOT use analyze_youtube_video
-- User asks for existing YouTube captions, an SRT file, a transcript, or "transcribe this YouTube video" → get_youtube_captions first, not generate_subtitles
+- User asks for existing YouTube captions, an SRT file, a transcript, or "transcribe this YouTube video" → get_youtube_captions
 - User gives exact clip times → cut_video_clip directly, not web_search first
 - User asks for SEO/title/script from their own idea → answer directly unless they ask for export/download
 - User asks for visible text from image in chat → answer directly unless they need the text extracted as a file
@@ -1556,7 +1534,6 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "give me the captions / subtitles already on YouTube" | get_youtube_captions (instant, no transcription) |
 | "transcribe / give SRT for this YouTube video" | get_youtube_captions, then clean terminology if needed while preserving all indexes and timestamps |
 | "translate this existing SRT / translate these captions" | Use the SRT already in context from get_youtube_captions; do not call get_youtube_captions again unless no SRT is available |
-| "generate subtitles with the generate_subtitles tool / test generated subtitles" | generate_subtitles |
 | "fix / clean pasted SRT/VTT/TXT" | answer directly with cleaned text; use canvas for long subtitle output |
 | "cut from X to Y / make a clip" | cut_video_clip |
 | "download the whole video / get the audio" | download_video (use quality='audio_only' for audio) |
@@ -1603,7 +1580,7 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 # CAPTION VS TRANSCRIPTION
 
 - Existing YouTube captions or YouTube URL → get_youtube_captions with language='hi' by default (instant, uses YouTube's own captions). Treat the returned SRT content as the source file for this turn.
-- Do not run generate_subtitles unless the user explicitly asks to use/test the generate_subtitles tool. If YouTube has no captions, say that full YouTube captions were not available instead of silently transcribing.
+- The Super Agent does not generate new subtitles from audio. If YouTube has no captions, say that full YouTube captions were not available and suggest the dedicated Subtitles tab only if the user wants audio transcription.
 - If the user asks for an SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, and similar names/terms inferred from context. Do not rewrite meaning.
 - If the user asks to translate captions/SRT after captions were already fetched, translate from the existing full SRT in context. Do not call get_youtube_captions again unless the caption content is missing.
 - For long SRT output, provide the complete cleaned or translated SRT as a text artifact/canvas/downloadable file, not only a short chat excerpt. For multiple target languages, create one complete SRT artifact per language.
@@ -1637,7 +1614,7 @@ When the user assigns a task, complete the full workflow without asking for step
 
 # UPLOADED FILES
 
-If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], pass that URL straight to generate_subtitles or translate_video. Do NOT ask for a YouTube link.
+If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], use translate_video only for dubbing/translation-video tasks. For subtitle/SRT requests, explain that Super Agent works from existing YouTube captions and the dedicated Subtitles tab handles uploaded audio/video transcription.
 
 # FAILURE HANDLING
 
@@ -3983,7 +3960,6 @@ async function executeTool(
             results.get_youtube_captions = {
               error: err?.message ?? "Direct captions unavailable",
             };
-            await runStep("generate_subtitles", { url, language });
           }
         })(),
         runStep("find_best_clips", {
@@ -5430,7 +5406,7 @@ router.post("/agent/chat", async (req, res) => {
                 : a.type === "audio"
                   ? "AUDIO"
                   : "FILE";
-            return `[ATTACHED ${typeLabel}: "${a.name}" | URL: ${a.url} | MIME: ${a.mimeType}]\nThe user uploaded this file. Use its URL directly with tools (generate_subtitles, translate_video, etc.) - do NOT ask for a YouTube link.`;
+            return `[ATTACHED ${typeLabel}: "${a.name}" | URL: ${a.url} | MIME: ${a.mimeType}]\nThe user uploaded this file. Use its URL directly with translate_video for dubbing/translation-video tasks. For subtitle/SRT transcription, explain that Super Agent uses existing YouTube captions and the dedicated Subtitles tab handles uploaded audio/video transcription.`;
           })
           .join("\n");
         parts.push({
