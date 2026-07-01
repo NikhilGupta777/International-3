@@ -1463,17 +1463,17 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
   const normalizedLanguage = normalizeCanvasLanguage(language, content);
   const canPreview = isHtmlCanvas(normalizedLanguage, content);
   const canRenderMarkdown = isMarkdownArtifact(normalizedLanguage, label);
+  const downloadName = label || canvasFilename(normalizedLanguage);
+  const artifactUrl = React.useMemo(
+    () => downloadUrl || `data:${canPreview ? "text/html" : "text/plain"};charset=utf-8,${encodeURIComponent(content)}`,
+    [canPreview, content, downloadUrl],
+  );
   // For short non-live, non-previewable content, drop the heavy "canvas" UI and
   // show a tight inline card. Canvas is for real artifacts the user will edit/download.
   if (!live && !canPreview && content.length <= 500) {
     return <CompactTextArtifact label={label} content={content} downloadUrl={downloadUrl} />;
   }
   const copyText = () => { void navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); };
-  const downloadName = label || canvasFilename(normalizedLanguage);
-  const artifactUrl = React.useMemo(
-    () => downloadUrl || `data:${canPreview ? "text/html" : "text/plain"};charset=utf-8,${encodeURIComponent(content)}`,
-    [canPreview, content, downloadUrl],
-  );
   const preview = content.length > 3200 ? `${content.slice(0, 3200)}\n\n...` : content;
   return (
     <>
