@@ -5499,8 +5499,7 @@ router.post("/agent/chat", async (req, res) => {
   let captionToolAttemptedForTurn = false;
   let captionsUnavailableForTurn = false;
   let assemblyCaptionsAttemptedForTurn = false;
-  const holdActionTextUntilToolDecision =
-    captionToolRequiredForTurn || looksLikeActionRequest(latestUserActionText);
+  const holdActionTextUntilToolDecision = captionToolRequiredForTurn;
   let anyToolAttemptedForTurn = false;
   const shouldHoldToolDependentOutput = () =>
     (holdActionTextUntilToolDecision && !anyToolAttemptedForTurn) ||
@@ -6277,9 +6276,17 @@ toolConfig: activeCacheName
           if (items.length > 0)
             sseEvent(res, { type: "suggestions", items, runId } as any);
         }
-        // Only send full text event if we didn't already stream it via text_delta
+        // Only send full text event if we didn't already stream it via text_delta.
+        // If text was held while waiting for a tool decision, it may contain the
+        // hidden canvas protocol. Route it through the canvas parser instead of
+        // emitting raw <canvas> tags into chat.
         if (!streamedTextLive) {
-          sseEvent(res, { type: "text", content: fullText, runId });
+          const heldText = pendingTextBuf || fullText;
+          if (/<canvas\b|```(?:html|css|javascript|js|typescript|ts|python|py|json|markdown|md|text|srt|vtt)\b/i.test(heldText)) {
+            emitCanvasRoutedText(heldText, true);
+          } else {
+            sseEvent(res, { type: "text", content: fullText, runId });
+          }
         }
         finalAnswerSent = true;
         // Emit grounding sources if native Google Search grounding was used.
