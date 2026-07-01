@@ -95,6 +95,19 @@ function looksLikeActionRequest(text: string): boolean {
   );
 }
 
+function looksLikeYoutubeCaptionWorkflow(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!/(https?:\/\/|youtu\.be|youtube\.com|youtube-nocookie\.com)/.test(normalized)) {
+    return false;
+  }
+  const asksForCaptions =
+    /\b(caption|captions|subtitle|subtitles|srt|transcript|transcribe)\b/.test(normalized);
+  const asksToTranslateCaptions =
+    /\btranslate\b/.test(normalized) &&
+    /\b(caption|captions|subtitle|subtitles|srt|transcript)\b/.test(normalized);
+  return asksForCaptions || asksToTranslateCaptions;
+}
+
 // buildThinkingConfig imported from gemini-client.ts
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -406,7 +419,8 @@ async function pollSubtitleUntilDone(
   isConnected: () => boolean,
   toolId?: string,
   runId?: string,
-): Promise<{ status: string; srtFilename?: string }> {
+  progressToolName = "generate_subtitles",
+): Promise<{ status: string; srtFilename?: string; srt?: string | null; originalSrt?: string | null }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   let lastLogMsg: string | null = null;
   while (Date.now() < deadline && isConnected()) {
@@ -425,7 +439,7 @@ async function pollSubtitleUntilDone(
       type: "tool_progress",
       runId,
       toolId,
-      name: "generate_subtitles",
+      name: progressToolName,
       status,
       percent: progressPct ?? null,
       message: subtitleMsg,
@@ -436,13 +450,20 @@ async function pollSubtitleUntilDone(
         type: "tool_log",
         runId,
         toolId,
-        name: "generate_subtitles",
+        name: progressToolName,
         message: subtitleMsg,
         level: "info",
       });
       lastLogMsg = subtitleMsg;
     }
-    if (status === "done") return { status, srtFilename };
+    if (status === "done") {
+      return {
+        status,
+        srtFilename,
+        srt: typeof data.srt === "string" ? data.srt : null,
+        originalSrt: typeof data.originalSrt === "string" ? data.originalSrt : null,
+      };
+    }
     if (["error", "cancelled"].includes(status))
       throw new Error(`Subtitle job ${status}: ${message ?? ""}`);
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -1580,7 +1601,7 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 # CAPTION VS TRANSCRIPTION
 
 - Existing YouTube captions or YouTube URL → get_youtube_captions with language='hi' by default (instant, uses YouTube's own captions). Treat the returned SRT content as the source file for this turn.
-- The Super Agent does not generate new subtitles from audio. If YouTube has no captions, say that full YouTube captions were not available and suggest the dedicated Subtitles tab only if the user wants audio transcription.
+- Do not manually invent SRT content. Always call get_youtube_captions first. If YouTube captions are unavailable, the backend may generate a full SRT from the video audio inside that same tool and return it as the tool result.
 - If the user asks for an SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, and similar names/terms inferred from context. Do not rewrite meaning.
 - If the user asks for generating SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as accurately possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as these should be kept in set file even in translated srt too, speaker may say these words u have to understand think and reserve them as they are as brand assets in wording not to be changed - Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, Vishwa Sanatan Dharma Seva Trust, Sudharma Maha Maha Sangh, Bhavishya Malika Puran, Garga Samhita, Gupta Padmak, Nitya Panchasakha, Mahapurush Achyutananda Das, Kalki Avatar, Kalki Bhagwan, Jagannath Mahaprabhu, Balabhadra, Subhadra, Sudarshan Mahaprabhu, Chaturdha Vigraha, Darubrahma, Neela Chakra, Patit Pavan Dhwaja, Bais Pahacha, Kalpavriksha, Nilakandara, Ratna Singhasan, Snan Mandap, Anavasar Ghar, Dhari Pahandi, Goti Pahandi, Shunya Pahandi, Dhool Govind, Thakur Raja Dibyasingha Deb, Panch Balveer, Sapta Chiranjeevi, Maru, Devapi, Khatu Shyam Baba, Chausath Yogini Mata, Panchabhoota, Dashadikpal, Gupta Maruni, Operation Sindoor, Brahma Pralay, Golok Vaikuntha, Sambhal Kalki Dham, Satya Yuga, and similar names/terms inferred from context. Do not rewrite meaning.
 - If the user asks to translate captions/SRT after captions were already fetched, translate from the existing full SRT in context. Do not call get_youtube_captions again unless the caption content is missing.
@@ -1616,7 +1637,7 @@ When the user assigns a task, complete the full workflow without asking for step
 
 # UPLOADED FILES
 
-If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], use translate_video only for dubbing/translation-video tasks. For subtitle/SRT requests, explain that Super Agent works from existing YouTube captions and the dedicated Subtitles tab handles uploaded audio/video transcription.
+If the conversation context contains [ATTACHED VIDEO/AUDIO/FILE: ... | URL: ...], use translate_video only for dubbing/translation-video tasks. For uploaded-file subtitle/SRT transcription, explain that the dedicated Subtitles tab handles uploaded audio/video transcription.
 
 # FAILURE HANDLING
 
@@ -2905,6 +2926,91 @@ const ALLOWED_NAV_TABS = new Set([
   "settings",
 ]);
 
+async function generateCaptionsFallbackFromUrl(params: {
+  apiBase: string;
+  internalHeaders: Record<string, string>;
+  req: any;
+  res: any;
+  isConnected: () => boolean;
+  runId?: string;
+  toolId?: string;
+  url: string;
+  language: string;
+}): Promise<{ result: any; artifact: object }> {
+  const {
+    apiBase,
+    internalHeaders,
+    req,
+    res,
+    isConnected,
+    runId,
+    toolId,
+    url,
+    language,
+  } = params;
+
+  sseEvent(res, {
+    type: "tool_progress",
+    runId,
+    toolId,
+    name: "get_youtube_captions",
+    message:
+      "YouTube captions were unavailable. Generating a full SRT from the video audio...",
+  });
+
+  const start = await fetch(`${apiBase}/subtitles/generate`, {
+    method: "POST",
+    headers: internalHeaders,
+    body: JSON.stringify({
+      url,
+      language: language || "auto",
+      source: "url",
+    }),
+  });
+  if (!start.ok) {
+    const err = (await start.json().catch(() => ({}))) as any;
+    throw new Error(
+      err.error ?? `Caption generation fallback failed: ${start.status}`,
+    );
+  }
+  const started = (await start.json()) as any;
+  const jobId = String(started.jobId ?? started.id ?? "");
+  if (!jobId) throw new Error("Caption generation fallback did not return a jobId");
+  rememberAgentJob(req, jobId);
+
+  const final = await pollSubtitleUntilDone(
+    res,
+    `${apiBase}/subtitles/status/${jobId}`,
+    jobId,
+    internalHeaders,
+    isConnected,
+    toolId,
+    runId,
+    "get_youtube_captions",
+  );
+  const srt = final.srt ?? final.originalSrt;
+  if (!srt?.trim()) {
+    throw new Error("Caption generation fallback completed without SRT text");
+  }
+
+  const filename = final.srtFilename ?? "generated-subtitles.srt";
+  const artifact = await downloadableTextArtifact(filename, srt);
+  return {
+    result: {
+      filename,
+      language,
+      source: "generated_audio_fallback",
+      fallbackReason: "youtube_captions_unavailable",
+      jobId,
+      bytes: Buffer.byteLength(srt, "utf8"),
+      contentBytes: Buffer.byteLength(srt, "utf8"),
+      fullContentInContext: true,
+      content: srt,
+    },
+    artifact,
+  };
+}
+
 async function executeTool(
   name: string,
   args: Record<string, any>,
@@ -3585,6 +3691,22 @@ async function executeTool(
           const parsed = JSON.parse(content) as { error?: string };
           message = parsed.error ?? message;
         } catch {}
+        const canGenerateFallback =
+          isYouTubeUrl(String(args.url ?? "")) &&
+          /no subtitles|no captions|captions unavailable|subtitles unavailable|not found|404/i.test(message);
+        if (canGenerateFallback) {
+          return await generateCaptionsFallbackFromUrl({
+            apiBase,
+            internalHeaders,
+            req,
+            res,
+            isConnected,
+            runId,
+            toolId,
+            url: args.url,
+            language,
+          });
+        }
         throw new Error(message);
       }
       return {
@@ -5338,6 +5460,16 @@ router.post("/agent/chat", async (req, res) => {
     .reverse()
     .find((message) => message.role === "user")
     ?.content ?? "";
+  const conversationActionText = normalizedMessages
+    .slice(-8)
+    .map((message) => String(message.content ?? ""))
+    .join("\n");
+  const captionToolRequiredForTurn =
+    looksLikeYoutubeCaptionWorkflow(conversationActionText);
+  let captionToolAttemptedForTurn = false;
+  const holdActionTextUntilToolDecision =
+    captionToolRequiredForTurn || looksLikeActionRequest(latestUserActionText);
+  let anyToolAttemptedForTurn = false;
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
   setupSse(res);
@@ -5892,54 +6024,56 @@ toolConfig: activeCacheName
         if (chunkText) {
           fullText += chunkText;
           pendingTextBuf += chunkText;
-          // Hold back text that might be a partial internal marker.
-          // Check for any marker pattern that should not reach the client:
-          // [SUGGEST..., [Tool:..., [TextArtifact:..., [Artifact:...
-          const markerPatterns = [
-            "[SUGGEST",
-            "[Tool:",
-            "[TextArtifact:",
-            "[Artifact:",
-          ];
-          let holdIdx = -1;
-          for (const pat of markerPatterns) {
-            // Check for full pattern start or partial match at the end of buffer
-            const idx = pendingTextBuf.lastIndexOf(pat);
-            if (idx !== -1 && (holdIdx === -1 || idx < holdIdx)) {
-              holdIdx = idx;
+          if (!(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)) {
+            // Hold back text that might be a partial internal marker.
+            // Check for any marker pattern that should not reach the client:
+            // [SUGGEST..., [Tool:..., [TextArtifact:..., [Artifact:...
+            const markerPatterns = [
+              "[SUGGEST",
+              "[Tool:",
+              "[TextArtifact:",
+              "[Artifact:",
+            ];
+            let holdIdx = -1;
+            for (const pat of markerPatterns) {
+              // Check for full pattern start or partial match at the end of buffer
+              const idx = pendingTextBuf.lastIndexOf(pat);
+              if (idx !== -1 && (holdIdx === -1 || idx < holdIdx)) {
+                holdIdx = idx;
+              }
+              // Also check for partial pattern at the very end (e.g. "[Too" or "[Tex")
+              for (let pLen = 1; pLen < pat.length; pLen++) {
+                if (pendingTextBuf.endsWith(pat.slice(0, pLen))) {
+                  const partialIdx = pendingTextBuf.length - pLen;
+                  if (holdIdx === -1 || partialIdx < holdIdx) {
+                    holdIdx = partialIdx;
+                  }
+                }
+              }
             }
-            // Also check for partial pattern at the very end (e.g. "[Too" or "[Tex")
-            for (let pLen = 1; pLen < pat.length; pLen++) {
-              if (pendingTextBuf.endsWith(pat.slice(0, pLen))) {
+            // Also hold back partial <canvas tags at the end of buffer
+            const canvasTag = "<canvas";
+            for (let pLen = 1; pLen <= canvasTag.length; pLen++) {
+              if (
+                pendingTextBuf.toLowerCase().endsWith(canvasTag.slice(0, pLen))
+              ) {
                 const partialIdx = pendingTextBuf.length - pLen;
                 if (holdIdx === -1 || partialIdx < holdIdx) {
                   holdIdx = partialIdx;
                 }
+                break;
               }
             }
-          }
-          // Also hold back partial <canvas tags at the end of buffer
-          const canvasTag = "<canvas";
-          for (let pLen = 1; pLen <= canvasTag.length; pLen++) {
-            if (
-              pendingTextBuf.toLowerCase().endsWith(canvasTag.slice(0, pLen))
-            ) {
-              const partialIdx = pendingTextBuf.length - pLen;
-              if (holdIdx === -1 || partialIdx < holdIdx) {
-                holdIdx = partialIdx;
+            if (holdIdx === -1) {
+              emitCanvasRoutedText(pendingTextBuf);
+              pendingTextBuf = "";
+            } else {
+              const safe = pendingTextBuf.slice(0, holdIdx);
+              if (safe) {
+                emitCanvasRoutedText(safe);
               }
-              break;
+              pendingTextBuf = pendingTextBuf.slice(holdIdx);
             }
-          }
-          if (holdIdx === -1) {
-            emitCanvasRoutedText(pendingTextBuf);
-            pendingTextBuf = "";
-          } else {
-            const safe = pendingTextBuf.slice(0, holdIdx);
-            if (safe) {
-              emitCanvasRoutedText(safe);
-            }
-            pendingTextBuf = pendingTextBuf.slice(holdIdx);
           }
         }
 
@@ -5963,7 +6097,7 @@ toolConfig: activeCacheName
         if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
       }
       // Flush remaining buffered text (strip internal markers if present)
-      if (pendingTextBuf) {
+      if (pendingTextBuf && !(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)) {
         const cleaned = pendingTextBuf
           .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
           .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
@@ -5976,7 +6110,12 @@ toolConfig: activeCacheName
           emitCanvasRoutedText(cleaned, true);
         }
       }
-      if (canvasRouteBuf || activeCanvas) emitCanvasRoutedText("", true);
+      if (
+        (canvasRouteBuf || activeCanvas) &&
+        !(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)
+      ) {
+        emitCanvasRoutedText("", true);
+      }
 
       if (!isConnected()) break;
 
@@ -6009,6 +6148,38 @@ toolConfig: activeCacheName
 
       // ── 2b. No function calls → final answer, parse suggestions, done ─────
       if (functionCalls.length === 0) {
+        if (
+          captionToolRequiredForTurn &&
+          !captionToolAttemptedForTurn &&
+          unexecutedActionRetries < 3
+        ) {
+          unexecutedActionRetries++;
+          pendingTextBuf = "";
+          canvasRouteBuf = "";
+          activeCanvas = null;
+          loopContents.push({
+            role: "model" as const,
+            parts: [{ text: fullText }],
+          });
+          loopContents.push({
+            role: "user" as const,
+            parts: [{
+              text:
+                "The user is asking for YouTube captions/subtitles/SRT/transcript work. You MUST call get_youtube_captions before writing any SRT, translation, or canvas. Do not create subtitle content from memory or reasoning. If get_youtube_captions fails, the backend will handle the audio-generation fallback inside that tool.",
+            }],
+          });
+          continue;
+        }
+        if (captionToolRequiredForTurn && !captionToolAttemptedForTurn) {
+          sseEvent(res, {
+            type: "text",
+            content:
+              "I could not start the required caption tool for this request. Please send it again and I will fetch the captions before writing any SRT.",
+            runId,
+          });
+          finalAnswerSent = true;
+          break;
+        }
         if (
           unexecutedActionRetries < 2 &&
           looksLikeActionRequest(latestUserActionText) &&
@@ -6080,7 +6251,7 @@ toolConfig: activeCacheName
       const toolResults: any[] = [];
       let iterationHadError = false;
       // Only emit pre-tool text if it wasn't already streamed live
-      if (!streamedTextLive) {
+      if (!streamedTextLive && !(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)) {
         const preToolText = stripReasoningTags(fullText);
         if (preToolText) {
           sseEvent(res, {
@@ -6153,6 +6324,10 @@ toolConfig: activeCacheName
             level: "error",
           });
         }
+        if (fc.name === "get_youtube_captions") {
+          captionToolAttemptedForTurn = true;
+        }
+        anyToolAttemptedForTurn = true;
 
         sseEvent(res, {
           type: "tool_done",
