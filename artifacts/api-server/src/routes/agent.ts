@@ -716,6 +716,23 @@ const STUDIO_TOOLS: any[] = [
     },
   },
   {
+    name: "generate_captions_with_assemblyai",
+    description:
+      "Internal fallback tool. Use ONLY after get_youtube_captions fails because YouTube captions/subtitles are unavailable. Downloads the YouTube audio server-side, submits it to AssemblyAI, waits for the SRT, and returns the full SRT content.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: { type: Type.STRING, description: "YouTube video URL" },
+        language: {
+          type: Type.STRING,
+          description:
+            "Language code to prefer, e.g. 'hi' for Hindi or 'en' for English. Default: hi unless the user asked for another language.",
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "fix_subtitles",
     description:
       "Fix and clean up garbled or mistimed SRT subtitle content. Pass the raw SRT as a string.",
@@ -1601,7 +1618,7 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 # CAPTION VS TRANSCRIPTION
 
 - Existing YouTube captions or YouTube URL → get_youtube_captions with language='hi' by default (instant, uses YouTube's own captions). Treat the returned SRT content as the source file for this turn.
-- Do not manually invent SRT content. Always call get_youtube_captions first. If YouTube captions are unavailable, the backend may generate a full SRT from the video audio inside that same tool and return it as the tool result.
+- Do not manually invent SRT content. Always call get_youtube_captions first. If and only if get_youtube_captions returns a captions-unavailable error telling you to use AssemblyAI, call generate_captions_with_assemblyai with the same YouTube URL and language. Never call generate_captions_with_assemblyai before get_youtube_captions has failed for that URL.
 - If the user asks for an SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, and similar names/terms inferred from context. Do not rewrite meaning.
 - If the user asks for generating SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as accurately possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as these should be kept in set file even in translated srt too, speaker may say these words u have to understand think and reserve them as they are as brand assets in wording not to be changed - Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, Vishwa Sanatan Dharma Seva Trust, Sudharma Maha Maha Sangh, Bhavishya Malika Puran, Garga Samhita, Gupta Padmak, Nitya Panchasakha, Mahapurush Achyutananda Das, Kalki Avatar, Kalki Bhagwan, Jagannath Mahaprabhu, Balabhadra, Subhadra, Sudarshan Mahaprabhu, Chaturdha Vigraha, Darubrahma, Neela Chakra, Patit Pavan Dhwaja, Bais Pahacha, Kalpavriksha, Nilakandara, Ratna Singhasan, Snan Mandap, Anavasar Ghar, Dhari Pahandi, Goti Pahandi, Shunya Pahandi, Dhool Govind, Thakur Raja Dibyasingha Deb, Panch Balveer, Sapta Chiranjeevi, Maru, Devapi, Khatu Shyam Baba, Chausath Yogini Mata, Panchabhoota, Dashadikpal, Gupta Maruni, Operation Sindoor, Brahma Pralay, Golok Vaikuntha, Sambhal Kalki Dham, Satya Yuga, and similar names/terms inferred from context. Do not rewrite meaning.
 - If the user asks to translate captions/SRT after captions were already fetched, translate from the existing full SRT in context. Do not call get_youtube_captions again unless the caption content is missing.
@@ -1615,7 +1632,7 @@ You can chain up to ${MAX_ITERATIONS} tool calls per turn:
 - "summarize the video and then pull the best 3 clips" → answer directly, then find_best_clips.
 - "transcribe and translate this YouTube video to English" → get_youtube_captions with language='hi', then translate the returned SRT text to English while preserving indexes and timestamps.
 - "what does the host say about X at minute 10" → answer directly using native capabilities.
-- If a tool result contains "video unavailable", "private", or "no captions found", stop retrying and tell the user plainly.
+- If get_youtube_captions says captions are unavailable and tells you to use AssemblyAI, immediately call generate_captions_with_assemblyai. If any other tool result contains "video unavailable" or "private", stop retrying and tell the user plainly.
 
 When multiple requested actions are independent, call the tools together in the same turn. Keep dependent chains in order.
 For multiple clip-cut requests, call up to 3 cut_video_clip tools in the same turn.
@@ -2926,7 +2943,7 @@ const ALLOWED_NAV_TABS = new Set([
   "settings",
 ]);
 
-async function generateCaptionsFallbackFromUrl(params: {
+async function generateAssemblyAiCaptionsFromUrl(params: {
   apiBase: string;
   internalHeaders: Record<string, string>;
   req: any;
@@ -2953,9 +2970,9 @@ async function generateCaptionsFallbackFromUrl(params: {
     type: "tool_progress",
     runId,
     toolId,
-    name: "get_youtube_captions",
+    name: "generate_captions_with_assemblyai",
     message:
-      "YouTube captions were unavailable. Generating a full SRT from the video audio...",
+      "Submitting YouTube audio to AssemblyAI for full SRT transcription...",
   });
 
   const start = await fetch(`${apiBase}/subtitles/generate`, {
@@ -2965,6 +2982,7 @@ async function generateCaptionsFallbackFromUrl(params: {
       url,
       language: language || "auto",
       source: "url",
+      forceAssemblyAI: true,
     }),
   });
   if (!start.ok) {
@@ -2986,7 +3004,7 @@ async function generateCaptionsFallbackFromUrl(params: {
     isConnected,
     toolId,
     runId,
-    "get_youtube_captions",
+    "generate_captions_with_assemblyai",
   );
   const srt = final.srt ?? final.originalSrt;
   if (!srt?.trim()) {
@@ -3000,6 +3018,7 @@ async function generateCaptionsFallbackFromUrl(params: {
       filename,
       language,
       source: "generated_audio_fallback",
+      provider: "assemblyai",
       fallbackReason: "youtube_captions_unavailable",
       jobId,
       bytes: Buffer.byteLength(srt, "utf8"),
@@ -3691,21 +3710,13 @@ async function executeTool(
           const parsed = JSON.parse(content) as { error?: string };
           message = parsed.error ?? message;
         } catch {}
-        const canGenerateFallback =
+        const canUseAssemblyAiFallback =
           isYouTubeUrl(String(args.url ?? "")) &&
           /no subtitles|no captions|captions unavailable|subtitles unavailable|not found|404/i.test(message);
-        if (canGenerateFallback) {
-          return await generateCaptionsFallbackFromUrl({
-            apiBase,
-            internalHeaders,
-            req,
-            res,
-            isConnected,
-            runId,
-            toolId,
-            url: args.url,
-            language,
-          });
+        if (canUseAssemblyAiFallback) {
+          throw new Error(
+            `CAPTIONS_UNAVAILABLE_USE_ASSEMBLYAI: YouTube captions are unavailable for this URL. Call generate_captions_with_assemblyai with the same url and language="${language}" to generate a full SRT from the audio using AssemblyAI.`,
+          );
         }
         throw new Error(message);
       }
@@ -3727,6 +3738,25 @@ async function executeTool(
           downloadUrl,
         },
       };
+    }
+
+    case "generate_captions_with_assemblyai": {
+      const language = args.language ?? DEFAULT_CAPTION_LANGUAGE;
+      if (!isYouTubeUrl(String(args.url ?? ""))) {
+        throw new Error("generate_captions_with_assemblyai requires a YouTube URL");
+      }
+      logTool("Generating captions with AssemblyAI", { url: args.url, language });
+      return await generateAssemblyAiCaptionsFromUrl({
+        apiBase,
+        internalHeaders,
+        req,
+        res,
+        isConnected,
+        runId,
+        toolId,
+        url: args.url,
+        language,
+      });
     }
 
     case "fix_subtitles": {
@@ -5467,9 +5497,14 @@ router.post("/agent/chat", async (req, res) => {
   const captionToolRequiredForTurn =
     looksLikeYoutubeCaptionWorkflow(conversationActionText);
   let captionToolAttemptedForTurn = false;
+  let captionsUnavailableForTurn = false;
+  let assemblyCaptionsAttemptedForTurn = false;
   const holdActionTextUntilToolDecision =
     captionToolRequiredForTurn || looksLikeActionRequest(latestUserActionText);
   let anyToolAttemptedForTurn = false;
+  const shouldHoldToolDependentOutput = () =>
+    (holdActionTextUntilToolDecision && !anyToolAttemptedForTurn) ||
+    (captionsUnavailableForTurn && !assemblyCaptionsAttemptedForTurn);
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
   setupSse(res);
@@ -6024,7 +6059,7 @@ toolConfig: activeCacheName
         if (chunkText) {
           fullText += chunkText;
           pendingTextBuf += chunkText;
-          if (!(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)) {
+          if (!shouldHoldToolDependentOutput()) {
             // Hold back text that might be a partial internal marker.
             // Check for any marker pattern that should not reach the client:
             // [SUGGEST..., [Tool:..., [TextArtifact:..., [Artifact:...
@@ -6097,7 +6132,7 @@ toolConfig: activeCacheName
         if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
       }
       // Flush remaining buffered text (strip internal markers if present)
-      if (pendingTextBuf && !(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)) {
+      if (pendingTextBuf && !shouldHoldToolDependentOutput()) {
         const cleaned = pendingTextBuf
           .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
           .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
@@ -6112,7 +6147,7 @@ toolConfig: activeCacheName
       }
       if (
         (canvasRouteBuf || activeCanvas) &&
-        !(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)
+        !shouldHoldToolDependentOutput()
       ) {
         emitCanvasRoutedText("", true);
       }
@@ -6149,6 +6184,38 @@ toolConfig: activeCacheName
       // ── 2b. No function calls → final answer, parse suggestions, done ─────
       if (functionCalls.length === 0) {
         if (
+          captionsUnavailableForTurn &&
+          !assemblyCaptionsAttemptedForTurn &&
+          unexecutedActionRetries < 3
+        ) {
+          unexecutedActionRetries++;
+          pendingTextBuf = "";
+          canvasRouteBuf = "";
+          activeCanvas = null;
+          loopContents.push({
+            role: "model" as const,
+            parts: [{ text: fullText }],
+          });
+          loopContents.push({
+            role: "user" as const,
+            parts: [{
+              text:
+                "get_youtube_captions returned CAPTIONS_UNAVAILABLE_USE_ASSEMBLYAI. You MUST now call generate_captions_with_assemblyai with the same YouTube URL and language. Do not write a failure message, do not create a canvas, and do not invent SRT content before that tool returns.",
+            }],
+          });
+          continue;
+        }
+        if (captionsUnavailableForTurn && !assemblyCaptionsAttemptedForTurn) {
+          sseEvent(res, {
+            type: "text",
+            content:
+              "YouTube captions were unavailable, and I could not start the AssemblyAI caption fallback. Please send it again and I will run the fallback tool.",
+            runId,
+          });
+          finalAnswerSent = true;
+          break;
+        }
+        if (
           captionToolRequiredForTurn &&
           !captionToolAttemptedForTurn &&
           unexecutedActionRetries < 3
@@ -6165,7 +6232,7 @@ toolConfig: activeCacheName
             role: "user" as const,
             parts: [{
               text:
-                "The user is asking for YouTube captions/subtitles/SRT/transcript work. You MUST call get_youtube_captions before writing any SRT, translation, or canvas. Do not create subtitle content from memory or reasoning. If get_youtube_captions fails, the backend will handle the audio-generation fallback inside that tool.",
+                "The user is asking for YouTube captions/subtitles/SRT/transcript work. You MUST call get_youtube_captions before writing any SRT, translation, or canvas. Do not create subtitle content from memory or reasoning. If get_youtube_captions returns CAPTIONS_UNAVAILABLE_USE_ASSEMBLYAI, call generate_captions_with_assemblyai next.",
             }],
           });
           continue;
@@ -6251,7 +6318,7 @@ toolConfig: activeCacheName
       const toolResults: any[] = [];
       let iterationHadError = false;
       // Only emit pre-tool text if it wasn't already streamed live
-      if (!streamedTextLive && !(holdActionTextUntilToolDecision && !anyToolAttemptedForTurn)) {
+      if (!streamedTextLive && !shouldHoldToolDependentOutput()) {
         const preToolText = stripReasoningTags(fullText);
         if (preToolText) {
           sseEvent(res, {
@@ -6288,6 +6355,7 @@ toolConfig: activeCacheName
         let toolResult: any;
         let toolArtifact: object | undefined;
         let hadError = false;
+        let toolErrorMessage = "";
 
         try {
           // TS-12: Spread args to prevent mutation of fc.args by executeTool.
@@ -6306,26 +6374,33 @@ toolConfig: activeCacheName
           hadError = Boolean(toolResult?.error);
         } catch (toolErr: any) {
           hadError = true;
-          toolResult = { error: toolErr?.message ?? "Tool execution failed" };
+          toolErrorMessage = toolErr?.message ?? "Tool execution failed";
+          toolResult = { error: toolErrorMessage };
           sseEvent(res, {
             type: "tool_progress",
             runId,
             toolId,
             name: fc.name,
             status: "error",
-            message: toolErr?.message ?? "Failed",
+            message: toolErrorMessage,
           });
           sseEvent(res, {
             type: "tool_log",
             runId,
             toolId,
             name: fc.name,
-            message: toolErr?.message ?? "Tool failed",
+            message: toolErrorMessage,
             level: "error",
           });
         }
         if (fc.name === "get_youtube_captions") {
           captionToolAttemptedForTurn = true;
+          if (/CAPTIONS_UNAVAILABLE_USE_ASSEMBLYAI/i.test(toolErrorMessage)) {
+            captionsUnavailableForTurn = true;
+          }
+        }
+        if (fc.name === "generate_captions_with_assemblyai") {
+          assemblyCaptionsAttemptedForTurn = true;
         }
         anyToolAttemptedForTurn = true;
 

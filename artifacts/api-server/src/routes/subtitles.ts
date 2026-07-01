@@ -632,6 +632,7 @@ export interface SrtJob {
   notifyClientKey?: string | null;
   errorNotified?: boolean;
   isFastPipeline?: boolean;
+  forceAssemblyAI?: boolean;
 }
 const jobs = new Map<string, SrtJob>();
 const CANCELLED_BY_USER = "Cancelled by user";
@@ -3138,16 +3139,23 @@ async function processAudio(
   cleanup?: () => void,
   precomputedWav?: { path: string; mimeType: string; durationSecs: number },
   isFastPipeline?: boolean,
+  forceAssemblyAI?: boolean,
 ) {
   const job = jobs.get(jobId);
   if (!job) return;
 
   const clients = getAllPersonalGenAIClients();
   const apiKeys = isVertexGeminiEnabled() ? [] : getAllPersonalGeminiKeys();
-  if (clients.length === 0) {
+  if (!forceAssemblyAI && clients.length === 0) {
     job.status = "error";
     job.completedAt = Date.now();
     job.error = "No Gemini API key configured for audio processing — add GEMINI_API_KEY to your secrets. The Replit AI integration does not support audio file uploads.";
+    return;
+  }
+  if (forceAssemblyAI && !ASSEMBLYAI_API_KEY) {
+    job.status = "error";
+    job.completedAt = Date.now();
+    job.error = "AssemblyAI not configured — add ASSEMBLYAI_API_KEY";
     return;
   }
 
@@ -3198,7 +3206,7 @@ async function processAudio(
 
     let correctedFinalSrt: string | null = null;
 
-    const useAssemblyAI = !!ASSEMBLYAI_API_KEY && durationSecs >= ASSEMBLYAI_THRESHOLD_SECS;
+    const useAssemblyAI = forceAssemblyAI || (!!ASSEMBLYAI_API_KEY && durationSecs >= ASSEMBLYAI_THRESHOLD_SECS);
 
     if (useAssemblyAI) {
       // ── AssemblyAI path (audio > 10 min) ─────────────────────────────────────
@@ -3206,7 +3214,7 @@ async function processAudio(
       job.status = "audio";
       job.progressPct = 20;
       job.message = "Uploading to AssemblyAI for transcription…";
-      logger.info({ durationSecs }, "Routing to AssemblyAI (long audio)");
+      logger.info({ durationSecs, forceAssemblyAI }, "Routing to AssemblyAI");
 
       const rawSrt = await transcribeWithAssemblyAI(processedPath, language, job);
       if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
@@ -3583,6 +3591,7 @@ export type SubtitleWorkerEvent = {
   translateTo?: string;
   notifyClientKey?: string | null;
   isFastPipeline?: boolean;
+  forceAssemblyAI?: boolean;
 };
 
 async function runSubtitleUrlJob(params: {
@@ -3592,6 +3601,7 @@ async function runSubtitleUrlJob(params: {
   translateLang?: string;
   notifyClientKey?: string | null;
   isFastPipeline?: boolean;
+  forceAssemblyAI?: boolean;
 }): Promise<void> {
   let job = jobs.get(params.jobId);
   if (!job) {
@@ -3604,6 +3614,7 @@ async function runSubtitleUrlJob(params: {
       progressPct: 0,
       notifyClientKey: params.notifyClientKey ?? null,
       isFastPipeline: params.isFastPipeline,
+      forceAssemblyAI: params.forceAssemblyAI,
     });
   }
 
@@ -3625,7 +3636,7 @@ async function runSubtitleUrlJob(params: {
   // (no download, no files.upload), mirroring the High Accuracy path. This avoids
   // the file-upload code that crashes on non-ASCII (e.g. Hindi) video titles.
   const isYouTubeUrl = /(?:youtube\.com|youtu\.be)/i.test(params.normalizedUrl);
-  if (params.isFastPipeline && isYouTubeUrl) {
+  if (!params.forceAssemblyAI && params.isFastPipeline && isYouTubeUrl) {
     const completedFast = await processFastYoutubeVideoSrt(
       params.jobId,
       params.normalizedUrl,
@@ -3641,7 +3652,7 @@ async function runSubtitleUrlJob(params: {
     );
   }
 
-  if (!params.isFastPipeline && (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS)) {
+  if (!params.forceAssemblyAI && !params.isFastPipeline && (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS)) {
     const completedViaVideo = await processYoutubeVideoSrt(
       params.jobId,
       params.normalizedUrl,
@@ -3668,7 +3679,7 @@ async function runSubtitleUrlJob(params: {
       path: cached.wavPath,
       mimeType: cached.mimeType,
       durationSecs: cached.durationSecs,
-    }, params.isFastPipeline);
+    }, params.isFastPipeline, params.forceAssemblyAI);
     return;
   }
 
@@ -3734,6 +3745,7 @@ async function runSubtitleUrlJob(params: {
       },
       { path: preprocessed.path, mimeType, durationSecs },
       params.isFastPipeline,
+      params.forceAssemblyAI,
     );
   } catch (err: any) {
     logger.error({ err }, "SRT YouTube download error");
@@ -3847,11 +3859,12 @@ export async function runSubtitleWorker(event: SubtitleWorkerEvent): Promise<voi
 
 // ── Route: Generate from YouTube URL ────────────────────────────────────────
 router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Request, res: Response) => {
-  const { url, language = "auto", translateTo, isFastPipeline } = req.body as {
+  const { url, language = "auto", translateTo, isFastPipeline, forceAssemblyAI } = req.body as {
     url: string;
     language?: string;
     translateTo?: string;
     isFastPipeline?: boolean;
+    forceAssemblyAI?: boolean;
   };
 
   if (!url?.trim()) {
@@ -3859,8 +3872,12 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
     return;
   }
 
-  if (!isAiConfigured()) {
+  if (!forceAssemblyAI && !isAiConfigured()) {
     res.status(503).json({ error: "AI not configured — add GEMINI_API_KEY" });
+    return;
+  }
+  if (forceAssemblyAI && !ASSEMBLYAI_API_KEY) {
+    res.status(503).json({ error: "AssemblyAI not configured — add ASSEMBLYAI_API_KEY" });
     return;
   }
 
@@ -3869,7 +3886,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
   const translateLang = translateTo && translateTo !== "none" ? translateTo : undefined;
   const notifyClientKey = getNotifyClientKey(req);
 
-  if (shouldQueueSubtitleUrlJob(null)) {
+  if (!forceAssemblyAI && shouldQueueSubtitleUrlJob(null)) {
     try {
       await submitYoutubeQueuePrimaryJob({
         jobId,
@@ -3882,6 +3899,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
           inputMode: "url",
           durationSecs: null,
           isFastPipeline,
+          forceAssemblyAI,
         },
       });
       res.json({ jobId, status: "queued", message: "Subtitle generation queued" });
@@ -3917,6 +3935,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
           translateTo: translateLang,
           notifyClientKey: notifyClientKey ?? null,
           isFastPipeline,
+          forceAssemblyAI,
         } satisfies SubtitleWorkerEvent)),
       }));
       res.json({ jobId, mode: "lambda" });
@@ -3955,6 +3974,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
       translateLang,
       notifyClientKey,
       isFastPipeline,
+      forceAssemblyAI,
     });
     return;
 
