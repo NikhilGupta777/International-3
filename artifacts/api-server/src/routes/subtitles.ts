@@ -3221,39 +3221,49 @@ async function processAudio(
 
       const cleanedRaw = stripFences(rawSrt);
 
-      // Pass 2: Text-only Gemini correction.
-      // Skip for very long audio (>30 min) — the SRT would be too large for Gemini's
-      // token limit and would be truncated. AssemblyAI word-level output is accurate enough.
-      const CORRECTION_MAX_SECS = 1800; // 30 minutes
-      let correctedText = "";
-      if (durationSecs < CORRECTION_MAX_SECS) {
-        job.status = "correcting";
-        job.progressPct = 70;
-        job.message = "AI is refining subtitles…";
-        try {
-          correctedText = await generateWithKeyRotation(
-            (model) => ({
-              model,
-              contents: [{ role: "user", parts: [{ text: buildTextOnlyCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
-              config: {
-                maxOutputTokens: 65536,
-                thinkingConfig: buildThinkingConfig(model, "HIGH"),
-              },
-            }),
-            "SRT text correction (AssemblyAI path)",
-          );
-        } catch (err) {
-          logger.warn({ err }, "Text-only correction failed — using raw AssemblyAI output");
-        }
+      // Forced AssemblyAI fallback is intentionally provider-pure: no Gemini
+      // correction/verification after AssemblyAI. Only deterministic timestamp
+      // cleanup is applied before returning the SRT to Super Agent.
+      if (forceAssemblyAI) {
+        const normalized = normalizeSrtTimestamps(cleanedRaw);
+        const deduped = cleanupHallucinatedEntries(normalized);
+        const strictFiltered = strictFilterMalformedTimestamps(deduped);
+        correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
       } else {
-        logger.info({ durationSecs }, "Skipping Gemini correction for very long audio — using raw AssemblyAI output directly");
-      }
+        // Pass 2: Text-only Gemini correction.
+        // Skip for very long audio (>30 min) — the SRT would be too large for Gemini's
+        // token limit and would be truncated. AssemblyAI word-level output is accurate enough.
+        const CORRECTION_MAX_SECS = 1800; // 30 minutes
+        let correctedText = "";
+        if (durationSecs < CORRECTION_MAX_SECS) {
+          job.status = "correcting";
+          job.progressPct = 70;
+          job.message = "AI is refining subtitles…";
+          try {
+            correctedText = await generateWithKeyRotation(
+              (model) => ({
+                model,
+                contents: [{ role: "user", parts: [{ text: buildTextOnlyCorrectionPrompt(cleanedRaw, language, durationSrt) }] }],
+                config: {
+                  maxOutputTokens: 65536,
+                  thinkingConfig: buildThinkingConfig(model, "HIGH"),
+                },
+              }),
+              "SRT text correction (AssemblyAI path)",
+            );
+          } catch (err) {
+            logger.warn({ err }, "Text-only correction failed — using raw AssemblyAI output");
+          }
+        } else {
+          logger.info({ durationSecs }, "Skipping Gemini correction for very long audio — using raw AssemblyAI output directly");
+        }
 
-      const rawFinal = correctedText && correctedText.length > 10 ? stripFences(correctedText) : cleanedRaw;
-      const normalized = normalizeSrtTimestamps(rawFinal);
-      const deduped = cleanupHallucinatedEntries(normalized);
-      const strictFiltered = strictFilterMalformedTimestamps(deduped);
-      correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
+        const rawFinal = correctedText && correctedText.length > 10 ? stripFences(correctedText) : cleanedRaw;
+        const normalized = normalizeSrtTimestamps(rawFinal);
+        const deduped = cleanupHallucinatedEntries(normalized);
+        const strictFiltered = strictFilterMalformedTimestamps(deduped);
+        correctedFinalSrt = filterOutOfBoundsEntries(strictFiltered, durationSecs);
+      }
 
     } else {
       // ── Gemini path (audio ≤ 10 min) ─────────────────────────────────────────
