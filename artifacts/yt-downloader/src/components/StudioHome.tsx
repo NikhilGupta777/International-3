@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Plus, AudioLines, ArrowUp, Loader2,
-  Download, Sparkles, Captions, Scissors,
-  ListVideo, AlarmClock, UploadCloud, Languages,
-  Film, Paperclip, ImagePlus, Music2, Search, Clapperboard,
+  Download, Captions, Scissors,
+  AlarmClock, UploadCloud,
+  Paperclip, ImagePlus, Music2, Search, Clapperboard,
+  Bell, X, Newspaper,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -12,9 +13,31 @@ import { useToast } from "@/hooks/use-toast";
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "findvideo" | "videostudio" | "help" | "activity";
+  | "upload" | "translator" | "findvideo" | "content-manager" | "videostudio" | "help" | "activity";
 const ULTRA_KEY = "studio-ultra-mode";
 const REASONING_KEY = "studio-reasoning-mode";
+const HOME_UPDATES_KEY = "studio-home-updates-read-v1";
+
+const HOME_UPDATES = [
+  {
+    id: "content-manager",
+    label: "New",
+    title: "Content Manager",
+    summary: "Plan the next YouTube upload with channel memory, SEO titles, description, tags, timing, and must-do steps.",
+    mode: "content-manager" as Mode,
+    visual: "content" as const,
+  },
+  {
+    id: "find-video",
+    label: "Updated",
+    title: "Find Video",
+    summary: "Search the Bhavishya Malika knowledge base with chat history, full database mode, live thinking, and stop controls.",
+    mode: "findvideo" as Mode,
+    visual: "find" as const,
+  },
+];
+
+type HomeUpdate = typeof HOME_UPDATES[number];
 
 // ── Animated typing placeholder ───────────────────────────────────────────────
 const PLACEHOLDER_SUGGESTIONS = [
@@ -73,20 +96,64 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
+function readHomeUpdatesInitial(): string[] {
+  try {
+    const raw = localStorage.getItem(HOME_UPDATES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function HomeUpdateVisual({ type }: { type: HomeUpdate["visual"] }) {
+  return (
+    <div className="home-update-visual" aria-hidden="true">
+      <div className="home-update-visual-top">
+        <span />
+        <span />
+        <span />
+      </div>
+      {type === "content" ? (
+        <>
+          <div className="home-update-visual-title">Content Manager</div>
+          <div className="home-update-visual-prompt">Delhi clashes + border tension...</div>
+          <div className="home-update-visual-lines">
+            <i />
+            <i />
+            <i />
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="home-update-visual-title">Find Video</div>
+          <div className="home-update-visual-search">Full DB search</div>
+          <div className="home-update-visual-chips">
+            <i />
+            <i />
+            <i />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 
 export function StudioHome({
   onSwitchMode,
   onLaunchAgent,
-  translatorEnabled = true,
 }: {
   onSwitchMode: (m: Mode) => void;
   onLaunchAgent: (prompt: string) => void;
-  translatorEnabled?: boolean;
 }) {
   const { toast } = useToast();
   const [text, setText] = useState("");
   const [textareaFocused, setTextareaFocused] = useState(false);
   const [ultra, setUltra] = useState<boolean>(readUltraInitial);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
+  const [activeUpdate, setActiveUpdate] = useState<HomeUpdate | null>(null);
+  const [readUpdates, setReadUpdates] = useState<string[]>(readHomeUpdatesInitial);
   const [listening, setListening] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const resizeTextarea = useCallback(() => {
@@ -100,6 +167,22 @@ export function StudioHome({
   const placeholderActive = !text && !textareaFocused;
   const { displayText: placeholderText, cursorVisible: placeholderCursor } = useTypingPlaceholder(placeholderActive);
   const recognitionRef = useRef<any>(null);
+  const unreadUpdates = HOME_UPDATES.filter((update) => !readUpdates.includes(update.id));
+
+  const markUpdateRead = (id: string) => {
+    setReadUpdates((prev) => {
+      if (prev.includes(id)) return prev;
+      const next = [...prev, id];
+      try { localStorage.setItem(HOME_UPDATES_KEY, JSON.stringify(next)); } catch { }
+      return next;
+    });
+  };
+
+  const openUpdate = (update: HomeUpdate) => {
+    markUpdateRead(update.id);
+    setActiveUpdate(update);
+    setUpdatesOpen(false);
+  };
 
   // Speech recognition is available in Chrome/Edge/Safari on HTTPS or localhost.
   // Firefox and non-secure origins do NOT support the Web Speech API.
@@ -387,6 +470,84 @@ export function StudioHome({
   return (
     <div className="gs-home">
       <canvas ref={canvasRef} className="gs-home-orbs-canvas" style={{ filter: "blur(80px)" }} />
+      <div className="home-update-anchor">
+        <button
+          type="button"
+          className={cn("home-update-bell", updatesOpen && "home-update-bell-active")}
+          onClick={() => setUpdatesOpen(v => !v)}
+          aria-label={`Notifications${unreadUpdates.length ? `, ${unreadUpdates.length} unread` : ""}`}
+          title="Latest updates"
+        >
+          <Bell className="w-4 h-4" />
+          {unreadUpdates.length > 0 && <span className="home-update-badge">{unreadUpdates.length}</span>}
+        </button>
+
+        {updatesOpen && (
+          <div className="home-update-popover">
+            <div className="home-update-popover-head">
+              <div>
+                <span>Latest updates</span>
+                <p>New tools added to your workspace</p>
+              </div>
+              <button type="button" onClick={() => setUpdatesOpen(false)} aria-label="Close updates">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="home-update-list">
+              {HOME_UPDATES.map((update) => {
+                const read = readUpdates.includes(update.id);
+                return (
+                  <button
+                    key={update.id}
+                    type="button"
+                    className={cn("home-update-card", read && "home-update-card-read")}
+                    onClick={() => openUpdate(update)}
+                  >
+                    <HomeUpdateVisual type={update.visual} />
+                    <span className="home-update-card-copy">
+                      <b>{update.title}</b>
+                      <small>{update.summary}</small>
+                      <em>{read ? "Read again" : "Read more"}</em>
+                    </span>
+                    {!read && <span className="home-update-dot" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {activeUpdate && (
+        <div className="home-update-modal-backdrop" role="dialog" aria-modal="true" aria-label={activeUpdate.title}>
+          <div className="home-update-modal">
+            <button
+              type="button"
+              className="home-update-modal-close"
+              onClick={() => setActiveUpdate(null)}
+              aria-label="Close update"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <div className="home-update-modal-copy">
+              <span>{activeUpdate.label}</span>
+              <h2>{activeUpdate.title}</h2>
+              <p>{activeUpdate.summary}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveUpdate(null);
+                  onSwitchMode(activeUpdate.mode);
+                }}
+              >
+                Open {activeUpdate.title}
+              </button>
+            </div>
+            <HomeUpdateVisual type={activeUpdate.visual} />
+          </div>
+        </div>
+      )}
+
       <div className="gs-home-center">
         {/* Title */}
         <h1 className="gs-home-title">
@@ -550,22 +711,21 @@ export function StudioHome({
         {/* Tool bubbles — grid layout */}
         <div className="studio-home-grid mt-4">
           {([
+            { icon: <Newspaper className="w-5 h-5" />, label: "Content", desc: "Plan next upload", mode: "content-manager", color: "text-red-300", badge: "New" },
+            { icon: <Search className="w-5 h-5" />, label: "Find Video", desc: "Ask NotebookLM", mode: "findvideo", color: "text-sky-400", badge: "New" },
             { icon: <Scissors className="w-5 h-5" />, label: "Clip Cutter", desc: "Trim any range", mode: "clipcutter", color: "text-orange-400" },
-            { icon: <Clapperboard className="w-5 h-5" />, label: "AI Studio", desc: "Finish videos", mode: "videostudio", color: "text-emerald-400" },
             { icon: <Captions className="w-5 h-5" />, label: "Subtitles", desc: "Auto + translate", mode: "subtitles", color: "text-blue-400" },
-            ...(translatorEnabled ? [{ icon: <Film className="w-5 h-5" />, label: "Translator", desc: "Dub any video", mode: "translator", color: "text-pink-400" }] : []),
-            { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
             { icon: <AlarmClock className="w-5 h-5" />, label: "Timestamps", desc: "Chapter markers", mode: "timestamps", color: "text-purple-400" },
-            // { icon: <Sparkles className="w-5 h-5" />, label: "Best Clips", desc: "AI highlights", mode: "clips", color: "text-yellow-400" },
-            { icon: <Search className="w-5 h-5" />, label: "Find Video", desc: "Ask NotebookLM", mode: "findvideo", color: "text-sky-400" },
-            // { icon: <ListVideo className="w-5 h-5" />, label: "Find Sabha", desc: "Search within videos", mode: "scenefinder", color: "text-sky-400" },
+            { icon: <Clapperboard className="w-5 h-5" />, label: "AI Studio", desc: "Finish videos", mode: "videostudio", color: "text-emerald-400" },
+            { icon: <Download className="w-5 h-5" />, label: "Download", desc: "MP4, Audio, 4K", mode: "download", color: "text-red-400" },
             { icon: <UploadCloud className="w-5 h-5" />, label: "Share", desc: "Share files", mode: "upload", color: "text-cyan-400" },
-          ] as Array<{ icon: React.ReactNode; label: string; desc: string; mode: string; color: string }>).map((tool) => (
+          ] as Array<{ icon: React.ReactNode; label: string; desc: string; mode: string; color: string; badge?: string }>).map((tool) => (
             <button
               key={tool.mode}
               onClick={() => onSwitchMode(tool.mode as Mode)}
               className="studio-home-tool"
             >
+              {tool.badge ? <span className="studio-home-tool-badge">{tool.badge}</span> : null}
               <span className={tool.color}>{tool.icon}</span>
               <div className="studio-home-tool-text">
                 <span className="studio-home-tool-label">{tool.label}</span>

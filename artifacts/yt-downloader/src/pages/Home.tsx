@@ -1215,7 +1215,6 @@ export default function Home({
                   className="w-full h-full flex-1 flex flex-col"
                 >
                   <StudioHome
-                    translatorEnabled={canUseTranslator}
                     onSwitchMode={(m) => switchMode(m as Mode)}
                     onLaunchAgent={(prompt) => {
                       if (!canUseSuperAgent) {

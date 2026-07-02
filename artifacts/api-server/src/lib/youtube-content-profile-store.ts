@@ -219,10 +219,12 @@ function summarizeRecords(records: ContentProfileRecord[]): ContentProfileSummar
 function resolveFilePath(filename: string): string {
   const root = process.env.REPL_HOME ?? process.cwd();
   const candidates = [
+    process.env.CONTENT_PROFILE_FILE,
     join(root, filename),
+    join(root, "artifacts", "api-server", filename),
     join(root, "..", filename),
     join(root, "..", "..", filename),
-  ];
+  ].filter((path): path is string => Boolean(path && path.trim()));
   return candidates.find((path) => existsSync(path)) ?? candidates[0];
 }
 

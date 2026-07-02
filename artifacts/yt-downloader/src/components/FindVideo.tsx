@@ -70,6 +70,7 @@ export function FindVideo() {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [collapsedThoughts, setCollapsedThoughts] = useState<Record<number, boolean>>({});
   const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [deepSearch, setDeepSearch] = useState(true);
 
   const messagesAreaRef = useRef<HTMLDivElement>(null);
   const userHasScrolledUpRef = useRef(false);
@@ -334,7 +335,8 @@ export function FindVideo() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: queryText.trim(),
-          messages: newMessages
+          messages: newMessages,
+          deepSearch
         })
       });
 
@@ -567,6 +569,20 @@ export function FindVideo() {
           Bhavishya Malika Search Assistant
         </h1>
         <div className="flex items-center gap-3">
+          <label
+            className="inline-flex h-9 items-center gap-2 rounded-full border border-[#d4af37]/20 bg-white/[0.04] px-3 text-[12px] font-semibold text-[#d4af37]/80 hover:bg-white/[0.06] transition-all cursor-pointer select-none"
+            title={deepSearch ? "Full indexed database search is enabled" : "Full indexed database search is disabled"}
+          >
+            <input
+              type="checkbox"
+              checked={deepSearch}
+              onChange={(e) => setDeepSearch(e.target.checked)}
+              className="h-3.5 w-3.5 rounded accent-[#d4af37]"
+            />
+            <Database className="w-3.5 h-3.5" />
+            <span>Full DB</span>
+          </label>
+
           {/* New Chat */}
           <button
             onClick={handleNewChat}

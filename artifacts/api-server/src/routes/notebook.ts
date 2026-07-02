@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import fs from "fs";
 import path from "path";
+import zlib from "zlib";
 import { fileURLToPath } from "url";
 import pino from "pino";
 import MiniSearch from "minisearch";
@@ -14,12 +15,18 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 // Resolve index path dynamically
 let indexCachePath = "";
+let indexLoadError = "";
 const possiblePaths = [
+  process.env.BHAVISHYA_INDEX_PATH,
   path.join(process.cwd(), "bhavishya_index.json"),
+  path.join(process.cwd(), "bhavishya_index.json.gz"),
   path.join(process.cwd(), "artifacts/api-server/bhavishya_index.json"),
+  path.join(process.cwd(), "artifacts/api-server/bhavishya_index.json.gz"),
   path.resolve(MODULE_DIR, "../../bhavishya_index.json"),
-  path.resolve(MODULE_DIR, "../bhavishya_index.json")
-];
+  path.resolve(MODULE_DIR, "../../bhavishya_index.json.gz"),
+  path.resolve(MODULE_DIR, "../bhavishya_index.json"),
+  path.resolve(MODULE_DIR, "../bhavishya_index.json.gz")
+].filter((p): p is string => Boolean(p && p.trim()));
 
 for (const p of possiblePaths) {
   if (fs.existsSync(p)) {
@@ -31,11 +38,19 @@ for (const p of possiblePaths) {
 let miniSearchInstance: MiniSearch | null = null;
 let rawDocuments: Record<string, any> = {};
 
+function readIndexJson(filePath: string) {
+  const raw = fs.readFileSync(filePath);
+  const json = filePath.endsWith(".gz")
+    ? zlib.gunzipSync(raw).toString("utf8")
+    : raw.toString("utf8");
+  return JSON.parse(json);
+}
+
 // Load and index the Q&A database on startup
 try {
   logger.info(`Loading search index from: ${indexCachePath || 'NOT_FOUND'}`);
   if (indexCachePath && fs.existsSync(indexCachePath)) {
-    const indexData = JSON.parse(fs.readFileSync(indexCachePath, "utf8"));
+    const indexData = readIndexJson(indexCachePath);
     rawDocuments = indexData.storedFields || {};
 
     miniSearchInstance = MiniSearch.loadJSON(JSON.stringify(indexData), {
@@ -44,10 +59,12 @@ try {
     });
     logger.info(`Database loaded. Indexed ${Object.keys(rawDocuments).length} Q&As.`);
   } else {
-    logger.error("CRITICAL: bhavishya_index.json not found in search paths.");
+    indexLoadError = "bhavishya_index.json(.gz) not found in search paths.";
+    logger.error({ possiblePaths }, `CRITICAL: ${indexLoadError}`);
   }
 } catch (err: any) {
-  logger.error(`Failed to load search index database: ${err.message}`);
+  indexLoadError = err?.message || "Unknown index load error.";
+  logger.error({ err, indexCachePath }, `Failed to load search index database: ${indexLoadError}`);
 }
 
 // === Tool Implementations ===
@@ -304,7 +321,13 @@ router.get("/notebook/health", (_req: Request, res: Response) => {
     const stats = getDatabaseStats();
     res.json({
       enabled: true,
-      configured: true,
+      configured: Boolean(miniSearchInstance),
+      index: {
+        loaded: Boolean(miniSearchInstance),
+        file: indexCachePath ? path.basename(indexCachePath) : null,
+        compressed: indexCachePath.endsWith(".gz"),
+        error: indexLoadError || null
+      },
       stats
     });
   } catch (err: any) {

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
-  ListVideo, AlarmClock, UploadCloud, Languages, Search, Menu, X,
-  Home as HomeIcon, Activity, Settings, Image as ImageIcon, Clapperboard,
+  AlarmClock, UploadCloud, Search, Menu, X,
+  Home as HomeIcon, Activity, Settings, Clapperboard,
   Terminal, Newspaper,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -48,16 +48,14 @@ const SUPER_AGENT_ITEM: NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { mode: "home",        icon: <HomeIcon className="gs-icon" />,        label: "Home" },
   SUPER_AGENT_ITEM,
-  { mode: "videostudio", icon: <Clapperboard className="gs-icon" />,    label: "AI Studio" },
   { mode: "content-manager", icon: <Newspaper className="gs-icon" />,    label: "Content", badge: "New" },
-  { mode: "clips",       icon: <Sparkles className="gs-icon" />,        label: "Best Clips" },
+  { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video", badge: "New" },
   { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
   { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },
-  // { mode: "thumbnail",   icon: <ImageIcon className="gs-icon" />,       label: "Thumbnail" },
-  { mode: "translator",  icon: <Languages className="gs-icon" />,       label: "Translator" },
-  { mode: "heygen",      icon: <Languages className="gs-icon" />,       label: "HeyGen" },
-  { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video" },
   { mode: "timestamps",  icon: <AlarmClock className="gs-icon" />,      label: "Timestamps" },
+  { mode: "videostudio", icon: <Clapperboard className="gs-icon" />,    label: "AI Studio" },
+  { mode: "clips",       icon: <Sparkles className="gs-icon" />,        label: "Best Clips" },
+  // { mode: "thumbnail",   icon: <ImageIcon className="gs-icon" />,       label: "Thumbnail" },
   { mode: "download",    icon: <Download className="gs-icon" />,        label: "Download" },
   // { mode: "scenefinder", icon: <ListVideo className="gs-icon" />,       label: "Find Sabha" },
   { mode: "bhagwat",     icon: <Shield className="gs-icon" />,          label: "Bhagwat" },

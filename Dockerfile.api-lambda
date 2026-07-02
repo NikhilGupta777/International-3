@@ -50,6 +50,8 @@ WORKDIR ${LAMBDA_TASK_ROOT}
 
 COPY artifacts/api-server/dist ./artifacts/api-server/dist
 COPY artifacts/api-server/scripts ./artifacts/api-server/scripts
+COPY artifacts/api-server/bhavishya_index.json.gz ./artifacts/api-server/bhavishya_index.json.gz
+COPY saved-channel-profiles.json ./saved-channel-profiles.json
 COPY artifacts/api-server/src/routes/translator.ts ./code-context/artifacts/api-server/src/routes/translator.ts
 COPY artifacts/api-server/src/lib/gemini-client.ts ./code-context/artifacts/api-server/src/lib/gemini-client.ts
 COPY artifacts/api-server/package.json ./code-context/artifacts/api-server/package.json
