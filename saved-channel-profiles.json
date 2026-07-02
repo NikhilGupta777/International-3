@@ -3470,26 +3470,26 @@
     "updatedAt": 1783021323813
   },
   {
-    "jobId": "ycp_malikajankari",
+    "jobId": "ycp_test_channel",
     "kind": "youtube-content-profile",
     "owner": "__youtube_content_shared__",
-    "name": "Malika Jankari",
-    "channelInput": "@MalikaJankari",
+    "name": "test_channel",
+    "channelInput": "@test_channel",
     "profile": {
-      "channelName": "Malika Jankari",
-      "channelInput": "@MalikaJankari",
+      "channelName": "test_channel",
+      "channelInput": "@test_channel",
       "channelId": "UClKvqxeEpEqXmubWkW_pH5w",
       "channelUrl": "https://www.youtube.com/channel/UClKvqxeEpEqXmubWkW_pH5w",
-      "handle": "@MalikaJankari",
+      "handle": "@test_channel",
       "scrapedAt": 1783021402202,
       "source": "yt-dlp",
       "recentVideos": [
         {
           "id": "Yc4hcSmNpbk",
           "url": "https://www.youtube.com/watch?v=Yc4hcSmNpbk",
-          "title": "पहाड़िया आसमान में उड़ेगा | Kashinath Mishra |  Bhavishya Malika Puran | Malika Jankari",
+          "title": "पहाड़िया आसमान में उड़ेगा | Kashinath Mishra |  Bhavishya Malika Puran | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kalki Avatar Official Channel",
             "Pandit Kashinath Mishra",
             "Kashinath Mishra",
@@ -3506,9 +3506,9 @@
         {
           "id": "RpcDTuubW6M",
           "url": "https://www.youtube.com/watch?v=RpcDTuubW6M",
-          "title": "22 प्रमाण भगवान कल्कि जन्म ले चुके हैं | Kashinath Mishra | Bhavishya Malika Puran  | Malika Jankari",
+          "title": "22 प्रमाण भगवान कल्कि जन्म ले चुके हैं | Kashinath Mishra | Bhavishya Malika Puran  | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath mishra ji",
@@ -3525,7 +3525,7 @@
         {
           "id": "7SUmb8zq8PQ",
           "url": "https://www.youtube.com/watch?v=7SUmb8zq8PQ",
-          "title": "स्नान पूर्णिमा से अशुभ संकेत ,क्या होने वाला है | Bhavishya Malika | Malika Jankari",
+          "title": "स्नान पूर्णिमा से अशुभ संकेत ,क्या होने वाला है | Bhavishya Malika | test_channel",
           "tags": [],
           "publishedAt": "20260630",
           "durationSec": 403,
@@ -3537,9 +3537,9 @@
         {
           "id": "lB6fpv6cBEk",
           "url": "https://www.youtube.com/watch?v=lB6fpv6cBEk",
-          "title": "🚨दावा नहीं मिलेगा,दुनिया शमशान बनेगा | Bhavishya Malika | Malika Jankari",
+          "title": "🚨दावा नहीं मिलेगा,दुनिया शमशान बनेगा | Bhavishya Malika | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "Pandit Kashinath Mishra ji",
@@ -3556,9 +3556,9 @@
         {
           "id": "IQL71Z1XjGA",
           "url": "https://www.youtube.com/watch?v=IQL71Z1XjGA",
-          "title": "जंगल से लेकर शहर तक सब कुछ जलेगा | Pt.Kashinath Mishra Ji | Malika Jankari",
+          "title": "जंगल से लेकर शहर तक सब कुछ जलेगा | Pt.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3575,9 +3575,9 @@
         {
           "id": "NKEjWxPtDgE",
           "url": "https://www.youtube.com/watch?v=NKEjWxPtDgE",
-          "title": "2032 से पहले महाभारत का एक बेला युद्ध होगा | Pt. Kashinath Mishra ji | Malika Jankari",
+          "title": "2032 से पहले महाभारत का एक बेला युद्ध होगा | Pt. Kashinath Mishra ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra Kalki Avatar",
@@ -3594,9 +3594,9 @@
         {
           "id": "3hzSg1DrLuA",
           "url": "https://www.youtube.com/watch?v=3hzSg1DrLuA",
-          "title": "100% सच हुई मालिका😱भूकंप से लाखो मौत | pt.kashinath Mishra Ji | Malika Jankari",
+          "title": "100% सच हुई मालिका😱भूकंप से लाखो मौत | pt.kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra ji",
@@ -3614,7 +3614,7 @@
           "url": "https://www.youtube.com/watch?v=qhM8y7HCuZw",
           "title": "एकादशी के साथ त्रिसंध्या और भागवत पठन भी पालन करो | Nirjala Ekadashi 2026",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pt.Dr.Kashinath mishra",
@@ -3630,9 +3630,9 @@
         {
           "id": "hZ1N-mu8oSc",
           "url": "https://www.youtube.com/watch?v=hZ1N-mu8oSc",
-          "title": "2028-32 सबसे ज्यादा दर्दनाक समय होगा | Kashinath Mishra | Malika Jankari",
+          "title": "2028-32 सबसे ज्यादा दर्दनाक समय होगा | Kashinath Mishra | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Ji",
@@ -3649,7 +3649,7 @@
         {
           "id": "8xLVQkR6sbY",
           "url": "https://www.youtube.com/watch?v=8xLVQkR6sbY",
-          "title": "श्रीमद्भागवत महापुराण का सार क्या है | Pt. Kashinath Mishra ji | Malika Jankari",
+          "title": "श्रीमद्भागवत महापुराण का सार क्या है | Pt. Kashinath Mishra ji | test_channel",
           "tags": [],
           "publishedAt": "20260622",
           "durationSec": 512,
@@ -3661,9 +3661,9 @@
         {
           "id": "4ie7l5aG1iU",
           "url": "https://www.youtube.com/watch?v=4ie7l5aG1iU",
-          "title": "भविष्य मालिका ग्रंथ में पहले ही Train के बारे में लिखा था | Kashinath Mishra | Malika Jankari",
+          "title": "भविष्य मालिका ग्रंथ में पहले ही Train के बारे में लिखा था | Kashinath Mishra | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra ji",
@@ -3681,9 +3681,9 @@
         {
           "id": "Oa1uTVFYjAA",
           "url": "https://www.youtube.com/watch?v=Oa1uTVFYjAA",
-          "title": "रथयात्रा में बाधाएं, विनाश का संकेत!! | Pt.Kashinath Mishra Ji | Malika Jankari",
+          "title": "रथयात्रा में बाधाएं, विनाश का संकेत!! | Pt.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "Pandit Kashinath Mishra ji",
@@ -3703,9 +3703,9 @@
         {
           "id": "RkFTUkqzbR8",
           "url": "https://www.youtube.com/watch?v=RkFTUkqzbR8",
-          "title": "आगे भयंकर युद्ध शुरू होने वाला है | Pt. Kashinath Mishra Ji | Malika Jankari",
+          "title": "आगे भयंकर युद्ध शुरू होने वाला है | Pt. Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath mishra ji",
@@ -3723,9 +3723,9 @@
         {
           "id": "GXYxWHRpUmE",
           "url": "https://www.youtube.com/watch?v=GXYxWHRpUmE",
-          "title": "जगन्नाथ जी का महाप्रसाद की महिमा | pt.kashinath Mishra ji | Malika Jankari",
+          "title": "जगन्नाथ जी का महाप्रसाद की महिमा | pt.kashinath Mishra ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3743,9 +3743,9 @@
         {
           "id": "Oais3EYGLxc",
           "url": "https://www.youtube.com/watch?v=Oais3EYGLxc",
-          "title": "सच हुई मालिका🔥 ईरान अमेरिका युद्ध हुआ बंद !! | Bhavishya Malika | Malika Jankari",
+          "title": "सच हुई मालिका🔥 ईरान अमेरिका युद्ध हुआ बंद !! | Bhavishya Malika | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra ji",
@@ -3763,9 +3763,9 @@
         {
           "id": "E1bbATTZYQE",
           "url": "https://www.youtube.com/watch?v=E1bbATTZYQE",
-          "title": "आज से विनाश का खेला शुरू होगा ,अमावस्या संक्रांति एक साथ | Kashinath Mishra | Malika Jankari",
+          "title": "आज से विनाश का खेला शुरू होगा ,अमावस्या संक्रांति एक साथ | Kashinath Mishra | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3785,7 +3785,7 @@
           "url": "https://www.youtube.com/watch?v=FCDuIci8m7w",
           "title": "भविष्यवाणी हुई सच!!😱 ₹1354 करोड़ का अनाज हुआ बर्बाद | Bhavishya Malika",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3803,9 +3803,9 @@
         {
           "id": "Be26sbCv31E",
           "url": "https://www.youtube.com/watch?v=Be26sbCv31E",
-          "title": "देर रात भोजन मत करो , असुर प्रवती है ये | Pt. Kashinath Mishra Ji | Malika Jankari",
+          "title": "देर रात भोजन मत करो , असुर प्रवती है ये | Pt. Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Ji",
@@ -3824,7 +3824,7 @@
           "url": "https://www.youtube.com/watch?v=LOt5UsHAZC0",
           "title": "भगवान श्री कृष्ण और माता राधा रानी जी की विवाह की कथा | Pt.Kashinath Mishra Ji",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3840,9 +3840,9 @@
         {
           "id": "8RY-cp4yu5E",
           "url": "https://www.youtube.com/watch?v=8RY-cp4yu5E",
-          "title": "आगे पानी नहीं मिलेगा😱 तालाब सुख जाएगा | Pt.Kashinath Mishra ji | Malika Jankari",
+          "title": "आगे पानी नहीं मिलेगा😱 तालाब सुख जाएगा | Pt.Kashinath Mishra ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3858,7 +3858,7 @@
         {
           "id": "6ZTAQ4TUMys",
           "url": "https://www.youtube.com/watch?v=6ZTAQ4TUMys",
-          "title": "2028 के बाद सोना नहीं मिलेगा | Pandit Dr Kashinath Mishra | Malika Jankari",
+          "title": "2028 के बाद सोना नहीं मिलेगा | Pandit Dr Kashinath Mishra | test_channel",
           "tags": [],
           "publishedAt": "20260609",
           "durationSec": 569,
@@ -3870,9 +3870,9 @@
         {
           "id": "v8PWu30WnfY",
           "url": "https://www.youtube.com/watch?v=v8PWu30WnfY",
-          "title": "भगवान कल्कि की शक्ति😱💥 सारा ब्रह्मांड खत्म | Pt.Kashinath Mishra Ji | Malika Jankari",
+          "title": "भगवान कल्कि की शक्ति😱💥 सारा ब्रह्मांड खत्म | Pt.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3892,7 +3892,7 @@
           "url": "https://www.youtube.com/watch?v=57BxV3jYFLI",
           "title": "राम नाम के हीरे मोती मैं बिखराऊं गली-गली || Bhajan by Pt.Kashinath Mishra Ji",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -3908,9 +3908,9 @@
         {
           "id": "QIW3Ye8fiq0",
           "url": "https://www.youtube.com/watch?v=QIW3Ye8fiq0",
-          "title": "2032 तक बचना मुश्किल होगा | Bhavishya Malika | Malika Jankari",
+          "title": "2032 तक बचना मुश्किल होगा | Bhavishya Malika | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Kalki Avatar",
@@ -3929,7 +3929,7 @@
           "url": "https://www.youtube.com/watch?v=Am3XMFgI7FQ",
           "title": "Mukund Madhav Hari Hari Bol | Bhajan by Pt.Kashinath Mishra Ji",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "Pandit Kashinath Mishra ji",
@@ -3945,9 +3945,9 @@
         {
           "id": "XOjD9lcAm0U",
           "url": "https://www.youtube.com/watch?v=XOjD9lcAm0U",
-          "title": "हर दिन 15 minute ये करो , विनाश से रक्षा के लिए | Pt.Kashinath Mishra Ji | Malika Jankari",
+          "title": "हर दिन 15 minute ये करो , विनाश से रक्षा के लिए | Pt.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra Kalki Avatar",
@@ -3963,9 +3963,9 @@
         {
           "id": "UsY3Jz46HlU",
           "url": "https://www.youtube.com/watch?v=UsY3Jz46HlU",
-          "title": "आगे नहीं मिलेगा खर्चा कम करो | Pandit Kashinath Mishra Ji | Malika Jankari",
+          "title": "आगे नहीं मिलेगा खर्चा कम करो | Pandit Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kalki Avatar Official Channel",
             "Pandit Kashinath Mishra Ji",
             "Kashinath Mishra Ji"
@@ -3980,9 +3980,9 @@
         {
           "id": "NsS6YJiSgpM",
           "url": "https://www.youtube.com/watch?v=NsS6YJiSgpM",
-          "title": "Samundra Manthan Katha | Pandit Dr Kashinath Mishra Ji | Malika Jankari",
+          "title": "Samundra Manthan Katha | Pandit Dr Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "Pandit Kashinath Mishra ji",
@@ -3998,9 +3998,9 @@
         {
           "id": "5CDhy888Nk4",
           "url": "https://www.youtube.com/watch?v=5CDhy888Nk4",
-          "title": "माधव नाम की शक्ति- गोली मिसाईल काम नहीं करेगा | Pt. Kashinath Mishra Ji | Malika Jankari",
+          "title": "माधव नाम की शक्ति- गोली मिसाईल काम नहीं करेगा | Pt. Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Ji",
@@ -4017,9 +4017,9 @@
         {
           "id": "hLPZKyNXynw",
           "url": "https://www.youtube.com/watch?v=hLPZKyNXynw",
-          "title": "आत्महत्या महा पाप है , कभी मत करना | Pt.Kashinath Mishra Ji | Malika Jankari",
+          "title": "आत्महत्या महा पाप है , कभी मत करना | Pt.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Ji",
@@ -4035,9 +4035,9 @@
         {
           "id": "lYvshREyYD8",
           "url": "https://www.youtube.com/watch?v=lYvshREyYD8",
-          "title": "सितंबर- अक्टूबर में बहुत ज्यादा गर्मी होगी | Malika Jankari #shorts",
+          "title": "सितंबर- अक्टूबर में बहुत ज्यादा गर्मी होगी | test_channel #shorts",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kalki Avatar Official Channel",
             "Kashinath Mishra Ji",
             "pandit Kashinath Mishra Ji"
@@ -4052,9 +4052,9 @@
         {
           "id": "j-8Nf0VLpB8",
           "url": "https://www.youtube.com/watch?v=j-8Nf0VLpB8",
-          "title": "सतयुग में सालों भर बसंत ऋतु रहेगा | Pt.Kashinath Mishra Ji | Malika Jankari",
+          "title": "सतयुग में सालों भर बसंत ऋतु रहेगा | Pt.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "bhavishya malika Kashinath Mishra",
@@ -4073,7 +4073,7 @@
           "url": "https://www.youtube.com/watch?v=qnjOIVRiiZc",
           "title": "सजा दो घर को गुलशन सा मेरे सरकार आए है | Pt. Kashinath Mishra Ji",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -4089,9 +4089,9 @@
         {
           "id": "53NjaOIQnpo",
           "url": "https://www.youtube.com/watch?v=53NjaOIQnpo",
-          "title": "2026-29 के बीच क्या होगा , भविष्यवाणी!! | Bhavishya Malika | Malika Jankari",
+          "title": "2026-29 के बीच क्या होगा , भविष्यवाणी!! | Bhavishya Malika | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra ji",
@@ -4107,9 +4107,9 @@
         {
           "id": "Ex6iTT7gJbA",
           "url": "https://www.youtube.com/watch?v=Ex6iTT7gJbA",
-          "title": "सोना, चांदी को लोग Road पर फेक देंगे | Pt. Kashinath Mishra ji | Malika Jankari",
+          "title": "सोना, चांदी को लोग Road पर फेक देंगे | Pt. Kashinath Mishra ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -4127,7 +4127,7 @@
           "url": "https://www.youtube.com/watch?v=Jcx4InF71NE",
           "title": "मानव जाती का बड़ा विनाश आ रहा है , अमावस्या संक्रांति | Pt. Kashinath Mishra Ji",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Ji",
@@ -4143,9 +4143,9 @@
         {
           "id": "34ClUSqkgQw",
           "url": "https://www.youtube.com/watch?v=34ClUSqkgQw",
-          "title": "सुख - दुख में समान भाव कैसे रखे | Pt.Dr.Kashinath Mishra Ji | Malika Jankari",
+          "title": "सुख - दुख में समान भाव कैसे रखे | Pt.Dr.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Kalki Avatar"
@@ -4160,9 +4160,9 @@
         {
           "id": "-DRynsOUrjw",
           "url": "https://www.youtube.com/watch?v=-DRynsOUrjw",
-          "title": "भारत में भी Ebola Virus🦠 आने वाला है? | Pt.Kashinath Mishra ji | Malika Jankari",
+          "title": "भारत में भी Ebola Virus🦠 आने वाला है? | Pt.Kashinath Mishra ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -4179,9 +4179,9 @@
         {
           "id": "lCJY14W_w0I",
           "url": "https://www.youtube.com/watch?v=lCJY14W_w0I",
-          "title": "भगवान कल्कि रूप धारण करेंगे 3 दिन के लिए | Pandit Kashinath Mishra | Malika Jankari",
+          "title": "भगवान कल्कि रूप धारण करेंगे 3 दिन के लिए | Pandit Kashinath Mishra | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kalki Avatar Official Channel",
             "Pandit Kashinath Mishra Ji",
             "Kashinath Mishra Ji"
@@ -4196,9 +4196,9 @@
         {
           "id": "DeUTRJefI3c",
           "url": "https://www.youtube.com/watch?v=DeUTRJefI3c",
-          "title": "आगे FINANCIAL EMERGENCY लगेगा | Kashinath Mishra | Malika Jankari",
+          "title": "आगे FINANCIAL EMERGENCY लगेगा | Kashinath Mishra | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath mishra kalki avatar",
@@ -4214,9 +4214,9 @@
         {
           "id": "KtT6ZEvXejI",
           "url": "https://www.youtube.com/watch?v=KtT6ZEvXejI",
-          "title": "आगे Petrol - Diesel नहीं मिलेगा | pt.Dr.Kashinath Mishra Ji | Malika Jankari",
+          "title": "आगे Petrol - Diesel नहीं मिलेगा | pt.Dr.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "bhavishya malika kashinath mishra",
@@ -4233,9 +4233,9 @@
         {
           "id": "k8-Dii8nyyU",
           "url": "https://www.youtube.com/watch?v=k8-Dii8nyyU",
-          "title": "भविष्य मालिका सच हो रही है | Pandit Dr Kashinath Mishra Ji | Malika Jankari",
+          "title": "भविष्य मालिका सच हो रही है | Pandit Dr Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kalki Avatar Official Channel",
             "Pandit Kashinath Mishra Ji",
             "Kashinath Mishra Ji"
@@ -4252,7 +4252,7 @@
           "url": "https://www.youtube.com/watch?v=doRy-rt7oZA",
           "title": "एक गरीब भक्त के साथ चमत्कार हुआ | दासिया भक्त की कहानी | Pt. Kashinath Mishra Ji",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra Ji",
@@ -4269,9 +4269,9 @@
         {
           "id": "2O1CsJ40esg",
           "url": "https://www.youtube.com/watch?v=2O1CsJ40esg",
-          "title": "मालिका के अनुसार भगवान कल्कि को कैसे पहचाने | Pt.Dr.Kashinath Mishra Ji | Malika Jankari",
+          "title": "मालिका के अनुसार भगवान कल्कि को कैसे पहचाने | Pt.Dr.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra ji",
@@ -4288,9 +4288,9 @@
         {
           "id": "djNm2kziReI",
           "url": "https://www.youtube.com/watch?v=djNm2kziReI",
-          "title": "बांग्लादेश के साथ भी हो सकता है युद्ध | Pt.Kashinath Mishra Ji | Malika Jankari",
+          "title": "बांग्लादेश के साथ भी हो सकता है युद्ध | Pt.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra ji",
@@ -4307,9 +4307,9 @@
         {
           "id": "cw20NKT8nE4",
           "url": "https://www.youtube.com/watch?v=cw20NKT8nE4",
-          "title": "सही सत्संग के बिना मुक्ती नहीं होगा | Pt.Dr.Kashinath Mishra Ji | Malika Jankari",
+          "title": "सही सत्संग के बिना मुक्ती नहीं होगा | Pt.Dr.Kashinath Mishra Ji | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit kashinath mishra ji",
@@ -4326,9 +4326,9 @@
         {
           "id": "HjDbDAP70js",
           "url": "https://www.youtube.com/watch?v=HjDbDAP70js",
-          "title": "क्या मालिका में BJP पार्टी के बारे में लिखा था? | Bhavishya Malika | Malika Jankari",
+          "title": "क्या मालिका में BJP पार्टी के बारे में लिखा था? | Bhavishya Malika | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kalki Avatar official channel",
             "pandit Kashinath Mishra ji",
             "Kashinath Mishra",
@@ -4338,7 +4338,7 @@
             "pt.dr.Kashinath Mishra",
             "pandit Kashinath Mishra Kalki Avatar",
             "bhavishya malika",
-            "malika jankari",
+            "test_channel",
             "pandit kashinath mishra ji",
             "bjp",
             "bharatiya janata party"
@@ -4353,9 +4353,9 @@
         {
           "id": "wZuLTLO8kVE",
           "url": "https://www.youtube.com/watch?v=wZuLTLO8kVE",
-          "title": "लिख कर रखो ! भारत चीन का युद्ध कब होगा | Bhavishya Malika | Malika Jankari",
+          "title": "लिख कर रखो ! भारत चीन का युद्ध कब होगा | Bhavishya Malika | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "bhavishya malika",
             "Kashinath Mishra Malika",
             "Kashinath Mishra",
@@ -4372,9 +4372,9 @@
         {
           "id": "RRnuMam2kmI",
           "url": "https://www.youtube.com/watch?v=RRnuMam2kmI",
-          "title": "AC Blast होगा, पहले ही बताया था | Bhavishya Malika| Malika Jankari",
+          "title": "AC Blast होगा, पहले ही बताया था | Bhavishya Malika| test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -4392,9 +4392,9 @@
         {
           "id": "aT4nsunCxwQ",
           "url": "https://www.youtube.com/watch?v=aT4nsunCxwQ",
-          "title": "गर्मी के मौसम में बर्फबारी क्यों हो रहा है? | Bhavishya Malika | Malika Jankari",
+          "title": "गर्मी के मौसम में बर्फबारी क्यों हो रहा है? | Bhavishya Malika | test_channel",
           "tags": [
-            "Malika Jankari",
+            "test_channel",
             "Kashinath Mishra",
             "Kashinath Mishra Malika",
             "pandit Kashinath Mishra ji",
@@ -4413,38 +4413,38 @@
       "recentDescriptions": [
         {
           "videoId": "Yc4hcSmNpbk",
-          "title": "पहाड़िया आसमान में उड़ेगा | Kashinath Mishra |  Bhavishya Malika Puran | Malika Jankari",
-          "description": "पहाड़िया आसमान में उड़ेगा | Kashinath Mishra |  Bhavishya Malika Puran | Malika Jankari\n\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\nThe content presented on this channel is intended to share and disseminate the information from Bhavishya Malika, 'a compilation of 600-year-old writings authored by Panchasakha and Mahapurush Achyutananda Das. The channel does not endorse any personal or biased interpretations of the content. The channel creators do not take responsibility for any errors or omissions in the contents of this channel and any misinterpretations or misuses of the information shared. We do not intend to offend or hurt the sentiments of any individual or community and we do not endorse or support any form of superstition. Viewers are advised to use their discretion and not solely rely on the information presented on this channel for making important decisions. All content on this channel is protected by copyright and may not be reproduced or utilized without obtaining explicit permission.\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
+          "title": "पहाड़िया आसमान में उड़ेगा | Kashinath Mishra |  Bhavishya Malika Puran | test_channel",
+          "description": "पहाड़िया आसमान में उड़ेगा | Kashinath Mishra |  Bhavishya Malika Puran | test_channel\n\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\nThe content presented on this channel is intended to share and disseminate the information from Bhavishya Malika, 'a compilation of 600-year-old writings authored by Panchasakha and Mahapurush Achyutananda Das. The channel does not endorse any personal or biased interpretations of the content. The channel creators do not take responsibility for any errors or omissions in the contents of this channel and any misinterpretations or misuses of the information shared. We do not intend to offend or hurt the sentiments of any individual or community and we do not endorse or support any form of superstition. Viewers are advised to use their discretion and not solely rely on the information presented on this channel for making important decisions. All content on this channel is protected by copyright and may not be reproduced or utilized without obtaining explicit permission.\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
         },
         {
           "videoId": "RpcDTuubW6M",
-          "title": "22 प्रमाण भगवान कल्कि जन्म ले चुके हैं | Kashinath Mishra | Bhavishya Malika Puran  | Malika Jankari",
-          "description": "22 प्रमाण भगवान कल्कि जन्म ले चुके हैं | Kashinath Mishra | Malika Jankari\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\nत्रिसंध्या New PDF 👇\nhttps://drive.google.com/file/d/1IktpA24x-HAlixtxQWqfwi0AfLS79N4L/view?usp=drivesdk\n\nFull Trisandhya 12 Minutes Video \nhttps://youtu.be/2VPNfp7pgsw?si=rTvpRkzozPwmJHhV\n\n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n------------------------------------------------------------------------\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n#kalkiavatar \n\n------------------------------------------------------\nJai shree madhav 🙏"
+          "title": "22 प्रमाण भगवान कल्कि जन्म ले चुके हैं | Kashinath Mishra | Bhavishya Malika Puran  | test_channel",
+          "description": "22 प्रमाण भगवान कल्कि जन्म ले चुके हैं | Kashinath Mishra | test_channel\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\nत्रिसंध्या New PDF 👇\nhttps://drive.google.com/file/d/1IktpA24x-HAlixtxQWqfwi0AfLS79N4L/view?usp=drivesdk\n\nFull Trisandhya 12 Minutes Video \nhttps://youtu.be/2VPNfp7pgsw?si=rTvpRkzozPwmJHhV\n\n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n------------------------------------------------------------------------\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n#kalkiavatar \n\n------------------------------------------------------\nJai shree madhav 🙏"
         },
         {
           "videoId": "7SUmb8zq8PQ",
-          "title": "स्नान पूर्णिमा से अशुभ संकेत ,क्या होने वाला है | Bhavishya Malika | Malika Jankari",
-          "description": "स्नान पूर्णिमा से अशुभ संकेत ,क्या होने वाला है | Bhavishya Malika | Malika Jankari\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\nत्रिसंध्या New PDF 👇\nhttps://drive.google.com/file/d/1IktpA24x-HAlixtxQWqfwi0AfLS79N4L/view?usp=drivesdk\n\nFull Trisandhya 12 Minutes Video \nhttps://youtu.be/2VPNfp7pgsw?si=rTvpRkzozPwmJHhV\n\n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n------------------------------------------------------------------------\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n#jagannath \n#purijagannath \n\n------------------------------------------------------\nJai shree madhav 🙏"
+          "title": "स्नान पूर्णिमा से अशुभ संकेत ,क्या होने वाला है | Bhavishya Malika | test_channel",
+          "description": "स्नान पूर्णिमा से अशुभ संकेत ,क्या होने वाला है | Bhavishya Malika | test_channel\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\nत्रिसंध्या New PDF 👇\nhttps://drive.google.com/file/d/1IktpA24x-HAlixtxQWqfwi0AfLS79N4L/view?usp=drivesdk\n\nFull Trisandhya 12 Minutes Video \nhttps://youtu.be/2VPNfp7pgsw?si=rTvpRkzozPwmJHhV\n\n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n------------------------------------------------------------------------\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n#jagannath \n#purijagannath \n\n------------------------------------------------------\nJai shree madhav 🙏"
         },
         {
           "videoId": "lB6fpv6cBEk",
-          "title": "🚨दावा नहीं मिलेगा,दुनिया शमशान बनेगा | Bhavishya Malika | Malika Jankari",
-          "description": "🚨दावा नहीं मिलेगा,दुनिया शमशान बनेगा | Bhavishya Malika | Malika Jankari\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
+          "title": "🚨दावा नहीं मिलेगा,दुनिया शमशान बनेगा | Bhavishya Malika | test_channel",
+          "description": "🚨दावा नहीं मिलेगा,दुनिया शमशान बनेगा | Bhavishya Malika | test_channel\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
         },
         {
           "videoId": "IQL71Z1XjGA",
-          "title": "जंगल से लेकर शहर तक सब कुछ जलेगा | Pt.Kashinath Mishra Ji | Malika Jankari",
-          "description": "जंगल से लेकर शहर तक सब कुछ जलेगा | Pt.Kashinath Mishra Ji | Malika Jankari\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
+          "title": "जंगल से लेकर शहर तक सब कुछ जलेगा | Pt.Kashinath Mishra Ji | test_channel",
+          "description": "जंगल से लेकर शहर तक सब कुछ जलेगा | Pt.Kashinath Mishra Ji | test_channel\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
         },
         {
           "videoId": "NKEjWxPtDgE",
-          "title": "2032 से पहले महाभारत का एक बेला युद्ध होगा | Pt. Kashinath Mishra ji | Malika Jankari",
-          "description": "2032 से पहले महाभारत का एक बेला युद्ध होगा | Pt. Kashinath Mishra ji | Malika Jankari\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
+          "title": "2032 से पहले महाभारत का एक बेला युद्ध होगा | Pt. Kashinath Mishra ji | test_channel",
+          "description": "2032 से पहले महाभारत का एक बेला युद्ध होगा | Pt. Kashinath Mishra ji | test_channel\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
         },
         {
           "videoId": "3hzSg1DrLuA",
-          "title": "100% सच हुई मालिका😱भूकंप से लाखो मौत | pt.kashinath Mishra Ji | Malika Jankari",
-          "description": "100% सच हुई मालिका😱भूकंप से लाखो मौत | pt.kashinath Mishra Ji | Malika Jankari\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
+          "title": "100% सच हुई मालिका😱भूकंप से लाखो मौत | pt.kashinath Mishra Ji | test_channel",
+          "description": "100% सच हुई मालिका😱भूकंप से लाखो मौत | pt.kashinath Mishra Ji | test_channel\n\nत्रिसंध्या धारा से जुड़ने के लिए Form \nhttps://docs.google.com/forms/d/e/1FAIpQLSdXYwXF_h9qoGpVBCsRCoLifvLVZDzll4NfZh5kOxoSrjX7Jg/viewform?pli=1\n\nत्रिसंध्या धारा जानकारी जानिए \nhttp://youtube.com/post/Ugkx4zNze63_jeBL9JJZQsvYGf__BWMG0L_6?si=wJ7M_RTrHhU6VQ6D\n\nOfficial Whatsapp Channel Link 👇 https://whatsapp.com/channel/0029Vb79d2ADzgTIAj6mmQ43\n\nExclusive Buy Now 📌\nBhavishya Malika Puran Part - 2\nhttps://amzn.to/4hUUbis\n\nBhavishya Malika Puran Part - 1\nhttps://amzn.to/3Y33C87\n\nShrimad Bhagavat Mahapuran\nhttps://amzn.to/3FLSsP2\n\nक्या आप जानते हैं कि भगवान श्री राम और श्री कृष्ण के अंतिम अवतार, महाप्रभु कल्कि जी का जन्म हो चुका है? 🌍✨ अब समय है धर्मपथ अपनाने का! 🕉️    \n\n🔥 माधव नाम जप करें  \n🔥 त्रिसंध्या धारा का पालन करें \n🔥 श्रीमद्भागवत महापुराण का पठन करें  \n\nNote :- यह सबको करने से पहले, आपको पिछले 15  दिन से शुद्ध शाकाहारी होना होगा और किसी भी तरह का नशा नहीं करना है।\n\n⚡ सिर्फ उन्हीं की पूजा फलित होगी, जो:  \n✔ शुद्ध शाकाहारी हैं 🥦  \n✔ किसी भी नशे से दूर हैं 🚫  \n✔ व्यभिचार और दुराचार से मुक्त हैं 🙏  \n\n📖 त्रिसंध्या पाठ के समय:  \n🌅 सुबह – 04:00 - 06:30 AM  \n🌞 दोपहर – 11:30 - 01:00 PM  \n🌆 शाम – 05:00 - 07:00 PM  \n\n🔗 त्रिसंध्या PDF + Audio & श्रीमद्भागवत महापुराण:  \n👉 https://linktr.ee/Bhavishyamalikahindi  \n\n🔗 BM Puran Free eBook + Website + Videos (All-in-One):  \n👉 https://linktr.ee/kalkiavatar  \n\n📽 त्रिसंध्या वीडियो देखें:  \n👉 [https://youtu.be/_UgDI2EjlMo?si=qQvhR3vOSZA3cnhx] \n\n📢 अधिक जानकारी के लिए संपर्क करें:  \nBhai - : +91 8882486287\nMaa  -: +91 8766253647\n\n⚠️ Disclaimer:\n\nThis YouTube channel is not the official channel of Param Pujya Pandit Shri Kashinath Mishra Ji. It is lovingly managed by his fans or well-wishers as a fan platform to share his divine pravachans, bhajans, and spiritual wisdom for the benefit of all. We do not claim any official affiliation with Pandit Ji. All videos, audios, and images are respectfully shared to spread Sanatan Dharma and the teachings of Pandit Ji. 🙏 If any content needs to be updated or removed, please feel free to contact us. We will humbly comply with all requests.\n\n-----------------------------------------------------------------------\n\nWebsite :-\n👉https://www.BhavishyaMalika.com\nInstagram :-\n👉https://www.instagram.com/bhavishyamalika_official\n👉https://www.instagram.com/kalki_avatar_arrived?igsh=YzljYTk1ODg3Zg==\n👉https://www.instagram.com/kalkiavatar_official?igsh=YzljYTk1ODg3Zg==\nFacebook :-\nhttps://www.facebook.com/kalkiavatara13\nTwitter :-\nhttps://x.com/kalkiabatara\nAll in One Link :-\n👉https://www.linktr.ee/KalkiAvatar\nDownload Kalki Avatar App :-\n👉https://play.google.com/store/apps/details?id=com.kalki.avtar\n\n#bhavishyamalika \n#kashinathmishra \n\n------------------------------------------------------\nJai shree madhav 🙏🙏"
         },
         {
           "videoId": "qhM8y7HCuZw",
@@ -4456,7 +4456,7 @@
         "videoCount": 50,
         "averageViews": 9157,
         "topTags": [
-          "Malika Jankari",
+          "test_channel",
           "Kalki Avatar Official Channel",
           "Pandit Kashinath Mishra",
           "Kashinath Mishra",

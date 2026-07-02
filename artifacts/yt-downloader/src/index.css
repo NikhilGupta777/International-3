@@ -3612,14 +3612,30 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   position: absolute;
   top: calc(100% + 10px);
   right: 0;
-  width: min(380px, calc(100vw - 32px));
-  padding: 12px;
-  background: rgba(18,18,20,0.96);
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 22px;
-  box-shadow: 0 28px 80px rgba(0,0,0,0.48);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
+  width: min(390px, calc(100vw - 32px));
+  padding: 14px;
+  background: rgba(10, 10, 12, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  box-shadow: 
+    0 4px 30px rgba(0, 0, 0, 0.4),
+    0 24px 68px rgba(0, 0, 0, 0.6),
+    inset 0 1px 1px rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(28px);
+  -webkit-backdrop-filter: blur(28px);
+  z-index: 50;
+  animation: popoverFadeIn 0.24s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes popoverFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .home-update-popover-head {
@@ -3627,20 +3643,21 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 4px 4px 12px;
+  padding: 4px 6px 14px;
 }
 
 .home-update-popover-head span {
   display: block;
-  color: rgba(255,255,255,0.92);
-  font-size: 14px;
+  color: #fff;
+  font-size: 15px;
   font-weight: 800;
+  letter-spacing: -0.01em;
 }
 
 .home-update-popover-head p {
   margin: 2px 0 0;
-  color: rgba(255,255,255,0.48);
-  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 11.5px;
 }
 
 .home-update-popover-head button,
@@ -3648,151 +3665,129 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  color: rgba(255,255,255,0.62);
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.08);
+  width: 28px;
+  height: 28px;
+  color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 999px;
+  transition: all 0.2s ease;
 }
 
 .home-update-popover-head button:hover,
 .home-update-modal-close:hover {
   color: #fff;
-  background: rgba(255,255,255,0.12);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.15);
 }
 
 .home-update-list {
   display: grid;
-  gap: 9px;
+  gap: 10px;
 }
 
 .home-update-card {
   position: relative;
   display: grid;
-  grid-template-columns: 92px 1fr;
-  gap: 12px;
+  grid-template-columns: 104px 1fr;
+  gap: 14px;
   width: 100%;
   padding: 10px;
   text-align: left;
-  background: rgba(255,255,255,0.055);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 16px;
-  transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 18px;
+  transition: all 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: hidden;
 }
 
 .home-update-card:hover {
-  transform: translateY(-1px);
-  background: rgba(255,255,255,0.08);
-  border-color: rgba(255,255,255,0.18);
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(125, 211, 252, 0.3);
+  box-shadow: 
+    0 12px 24px -10px rgba(0, 0, 0, 0.5),
+    0 0 16px rgba(125, 211, 252, 0.05);
 }
 
 .home-update-card-read {
-  opacity: 0.72;
+  opacity: 0.75;
 }
 
 .home-update-card-copy {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   justify-content: center;
 }
 
 .home-update-card-copy b {
-  color: rgba(255,255,255,0.92);
-  font-size: 14px;
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .home-update-card-copy small {
-  color: rgba(255,255,255,0.52);
-  font-size: 12px;
-  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 11.5px;
+  line-height: 1.4;
 }
 
 .home-update-card-copy em {
-  color: #7dd3fc;
-  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #38bdf8;
+  font-size: 11px;
   font-style: normal;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin-top: 2px;
 }
 
 .home-update-dot {
   position: absolute;
   top: 12px;
   right: 12px;
-  width: 8px;
-  height: 8px;
-  background: #ef4444;
+  width: 7px;
+  height: 7px;
+  background: #f43f5e;
   border-radius: 999px;
+  box-shadow: 0 0 8px #f43f5e;
 }
 
 .home-update-visual {
-  min-height: 82px;
+  position: relative;
+  height: 82px;
   overflow: hidden;
-  padding: 10px;
-  background:
-    linear-gradient(135deg, rgba(59,130,246,0.16), transparent 55%),
-    rgba(8,12,18,0.9);
-  border: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 10, 14, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
+  transition: all 0.24s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.home-update-visual-top {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 9px;
+.home-update-card:hover .home-update-visual {
+  border-color: rgba(125, 211, 252, 0.25);
+  background: rgba(8, 8, 10, 0.95);
 }
 
-.home-update-visual-top span {
-  width: 7px;
-  height: 7px;
-  background: rgba(255,255,255,0.28);
-  border-radius: 999px;
+.home-update-visual-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+  border-radius: 11px;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.home-update-visual-title {
-  color: rgba(255,255,255,0.9);
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.home-update-visual-prompt,
-.home-update-visual-search {
-  margin-top: 7px;
-  padding: 6px 7px;
-  color: rgba(255,255,255,0.72);
-  font-size: 9px;
-  background: rgba(255,255,255,0.09);
-  border-radius: 8px;
-}
-
-.home-update-visual-lines {
-  display: grid;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.home-update-visual-lines i,
-.home-update-visual-chips i {
-  display: block;
-  height: 5px;
-  background: rgba(125,211,252,0.42);
-  border-radius: 999px;
-}
-
-.home-update-visual-lines i:nth-child(2) { width: 78%; }
-.home-update-visual-lines i:nth-child(3) { width: 58%; }
-
-.home-update-visual-chips {
-  display: flex;
-  gap: 5px;
-  margin-top: 11px;
-}
-
-.home-update-visual-chips i {
-  width: 24%;
-  height: 16px;
+.home-update-card:hover .home-update-visual-image {
+  transform: scale(1.06);
 }
 
 .home-update-modal-backdrop {

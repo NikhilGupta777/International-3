@@ -22,8 +22,8 @@ const HOME_UPDATES = [
   {
     id: "content-manager",
     label: "New",
-    title: "Content Manager",
-    summary: "Plan the next YouTube upload with channel memory, SEO titles, description, tags, timing, and must-do steps.",
+    title: "AI YT Channel Strategist",
+    summary: "Next video title, description, tags, and many more. All in one place, your personalized AI channel strategist.",
     mode: "content-manager" as Mode,
     visual: "content" as const,
   },
@@ -107,34 +107,18 @@ function readHomeUpdatesInitial(): string[] {
 }
 
 function HomeUpdateVisual({ type }: { type: HomeUpdate["visual"] }) {
+  const BASE = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+  const imgSrc = type === "content" 
+    ? `${BASE}/content_manager_preview.png` 
+    : `${BASE}/find_video_preview.png`;
+    
   return (
-    <div className="home-update-visual" aria-hidden="true">
-      <div className="home-update-visual-top">
-        <span />
-        <span />
-        <span />
-      </div>
-      {type === "content" ? (
-        <>
-          <div className="home-update-visual-title">Content Manager</div>
-          <div className="home-update-visual-prompt">Delhi clashes + border tension...</div>
-          <div className="home-update-visual-lines">
-            <i />
-            <i />
-            <i />
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="home-update-visual-title">Find Video</div>
-          <div className="home-update-visual-search">Full DB search</div>
-          <div className="home-update-visual-chips">
-            <i />
-            <i />
-            <i />
-          </div>
-        </>
-      )}
+    <div className={`home-update-visual home-update-visual-${type}`} aria-hidden="true">
+      <img 
+        src={imgSrc} 
+        alt={type === "content" ? "Content Manager" : "Find Video"} 
+        className="home-update-visual-image"
+      />
     </div>
   );
 }

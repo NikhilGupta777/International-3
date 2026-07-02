@@ -156,7 +156,7 @@ export function YouTubeContentManager() {
       if (!res.ok) throw new Error(data?.error || "Could not load channels");
       const rows: ProfileSummary[] = Array.isArray(data?.profiles) ? data.profiles : [];
       setProfiles(rows);
-      setSelectedId((current) => current || rows[0]?.id || "");
+      setSelectedId((current) => current || "");
     } catch (err: any) {
       toast({ title: "Could not load channels", description: err?.message, variant: "destructive" });
     } finally {
@@ -334,16 +334,21 @@ export function YouTubeContentManager() {
   };
 
   const generate = async () => {
+    if (generating) return;
     if (!selectedId) {
       toast({
         title: "No channel selected",
-        description: "Select a saved channel from the top bar or type @ and choose one from the menu.",
+        description: "Select a channel by typing @ in the chatbox (e.g., @test_channel followed by your query).",
         variant: "destructive",
       });
       return;
     }
     if (!topic.trim()) {
-      toast({ title: "Write the video topic first", variant: "destructive" });
+      toast({
+        title: "Write the video topic first",
+        description: "Type @ followed by your channel name, then write your topic request (e.g., @test_channel suggest 5 video titles for today).",
+        variant: "destructive",
+      });
       return;
     }
     if (abortControllerRef.current) {
@@ -451,7 +456,7 @@ export function YouTubeContentManager() {
       setProfiles((prev) => {
         const next = prev.filter((p) => p.id !== id);
         if (selectedId === id) {
-          setSelectedId(next[0]?.id || "");
+          setSelectedId("");
         }
         return next;
       });
@@ -641,6 +646,7 @@ export function YouTubeContentManager() {
           className="ytcm-input-card"
           onSubmit={(event) => {
             event.preventDefault();
+            if (generating) return;
             void generate();
           }}
         >
@@ -652,28 +658,32 @@ export function YouTubeContentManager() {
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
+                if (generating) return;
                 void generate();
               }
             }}
           />
-          {generating ? (
-            <button
-              type="button"
-              className="ytcm-stop-btn"
-              onClick={stopGeneration}
-              title="Stop generation"
-            >
+          <button
+            type={generating ? "button" : "submit"}
+            className={generating ? "ytcm-stop-btn" : ""}
+            onClick={
+              generating
+                ? (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    stopGeneration();
+                  }
+                : undefined
+            }
+            disabled={!generating && (!selectedId || !topic.trim() || scraping)}
+            title={generating ? "Stop generation" : "Send"}
+          >
+            {generating ? (
               <Square className="w-4 h-4 fill-white" />
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={!selectedId || !topic.trim() || generating || scraping}
-              title="Send"
-            >
+            ) : (
               <Sparkles className="w-4 h-4" />
-            </button>
-          )}
+            )}
+          </button>
         </form>
       </footer>
 
