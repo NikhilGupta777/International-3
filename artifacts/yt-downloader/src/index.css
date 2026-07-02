@@ -8736,6 +8736,1332 @@ html.studio-light-mode .tp-new-btn:hover { background: #3b82f6; }
   .tp-img-grid { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
 }
 
+/* ── YouTube Content Manager ─────────────────────────────────────────────── */
+.ytcm-page {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 18px;
+  color: #f8fafc;
+}
+.ytcm-sidebar,
+.ytcm-composer,
+.ytcm-status,
+.ytcm-result,
+.ytcm-placeholder {
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(11, 13, 18, 0.82);
+  box-shadow: 0 18px 50px rgba(0,0,0,0.28);
+  backdrop-filter: blur(18px);
+}
+.ytcm-sidebar {
+  min-height: 0;
+  border-radius: 16px;
+  padding: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.ytcm-side-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.ytcm-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: #fca5a5;
+  background: rgba(239,68,68,0.14);
+  border: 1px solid rgba(239,68,68,0.24);
+}
+.ytcm-side-head h2,
+.ytcm-composer h1,
+.ytcm-result h2,
+.ytcm-placeholder h2 {
+  margin: 0;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.ytcm-side-head h2 { font-size: 0.98rem; }
+.ytcm-side-head p,
+.ytcm-composer p,
+.ytcm-placeholder p,
+.ytcm-profile-meta,
+.ytcm-title-item p,
+.ytcm-result p {
+  color: rgba(248,250,252,0.58);
+}
+.ytcm-side-head p,
+.ytcm-composer p {
+  margin: 2px 0 0;
+  font-size: 0.78rem;
+}
+.ytcm-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.ytcm-add input,
+.ytcm-composer textarea {
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(255,255,255,0.05);
+  color: #fff;
+  outline: none;
+}
+.ytcm-add input {
+  min-width: 0;
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 0.82rem;
+}
+.ytcm-add button,
+.ytcm-primary,
+.ytcm-secondary,
+.ytcm-result-head button,
+.ytcm-modal-actions button,
+.ytcm-list-head button {
+  border: 0;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  cursor: pointer;
+  transition: background 0.16s ease, opacity 0.16s ease, transform 0.16s ease;
+}
+.ytcm-add button,
+.ytcm-primary {
+  border-radius: 10px;
+  background: #2563eb;
+  padding: 9px 12px;
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+.ytcm-add button:disabled,
+.ytcm-primary:disabled,
+.ytcm-secondary:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ytcm-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 2px 0 8px;
+  color: rgba(248,250,252,0.56);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.ytcm-list-head button {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+}
+.ytcm-profile-list {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ytcm-profile {
+  width: 100%;
+  border: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,255,255,0.045);
+  color: #fff;
+  border-radius: 12px;
+  padding: 10px;
+  text-align: left;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  cursor: pointer;
+}
+.ytcm-profile.is-active {
+  border-color: rgba(59,130,246,0.55);
+  background: rgba(37,99,235,0.16);
+}
+.ytcm-profile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.88rem;
+  font-weight: 650;
+}
+.ytcm-profile-meta {
+  font-size: 0.74rem;
+}
+.ytcm-profile-actions {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.ytcm-profile-actions span {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: rgba(255,255,255,0.55);
+}
+.ytcm-profile-actions span:hover {
+  background: rgba(255,255,255,0.08);
+  color: #fff;
+}
+.ytcm-empty {
+  border: 1px dashed rgba(255,255,255,0.14);
+  border-radius: 12px;
+  padding: 18px 12px;
+  color: rgba(255,255,255,0.44);
+  font-size: 0.82rem;
+  text-align: center;
+}
+.ytcm-main {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ytcm-composer {
+  border-radius: 18px;
+  padding: 18px;
+}
+.ytcm-composer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.ytcm-composer h1 { font-size: clamp(1.45rem, 3vw, 2.1rem); }
+.ytcm-toggle {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: rgba(248,250,252,0.72);
+  user-select: none;
+}
+.ytcm-toggle span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ytcm-composer textarea {
+  min-height: 122px;
+  border-radius: 14px;
+  padding: 13px;
+  resize: vertical;
+  line-height: 1.55;
+  font-size: 0.95rem;
+}
+.ytcm-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.ytcm-secondary {
+  border-radius: 10px;
+  padding: 9px 12px;
+  background: rgba(255,255,255,0.08);
+  font-weight: 700;
+  font-size: 0.82rem;
+}
+.ytcm-status {
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+.ytcm-status-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #bfdbfe;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.ytcm-status-lines {
+  margin-top: 7px;
+  display: grid;
+  gap: 4px;
+}
+.ytcm-status-lines p {
+  margin: 0;
+  color: rgba(248,250,252,0.52);
+  font-size: 0.78rem;
+}
+.ytcm-results {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+  gap: 14px;
+}
+.ytcm-result {
+  border-radius: 16px;
+  padding: 15px;
+}
+.ytcm-result:first-child,
+.ytcm-result:nth-child(2) {
+  grid-column: 1 / -1;
+}
+.ytcm-result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.ytcm-result h2 {
+  font-size: 0.92rem;
+  color: rgba(248,250,252,0.88);
+}
+.ytcm-result-head button {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: rgba(255,255,255,0.08);
+}
+.ytcm-title-list {
+  display: grid;
+  gap: 10px;
+}
+.ytcm-title-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.045);
+}
+.ytcm-title-item > span {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: rgba(37,99,235,0.22);
+  color: #bfdbfe;
+  font-weight: 800;
+  font-size: 0.78rem;
+}
+.ytcm-title-item h3,
+.ytcm-time {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.35;
+  letter-spacing: 0;
+  color: #fff;
+}
+.ytcm-title-item p,
+.ytcm-result p {
+  margin: 5px 0 0;
+  line-height: 1.55;
+  font-size: 0.86rem;
+}
+.ytcm-preline {
+  white-space: pre-wrap;
+}
+.ytcm-tags,
+.ytcm-preline,
+.ytcm-title-item h3,
+.ytcm-result h2,
+.ytcm-result p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.ytcm-bullets,
+.ytcm-sources {
+  margin: 0;
+  padding-left: 18px;
+  color: rgba(248,250,252,0.72);
+  line-height: 1.55;
+  font-size: 0.9rem;
+}
+.ytcm-sources a {
+  color: #93c5fd;
+  text-decoration: none;
+}
+.ytcm-placeholder {
+  border-radius: 18px;
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 28px;
+}
+.ytcm-placeholder svg {
+  color: #93c5fd;
+}
+.ytcm-placeholder h2 {
+  font-size: 1.15rem;
+}
+.ytcm-placeholder p {
+  max-width: 460px;
+  margin: 0;
+  line-height: 1.55;
+}
+.ytcm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(0,0,0,0.62);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+.ytcm-modal {
+  width: min(480px, 100%);
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: #101218;
+  color: #fff;
+  padding: 20px;
+  box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+}
+.ytcm-modal-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: #fbbf24;
+  background: rgba(245,158,11,0.14);
+  border: 1px solid rgba(245,158,11,0.28);
+  margin-bottom: 12px;
+}
+.ytcm-modal h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+.ytcm-modal p {
+  margin: 8px 0 0;
+  color: rgba(248,250,252,0.62);
+  line-height: 1.55;
+  font-size: 0.92rem;
+}
+.ytcm-modal-input {
+  width: 100%;
+  height: 46px;
+  margin-top: 16px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(255,255,255,0.05);
+  color: #fff;
+  font-size: 0.95rem;
+  outline: none;
+}
+.ytcm-modal-input:focus {
+  border-color: rgba(129,161,255,0.6);
+  background: rgba(255,255,255,0.08);
+}
+.ytcm-modal-actions button:last-child:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ytcm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 18px;
+}
+.ytcm-modal-actions button {
+  border-radius: 10px;
+  padding: 9px 13px;
+  background: rgba(255,255,255,0.08);
+  font-weight: 700;
+}
+.ytcm-modal-actions button:last-child {
+  background: #2563eb;
+}
+html.studio-light-mode .ytcm-sidebar,
+html.studio-light-mode .ytcm-composer,
+html.studio-light-mode .ytcm-status,
+html.studio-light-mode .ytcm-result,
+html.studio-light-mode .ytcm-placeholder {
+  background: rgba(255,255,255,0.88);
+  color: #111827;
+  border-color: rgba(17,24,39,0.08);
+}
+html.studio-light-mode .ytcm-add input,
+html.studio-light-mode .ytcm-composer textarea,
+html.studio-light-mode .ytcm-profile {
+  background: rgba(17,24,39,0.04);
+  border-color: rgba(17,24,39,0.1);
+  color: #111827;
+}
+@media (max-width: 900px) {
+  .ytcm-page {
+    grid-template-columns: 1fr;
+  }
+  .ytcm-sidebar {
+    max-height: 360px;
+  }
+  .ytcm-results {
+    grid-template-columns: 1fr;
+  }
+  .ytcm-result:first-child,
+  .ytcm-result:nth-child(2) {
+    grid-column: auto;
+  }
+}
+@media (max-width: 560px) {
+  .ytcm-composer-head {
+    flex-direction: column;
+  }
+  .ytcm-add {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Content Manager chat redesign */
+.ytcm-chat-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+  gap: 0;
+  background: #000;
+  color: #fff;
+  overflow: hidden;
+}
+.ytcm-chat-topbar {
+  position: absolute;
+  top: 26px;
+  left: 32px;
+  right: 32px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  pointer-events: none;
+}
+.ytcm-chat-brand,
+.ytcm-chat-controls {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ytcm-chat-brand {
+  min-width: 0;
+}
+.ytcm-chat-brand span {
+  display: block;
+  font-size: 0.95rem;
+  font-weight: 750;
+  letter-spacing: 0;
+}
+.ytcm-chat-brand p {
+  margin: 1px 0 0;
+  max-width: 360px;
+  color: rgba(255,255,255,0.45);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ytcm-chat-controls {
+  padding: 7px;
+  border: 1px solid rgba(255,255,255,0.11);
+  border-radius: 999px;
+  background: rgba(31,31,31,0.92);
+  box-shadow: 0 14px 40px rgba(0,0,0,0.35);
+}
+.ytcm-chat-controls .ytcm-round-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ytcm-history-wrap {
+  position: relative;
+}
+.ytcm-round-btn.is-active {
+  color: #fff;
+  background: rgba(255,255,255,0.14);
+}
+.ytcm-history-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  width: 292px;
+  max-height: 430px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(18,18,18,0.98);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.55);
+}
+.ytcm-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.58);
+  font-size: 0.72rem;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ytcm-history-head button {
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #fca5a5;
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.ytcm-history-list {
+  min-height: 0;
+  max-height: 318px;
+  overflow-y: auto;
+  padding: 7px;
+}
+.ytcm-history-empty {
+  padding: 28px 10px;
+  text-align: center;
+  color: rgba(255,255,255,0.35);
+  font-size: 0.82rem;
+}
+.ytcm-history-item {
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  border-radius: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 9px 9px 11px;
+  color: rgba(255,255,255,0.82);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.ytcm-history-item:hover,
+.ytcm-history-item.is-active {
+  background: rgba(255,255,255,0.07);
+}
+.ytcm-history-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.83rem;
+  font-weight: 650;
+}
+.ytcm-history-item em {
+  color: rgba(255,255,255,0.4);
+  font-style: normal;
+  font-size: 0.72rem;
+}
+.ytcm-history-item i {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: rgba(255,255,255,0.42);
+  opacity: 0;
+}
+.ytcm-history-item:hover i {
+  opacity: 1;
+}
+.ytcm-history-item i:hover {
+  color: #fca5a5;
+  background: rgba(255,255,255,0.08);
+}
+.ytcm-chat-controls select {
+  max-width: 230px;
+  height: 34px;
+  border: 0;
+  outline: none;
+  color: rgba(255,255,255,0.86);
+  background: transparent;
+  font-size: 0.82rem;
+}
+.ytcm-chat-controls option {
+  background: #161616;
+  color: #fff;
+}
+.ytcm-round-btn {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: rgba(255,255,255,0.68);
+  background: rgba(255,255,255,0.06);
+  cursor: pointer;
+}
+.ytcm-round-btn:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.12);
+}
+.ytcm-live-pill {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border-radius: 999px;
+  color: rgba(255,255,255,0.72);
+  background: rgba(255,255,255,0.06);
+  font-size: 0.78rem;
+  user-select: none;
+}
+.ytcm-live-pill input {
+  width: 14px;
+  height: 14px;
+  accent-color: #3b82f6;
+}
+.ytcm-live-pill span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ytcm-chat-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 112px 16px 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+.ytcm-chat-welcome {
+  width: 100%;
+  margin: auto 0;
+  text-align: center;
+}
+.ytcm-chat-welcome h1 {
+  margin: 0;
+  font-size: clamp(2.7rem, 6vw, 4.4rem);
+  line-height: 1.05;
+  letter-spacing: 0;
+  font-weight: 780;
+}
+.ytcm-chat-welcome p {
+  margin: 18px auto 0;
+  max-width: 760px;
+  color: rgba(255,255,255,0.52);
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  line-height: 1.55;
+}
+.ytcm-starters {
+  margin: 32px auto 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+.ytcm-starters button {
+  min-height: 60px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 16px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: rgba(255,255,255,0.88);
+  background: #181818;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+.ytcm-starters button:hover {
+  background: #202020;
+  border-color: rgba(255,255,255,0.2);
+}
+.ytcm-status-bubble,
+.ytcm-assistant-message {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 14px;
+  align-items: flex-start;
+}
+.ytcm-status-bubble > div:last-child,
+.ytcm-assistant-body {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.ytcm-assistant-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: #93c5fd;
+  background: rgba(59,130,246,0.12);
+  border: 1px solid rgba(147,197,253,0.22);
+}
+.ytcm-status-bubble h3 {
+  margin: 3px 0 6px;
+  color: rgba(255,255,255,0.9);
+  font-size: 0.92rem;
+}
+.ytcm-status-bubble p {
+  margin: 3px 0;
+  color: rgba(255,255,255,0.5);
+  font-size: 0.86rem;
+}
+.ytcm-user-message {
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+  margin: 12px 0 6px;
+}
+.ytcm-user-bubble {
+  max-width: min(560px, 85%);
+  padding: 12px 20px;
+  border-radius: 22px;
+  border-bottom-right-radius: 4px;
+  background: #27272a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  word-break: break-word;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+}
+.ytcm-assistant-message,
+.ytcm-copilot-thinking,
+.ytcm-user-message {
+  max-width: 760px;
+}
+.ytcm-copilot-thinking {
+  width: 100%;
+  align-self: center;
+}
+.ytcm-copilot-thinking .gs-thinking-header {
+  border: 0;
+  background: transparent;
+  color: rgba(248, 250, 252, 0.78);
+  padding: 4px 0;
+}
+.ytcm-copilot-thinking .gs-thinking-header-clickable {
+  cursor: pointer;
+}
+.ytcm-copilot-thinking .gs-thinking-header:disabled {
+  cursor: default;
+}
+.ytcm-copilot-thinking .gs-thinking-content-inner {
+  width: 100%;
+  color: #e2e8f0;
+  font-size: 0.88rem;
+  line-height: 1.65;
+  padding: 14px 18px;
+  border-radius: 16px;
+  background: rgba(30, 41, 59, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  white-space: pre-wrap;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.ytcm-chat-composer {
+  position: absolute;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+}
+.ytcm-mention-menu {
+  width: min(760px, calc(100% - 32px));
+  pointer-events: auto;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: #1c1c1c;
+  padding: 8px;
+  box-shadow: 0 -12px 30px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+  animation: ytcm-pop 0.15s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.ytcm-input-card {
+  width: min(760px, calc(100% - 32px));
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 24px;
+}
+.ytcm-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+.ytcm-message-actions button,
+.ytcm-result-head button {
+  height: 32px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 999px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(255,255,255,0.72);
+  background: rgba(255,255,255,0.06);
+  cursor: pointer;
+}
+.ytcm-result {
+  margin-top: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.ytcm-result-head {
+  margin-bottom: 9px;
+}
+.ytcm-result h2 {
+  color: rgba(255,255,255,0.9);
+  font-size: 1rem;
+}
+.ytcm-title-item {
+  border: 1px solid rgba(255,255,255,0.09);
+  background: #151515;
+}
+.ytcm-chat-composer {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  z-index: 5;
+  transform: translateX(-50%);
+  width: min(820px, calc(100% - 64px));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.ytcm-channel-add,
+.ytcm-input-card {
+  min-height: 72px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 28px;
+  background: #242424;
+  box-shadow: 0 18px 60px rgba(0,0,0,0.42);
+}
+.ytcm-channel-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 0 18px;
+}
+.ytcm-channel-add input {
+  min-width: 0;
+  border: 0;
+  outline: none;
+  color: #fff;
+  background: transparent;
+  font-size: 0.95rem;
+}
+.ytcm-channel-add button,
+.ytcm-input-card button {
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(255,255,255,0.1);
+  cursor: pointer;
+}
+.ytcm-channel-add button:disabled,
+.ytcm-input-card button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.ytcm-input-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 24px;
+}
+.ytcm-mention-menu {
+  width: 100%;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: #1c1c1c;
+  padding: 8px;
+  box-shadow: 0 -12px 30px rgba(0,0,0,0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+  animation: ytcm-pop 0.15s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.ytcm-mention-head {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.45);
+  padding: 4px 8px;
+}
+.ytcm-mention-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 0;
+  background: transparent;
+  color: #e2e8f0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.ytcm-mention-item:hover,
+.ytcm-mention-item.is-active {
+  background: rgba(59,130,246,0.2);
+  color: #bfdbfe;
+}
+.ytcm-mention-item em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 0.74rem;
+  color: rgba(255,255,255,0.4);
+}
+.ytcm-input-card textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 118px;
+  border: 0;
+  outline: none;
+  resize: none;
+  color: #fff;
+  background: transparent;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+.ytcm-input-card button {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  background: #3a3a3a;
+}
+.ytcm-input-card button:not(:disabled) {
+  background: #4b5563;
+}
+.ytcm-input-card button.ytcm-stop-btn {
+  background: #dc2626 !important;
+  color: #fff !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
+}
+.ytcm-input-card button.ytcm-stop-btn:hover {
+  background: #ef4444 !important;
+}
+
+/* Web-search activity chips inside the thinking block */
+.ytcm-search-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+.ytcm-search-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(147,197,253,0.22);
+  background: rgba(59,130,246,0.1);
+  color: rgba(191,219,254,0.92);
+  font-size: 0.78rem;
+}
+.ytcm-search-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ytcm-search-chip em {
+  font-style: normal;
+  color: rgba(255,255,255,0.5);
+  font-size: 0.72rem;
+}
+
+/* Streamed natural-language summary above the pack */
+.ytcm-summary {
+  margin: 2px 0 14px;
+  color: rgba(255,255,255,0.9);
+  font-size: 0.98rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* ── Content-pack artifact card (navy, big radius) ─────────────────────────── */
+.ytcm-pack-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  position: relative;
+  overflow: hidden;
+  padding: 16px 18px;
+  border: 1px solid rgba(96,132,255,0.34);
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, rgba(30,58,138,0.55) 0%, rgba(23,37,84,0.72) 100%);
+  box-shadow: 0 16px 44px rgba(12,20,55,0.45);
+  text-align: left;
+  color: #fff;
+}
+.ytcm-pack-card.is-ready {
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ytcm-pack-card.is-ready:hover {
+  transform: translateY(-1px);
+  border-color: rgba(129,161,255,0.6);
+  box-shadow: 0 20px 52px rgba(12,20,55,0.6);
+}
+.ytcm-pack-title {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+}
+.ytcm-pack-badge {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(59,89,205,0.55);
+  border: 1px solid rgba(147,170,255,0.4);
+}
+.ytcm-pack-badge svg { color: #fff; }
+.ytcm-pack-title-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.98rem;
+  color: #fff;
+}
+.ytcm-pack-title-text em {
+  font-style: normal;
+  font-weight: 500;
+  color: rgba(199,210,254,0.7);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ytcm-pack-open-hint {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 34px;
+  padding: 0 8px 0 14px;
+  border-radius: 999px;
+  background: rgba(147,170,255,0.16);
+  color: #dbe2ff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.ytcm-pack-spin {
+  flex-shrink: 0;
+  color: #c7d2fe;
+}
+.ytcm-pack-shimmer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 20%, rgba(147,170,255,0.16) 50%, transparent 80%);
+  background-size: 220% 100%;
+  animation: ytcm-shimmer 1.5s ease infinite;
+}
+@keyframes ytcm-shimmer {
+  0% { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
+
+/* ── Content-pack popup modal ──────────────────────────────────────────────── */
+.ytcm-pack-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(6,10,26,0.66);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  animation: ytcm-fade 0.16s ease;
+}
+.ytcm-pack-modal {
+  width: min(760px, 100%);
+  max-height: min(86vh, 900px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(96,132,255,0.3);
+  border-radius: 26px;
+  background: linear-gradient(180deg, #10152e 0%, #0b0f22 100%);
+  box-shadow: 0 40px 100px rgba(0,0,0,0.6);
+  overflow: hidden;
+  animation: ytcm-pop 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.ytcm-pack-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid rgba(147,170,255,0.14);
+  background: linear-gradient(135deg, rgba(30,58,138,0.4), rgba(23,37,84,0.2));
+}
+.ytcm-pack-modal-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ytcm-pack-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(147,170,255,0.28);
+  background: rgba(147,170,255,0.14);
+  color: #dbe2ff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ytcm-pack-copy:hover {
+  background: rgba(147,170,255,0.24);
+  color: #fff;
+}
+.ytcm-pack-close {
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  color: rgba(219,226,255,0.72);
+  background: rgba(255,255,255,0.06);
+  cursor: pointer;
+}
+.ytcm-pack-close:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.14);
+}
+.ytcm-pack-modal-body {
+  padding: 6px 20px 22px;
+  overflow-y: auto;
+}
+.ytcm-pack-modal-body .ytcm-result:first-child { margin-top: 16px; }
+@keyframes ytcm-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ytcm-pop {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+html.studio-light-mode .ytcm-summary {
+  color: #1f2937;
+}
+
+@media (max-width: 900px) {
+  .ytcm-chat-shell {
+    height: calc(100dvh - 48px);
+    min-height: 0;
+  }
+  .ytcm-chat-topbar {
+    left: 16px;
+    right: 16px;
+    top: 16px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ytcm-chat-controls {
+    border-radius: 18px;
+    flex-wrap: wrap;
+    width: 100%;
+    overflow-x: auto;
+  }
+  .ytcm-history-menu {
+    left: 0;
+    right: auto;
+  }
+  .ytcm-chat-main {
+    padding: 154px 16px 210px;
+  }
+  .ytcm-chat-welcome {
+    width: 100%;
+  }
+  .ytcm-starters {
+    grid-template-columns: 1fr;
+  }
+  .ytcm-chat-composer {
+    width: calc(100vw - 32px);
+    grid-template-columns: 1fr;
+  }
+  .ytcm-channel-add,
+  .ytcm-input-card {
+    min-height: 58px;
+    border-radius: 22px;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    AI VIDEO STUDIO — HeyGen-Inspired Chat-First Agent UI
    ═══════════════════════════════════════════════════════════════════════════════ */

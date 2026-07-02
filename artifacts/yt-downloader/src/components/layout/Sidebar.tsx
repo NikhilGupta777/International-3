@@ -3,14 +3,14 @@ import {
   Download, Sparkles, Captions, Scissors, Shield,
   ListVideo, AlarmClock, UploadCloud, Languages, Search, Menu, X,
   Home as HomeIcon, Activity, Settings, Image as ImageIcon, Clapperboard,
-  Terminal,
+  Terminal, Newspaper,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "heygen" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
+  | "upload" | "translator" | "heygen" | "findvideo" | "thumbnail" | "content-manager" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
 
 interface NavItem {
   mode: Mode;
@@ -48,7 +48,8 @@ const SUPER_AGENT_ITEM: NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { mode: "home",        icon: <HomeIcon className="gs-icon" />,        label: "Home" },
   SUPER_AGENT_ITEM,
-  { mode: "videostudio", icon: <Clapperboard className="gs-icon" />,    label: "AI Studio", badge: "New" },
+  { mode: "videostudio", icon: <Clapperboard className="gs-icon" />,    label: "AI Studio" },
+  { mode: "content-manager", icon: <Newspaper className="gs-icon" />,    label: "Content", badge: "New" },
   { mode: "clips",       icon: <Sparkles className="gs-icon" />,        label: "Best Clips" },
   { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
   { mode: "subtitles",   icon: <Captions className="gs-icon" />,        label: "Subtitles" },

@@ -5770,7 +5770,10 @@ toolConfig: activeCacheName
 
               maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192),
 
-              thinkingConfig: buildThinkingConfig(streamModel, thinkingLevel),
+              thinkingConfig: {
+                ...buildThinkingConfig(streamModel, thinkingLevel),
+                includeThoughts: true,
+              },
 
               cachedContent: activeCacheName,
             } as any,

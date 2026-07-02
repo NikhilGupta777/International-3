@@ -220,6 +220,18 @@ export function getPersonalKeysForCaller(caller?: string): string[] {
     return ordered;
   }
 
+  // Content Manager tab: start at key 3, then continue forward, then wrap.
+  if (caller === "content-manager") {
+    const startIndex = Math.min(baseKeys.length - 1, 2);
+    return [...baseKeys.slice(startIndex), ...baseKeys.slice(0, startIndex)];
+  }
+
+  // Find Video tab: start at key 4, then continue forward, then wrap.
+  if (caller === "find-video" || caller === "notebook") {
+    const startIndex = Math.min(baseKeys.length - 1, 3);
+    return [...baseKeys.slice(startIndex), ...baseKeys.slice(0, startIndex)];
+  }
+
   // Agent / Copilot / Default: standard forward order (Key 1 to Key 13)
   return baseKeys;
 }

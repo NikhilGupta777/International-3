@@ -32,6 +32,7 @@ import { StudioHome } from "@/components/StudioHome";
 import { AiVideoStudio, type AiVideoStudioHandle } from "@/components/AiVideoStudio";
 import { FindVideo } from "@/components/FindVideo";
 import { Thumbnail } from "@/components/Thumbnail";
+import { YouTubeContentManager } from "@/components/YouTubeContentManager";
 import VideoTranslator from "./VideoTranslator";
 import HeyGenTranslator from "./HeyGenTranslator";
 import {
@@ -60,7 +61,7 @@ import {
   subscribeToPreferenceChanges,
 } from "@/lib/user-preferences";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "content-manager" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -106,6 +107,7 @@ const MODE_LABELS: Record<Mode, string> = {
   heygen: "HeyGen",
   findvideo: "Find Video",
   thumbnail: "Thumbnail",
+  "content-manager": "Content Manager",
   videostudio: "AI Video Studio",
   help: "Help",
   activity: "Activity",
@@ -131,6 +133,7 @@ const MODE_PATHS: Record<Mode, string> = {
   heygen: "/heygen",
   findvideo: "/find-video",
   thumbnail: "/thumbnail",
+  "content-manager": "/content-manager",
   videostudio: "/ai-studio",
   help: "/help",
   activity: "/activity",
@@ -557,6 +560,7 @@ export default function Home({
   const showHeyGen = mode === "heygen";
   const showFindVideo = mode === "findvideo";
   const showThumbnail = mode === "thumbnail";
+  const showContentManager = mode === "content-manager";
   const showVideoStudio = mode === "videostudio";
   const showAdmin = mode === "admin";
   const showDeveloper = mode === "developer";
@@ -836,8 +840,8 @@ export default function Home({
         />
 
         {/* Main scrollable content */}
-        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "heygen" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "overflow-hidden")} id="studio-content">
-          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "heygen" || mode === "findvideo" || mode === "thumbnail" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
+        <main className={cn("studio-content", (mode === "copilot" || mode === "translator" || mode === "heygen" || mode === "findvideo" || mode === "thumbnail" || mode === "content-manager" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "overflow-hidden")} id="studio-content">
+          <div className={cn("studio-content-inner", (mode === "copilot" || mode === "heygen" || mode === "findvideo" || mode === "thumbnail" || mode === "content-manager" || mode === "videostudio" || mode === "home" || mode === "help" || mode === "activity" || mode === "admin" || mode === "developer" || mode === "api-docs" || mode === "settings") && "is-copilot", mode === "translator" && "is-copilot")}>
             {/* Translator tab - full screen */}
             {mode === "translator" && (
               canUseTranslator
@@ -1239,6 +1243,12 @@ export default function Home({
               {showThumbnail && (
                 <motion.div key="thumbnail-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
                   <Thumbnail onBackToHome={() => switchMode("home")} />
+                </motion.div>
+              )}
+
+              {showContentManager && (
+                <motion.div key="content-manager-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
+                  <YouTubeContentManager />
                 </motion.div>
               )}
 
