@@ -5490,12 +5490,16 @@ router.post("/agent/chat", async (req, res) => {
     .reverse()
     .find((message) => message.role === "user")
     ?.content ?? "";
-  const conversationActionText = normalizedMessages
-    .slice(-8)
+  // Caption enforcement must be scoped to user intent only. Assistant/tool
+  // policy text in recent history can mention YouTube captions and should not
+  // make an unrelated follow-up look like a caption workflow.
+  const recentUserActionText = normalizedMessages
+    .filter((message) => message.role === "user")
+    .slice(-2)
     .map((message) => String(message.content ?? ""))
     .join("\n");
   const captionToolRequiredForTurn =
-    looksLikeYoutubeCaptionWorkflow(conversationActionText);
+    looksLikeYoutubeCaptionWorkflow(recentUserActionText);
   let captionToolAttemptedForTurn = false;
   let captionsUnavailableForTurn = false;
   let assemblyCaptionsAttemptedForTurn = false;
