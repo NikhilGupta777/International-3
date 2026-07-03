@@ -69,10 +69,10 @@ try {
 
 // === Tool Implementations ===
 
-function searchDatabase(query: string) {
+function searchDatabase(query: string, limit = 22) {
   if (!miniSearchInstance) return { error: "Database index is not available." };
 
-  logger.info(`[Tool Call] searchDatabase for query: "${query}"`);
+  logger.info(`[Tool Call] searchDatabase for query: "${query}" (limit=${limit})`);
   const results = miniSearchInstance.search(query, {
     boost: { Question: 2, Answer: 1 },
     prefix: true,
@@ -87,7 +87,7 @@ function searchDatabase(query: string) {
   const maxScore = results[0].score;
   const threshold = maxScore * 0.1;
   const filtered = results.filter(r => r.score >= threshold);
-  const sliced = filtered.slice(0, 22);
+  const sliced = filtered.slice(0, limit);
 
   let matchingRecordsText = "";
   sliced.forEach((r, idx) => {
@@ -106,8 +106,8 @@ function searchDatabase(query: string) {
   };
 }
 
-function getVideoQas(videoTitle: string) {
-  logger.info(`[Tool Call] getVideoQas for title: "${videoTitle}"`);
+function getVideoQas(videoTitle: string, limit = 22) {
+  logger.info(`[Tool Call] getVideoQas for title: "${videoTitle}" (limit=${limit})`);
   const results: any[] = [];
   const queryLower = videoTitle.toLowerCase();
 
@@ -118,7 +118,7 @@ function getVideoQas(videoTitle: string) {
     }
   }
 
-  const sliced = results.slice(0, 22);
+  const sliced = results.slice(0, limit);
 
   let matchingRecordsText = "";
   sliced.forEach((r, idx) => {
@@ -192,12 +192,12 @@ function getDatabaseStats() {
   };
 }
 
-async function executeTool(name: string, args: any) {
+async function executeTool(name: string, args: any, resultLimit: number) {
   try {
     if (name === 'search_database') {
-      return searchDatabase(args.query);
+      return searchDatabase(args.query, resultLimit);
     } else if (name === 'get_video_qas') {
-      return getVideoQas(args.video_title);
+      return getVideoQas(args.video_title, resultLimit);
     } else if (name === 'get_database_stats') {
       return getDatabaseStats();
     } else {
@@ -339,6 +339,10 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
   setupSse(res);
   const rawMessage = typeof req.body?.message === "string" ? req.body.message : "";
   const requestMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const deepSearch = req.body?.deepSearch !== false;
+  const DEEP_SEARCH_LIMIT = 80;
+  const NORMAL_SEARCH_LIMIT = 22;
+  const resultLimit = deepSearch ? DEEP_SEARCH_LIMIT : NORMAL_SEARCH_LIMIT;
 
   const messagesList = [...requestMessages];
   if (messagesList.length === 0 && rawMessage.trim()) {
@@ -607,12 +611,12 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
           }
 
           sendSseEvent("tool_start", { name: callName, message: logMsg });
-          const result = await executeTool(callName, callArgs);
+          const result = await executeTool(callName, callArgs, resultLimit);
 
           let resultMsg = "";
           if (callName === 'search_database' || callName === 'get_video_qas') {
             const totalMatches = Number((result as { total_matches_found?: number }).total_matches_found ?? 0);
-            const count = Math.min(22, totalMatches);
+            const count = Math.min(resultLimit, totalMatches);
             resultMsg = `Found ${totalMatches} matches (sending top ${count} to Gemma)`;
           } else {
             resultMsg = `Stats loaded successfully.`;
