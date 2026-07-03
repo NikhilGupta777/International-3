@@ -2874,30 +2874,37 @@ async function fetchReadableWebPage(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const r = await fetch(parsed.toString(), {
-      redirect: "follow",
-      signal: controller.signal,
-      headers: {
-        "user-agent": "VideoMakingStudioAgent/1.0 (+https://videomaking.in)",
-        accept:
-          "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
-      },
-    });
-    if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
-    // SECURITY: Re-validate post-redirect URL against internal hosts (SSRF).
-    // fetch() with redirect:"follow" may have been redirected to an internal IP.
-    const finalUrl = r.url || parsed.toString();
-    try {
-      const finalParsed = new URL(finalUrl);
-      if (isInternalHost(finalParsed.hostname)) {
-        throw new Error(
-          "Redirect target resolves to an internal/private network address.",
-        );
+    const MAX_REDIRECTS = 10;
+    let currentUrl = parsed.toString();
+    let r: Awaited<ReturnType<typeof fetch>> | undefined;
+    for (let i = 0; i <= MAX_REDIRECTS; i++) {
+      r = await fetch(currentUrl, {
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          "user-agent": "VideoMakingStudioAgent/1.0 (+https://videomaking.in)",
+          accept:
+            "text/html,application/xhtml+xml,text/plain,application/json;q=0.9,*/*;q=0.8",
+        },
+      });
+      if (r.status >= 300 && r.status < 400) {
+        const location = r.headers.get("location");
+        if (!location) break;
+        const nextUrl = new URL(location, currentUrl);
+        if (!["http:", "https:"].includes(nextUrl.protocol))
+          throw new Error("Redirect to non-http(s) protocol blocked.");
+        if (isInternalHost(nextUrl.hostname))
+          throw new Error(
+            "Redirect target resolves to an internal/private network address.",
+          );
+        currentUrl = nextUrl.toString();
+        continue;
       }
-    } catch (err: any) {
-      if (err.message.includes("internal/private")) throw err;
-      // URL parse failure on finalUrl — very unusual; fetch already resolved it
+      break;
     }
+    if (!r) throw new Error("Page fetch failed: no response");
+    if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
+    const finalUrl = currentUrl;
     const contentType = r.headers.get("content-type") ?? "";
     const raw = await readResponseTextWithLimit(r, 5 * 1024 * 1024, controller);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i
@@ -5086,14 +5093,29 @@ except Exception as exc:
         // Invalid URL — let fetch fail naturally
       }
 
+      const isInternal = resolvedUrl.startsWith(apiBase.replace(/\/api$/, ""));
+      const fetchHeaders: Record<string, string> = {};
+      if (isInternal) {
+        fetchHeaders["Cookie"] = req.headers.cookie ?? "";
+        fetchHeaders["X-Internal-Agent"] = INTERNAL_AGENT_SECRET;
+      }
       const r = await fetch(resolvedUrl, {
-        headers: {
-          Cookie: req.headers.cookie ?? "",
-          "X-Internal-Agent": INTERNAL_AGENT_SECRET,
-        },
+        headers: fetchHeaders,
         redirect: "follow",
       });
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
+      // SECURITY: Re-validate post-redirect URL against internal hosts (SSRF).
+      const finalFetchUrl = r.url || resolvedUrl;
+      try {
+        const finalParsed = new URL(finalFetchUrl);
+        if (isInternalHost(finalParsed.hostname)) {
+          throw new Error(
+            "save_artifact_to_workspace redirect target resolves to an internal/private network address.",
+          );
+        }
+      } catch (err: any) {
+        if (err.message.includes("internal/private")) throw err;
+      }
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
       const size = sizeHeader ? Number(sizeHeader) : null;
@@ -5262,16 +5284,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname);
   } catch {
     return true;
   }
@@ -6580,6 +6593,7 @@ toolConfig: activeCacheName
         .trim();
       sseEvent(res, {
         type: "error",
+        runId,
         message: errMsg || "Something went wrong — please try again.",
       });
     }
