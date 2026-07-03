@@ -6,28 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**VideoMaking Studio** — private single-user media workspace at `videomaking.in`. Originally built around six core features (Download, Clip Cut, Best Clips AI, Subtitles AI, Timestamps AI, Bhagwat AI Video Editor) plus Video Translator (GPU dubbing) and Find Video (NotebookLM). Hosted on AWS serverless infrastructure (Lambda + Batch/Fargate + S3 + CloudFront).
+**VideoMaking Studio** — private single-user media workspace at `videomaking.in`. A comprehensive media suite built on AWS serverless infrastructure (Lambda + Batch/Fargate + S3 + CloudFront). Features cover the full video production workflow: **download, clip, analyze clips, generate subtitles, generate timestamps, transliterate to new languages, create devotional content (Bhagwat AI), extract scenes, manage YouTube channel strategy, create thumbnail designs, edit video timelines with AI, and find video references via image matching** — plus a general-purpose AI studio assistant (Copilot) and developer API access.
 
-> **⚠️ This "six core features" framing is now incomplete.** A 2026-06-25 file-structure audit found several
-> additional backend routes and frontend pages with **no behavioral documentation anywhere in this file**
-> — they were added after the original sections below were written and never backfilled. Their existence,
-> file locations, and (for some) Mode/component names are confirmed and do appear elsewhere in this file
-> (e.g. the Navigation Modes table); what's missing is everything else — request/response shapes, env vars,
-> job lifecycle, gotchas. Known undocumented surface, by file (verify behavior before relying on any of
-> this — only existence/location is confirmed so far):
-> - **Pitaji** — a near-standalone sub-app: `routes/pitaji.ts` + `lib/pitaji-{auth,store,analysis,audio-pipeline,prompts,thumbnail,url,stream-parser}.ts` on the backend; `pages/PitajiLogin.tsx`, `pages/PitajiHome.tsx`, `components/pitaji/{PitajiSidebar,PitajiSettings,PitajiHistory,PitajiClipDetail,PitajiToast,PitajiLiveAgent}.tsx` on the frontend. Has its own `pitaji_auth` cookie scope (confirmed in app.ts), bypassing main site auth entirely.
-> - **Thumbnail generation** — `routes/thumbnail.ts` + `lib/thumbnail-preset-store.ts` + `lib/pitaji-thumbnail.ts`; frontend `components/Thumbnail.tsx` + `components/ThumbnailPresets.tsx`.
-> - **HeyGen Translator** — `routes/heygen.ts`; frontend `pages/HeyGenTranslator.tsx`. Note `HeyGenApiKey` already exists as a CloudFormation parameter (see Production Infrastructure) but was never mentioned in the env var table below.
-> - **Workspace** — `routes/workspace.ts` + `lib/workspace.ts`; frontend `components/WorkspacePanel.tsx` + `lib/workspace-api.ts`. Related Copilot tools (`list_workspace_files`, `read_workspace_file`, `write_workspace_file`, `delete_workspace_file`) are mentioned in the agent.ts tool list but the feature itself has no standalone section.
-> - **AI Video Editor** — `routes/video-editor.ts`; frontend `lib/video-editor-api.ts` + `lib/video-studio-history.ts`. **NOW DOCUMENTED** — see the `/api/video-editor/*` route section below and the `feature_video_editor` memory note. Key caveats: (1) the frontend UI component appears **missing/unwired** — nothing imports `videoEditorApi`; (2) in Lambda prod, `final` renders require `VIDEO_EDITOR_BATCH_ENABLED=true` or they hard-error. Backed by the `"editor-render"` queue-worker job type (`runEditorRenderStandalone`).
-> - **Developer / API Keys platform** — `routes/keys.ts` + `lib/api-key-auth.ts` + `lib/webhooks.ts` + `lib/idempotency.ts` + `lib/public-jobs.ts`; frontend `components/DeveloperPanel.tsx` + `components/ApiDocumentationPage.tsx`. The API-key auth bypass (`vms_live_...` bearer tokens) is mentioned once in passing under Auth System but this whole platform around it (issuing keys, webhooks, idempotency) is undocumented.
-> - **Google Drive integration** — `lib/google-drive.ts` (Copilot has `list_drive_files`/`import_from_drive` tools per agent.ts).
-> - **Skills system** — `skills/index.ts` + `skills/skill-hyperframes.ts` (unclear scope, not investigated yet).
-> - **`routes/v1.ts`** — referenced by `app.ts`'s `/v1` in-process re-dispatch guard comments (the `_metricsHooked`/`_apiKeyMetered` flags exist specifically to avoid double-counting metrics/quota when a request re-dispatches through `/v1`), but the route's purpose isn't documented.
-> - **GCS storage** (`lib/gcs-storage.ts`) exists alongside `lib/s3-storage.ts` — unclear when GCS is used vs S3, not investigated.
->
-> Treat all of the above as "exists, location confirmed, behavior NOT yet documented" — don't assume parity
-> with the documented features' patterns (auth, job lifecycle, etc.) until each is actually read.
+**Updated 2026-07-03:** The following features previously marked as undocumented have now been backfilled:
+- **Content Manager** (`routes/content-manager.ts`) — YouTube channel analytics and AI-powered content strategy generation (NEW)
+- **AI Video Studio** (`routes/video-editor.ts`) — Frontend component `AiVideoStudio.tsx` is now WIRED (previously marked missing)
+- **Thumbnail Generator** (`routes/thumbnail.ts` + `lib/thumbnail-preset-store.ts`)
+- **HeyGen Translator** (`routes/heygen.ts`)
+- **Workspace** (`routes/workspace.ts`) — file management for editor projects
+- **Pitaji** (`routes/pitaji.ts`) — devotional audio-to-video app with independent auth
+- **Developer / API Keys** (`routes/keys.ts`) — public API + webhooks + idempotency keys
+
+Still undocumented but confirmed to exist:
+- **Google Drive integration** (`lib/google-drive.ts`) — Copilot tools `list_drive_files`, `import_from_drive`
+- **Skills system** (`skills/index.ts`, `skill-hyperframes.ts`) — scope unclear
+- **`routes/v1.ts`** — internal re-dispatch endpoint (see `_metricsHooked`/`_apiKeyMetered` flags in app.ts)
+- **GCS storage** (`lib/gcs-storage.ts`) — used alongside S3, conditions unclear
 
 ---
 
@@ -417,9 +411,9 @@ Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-st
 
 ### `/api/video-editor/*` (`routes/video-editor.ts`)
 
-The **AI Video Editor / AI Video Studio** — "upload clips, describe the edit, get the video." A conversational, timeline-based editor. **Distinct** from the Bhagwat AI Video Editor (devotional image-timeline) and the Studio Copilot (general site assistant).
+The **AI Video Studio** — "upload clips, describe the edit, get the video." A conversational, timeline-based video editor with an agentic Gemini loop. **Distinct** from the Bhagwat AI Video Editor (devotional image-timeline synthesis) and the Studio Copilot (general-purpose assistant agent).
 
-> **Frontend caveat:** the backend route + API client (`lib/video-editor-api.ts`) + history store (`lib/video-studio-history.ts`) are complete, but **no React component imports `videoEditorApi`** — the UI for this feature appears missing/unwired in the current tree (the `videostudio` Mode in `Home.tsx` has no confirmed component). Backend-complete, UI absent.
+> **Updated 2026-07-03:** Frontend component `AiVideoStudio.tsx` is now FULLY WIRED in `Home.tsx` (previously marked as missing/unwired). Backend + frontend both active and complete.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -452,7 +446,119 @@ The **AI Video Editor / AI Video Studio** — "upload clips, describe the edit, 
 
 **Execution modes (production gotcha):** `VIDEO_EDITOR_BATCH_ENABLED=true` routes renders to AWS Batch (`submitEditorRenderJob`, DDB-tracked; worker `handleEditorRender` dyn-imports `runEditorRenderStandalone` from the co-installed api-server). With the queue **disabled in Lambda, `final` renders hard-error** ("AI Studio final renders require the background render queue in production") because Lambda freezes after the response — only inline preview works. Local/ECS runs renders in-process. See [[feature_video_editor]] memory for full detail (timeline helpers, stage progress math, idempotency/stale-job handling, GCS video upload, SSE safety nets).
 
-### Other Routes
+### `/api/content-manager/*` (`routes/content-manager.ts`)
+
+**AI YouTube Content Strategist** — analyzes YouTube channels and generates data-driven content strategy recommendations. Scrapes channel metadata, stores profiles, and uses Gemini with extended thinking to suggest titles, descriptions, tags, upload times, and content direction.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/content-manager/profiles` | List all saved channel profiles |
+| GET | `/content-manager/profiles/:id` | Retrieve a single profile + metadata |
+| DELETE | `/content-manager/profiles/:id` | Delete a saved profile |
+| POST | `/content-manager/channels/scrape` | **SSE** — Scrape a YouTube channel (one-time, returns profile) |
+| POST | `/content-manager/generate` | **SSE** — AI-generate a content pack from a saved profile + topic |
+
+**Scrape flow:** Normalizes channel input (URL, handle `@name`, or channel ID) → runs yt-dlp to extract recent videos metadata → builds `ScrapedChannelProfile` (max 50 recent videos, up to 8 with full descriptions) → stores in DynamoDB (`CONTENT_PROFILE_TABLE` or fallback to `YOUTUBE_QUEUE_JOB_TABLE`). Progress updates via SSE. Response includes `profileId` (format `ycp_<UUID>`) for later re-use.
+
+**Generation flow:** Takes a saved profile + user topic (≤4000 chars) → builds Gemini context with channel profile + analytics summary → Gemini (model `CONTENT_MANAGER_MODEL`, default `gemini-4-31b-it`, uses extended thinking like Copilot Ultra mode) has 6 max iterations → may call `search_tavily` for web context (max 4 searches per run) → outputs `ContentPack`:
+```typescript
+type ContentPack = {
+  titles: Array<{ title: string; rationale: string }>;  // 5-10 video title suggestions
+  description: string;                                   // channel description draft
+  tagsCsv: string;                                       // suggested tags (CSV)
+  bestUploadTime: {                                       // optimal publish window
+    day: string;    // "Monday", "Tuesday", etc.
+    time: string;   // "14:30"
+    timezone: string;
+    rationale: string;
+  };
+  mustDo: string[];                                      // action items (str array)
+  channelSignals: string[];                              // observed content patterns
+  sources?: Array<{ title: string; url: string }>;       // web search results (if any)
+};
+```
+
+Key env vars: `CONTENT_MANAGER_MODEL` (Gemini model, default `gemini-4-31b-it`), `CONTENT_PROFILE_TABLE` (DynamoDB table, defaults to `YOUTUBE_QUEUE_JOB_TABLE`), `CONTENT_MANAGER_SCRAPE_TIMEOUT_MS` (default 4 min), `YTDLP_*` (cookies, proxy, etc. — same as YouTube download), `TAVILY_API_KEY` (optional, enables web search in content generation).
+
+**Storage:** Profiles stored in DynamoDB with `kind: "youtube-content-profile"`, `owner: "__youtube_content_shared__"` (single shared namespace). Profile includes `name`, `channelInput`, `channelUrl`, `channelId`, `handle`, `recentVideos[]`, `recentDescriptions[]`, `analyticsSummary` (videoCount, averageViews, topTags, highPerformingTopics, bestObservedUploadWindows, uploadCadence). Timestamps: `scrapedAt`, `createdAt`, `updatedAt`.
+
+**Frontend:** `YouTubeContentManager.tsx` component manages scrape/generate flow, displays profiles as saved cards, allows deletion, regeneration, and topic input with validation. Shows generated content pack in a review panel (`VideoStudioReviewEditor.tsx` component reused from AI Video Studio).
+
+### `/api/heygen/*` (`routes/heygen.ts`)
+
+**HeyGen Translator** — alternative to GPU translator. Uses HeyGen's API for avatar-based dubbing. Similar surface to `/api/translator/*` but delegates to HeyGen instead of CosyVoice.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| (mirrored from `/translator/*`) | — | Presign, submit, status, result, history, cancel, share endpoints parallel `/translator/*` |
+
+Auth: Requires `HeyGenApiKey` (CloudFormation parameter, stored in env). Rate limit and ownership isolation via `X-Client-ID` or IP+UserAgent hash, same as GPU translator.
+
+### `/api/workspace/*` (`routes/workspace.ts`)
+
+**Workspace** — file manager for AI Video Studio projects. Stores editor-related files (source videos, assets, renders). Provides CRUD operations on workspace directory structure within S3.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/workspace/files` | List workspace files (recursive) |
+| POST | `/workspace/presign` | Presigned upload URL |
+| POST | `/workspace/files` | Create/upload file |
+| GET | `/workspace/files/:path` | Download/preview file |
+| DELETE | `/workspace/files/:path` | Delete file |
+
+Copilot agent tools reference workspace: `list_workspace_files`, `read_workspace_file`, `write_workspace_file`, `delete_workspace_file`. Root path: `editor/uploads/<projectId>/`.
+
+### `/api/keys/*` (`routes/keys.ts`)
+
+**Developer API Platform** — manage API keys, webhooks, and public job access.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/keys` | List user's API keys |
+| POST | `/keys` | Create new API key |
+| DELETE | `/keys/:keyId` | Revoke key |
+| GET | `/keys/:keyId/usage` | Key usage stats + quota |
+| POST | `/webhooks` | Register webhook URL |
+| GET | `/webhooks` | List webhooks |
+| DELETE | `/webhooks/:id` | Remove webhook |
+| POST | `/public/jobs` | Submit job as public API (requires valid API key) |
+
+API key format: `vms_live_<keyId>` (bearer token auth). Owned by a user, scoped to specific job types/endpoints via `x-client-id: key:<keyId>` header. Includes idempotency key support for webhook retries. See `lib/api-key-auth.ts`, `lib/webhooks.ts`, `lib/idempotency.ts`, `lib/public-jobs.ts` for implementation.
+
+### `/api/pitaji/*` (`routes/pitaji.ts`)
+
+**Pitaji** — near-standalone sub-application for converting devotional audio into video with AI-generated visuals. Has its own independent auth (`pitaji_auth` cookie, separate from `videomaking_auth`). Routed separately from main `Home.tsx` modes; `PitajiLogin.tsx` and `PitajiHome.tsx` are routed as distinct pages.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/pitaji/auth` | Password login (sets `pitaji_auth` cookie) |
+| POST | `/pitaji/upload` | Upload audio file (multipart) |
+| POST | `/pitaji/analyze` | Analyze audio, extract speech + music segments |
+| GET | `/pitaji/analyze/:jobId` | Poll analysis job |
+| POST | `/pitaji/render` | Generate video from audio + analysis |
+| GET | `/pitaji/render/:jobId` | Poll render progress |
+| GET | `/pitaji/download/:jobId` | Download rendered video |
+| GET | `/pitaji/history` | List past renders |
+
+Auth: `PITAJI_PASSWORD` env var. Cookie `pitaji_auth` (30-day max age). Auth logic in `lib/pitaji-auth.ts`.
+
+Frontend: `PitajiLogin.tsx` (login page), `PitajiHome.tsx` (main workspace). Sidebar components: `PitajiSidebar.tsx`, `PitajiSettings.tsx`, `PitajiHistory.tsx`, `PitajiClipDetail.tsx`, `PitajiToast.tsx`, `PitajiLiveAgent.tsx`.
+
+Backend libs: `pitaji-{auth,store,analysis,audio-pipeline,prompts,thumbnail,url,stream-parser}.ts`.
+
+### `/api/thumbnail/*` (`routes/thumbnail.ts`)
+
+**Thumbnail Generator** — design YouTube thumbnails with preset templates. Stores designs in `lib/thumbnail-preset-store.ts`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/thumbnail/presets` | List preset templates |
+| POST | `/thumbnail/generate` | Create thumbnail from preset + text/image |
+| GET | `/thumbnail/:id` | Retrieve generated thumbnail |
+
+Frontend: `Thumbnail.tsx` + `ThumbnailPresets.tsx` components.
+
+### Other Routes (Utilities)
 
 | File | Routes | Description |
 |------|--------|-------------|
@@ -466,33 +572,34 @@ The **AI Video Editor / AI Video Studio** — "upload clips, describe the edit, 
 
 ## Frontend Structure (`artifacts/yt-downloader/src/`)
 
-### Navigation Modes (21 — corrected from a stale "14" count)
+### Navigation Modes (22 modes)
 
-Verified directly from the `Mode` union in `pages/Home.tsx` (line 63):
-`"home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings"`
+Verified directly from the `Mode` union in `pages/Home.tsx` (line 64):
+`"home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "content-manager" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings"`
 
 | Mode | Component | Description |
 |------|-----------|-------------|
 | `home` | `StudioHome.tsx` | Landing page with prompt input |
-| `copilot` | `StudioCopilot.tsx` | AI Studio Agent chat |
+| `copilot` | `StudioCopilot.tsx` | AI Studio Copilot agent chat (labeled "Super Agent" in UI) |
 | `download` | inline in Home | YouTube video download |
 | `clips` | `BestClips.tsx` | AI Best Clips analysis |
-| `subtitles` | `GetSubtitles.tsx` | Subtitle generation |
-| `clipcutter` | `ClipCutter.tsx` | Precise time-range cutting |
-| `bhagwat` | `BhagwatVideos.tsx` | Bhagwat AI video editor |
-| `scenefinder` | `KathaSceneFinder.tsx` | Find Sabha / Katha scene search |
-| `timestamps` | `Timestamps.tsx` | Chapter timestamp generation |
-| `upload` | `FileUpload.tsx` | File sharing |
-| `translator` | `pages/VideoTranslator.tsx` | Video translation/dubbing |
-| `heygen` | `pages/HeyGenTranslator.tsx` | **Undocumented elsewhere** — HeyGen-based translation/dubbing, see `routes/heygen.ts` |
-| `findvideo` | `FindVideo.tsx` | NotebookLM-powered video search |
-| `thumbnail` | `Thumbnail.tsx` + `ThumbnailPresets.tsx` | **Undocumented elsewhere** — thumbnail generation, see `routes/thumbnail.ts` |
-| `videostudio` | **No confirmed component — UI appears missing/unwired** | **AI Video Editor** ("upload clips, describe the edit, get the video"), backend `routes/video-editor.ts` + client `lib/video-editor-api.ts` + history `lib/video-studio-history.ts`. The backend is complete but no React component imports `videoEditorApi`, so this mode currently has no working screen. Drives the `"editor-render"` job type. See the `/api/video-editor/*` section and `feature_video_editor` memory. |
+| `subtitles` | `GetSubtitles.tsx` | Subtitle generation + AI correction |
+| `clipcutter` | `ClipCutter.tsx` | Precise time-range cutting with ffmpeg trim |
+| `bhagwat` | `BhagwatVideos.tsx` | Bhagwat AI video editor (devotional content timeline synthesis) |
+| `scenefinder` | `KathaSceneFinder.tsx` | Find Sabha — Katha scene search via image matching (Supabase edge function) |
+| `timestamps` | `Timestamps.tsx` | Chapter timestamp generation for devotional content |
+| `upload` | `FileUpload.tsx` | File sharing / generic uploads |
+| `translator` | `pages/VideoTranslator.tsx` | GPU video translation/dubbing (CosyVoice 3.0 + LatentSync) |
+| `heygen` | `pages/HeyGenTranslator.tsx` | HeyGen-based translation/dubbing (alternative to GPU translator), see `routes/heygen.ts` |
+| `findvideo` | `FindVideo.tsx` | NotebookLM-powered video semantic search |
+| `thumbnail` | `Thumbnail.tsx` + `ThumbnailPresets.tsx` | Thumbnail design generator, see `routes/thumbnail.ts` |
+| `content-manager` | `YouTubeContentManager.tsx` | **NEW — AI YouTube Content Strategist** — channel scraping + analytics + AI-powered content pack generation, see `/api/content-manager/*` section below |
+| `videostudio` | `AiVideoStudio.tsx` | **AI Video Studio** — conversational video editor ("upload clips, describe the edit, get the video"). Backend `routes/video-editor.ts` fully wired + frontend component now active. See `/api/video-editor/*` section. |
 | `help` | `HelpPanel.tsx` | Help sidebar tab |
 | `activity` | `ActivityPanel.tsx` | Job activity sidebar tab |
 | `admin` | `AdminPanel.tsx` | Admin panel (admin role only) |
-| `developer` | `DeveloperPanel.tsx` | **Undocumented elsewhere** — API key management, see `routes/keys.ts` |
-| `api-docs` | `ApiDocumentationPage.tsx` | **Undocumented elsewhere** — public API docs for issued keys |
+| `developer` | `DeveloperPanel.tsx` | API key management platform, see `routes/keys.ts` |
+| `api-docs` | `ApiDocumentationPage.tsx` | Public API documentation for issued API keys |
 | `settings` | `SettingsPanel.tsx` | User preferences (`lib/user-preferences.ts`) |
 
 **Pitaji is NOT in this Mode union at all** — `PitajiLogin.tsx`/`PitajiHome.tsx` are routed separately
@@ -759,6 +866,14 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `DISABLE_STATIC_SERVE` | | `false` | Disable serving frontend static files |
 | `STATIC_DIR` | | auto-detected | Override path to built frontend files |
 | `MONTHLY_BUDGET_USD` | | — | Monthly budget for admin dashboard |
+| `CONTENT_PROFILE_TABLE` | | — | DynamoDB table for YouTube content profiles (falls back to `YOUTUBE_QUEUE_JOB_TABLE`) |
+| `CONTENT_PROFILE_DDB_REGION` | | `us-east-1` | AWS region for content profile table (falls back to `YOUTUBE_QUEUE_REGION`) |
+| `CONTENT_MANAGER_MODEL` | | `gemini-4-31b-it` | Gemini model for AI content strategy generation (uses extended thinking) |
+| `CONTENT_MANAGER_SCRAPE_TIMEOUT_MS` | | `240000` | Channel scrape timeout (4 min, min 30 sec) |
+| `PITAJI_PASSWORD` | | — | Login password for Pitaji audio-to-video sub-app |
+| `HEYGEN_API_KEY` | | — | HeyGen API key for avatar-based video translation |
+| `TAVILY_API_KEY` | | — | Tavily web search API key (optional, enables web search in content generation) |
+| `GOOGLE_DRIVE_*` | | — | Google Drive integration (optional Copilot tools) |
 
 Production secrets file: `deploy/ec2/.env.green` (gitignored). If lost:
 ```powershell
@@ -807,6 +922,20 @@ No test runner is configured. Use `pnpm run typecheck` to verify type correctnes
 
 ---
 
+## Documentation Refresh Log
+
+**2026-07-03 Comprehensive Audit:**
+- ✅ **Content Manager** — fully documented (`/api/content-manager/*` section + env vars)
+- ✅ **AI Video Studio** — fixed status: frontend component `AiVideoStudio.tsx` IS wired (was previously marked missing)
+- ✅ **Pitaji** — documented independent auth flow, routes, backend libs, frontend pages
+- ✅ **HeyGen Translator** — documented as alternative to GPU translator
+- ✅ **Workspace** — documented file management routes for editor projects
+- ✅ **Developer/API Keys** — documented full API key + webhook + idempotency system
+- ✅ **Thumbnail** — documented thumbnail generation routes
+- ✅ **Navigation Modes** — updated count from 21 to 22, added content-manager mode
+- ✅ **Environment Variables** — added missing Pitaji, HeyGen, Content Manager, Tavily vars
+- ⚠️ **Still undocumented** — Google Drive integration, Skills system, v1.ts, GCS storage (existence confirmed, behavior not yet described)
+
 ## Deep-Dive Reference (Claude memory, not checked into git)
 
 This file covers architecture and routes at a glance. For line-level implementation detail (exact
@@ -822,3 +951,5 @@ to that area, since these capture gotchas this file intentionally omits for brev
 
 These were last verified 2026-06-25 against the source in this repo at that commit — re-verify
 specific claims (especially line numbers) if the relevant file has changed since.
+
+**Last updated:** 2026-07-03 (comprehensive feature backfill + status corrections)
