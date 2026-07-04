@@ -95,19 +95,6 @@ function looksLikeActionRequest(text: string): boolean {
   );
 }
 
-function looksLikeYoutubeCaptionWorkflow(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!/(https?:\/\/|youtu\.be|youtube\.com|youtube-nocookie\.com)/.test(normalized)) {
-    return false;
-  }
-  const asksForCaptions =
-    /\b(caption|captions|subtitle|subtitles|srt|transcript|transcribe)\b/.test(normalized);
-  const asksToTranslateCaptions =
-    /\btranslate\b/.test(normalized) &&
-    /\b(caption|captions|subtitle|subtitles|srt|transcript)\b/.test(normalized);
-  return asksForCaptions || asksToTranslateCaptions;
-}
-
 // buildThinkingConfig imported from gemini-client.ts
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -603,7 +590,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "find_best_clips",
     description:
-      "Find the most valuable segments from a long YouTube video. Polls until analysis is complete and returns a Best Clips tab artifact. Use for highlights, shorts, viral moments, best clips, or content segment discovery.",
+      "Find a selective set of the most valuable highlight segments from a long YouTube video. Polls until analysis is complete and returns a Best Clips tab artifact. Use for highlights, shorts, viral moments, or best clips. Do NOT use when the user asks for all clips/all topics/every segment from a video; for that exhaustive topic breakdown, fetch captions with get_youtube_captions and answer in chat.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1523,6 +1510,7 @@ Do not run a heavy tool just because a URL exists in context:
 - User asks for title/metadata only → get_video_info only, not analyze_youtube_video
 - User asks for summary/quotes/moments → answer directly using native YouTube capabilities, do NOT use analyze_youtube_video
 - User asks for existing YouTube captions, an SRT file, a transcript, or "transcribe this YouTube video" → get_youtube_captions
+- User asks "give all clips from this video", "all topics from this video", "all segments", "every clip", or similar exhaustive clip/topic breakdown for a YouTube URL → get_youtube_captions first, then analyze the full returned SRT in chat. Do NOT call find_best_clips, do NOT open/use the Best Clips tab, and do NOT cut/render clips unless the user gives exact ranges later.
 - User gives exact clip times → cut_video_clip directly, not web_search first
 - User asks for SEO/title/script from their own idea → answer directly unless they ask for export/download
 - User asks for visible text from image in chat → answer directly unless they need the text extracted as a file
@@ -1575,6 +1563,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "fix / clean pasted SRT/VTT/TXT" | answer directly with cleaned text; use canvas for long subtitle output |
 | "cut from X to Y / make a clip" | cut_video_clip |
 | "download the whole video / get the audio" | download_video (use quality='audio_only' for audio) |
+| "give all clips from this video / all topics / every segment" | get_youtube_captions, then analyze the full SRT and answer in chat (never find_best_clips) |
 | "find best moments / highlights / shorts" | find_best_clips |
 | "make chapter timestamps" | generate_timestamps |
 | "translate this video / dub in Hindi/Spanish" | translate_video only |
@@ -1625,10 +1614,24 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 - For long SRT output, provide the complete cleaned or translated SRT as a text artifact/canvas/downloadable file, not only a short chat excerpt. For multiple target languages, create one complete SRT artifact per language.
 - Fix pasted SRT/VTT/text → answer directly; use canvas for long subtitle output
 
+# EXHAUSTIVE TOPIC CLIPS FROM ONE VIDEO
+
+When the user asks for all clips, all topics, every segment, a complete clip list, or "give all clips from this video" for a YouTube URL:
+- This is NOT a Best Clips tab task. Do NOT call find_best_clips. Do NOT use/open the clips tab. Do NOT call cut_video_clip unless the user later asks to render a specific range.
+- First call get_youtube_captions with the URL and the best language default (hi unless the user asks otherwise). Treat the returned SRT as the complete transcript file for this turn.
+- Read the full transcript from the first caption to the last. Segment by real topic boundaries, not by arbitrary equal intervals.
+- Each returned clip should normally be a coherent long-form topic segment, roughly 2 to 10 minutes, and can stretch to 15 minutes when the topic naturally needs it. Shorter or longer is allowed only when the actual topic boundary demands it.
+- Use exact timestamps from the SRT: start at the first spoken line of that topic and end at the last spoken line before the next topic begins. Do not round to broad chapter guesses if the SRT gives more precise timing.
+- Do not miss useful topic segments. Include every meaningful topic from start to end, but drop genuinely non-useful parts such as silence, intro/outro filler, repeated greetings, sponsor/admin chatter, dead air, or unrelated setup.
+- Final chat format:
+  1. A numbered list where each clip has: "Clip title", "Time: HH:MM:SS - HH:MM:SS", and "Details:" with 2-4 bullets explaining what is said.
+  2. After the list, add a short "Coverage summary" explaining why these segments were chosen.
+  3. End with a short italic conclusion note listing any dropped time ranges and why they were not included.
 
 # MULTI-STEP REASONING
 
 You can chain up to ${MAX_ITERATIONS} tool calls per turn:
+- "give all clips from this video https://youtu.be/..." → get_youtube_captions, then segment the full SRT by all meaningful topics and answer in chat with exact start/end times; never find_best_clips.
 - "summarize the video and then pull the best 3 clips" → answer directly, then find_best_clips.
 - "transcribe and translate this YouTube video to English" → get_youtube_captions with language='hi', then translate the returned SRT text to English while preserving indexes and timestamps.
 - "what does the host say about X at minute 10" → answer directly using native capabilities.
@@ -5490,24 +5493,8 @@ router.post("/agent/chat", async (req, res) => {
     .reverse()
     .find((message) => message.role === "user")
     ?.content ?? "";
-  // Caption enforcement must be scoped to user intent only. Assistant/tool
-  // policy text in recent history can mention YouTube captions and should not
-  // make an unrelated follow-up look like a caption workflow.
-  const recentUserActionText = normalizedMessages
-    .filter((message) => message.role === "user")
-    .slice(-2)
-    .map((message) => String(message.content ?? ""))
-    .join("\n");
-  const captionToolRequiredForTurn =
-    looksLikeYoutubeCaptionWorkflow(recentUserActionText);
-  let captionToolAttemptedForTurn = false;
-  let captionsUnavailableForTurn = false;
-  let assemblyCaptionsAttemptedForTurn = false;
-  const holdActionTextUntilToolDecision = captionToolRequiredForTurn;
   let anyToolAttemptedForTurn = false;
-  const shouldHoldToolDependentOutput = () =>
-    (holdActionTextUntilToolDecision && !anyToolAttemptedForTurn) ||
-    (captionsUnavailableForTurn && !assemblyCaptionsAttemptedForTurn);
+  const shouldHoldToolDependentOutput = () => false;
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
   setupSse(res);
@@ -6190,70 +6177,6 @@ toolConfig: activeCacheName
       // ── 2b. No function calls → final answer, parse suggestions, done ─────
       if (functionCalls.length === 0) {
         if (
-          captionsUnavailableForTurn &&
-          !assemblyCaptionsAttemptedForTurn &&
-          unexecutedActionRetries < 3
-        ) {
-          unexecutedActionRetries++;
-          pendingTextBuf = "";
-          canvasRouteBuf = "";
-          activeCanvas = null;
-          loopContents.push({
-            role: "model" as const,
-            parts: [{ text: fullText }],
-          });
-          loopContents.push({
-            role: "user" as const,
-            parts: [{
-              text:
-                "get_youtube_captions returned CAPTIONS_UNAVAILABLE_USE_ASSEMBLYAI. You MUST now call generate_captions_with_assemblyai with the same YouTube URL and language. Do not write a failure message, do not create a canvas, and do not invent SRT content before that tool returns.",
-            }],
-          });
-          continue;
-        }
-        if (captionsUnavailableForTurn && !assemblyCaptionsAttemptedForTurn) {
-          sseEvent(res, {
-            type: "text",
-            content:
-              "YouTube captions were unavailable, and I could not start the AssemblyAI caption fallback. Please send it again and I will run the fallback tool.",
-            runId,
-          });
-          finalAnswerSent = true;
-          break;
-        }
-        if (
-          captionToolRequiredForTurn &&
-          !captionToolAttemptedForTurn &&
-          unexecutedActionRetries < 3
-        ) {
-          unexecutedActionRetries++;
-          pendingTextBuf = "";
-          canvasRouteBuf = "";
-          activeCanvas = null;
-          loopContents.push({
-            role: "model" as const,
-            parts: [{ text: fullText }],
-          });
-          loopContents.push({
-            role: "user" as const,
-            parts: [{
-              text:
-                "The user is asking for YouTube captions/subtitles/SRT/transcript work. You MUST call get_youtube_captions before writing any SRT, translation, or canvas. Do not create subtitle content from memory or reasoning. If get_youtube_captions returns CAPTIONS_UNAVAILABLE_USE_ASSEMBLYAI, call generate_captions_with_assemblyai next.",
-            }],
-          });
-          continue;
-        }
-        if (captionToolRequiredForTurn && !captionToolAttemptedForTurn) {
-          sseEvent(res, {
-            type: "text",
-            content:
-              "I could not start the required caption tool for this request. Please send it again and I will fetch the captions before writing any SRT.",
-            runId,
-          });
-          finalAnswerSent = true;
-          break;
-        }
-        if (
           unexecutedActionRetries < 2 &&
           looksLikeActionRequest(latestUserActionText) &&
           looksLikeUnexecutedActionPromise(cleanedText)
@@ -6406,15 +6329,6 @@ toolConfig: activeCacheName
             message: toolErrorMessage,
             level: "error",
           });
-        }
-        if (fc.name === "get_youtube_captions") {
-          captionToolAttemptedForTurn = true;
-          if (/CAPTIONS_UNAVAILABLE_USE_ASSEMBLYAI/i.test(toolErrorMessage)) {
-            captionsUnavailableForTurn = true;
-          }
-        }
-        if (fc.name === "generate_captions_with_assemblyai") {
-          assemblyCaptionsAttemptedForTurn = true;
         }
         anyToolAttemptedForTurn = true;
 
