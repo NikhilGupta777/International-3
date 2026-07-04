@@ -110,6 +110,9 @@ type TimelineClip = {
   transitionOut?: TransitionDef;
   colorPreset?: ColorPreset;
   reverse?: boolean;
+  cropZoom?: number;   // spatial zoom/pan crop, 1 = no crop
+  cropX?: number;      // crop window center x in normalized 0..1 frame coords
+  cropY?: number;      // crop window center y in normalized 0..1 frame coords
 };
 
 type TimedOverlay = {
@@ -1194,7 +1197,31 @@ async function processRenderJob(ws: ReturnType<typeof getWorkspace>, projectId: 
             ? `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1`
             : `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=lanczos,crop=${width}:${height},setsar=1`;
 
-        const vFilters: string[] = [scaleFilter];
+        const vFilters: string[] = [];
+
+        // ── Per-clip spatial crop (zoom + pan) ──────────────────────────────
+        // Applied BEFORE the scale filter so we crop from original resolution.
+        // cropZoom=1.5, cropX=0.3, cropY=0.2 means:
+        //   keep a 1/1.5 = 66% wide window, horizontally centered at 30% of
+        //   the frame width, vertically at 20% — useful for tightening on a
+        //   face that is off-centre in the original footage.
+        const clipCropZoom = typeof clip.cropZoom === "number" && clip.cropZoom > 1.001
+          ? Math.min(4, clip.cropZoom) : 1;
+        if (clipCropZoom > 1.001) {
+          const cx = typeof clip.cropX === "number" ? Math.max(0, Math.min(1, clip.cropX)) : 0.5;
+          const cy = typeof clip.cropY === "number" ? Math.max(0, Math.min(1, clip.cropY)) : 0.5;
+          const z  = clipCropZoom.toFixed(6);
+          // crop=W:H:X:Y where W/H are the sub-region dims and X/Y are the
+          // top-left corner, all expressed in iw/ih units so it adapts to
+          // whatever resolution the source clip happens to be.
+          vFilters.push(
+            `crop=iw/${z}:ih/${z}` +
+            `:max(0\\,min(iw-iw/${z}\\,iw*${cx.toFixed(6)}-iw/${z}/2))` +
+            `:max(0\\,min(ih-ih/${z}\\,ih*${cy.toFixed(6)}-ih/${z}/2))`,
+          );
+        }
+
+        vFilters.push(scaleFilter);
         if (Math.abs(speed - 1) > 0.001) vFilters.push(`setpts=${(1 / speed).toFixed(4)}*PTS`);
         const clipColor = clip.colorPreset || colorPresetVal;
         const cf = colorPresetFilter(clipColor as ColorPreset);
@@ -1849,6 +1876,12 @@ const AGENT_TOOL_DECLARATIONS_V2 = [
     clipId: { type: Type.STRING, description: "The clip ID to split" },
     splitAt: { type: Type.NUMBER, description: "Time in source seconds where to split" },
   }, required: ["clipId", "splitAt"] } },
+  { name: "set_clip_crop", description: "Zoom into and reframe a specific clip — control zoom level AND pan position. Use AFTER analyze_video tells you where the subject/face is in the frame. cropX/cropY are the CENTER of the kept crop window (0=left/top edge, 0.5=center, 1=right/bottom edge). Example workflow: analyze_video → face detected at roughly x=0.3 of frame → set_clip_crop(zoom=1.6, cropX=0.3, cropY=0.4) to tighten on the face. Set zoom=1 to reset to full frame.", parameters: { type: Type.OBJECT, properties: {
+    clipId: { type: Type.STRING, description: "The clip ID to crop/reframe" },
+    zoom: { type: Type.NUMBER, description: "Zoom factor: 1.0=full frame (no crop), 1.5=50% zoomed in, 2.0=2× zoom. Max 4.0." },
+    cropX: { type: Type.NUMBER, description: "Horizontal center of crop window 0..1. 0=left edge, 0.5=center, 1=right edge. Default 0.5." },
+    cropY: { type: Type.NUMBER, description: "Vertical center of crop window 0..1. 0=top edge, 0.5=center, 1=bottom edge. Default 0.5." },
+  }, required: ["clipId", "zoom"] } },
   { name: "reorder_clips", description: "Reorder clips on the timeline by providing clip IDs in the desired order.", parameters: { type: Type.OBJECT, properties: {
     clipIds: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Clip IDs in desired playback order" },
   }, required: ["clipIds"] } },
@@ -1931,6 +1964,8 @@ BEHAVIOR RULES:
 - For dates/text overlays, detect date formats in the user's message and use them.
 - If a logo is uploaded, call detect_logo_background to pick the right key.
 - Overlays can go ANYWHERE: pass exact x,y (0..1, the overlay's center) to add_overlay instead of a named corner. To place a logo/text in a specific empty area, call analyze_video first to see the frame, then add_overlay with those coordinates.
+- To reframe/zoom a shot: call analyze_video first (ask "where is the subject/face in the frame?"), then call set_clip_crop with zoom (e.g. 1.5) and cropX/cropY matching the subject's position. For "zoom in on face", "tighten the shot", "vertical reframe", or "remove distracting edges" — always analyze first, then crop.
+- set_clip_crop zoom=1 resets to full frame. cropX=0.5/cropY=0.5 is dead center. cropX=0.3 shifts the crop window LEFT (captures left side of frame). cropY=0.25 shifts UP (captures top of frame).
 - If the user says "render"/"do it"/"go"/"approved" and there's an approved plan, start_render final.
 - Refuse non-video tasks in one short sentence.
 
@@ -2105,6 +2140,19 @@ function buildToolDispatcherV2(
         pendingTimeline.export.colorPreset = args.colorPreset;
       }
       return { message: `Export: ${pendingTimeline.export.aspectRatio}, ${pendingTimeline.export.cropMode}, color=${pendingTimeline.export.colorPreset}.` };
+    },
+    set_clip_crop: async (args) => {
+      if (typeof args?.clipId !== "string" || !args.clipId) throw new Error("clipId required.");
+      const clip = pendingTimeline.tracks.video.find((c) => c.id === args.clipId);
+      if (!clip) throw new Error(`Clip "${args.clipId}" not found in timeline.`);
+      const zoom  = clampNumber(args.zoom,  1, 4,   1);
+      const cropX = clampNumber(args.cropX, 0, 1, 0.5);
+      const cropY = clampNumber(args.cropY, 0, 1, 0.5);
+      clip.cropZoom = zoom;
+      clip.cropX    = cropX;
+      clip.cropY    = cropY;
+      const note = zoom <= 1.001 ? " (crop reset — full frame)" : ` center=(${cropX.toFixed(2)}, ${cropY.toFixed(2)})`;
+      return { message: `Clip crop set: zoom=${zoom.toFixed(2)}×${note}.`, clip };
     },
     propose: async (args) => {
       const ws = getWorkspace(req);

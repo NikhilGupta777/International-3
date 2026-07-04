@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import fs from "fs";
 import path from "path";
 import zlib from "zlib";
@@ -67,7 +67,91 @@ try {
   logger.error({ err, indexCachePath }, `Failed to load search index database: ${indexLoadError}`);
 }
 
+// === Rate limiter ===
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const SEARCH_RATE_LIMIT = 10; // 10 searches per minute per IP
+const rateWindows = new Map<string, { count: number; resetAt: number }>();
+
+// Evict expired entries every 5 minutes to prevent unbounded growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateWindows) {
+    if (now >= entry.resetAt) rateWindows.delete(key);
+  }
+}, 5 * 60 * 1000).unref();
+
+const RATE_LIMIT_BYPASS_IPS = new Set(
+  (process.env.RATE_LIMIT_BYPASS_IPS ?? "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean)
+);
+
+function getClientIp(req: Request): string {
+  // cf-connecting-ip is Cloudflare-only and never set here (site uses CloudFront).
+  // x-real-ip is not set by AWS and can be spoofed by clients — skip it.
+  // x-forwarded-for is set by AWS infrastructure and is the correct header to use.
+  const forwarded = req.headers["x-forwarded-for"];
+  const first = (v: string | string[] | undefined) =>
+    Array.isArray(v) ? v[0] : v?.split(",")[0];
+  const ip =
+    first(forwarded as string | string[] | undefined)?.trim() ||
+    req.ip ||
+    req.socket.remoteAddress ||
+    "unknown";
+  return ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+}
+
+function normalizeAiErrorMessage(err: any): string {
+  const raw = String(err?.message ?? err ?? "AI search failed.");
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart));
+      const message = String(parsed?.error?.message ?? parsed?.message ?? "").trim();
+      if (/internal error encountered/i.test(message)) {
+        return "The AI provider hit a temporary internal error. Please retry.";
+      }
+      if (message) return message;
+    } catch {
+      // Fall through to text cleanup.
+    }
+  }
+  if (/error in input stream/i.test(raw)) {
+    return "The search stream failed while building the answer. Please retry.";
+  }
+  if (/internal error encountered|status.+internal|code.+500/i.test(raw)) {
+    return "The AI provider hit a temporary internal error. Please retry.";
+  }
+  return raw.replace(/^Gemini API returned error:\s*/i, "").trim() || "AI search failed.";
+}
+
+function searchRateLimiter(req: Request, res: Response, next: NextFunction) {
+  const ip = getClientIp(req);
+  if (RATE_LIMIT_BYPASS_IPS.has(ip)) { next(); return; }
+
+  const now = Date.now();
+  const key = `notebook|${ip}`;
+  const current = rateWindows.get(key);
+
+  if (!current || now >= current.resetAt) {
+    rateWindows.set(key, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    next();
+    return;
+  }
+
+  if (current.count >= SEARCH_RATE_LIMIT) {
+    const minsLeft = Math.max(1, Math.ceil((current.resetAt - now) / 60000));
+    res.status(429).json({ error: `Rate limit exceeded. Try again in ${minsLeft} minute(s).` });
+    return;
+  }
+
+  current.count += 1;
+  next();
+}
+
 // === Tool Implementations ===
+const SEARCH_RESULT_LIMIT = 32;
 
 function searchDatabase(query: string) {
   if (!miniSearchInstance) return { error: "Database index is not available." };
@@ -87,7 +171,7 @@ function searchDatabase(query: string) {
   const maxScore = results[0].score;
   const threshold = maxScore * 0.1;
   const filtered = results.filter(r => r.score >= threshold);
-  const sliced = filtered.slice(0, 22);
+  const sliced = pickDiverseVideoResults(filtered, SEARCH_RESULT_LIMIT);
 
   let matchingRecordsText = "";
   sliced.forEach((r, idx) => {
@@ -106,19 +190,54 @@ function searchDatabase(query: string) {
   };
 }
 
-function getVideoQas(videoTitle: string) {
-  logger.info(`[Tool Call] getVideoQas for title: "${videoTitle}"`);
-  const results: any[] = [];
-  const queryLower = videoTitle.toLowerCase();
+function getVideoKey(url: string | undefined): string {
+  const raw = String(url || "");
+  const watchMatch = raw.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+  if (watchMatch) return watchMatch[1];
+  const shortMatch = raw.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
+  if (shortMatch) return shortMatch[1];
+  return raw || "unknown";
+}
 
-  for (const id in rawDocuments) {
-    const doc = rawDocuments[id];
-    if (doc.Title && doc.Title.toLowerCase().includes(queryLower)) {
-      results.push(doc);
-    }
+function pickDiverseVideoResults<T extends Record<string, any>>(results: T[], limit: number): T[] {
+  const picked: T[] = [];
+  const usedVideos = new Set<string>();
+
+  for (const result of results) {
+    const key = getVideoKey(result.URL);
+    if (usedVideos.has(key)) continue;
+    usedVideos.add(key);
+    picked.push(result);
+    if (picked.length >= limit) return picked;
   }
 
-  const sliced = results.slice(0, 22);
+  for (const result of results) {
+    if (picked.includes(result)) continue;
+    picked.push(result);
+    if (picked.length >= limit) break;
+  }
+
+  return picked;
+}
+
+function getVideoQas(videoTitle: string) {
+  logger.info(`[Tool Call] getVideoQas for title: "${videoTitle}"`);
+
+  if (!miniSearchInstance) {
+    return { error: "Database index is not available." };
+  }
+
+  // Use MiniSearch on the Title field instead of requiring an exact substring.
+  const results = miniSearchInstance.search(videoTitle, {
+    boost: { Title: 3 },
+    prefix: true,
+    fuzzy: 0.15,
+    combineWith: "OR"
+  });
+
+  const matched = results.filter(r => r.Title);
+
+  const sliced = matched.slice(0, SEARCH_RESULT_LIMIT);
 
   let matchingRecordsText = "";
   sliced.forEach((r, idx) => {
@@ -130,15 +249,19 @@ function getVideoQas(videoTitle: string) {
     matchingRecordsText += `Answer: ${r.Answer || 'N/A'}\n\n`;
   });
 
-  logger.info(`[Tool Call] Found ${results.length} matching Q&As, returning top ${sliced.length}.`);
+  logger.info(`[Tool Call] Found ${matched.length} matching Q&As, returning top ${sliced.length}.`);
   return {
-    total_matches_found: results.length,
+    total_matches_found: matched.length,
     matching_records: matchingRecordsText
   };
 }
 
-function getDatabaseStats() {
-  logger.info(`[Tool Call] getDatabaseStats`);
+// Cached stats — recomputed at most once per 5 minutes
+let cachedStats: ReturnType<typeof computeDatabaseStats> | null = null;
+let statsCachedAt = 0;
+const STATS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function computeDatabaseStats() {
   const totalDocs = Object.keys(rawDocuments).length;
   const uniqueVideos = new Set<string>();
   let minDate: string | null = null;
@@ -153,22 +276,18 @@ function getDatabaseStats() {
     const combined = `${q} ${a}`;
 
     totalCharacters += combined.length;
-    totalWords += combined.split(/\s+/).filter(w => w.length > 0).length;
+    totalWords += combined.split(/\s+/).filter((w: string) => w.length > 0).length;
 
     if (doc.URL) {
       let videoId = "";
       const urlStr = doc.URL;
       if (urlStr.includes("youtube.com/watch")) {
         const query = urlStr.split("?")[1] || "";
-        const params = query.split("&");
-        const vParam = params.find((p: string) => p.startsWith("v="));
-        if (vParam) {
-          videoId = vParam.split("=")[1];
-        }
+        const vParam = query.split("&").find((p: string) => p.startsWith("v="));
+        if (vParam) videoId = vParam.split("=")[1];
       } else if (urlStr.includes("youtu.be/")) {
         const parts = urlStr.split("youtu.be/");
-        const pathPart = parts[1] || "";
-        videoId = pathPart.split("?")[0].split("&")[0];
+        videoId = (parts[1] || "").split("?")[0].split("&")[0];
       }
 
       if (videoId) {
@@ -192,6 +311,17 @@ function getDatabaseStats() {
   };
 }
 
+function getDatabaseStats() {
+  logger.info(`[Tool Call] getDatabaseStats`);
+  const now = Date.now();
+  if (cachedStats && now - statsCachedAt < STATS_CACHE_TTL_MS) {
+    return cachedStats;
+  }
+  cachedStats = computeDatabaseStats();
+  statsCachedAt = now;
+  return cachedStats;
+}
+
 async function executeTool(name: string, args: any) {
   try {
     if (name === 'search_database') {
@@ -208,7 +338,8 @@ async function executeTool(name: string, args: any) {
   }
 }
 
-// Safeguard compactor logic to maintain user/model role alternation
+// Compact history to stay within token budget.
+// Always guarantees the returned array starts with a `user` role message.
 function compactHistory(contents: any[], maxTokensEstimate = 180000) {
   let totalChars = 0;
   contents.forEach(msg => {
@@ -219,11 +350,11 @@ function compactHistory(contents: any[], maxTokensEstimate = 180000) {
 
   const estimatedTokens = totalChars / 4;
   if (estimatedTokens < maxTokensEstimate) {
-    return contents;
+    return enforceUserFirst(contents);
   }
 
   logger.info(`[Compactor] History size (${Math.round(estimatedTokens)} tokens) exceeds threshold. Compacting...`);
-  if (contents.length <= 3) return contents;
+  if (contents.length <= 3) return enforceUserFirst(contents);
 
   const untouchedCount = 3;
   const historyToCompact = contents.slice(0, contents.length - untouchedCount);
@@ -248,7 +379,6 @@ function compactHistory(contents: any[], maxTokensEstimate = 180000) {
   const finalContents: any[] = [];
   combined.forEach(msg => {
     if (!msg.parts || msg.parts.length === 0) return;
-
     if (finalContents.length === 0) {
       finalContents.push(JSON.parse(JSON.stringify(msg)));
     } else {
@@ -261,7 +391,16 @@ function compactHistory(contents: any[], maxTokensEstimate = 180000) {
     }
   });
 
-  return finalContents;
+  return enforceUserFirst(finalContents);
+}
+
+// Gemini requires contents[0] to be role:"user". Drop leading model messages.
+function enforceUserFirst(contents: any[]): any[] {
+  let start = 0;
+  while (start < contents.length && contents[start].role !== "user") {
+    start++;
+  }
+  return contents.slice(start);
 }
 
 const systemInstruction = {
@@ -287,7 +426,7 @@ For every prompt that you receive to find a particular topic, search all the vid
 
 User Request: "[Exactly what the user requested]"
 
-Occourances: [N] Videos/Live Streams
+Occurrences: [N] Videos/Live Streams
 
 ### Video_1
 Title: [Exact title of the video]
@@ -335,7 +474,7 @@ router.get("/notebook/health", (_req: Request, res: Response) => {
   }
 });
 
-router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
+router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res: Response) => {
   setupSse(res);
   const rawMessage = typeof req.body?.message === "string" ? req.body.message : "";
   const requestMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
@@ -346,9 +485,15 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
   }
 
   let closed = false;
+  let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
   res.on("close", () => {
     closed = true;
+    // Cancel the active Gemini stream reader to release the connection
+    if (activeReader) {
+      activeReader.cancel().catch(() => {});
+      activeReader = null;
+    }
   });
 
   const sendSseEvent = (type: string, data: any) => {
@@ -414,11 +559,14 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
       ]
     }];
 
-    // Format chat history for Gemini API
+    // Build Gemini contents from chat history (only use .content — no thoughts/trace)
     let contents: any[] = [];
     messagesList.forEach((msg) => {
       const role = msg.role === "assistant" ? "model" : "user";
-      contents.push({ role, parts: [{ text: msg.content }] });
+      const text = typeof msg.content === "string" ? msg.content : "";
+      if (text.trim()) {
+        contents.push({ role, parts: [{ text }] });
+      }
     });
 
     const maxIterations = 5;
@@ -432,6 +580,12 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
       sendSseEvent("thinking", { message: `Thinking (step ${iteration})...` });
 
       contents = compactHistory(contents);
+
+      // Safety: if compaction left us with an empty array, abort
+      if (contents.length === 0) {
+        finalResponse = "History compaction left no content to process. Please start a new chat.";
+        break;
+      }
 
       const requestBody = {
         contents,
@@ -485,90 +639,93 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
       if (closed || !response || !response.body) break;
 
       const reader = response.body.getReader();
+      activeReader = reader;
+
       const decoder = new TextDecoder("utf-8");
       let sseBuffer = "";
 
       let accumulatedParts: any[] = [];
       let currentFunctionCalls: any[] = [];
       let isThinking = false;
+      let pendingVisibleText = "";
 
-      while (true) {
-        if (closed) break;
-        const { value, done } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          if (closed) break;
+          const { value, done } = await reader.read();
+          if (done) break;
 
-        sseBuffer += decoder.decode(value);
-        const lines = sseBuffer.split("\n");
-        sseBuffer = lines.pop() || "";
+          sseBuffer += decoder.decode(value, { stream: true });
+          const lines = sseBuffer.split("\n");
+          sseBuffer = lines.pop() || "";
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith("data:")) continue;
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data:")) continue;
 
-          try {
-            const chunk = JSON.parse(trimmed.substring(5).trim());
-            const candidate = chunk.candidates?.[0];
-            const content = candidate?.content;
+            try {
+              const chunk = JSON.parse(trimmed.substring(5).trim());
+              const candidate = chunk.candidates?.[0];
+              const content = candidate?.content;
 
-            if (content && content.parts) {
-              for (const part of content.parts) {
-                let text = part.text || "";
-                let isThoughtPart = (part.thought === true);
+              if (content && content.parts) {
+                for (const part of content.parts) {
+                  let text = part.text || "";
+                  const isThoughtPart = (part.thought === true);
 
-                if (isThoughtPart) {
-                  if (text) {
-                    sendSseEvent("thought_chunk", { content: text });
-                  }
-                } else if (text) {
-                  // Fallback: parse inline thinking tags
-                  if (text.includes('<think>') || text.includes('<|think|>')) {
-                    isThinking = true;
-                    text = text.replace('<think>', '').replace('<|think|>', '');
-                  }
-
-                  if (text.includes('</think>') || text.includes('</|think|>')) {
-                    isThinking = false;
-                    const parts = text.split(/<\/think>|<\/\|think\|>/);
-                    if (parts[0]) sendSseEvent("thought_chunk", { content: parts[0] });
-                    if (parts[1]) sendSseEvent("text_chunk", { content: parts[1] });
-                  } else {
-                    if (isThinking) {
+                  if (isThoughtPart) {
+                    if (text) {
                       sendSseEvent("thought_chunk", { content: text });
+                    }
+                  } else if (text) {
+                    // Fallback: parse inline thinking tags
+                    if (text.includes('<think>') || text.includes('<|think|>')) {
+                      isThinking = true;
+                      text = text.replace('<think>', '').replace('<|think|>', '');
+                    }
+
+                    if (text.includes('</think>') || text.includes('</|think|>')) {
+                      isThinking = false;
+                      const parts = text.split(/<\/think>|<\/\|think\|>/);
+                      if (parts[0]) sendSseEvent("thought_chunk", { content: parts[0] });
+                      if (parts[1]) pendingVisibleText += parts[1];
                     } else {
-                      sendSseEvent("text_chunk", { content: text });
+                      if (isThinking) {
+                        sendSseEvent("thought_chunk", { content: text });
+                      } else {
+                        pendingVisibleText += text;
+                      }
                     }
                   }
-                }
 
-                if (part.functionCall) {
-                  currentFunctionCalls.push(part.functionCall);
-                }
+                  if (part.functionCall) {
+                    currentFunctionCalls.push(part.functionCall);
+                  }
 
-                accumulatedParts.push(part);
+                  accumulatedParts.push(part);
+                }
               }
+            } catch (e) {
+              // parsing error or keep-alive tick, ignore
             }
-          } catch (e) {
-            // parsing error or keep-alive tick, ignore
           }
         }
+      } finally {
+        // Always release the reader reference after the inner loop
+        if (activeReader === reader) activeReader = null;
+        await reader.cancel().catch(() => {});
       }
 
       if (closed) break;
 
-      // Group and combine the streamed parts to append to contents history
+      // Combine streamed parts for history
       const combinedParts: any[] = [];
       let currentTextPart: any = null;
-      let currentThoughtPart: any = null;
 
       accumulatedParts.forEach(part => {
         if (part.thought === true) {
-          if (currentThoughtPart) {
-            currentThoughtPart.text += part.text;
-          } else {
-            currentThoughtPart = { thought: true, text: part.text };
-            combinedParts.push(currentThoughtPart);
-          }
           currentTextPart = null;
+          return;
         } else if (part.text) {
           if (currentTextPart) {
             currentTextPart.text += part.text;
@@ -576,18 +733,18 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
             currentTextPart = { text: part.text };
             combinedParts.push(currentTextPart);
           }
-          currentThoughtPart = null;
         } else if (part.functionCall) {
           combinedParts.push(part);
           currentTextPart = null;
-          currentThoughtPart = null;
         }
       });
 
-      contents.push({
-        role: "model",
-        parts: combinedParts
-      });
+      if (combinedParts.length > 0) {
+        contents.push({
+          role: "model",
+          parts: combinedParts
+        });
+      }
 
       if (currentFunctionCalls.length > 0) {
         logger.info(`[Agent Loop] Model requested ${currentFunctionCalls.length} tool execution(s).`);
@@ -612,8 +769,8 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
           let resultMsg = "";
           if (callName === 'search_database' || callName === 'get_video_qas') {
             const totalMatches = Number((result as { total_matches_found?: number }).total_matches_found ?? 0);
-            const count = Math.min(22, totalMatches);
-            resultMsg = `Found ${totalMatches} matches (sending top ${count} to Gemma)`;
+            const count = Math.min(SEARCH_RESULT_LIMIT, totalMatches);
+            resultMsg = `Found ${totalMatches} matches (sending top ${count})`;
           } else {
             resultMsg = `Stats loaded successfully.`;
           }
@@ -634,10 +791,24 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
         });
       } else {
         logger.info("[Agent Loop] Model returned final text answer.");
-        let finalText = "";
-        combinedParts.forEach(p => {
-          if (p.text && !p.thought) finalText += p.text;
-        });
+        let finalText = pendingVisibleText;
+        if (!finalText) {
+          combinedParts.forEach(p => {
+            if (p.text && !p.thought) finalText += p.text;
+          });
+        }
+        if (pendingVisibleText) {
+          sendSseEvent("text_chunk", { content: pendingVisibleText });
+        }
+        if (!finalText.trim() && iteration < maxIterations) {
+          contents.push({
+            role: "user",
+            parts: [{
+              text: "You returned only hidden reasoning. Now call search_database with 2-3 concise bilingual search queries, or provide the final formatted answer if you already have records.",
+            }],
+          });
+          continue;
+        }
         finalResponse = finalText;
         break;
       }
@@ -656,7 +827,7 @@ router.post("/notebook/ask/stream", async (req: Request, res: Response) => {
 
   } catch (err: any) {
     logger.error(`API Error: ${err.message}`);
-    sendSseEvent("error", { message: err.message });
+    sendSseEvent("error", { message: normalizeAiErrorMessage(err) });
     res.end();
   }
 });

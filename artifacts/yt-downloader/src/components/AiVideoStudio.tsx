@@ -559,9 +559,10 @@ function restoreBubblesFromProject(messages: EditorChatMessage[], project: Edito
 }
 
 function computeTimelineDuration(timeline: Timeline): number {
-  return timeline.tracks.video.reduce((max, clip) => {
+  // Clips are concatenated in array order; total = sum of clip durations.
+  return timeline.tracks.video.reduce((sum, clip) => {
     const sourceDuration = clip.srcOut > clip.srcIn ? clip.srcOut - clip.srcIn : 0;
-    return Math.max(max, clip.tlStart + sourceDuration / (clip.speed || 1));
+    return sum + sourceDuration / (clip.speed || 1);
   }, 0);
 }
 

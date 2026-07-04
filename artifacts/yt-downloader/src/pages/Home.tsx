@@ -1233,11 +1233,7 @@ export default function Home({
                   mounted below (outside AnimatePresence) so the SSE stream survives
                   tab navigation without being killed by React unmounting. */}
 
-              {showFindVideo && (
-                <motion.div key="findvideo-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
-                  <FindVideo />
-                </motion.div>
-              )}
+              {/* Find Video is kept mounted below so chat state and active streams survive tab navigation. */}
 
               {showThumbnail && (
                 <motion.div key="thumbnail-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
@@ -1245,11 +1241,7 @@ export default function Home({
                 </motion.div>
               )}
 
-              {showContentManager && (
-                <motion.div key="content-manager-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
-                  <YouTubeContentManager />
-                </motion.div>
-              )}
+              {/* Content Manager is kept mounted below so generated turns and active streams survive tab navigation. */}
 
               {showVideoStudio && (
                 <motion.div key="video-studio-panel" initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.25 }} className="w-full h-full flex-1 flex flex-col">
@@ -1274,6 +1266,15 @@ export default function Home({
                 unmounted when the user navigates to another tab. Hidden state uses
                 visibility/position instead of display:none so entry animation still runs. */}
             <motion.div
+              aria-hidden={!showFindVideo}
+              animate={showFindVideo ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className={cn("w-full h-full flex-1 flex flex-col copilot-mounted-panel", !showFindVideo && "copilot-mounted-panel-hidden")}
+            >
+              <FindVideo />
+            </motion.div>
+
+            <motion.div
               aria-hidden={!showCopilot}
               animate={showCopilot ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
               transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
@@ -1290,6 +1291,15 @@ export default function Home({
               ) : (
                 <FeatureUnavailable title="Super Agent is restricted" detail="Your account is not allowed to use Super Agent right now." />
               )}
+            </motion.div>
+
+            <motion.div
+              aria-hidden={!showContentManager}
+              animate={showContentManager ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className={cn("w-full h-full flex-1 flex flex-col copilot-mounted-panel", !showContentManager && "copilot-mounted-panel-hidden")}
+            >
+              <YouTubeContentManager />
             </motion.div>
 
           </div>

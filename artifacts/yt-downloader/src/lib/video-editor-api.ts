@@ -23,6 +23,13 @@ export type TimelineClip = {
   transitionOut?: TransitionDef;
   colorPreset?: string;
   reverse?: boolean;
+  /** Spatial zoom/pan crop applied before scaling.
+   *  cropZoom >= 1.0 (1 = no crop, 2 = 2× zoom in).
+   *  cropX / cropY are the CENTER of the kept window in 0..1 coords
+   *  (0.5/0.5 = dead center, 0/0 = top-left corner). */
+  cropZoom?: number;
+  cropX?: number;
+  cropY?: number;
 };
 
 export type TimedOverlay = {

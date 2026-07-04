@@ -43,6 +43,27 @@ function send(res: any, payload: object): void {
   sseFlush(res);
 }
 
+function normalizeAiErrorMessage(err: any): string {
+  const raw = String(err?.message ?? err ?? "Content generation failed");
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart));
+      const message = String(parsed?.error?.message ?? parsed?.message ?? "").trim();
+      if (/internal error encountered/i.test(message)) {
+        return "The AI provider hit a temporary internal error. Please retry.";
+      }
+      if (message) return message;
+    } catch {
+      // Fall through to text cleanup.
+    }
+  }
+  if (/internal error encountered|status.+internal|code.+500/i.test(raw)) {
+    return "The AI provider hit a temporary internal error. Please retry.";
+  }
+  return raw.trim() || "Content generation failed";
+}
+
 router.get("/content-manager/profiles", async (_req, res) => {
   if (!isContentProfileStoreEnabled()) {
     res.json({ profiles: [], enabled: false });
@@ -311,19 +332,17 @@ router.post("/content-manager/generate", async (req, res) => {
     } finally {
       clearInterval(heartbeat);
     }
-    const pack = coerceContentPack(parseJson(builtText));
+    let pack: ContentPack;
+    try {
+      pack = coerceContentPack(parseJson(builtText));
+    } catch {
+      throw new Error("The AI returned an unreadable content pack. Please try again.");
+    }
     if (collectedSources.length > 0) pack.sources = collectedSources;
     send(res, { type: "result", runId, pack, summary: cleanSummary });
     send(res, { type: "done", runId });
   } catch (err: any) {
-    let message = err?.message ?? "Content generation failed";
-    try {
-      const parsed = JSON.parse(message);
-      message = String(parsed?.error?.message ?? parsed?.message ?? message).split(/\.?\s*Please refer to https?:\/\//).shift()!.trim();
-    } catch {
-      // keep original
-    }
-    send(res, { type: "error", runId, message });
+    send(res, { type: "error", runId, message: normalizeAiErrorMessage(err) });
   } finally {
     if (!res.writableEnded) res.end();
   }
