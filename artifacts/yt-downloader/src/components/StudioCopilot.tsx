@@ -23,6 +23,7 @@ import { saveActiveJob, loadActiveJob, saveToHistory } from "@/lib/subtitle-hist
 import { loadActiveClipJobs, saveActiveClipJobs, saveToClipHistory } from "@/lib/clip-history";
 import { saveToMusicHistory } from "@/lib/music-history";
 import { upsertActiveTranslatorJob } from "@/lib/translator-history";
+import { saveToTimestampHistory } from "@/lib/timestamps-history";
 
 const ULTRA_KEY = "studio-ultra-mode";
 // Separate key persists the full reasoning mode (flash/pro/advanced).
@@ -3237,6 +3238,23 @@ export function StudioCopilot({
               step: "Starting",
               status: "processing"
             });
+          } else if (evt.name === "generate_timestamps") {
+            try {
+              const key = "ytgrabber_active_timestamps_jobs";
+              const raw = localStorage.getItem(key);
+              const active: any[] = raw ? JSON.parse(raw) : [];
+              if (!active.some((j: any) => j.jobId === evt.jobId)) {
+                active.push({
+                  jobId: evt.jobId,
+                  url: (evt as any).url || "",
+                  status: "running",
+                  percent: evt.percent ?? 0,
+                  message: evt.message || "Starting",
+                  startedAt: Date.now()
+                });
+                localStorage.setItem(key, JSON.stringify(active));
+              }
+            } catch {}
           }
         }
         return;
@@ -3302,6 +3320,16 @@ export function StudioCopilot({
             translateTo: evt.result.translateTo || "",
             srt: "",
             entryCount: 0,
+          });
+        } else if (evt.name === "generate_timestamps" && evt.result?.jobId) {
+          saveToTimestampHistory({
+            id: evt.result.jobId,
+            createdAt: Date.now(),
+            videoTitle: evt.result.videoTitle || "",
+            videoUrl: evt.result.url || "",
+            chapterCount: evt.result.chapterCount ?? 0,
+            videoDurationSecs: evt.result.videoDurationSecs ?? 0,
+            timestamps: evt.result.timestamps ?? [],
           });
         }
 

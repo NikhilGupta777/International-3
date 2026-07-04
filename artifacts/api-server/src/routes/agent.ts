@@ -191,6 +191,8 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "check_job_status":
     case "check_active_jobs":
     case "repeat_last_artifact":
+    case "read_uploaded_file":
+    case "describe_image":
     case "extract_text_from_image":
     case "write_video_script":
     case "generate_seo_pack":
@@ -205,6 +207,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "cut_video_clip":
     case "download_video":
     case "find_best_clips":
+    case "generate_subtitles":
     case "generate_timestamps":
       return "youtube_processing";
 
@@ -5069,21 +5072,25 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isInternalRelative = sourceUrl.startsWith("/");
+      const resolvedUrl = isInternalRelative
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: Validate resolved URL is not internal before fetching.
+      // Skip the check for internally-resolved relative URLs (e.g. /api/youtube/file/xxx)
+      // since those are our own API endpoints resolved via INTERNAL_API_BASE.
+      if (!isInternalRelative) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private")) throw err;
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
       const r = await fetch(resolvedUrl, {
