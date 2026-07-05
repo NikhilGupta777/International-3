@@ -192,6 +192,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "cut_video_clip":
     case "download_video":
     case "find_best_clips":
+    case "generate_subtitles":
     case "generate_timestamps":
       return "youtube_processing";
 
@@ -2937,6 +2938,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -5266,15 +5268,8 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    if (host.endsWith(".local")) return true;
+    return isInternalHost(host);
   } catch {
     return true;
   }
@@ -5691,7 +5686,7 @@ router.post("/agent/chat", async (req, res) => {
       let timeoutId: NodeJS.Timeout | null = null;
       let controller: AbortController | null = null;
       const streamFallbackModels = activeModel === "gemma-4-31b-it"
-        ? [activeModel]
+        ? [activeModel, "gemini-3.5-flash"]
         : Array.from(
             new Set([
               activeModel,

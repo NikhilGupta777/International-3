@@ -183,7 +183,7 @@ export function StudioHome({
     setUltra(next);
     try {
       localStorage.setItem(ULTRA_KEY, next ? "1" : "0");
-      localStorage.setItem(REASONING_KEY, next ? "advanced" : "flash");
+      localStorage.setItem(REASONING_KEY, next ? "gemma-4-31b-it" : "gemini-3.1-flash-lite-low");
     } catch { }
   };
 
