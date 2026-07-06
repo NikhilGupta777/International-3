@@ -2937,6 +2937,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3331,7 +3332,7 @@ async function executeTool(
         status: "processing",
         message: "Starting subtitle generation...",
         jobId: subtitleJobId,
-        url: args.url,
+        url: inputUrl,
       } as any);
 
       const final = await pollSubtitleUntilDone(
@@ -5072,21 +5073,25 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isRelativeApiUrl = sourceUrl.startsWith("/");
+      const resolvedUrl = isRelativeApiUrl
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: Validate resolved URL is not internal before fetching.
+      // Skip for relative /api/... URLs — those are our own endpoints,
+      // resolved to localhost intentionally and authenticated via cookie.
+      if (!isRelativeApiUrl) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private")) throw err;
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
       const r = await fetch(resolvedUrl, {
@@ -5266,15 +5271,22 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
       host.endsWith(".local")
-    );
+    )
+      return true;
+    // 172.16.0.0/12 — second octet 16..31
+    const parts = host.split(".");
+    if (parts[0] === "172") {
+      const second = parseInt(parts[1], 10);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
   } catch {
     return true;
   }
@@ -6500,14 +6512,10 @@ toolConfig: activeCacheName
   } finally {
     clearInterval(keepAlive);
     if (!runCompleted) {
-      // LA-2 fix: Await job cancellation when the client disconnected.
-      // The previous fire-and-forget pattern risked Lambda freezing before
-      // cancels reached the internal API.
-      if (clientConnected) {
-        void cancelAgentRunJobs(req, "agent_error");
-      } else {
-        await cancelAgentRunJobs(req, "client_abort").catch(() => {});
-      }
+      // Always await cancellation — res.end() follows immediately after this
+      // block, and in Lambda the container freezes once the response closes.
+      const reason = clientConnected ? "agent_error" : "client_abort";
+      await cancelAgentRunJobs(req, reason).catch(() => {});
     }
     if (!res.writableEnded) res.end();
   }
