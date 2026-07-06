@@ -23,6 +23,7 @@ import { saveActiveJob, loadActiveJob, saveToHistory } from "@/lib/subtitle-hist
 import { loadActiveClipJobs, saveActiveClipJobs, saveToClipHistory } from "@/lib/clip-history";
 import { saveToMusicHistory } from "@/lib/music-history";
 import { upsertActiveTranslatorJob } from "@/lib/translator-history";
+import { getToolResultError } from "@/lib/copilot-tool-state";
 
 const ULTRA_KEY = "studio-ultra-mode";
 // Separate key persists the full reasoning mode (flash/pro/advanced).
@@ -1210,8 +1211,10 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
   // Status accent — drives the orb / pill / progress bar color. Tailwind only
   // sees literal class names, so the colors must be enumerated, not interpolated.
   type Accent = "running" | "progress" | "done" | "cancelled" | "error";
+  const resultError = getToolResultError(part.result);
+  const displayError = part.error ?? resultError;
   const accent: Accent = part.done
-    ? (part.cancelled ? "cancelled" : part.error ? "error" : "done")
+    ? (part.cancelled ? "cancelled" : displayError ? "error" : "done")
     : (hasProgress ? "progress" : "running");
   const ACCENT: Record<Accent, { orbBg: string; orbBorder: string; pingBg: string; pillBg: string; pillText: string; bar: string; dot: string }> = {
     running:   { orbBg: "bg-amber-300/12", orbBorder: "border-amber-300/30", pingBg: "bg-amber-300/30", pillBg: "bg-amber-300/14", pillText: "text-amber-300", bar: "bg-amber-300/60", dot: "bg-amber-300" },
@@ -1275,7 +1278,7 @@ function ToolCard({ part }: { part: MessagePart & { kind: "tool_start" } }) {
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white/8 text-[10px] font-medium text-white/55">
                 <X className="w-3 h-3" /> Stopped
               </span>
-            ) : part.error ? (
+            ) : displayError ? (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-400/14 text-[10px] font-medium text-rose-200">
                 Failed
               </span>
@@ -2617,6 +2620,13 @@ export function StudioCopilot({
     }
   }, []);
 
+  const applyComposerValue = useCallback((value: string) => {
+    setInput(value);
+    handleSlashInput(value);
+    const trimmed = value.trim();
+    setPasteUrl(/^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null);
+  }, [handleSlashInput]);
+
   // Select a skill from the slash menu
   const selectSlashSkill = useCallback((skill: SkillMeta) => {
     const current = activeSkillsRef.current;
@@ -2662,6 +2672,37 @@ export function StudioCopilot({
   pendingAttachmentsRef.current = pendingAttachments;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [role='textbox']"));
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.length !== 1 || event.key === " ") return;
+      if (isEditableTarget(event.target)) return;
+
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+
+      event.preventDefault();
+      textarea.focus();
+      applyComposerValue(`${textarea.value}${event.key}`);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        const length = el.value.length;
+        el.setSelectionRange(length, length);
+      });
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [applyComposerValue]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -3254,9 +3295,17 @@ export function StudioCopilot({
             if (!exactMatch && !fallbackMatch) return p;
             if (fallbackMatch) matchedFallbackTool = true;
             matchedTool = true;
-            return { ...p, done: true, result: evt.result, progress: 100 };
+            const error = getToolResultError(evt.result);
+            return {
+              ...p,
+              done: true,
+              result: evt.result,
+              error,
+              progress: error ? toolPart.progress ?? null : 100,
+            };
           });
           if (!matchedTool) {
+            const error = getToolResultError(evt.result);
             parts.push({
               kind: "tool_start",
               toolId: evt.toolId,
@@ -3264,7 +3313,8 @@ export function StudioCopilot({
               args: {},
               done: true,
               result: evt.result,
-              progress: 100,
+              error,
+              progress: error ? null : 100,
               logs: [{ ts: Date.now(), msg: "Tool completed", level: "info" as const }],
             });
           }
@@ -3883,11 +3933,7 @@ export function StudioCopilot({
             value={input}
             onChange={e => {
               const val = e.target.value;
-              setInput(val);
-              handleSlashInput(val);
-              // Surface the quick-action pill when the whole input is just a pasted/typed link
-              const trimmed = val.trim();
-              setPasteUrl(/^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null);
+              applyComposerValue(val);
               const target = e.currentTarget;
               requestAnimationFrame(() => {
                 const maxH = getInputMaxHeight();

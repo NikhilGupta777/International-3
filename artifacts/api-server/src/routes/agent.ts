@@ -47,6 +47,10 @@ import {
   deleteLocalFile,
 } from "../lib/gcs-storage";
 import { recordKeyFailure } from "../utils/key-circuit-breaker";
+import {
+  getArtifactValidationError,
+  getCleanAgentErrorMessage,
+} from "../lib/agent-tool-events";
 
 const router = Router();
 
@@ -74,25 +78,6 @@ const DEFAULT_CAPTION_LANGUAGE = "hi";
 
 function supportsNativeMediaInput(model: string): boolean {
   return !model.toLowerCase().startsWith("gemma-");
-}
-
-function looksLikeUnexecutedActionPromise(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    /\b(i['’]?ll|i will|let me|going to)\b/.test(normalized) &&
-    /\b(right now|now|for you|i will|i['’]?ll)\b/.test(normalized) &&
-    /\b(get|fetch|generate|create|make|download|translate|transcribe|cut|save|open|check|run|find)\b/.test(normalized)
-  );
-}
-
-function looksLikeActionRequest(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    /https?:\/\/|youtu\.be|youtube\.com/.test(normalized) ||
-    /\b(get|fetch|give|generate|create|make|download|translate|transcribe|caption|captions|subtitle|subtitles|cut|clip|save|open|check|run|find)\b/.test(normalized)
-  );
 }
 
 // buildThinkingConfig imported from gemini-client.ts
@@ -886,7 +871,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "create_image",
     description:
-      "Create a new image from a text prompt. If the user attached an existing image and asks to modify/edit it, use edit_image instead. Use create_image only for generating new images from scratch. IMPORTANT: Before calling this tool, deeply understand what the user actually wants — their intent, mood, use case, and visual style. Then craft a rich, detailed prompt yourself (scene composition, lighting, color palette, style, camera angle, mood, key elements) that will produce the best possible image. Never pass the user's raw text as the prompt — always rewrite it into a production-quality image generation prompt. Choose the best aspectRatio automatically based on the use case.",
+      "TEMPORARILY DISABLED. Do not call this tool. If the user asks to create or generate an image, reply that image generation is temporarily disabled and they will be notified once it becomes available.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1185,7 +1170,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "generate_music",
     description:
-      "Generate original music using Google Lyria AI. Use for any request to create, compose, or make music/songs/soundtracks/jingles. Craft the best possible Lyria prompt based on the user's intent — describe mood, genre, instruments, tempo, energy, structure, and duration. If duration not specified ask naturally: short (~30s) or full song (~2-3 min)? Also generates matching cover art automatically.",
+      "TEMPORARILY DISABLED. Do not call this tool. If the user asks to make, generate, compose, or create music/songs/soundtracks/background music, reply that music generation is temporarily disabled and they will be notified once it becomes available.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1389,8 +1374,15 @@ const GEMINI_DIRECT_TOOL_NAMES = new Set([
   "read_uploaded_file",
 ]);
 
+const TEMPORARILY_DISABLED_TOOL_NAMES = new Set([
+  "create_image",
+  "generate_music",
+]);
+
 const AGENT_VISIBLE_TOOLS = STUDIO_TOOLS.filter(
-  (tool) => !GEMINI_DIRECT_TOOL_NAMES.has(tool.name),
+  (tool) =>
+    !GEMINI_DIRECT_TOOL_NAMES.has(tool.name) &&
+    !TEMPORARILY_DISABLED_TOOL_NAMES.has(tool.name),
 );
 
 function buildAgentTools(includeNativeSearch: boolean): any[] {
@@ -1446,6 +1438,14 @@ Match the user's language:
 - If the user writes in English, respond in English.
 - Keep devotional/religious content respectful.
 
+# TEMPORARILY DISABLED FEATURES
+
+Image generation and music generation are temporarily disabled.
+- If the user asks to create/generate an image from scratch, do NOT call create_image. Say: "Image generation is temporarily disabled. You'll be notified once it becomes available."
+- If the user asks to make/generate/compose music, songs, soundtracks, jingles, or background music, do NOT call generate_music. Say: "Music generation is temporarily disabled. You'll be notified once it becomes available."
+- Do not offer workarounds that pretend to generate the image or music. You may still help write prompts, concepts, scripts, lyrics, or creative direction if the user asks.
+- Image description, OCR, and attached-image understanding can still be answered normally.
+
 # INTELLIGENCE FIRST — NO TOOL SPAM
 
 Use your own intelligence first. Do NOT call tools for:
@@ -1459,7 +1459,7 @@ Use your own intelligence first. Do NOT call tools for:
 
 Call tools only when the user needs a real app action or unavailable information:
 - YouTube metadata, captions, video analysis, download, clip, subtitles, timestamps, best clips, translation/dubbing
-- Image generation/edit/enhancement that must produce an output image file
+- Image edit/enhancement that must produce an output image file. New image generation from scratch is temporarily disabled.
 - File export/download or app navigation actions
 - Web research or current information
 - Job status, cancel, repeat artifact, tab navigation
@@ -1569,12 +1569,12 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "translate this video / dub in Hindi/Spanish" | translate_video only |
 | "what's trending / latest news / who is X" | web_search first, then maybe a video tool |
 | "read this article/page/source" | read_web_page |
-| "create/generate an image" | create_image — understand user intent deeply, craft a rich detailed prompt (composition, lighting, style, mood, colors), and pick the right aspect ratio for the use case (16:9 for thumbnails, 9:16 for stories/reels, 1:1 for social posts, etc.) |
+| "create/generate an image" | Do NOT call create_image. Say image generation is temporarily disabled and the user will be notified once it becomes available. |
 | "make this attached image clearer / enhance / restore" | enhance_image |
 | "edit this attached image" | edit_image — craft a precise editing prompt from user intent (what to change, what to preserve, style, constraints) |
 | "what is in this image" | answer directly using Gemini vision |
 | "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
-| "make music / generate a song / compose / create soundtrack / background music" | MANDATORY: call generate_music — you MUST call this tool, never describe or write about the music instead. Ask duration naturally if unclear ("short ~30s or a full song ~2-3 min?"). Craft a vivid Lyria prompt with genre, mood, instruments, tempo, structure. FORBIDDEN: saying "Done", "I have generated", "use the download button", or describing the result in ANY way before the tool has actually run and returned. If the tool fails, say it failed — never pretend success. |
+| "make music / generate a song / compose / create soundtrack / background music" | Do NOT call generate_music. Say music generation is temporarily disabled and the user will be notified once it becomes available. |
 | "write script / storyboard / shot list" | write_video_script — craft a detailed topic brief (audience, platform, tone, key points, emotional arc) before calling; only when user needs downloadable file, otherwise answer directly |
 | "SEO title/description/tags/thumbnail text" | generate_seo_pack — craft a detailed context brief (video content, niche, trends, goals) before calling; only when user needs structured artifact export, otherwise answer directly |
 | "full package / do everything / complete package" | do_full_package |
@@ -5666,7 +5666,7 @@ router.post("/agent/chat", async (req, res) => {
 
     let iterations = 0;
     let emptyResponseRetries = 0;
-    let unexecutedActionRetries = 0;
+    let streamReadRetries = 0;
     let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH && activeModel !== "gemma-4-31b-it";
     let finalAnswerSent = false;
 
@@ -6024,126 +6024,77 @@ toolConfig: activeCacheName
       };
       let lastGroundingMeta: any = null;
       let firstChunkReceived = false;
+      let streamReadErr: unknown = null;
       try {
-      for await (const chunk of stream!) {
-        if (!firstChunkReceived) {
-          firstChunkReceived = true;
-          if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
-        }
-        if (!isConnected()) break;
-
-        // ── Extract thought summaries from Gemini's thinking mode ────────
-        // When includeThoughts is true, parts with thought===true contain
-        // the model's reasoning summary. Stream these to the client so
-        // users can see what the agent is thinking in real time.
-        let chunkText = "";
-        const chunkParts = chunk.candidates?.[0]?.content?.parts ?? [];
-        for (const tp of chunkParts) {
-          if (tp.thought && tp.text) {
-            sseEvent(res, { type: "thought_delta", runId, content: tp.text });
-          } else if (tp.text) {
-            chunkText += tp.text;
+        for await (const chunk of stream!) {
+          if (!firstChunkReceived) {
+            firstChunkReceived = true;
+            if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
           }
-        }
+          if (!isConnected()) break;
 
-        // ── Track grounding metadata from native Google Search grounding ─
-        const gm = chunk.candidates?.[0]?.groundingMetadata as any;
-        if (gm) lastGroundingMeta = gm;
-        if (chunkText) {
-          fullText += chunkText;
-          pendingTextBuf += chunkText;
-          if (!shouldHoldToolDependentOutput()) {
-            // Hold back text that might be a partial internal marker.
-            // Check for any marker pattern that should not reach the client:
-            // [SUGGEST..., [Tool:..., [TextArtifact:..., [Artifact:...
-            const markerPatterns = [
-              "[SUGGEST",
-              "[Tool:",
-              "[TextArtifact:",
-              "[Artifact:",
-            ];
-            let holdIdx = -1;
-            for (const pat of markerPatterns) {
-              // Check for full pattern start or partial match at the end of buffer
-              const idx = pendingTextBuf.lastIndexOf(pat);
-              if (idx !== -1 && (holdIdx === -1 || idx < holdIdx)) {
-                holdIdx = idx;
-              }
-              // Also check for partial pattern at the very end (e.g. "[Too" or "[Tex")
-              for (let pLen = 1; pLen < pat.length; pLen++) {
-                if (pendingTextBuf.endsWith(pat.slice(0, pLen))) {
-                  const partialIdx = pendingTextBuf.length - pLen;
-                  if (holdIdx === -1 || partialIdx < holdIdx) {
-                    holdIdx = partialIdx;
-                  }
-                }
-              }
+          // ── Extract thought summaries from Gemini's thinking mode ────────
+          // When includeThoughts is true, parts with thought===true contain
+          // the model's reasoning summary. Stream these to the client so
+          // users can see what the agent is thinking in real time.
+          let chunkText = "";
+          const chunkParts = chunk.candidates?.[0]?.content?.parts ?? [];
+          for (const tp of chunkParts) {
+            if (tp.thought && tp.text) {
+              sseEvent(res, { type: "thought_delta", runId, content: tp.text });
+            } else if (tp.text) {
+              chunkText += tp.text;
             }
-            // Also hold back partial <canvas tags at the end of buffer
-            const canvasTag = "<canvas";
-            for (let pLen = 1; pLen <= canvasTag.length; pLen++) {
-              if (
-                pendingTextBuf.toLowerCase().endsWith(canvasTag.slice(0, pLen))
-              ) {
-                const partialIdx = pendingTextBuf.length - pLen;
-                if (holdIdx === -1 || partialIdx < holdIdx) {
-                  holdIdx = partialIdx;
-                }
-                break;
+          }
+
+          // ── Track grounding metadata from native Google Search grounding ─
+          const gm = chunk.candidates?.[0]?.groundingMetadata as any;
+          if (gm) lastGroundingMeta = gm;
+          if (chunkText) {
+            fullText += chunkText;
+            pendingTextBuf += chunkText;
+          }
+
+          const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+          for (const p of parts) {
+            if (p.functionCall) {
+              // PD-5: Only add function calls with a valid name — filter out
+              // malformed parts where Gemini sends a functionCall with no name.
+              if (p.functionCall.name) {
+                functionCalls.push({
+                  id: p.functionCall.id,
+                  name: p.functionCall.name,
+                  args: (p.functionCall.args ?? {}) as Record<string, any>,
+                });
+                rawFcParts.push(p);
               }
-            }
-            if (holdIdx === -1) {
-              emitCanvasRoutedText(pendingTextBuf);
-              pendingTextBuf = "";
-            } else {
-              const safe = pendingTextBuf.slice(0, holdIdx);
-              if (safe) {
-                emitCanvasRoutedText(safe);
-              }
-              pendingTextBuf = pendingTextBuf.slice(holdIdx);
             }
           }
         }
-
-        const parts = chunk.candidates?.[0]?.content?.parts ?? [];
-        for (const p of parts) {
-          if (p.functionCall) {
-            // PD-5: Only add function calls with a valid name — filter out
-            // malformed parts where Gemini sends a functionCall with no name.
-            if (p.functionCall.name) {
-              functionCalls.push({
-                id: p.functionCall.id,
-                name: p.functionCall.name,
-                args: (p.functionCall.args ?? {}) as Record<string, any>,
-              });
-              rawFcParts.push(p);
-            }
-          }
-        }
-      }
+      } catch (err) {
+        streamReadErr = err;
       } finally {
         if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
       }
-      // Flush remaining buffered text (strip internal markers if present)
-      if (pendingTextBuf && !shouldHoldToolDependentOutput()) {
-        const cleaned = pendingTextBuf
-          .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
-          .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
-          .replace(/\[TextArtifact:[^\]]*\][^\[]*/gi, "")
-          .replace(/\[Artifact:[^\]]*\]/gi, "")
-          .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
-          .replace(/\{"\w+(?:Url|url)":\s*"https?:\/\/[^"]*"[^}]*\}/g, "")
-          .trimEnd();
-        if (cleaned) {
-          emitCanvasRoutedText(cleaned, true);
+      if (streamReadErr) {
+        if (
+          isGeminiKeyRetryableError(streamReadErr) &&
+          streamReadRetries < 3 &&
+          isConnected()
+        ) {
+          streamReadRetries++;
+          iterations--; // same turn/context; do not spend an agent step
+          if (currentApiKey) {
+            recordKeyFailure(currentApiKey, streamReadErr).catch(() => {});
+          }
+          await new Promise((r) =>
+            setTimeout(r, 500 + streamReadRetries * 700),
+          );
+          continue;
         }
+        throw streamReadErr;
       }
-      if (
-        (canvasRouteBuf || activeCanvas) &&
-        !shouldHoldToolDependentOutput()
-      ) {
-        emitCanvasRoutedText("", true);
-      }
+      streamReadRetries = 0;
 
       if (!isConnected()) break;
 
@@ -6176,28 +6127,17 @@ toolConfig: activeCacheName
 
       // ── 2b. No function calls → final answer, parse suggestions, done ─────
       if (functionCalls.length === 0) {
-        if (
-          unexecutedActionRetries < 2 &&
-          looksLikeActionRequest(latestUserActionText) &&
-          looksLikeUnexecutedActionPromise(cleanedText)
-        ) {
-          unexecutedActionRetries++;
-          loopContents.push({
-            role: "model" as const,
-            parts: [{ text: fullText }],
-          });
-          loopContents.push({
-            role: "user" as const,
-            parts: [{
-              text:
-                "You just promised to perform an app action, but you did not call any tool. Do not repeat the promise. If the user requested a real app action and the inputs are available from the chat/tool history, call the correct function now. If no action is possible, give one concise final answer explaining the exact blocker.",
-            }],
-          });
-          continue;
-        }
-
         // Extract [SUGGESTIONS: "a" | "b" | "c"] from the final text
         const sugMatch = fullText.match(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s);
+        const visibleText = fullText
+          .replace(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s, "")
+          .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
+          .replace(/\[Tool:\s*\w+\s*\|[^\]]*\]/gi, "")
+          .replace(/\[TextArtifact:[^\]]*\][^\[]*/gi, "")
+          .replace(/\[Artifact:[^\]]*\]/gi, "")
+          .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
+          .replace(/\{"\w+(?:Url|url)":\s*"https?:\/\/[^"]*"[^}]*\}/g, "")
+          .trimEnd();
         if (sugMatch) {
           const items = sugMatch[1]
             .split("|")
@@ -6211,11 +6151,11 @@ toolConfig: activeCacheName
         // hidden canvas protocol. Route it through the canvas parser instead of
         // emitting raw <canvas> tags into chat.
         if (!streamedTextLive) {
-          const heldText = pendingTextBuf || fullText;
+          const heldText = visibleText || pendingTextBuf || fullText;
           if (/<canvas\b|```(?:html|css|javascript|js|typescript|ts|python|py|json|markdown|md|text|srt|vtt)\b/i.test(heldText)) {
             emitCanvasRoutedText(heldText, true);
           } else {
-            sseEvent(res, { type: "text", content: fullText, runId });
+            sseEvent(res, { type: "text", content: visibleText, runId });
           }
         }
         finalAnswerSent = true;
@@ -6332,6 +6272,45 @@ toolConfig: activeCacheName
         }
         anyToolAttemptedForTurn = true;
 
+        if (!hadError && toolArtifact) {
+          const artifactError = getArtifactValidationError(toolArtifact as any);
+          if (artifactError) {
+            hadError = true;
+            toolErrorMessage = artifactError;
+            toolResult = {
+              ...(toolResult && typeof toolResult === "object"
+                ? toolResult
+                : {}),
+              error: artifactError,
+            };
+            toolArtifact = undefined;
+            sseEvent(res, {
+              type: "tool_progress",
+              runId,
+              toolId,
+              name: fc.name,
+              status: "error",
+              message: artifactError,
+            });
+            sseEvent(res, {
+              type: "tool_log",
+              runId,
+              toolId,
+              name: fc.name,
+              message: artifactError,
+              level: "error",
+            });
+          }
+        }
+
+        if (!hadError && toolArtifact)
+          sseEvent(res, {
+            type: "artifact",
+            runId,
+            toolId,
+            ...(toolArtifact as object),
+          });
+
         sseEvent(res, {
           type: "tool_done",
           runId,
@@ -6340,13 +6319,6 @@ toolConfig: activeCacheName
           result: toolResult,
           ts: Date.now(),
         });
-        if (toolArtifact)
-          sseEvent(res, {
-            type: "artifact",
-            runId,
-            toolId,
-            ...(toolArtifact as object),
-          });
 
         return {
           index: fcIndex,
@@ -6463,7 +6435,7 @@ toolConfig: activeCacheName
     }
   } catch (err: any) {
     if (isConnected()) {
-      let errMsg: string = err?.message ?? "Unknown copilot error";
+      let errMsg = getCleanAgentErrorMessage(err);
       // Specific: Gemini 'empty output' transient error — always show clean message
       if (/model output must contain|both be empty/i.test(errMsg)) {
         sseEvent(res, {
@@ -6476,22 +6448,6 @@ toolConfig: activeCacheName
         runCompleted = true;
         return;
       }
-      try {
-        const parsed = JSON.parse(errMsg);
-        const inner = parsed?.error?.message ?? parsed?.message ?? errMsg;
-        // Strip the long docs URL reference
-        errMsg = String(inner)
-          .split(/\.?\s*Please refer to https?:\/\//)
-          .shift()!
-          .trim();
-      } catch {
-        /* not JSON, use as-is */
-      }
-      // Also sanitize other known internal Gemini error patterns
-      errMsg = errMsg
-        .replace(/\[JUDGE\][^\]]*\]/gi, "")
-        .replace(/thought_signature/gi, "")
-        .trim();
       sseEvent(res, {
         type: "error",
         message: errMsg || "Something went wrong — please try again.",
