@@ -51,6 +51,10 @@ import {
   getArtifactValidationError,
   getCleanAgentErrorMessage,
 } from "../lib/agent-tool-events";
+import {
+  getAnalyzeYoutubeVideoDescription,
+  getModelSpecificSystemPrompt,
+} from "../lib/agent-model-instructions";
 
 const router = Router();
 
@@ -1385,14 +1389,22 @@ const AGENT_VISIBLE_TOOLS = STUDIO_TOOLS.filter(
     !TEMPORARILY_DISABLED_TOOL_NAMES.has(tool.name),
 );
 
-function buildAgentTools(includeNativeSearch: boolean): any[] {
+function buildAgentTools(includeNativeSearch: boolean, activeModel: string): any[] {
+  const functionDeclarations = AGENT_VISIBLE_TOOLS.map((tool) =>
+    tool.name === "analyze_youtube_video"
+      ? {
+          ...tool,
+          description: getAnalyzeYoutubeVideoDescription(activeModel),
+        }
+      : tool,
+  );
   const tools: any[] = [];
   if (includeNativeSearch && ENABLE_NATIVE_AGENT_SEARCH) {
     // Keep Google Search in the main model turn so ordinary searches avoid an
     // extra web_search function-call round trip.
     tools.push({ googleSearch: {} });
   }
-  tools.push({ functionDeclarations: AGENT_VISIBLE_TOOLS as any });
+  tools.push({ functionDeclarations: functionDeclarations as any });
   return tools;
 }
 
@@ -5745,11 +5757,13 @@ router.post("/agent/chat", async (req, res) => {
               abortSignal: controller.signal,
               systemInstruction: activeCacheName
                 ? undefined
-                : SYSTEM_PROMPT + skillPromptAddendum,
+                : SYSTEM_PROMPT +
+                  getModelSpecificSystemPrompt(activeModel) +
+                  skillPromptAddendum,
 
               tools: activeCacheName
                 ? undefined
-                : buildAgentTools(useNativeSearchTools),
+                : buildAgentTools(useNativeSearchTools, activeModel),
 
 toolConfig: activeCacheName
                 ? undefined
