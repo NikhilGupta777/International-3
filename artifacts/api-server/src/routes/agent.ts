@@ -6067,54 +6067,6 @@ toolConfig: activeCacheName
           if (chunkText) {
             fullText += chunkText;
             pendingTextBuf += chunkText;
-            if (!shouldHoldToolDependentOutput()) {
-              // Stream user-visible text live, but keep partial hidden markers
-              // until we know whether they are internal protocol text.
-              const markerPatterns = [
-                "[SUGGEST",
-                "[Tool:",
-                "[TextArtifact:",
-                "[Artifact:",
-              ];
-              let holdIdx = -1;
-              for (const pat of markerPatterns) {
-                const idx = pendingTextBuf.lastIndexOf(pat);
-                if (idx !== -1 && (holdIdx === -1 || idx < holdIdx)) {
-                  holdIdx = idx;
-                }
-                for (let pLen = 1; pLen < pat.length; pLen++) {
-                  if (pendingTextBuf.endsWith(pat.slice(0, pLen))) {
-                    const partialIdx = pendingTextBuf.length - pLen;
-                    if (holdIdx === -1 || partialIdx < holdIdx) {
-                      holdIdx = partialIdx;
-                    }
-                  }
-                }
-              }
-              const canvasTag = "<canvas";
-              for (let pLen = 1; pLen <= canvasTag.length; pLen++) {
-                if (
-                  pendingTextBuf.toLowerCase().endsWith(canvasTag.slice(0, pLen))
-                ) {
-                  const partialIdx = pendingTextBuf.length - pLen;
-                  if (holdIdx === -1 || partialIdx < holdIdx) {
-                    holdIdx = partialIdx;
-                  }
-                  break;
-                }
-              }
-
-              if (holdIdx === -1) {
-                emitCanvasRoutedText(pendingTextBuf);
-                pendingTextBuf = "";
-              } else {
-                const safe = pendingTextBuf.slice(0, holdIdx);
-                if (safe) {
-                  emitCanvasRoutedText(safe);
-                }
-                pendingTextBuf = pendingTextBuf.slice(holdIdx);
-              }
-            }
           }
 
           const parts = chunk.candidates?.[0]?.content?.parts ?? [];
@@ -6157,17 +6109,6 @@ toolConfig: activeCacheName
         throw streamReadErr;
       }
       streamReadRetries = 0;
-
-      if (pendingTextBuf && !shouldHoldToolDependentOutput()) {
-        emitCanvasRoutedText(pendingTextBuf, true);
-        pendingTextBuf = "";
-      }
-      if (
-        (canvasRouteBuf || activeCanvas) &&
-        !shouldHoldToolDependentOutput()
-      ) {
-        emitCanvasRoutedText("", true);
-      }
 
       if (!isConnected()) break;
 
