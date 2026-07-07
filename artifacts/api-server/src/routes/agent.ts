@@ -3265,11 +3265,12 @@ async function executeTool(
         url: args.url,
       } as any);
 
-      // Poll until analysis is done (same pattern as clip/download)
+      // Poll the clips-specific status endpoint (clipJobs map, not the
+      // download jobs map that /youtube/progress/ checks).
       await pollJobUntilDone(
         res,
         name,
-        `${apiBase}/youtube/progress/${jobId}`,
+        `${apiBase}/youtube/clips/status/${jobId}`,
         jobId,
         internalHeaders,
         isConnected,
@@ -3662,6 +3663,8 @@ async function executeTool(
       let data: any = { status: "not_found" };
       for (const endpoint of [
         `${apiBase}/youtube/progress/${args.jobId}`,
+        `${apiBase}/youtube/clips/status/${args.jobId}`,
+        `${apiBase}/youtube/timestamps/status/${args.jobId}`,
         `${apiBase}/subtitles/status/${args.jobId}`,
         `${apiBase}/translator/status/${args.jobId}`,
       ]) {
@@ -3669,8 +3672,8 @@ async function executeTool(
           () => null,
         );
         if (r?.ok) {
-          const parsed = await r.json().catch(() => null);
-          if (parsed) {
+          const parsed = (await r.json().catch(() => null)) as any;
+          if (parsed && parsed.status !== "not_found") {
             data = parsed;
             break;
           }
@@ -4093,6 +4096,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -4906,21 +4914,25 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isRelativeApi = sourceUrl.startsWith("/");
+      const resolvedUrl = isRelativeApi
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: Validate resolved URL is not internal before fetching.
+      // Skip check for relative /api/ URLs — those are intentionally resolved
+      // to the internal API base and carry auth via X-Internal-Agent header.
+      if (!isRelativeApi) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private")) throw err;
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
       const r = await fetch(resolvedUrl, {
