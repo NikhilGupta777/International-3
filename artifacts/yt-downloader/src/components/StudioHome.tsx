@@ -5,7 +5,7 @@ import {
   Download, Captions, Scissors,
   AlarmClock, UploadCloud,
   Paperclip, ImagePlus, Music2, Search, Clapperboard,
-  Bell, X, Newspaper,
+  Bell, X, Newspaper, ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -149,6 +149,7 @@ export function StudioHome({
   const [updatesOpen, setUpdatesOpen] = useState(false);
   const [activeUpdate, setActiveUpdate] = useState<HomeUpdate | null>(null);
   const [readUpdates, setReadUpdates] = useState<string[]>(readHomeUpdatesInitial);
+  const [recentUpdatesOpen, setRecentUpdatesOpen] = useState(false);
   const [listening, setListening] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const resizeTextarea = useCallback(() => {
@@ -163,6 +164,8 @@ export function StudioHome({
   const { displayText: placeholderText, cursorVisible: placeholderCursor } = useTypingPlaceholder(placeholderActive);
   const recognitionRef = useRef<any>(null);
   const unreadUpdates = HOME_UPDATES.filter((update) => !readUpdates.includes(update.id));
+  const visibleUpdates = HOME_UPDATES.slice(0, 2);
+  const recentUpdates = HOME_UPDATES.slice(2);
 
   const markUpdateRead = (id: string) => {
     setReadUpdates((prev) => {
@@ -489,7 +492,7 @@ export function StudioHome({
               </button>
             </div>
             <div className="home-update-list">
-              {HOME_UPDATES.map((update) => {
+              {visibleUpdates.map((update) => {
                 const read = readUpdates.includes(update.id);
                 return (
                   <button
@@ -509,6 +512,44 @@ export function StudioHome({
                   </button>
                 );
               })}
+              {recentUpdates.length > 0 ? (
+                <div className="home-update-recent-group">
+                  <button
+                    type="button"
+                    className={cn("home-update-recent-toggle", recentUpdatesOpen && "is-open")}
+                    onClick={() => setRecentUpdatesOpen((v) => !v)}
+                    aria-expanded={recentUpdatesOpen}
+                  >
+                    <span>Recent</span>
+                    <em>{recentUpdates.length} older update{recentUpdates.length !== 1 ? "s" : ""}</em>
+                    <ChevronDown className="w-4 h-4" />
+                  </button>
+                  {recentUpdatesOpen ? (
+                    <div className="home-update-recent-list">
+                      {recentUpdates.map((update) => {
+                        const read = readUpdates.includes(update.id);
+                        return (
+                          <button
+                            key={update.id}
+                            type="button"
+                            className={cn("home-update-card", read && "home-update-card-read")}
+                            onClick={() => openUpdate(update)}
+                          >
+                            <HomeUpdateVisual type={update.visual} />
+                            <span className="home-update-card-copy">
+                              <i>{update.date}</i>
+                              <b>{update.title}</b>
+                              <small>{update.summary}</small>
+                              <em>{read ? "Read again" : "Read more"}</em>
+                            </span>
+                            {!read && <span className="home-update-dot" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
         )}

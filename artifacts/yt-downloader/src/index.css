@@ -3704,6 +3704,59 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   border-radius: 999px;
 }
 
+.home-update-recent-group {
+  display: grid;
+  gap: 10px;
+}
+
+.home-update-recent-toggle {
+  width: 100%;
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 15px;
+  text-align: left;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.home-update-recent-toggle:hover,
+.home-update-recent-toggle.is-open {
+  background: rgba(255, 255, 255, 0.075);
+  border-color: rgba(125, 211, 252, 0.24);
+}
+
+.home-update-recent-toggle span {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.home-update-recent-toggle em {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+}
+
+.home-update-recent-toggle svg {
+  color: rgba(125, 211, 252, 0.72);
+  transition: transform 0.18s ease;
+}
+
+.home-update-recent-toggle.is-open svg {
+  transform: rotate(180deg);
+}
+
+.home-update-recent-list {
+  display: grid;
+  gap: 10px;
+}
+
 .home-update-card {
   position: relative;
   display: grid;
