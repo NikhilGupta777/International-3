@@ -6067,6 +6067,7 @@ toolConfig: activeCacheName
           if (chunkText) {
             fullText += chunkText;
             pendingTextBuf += chunkText;
+            emitCanvasRoutedText(chunkText);
           }
 
           const parts = chunk.candidates?.[0]?.content?.parts ?? [];

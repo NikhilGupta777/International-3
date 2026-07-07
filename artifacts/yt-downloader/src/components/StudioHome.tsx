@@ -20,8 +20,18 @@ const HOME_UPDATES_KEY = "studio-home-updates-read-v1";
 
 const HOME_UPDATES = [
   {
+    id: "content-manager-video-link-2026-07-07",
+    label: "New",
+    date: "7/7/26",
+    title: "Content Manager now watches and analyzes videos",
+    summary: "Paste an unlisted YouTube video link, select a channel, and AI watches the video context to create the best title, description, tags, SEO pack, and more.",
+    mode: "content-manager" as Mode,
+    visual: "content" as const,
+  },
+  {
     id: "content-manager",
     label: "New",
+    date: "Earlier",
     title: "AI YT Channel Strategist",
     summary: "Next video title, description, tags, and many more. All in one place, your personalized AI channel strategist.",
     mode: "content-manager" as Mode,
@@ -30,6 +40,7 @@ const HOME_UPDATES = [
   {
     id: "find-video",
     label: "Updated",
+    date: "Recent",
     title: "Find Video",
     summary: "Search the Bhavishya Malika knowledge base with chat history, full database mode, live thinking, and stop controls.",
     mode: "findvideo" as Mode,
@@ -489,6 +500,7 @@ export function StudioHome({
                   >
                     <HomeUpdateVisual type={update.visual} />
                     <span className="home-update-card-copy">
+                      <i>{update.date}</i>
                       <b>{update.title}</b>
                       <small>{update.summary}</small>
                       <em>{read ? "Read again" : "Read more"}</em>
@@ -514,7 +526,7 @@ export function StudioHome({
               <X className="w-4 h-4" />
             </button>
             <div className="home-update-modal-copy">
-              <span>{activeUpdate.label}</span>
+              <span>{activeUpdate.label} · {activeUpdate.date}</span>
               <h2>{activeUpdate.title}</h2>
               <p>{activeUpdate.summary}</p>
               <button

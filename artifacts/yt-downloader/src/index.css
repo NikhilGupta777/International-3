@@ -3613,6 +3613,7 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   top: calc(100% + 10px);
   right: 0;
   width: min(390px, calc(100vw - 32px));
+  max-height: min(620px, calc(100vh - 96px));
   padding: 14px;
   background: rgba(10, 10, 12, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -3625,6 +3626,9 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   -webkit-backdrop-filter: blur(28px);
   z-index: 50;
   animation: popoverFadeIn 0.24s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 @keyframes popoverFadeIn {
@@ -3684,6 +3688,20 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
 .home-update-list {
   display: grid;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(125, 211, 252, 0.35) transparent;
+}
+
+.home-update-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.home-update-list::-webkit-scrollbar-thumb {
+  background: rgba(125, 211, 252, 0.35);
+  border-radius: 999px;
 }
 
 .home-update-card {
@@ -3720,6 +3738,15 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   flex-direction: column;
   gap: 5px;
   justify-content: center;
+}
+
+.home-update-card-copy i {
+  color: rgba(125, 211, 252, 0.72);
+  font-size: 10.5px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .home-update-card-copy b {
@@ -9601,12 +9628,13 @@ html.studio-light-mode .ytcm-profile {
   z-index: 4;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 16px;
   pointer-events: none;
 }
 .ytcm-chat-brand,
-.ytcm-chat-controls {
+.ytcm-chat-controls,
+.ytcm-chat-actions {
   pointer-events: auto;
   display: flex;
   align-items: center;
@@ -9637,11 +9665,37 @@ html.studio-light-mode .ytcm-profile {
   background: rgba(31,31,31,0.92);
   box-shadow: 0 14px 40px rgba(0,0,0,0.35);
 }
+.ytcm-chat-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  gap: 12px;
+}
+.ytcm-top-icon-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: rgba(255,255,255,0.68);
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.ytcm-top-icon-btn:hover,
+.ytcm-top-icon-btn.is-active {
+  color: #fff;
+  background: rgba(255,255,255,0.10);
+}
 .ytcm-chat-controls .ytcm-round-btn:disabled {
   opacity: 0.45;
   cursor: default;
 }
 .ytcm-history-wrap {
+  position: relative;
+}
+.ytcm-channel-wrap {
   position: relative;
 }
 .ytcm-round-btn.is-active {
@@ -9654,6 +9708,20 @@ html.studio-light-mode .ytcm-profile {
   top: calc(100% + 10px);
   width: 292px;
   max-height: 430px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(18,18,18,0.98);
+  box-shadow: 0 24px 70px rgba(0,0,0,0.55);
+}
+.ytcm-channel-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 10px);
+  width: 260px;
+  max-height: 360px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -9694,6 +9762,11 @@ html.studio-light-mode .ytcm-profile {
 }
 .ytcm-history-empty {
   padding: 28px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   text-align: center;
   color: rgba(255,255,255,0.35);
   font-size: 0.82rem;
@@ -9795,6 +9868,41 @@ html.studio-light-mode .ytcm-profile {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+.ytcm-channel-pill {
+  height: 34px;
+  border: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: rgba(255,255,255,0.78);
+  background: rgba(255,255,255,0.06);
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.ytcm-channel-pill:hover,
+.ytcm-channel-pill.is-active {
+  color: #fff;
+  background: rgba(255,255,255,0.10);
+}
+.ytcm-channel-menu .ytcm-mention-item {
+  width: calc(100% - 12px);
+  margin: 0 6px;
+}
+.ytcm-channel-menu .ytcm-mention-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ytcm-add-channel-item {
+  border-top: 1px solid rgba(255,255,255,0.07) !important;
+  margin-top: 5px !important;
+  padding-top: 9px !important;
 }
 .ytcm-chat-main {
   flex: 1;
@@ -10226,6 +10334,19 @@ html.studio-light-mode .ytcm-profile {
   font-style: normal;
   color: rgba(255,255,255,0.5);
   font-size: 0.72rem;
+}
+.ytcm-video-tool-chips {
+  margin-top: 0;
+}
+.ytcm-video-tool-chip {
+  border-color: rgba(45,212,191,0.24);
+  background: rgba(20,184,166,0.1);
+  color: rgba(204,251,241,0.94);
+}
+.ytcm-video-tool-chip.is-error {
+  border-color: rgba(248,113,113,0.24);
+  background: rgba(239,68,68,0.1);
+  color: rgba(254,202,202,0.94);
 }
 
 /* Streamed natural-language summary above the pack */

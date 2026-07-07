@@ -26,6 +26,8 @@ const router = Router();
 const MAX_TOPIC_CHARS = 4000;
 const MAX_AGENT_ITERATIONS = 6;
 const MAX_SEARCHES_PER_RUN = 4;
+const MAX_VIDEO_CAPTION_CHARS = 220_000;
+const DEFAULT_CAPTION_LANGUAGE = "hi";
 
 type ContentPack = {
   titles: Array<{ title: string; rationale: string }>;
@@ -35,6 +37,20 @@ type ContentPack = {
   mustDo: string[];
   channelSignals: string[];
   sources?: Array<{ title: string; url: string }>;
+};
+
+type VideoSourceContext = {
+  url: string;
+  info?: Record<string, any>;
+  captions?: {
+    language: string;
+    content: string;
+    contentBytes: number;
+    fullContentInContext: boolean;
+    subtitleSource?: string;
+    videoDurationSec?: number;
+  };
+  errors: string[];
 };
 
 function send(res: any, payload: object): void {
@@ -62,6 +78,157 @@ function normalizeAiErrorMessage(err: any): string {
     return "The AI provider hit a temporary internal error. Please retry.";
   }
   return raw.trim() || "Content generation failed";
+}
+
+function getApiBase(): string {
+  if (process.env.INTERNAL_API_BASE) return `${process.env.INTERNAL_API_BASE}/api`;
+  return `http://127.0.0.1:${process.env.PORT ?? 8080}/api`;
+}
+
+function buildInternalHeaders(req: any): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Cookie: req.headers.cookie ?? "",
+    "x-internal-agent": process.env.INTERNAL_AGENT_SECRET || "dev-internal-agent-secret",
+  };
+  if (req.headers["x-forwarded-for"]) headers["x-forwarded-for"] = String(req.headers["x-forwarded-for"]);
+  else if (req.ip) headers["x-forwarded-for"] = req.ip;
+  if (req.headers["x-notify-client"]) headers["x-notify-client"] = String(req.headers["x-notify-client"]);
+  if (req.headers["x-client-id"]) headers["x-client-id"] = String(req.headers["x-client-id"]);
+  if (req.headers["x-device-id"]) headers["x-device-id"] = String(req.headers["x-device-id"]);
+  return headers;
+}
+
+function extractYouTubeUrl(text: string): string | null {
+  const match = String(text ?? "").match(/https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?[^\s<>"']*v=[\w-]{11}[^\s<>"']*|youtu\.be\/[\w-]{11}[^\s<>"']*|youtube\.com\/shorts\/[\w-]{11}[^\s<>"']*)/i);
+  return match?.[0] ?? null;
+}
+
+function buildEffectiveTopic(topic: string, sourceUrl: string | null): string {
+  if (!sourceUrl) return topic;
+  const withoutUrls = topic
+    .replace(sourceUrl, " ")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return withoutUrls.length >= 4
+    ? withoutUrls
+    : "Create the best title suggestions and SEO pack from this source video for the selected channel.";
+}
+
+function formatDuration(seconds: unknown): string {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const h = Math.floor(value / 3600);
+  const m = Math.floor((value % 3600) / 60);
+  const s = Math.floor(value % 60);
+  return h > 0
+    ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+    : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+async function readResponseTextWithLimit(res: Response, maxChars: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return await res.text();
+  const decoder = new TextDecoder();
+  let text = "";
+  while (text.length < maxChars) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  if (text.length >= maxChars) {
+    try { await reader.cancel(); } catch {}
+  } else {
+    text += decoder.decode();
+  }
+  return text.slice(0, maxChars);
+}
+
+async function fetchVideoSourceContext(req: any, res: any, runId: string, url: string): Promise<VideoSourceContext> {
+  const apiBase = getApiBase();
+  const headers = buildInternalHeaders(req);
+  const language = DEFAULT_CAPTION_LANGUAGE;
+  const result: VideoSourceContext = { url, errors: [] };
+
+  send(res, { type: "video_tool_start", runId, name: "get_video_info", label: "Fetching video info" });
+  send(res, { type: "video_tool_start", runId, name: "get_youtube_captions", label: "Getting captions" });
+
+  const [infoOutcome, captionsOutcome] = await Promise.allSettled([
+    (async () => {
+      const r = await fetch(`${apiBase}/youtube/info`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ url }),
+      });
+      const data = await r.json().catch(() => ({})) as Record<string, any>;
+      if (!r.ok) throw new Error(data?.error ?? `Info fetch failed: ${r.status}`);
+      return data;
+    })(),
+    (async () => {
+      const r = await fetch(`${apiBase}/youtube/subtitles?url=${encodeURIComponent(url)}&lang=${encodeURIComponent(language)}&format=srt`, {
+        headers,
+      });
+      const rawText = await readResponseTextWithLimit(r, MAX_VIDEO_CAPTION_CHARS + 1);
+      if (!r.ok) {
+        let message = rawText || `Captions fetch failed: ${r.status}`;
+        try {
+          const parsed = JSON.parse(rawText) as { error?: string };
+          message = parsed.error ?? message;
+        } catch {}
+        throw new Error(message);
+      }
+      return {
+        language,
+        content: rawText.slice(0, MAX_VIDEO_CAPTION_CHARS),
+        contentBytes: Buffer.byteLength(rawText.slice(0, MAX_VIDEO_CAPTION_CHARS), "utf8"),
+        fullContentInContext: rawText.length <= MAX_VIDEO_CAPTION_CHARS,
+        subtitleSource: r.headers.get("x-subtitle-source") ?? undefined,
+        videoDurationSec: Number(r.headers.get("x-video-duration") ?? "") || undefined,
+      };
+    })(),
+  ]);
+
+  if (infoOutcome.status === "fulfilled") {
+    result.info = infoOutcome.value;
+    send(res, { type: "video_tool_done", runId, name: "get_video_info", label: "Video info fetched" });
+  } else {
+    const message = infoOutcome.reason?.message ?? "Video info failed";
+    result.errors.push(`get_video_info: ${message}`);
+    send(res, { type: "video_tool_done", runId, name: "get_video_info", label: "Video info failed", error: message });
+  }
+
+  if (captionsOutcome.status === "fulfilled") {
+    result.captions = captionsOutcome.value;
+    send(res, { type: "video_tool_done", runId, name: "get_youtube_captions", label: "Captions fetched" });
+  } else {
+    const message = captionsOutcome.reason?.message ?? "Captions failed";
+    result.errors.push(`get_youtube_captions: ${message}`);
+    send(res, { type: "video_tool_done", runId, name: "get_youtube_captions", label: "Captions failed", error: message });
+  }
+
+  return result.info || result.captions ? result : { ...result, errors: result.errors.length ? result.errors : ["No video information or captions could be fetched."] };
+}
+
+function buildVideoSourcePrompt(source: VideoSourceContext | null, maxCaptionChars = MAX_VIDEO_CAPTION_CHARS): string {
+  if (!source) return "";
+  const info = source.info ?? {};
+  const captionContent = source.captions?.content.slice(0, maxCaptionChars);
+  const lines = [
+    "YOUTUBE SOURCE VIDEO PROVIDED BY USER",
+    `URL: ${source.url}`,
+    info.title ? `Existing title: ${info.title}` : "",
+    info.uploader ? `Source channel: ${info.uploader}` : "",
+    info.duration ? `Duration: ${formatDuration(info.duration)} (${info.duration}s)` : "",
+    info.viewCount != null ? `Views: ${Number(info.viewCount).toLocaleString("en-US")}` : "",
+    info.uploadDate ? `Upload date: ${info.uploadDate}` : "",
+    info.description ? `Existing description excerpt: ${String(info.description).slice(0, 500)}` : "",
+    source.captions
+      ? `Available captions (${source.captions.language}, source ${source.captions.subtitleSource ?? "unknown"}${source.captions.fullContentInContext && source.captions.content.length <= maxCaptionChars ? "" : ", truncated for prompt safety"}):\n${captionContent}`
+      : "",
+    source.errors.length ? `Tool notes:\n${source.errors.join("\n")}` : "",
+  ].filter(Boolean);
+  return lines.join("\n");
 }
 
 router.get("/content-manager/profiles", async (_req, res) => {
@@ -162,19 +329,31 @@ router.post("/content-manager/generate", async (req, res) => {
     if (!record) throw new Error("Channel profile not found. Add or refresh the channel first.");
     send(res, { type: "status", runId, message: "Analyzing saved channel data..." });
 
-    const context = buildContentManagerModelContext({ profile: record.profile, topic });
+    const sourceUrl = extractYouTubeUrl(topic);
+    const effectiveTopic = buildEffectiveTopic(topic, sourceUrl);
+    const videoSource = sourceUrl ? await fetchVideoSourceContext(req, res, runId, sourceUrl) : null;
+    const context = buildContentManagerModelContext({ profile: record.profile, topic: effectiveTopic });
+    const videoContext = buildVideoSourcePrompt(videoSource);
     const client = createGeminiClient({ caller: "content-manager" });
+    const isVideoSourceRequest = Boolean(videoSource);
 
     // ── PHASE 1: converse, optionally search, decide intent ──────────────────
     // The model chats like a person. For a real content request it may search,
     // then calls request_content_pack to signal it's ready to build the pack.
-    const contents: any[] = [{ role: "user", parts: [{ text: context }] }];
+    const contents: any[] = [{ role: "user", parts: [{ text: [context, videoContext].filter(Boolean).join("\n\n") }] }];
     const collectedSources: Array<{ title: string; url: string }> = [];
     const researchNotes: string[] = [];
     let summary = "";
     let wantsPack = false;
     let packAngle = "";
     let searchCount = 0;
+
+    if (isVideoSourceRequest) {
+      wantsPack = true;
+      packAngle = "Create title and SEO suggestions from the fetched source-video captions for the selected channel style.";
+      summary = "I fetched the source video info and captions. Now I am turning the transcript into title options and an SEO pack for the selected channel style.";
+      send(res, { type: "summary_delta", runId, content: summary });
+    }
 
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS && !wantsPack; iteration += 1) {
       send(res, { type: "thinking", runId, stage: iteration === 0 ? "analyzing" : "refining" });
@@ -288,8 +467,9 @@ router.post("/content-manager/generate", async (req, res) => {
     // functionCall/functionResponse parts) with responseSchema + no tools makes the
     // Gemini API reject the request, which killed the pack after the blue card showed.
     send(res, { type: "pack_start", runId });
-    const phase2Prompt = [
+    const buildPhase2Prompt = (sourcePrompt: string) => [
       context,
+      sourcePrompt ? `\nSOURCE VIDEO TRANSCRIPT AND METADATA:\n${sourcePrompt}` : "",
       packAngle ? `\nRECOMMENDED DIRECTION: ${packAngle}` : "",
       summary.trim() ? `\nYOUR SUMMARY ALREADY SHOWN TO THE USER:\n${stripMarkup(summary)}` : "",
       researchNotes.length ? `\nLIVE RESEARCH NOTES:\n${researchNotes.join("\n\n")}` : "",
@@ -305,30 +485,48 @@ router.post("/content-manager/generate", async (req, res) => {
     }, 8000);
     let builtText = "";
     try {
-      const packStream = await client.models.generateContentStream({
-        model: CONTENT_MANAGER_MODEL,
-        contents: [{ role: "user", parts: [{ text: phase2Prompt }] }],
-        config: {
-          systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
-          maxOutputTokens: 8192,
-          thinkingConfig: {
-            ...buildThinkingConfig(CONTENT_MANAGER_MODEL, "HIGH"),
-            includeThoughts: true,
-          },
-          responseMimeType: "application/json",
-          responseSchema: CONTENT_PACK_SCHEMA,
-        },
-      });
-      for await (const chunk of packStream) {
-        const parts = chunk.candidates?.[0]?.content?.parts ?? [];
-        for (const part of parts) {
-          if (part.thought && part.text) {
-            send(res, { type: "thought_delta", runId, content: part.text });
-          } else if (part.text) {
-            builtText += part.text;
+      const sourcePrompts = videoSource
+        ? [videoContext, buildVideoSourcePrompt(videoSource, 80_000)]
+        : [videoContext];
+      let lastErr: any = null;
+      for (let attempt = 0; attempt < sourcePrompts.length; attempt += 1) {
+        builtText = "";
+        try {
+          const packStream = await client.models.generateContentStream({
+            model: CONTENT_MANAGER_MODEL,
+            contents: [{ role: "user", parts: [{ text: buildPhase2Prompt(sourcePrompts[attempt]) }] }],
+            config: {
+              systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
+              maxOutputTokens: 8192,
+              thinkingConfig: {
+                ...buildThinkingConfig(CONTENT_MANAGER_MODEL, "HIGH"),
+                includeThoughts: true,
+              },
+              responseMimeType: "application/json",
+              responseSchema: CONTENT_PACK_SCHEMA,
+            },
+          });
+          for await (const chunk of packStream) {
+            const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+            for (const part of parts) {
+              if (part.thought && part.text) {
+                send(res, { type: "thought_delta", runId, content: part.text });
+              } else if (part.text) {
+                builtText += part.text;
+              }
+            }
           }
+          lastErr = null;
+          break;
+        } catch (err: any) {
+          lastErr = err;
+          const canRetry = attempt < sourcePrompts.length - 1 && /internal error|status.+internal|code.+500|temporar/i.test(String(err?.message ?? err));
+          if (!canRetry) throw err;
+          send(res, { type: "status", runId, message: "Retrying with a compact transcript excerpt..." });
+          continue;
         }
       }
+      if (lastErr) throw lastErr;
     } finally {
       clearInterval(heartbeat);
     }
@@ -358,9 +556,11 @@ If the user is greeting you, making small talk, thanking you, or asking a genera
 # WHEN TO BUILD A CONTENT PACK
 Only when the user actually asks for video help — a title, titles, an SEO description, tags, the best upload time, a "next upload" idea, or a plan for a specific topic — do the real work:
 1. Think through the channel's proven wording, tags, cadence, and upload windows.
-2. web_search(query) ONLY if the topic is time-sensitive (breaking news, a current event, "today"/"latest", a trending angle) or you are unsure of a fact. Skip it for evergreen/generic topics.
-3. Write a SHORT (2-4 sentence) plain-language summary of your recommendation as normal text.
-4. Then call request_content_pack() to hand off — the app builds the full structured pack for you. Do NOT write the titles/description/tags yourself in your text.
+2. If the user pasted a YouTube URL, the app has already fetched get_video_info and get_youtube_captions in parallel. Use the source video's title/metadata only as supporting context, and analyze the captions as the main source of what the video is actually about.
+3. For pasted source videos, create the pack for the SELECTED CHANNEL'S audience and style, using the caption substance and channel signals together. Do not simply copy the source video's existing title.
+4. web_search(query) ONLY if the topic is time-sensitive (breaking news, a current event, "today"/"latest", a trending angle) or you are unsure of a fact. Skip it for evergreen/generic topics and for source-video-only title generation unless facts need checking.
+5. Write a SHORT (2-4 sentence) plain-language summary of your recommendation as normal text.
+6. Then call request_content_pack() to hand off — the app builds the full structured pack for you. Do NOT write the titles/description/tags yourself in your text.
 
 # TOOLS
 - web_search(query): live web search. Use sparingly, only when genuinely needed.

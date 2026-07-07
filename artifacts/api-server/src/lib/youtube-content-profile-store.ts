@@ -95,7 +95,7 @@ export async function listContentProfiles(): Promise<ContentProfileSummary[]> {
     const records = items
       .map(decodeRecord)
       .filter((record): record is ContentProfileRecord => Boolean(record));
-    return summarizeRecords(records.length > 0 ? records : loadFileRecords());
+    return summarizeRecords(mergeRecords(records, loadFileRecords()));
   } catch {
     return summarizeRecords(loadFileRecords());
   }
@@ -138,15 +138,9 @@ export async function upsertContentProfile(params: {
       TableName: TABLE_NAME,
       Item: encodeRecord(record),
     }));
+    upsertFileRecord(record);
   } catch {
-    const records = loadFileRecords();
-    const existingIndex = records.findIndex((item) => item.jobId === id);
-    if (existingIndex >= 0) {
-      records[existingIndex] = record;
-    } else {
-      records.unshift(record);
-    }
-    saveFileRecords(records);
+    upsertFileRecord(record);
   }
   return record;
 }
@@ -216,6 +210,13 @@ function summarizeRecords(records: ContentProfileRecord[]): ContentProfileSummar
     }));
 }
 
+function mergeRecords(primary: ContentProfileRecord[], fallback: ContentProfileRecord[]): ContentProfileRecord[] {
+  const byId = new Map<string, ContentProfileRecord>();
+  for (const record of fallback) byId.set(record.jobId, record);
+  for (const record of primary) byId.set(record.jobId, record);
+  return [...byId.values()];
+}
+
 function resolveFilePath(filename: string): string {
   const root = process.env.REPL_HOME ?? process.cwd();
   const candidates = [
@@ -242,4 +243,15 @@ function loadFileRecords(): ContentProfileRecord[] {
 function saveFileRecords(records: ContentProfileRecord[]): void {
   const target = resolveFilePath("saved-channel-profiles.json");
   writeFileSync(target, JSON.stringify(records, null, 2), "utf8");
+}
+
+function upsertFileRecord(record: ContentProfileRecord): void {
+  const records = loadFileRecords();
+  const existingIndex = records.findIndex((item) => item.jobId === record.jobId);
+  if (existingIndex >= 0) {
+    records[existingIndex] = record;
+  } else {
+    records.unshift(record);
+  }
+  saveFileRecords(records);
 }

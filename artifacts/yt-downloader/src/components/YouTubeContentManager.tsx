@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  Captions,
   Check,
   ChevronRight,
   Copy,
   Globe,
   History,
+  Info,
   Loader2,
   Plus,
-  RefreshCw,
   Sparkles,
   Square,
   Trash2,
@@ -39,6 +40,13 @@ type ContentPack = {
   sources?: Array<{ title: string; url: string }>;
 };
 
+type VideoToolStatus = {
+  name: "get_video_info" | "get_youtube_captions" | string;
+  label: string;
+  status: "running" | "done" | "error";
+  error?: string;
+};
+
 type ContentTurn = {
   id: string;
   topic: string;
@@ -46,6 +54,7 @@ type ContentTurn = {
   profileName: string;
   thoughts: string;
   searches: Array<{ query: string; count: number | null }>;
+  videoTools?: VideoToolStatus[];
   summary: string;
   pack: ContentPack | null;
   createdAt: string;
@@ -137,6 +146,7 @@ export function YouTubeContentManager() {
   const [generateLog, setGenerateLog] = useState<string[]>([]);
   const [generateThoughts, setGenerateThoughts] = useState("");
   const [searches, setSearches] = useState<Array<{ query: string; count: number | null }>>([]);
+  const [videoTools, setVideoTools] = useState<VideoToolStatus[]>([]);
   const [activeTopic, setActiveTopic] = useState("");
   const [summary, setSummary] = useState("");
   const [pack, setPack] = useState<ContentPack | null>(null);
@@ -159,6 +169,7 @@ export function YouTubeContentManager() {
   const liveThoughtsRef = useRef("");
   const liveSummaryRef = useRef("");
   const liveSearchesRef = useRef<Array<{ query: string; count: number | null }>>([]);
+  const liveVideoToolsRef = useRef<VideoToolStatus[]>([]);
 
   const selected = useMemo(
     () => profiles.find((profile) => profile.id === selectedId) ?? null,
@@ -309,11 +320,12 @@ export function YouTubeContentManager() {
       profileName: selected?.name ?? "Selected channel",
       thoughts: generateThoughts,
       searches,
+      videoTools,
       summary,
       pack: overridePack === undefined ? pack : overridePack,
       createdAt: new Date().toISOString(),
     };
-  }, [activeTopic, generateThoughts, pack, searches, selected?.name, selectedId, summary]);
+  }, [activeTopic, generateThoughts, pack, searches, selected?.name, selectedId, summary, videoTools]);
 
   const persistSession = useCallback((nextTurns: ContentTurn[]) => {
     if (nextTurns.length === 0) return;
@@ -344,6 +356,7 @@ export function YouTubeContentManager() {
     setGenerateThoughts("");
     setGenerateLog([]);
     setSearches([]);
+    setVideoTools([]);
     setScrapeLog([]);
     setTopic("");
     setPackProfileName("");
@@ -364,6 +377,7 @@ export function YouTubeContentManager() {
     setGenerateThoughts("");
     setGenerateLog([]);
     setSearches([]);
+    setVideoTools([]);
     const last = session.turns[session.turns.length - 1];
     if (last?.profileId) setSelectedId(last.profileId);
   };
@@ -413,8 +427,10 @@ export function YouTubeContentManager() {
     liveThoughtsRef.current = "";
     liveSummaryRef.current = "";
     liveSearchesRef.current = [];
+    liveVideoToolsRef.current = [];
     setSummary("");
     setSearches([]);
+    setVideoTools([]);
     setGenerateLog([]);
     try {
       await streamPost("/api/content-manager/generate", {
@@ -452,6 +468,32 @@ export function YouTubeContentManager() {
             liveSearchesRef.current = next;
             setSearches(next);
           }
+          if (event.type === "video_tool_start" && event.name) {
+            const nextTool: VideoToolStatus = {
+              name: String(event.name),
+              label: String(event.label || event.name),
+              status: "running",
+            };
+            const others = liveVideoToolsRef.current.filter((item) => item.name !== nextTool.name);
+            const next = [...others, nextTool];
+            liveVideoToolsRef.current = next;
+            setVideoTools(next);
+          }
+          if (event.type === "video_tool_done" && event.name) {
+            const name = String(event.name);
+            const next = liveVideoToolsRef.current.map((item) =>
+              item.name === name
+                ? {
+                    ...item,
+                    label: String(event.label || item.label),
+                    status: event.error ? "error" as const : "done" as const,
+                    error: event.error ? String(event.error) : undefined,
+                  }
+                : item,
+            );
+            liveVideoToolsRef.current = next;
+            setVideoTools(next);
+          }
           if (event.type === "result") {
             setPackGenerating(false);
             const nextPack = event.pack || null;
@@ -467,6 +509,7 @@ export function YouTubeContentManager() {
               profileName: selected?.name ?? "Selected channel",
               thoughts: liveThoughtsRef.current,
               searches: liveSearchesRef.current,
+              videoTools: liveVideoToolsRef.current,
               summary: typeof event.summary === "string" && event.summary.trim() ? event.summary.trim() : liveSummaryRef.current,
               pack: nextPack,
               createdAt: new Date().toISOString(),
@@ -570,29 +613,46 @@ export function YouTubeContentManager() {
   return (
     <div className="ytcm-page ytcm-chat-shell">
       <header className="ytcm-chat-topbar">
-        <div className="ytcm-chat-controls">
+        <div className="ytcm-chat-actions">
           <div className="ytcm-history-wrap" style={{ position: "relative" }}>
+            <button
+              type="button"
+              className="ytcm-top-icon-btn"
+              onClick={startNewChat}
+              title="New chat"
+              aria-label="New chat"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          </div>
+          <div className="ytcm-history-wrap">
             <button
               ref={historyButtonRef}
               type="button"
-              className={cn("ytcm-round-btn", showHistoryDropdown && "is-active")}
+              className={cn("ytcm-top-icon-btn", showHistoryDropdown && "is-active")}
               onClick={() => setShowHistoryDropdown((v) => !v)}
               title="Chat history"
-              disabled={sessions.length === 0}
+              aria-label="Chat history"
             >
-              <History className="w-4 h-4" />
+              <History className="w-5 h-5" />
             </button>
             {showHistoryDropdown ? (
               <div ref={historyDropdownRef} className="ytcm-history-menu">
                 <div className="ytcm-history-head">
                   <span>History</span>
-                  <button type="button" onClick={() => setShowHistoryDropdown(false)}>
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                  {sessions.length > 0 ? (
+                    <button type="button" onClick={() => { saveSessions([]); startNewChat(); }}>
+                      <Trash2 className="w-3 h-3" />
+                      Clear All
+                    </button>
+                  ) : null}
                 </div>
                 <div className="ytcm-history-list">
                   {sessions.length === 0 ? (
-                    <p className="ytcm-history-empty">No past sessions</p>
+                    <p className="ytcm-history-empty">
+                      <History className="w-5 h-5" />
+                      <span>No sessions yet</span>
+                    </p>
                   ) : null}
                   {sessions.map((session) => (
                     <button
@@ -609,96 +669,55 @@ export function YouTubeContentManager() {
               </div>
             ) : null}
           </div>
-          <button
-            type="button"
-            className="ytcm-round-btn"
-            onClick={startNewChat}
-            title="New chat"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div style={{ position: "relative" }}>
-          <button
-            ref={channelsButtonRef}
-            type="button"
-            className={cn("ytcm-live-pill", showChannelsDropdown && "is-active")}
-            onClick={() => setShowChannelsDropdown((v) => !v)}
-            title="Available channels"
-          >
-            <Youtube className="w-3.5 h-3.5" />
-            <span>
-              {profiles.length > 0
-                ? `${profiles.length} channel${profiles.length !== 1 ? "s" : ""}`
-                : "Add channel"}
-            </span>
-          </button>
-          {showChannelsDropdown ? (
-            <div
-              ref={channelsDropdownRef}
-              className="ytcm-mention-menu"
-              style={{ top: "calc(100% + 6px)", right: 0, left: "auto", minWidth: 220 }}
+          <div className="ytcm-channel-wrap">
+            <button
+              ref={channelsButtonRef}
+              type="button"
+              className={cn("ytcm-channel-pill", showChannelsDropdown && "is-active")}
+              onClick={() => setShowChannelsDropdown((v) => !v)}
+              title="Available channels"
             >
-              <div className="ytcm-mention-head">
-                {profilesLoading ? "Loading…" : profiles.length > 0 ? "Available channels" : "No channels yet"}
-              </div>
-              {profiles.map((profile) => (
-                <div
-                  key={profile.id}
-                  className={cn("ytcm-mention-item", selectedId === profile.id && "is-active")}
-                  style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
-                  onClick={() => { setSelectedId(profile.id); setShowChannelsDropdown(false); }}
-                >
-                  <Youtube className="w-3.5 h-3.5" style={{ flexShrink: 0 }} />
-                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {profile.name || profile.channelInput}
-                  </span>
-                  <em style={{ flexShrink: 0 }}>{profile.videoCount}v</em>
-                  <button
-                    type="button"
-                    title="Refresh channel"
-                    style={{ flexShrink: 0, opacity: 0.5, padding: "2px 3px", borderRadius: 4 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setPendingScrapeId(profile.id);
-                      setChannelInput(profile.channelInput || "");
-                      setShowChannelsDropdown(false);
-                      setConfirmOpen(true);
-                    }}
-                  >
-                    <RefreshCw className="w-3 h-3" />
-                  </button>
-                  <button
-                    type="button"
-                    title="Delete channel"
-                    style={{ flexShrink: 0, opacity: 0.5, padding: "2px 3px", borderRadius: 4 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowChannelsDropdown(false);
-                      void removeProfile(profile.id);
-                    }}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
+              <Youtube className="w-3.5 h-3.5" />
+              <span>{profiles.length} channel{profiles.length !== 1 ? "s" : ""}</span>
+            </button>
+            {showChannelsDropdown ? (
+              <div ref={channelsDropdownRef} className="ytcm-channel-menu">
+                <div className="ytcm-mention-head">
+                  {profilesLoading ? "Loading..." : "Available channels"}
                 </div>
-              ))}
-              <button
-                type="button"
-                className="ytcm-mention-item"
-                style={{ borderTop: "1px solid rgba(255,255,255,0.07)", marginTop: 4, paddingTop: 8 }}
-                onClick={() => {
-                  setPendingScrapeId(null);
-                  setChannelInput("");
-                  setShowChannelsDropdown(false);
-                  setConfirmOpen(true);
-                }}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add channel</span>
-              </button>
-            </div>
-          ) : null}
+                {profiles.length === 0 ? (
+                  <p className="ytcm-history-empty">
+                    <Youtube className="w-5 h-5" />
+                    <span>No channels yet</span>
+                  </p>
+                ) : profiles.map((profile) => (
+                  <button
+                    key={profile.id}
+                    type="button"
+                    className={cn("ytcm-mention-item", selectedId === profile.id && "is-active")}
+                    onClick={() => { setSelectedId(profile.id); setShowChannelsDropdown(false); }}
+                  >
+                    <Youtube className="w-3.5 h-3.5" />
+                    <span>{profile.name || profile.channelInput}</span>
+                    <em>{profile.videoCount} videos</em>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="ytcm-mention-item ytcm-add-channel-item"
+                  onClick={() => {
+                    setPendingScrapeId(null);
+                    setChannelInput("");
+                    setShowChannelsDropdown(false);
+                    setConfirmOpen(true);
+                  }}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Add channel</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -766,8 +785,9 @@ export function YouTubeContentManager() {
             thoughtText={generateThoughts}
             busy={generating}
           >
-            {(searches.length > 0 || (!generateThoughts.trim() && generateLog.length > 0)) ? (
+            {(searches.length > 0 || videoTools.length > 0 || (!generateThoughts.trim() && generateLog.length > 0)) ? (
               <div>
+                <VideoToolChips tools={videoTools} />
                 {searches.length > 0 ? (
                   <div className="ytcm-search-chips">
                     {searches.map((item, index) => (
@@ -780,7 +800,7 @@ export function YouTubeContentManager() {
                   </div>
                 ) : null}
                 {!generateThoughts.trim() && generateLog.length > 0 ? (
-                  <div style={{ marginTop: searches.length > 0 ? 6 : 0, fontSize: "0.78rem", opacity: 0.55, lineHeight: 1.6 }}>
+                  <div style={{ marginTop: searches.length > 0 || videoTools.length > 0 ? 6 : 0, fontSize: "0.78rem", opacity: 0.55, lineHeight: 1.6 }}>
                     {generateLog.map((line, i) => <div key={i}>{line}</div>)}
                   </div>
                 ) : null}
@@ -1048,6 +1068,28 @@ function ThoughtStatusBlock({
   );
 }
 
+function VideoToolChips({ tools }: { tools: VideoToolStatus[] }) {
+  if (!tools.length) return null;
+  return (
+    <div className="ytcm-search-chips ytcm-video-tool-chips">
+      {tools.map((tool) => {
+        const Icon = tool.name === "get_youtube_captions" ? Captions : Info;
+        return (
+          <span
+            key={tool.name}
+            className={cn("ytcm-search-chip ytcm-video-tool-chip", tool.status === "error" && "is-error")}
+            title={tool.error || tool.label}
+          >
+            {tool.status === "running" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Icon className="w-3 h-3" />}
+            <span>{tool.label}</span>
+            <em>{tool.status === "running" ? "running" : tool.status === "error" ? "failed" : "done"}</em>
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function CompletedTurn({
   turn,
   onOpenPack,
@@ -1060,12 +1102,13 @@ function CompletedTurn({
       <section className="ytcm-user-message">
         <div className="ytcm-user-bubble">{turn.topic}</div>
       </section>
-      {turn.thoughts.trim() || turn.searches.length > 0 ? (
+      {turn.thoughts.trim() || turn.searches.length > 0 || (turn.videoTools?.length ?? 0) > 0 ? (
         <ThoughtStatusBlock
           title="Thought for a second"
           thoughtText={turn.thoughts}
           busy={false}
         >
+          <VideoToolChips tools={turn.videoTools ?? []} />
           {turn.searches.length > 0 ? (
             <div className="ytcm-search-chips">
               {turn.searches.map((item, index) => (
