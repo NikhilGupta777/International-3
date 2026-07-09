@@ -180,6 +180,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 
     case "cut_video_clip":
     case "download_video":
+    case "generate_subtitles":
     case "find_best_clips":
     case "generate_timestamps":
       return "youtube_processing";
@@ -222,6 +223,7 @@ async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
         `${apiBase}/youtube/cancel/${jobId}`,
         `${apiBase}/subtitles/cancel/${jobId}`,
         `${apiBase}/translator/cancel/${jobId}`,
+        `${apiBase}/youtube/timestamps/cancel/${jobId}`,
       ]) {
         const res = await fetch(endpoint, { method: "POST", headers }).catch(
           () => null,
@@ -593,6 +595,32 @@ const STUDIO_TOOLS: any[] = [
           type: Type.STRING,
           description:
             "Optional topic focus, e.g. 'focus on spiritual stories'",
+        },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "generate_subtitles",
+    description:
+      "Generate subtitles/captions for a YouTube video or an uploaded media file. Returns SRT text. Supports optional translation to another language.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        url: {
+          type: Type.STRING,
+          description:
+            "YouTube video URL or direct media URL (S3/CDN upload)",
+        },
+        language: {
+          type: Type.STRING,
+          description:
+            "Source language hint (e.g. 'hi', 'en'). Default: auto-detect.",
+        },
+        translateTo: {
+          type: Type.STRING,
+          description:
+            "Target language for translation (e.g. 'en', 'hi'). Omit to keep original language.",
         },
       },
       required: ["url"],
@@ -2741,7 +2769,7 @@ function scanKnownJobIds(req: any): string[] {
   for (const match of text.matchAll(/\bjob(?:Id)?:?\s*([a-f0-9-]{8,})\b/gi))
     addId(match[1]);
   for (const match of text.matchAll(
-    /\/api\/(?:youtube\/file|subtitles\/status|translator\/status|translator\/result)\/([a-f0-9-]{8,})/gi,
+    /\/api\/(?:youtube\/file|youtube\/clips\/status|youtube\/timestamps\/status|subtitles\/status|translator\/status|translator\/result)\/([a-f0-9-]{8,})/gi,
   ))
     addId(match[1]);
   return [...ids].slice(-20);
@@ -2949,6 +2977,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3416,7 +3445,7 @@ async function executeTool(
       await pollJobUntilDone(
         res,
         name,
-        `${apiBase}/youtube/progress/${jobId}`,
+        `${apiBase}/youtube/clips/status/${jobId}`,
         jobId,
         internalHeaders,
         isConnected,
@@ -3815,6 +3844,7 @@ async function executeTool(
         `${apiBase}/youtube/cancel/${args.jobId}`,
         `${apiBase}/subtitles/cancel/${args.jobId}`,
         `${apiBase}/translator/cancel/${args.jobId}`,
+        `${apiBase}/youtube/timestamps/cancel/${args.jobId}`,
       ]) {
         const r = await fetch(endpoint, {
           method: "POST",
@@ -3841,6 +3871,8 @@ async function executeTool(
       let data: any = { status: "not_found" };
       for (const endpoint of [
         `${apiBase}/youtube/progress/${args.jobId}`,
+        `${apiBase}/youtube/clips/status/${args.jobId}`,
+        `${apiBase}/youtube/timestamps/status/${args.jobId}`,
         `${apiBase}/subtitles/status/${args.jobId}`,
         `${apiBase}/translator/status/${args.jobId}`,
       ]) {
@@ -4180,6 +4212,8 @@ async function executeTool(
         let status: any = null;
         for (const endpoint of [
           `${apiBase}/youtube/progress/${jobId}`,
+          `${apiBase}/youtube/clips/status/${jobId}`,
+          `${apiBase}/youtube/timestamps/status/${jobId}`,
           `${apiBase}/subtitles/status/${jobId}`,
           `${apiBase}/translator/status/${jobId}`,
         ]) {
@@ -4234,6 +4268,7 @@ async function executeTool(
           `${apiBase}/youtube/cancel/${jobId}`,
           `${apiBase}/subtitles/cancel/${jobId}`,
           `${apiBase}/translator/cancel/${jobId}`,
+          `${apiBase}/youtube/timestamps/cancel/${jobId}`,
         ]) {
           const r = await fetch(endpoint, {
             method: "POST",
