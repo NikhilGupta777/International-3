@@ -2782,7 +2782,7 @@ function buildToolDispatcherV2(
           videoPart,
         ] }],
         config: {
-          maxOutputTokens: 8192,
+          maxOutputTokens: 50000,
           thinkingConfig: buildThinkingConfig(EDITOR_WATCH_MODEL, "MEDIUM"),
         },
       }, { caller: "video-editor" });

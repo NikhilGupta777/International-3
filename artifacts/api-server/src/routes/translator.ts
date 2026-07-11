@@ -1501,7 +1501,7 @@ async function translateSegmentsFast(segments: FastSegment[], targetLang: string
   const resp = await ai.models.generateContent({
     model: TRANSLATOR_TEXT_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    config: { maxOutputTokens: 8192 },
+    config: { maxOutputTokens: 50000 },
   } as any);
   const text = (resp.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? "").join("").trim();
   const cleaned = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
@@ -3199,7 +3199,7 @@ router.post("/assistant", async (req: Request, res: ExpressResponse) => {
         contents,
         config: {
           systemInstruction,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 50000,
           thinkingConfig: { thinkingLevel: "LOW" as any },
           ...(buildTools(opts.search).length ? {
             tools: buildTools(opts.search),
@@ -3319,7 +3319,7 @@ router.post("/assistant/stream", async (req: Request, res: ExpressResponse) => {
         contents,
         config: {
           systemInstruction,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 50000,
           thinkingConfig: { thinkingLevel: "LOW" as any, includeThoughts: true },
           ...(buildTools(opts.search).length ? {
             tools: buildTools(opts.search),

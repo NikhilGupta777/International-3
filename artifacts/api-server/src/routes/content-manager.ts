@@ -362,7 +362,7 @@ router.post("/content-manager/generate", async (req, res) => {
         contents,
         config: {
           systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
-          maxOutputTokens: 8192,
+          maxOutputTokens: 50000,
           thinkingConfig: {
             ...buildThinkingConfig(CONTENT_MANAGER_MODEL, "HIGH"),
             includeThoughts: true,
@@ -497,7 +497,7 @@ router.post("/content-manager/generate", async (req, res) => {
             contents: [{ role: "user", parts: [{ text: buildPhase2Prompt(sourcePrompts[attempt]) }] }],
             config: {
               systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
-              maxOutputTokens: 8192,
+              maxOutputTokens: 50000,
               thinkingConfig: {
                 ...buildThinkingConfig(CONTENT_MANAGER_MODEL, "HIGH"),
                 includeThoughts: true,

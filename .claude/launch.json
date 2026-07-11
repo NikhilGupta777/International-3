@@ -2,6 +2,18 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "autom",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd /d C:\\Users\\g_n-n\\Desktop\\autom && node server/src/index.js"],
+      "port": 8790
+    },
+    {
+      "name": "katha-web",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd /d C:\\Users\\g_n-n\\Desktop\\apps\\katha-autofactory\\apps\\web && pnpm run dev"],
+      "port": 5173
+    },
+    {
       "name": "frontend",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@workspace/yt-downloader", "run", "dev"],

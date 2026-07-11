@@ -4,6 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## NPM Safety Guardrail
+
+Before debugging, building, installing dependencies, running tests, or doing anything npm/npx/pnpm-related, read:
+
+`npm-ignore-scripts-recovery.txt`
+
+Keep npm lifecycle scripts blocked unless a specific package has been inspected and trusted. Prefer `pnpm` in this repo. Do not install Codex CLI through npm on this machine.
+
+---
+
 ## Project Overview
 
 **VideoMaking Studio** — private single-user media workspace at `videomaking.in`. A comprehensive media suite built on AWS serverless infrastructure (Lambda + Batch/Fargate + S3 + CloudFront). Features cover the full video production workflow: **download, clip, analyze clips, generate subtitles, generate timestamps, transliterate to new languages, create devotional content (Bhagwat AI), extract scenes, manage YouTube channel strategy, create thumbnail designs, edit video timelines with AI, and find video references via image matching** — plus a general-purpose AI studio assistant (Copilot) and developer API access.

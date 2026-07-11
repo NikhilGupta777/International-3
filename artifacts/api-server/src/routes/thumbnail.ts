@@ -47,7 +47,7 @@ const router = Router();
 const THUMB_CHAT_MODEL = process.env.THUMBNAIL_CHAT_MODEL ?? "gemini-3.5-flash";
 const THUMB_IMAGE_MODEL = process.env.THUMBNAIL_IMAGE_MODEL ?? "gemini-3.1-flash-image-preview";
 const THUMB_MAX_ITERATIONS = Number.parseInt(process.env.THUMBNAIL_MAX_ITERATIONS ?? "8", 10) || 8;
-const THUMB_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.THUMBNAIL_MAX_OUTPUT_TOKENS ?? "8192", 10) || 8192;
+const THUMB_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.THUMBNAIL_MAX_OUTPUT_TOKENS ?? "50000", 10) || 50000;
 const MAX_HISTORY = 40;
 
 const VALID_RATIOS = new Set(["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]);

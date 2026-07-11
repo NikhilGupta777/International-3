@@ -84,6 +84,17 @@ function supportsNativeMediaInput(model: string): boolean {
   return !model.toLowerCase().startsWith("gemma-");
 }
 
+function getMaxOutputTokensForModel(model: string): number {
+  const m = model.toLowerCase();
+  if (m === "gemma-4-31b-it") {
+    return 262144;
+  }
+  if (m.startsWith("gemini-3.5")) {
+    return 65536;
+  }
+  return 50000;
+}
+
 // buildThinkingConfig imported from gemini-client.ts
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
@@ -91,8 +102,8 @@ const POLL_INTERVAL_MS = 1500;
 const MAX_ITERATIONS =
   Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "49", 10) || 49;
 const AGENT_MAX_OUTPUT_TOKENS =
-  Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "16384", 10) ||
-  16384;
+  Number.parseInt(process.env.COPILOT_MAX_OUTPUT_TOKENS ?? "262144", 10) ||
+  262144;
 const E2B_SANDBOX_TIMEOUT_MS =
   Number.parseInt(process.env.E2B_SANDBOX_TIMEOUT_MS ?? "3600000", 10) ||
   3600000;
@@ -2478,7 +2489,7 @@ async function textModelArtifact(
   const resp = await generateContentWithRotation({
     model: ULTRA_MODEL,
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+    config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(ULTRA_MODEL)) },
   });
   const content = stripReasoningTags(
     (resp.candidates?.[0]?.content?.parts ?? [])
@@ -3918,7 +3929,7 @@ async function executeTool(
           ],
           config: {
             tools: [{ googleSearch: {} }] as any,
-            maxOutputTokens: Math.min(4096, AGENT_MAX_OUTPUT_TOKENS),
+            maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(SEARCH_MODEL)),
           },
         });
         const groundedAnswer = (
@@ -4400,7 +4411,7 @@ async function executeTool(
             ],
           },
         ],
-        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(AGENT_MODEL)) },
       });
       const content = stripReasoningTags(
         (resp.candidates?.[0]?.content?.parts ?? [])
@@ -4440,7 +4451,7 @@ async function executeTool(
             ],
           },
         ],
-        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(AGENT_MODEL)) },
       });
       const content = stripReasoningTags(
         (resp.candidates?.[0]?.content?.parts ?? [])
@@ -4655,7 +4666,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
               ],
             },
           ],
-          config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192) },
+          config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(ULTRA_MODEL)) },
         });
         const content = stripReasoningTags(
           (resp.candidates?.[0]?.content?.parts ?? [])
@@ -4864,7 +4875,7 @@ except Exception as exc:
         ],
         config: {
           tools: [{ codeExecution: {} }] as any,
-          maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192),
+          maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(ULTRA_MODEL)),
         },
       } as any);
       const content = stripReasoningTags(
@@ -4957,7 +4968,7 @@ except Exception as exc:
           },
         ],
         config: {
-          maxOutputTokens: 8192,
+          maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(ULTRA_MODEL)),
         },
       });
 
@@ -5769,7 +5780,7 @@ toolConfig: activeCacheName
                 ? undefined
                 : { functionCallingConfig: { mode: "AUTO" as any } },
 
-              maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192),
+              maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(activeModel)),
 
               thinkingConfig: {
                 ...buildThinkingConfig(streamModel, thinkingLevel),
