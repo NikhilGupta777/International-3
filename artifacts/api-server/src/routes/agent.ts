@@ -191,6 +191,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 
     case "cut_video_clip":
     case "download_video":
+    case "generate_subtitles":
     case "find_best_clips":
     case "generate_timestamps":
       return "youtube_processing";
@@ -645,7 +646,7 @@ const STUDIO_TOOLS: any[] = [
         tab: {
           type: Type.STRING,
           description:
-            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
+            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator', 'heygen', 'findvideo', 'thumbnail', 'content-manager', 'videostudio', 'help', 'activity', 'admin', 'developer', 'api-docs', 'settings'",
         },
       },
       required: ["tab"],
@@ -2960,6 +2961,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3852,6 +3854,7 @@ async function executeTool(
       let data: any = { status: "not_found" };
       for (const endpoint of [
         `${apiBase}/youtube/progress/${args.jobId}`,
+        `${apiBase}/youtube/timestamps/status/${args.jobId}`,
         `${apiBase}/subtitles/status/${args.jobId}`,
         `${apiBase}/translator/status/${args.jobId}`,
       ]) {
@@ -4191,6 +4194,7 @@ async function executeTool(
         let status: any = null;
         for (const endpoint of [
           `${apiBase}/youtube/progress/${jobId}`,
+          `${apiBase}/youtube/timestamps/status/${jobId}`,
           `${apiBase}/subtitles/status/${jobId}`,
           `${apiBase}/translator/status/${jobId}`,
         ]) {
@@ -4282,6 +4286,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
