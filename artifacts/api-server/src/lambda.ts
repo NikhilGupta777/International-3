@@ -108,10 +108,8 @@ export const handler = awslambda.streamifyResponse(
     }
 
     // ── Clip-cut Lambda worker (async invocation) ──────────────────────
-    // Fired only when an API-key clip-cut request self-invokes this Lambda
-    // to run the actual yt-dlp/ffmpeg pipeline decoupled from the response.
-    // Dashboard clip-cuts never reach this branch — they keep running
-    // in-process inside the original HTTP request invocation.
+    // Every production fast-path clip-cut self-invokes this worker so the
+    // yt-dlp/ffmpeg pipeline is decoupled from the original HTTP response.
     if (event?.source === "videomaking.clip-cut") {
       const e = event as Partial<ClipCutWorkerEvent>;
       if (

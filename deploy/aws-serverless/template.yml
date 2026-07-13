@@ -275,6 +275,18 @@ Parameters:
   LambdaClipStallTimeoutMs:
     Type: Number
     Default: 60000
+  LambdaClipHandoffSampleMs:
+    Type: Number
+    Default: 75000
+  LambdaClipHandoffNoProgressMs:
+    Type: Number
+    Default: 120000
+  LambdaClipSafeBudgetMs:
+    Type: Number
+    Default: 660000
+  LambdaClipCompletionReserveMs:
+    Type: Number
+    Default: 120000
   YtdlpDownloadStallTimeoutMs:
     Type: Number
     Default: 60000
@@ -579,6 +591,10 @@ Resources:
           LAMBDA_CLIP_MAX_DURATION_SECONDS: !Ref LambdaClipMaxDurationSeconds
           LAMBDA_CLIP_COMMAND_TIMEOUT_MS: !Ref LambdaClipCommandTimeoutMs
           LAMBDA_CLIP_STALL_TIMEOUT_MS: !Ref LambdaClipStallTimeoutMs
+          LAMBDA_CLIP_HANDOFF_SAMPLE_MS: !Ref LambdaClipHandoffSampleMs
+          LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS: !Ref LambdaClipHandoffNoProgressMs
+          LAMBDA_CLIP_SAFE_BUDGET_MS: !Ref LambdaClipSafeBudgetMs
+          LAMBDA_CLIP_COMPLETION_RESERVE_MS: !Ref LambdaClipCompletionReserveMs
           YTDLP_DOWNLOAD_STALL_TIMEOUT_MS: !Ref YtdlpDownloadStallTimeoutMs
           YTDLP_MAX_DOWNLOAD_ATTEMPTS: !Ref YtdlpMaxDownloadAttempts
           MAX_CONCURRENT_CLIP_JOBS: !Ref MaxConcurrentClipJobs

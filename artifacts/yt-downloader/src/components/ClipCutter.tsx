@@ -38,6 +38,7 @@ const BASE_URL = import.meta.env.BASE_URL.replace(/\/$/, "");
 const JOB_NOT_FOUND_GRACE_MS = 15 * 60 * 1000;
 const HISTORY_PAGE_SIZE = 7;
 const PROGRESS_POLL_INTERVAL_MS = 4000;
+const PROGRESS_REQUEST_TIMEOUT_MS = 8000;
 
 const QUALITY_OPTIONS = [
   { label: "Best", value: "best" },
@@ -329,16 +330,18 @@ export function ClipCutter() {
       try {
         const current = jobsRef.current;
         const active = current.filter(isActiveJob);
-      if (active.length === 0) return;
+        if (active.length === 0) return;
 
-      for (const job of active) {
+        await Promise.allSettled(active.map(async (job) => {
           try {
-            const res = await fetch(`${BASE_URL}/api/youtube/progress/${job.jobId}`);
+            const res = await fetch(`${BASE_URL}/api/youtube/progress/${job.jobId}`, {
+              signal: AbortSignal.timeout(PROGRESS_REQUEST_TIMEOUT_MS),
+            });
 
             // 404 means server restarted and the job is gone
             if (res.status === 404) {
               if (Date.now() - job.startedAt < JOB_NOT_FOUND_GRACE_MS) {
-                continue;
+                return;
               }
               setJobs((prev) => {
                 const updated = prev.map((j) =>
@@ -351,14 +354,14 @@ export function ClipCutter() {
                 persistActiveJobs(updated);
                 return updated;
               });
-              continue;
+              return;
             }
 
-            if (!res.ok) continue;
+            if (!res.ok) return;
             const data = await res.json();
             if (data.status === "not_found") {
               if (Date.now() - job.startedAt < JOB_NOT_FOUND_GRACE_MS) {
-                continue;
+                return;
               }
               setJobs((prev) => {
                 const updated = prev.map((j) =>
@@ -371,7 +374,7 @@ export function ClipCutter() {
                 persistActiveJobs(updated);
                 return updated;
               });
-              continue;
+              return;
             }
 
             setJobs((prev) => {
@@ -409,8 +412,16 @@ export function ClipCutter() {
               persistActiveJobs(updated);
               return updated;
             });
-          } catch {}
-        }
+          } catch {
+            setJobs((prev) =>
+              prev.map((j) =>
+                j.jobId !== job.jobId || isTerminalJobStatus(j.status)
+                  ? j
+                  : { ...j, message: "Connection issue - retrying...", reconnected: true },
+              ),
+            );
+          }
+        }));
       } finally {
         pollInFlightRef.current = false;
       }
@@ -514,7 +525,9 @@ export function ClipCutter() {
   const refreshJobOnce = useCallback(
     async (jobId: string) => {
       try {
-        const res = await fetch(`${BASE_URL}/api/youtube/progress/${jobId}`);
+        const res = await fetch(`${BASE_URL}/api/youtube/progress/${jobId}`, {
+          signal: AbortSignal.timeout(PROGRESS_REQUEST_TIMEOUT_MS),
+        });
         if (res.status === 404) {
           const current = jobsRef.current.find((j) => j.jobId === jobId);
           if (current && Date.now() - current.startedAt < JOB_NOT_FOUND_GRACE_MS) {

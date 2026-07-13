@@ -278,6 +278,82 @@ export async function submitYoutubeQueuePrimaryJob(input: QueueSubmitInput): Pro
   return submitYoutubeQueueJob(input, "primary");
 }
 
+/**
+ * Move an already-persisted Lambda clip job to the primary Batch queue without
+ * replacing its original creation metadata. This is used by the adaptive
+ * Lambda fast path when observed ffmpeg speed cannot finish safely before the
+ * Lambda deadline.
+ */
+export async function handoffYoutubeQueuePrimaryJob(input: QueueSubmitInput): Promise<string | null> {
+  if (!isQueueModeEnabledFor("primary", input.jobType)) return null;
+  if (!ddb || !batch || !JOB_TABLE || !JOB_QUEUE || !JOB_DEFINITION) return null;
+
+  const payload: QueuePayload = {
+    jobId: input.jobId,
+    jobType: input.jobType,
+    sourceUrl: input.sourceUrl,
+    requestedAt: Date.now(),
+    meta: input.meta,
+  };
+  const submit = await batch.send(new SubmitJobCommand({
+    jobName: `yt-handoff-${input.jobType}-${Date.now()}`,
+    jobQueue: JOB_QUEUE,
+    jobDefinition: JOB_DEFINITION,
+    containerOverrides: {
+      environment: [
+        { name: "JOB_PAYLOAD", value: JSON.stringify(payload) },
+        { name: "JOB_TABLE", value: JOB_TABLE },
+        { name: "AWS_REGION", value: REGION },
+        { name: "QUEUE_MODE", value: "primary" },
+        { name: "QUEUE_INVOCATION_ID", value: randomUUID() },
+      ],
+    },
+  }));
+  const batchJobId = submit.jobId ?? null;
+  if (!batchJobId) return null;
+
+  try {
+    await ddb.send(new UpdateItemCommand({
+      TableName: JOB_TABLE,
+      Key: { jobId: { S: input.jobId } },
+      UpdateExpression:
+        "SET #s = :queued, #m = :message, batchJobId = :batchJobId, updatedAt = :updatedAt, progressPct = :progressPct",
+      ExpressionAttributeNames: { "#s": "status", "#m": "message" },
+      ExpressionAttributeValues: {
+        ":queued": { S: "queued" },
+        ":message": { S: "Taking longer than expected - continuing in background..." },
+        ":batchJobId": { S: batchJobId },
+        ":updatedAt": { N: String(Date.now()) },
+        ":progressPct": { N: "0" },
+        ":done": { S: "done" },
+        ":error": { S: "error" },
+        ":cancelled": { S: "cancelled" },
+        ":expired": { S: "expired" },
+      },
+      ConditionExpression: "attribute_not_exists(#s) OR NOT (#s IN (:done, :error, :cancelled, :expired))",
+    }));
+  } catch (err) {
+    const conditionalFailure =
+      (err as { name?: string })?.name === "ConditionalCheckFailedException";
+    try {
+      await batch.send(new TerminateJobCommand({
+        jobId: batchJobId,
+        reason: conditionalFailure
+          ? "Clip job became terminal before adaptive handoff completed"
+          : "Failed to persist adaptive clip handoff",
+      }));
+    } catch (terminateErr) {
+      logger.warn(
+        { err: terminateErr, jobId: input.jobId, batchJobId },
+        "Failed to terminate rejected handoff job",
+      );
+    }
+    if (conditionalFailure) return null;
+    throw err;
+  }
+  return batchJobId;
+}
+
 async function submitEditorRenderJobDurable(input: {
   jobId: string;
   workspaceId: string;
@@ -532,15 +608,36 @@ export async function updateYoutubeQueueLocalJob(
   addNumber("completedAt", fields.completedAt);
   addString("resultJson", fields.resultJson);
 
-  await ddb.send(
-    new UpdateItemCommand({
+  const nextStatus = fields.status;
+  if (nextStatus) {
+    names["#statusGuard"] = "status";
+    values[":terminalDone"] = { S: "done" };
+    values[":terminalError"] = { S: "error" };
+    values[":terminalCancelled"] = { S: "cancelled" };
+    values[":terminalExpired"] = { S: "expired" };
+    values[":nextStatus"] = { S: nextStatus };
+  }
+
+  try {
+    await ddb.send(new UpdateItemCommand({
       TableName: JOB_TABLE,
       Key: { jobId: { S: jobId } },
       UpdateExpression: `SET ${sets.join(", ")}`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
-    }),
-  );
+      ...(nextStatus
+        ? {
+            ConditionExpression:
+              "attribute_not_exists(#statusGuard) OR NOT (#statusGuard IN (:terminalDone, :terminalError, :terminalCancelled, :terminalExpired)) OR #statusGuard = :nextStatus",
+          }
+        : {}),
+    }));
+  } catch (err) {
+    if ((err as { name?: string })?.name === "ConditionalCheckFailedException") {
+      return false;
+    }
+    throw err;
+  }
   // Fire a completion webhook if one is registered and this write is terminal.
   if (fields.status && isTerminalStatus(fields.status)) {
     void maybeFireJobWebhook(jobId, fields.status, { message: fields.message ?? null });

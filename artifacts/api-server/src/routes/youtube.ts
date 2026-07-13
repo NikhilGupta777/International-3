@@ -42,6 +42,7 @@ import {
   uploadFileToS3,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
+import { evaluateClipHandoff } from "../lib/clip-cut-policy";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled, buildThinkingConfig, getPersonalGeminiApiKeysList, generateContentWithRotation } from "../lib/gemini-client";
 import {
   getNotifyClientKey,
@@ -50,6 +51,7 @@ import {
 import {
   cancelYoutubeQueueJob,
   getYoutubeQueueJobStatus,
+  handoffYoutubeQueuePrimaryJob,
   isYoutubeQueueEnabledFor,
   isYoutubeQueuePrimaryEnabledFor,
   putYoutubeQueueLocalJob,
@@ -396,6 +398,7 @@ interface DownloadJob {
   clipEnd?: number;
   clipQuality?: string;
   cancelled?: boolean;
+  handoffRequested?: boolean;
   activeProc?: ReturnType<typeof spawn> | null;
   notifyClientKey?: string | null;
 }
@@ -656,9 +659,9 @@ const LAMBDA_CLIP_MAX_DURATION_SECONDS = Number(
   process.env.LAMBDA_CLIP_MAX_DURATION_SECONDS ?? 10 * 60,
 );
 
-// Self-invoke worker config — used ONLY when the clip-cut request came via the
-// /api/v1 facade (API-key callers). The dashboard path is untouched and keeps
-// running clip-cut in-process. See `runClipCutWorker` and `lambda.ts`.
+// Self-invoke worker config used by every production ClipCut entry point so
+// work remains attached to a dedicated Lambda invocation after HTTP returns.
+// See `runClipCutWorker` and `lambda.ts`.
 const CLIPCUT_WORKER_FUNCTION_NAME =
   process.env.CLIPCUT_WORKER_FUNCTION_NAME ??
   process.env.AWS_LAMBDA_FUNCTION_NAME ??
@@ -1916,7 +1919,7 @@ function qualityToFormatCandidates(quality: string): string[] {
 
 const MAX_CLIP_FORMAT_CANDIDATES = 6;
 const MAX_CLIP_CLIENT_FALLBACKS = 2;
-const MAX_CLIP_DOWNLOAD_ATTEMPTS = 3;
+const MAX_CLIP_DOWNLOAD_ATTEMPTS = 8;
 const LAMBDA_CLIP_COMMAND_TIMEOUT_MS = Math.max(
   60_000,
   Number.parseInt(process.env.LAMBDA_CLIP_COMMAND_TIMEOUT_MS ?? "840000", 10) || 840_000,
@@ -1932,6 +1935,25 @@ const LAMBDA_CLIP_FULL_DOWNLOAD_MAX_SOURCE_SECONDS = Math.max(
 const MIN_CLIP_ATTEMPT_TIMEOUT_MS = 30_000;
 const LAMBDA_CLIP_FORCE_KEYFRAMES =
   process.env.LAMBDA_CLIP_FORCE_KEYFRAMES === "true";
+const LAMBDA_CLIP_HANDOFF_SAMPLE_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.LAMBDA_CLIP_HANDOFF_SAMPLE_MS ?? "75000", 10) || 75_000,
+);
+const LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS = Math.max(
+  LAMBDA_CLIP_HANDOFF_SAMPLE_MS,
+  Number.parseInt(process.env.LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS ?? "120000", 10) || 120_000,
+);
+const LAMBDA_CLIP_SAFE_BUDGET_MS = Math.min(
+  LAMBDA_CLIP_COMMAND_TIMEOUT_MS,
+  Math.max(
+    180_000,
+    Number.parseInt(process.env.LAMBDA_CLIP_SAFE_BUDGET_MS ?? "660000", 10) || 660_000,
+  ),
+);
+const LAMBDA_CLIP_COMPLETION_RESERVE_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.LAMBDA_CLIP_COMPLETION_RESERVE_MS ?? "120000", 10) || 120_000,
+);
 
 function qualityToSourceDownloadSelector(quality: string): string {
   const normalized = quality.trim().toLowerCase().replace(/p$/, "");
@@ -2371,9 +2393,9 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
 }
 
 /**
- * Payload shape for the self-invoked clip-cut worker Lambda. Dispatched by
- * `startClipCutJobInternal` when the request came through the /api/v1 facade,
- * and handled by `runClipCutWorker` below (wired up in lambda.ts).
+ * Payload shape for the self-invoked clip-cut worker Lambda. Production HTTP
+ * callers use this worker so ffmpeg is awaited by a dedicated invocation and
+ * cannot be frozen when the original HTTP response completes.
  */
 export interface ClipCutWorkerEvent {
   source: "videomaking.clip-cut";
@@ -2386,11 +2408,9 @@ export interface ClipCutWorkerEvent {
 }
 
 /**
- * Worker entry point — invoked asynchronously by Lambda when an API-key
- * clip-cut request needs background processing decoupled from the original
- * response Lambda. Reconstructs the same in-memory DownloadJob the inline
- * path uses and runs the existing processClipCut pipeline unchanged. The
- * dashboard path never reaches this — it keeps running in-process.
+ * Worker entry point invoked asynchronously by Lambda for the fast path.
+ * Slow jobs are handed to Batch after observing real ffmpeg progress, while
+ * fast jobs finish inside this dedicated invocation.
  */
 export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
   const job: DownloadJob = {
@@ -2416,6 +2436,57 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
     notifyClientKey: e.notifyClientKey ?? undefined,
   };
   jobs.set(e.jobId, job);
+  const workerStartedAt = Date.now();
+  const clipDurationSecs = Math.max(0, e.endTime - e.startTime);
+  const adaptiveHandoffEnabled = isYoutubeQueuePrimaryEnabledFor("clip-cut");
+  const handoffTimer = adaptiveHandoffEnabled
+    ? setInterval(() => {
+        if (
+          job.handoffRequested ||
+          job.cancelled ||
+          job.status === "done" ||
+          job.status === "error" ||
+          job.status === "cancelled"
+        ) {
+          return;
+        }
+        const decision = evaluateClipHandoff({
+          elapsedMs: Date.now() - workerStartedAt,
+          durationSecs: clipDurationSecs,
+          progressPct: job.percent,
+          speedText: job.speed,
+          sampleAfterMs: LAMBDA_CLIP_HANDOFF_SAMPLE_MS,
+          noProgressAfterMs: LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS,
+          lambdaBudgetMs: LAMBDA_CLIP_SAFE_BUDGET_MS,
+          completionReserveMs: LAMBDA_CLIP_COMPLETION_RESERVE_MS,
+        });
+        if (!decision.shouldHandoff) return;
+
+        job.handoffRequested = true;
+        job.cancelled = true;
+        job.message = "Taking longer than expected - continuing in background...";
+        persistClipJobState(e.jobId, job);
+        logger.info(
+          {
+            jobId: e.jobId,
+            speed: decision.speed,
+            projectedRemainingMs: decision.projectedRemainingMs,
+            elapsedMs: Date.now() - workerStartedAt,
+          },
+          "Handing slow clip-cut Lambda job to Batch",
+        );
+        const proc = job.activeProc;
+        if (proc) {
+          try { proc.kill("SIGTERM"); } catch {}
+          setTimeout(() => {
+            if (job.activeProc === proc) {
+              try { proc.kill("SIGKILL"); } catch {}
+            }
+          }, 2_000).unref?.();
+        }
+      }, 5_000)
+    : null;
+  handoffTimer?.unref?.();
 
   try {
     await processClipCut(e.jobId, job);
@@ -2423,6 +2494,31 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
     const j = jobs.get(e.jobId);
     if (!j) return;
     const message = err instanceof Error ? err.message : "Clip cut failed";
+    if (j.handoffRequested) {
+      try {
+        const batchJobId = await handoffYoutubeQueuePrimaryJob({
+          jobId: e.jobId,
+          jobType: "clip-cut",
+          sourceUrl: e.url,
+          meta: {
+            startTime: e.startTime,
+            endTime: e.endTime,
+            quality: e.quality,
+            notifyClientKey: e.notifyClientKey ?? null,
+          },
+        });
+        if (!batchJobId) throw new Error("Background queue is unavailable");
+        return;
+      } catch (handoffErr) {
+        logger.error({ err: handoffErr, jobId: e.jobId }, "Failed to hand clip-cut job to Batch");
+        j.cancelled = false;
+        j.status = "error";
+        j.message = "Clip was too slow for the fast worker and could not be moved to background processing. Please retry.";
+        j.percent = 0;
+        persistClipJobState(e.jobId, j);
+        return;
+      }
+    }
     if (message === CANCELLED_BY_USER || j.cancelled) {
       j.status = "cancelled";
       j.message = CANCELLED_BY_USER;
@@ -2440,6 +2536,8 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
       message.slice(0, 200),
       `clip-error:${e.jobId}`,
     );
+  } finally {
+    if (handoffTimer) clearInterval(handoffTimer);
   }
 }
 
@@ -2450,16 +2548,7 @@ async function startClipCutJobInternal(params: {
   quality?: string;
   notifyClientKey?: string | null;
   log?: Pick<Request["log"], "error" | "warn">;
-  /**
-   * True when the request came through the /api/v1 API-key facade (i.e.
-   * `isInternalAgentRequest(req)` was true at the route handler). In that
-   * case we dispatch the actual work to a self-invoked worker Lambda so the
-   * response Lambda is free to return immediately — without this, the
-   * fire-and-forget background task gets frozen along with the container
-   * when API clients poll instead of holding an SSE stream open, leaving
-   * jobs stuck at "downloading" forever. Dashboard (browser) requests
-   * always pass `false` here and run the original in-process path unchanged.
-   */
+  /** Retained for API-call attribution; production dispatch is identical. */
   isApi?: boolean;
 }): Promise<{ jobId: string; status: string; message: string }> {
   const jobId = randomUUID();
@@ -2481,11 +2570,10 @@ async function startClipCutJobInternal(params: {
     return { jobId, status: "queued", message: "Clip cut queued" };
   }
 
-  // API-key callers (v1 facade): hand the job to a self-invoked worker Lambda
-  // so processing survives independently of how the client polls. Mirrors the
-  // pattern in routes/timestamps.ts and routes/subtitles.ts. Dashboard path
-  // is untouched — see the in-process block below.
-  if (params.isApi && clipCutLambdaClient && CLIPCUT_WORKER_FUNCTION_NAME) {
+  // Production fast path: always use a dedicated async worker invocation.
+  // Running ffmpeg after res.json() is unsafe because Lambda freezes the HTTP
+  // environment as soon as the response invocation completes.
+  if (clipCutLambdaClient && CLIPCUT_WORKER_FUNCTION_NAME) {
     try {
       await putYoutubeQueueLocalJob({
         jobId,
@@ -2499,7 +2587,7 @@ async function startClipCutJobInternal(params: {
         startedAt: Date.now(),
       });
     } catch (err) {
-      params.log?.warn({ err, jobId }, "Failed to persist API clip-cut start state");
+      params.log?.warn({ err, jobId }, "Failed to persist clip-cut worker start state");
     }
 
     const workerPayload: ClipCutWorkerEvent = {
@@ -2520,6 +2608,16 @@ async function startClipCutJobInternal(params: {
       }));
     } catch (err) {
       params.log?.error({ err, jobId }, "Failed to invoke clip-cut worker Lambda");
+      try {
+        await updateYoutubeQueueLocalJob(jobId, {
+          status: "error",
+          message: "Could not start the clip worker. Please retry.",
+          progressPct: 0,
+          completedAt: Date.now(),
+        });
+      } catch (persistErr) {
+        params.log?.warn({ err: persistErr, jobId }, "Failed to persist clip worker invocation error");
+      }
       throw err;
     }
 
@@ -3288,7 +3386,9 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
-  const job = jobs.get(jobId);
+  // In production, DynamoDB is authoritative. Warm Lambda environments can
+  // retain an older Map entry after reconciliation, cancellation, or handoff.
+  const job = isDownloadQueueEnabled() ? undefined : jobs.get(jobId);
   if (job) {
     res.json(buildProgressPayload(jobId, job));
     return;
@@ -3355,7 +3455,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
-  const job = jobs.get(jobId);
+  const job = isDownloadQueueEnabled() ? undefined : jobs.get(jobId);
   if (!job) {
     if (!isDownloadQueueEnabled()) {
       res.status(404).json({ error: "Job not found" });
@@ -3418,7 +3518,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
       });
     }, 1000);
 
-    req.on("close", () => {
+    res.on("close", () => {
       clearInterval(timer);
     });
     return;
@@ -3451,7 +3551,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
     if (sendSnapshot()) clearInterval(timer);
   }, 1000);
 
-  req.on("close", () => {
+  res.on("close", () => {
     clearInterval(timer);
   });
 });
@@ -4735,7 +4835,7 @@ router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
       });
     }, 2500);
 
-    req.on("close", () => {
+    res.on("close", () => {
       clearInterval(timer);
     });
     return;
@@ -4771,7 +4871,7 @@ router.get("/youtube/clips/stream/:jobId", (req: Request, res: Response) => {
   job.emitter.on("done", onDone);
   job.emitter.on("error", onError);
 
-  req.on("close", () => {
+  res.on("close", () => {
     job.emitter.off("step", onStep);
     job.emitter.off("done", onDone);
     job.emitter.off("error", onError);
@@ -5333,11 +5433,10 @@ For each clip: read the transcript to find where the idea begins (startSec) and 
 // ─── Clip Download (specific time range) ─────────────────────────────────────
 
 router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req: Request, res: Response) => {
-  const { url, startSec, endSec, title, quality } = req.body as {
+  const { url, startSec, endSec, quality } = req.body as {
     url: string;
     startSec: number;
     endSec: number;
-    title?: string;
     quality?: string;
   };
 
@@ -5357,196 +5456,48 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
     return;
   }
-  const normalizedUrl = normalizeInputUrl(url);
-
-  const safeTitle = (title ?? "clip")
-    .replace(/[^\w\s\-_.()]/g, "_")
-    .slice(0, 60);
-  const jobId = randomUUID();
   const notifyClientKey = getNotifyClientKey(req);
-
-  if (isYoutubeQueuePrimaryEnabledFor("clip-cut") && !shouldRunClipInLambda(startSec, endSec)) {
-    try {
-      await submitYoutubeQueuePrimaryJob({
-        jobId,
-        jobType: "clip-cut",
-        sourceUrl: normalizedUrl,
-        meta: {
-          startSec,
-          endSec,
-          quality: quality ?? "best",
-          source: "legacy-download-clip",
-          notifyClientKey: notifyClientKey ?? null,
-        },
-      });
-      res.json({ jobId, status: "queued", message: "Clip download queued" });
-    } catch (err) {
-      req.log.error({ err, jobId }, "Failed to submit primary queue legacy clip job");
-      res.status(502).json({ error: "Failed to queue clip download job" });
-    }
-    return;
-  }
-
-  const job: DownloadJob = {
-    status: "pending",
-    percent: 0,
-    speed: null,
-    eta: null,
-    filename: `${safeTitle}.mp4`,
-    filesize: null,
-    message: "Queued - starting soon...",
-    progressLine: null,
-    progressSource: null,
-    startedAt: Date.now(),
-    completedAt: null,
-    filePath: null,
-    url: normalizedUrl,
-    formatId: "clip",
-    audioOnly: false,
-    ext: "mp4",
-    clipStart: startSec,
-    clipEnd: endSec,
-    clipQuality: quality ?? "best",
-    notifyClientKey,
-  };
-
-  jobs.set(jobId, job);
   try {
-    await putYoutubeQueueLocalJob({
-      jobId,
-      jobType: "clip-cut",
-      sourceUrl: normalizedUrl,
-      status: "pending",
-      message: job.message ?? "Clip download started",
-      progressPct: 0,
-      filename: job.filename,
-      durationSecs: endSec - startSec,
-      startedAt: job.startedAt ?? Date.now(),
+    const started = await startClipCutJobInternal({
+      url,
+      startTime: startSec,
+      endTime: endSec,
+      quality,
+      notifyClientKey,
+      log: req.log,
     });
+    res.json(started);
   } catch (err) {
-    req.log.warn({ err, jobId }, "Failed to persist Lambda legacy clip start state");
+    req.log.error({ err }, "Failed to start legacy clip download");
+    res.status(502).json({ error: "Failed to start clip download job" });
   }
-  res.json({ jobId, status: "pending", message: "Clip download started" });
-
-  enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
-    req.log.error({ err, jobId }, "Clip download failed");
-    const j = jobs.get(jobId);
-    if (!j) return;
-    const message = err instanceof Error ? err.message : "Clip download failed";
-    if (message === CANCELLED_BY_USER || j.cancelled) {
-      j.status = "cancelled";
-      j.message = CANCELLED_BY_USER;
-      persistClipJobState(jobId, j);
-    } else {
-      j.status = "error";
-      j.message = message;
-      j.percent = 0;
-      persistClipJobState(jobId, j);
-      pushFailureNotification(
-        j,
-        "Clip download failed",
-        message.slice(0, 200),
-        `clip-error:${jobId}`,
-      );
-    }
-  });
 });
 
 /**
  * Start a clip-cut job — same logic as POST /youtube/clip-cut but callable
  * directly without HTTP.  Handles both the Batch queue path (production,
- * long clips) and the in-process path (Lambda/local, short clips).
+ * long clips), the dedicated Lambda worker path (production short clips),
+ * and the in-process path (local development).
  * Used by Pita Ji dispatch so it works identically everywhere.
  */
-export function startClipCutInProcess(params: {
+export async function startClipCutInProcess(params: {
   youtubeUrl: string;
   startSec: number;
   endSec: number;
   quality?: string;
-}): { jobId: string; status: string } {
-  const jobId = randomUUID();
-  const normalizedUrl = normalizeInputUrl(params.youtubeUrl);
-
-  // Production: long clips go through AWS Batch / Fargate queue
-  if (
-    isYoutubeQueuePrimaryEnabledFor("clip-cut") &&
-    !shouldRunClipInLambda(params.startSec, params.endSec)
-  ) {
-    submitYoutubeQueuePrimaryJob({
-      jobId,
-      jobType: "clip-cut",
-      sourceUrl: normalizedUrl,
-      meta: {
-        startTime: params.startSec,
-        endTime: params.endSec,
-        quality: params.quality ?? "best",
-        notifyClientKey: null,
-      },
-    }).catch(() => {});
-    return { jobId, status: "queued" };
-  }
-
-  // In-process path (Lambda or local dev)
-  const job: DownloadJob = {
-    status: "pending",
-    percent: 0,
-    speed: null,
-    eta: null,
-    filename: null,
-    filesize: null,
-    message: "Starting clip cut...",
-    progressLine: null,
-    progressSource: null,
-    startedAt: Date.now(),
-    completedAt: null,
-    filePath: null,
-    url: normalizedUrl,
-    formatId: "clip",
-    audioOnly: false,
-    ext: "mp4",
-    clipStart: params.startSec,
-    clipEnd: params.endSec,
-    clipQuality: params.quality ?? "best",
-  };
-
-  jobs.set(jobId, job);
-
-  // Persist to DynamoDB (fire-and-forget)
-  putYoutubeQueueLocalJob({
-    jobId,
-    jobType: "clip-cut",
-    sourceUrl: normalizedUrl,
-    status: "pending",
-    message: job.message ?? "Starting clip cut...",
-    progressPct: 0,
-    filename: job.filename,
-    durationSecs: params.endSec - params.startSec,
-    startedAt: job.startedAt ?? Date.now(),
-  }).catch(() => {});
-
-  // Enqueue the actual FFmpeg work
-  enqueueClipJob(jobId, () => processClipCut(jobId, job)).catch((err) => {
-    const j = jobs.get(jobId);
-    if (j) {
-      const message = err instanceof Error ? err.message : "Clip cut failed";
-      if (message === CANCELLED_BY_USER || j.cancelled) {
-        j.status = "cancelled";
-        j.message = CANCELLED_BY_USER;
-      } else {
-        j.status = "error";
-        j.message = message;
-        j.percent = 0;
-      }
-      persistClipJobState(jobId, j);
-    }
+}): Promise<{ jobId: string; status: string }> {
+  const started = await startClipCutJobInternal({
+    url: params.youtubeUrl,
+    startTime: params.startSec,
+    endTime: params.endSec,
+    quality: params.quality,
   });
-
-  return { jobId, status: "pending" };
+  return { jobId: started.jobId, status: started.status };
 }
 
 /**
- * Read clip-cut job progress by jobId — in-process lookup first, then
- * DynamoDB fallback (for Batch-queued jobs or after Lambda restart).
+ * Read clip-cut job progress by jobId. DynamoDB is authoritative whenever
+ * the production queue store is enabled; memory is only a local-dev fallback.
  */
 export async function getClipCutProgress(childJobId: string): Promise<{
   status?: string;
@@ -5555,31 +5506,32 @@ export async function getClipCutProgress(childJobId: string): Promise<{
   s3Key?: string | null;
   filename?: string | null;
 } | null> {
-  // In-memory (in-process jobs)
+  if (isDownloadQueueEnabled()) {
+    try {
+      const qs = await getYoutubeQueueJobStatus(childJobId);
+      if (!qs) return null;
+      return {
+        status: qs.status,
+        message: qs.message,
+        progressPct: qs.progressPct,
+        s3Key: qs.s3Key ?? null,
+        filename: qs.filename,
+      };
+    } catch (err) {
+      logger.warn({ err, childJobId }, "Failed to read clip-cut progress from queue store");
+      return null;
+    }
+  }
+
   const job = jobs.get(childJobId);
-  if (job) {
-    return {
-      status: job.status,
-      message: job.message,
-      progressPct: job.percent,
-      s3Key: job.filePath ?? null,
-      filename: job.filename,
-    };
-  }
-  // DynamoDB fallback (Batch-queued or post-restart)
-  try {
-    const qs = await getYoutubeQueueJobStatus(childJobId);
-    if (!qs) return null;
-    return {
-      status: qs.status,
-      message: qs.message,
-      progressPct: null,
-      s3Key: qs.s3Key ?? null,
-      filename: null,
-    };
-  } catch {
-    return null;
-  }
+  if (!job) return null;
+  return {
+    status: job.status,
+    message: job.message,
+    progressPct: job.percent,
+    s3Key: job.filePath ?? null,
+    filename: job.filename,
+  };
 }
 
 export default router;

@@ -233,7 +233,13 @@ async function updateJobState(
     ":s": { S: status },
     ":m": { S: message },
     ":u": { N: String(Date.now()) },
+    ":terminalDone": { S: "done" },
+    ":terminalError": { S: "error" },
+    ":terminalCancelled": { S: "cancelled" },
+    ":terminalExpired": { S: "expired" },
+    ":nextStatus": { S: status },
   };
+  names["#statusGuard"] = "status";
   const sets: string[] = ["#s = :s", "#m = :m", "#u = :u"];
 
   if (extra) {
@@ -249,15 +255,20 @@ async function updateJobState(
     }
   }
 
-  await ddb.send(
-    new UpdateItemCommand({
+  try {
+    await ddb.send(new UpdateItemCommand({
       TableName: JOB_TABLE,
       Key: { jobId: { S: jobId } },
       UpdateExpression: `SET ${sets.join(", ")}`,
       ExpressionAttributeNames: names,
       ExpressionAttributeValues: values,
-    }),
-  );
+      ConditionExpression:
+        "attribute_not_exists(#statusGuard) OR NOT (#statusGuard IN (:terminalDone, :terminalError, :terminalCancelled, :terminalExpired)) OR #statusGuard = :nextStatus",
+    }));
+  } catch (err) {
+    if ((err as { name?: string })?.name === "ConditionalCheckFailedException") return;
+    throw err;
+  }
 }
 
 function ensureCookieFileIfNeeded(): string | null {

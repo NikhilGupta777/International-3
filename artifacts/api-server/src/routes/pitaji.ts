@@ -780,7 +780,7 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
         patch.action = existingHasThumb ? "both" : "cut";
         patch.cutStatus = "queued";
         try {
-          const child = dispatchClipCut({
+          const child = await dispatchClipCut({
             youtubeUrl: job.youtubeUrl,
             startSec: clip.startSec,
             endSec: clip.endSec,
@@ -848,7 +848,7 @@ router.post("/pitaji/jobs/:jobId/dispatch", async (req: Request, res: Response) 
 
     if (action === "cut" || action === "both") {
       try {
-        const child = dispatchClipCut({
+        const child = await dispatchClipCut({
           youtubeUrl: job.youtubeUrl,
           startSec: clip.startSec,
           endSec: clip.endSec,
@@ -937,14 +937,14 @@ router.get("/pitaji/jobs/:jobId/dispatches", async (req: Request, res: Response)
 });
 
 // ── Internal helpers ──────────────────────────────────────────────────────
-// Clip-cut dispatch uses the same in-process path as the main VideoMaking
-// clip cutter — no HTTP round-trip, works identically in Lambda and local dev.
+// Clip-cut dispatch uses the same path as the main VideoMaking clip cutter —
+// dedicated worker/Batch in production and in-process during local development.
 
-function dispatchClipCut(params: {
+async function dispatchClipCut(params: {
   youtubeUrl: string;
   startSec: number;
   endSec: number;
-}): { jobId: string; status?: string } {
+}): Promise<{ jobId: string; status?: string }> {
   return startClipCutInProcess({
     youtubeUrl: params.youtubeUrl,
     startSec: params.startSec,
