@@ -51,3 +51,14 @@ test("hands off a job that still has no measurable progress", () => {
   });
   assert.equal(decision.shouldHandoff, true);
 });
+
+test("hands off at the hard cutoff even when ffmpeg reports 95 percent", () => {
+  const decision = evaluateClipHandoff({
+    ...base,
+    elapsedMs: 600_000,
+    progressPct: 95,
+    speedText: "1.83x",
+  });
+  assert.equal(decision.shouldHandoff, true);
+  assert.equal(decision.speed, 1.83);
+});

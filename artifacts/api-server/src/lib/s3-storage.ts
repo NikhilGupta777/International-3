@@ -4,6 +4,7 @@ import { pipeline } from "stream/promises";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
@@ -257,6 +258,19 @@ export async function getS3SignedDownloadUrl(params: {
     }),
     { expiresIn: expiresInSec },
   );
+}
+
+export async function s3ObjectExists(key: string): Promise<boolean> {
+  const client = getS3Client();
+  try {
+    await client.send(new HeadObjectCommand({ Bucket: S3_BUCKET, Key: key }));
+    return true;
+  } catch (err) {
+    const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
+    const name = (err as { name?: string })?.name;
+    if (status === 404 || name === "NotFound" || name === "NoSuchKey") return false;
+    throw err;
+  }
 }
 
 export async function deleteS3Object(key: string): Promise<void> {

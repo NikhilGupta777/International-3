@@ -2407,6 +2407,9 @@ function buildToolDispatcherV2(
       const { jobId } = await r.json() as any;
       // Poll until done
       const result = await pollVideoEditorJob(apiBase, jobId, headers, sendSse, "clip_cut_youtube");
+      if (result.status !== "done") {
+        return { message: `Clip job ${jobId} is still processing in the background. Check its status before importing it.` };
+      }
       // Store in workspace
       const downloadUrl = `${apiBase}/youtube/file/${jobId}`;
       const ws = getWorkspace(req);
@@ -2827,10 +2830,11 @@ async function pollVideoEditorJob(
   apiBase: string, jobId: string, headers: Record<string, string>,
   sendSse: (event: any) => void, toolName: string,
 ): Promise<{ status: string; filename?: string }> {
-  const deadline = Date.now() + 10 * 60 * 1000; // 10 min timeout
+  const deadline = Date.now() + 12 * 60 * 1000;
   while (Date.now() < deadline) {
     const r = await fetch(`${apiBase}/youtube/progress/${jobId}`, {
       headers: { ...headers, "Cache-Control": "no-cache" },
+      signal: AbortSignal.timeout(10_000),
     });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
     const data = await r.json() as any;
@@ -2840,7 +2844,8 @@ async function pollVideoEditorJob(
       throw new Error(`Job ${data.status}: ${data.message ?? ""}`);
     await new Promise(r => setTimeout(r, 2000));
   }
-  throw new Error("Download timed out after 10 minutes");
+  if (toolName === "clip_cut_youtube") return { status: "processing" };
+  throw new Error("Job timed out after 12 minutes");
 }
 
 function sse(res: Response, event: any) {

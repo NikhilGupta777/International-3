@@ -27,6 +27,10 @@ export function evaluateClipHandoff(input: {
   }
 
   const speed = parseFfmpegSpeed(input.speedText);
+  const hardCutoffMs = Math.max(0, input.lambdaBudgetMs - input.completionReserveMs);
+  if (input.elapsedMs >= hardCutoffMs) {
+    return { shouldHandoff: true, projectedRemainingMs: 0, speed };
+  }
   const progressPct = Math.max(0, Math.min(95, input.progressPct ?? 0));
   if (!speed) {
     return {

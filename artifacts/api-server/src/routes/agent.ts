@@ -97,7 +97,7 @@ function getMaxOutputTokensForModel(model: string): number {
 
 // buildThinkingConfig imported from gemini-client.ts
 const JOB_TIMEOUT_MS = 8 * 60 * 1000;
-const CLIP_JOB_TIMEOUT_MS = 15 * 60 * 1000;
+const CLIP_JOB_TIMEOUT_MS = 12 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
 const MAX_ITERATIONS =
   Number.parseInt(process.env.COPILOT_MAX_ITERATIONS ?? "49", 10) || 49;
@@ -346,6 +346,7 @@ async function pollJobUntilDone(
     const r = await fetch(progressUrl, {
       headers: { ...headers, "Cache-Control": "no-cache" },
       cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
     });
     if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
     const data = (await r.json()) as any;
@@ -392,6 +393,9 @@ async function pollJobUntilDone(
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
   if (!isConnected()) throw new Error("Client disconnected");
+  if (toolName === "cut_video_clip") {
+    return { status: "processing" };
+  }
   throw new Error(
     `Job timed out after ${Math.round(timeoutMs / 60000)} minutes`,
   );
@@ -3176,7 +3180,7 @@ async function executeTool(
         quality,
       } as any);
 
-      await pollJobUntilDone(
+      const final = await pollJobUntilDone(
         res,
         name,
         `${apiBase}/youtube/progress/${jobId}`,
@@ -3186,6 +3190,15 @@ async function executeTool(
         toolId,
         runId,
       );
+      if (final.status !== "done") {
+        return {
+          result: {
+            jobId,
+            status: "processing",
+            message: "Clip is still processing in the background. Check the Activity panel for completion.",
+          },
+        };
+      }
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: {

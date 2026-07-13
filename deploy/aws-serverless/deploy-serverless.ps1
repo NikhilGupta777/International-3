@@ -424,6 +424,55 @@ if (-not $siteBucket -or -not $distributionId) {
   throw "Failed to resolve CloudFormation outputs"
 }
 
+# The output bucket is external to this stack, so CloudFormation cannot own its
+# lifecycle policy. Merge ClipCut retention rules without deleting unrelated
+# rules maintained by other features/operators.
+$outputBucket = Get-RequiredEnv $envMap 'S3_BUCKET'
+$outputPrefix = (Get-OptionalEnv $envMap 'S3_OBJECT_PREFIX' $Prefix).Trim('/')
+$lifecycleFile = Join-Path $env:TEMP "$Prefix-output-lifecycle.json"
+try {
+  $existingLifecycleRaw = aws s3api get-bucket-lifecycle-configuration `
+    --bucket $outputBucket `
+    --region $Region `
+    --output json 2>&1
+  $getLifecycleExitCode = $LASTEXITCODE
+  $rules = @()
+  $canMergeLifecycle = $getLifecycleExitCode -eq 0 -or
+    (($existingLifecycleRaw -join "`n") -match 'NoSuchLifecycleConfiguration')
+  if ($getLifecycleExitCode -eq 0 -and $existingLifecycleRaw) {
+    $existingLifecycle = ($existingLifecycleRaw -join "`n") | ConvertFrom-Json
+    $rules = @($existingLifecycle.Rules | Where-Object {
+      $_.ID -notin @('videomaking-clipcut-clips-7d', 'videomaking-clipcut-downloads-1d')
+    })
+  }
+  if (-not $canMergeLifecycle) {
+    Write-Warning "Could not read existing output bucket lifecycle; refusing to overwrite unknown rules"
+  } else {
+    $rules += [pscustomobject]@{
+      ID = 'videomaking-clipcut-clips-7d'
+      Status = 'Enabled'
+      Filter = [pscustomobject]@{ Prefix = "$outputPrefix/youtube/clips/" }
+      Expiration = [pscustomobject]@{ Days = 7 }
+    }
+    $rules += [pscustomobject]@{
+      ID = 'videomaking-clipcut-downloads-1d'
+      Status = 'Enabled'
+      Filter = [pscustomobject]@{ Prefix = "$outputPrefix/youtube/downloads/" }
+      Expiration = [pscustomobject]@{ Days = 1 }
+    }
+    @{ Rules = $rules } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $lifecycleFile -NoNewline
+    aws s3api put-bucket-lifecycle-configuration `
+      --bucket $outputBucket `
+      --region $Region `
+      --lifecycle-configuration "file://$lifecycleFile" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning "Could not apply output bucket retention lifecycle; application cleanup remains enabled"
+    }
+  }
+} finally {
+  Remove-Item -LiteralPath $lifecycleFile -Force -ErrorAction SilentlyContinue
+}
+
 pnpm --filter @workspace/yt-downloader run build
 Assert-LastExitCode "pnpm yt-downloader build"
 

@@ -94,6 +94,7 @@ const JOB_DEFINITION = process.env.YOUTUBE_BATCH_JOB_DEFINITION ?? "";
 
 const ddb = JOB_TABLE ? new DynamoDBClient({ region: REGION }) : null;
 const batch = JOB_QUEUE && JOB_DEFINITION ? new BatchClient({ region: REGION }) : null;
+const CLIP_WORKER_LEASE_KEY = "__clipcut_worker_leases__";
 
 const ALL_JOB_TYPES: QueueJobType[] = [
   "download",
@@ -229,8 +230,10 @@ async function submitYoutubeQueueJob(
     }),
   );
 
-  const submit = await batch.send(
-    new SubmitJobCommand({
+  let submit;
+  try {
+    submit = await batch.send(
+      new SubmitJobCommand({
       jobName: `yt-${mode}-${input.jobType}-${Date.now()}`,
       jobQueue: JOB_QUEUE,
       jobDefinition: JOB_DEFINITION,
@@ -243,29 +246,53 @@ async function submitYoutubeQueueJob(
           { name: "QUEUE_INVOCATION_ID", value: randomUUID() },
         ],
       },
-    }),
-  );
-
-  const batchJobId = submit.jobId ?? null;
-  if (batchJobId) {
-    await ddb.send(
-      new PutItemCommand({
-        TableName: JOB_TABLE,
-        Item: {
-          jobId: { S: input.jobId },
-          jobType: { S: input.jobType },
-          sourceUrl: { S: input.sourceUrl },
-          status: { S: "queued" },
-          message: {
-            S: "Queued - starting soon...",
-          },
-          batchJobId: { S: batchJobId },
-          createdAt: { N: String(now) },
-          updatedAt: { N: String(Date.now()) },
-          ...(durationSecs != null ? { durationSecs: { N: String(durationSecs) } } : {}),
-        },
       }),
     );
+  } catch (err) {
+    await updateYoutubeQueueLocalJob(input.jobId, {
+      status: "error",
+      message: err instanceof Error ? `Background submission failed: ${err.message}` : "Background submission failed",
+      completedAt: Date.now(),
+    });
+    throw err;
+  }
+
+  const batchJobId = submit.jobId ?? null;
+  if (!batchJobId) {
+    await updateYoutubeQueueLocalJob(input.jobId, {
+      status: "error",
+      message: "Background worker did not accept the job. Please retry.",
+      completedAt: Date.now(),
+    });
+    throw new Error("AWS Batch accepted the request without returning a job ID");
+  }
+  try {
+    await ddb.send(new UpdateItemCommand({
+      TableName: JOB_TABLE,
+      Key: { jobId: { S: input.jobId } },
+      UpdateExpression: "SET #s = :queued, #m = :message, batchJobId = :batchJobId, updatedAt = :updatedAt",
+      ExpressionAttributeNames: { "#s": "status", "#m": "message" },
+      ExpressionAttributeValues: {
+        ":queued": { S: "queued" },
+        ":message": { S: "Queued - starting soon..." },
+        ":batchJobId": { S: batchJobId },
+        ":updatedAt": { N: String(Date.now()) },
+        ":done": { S: "done" },
+        ":error": { S: "error" },
+        ":cancelled": { S: "cancelled" },
+        ":expired": { S: "expired" },
+      },
+      ConditionExpression: "attribute_exists(jobId) AND NOT (#s IN (:done, :error, :cancelled, :expired))",
+    }));
+  } catch (err) {
+    if ((err as { name?: string })?.name === "ConditionalCheckFailedException") {
+      await batch.send(new TerminateJobCommand({
+        jobId: batchJobId,
+        reason: "Job became terminal before Batch submission completed",
+      })).catch((terminateErr) => logger.warn({ err: terminateErr, batchJobId }, "Failed to terminate rejected Batch job"));
+      return null;
+    }
+    throw err;
   }
   return batchJobId;
 }
@@ -671,6 +698,8 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
     Date.now() - createdAt >= LOCAL_CLIP_STALE_MS &&
     PENDING_QUEUE_STATES.has(status)
   ) {
+    const observedStatus = status;
+    const observedUpdatedAt = updatedAt;
     status = "error";
     message = "Clip cut timed out in Lambda. Please retry with a shorter section or try again.";
     try {
@@ -689,11 +718,21 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
             ":m": { S: message },
             ":u": { N: String(Date.now()) },
             ":p": { N: "0" },
+            ":observedStatus": { S: observedStatus },
+            ...(observedUpdatedAt != null
+              ? { ":observedUpdatedAt": { N: String(observedUpdatedAt) } }
+              : {}),
           },
+          ConditionExpression: observedUpdatedAt != null
+            ? "#s = :observedStatus AND #u = :observedUpdatedAt"
+            : "#s = :observedStatus AND attribute_not_exists(#u)",
         }),
       );
       updatedAt = Date.now();
     } catch (err) {
+      if ((err as { name?: string })?.name === "ConditionalCheckFailedException") {
+        return getYoutubeQueueJobStatus(jobId);
+      }
       logger.warn({ err, jobId }, "Failed to mark stale local clip job");
     }
   }
@@ -705,6 +744,8 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
     Date.now() - updatedAt >= STALE_QUEUE_RECONCILE_MS &&
     PENDING_QUEUE_STATES.has(status)
   ) {
+    const observedStatus = status;
+    const observedUpdatedAt = updatedAt;
     try {
       const desc = await batch.send(
         new DescribeJobsCommand({
@@ -760,15 +801,24 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
             ":s": { S: status },
             ":m": { S: message ?? status },
             ":u": { N: String(Date.now()) },
+            ":observedStatus": { S: observedStatus },
+            ":observedUpdatedAt": { N: String(observedUpdatedAt) },
           },
+          ConditionExpression: "#s = :observedStatus AND #u = :observedUpdatedAt",
         }),
       );
       updatedAt = Date.now();
     } catch (err) {
+      if ((err as { name?: string })?.name === "ConditionalCheckFailedException") {
+        return getYoutubeQueueJobStatus(jobId);
+      }
       logger.warn({ err, jobId, batchJobId }, "Failed queue state reconciliation");
     }
   }
 
+  if (isTerminalStatus(status)) {
+    void maybeFireJobWebhook(jobId, status, { message });
+  }
   return {
     status,
     message,
@@ -789,6 +839,93 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
   };
 }
 
+export async function isYoutubeQueueJobCancelled(jobId: string): Promise<boolean> {
+  if (!ddb || !JOB_TABLE) return false;
+  const out = await ddb.send(new GetItemCommand({
+    TableName: JOB_TABLE,
+    Key: { jobId: { S: jobId } },
+    ProjectionExpression: "#s",
+    ExpressionAttributeNames: { "#s": "status" },
+    ConsistentRead: true,
+  }));
+  return out.Item?.status?.S === "cancelled";
+}
+
+type ClipWorkerLeases = Record<string, number>;
+
+async function mutateClipWorkerLeases(
+  mutate: (leases: ClipWorkerLeases, now: number) => { changed: boolean; acquired?: boolean },
+): Promise<boolean> {
+  if (!ddb || !JOB_TABLE) return true;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const current = await ddb.send(new GetItemCommand({
+      TableName: JOB_TABLE,
+      Key: { jobId: { S: CLIP_WORKER_LEASE_KEY } },
+      ConsistentRead: true,
+    }));
+    const revision = current.Item?.revision?.N ? Number(current.Item.revision.N) : 0;
+    let leases: ClipWorkerLeases = {};
+    try {
+      const parsed = JSON.parse(current.Item?.leasesJson?.S ?? "{}");
+      if (parsed && typeof parsed === "object") leases = parsed as ClipWorkerLeases;
+    } catch {}
+    const now = Date.now();
+    for (const [id, expiresAt] of Object.entries(leases)) {
+      if (!Number.isFinite(expiresAt) || expiresAt <= now) delete leases[id];
+    }
+    const result = mutate(leases, now);
+    if (!result.changed) return result.acquired ?? true;
+    try {
+      await ddb.send(new PutItemCommand({
+        TableName: JOB_TABLE,
+        Item: {
+          jobId: { S: CLIP_WORKER_LEASE_KEY },
+          status: { S: "control" },
+          leasesJson: { S: JSON.stringify(leases) },
+          revision: { N: String(revision + 1) },
+          updatedAt: { N: String(now) },
+        },
+        ConditionExpression: current.Item
+          ? "#revision = :revision"
+          : "attribute_not_exists(#jobId)",
+        ExpressionAttributeNames: current.Item
+          ? { "#revision": "revision" }
+          : { "#jobId": "jobId" },
+        ...(current.Item
+          ? { ExpressionAttributeValues: { ":revision": { N: String(revision) } } }
+          : {}),
+      }));
+      return result.acquired ?? true;
+    } catch (err) {
+      if ((err as { name?: string })?.name !== "ConditionalCheckFailedException") throw err;
+    }
+  }
+  throw new Error("Could not update ClipCut worker lease after repeated contention");
+}
+
+export async function acquireClipWorkerLease(
+  jobId: string,
+  maxConcurrent: number,
+  leaseMs = 17 * 60 * 1000,
+): Promise<boolean> {
+  return mutateClipWorkerLeases((leases, now) => {
+    if (leases[jobId]) return { changed: false, acquired: true };
+    if (Object.keys(leases).length >= Math.max(1, maxConcurrent)) {
+      return { changed: false, acquired: false };
+    }
+    leases[jobId] = now + leaseMs;
+    return { changed: true, acquired: true };
+  });
+}
+
+export async function releaseClipWorkerLease(jobId: string): Promise<void> {
+  await mutateClipWorkerLeases((leases) => {
+    if (!leases[jobId]) return { changed: false };
+    delete leases[jobId];
+    return { changed: true };
+  });
+}
+
 export async function cancelYoutubeQueueJob(
   jobId: string,
 ): Promise<{ ok: boolean; status: string; batchJobId: string | null; alreadyFinished?: boolean }> {
@@ -806,6 +943,21 @@ export async function cancelYoutubeQueueJob(
     };
   }
 
+  const cancelled = await updateYoutubeQueueLocalJob(jobId, {
+    status: "cancelled",
+    message: "Cancelled by user",
+    completedAt: Date.now(),
+  });
+  if (!cancelled) {
+    const latest = await getYoutubeQueueJobStatus(jobId);
+    return {
+      ok: !!latest,
+      status: latest?.status ?? "not-found",
+      batchJobId: latest?.batchJobId ?? status.batchJobId,
+      alreadyFinished: true,
+    };
+  }
+
   if (status.batchJobId && batch) {
     try {
       await batch.send(
@@ -818,24 +970,6 @@ export async function cancelYoutubeQueueJob(
       logger.warn({ err, jobId, batchJobId: status.batchJobId }, "Failed to terminate queue batch job");
     }
   }
-
-  await ddb.send(
-    new UpdateItemCommand({
-      TableName: JOB_TABLE,
-      Key: { jobId: { S: jobId } },
-      UpdateExpression: "SET #s = :s, #m = :m, #u = :u",
-      ExpressionAttributeNames: {
-        "#s": "status",
-        "#m": "message",
-        "#u": "updatedAt",
-      },
-      ExpressionAttributeValues: {
-        ":s": { S: "cancelled" },
-        ":m": { S: "Cancelled by user" },
-        ":u": { N: String(Date.now()) },
-      },
-    }),
-  );
 
   return { ok: true, status: "cancelled", batchJobId: status.batchJobId };
 }

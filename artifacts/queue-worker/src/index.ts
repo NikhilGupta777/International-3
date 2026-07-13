@@ -19,7 +19,7 @@ import {
   UpdateItemCommand,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import pino from "pino";
 
 type WorkerPayload = {
@@ -221,8 +221,8 @@ async function updateJobState(
   status: string,
   message: string,
   extra?: Record<string, string | number | boolean>,
-): Promise<void> {
-  if (!ddb || !JOB_TABLE) return;
+): Promise<boolean> {
+  if (!ddb || !JOB_TABLE) return false;
 
   const names: Record<string, string> = {
     "#s": "status",
@@ -266,9 +266,10 @@ async function updateJobState(
         "attribute_not_exists(#statusGuard) OR NOT (#statusGuard IN (:terminalDone, :terminalError, :terminalCancelled, :terminalExpired)) OR #statusGuard = :nextStatus",
     }));
   } catch (err) {
-    if ((err as { name?: string })?.name === "ConditionalCheckFailedException") return;
+    if ((err as { name?: string })?.name === "ConditionalCheckFailedException") return false;
     throw err;
   }
+  return true;
 }
 
 function ensureCookieFileIfNeeded(): string | null {
@@ -843,7 +844,10 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
     baseClipArgs.splice(baseClipArgs.indexOf("--downloader-args"), 0, "--force-keyframes-at-cuts");
   }
 
-  await updateJobState(payload.jobId, "running", "Cutting selected section...");
+  await updateJobState(payload.jobId, "running", "Cutting selected section...", {
+    startedAt: Date.now(),
+    progressPct: 0,
+  });
   let lastProgressUpdateAt = 0;
   const recordProgress = (line: string, source: "stdout" | "stderr") => {
     const compact = line.replace(/\s+/g, " ").trim().slice(0, 240);
@@ -961,12 +965,18 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
   const outputPath = findOutputFile(payload.jobId, ["mp4"]);
   const uploaded = await uploadIfConfigured(outputPath, payload.jobId, "youtube/clips");
 
-  await updateJobState(payload.jobId, "done", "Clip ready", {
+  const committed = await updateJobState(payload.jobId, "done", "Clip ready", {
     progressPct: 100,
+    completedAt: Date.now(),
     filename: uploaded.filename,
     filesize: uploaded.filesize,
     ...(uploaded.s3Key ? { s3Key: uploaded.s3Key } : {}),
   });
+  if (!committed && uploaded.s3Key && s3 && S3_BUCKET) {
+    await s3.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: uploaded.s3Key })).catch((err) =>
+      logger.warn({ err, jobId: payload.jobId, key: uploaded.s3Key }, "Failed to remove rejected ClipCut output"),
+    );
+  }
   cleanupFile(outputPath);
 }
 
@@ -992,7 +1002,7 @@ async function handleBestClips(payload: WorkerPayload): Promise<void> {
     notifyClientKey,
   });
 
-  const stepUpdates: Promise<void>[] = [];
+  const stepUpdates: Promise<boolean>[] = [];
   const onStep = (data: any) => {
     const message =
       typeof data?.message === "string" && data.message.trim().length > 0
@@ -1175,7 +1185,7 @@ async function handleBhagwatAnalyze(payload: WorkerPayload): Promise<void> {
   };
   let stagedAudioId: string | null = null;
   let stagedAudioPath: string | null = null;
-  const stepUpdates: Promise<void>[] = [];
+  const stepUpdates: Promise<boolean>[] = [];
 
   const onStep = (data: unknown) => {
     const stepData = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
@@ -1293,7 +1303,7 @@ async function handleBhagwatRender(payload: WorkerPayload): Promise<void> {
     title: originalFilename.replace(/\.[^.]+$/, ""),
   });
 
-  const progressUpdates: Promise<void>[] = [];
+  const progressUpdates: Promise<boolean>[] = [];
   const onProgress = (data: unknown) => {
     const progressData = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
     const percent = typeof progressData.percent === "number" ? progressData.percent : 0;
@@ -1472,6 +1482,7 @@ main()
           parsed.jobId,
           "error",
           err instanceof Error ? err.message.slice(0, 800) : "Unknown error",
+          { completedAt: Date.now() },
         );
       }
     } catch {}

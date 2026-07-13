@@ -39,22 +39,27 @@ import {
   readTextFromS3,
   getS3SignedDownloadUrl,
   isS3StorageEnabled,
+  s3ObjectExists,
   uploadFileToS3,
 } from "../lib/s3-storage";
 import { logger } from "../lib/logger";
 import { evaluateClipHandoff } from "../lib/clip-cut-policy";
+import { normalizeClipRange } from "../lib/clip-cut-validation";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled, buildThinkingConfig, getPersonalGeminiApiKeysList, generateContentWithRotation } from "../lib/gemini-client";
 import {
   getNotifyClientKey,
   notifyClientPush,
 } from "../lib/push-notifications";
 import {
+  acquireClipWorkerLease,
   cancelYoutubeQueueJob,
   getYoutubeQueueJobStatus,
   handoffYoutubeQueuePrimaryJob,
   isYoutubeQueueEnabledFor,
   isYoutubeQueuePrimaryEnabledFor,
+  isYoutubeQueueJobCancelled,
   putYoutubeQueueLocalJob,
+  releaseClipWorkerLease,
   submitYoutubeQueuePrimaryJob,
   submitYoutubeQueueShadowJob,
   updateYoutubeQueueLocalJob,
@@ -280,7 +285,7 @@ if (!existsSync(DOWNLOAD_DIR)) {
 const MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 // Full video downloads expire sooner than clips — they're typically larger and re-downloadable on demand
 const DOWNLOAD_MAX_FILE_AGE_MS = 1 * 24 * 60 * 60 * 1000;
-const CLIP_MAX_FILE_AGE_MS = 4 * 24 * 60 * 60 * 1000;
+const CLIP_MAX_FILE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 function cleanupOldFiles() {
   try {
     const now = Date.now();
@@ -350,6 +355,9 @@ function scheduleAutoDelete(
         jobRef.s3Key = null;
       }
       jobRef.status = "expired";
+      jobRef.message = "Clip expired after 7 days";
+      jobRef.completedAt = Date.now();
+      persistClipJobState(jobId, jobRef);
       setTimeout(() => jobs.delete(jobId), 60_000);
     })();
   }, ttlMs);
@@ -2376,6 +2384,11 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
 
   await storeJobOutputInS3(jobId, jobRef, finalPath, "youtube/clips");
+  if (jobRef.cancelled || await isYoutubeQueueJobCancelled(jobId)) {
+    if (jobRef.s3Key) await deleteS3Object(jobRef.s3Key);
+    jobRef.s3Key = null;
+    throw new Error(CANCELLED_BY_USER);
+  }
   jobRef.status = "done";
   jobRef.percent = 100;
   jobRef.speed = null;
@@ -2436,11 +2449,54 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
     notifyClientKey: e.notifyClientKey ?? undefined,
   };
   jobs.set(e.jobId, job);
+  let leaseAcquired = false;
+  try {
+    leaseAcquired = await acquireClipWorkerLease(e.jobId, MAX_CONCURRENT_CLIP_JOBS);
+  } catch (err) {
+    logger.warn({ err, jobId: e.jobId }, "Could not acquire global ClipCut lease; moving job to Batch");
+    leaseAcquired = false;
+  }
+  if (!leaseAcquired) {
+    try {
+      const batchJobId = await handoffYoutubeQueuePrimaryJob({
+        jobId: e.jobId,
+        jobType: "clip-cut",
+        sourceUrl: e.url,
+        meta: {
+          startTime: e.startTime,
+          endTime: e.endTime,
+          quality: e.quality,
+          notifyClientKey: e.notifyClientKey ?? null,
+        },
+      });
+      if (batchJobId) return;
+      throw new Error("Background queue is unavailable");
+    } catch (err) {
+      logger.error({ err, jobId: e.jobId }, "Failed to move overloaded ClipCut worker to Batch");
+      job.status = "error";
+      job.message = "Clip workers are busy and background processing is unavailable. Please retry.";
+      job.completedAt = Date.now();
+      persistClipJobState(e.jobId, job);
+    }
+    return;
+  }
   const workerStartedAt = Date.now();
   const clipDurationSecs = Math.max(0, e.endTime - e.startTime);
   const adaptiveHandoffEnabled = isYoutubeQueuePrimaryEnabledFor("clip-cut");
+  let controlCheckRunning = false;
+  const stopActiveProcess = () => {
+    const proc = job.activeProc;
+    if (!proc) return;
+    try { proc.kill("SIGTERM"); } catch {}
+    setTimeout(() => {
+      if (job.activeProc === proc) {
+        try { proc.kill("SIGKILL"); } catch {}
+      }
+    }, 2_000).unref?.();
+  };
   const handoffTimer = adaptiveHandoffEnabled
     ? setInterval(() => {
+        if (controlCheckRunning) return;
         if (
           job.handoffRequested ||
           job.cancelled ||
@@ -2450,40 +2506,45 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
         ) {
           return;
         }
-        const decision = evaluateClipHandoff({
-          elapsedMs: Date.now() - workerStartedAt,
-          durationSecs: clipDurationSecs,
-          progressPct: job.percent,
-          speedText: job.speed,
-          sampleAfterMs: LAMBDA_CLIP_HANDOFF_SAMPLE_MS,
-          noProgressAfterMs: LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS,
-          lambdaBudgetMs: LAMBDA_CLIP_SAFE_BUDGET_MS,
-          completionReserveMs: LAMBDA_CLIP_COMPLETION_RESERVE_MS,
-        });
-        if (!decision.shouldHandoff) return;
-
-        job.handoffRequested = true;
-        job.cancelled = true;
-        job.message = "Taking longer than expected - continuing in background...";
-        persistClipJobState(e.jobId, job);
-        logger.info(
-          {
-            jobId: e.jobId,
-            speed: decision.speed,
-            projectedRemainingMs: decision.projectedRemainingMs,
-            elapsedMs: Date.now() - workerStartedAt,
-          },
-          "Handing slow clip-cut Lambda job to Batch",
-        );
-        const proc = job.activeProc;
-        if (proc) {
-          try { proc.kill("SIGTERM"); } catch {}
-          setTimeout(() => {
-            if (job.activeProc === proc) {
-              try { proc.kill("SIGKILL"); } catch {}
+        controlCheckRunning = true;
+        void (async () => {
+          try {
+            if (await isYoutubeQueueJobCancelled(e.jobId)) {
+              job.cancelled = true;
+              job.status = "cancelled";
+              job.message = CANCELLED_BY_USER;
+              stopActiveProcess();
+              return;
             }
-          }, 2_000).unref?.();
-        }
+            if (job.status === "done" || job.status === "error" || job.status === "cancelled") return;
+            const decision = evaluateClipHandoff({
+              elapsedMs: Date.now() - workerStartedAt,
+              durationSecs: clipDurationSecs,
+              progressPct: job.percent,
+              speedText: job.speed,
+              sampleAfterMs: LAMBDA_CLIP_HANDOFF_SAMPLE_MS,
+              noProgressAfterMs: LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS,
+              lambdaBudgetMs: LAMBDA_CLIP_SAFE_BUDGET_MS,
+              completionReserveMs: LAMBDA_CLIP_COMPLETION_RESERVE_MS,
+            });
+            if (!decision.shouldHandoff) return;
+            job.handoffRequested = true;
+            job.cancelled = true;
+            job.message = "Taking longer than expected - continuing in background...";
+            persistClipJobState(e.jobId, job);
+            logger.info({
+              jobId: e.jobId,
+              speed: decision.speed,
+              projectedRemainingMs: decision.projectedRemainingMs,
+              elapsedMs: Date.now() - workerStartedAt,
+            }, "Handing slow clip-cut Lambda job to Batch");
+            stopActiveProcess();
+          } catch (err) {
+            logger.warn({ err, jobId: e.jobId }, "ClipCut worker control check failed");
+          } finally {
+            controlCheckRunning = false;
+          }
+        })();
       }, 5_000)
     : null;
   handoffTimer?.unref?.();
@@ -2538,6 +2599,11 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
     );
   } finally {
     if (handoffTimer) clearInterval(handoffTimer);
+    if (leaseAcquired) {
+      await releaseClipWorkerLease(e.jobId).catch((err) => {
+        logger.warn({ err, jobId: e.jobId }, "Failed to release ClipCut worker lease");
+      });
+    }
   }
 }
 
@@ -2551,12 +2617,17 @@ async function startClipCutJobInternal(params: {
   /** Retained for API-call attribution; production dispatch is identical. */
   isApi?: boolean;
 }): Promise<{ jobId: string; status: string; message: string }> {
+  const range = normalizeClipRange(params.startTime, params.endTime);
+  if (!range.ok) throw new Error(range.error);
+  params.startTime = range.value.startTime;
+  params.endTime = range.value.endTime;
   const jobId = randomUUID();
   const normalizedUrl = normalizeInputUrl(params.url);
+  if (!isYouTubeUrl(normalizedUrl)) throw new Error("A valid YouTube URL is required");
   const quality = params.quality ?? "best";
 
   if (isYoutubeQueuePrimaryEnabledFor("clip-cut") && !shouldRunClipInLambda(params.startTime, params.endTime)) {
-    await submitYoutubeQueuePrimaryJob({
+    const batchJobId = await submitYoutubeQueuePrimaryJob({
       jobId,
       jobType: "clip-cut",
       sourceUrl: normalizedUrl,
@@ -2567,6 +2638,7 @@ async function startClipCutJobInternal(params: {
         notifyClientKey: params.notifyClientKey ?? null,
       },
     });
+    if (!batchJobId) throw new Error("Background clip queue is unavailable");
     return { jobId, status: "queued", message: "Clip cut queued" };
   }
 
@@ -2751,16 +2823,16 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
     const clips = Array.isArray(parsed.clips) ? parsed.clips : null;
 
     if (clips && clips.length > 0) {
+      if (!url || !isYouTubeUrl(normalizeInputUrl(url))) {
+        res.status(422).json({ error: "AI needs a valid YouTube URL." });
+        return;
+      }
       const validatedClips: Array<{ startTime: number; endTime: number }> = [];
       for (const c of clips) {
         const cStart = Number(c.startTime);
         const cEnd = Number(c.endTime);
-        if (Number.isFinite(cStart) && Number.isFinite(cEnd) && cEnd > cStart && cEnd - cStart <= 3600) {
-          validatedClips.push({
-            startTime: Math.max(0, Math.round(cStart)),
-            endTime: Math.max(0, Math.round(cEnd)),
-          });
-        }
+        const range = normalizeClipRange(cStart, cEnd);
+        if (range.ok) validatedClips.push(range.value);
       }
       if (validatedClips.length === 0) {
         res.status(422).json({ error: "AI found invalid time ranges for the clips." });
@@ -2777,23 +2849,17 @@ router.post("/youtube/clip-cut/intent", async (req: Request, res: Response) => {
     const startTime = Number(parsed.startTime);
     const endTime = Number(parsed.endTime);
 
-    if (!url || !Number.isFinite(startTime) || !Number.isFinite(endTime)) {
+    if (!url || !isYouTubeUrl(normalizeInputUrl(url))) {
       res.status(422).json({ error: "AI needs a YouTube URL plus clear start and end times." });
       return;
     }
-    if (endTime <= startTime) {
-      res.status(422).json({ error: "AI found the end time before the start time. Please adjust the range." });
-      return;
-    }
-    if (endTime - startTime > 3600) {
-      res.status(422).json({ error: "Clip cannot exceed 60 minutes." });
-      return;
-    }
+    const range = normalizeClipRange(startTime, endTime);
+    if (!range.ok) { res.status(422).json({ error: range.error }); return; }
 
     res.json({
       url: normalizeInputUrl(url),
-      startTime: Math.max(0, Math.round(startTime)),
-      endTime: Math.max(0, Math.round(endTime)),
+      startTime: range.value.startTime,
+      endTime: range.value.endTime,
       message,
     });
   } catch (err) {
@@ -2810,27 +2876,20 @@ router.post("/youtube/clip-cut", clipCutRateLimiter, async (req: Request, res: R
     quality?: string;
   };
 
-  if (!url) { res.status(400).json({ error: "url is required" }); return; }
-  if (typeof startTime !== "number" || typeof endTime !== "number") {
-    res.status(400).json({ error: "startTime and endTime (in seconds) are required" });
+  if (!url || !isYouTubeUrl(normalizeInputUrl(url))) {
+    res.status(400).json({ error: "A valid YouTube URL is required" });
     return;
   }
-  if (endTime <= startTime) {
-    res.status(400).json({ error: "endTime must be greater than startTime" });
-    return;
-  }
-  if (endTime - startTime > 3600) {
-    res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
-    return;
-  }
+  const range = normalizeClipRange(startTime, endTime);
+  if (!range.ok) { res.status(400).json({ error: range.error }); return; }
 
   const notifyClientKey = getNotifyClientKey(req);
 
   try {
     const started = await startClipCutJobInternal({
       url,
-      startTime,
-      endTime,
+      startTime: range.value.startTime,
+      endTime: range.value.endTime,
       quality,
       notifyClientKey,
       log: req.log,
@@ -2850,7 +2909,10 @@ router.post("/youtube/clip-cut/batch", clipCutRateLimiter, async (req: Request, 
     quality?: string;
   };
 
-  if (!url) { res.status(400).json({ error: "url is required" }); return; }
+  if (!url || !isYouTubeUrl(normalizeInputUrl(url))) {
+    res.status(400).json({ error: "A valid YouTube URL is required" });
+    return;
+  }
   if (!Array.isArray(clips) || clips.length === 0) {
     res.status(400).json({ error: "clips are required" });
     return;
@@ -2862,31 +2924,14 @@ router.post("/youtube/clip-cut/batch", clipCutRateLimiter, async (req: Request, 
 
   const normalizedClips: Array<{ startTime: number; endTime: number }> = [];
   for (const clip of clips) {
-    const startTime = Number(clip.startTime);
-    const endTime = Number(clip.endTime);
-    if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) {
-      res.status(400).json({ error: "Each clip needs startTime and endTime in seconds" });
-      return;
-    }
-    if (endTime <= startTime) {
-      res.status(400).json({ error: "Each clip endTime must be greater than startTime" });
-      return;
-    }
-    if (endTime - startTime > 3600) {
-      res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
-      return;
-    }
-    normalizedClips.push({
-      startTime: Math.max(0, Math.round(startTime)),
-      endTime: Math.max(0, Math.round(endTime)),
-    });
+    const range = normalizeClipRange(clip.startTime, clip.endTime);
+    if (!range.ok) { res.status(400).json({ error: range.error }); return; }
+    normalizedClips.push(range.value);
   }
 
   const notifyClientKey = getNotifyClientKey(req);
-  try {
-    const jobs = [];
-    for (const clip of normalizedClips) {
-      jobs.push(await startClipCutJobInternal({
+  const results = await Promise.allSettled(normalizedClips.map((clip) =>
+      startClipCutJobInternal({
         url,
         startTime: clip.startTime,
         endTime: clip.endTime,
@@ -2894,13 +2939,19 @@ router.post("/youtube/clip-cut/batch", clipCutRateLimiter, async (req: Request, 
         notifyClientKey,
         log: req.log,
         isApi: res.locals.authVia === "apikey",
-      }));
-    }
-    res.json({ jobs, message: `Started ${jobs.length} clip cuts` });
-  } catch (err) {
-    req.log.error({ err }, "Failed to start batch clip-cut jobs");
-    res.status(502).json({ error: "Failed to start all clip cut jobs" });
-  }
+      })));
+  const jobs = results.flatMap((result, index) => result.status === "fulfilled"
+    ? [{ ...result.value, clip: normalizedClips[index] }]
+    : []);
+  const errors = results.flatMap((result, index) => result.status === "rejected"
+    ? [{ clip: normalizedClips[index], error: result.reason instanceof Error ? result.reason.message : "Failed to start clip" }]
+    : []);
+  if (errors.length) req.log.error({ errors }, "Some batch clip-cut jobs failed to start");
+  res.status(jobs.length === 0 ? 502 : errors.length ? 207 : 200).json({
+    jobs,
+    errors,
+    message: `Started ${jobs.length} of ${normalizedClips.length} clip cuts`,
+  });
 });
 
 // Run one download attempt with given extra args (cookies / client override).
@@ -3563,7 +3614,9 @@ router.post("/youtube/cancel/:jobId", cancelRateLimiter, async (req: Request, re
     return;
   }
 
-  const job = jobs.get(jobId);
+  // In production the HTTP request and async worker are different Lambda
+  // environments. DynamoDB is authoritative; an in-memory job may be stale.
+  const job = isDownloadQueueEnabled() ? undefined : jobs.get(jobId);
   if (!job) {
     if (!isDownloadQueueEnabled()) {
       res.status(404).json({ error: "Job not found" });
@@ -3779,7 +3832,7 @@ router.get("/youtube/file/:jobId", async (req: Request, res: Response) => {
     res.status(400).json({ error: "jobId is required" });
     return;
   }
-  const job = jobs.get(jobId);
+  const job = isDownloadQueueEnabled() ? undefined : jobs.get(jobId);
   if (!job) {
     if (!isDownloadQueueEnabled()) {
       res.status(404).json({ error: "Job not found", expired: true });
@@ -3802,6 +3855,16 @@ router.get("/youtube/file/:jobId", async (req: Request, res: Response) => {
 
     if (queueStatus.status !== "done" || !queueStatus.s3Key) {
       res.status(404).json({ error: "File not found or download not complete" });
+      return;
+    }
+
+    if (!await s3ObjectExists(queueStatus.s3Key)) {
+      await updateYoutubeQueueLocalJob(jobId, {
+        status: "expired",
+        message: "File expired after its retention period",
+        completedAt: Date.now(),
+      });
+      res.status(410).json({ error: "File has expired. Please run the job again.", expired: true });
       return;
     }
 
@@ -3952,6 +4015,7 @@ function pickFullestSubtitleCandidate(
     if (a.coverageEndSec !== b.coverageEndSec) {
       return b.coverageEndSec - a.coverageEndSec;
     }
+
     return b.bytes - a.bytes;
   })[0];
 }
@@ -5440,28 +5504,18 @@ router.post("/youtube/download-clip", legacyDownloadClipRateLimiter, async (req:
     quality?: string;
   };
 
-  if (!url || startSec == null || endSec == null) {
-    res.status(400).json({ error: "url, startSec, and endSec are required" });
+  if (!url || !isYouTubeUrl(normalizeInputUrl(url))) {
+    res.status(400).json({ error: "A valid YouTube URL is required" });
     return;
   }
-  if (typeof startSec !== "number" || typeof endSec !== "number") {
-    res.status(400).json({ error: "startSec and endSec (in seconds) must be numbers" });
-    return;
-  }
-  if (endSec <= startSec) {
-    res.status(400).json({ error: "endSec must be greater than startSec" });
-    return;
-  }
-  if (endSec - startSec > 3600) {
-    res.status(400).json({ error: "Clip cannot exceed 60 minutes" });
-    return;
-  }
+  const range = normalizeClipRange(startSec, endSec);
+  if (!range.ok) { res.status(400).json({ error: range.error }); return; }
   const notifyClientKey = getNotifyClientKey(req);
   try {
     const started = await startClipCutJobInternal({
       url,
-      startTime: startSec,
-      endTime: endSec,
+      startTime: range.value.startTime,
+      endTime: range.value.endTime,
       quality,
       notifyClientKey,
       log: req.log,

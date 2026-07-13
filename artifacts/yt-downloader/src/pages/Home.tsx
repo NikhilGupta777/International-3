@@ -730,31 +730,32 @@ export default function Home({
 
   // Reconcile Clip Cutter jobs even when user is on other tabs or reopens later.
   useEffect(() => {
+    if (mode === "clipcutter") return;
     let closed = false;
+    let inFlight = false;
 
     const syncClipJobs = async () => {
+      if (inFlight) return;
+      inFlight = true;
       const active = loadActiveClipJobs();
-      if (active.length === 0) return;
+      if (active.length === 0) { inFlight = false; return; }
 
       const nextActive: typeof active = [];
       let changed = false;
-
-      for (const j of active) {
+      const outcomes = await Promise.all(active.map(async (j) => {
         try {
           const res = await fetch(
             `${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/youtube/progress/${encodeURIComponent(j.jobId)}`,
+            { signal: AbortSignal.timeout(8000) },
           );
           if (res.status === 404) {
             if (Date.now() - j.startedAt < CLIP_JOB_MISSING_GRACE_MS) {
-              nextActive.push(j);
-              continue;
+              return { job: j, keep: true, changed: false };
             }
-            changed = true;
-            continue;
+            return { job: j, keep: false, changed: true };
           }
           if (!res.ok) {
-            nextActive.push(j);
-            continue;
+            return { job: j, keep: true, changed: false };
           }
           const data = (await res.json()) as {
             status?: string;
@@ -775,24 +776,29 @@ export default function Home({
               durationSecs: Math.max(1, j.endSecs - j.startSecs),
             };
             saveToClipHistory(entry);
-            changed = true;
-            continue;
+            return { job: j, keep: false, changed: true };
           }
 
           if (status === "error" || status === "cancelled" || status === "expired") {
-            changed = true;
-            continue;
+            return { job: j, keep: false, changed: true };
           }
-
-          nextActive.push(j);
+          return { job: j, keep: true, changed: false };
         } catch {
-          nextActive.push(j);
+          return { job: j, keep: true, changed: false };
         }
+      }));
+      for (const outcome of outcomes) {
+        if (outcome.keep) nextActive.push(outcome.job);
+        changed ||= outcome.changed;
       }
 
       if (!closed && changed) {
-        saveActiveClipJobs(nextActive);
+        // Preserve jobs created while this reconciliation request was in flight.
+        const snapshotIds = new Set(active.map((job) => job.jobId));
+        const newlyAdded = loadActiveClipJobs().filter((job) => !snapshotIds.has(job.jobId));
+        saveActiveClipJobs([...nextActive, ...newlyAdded]);
       }
+      inFlight = false;
     };
 
     void syncClipJobs();
@@ -801,7 +807,7 @@ export default function Home({
       closed = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [mode]);
 
   const switchMode = (m: Mode) => {
     initialRouteRef.current = { mode: m };

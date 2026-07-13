@@ -201,13 +201,14 @@ export function BhavishyaClips({ url }: { url: string }) {
 
       const { jobId } = startData;
 
-      let attempts = 0;
-      const MAX_ATTEMPTS = 200;
-
-      const poll = async (): Promise<void> => {
-        if (attempts++ >= MAX_ATTEMPTS) throw new Error("Download timed out");
-
-        const prog = await fetch(`${BASE}/api/youtube/progress/${jobId}`).then(r => r.json());
+      const deadline = Date.now() + 45 * 60 * 1000;
+      let completed = false;
+      while (Date.now() < deadline) {
+        const response = await fetch(`${BASE}/api/youtube/progress/${jobId}`, {
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!response.ok) throw new Error(`Progress check failed (${response.status})`);
+        const prog = await response.json();
 
         if (prog.status === "done") {
           setDownloadStates(prev => ({ ...prev, [key]: { status: "done", percent: 100, message: "Ready!" } }));
@@ -218,19 +219,18 @@ export function BhavishyaClips({ url }: { url: string }) {
           a.click();
           document.body.removeChild(a);
           toast({ title: "Clip downloaded!", description: clip.title });
-          return;
+          completed = true;
+          break;
         }
 
-        if (prog.status === "error" || prog.status === "expired") {
+        if (["error", "expired", "cancelled", "not_found"].includes(prog.status)) {
           throw new Error(prog.message ?? prog.error ?? "Download failed");
         }
 
         setDownloadStates(prev => ({ ...prev, [key]: { status: "downloading", percent: prog.percent ?? 0, message: prog.message ?? "" } }));
-        await new Promise(r => setTimeout(r, 1500));
-        return poll();
-      };
-
-      await poll();
+        await new Promise(r => setTimeout(r, 3000));
+      }
+      if (!completed) throw new Error("Clip is still processing after 45 minutes");
     } catch (err) {
       setDownloadStates(prev => ({ ...prev, [key]: { status: "error", percent: 0, message: err instanceof Error ? err.message : "Error" } }));
       toast({ title: "Download failed", description: err instanceof Error ? err.message : "Error", variant: "destructive" });
