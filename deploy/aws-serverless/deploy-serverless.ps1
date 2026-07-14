@@ -429,7 +429,9 @@ if (-not $siteBucket -or -not $distributionId) {
 # rules maintained by other features/operators.
 $outputBucket = Get-RequiredEnv $envMap 'S3_BUCKET'
 $outputPrefix = (Get-OptionalEnv $envMap 'S3_OBJECT_PREFIX' $Prefix).Trim('/')
-$lifecycleFile = Join-Path $env:TEMP "$Prefix-output-lifecycle.json"
+# $env:TEMP is not guaranteed to exist on Linux GitHub runners. Let .NET
+# resolve the platform-specific temporary directory instead.
+$lifecycleFile = Join-Path ([System.IO.Path]::GetTempPath()) "$Prefix-output-lifecycle.json"
 try {
   $existingLifecycleRaw = aws s3api get-bucket-lifecycle-configuration `
     --bucket $outputBucket `
