@@ -49,8 +49,11 @@ export async function uploadLocalFileToGCS(
 /**
  * Downloads a file from a URL to a temporary local path.
  */
-export async function downloadUrlToTempFile(url: string): Promise<string> {
-  const response = await fetch(url);
+export async function downloadUrlToTempFile(
+  url: string,
+  fetchImpl: typeof globalThis.fetch = globalThis.fetch,
+): Promise<string> {
+  const response = await fetchImpl(url);
   if (!response.ok) {
     throw new Error(`Failed to download file from URL ${url}: ${response.statusText}`);
   }
@@ -83,4 +86,3 @@ export async function deleteLocalFile(path: string): Promise<void> {
     logger.warn({ path, error: err.message }, "Failed to delete temp local file");
   }
 }
-

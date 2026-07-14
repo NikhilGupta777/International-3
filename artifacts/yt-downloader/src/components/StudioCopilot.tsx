@@ -17,8 +17,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { WorkspacePanel } from "./WorkspacePanel";
-import { useToast } from "@/hooks/use-toast";
+import { useToast, toast } from "@/hooks/use-toast";
 import { saveActiveDownload, loadActiveDownload, saveCompletedDownload } from "@/lib/download-history";
+import { inferCanvasLanguage, shouldPromoteFencedBlockToCanvas } from "@/lib/copilot-canvas-policy";
 import { saveActiveJob, loadActiveJob, saveToHistory } from "@/lib/subtitle-history";
 import { loadActiveClipJobs, saveActiveClipJobs, saveToClipHistory } from "@/lib/clip-history";
 import { saveToMusicHistory } from "@/lib/music-history";
@@ -36,9 +37,9 @@ function readUltraInitial(): boolean {
 
 type ReasoningMode = "gemini-3.1-flash-lite-low" | "gemini-3.1-flash-lite-high" | "gemma-4-31b-it";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "gemini-3.1-flash-lite-low",   label: "⚡ Fast",      description: "Low thinking, cheap & fast", ultra: false },
-  { id: "gemini-3.1-flash-lite-high",  label: "🧠 Thinking",  description: "High thinking, deeper reasoning", ultra: false },
-  { id: "gemma-4-31b-it",              label: "🧠🧠🧠 Ultra",  description: "Highest thinking, deepest reasoning", ultra: true },
+  { id: "gemini-3.1-flash-lite-low",   label: "Fast",      description: "Low thinking, cheap & fast", ultra: false },
+  { id: "gemini-3.1-flash-lite-high",  label: "Thinking",  description: "High thinking, deeper reasoning", ultra: false },
+  { id: "gemma-4-31b-it",              label: "Ultra",  description: "Highest thinking, deepest reasoning", ultra: true },
 ];
 
 function readReasoningInitial(): ReasoningMode {
@@ -156,7 +157,6 @@ type SseEvent =
   | { type: "canvas_delta"; runId?: string; canvasId: string; content: string }
   | { type: "canvas_done"; runId?: string; canvasId: string }
   | { type: "thought_delta"; content: string; runId?: string }
-  | { type: "suggestions"; items: string[]; runId?: string }
   | { type: "grounding_sources"; runId?: string; chunks: Array<{ title: string; uri: string }>; searchEntryPoint?: string | null }
   | { type: "error"; message: string }
   | { type: "done"; runId?: string; ts?: number };
@@ -229,7 +229,7 @@ const STARTERS = [
   { icon: <Sparkles className="w-4 h-4" />, text: "Find the best moments in a long video" },
   { icon: <Captions className="w-4 h-4" />, text: "Transcribe and translate a video to English" },
   { icon: <FolderOpen className="w-4 h-4" />, text: "Show me my saved files" },
-  { icon: <ImagePlus className="w-4 h-4" />, text: "Generate a thumbnail image for my video" },
+  { icon: <ImagePlus className="w-4 h-4" />, text: "Generate a thumbnail image for my video", capability: "createImage" as const },
   { icon: <Bot className="w-4 h-4" />, text: "What can you do?" },
 ];
 
@@ -381,18 +381,114 @@ function safeExternalHref(href?: string): string | null {
   return null;
 }
 
-function renderCodeBlock(code: string, language: string | undefined, key: string): React.ReactNode {
+function CodeBlock({ code, language }: { code: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
+  const [wrapped, setWrapped] = useState(false);
+  const [canvasOpen, setCanvasOpen] = useState(false);
+  const canvasPanelRef = useRef<HTMLDivElement | null>(null);
   const label = normalizeCanvasLanguage(language, code);
+  const filename = canvasFilename(label);
+
+  useEffect(() => {
+    if (!canvasOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCanvasOpen(false);
+      if (event.key === "Tab" && canvasPanelRef.current) {
+        const focusable = Array.from(
+          canvasPanelRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+          ),
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [canvasOpen]);
+
+  const copyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      toast({ title: "Copy failed", description: "Select the code and copy it manually." });
+    }
+  };
+
+  const downloadCode = () => {
+    const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div key={key} className="my-2 overflow-hidden rounded-lg border border-white/10 bg-black/30">
+    <div className="my-2 overflow-hidden rounded-lg border border-white/10 bg-black/30">
       <div className="flex items-center justify-between border-b border-white/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-white/35">
-        <span>{label}</span>
+        <span className="normal-case tracking-normal">{filename}</span>
+        <div className="flex items-center gap-0.5">
+          <button type="button" className="gs-code-action" onClick={() => setWrapped(v => !v)} aria-pressed={wrapped} aria-label={wrapped ? "Disable code wrapping" : "Wrap code"} title={wrapped ? "Disable wrapping" : "Wrap code"}>
+            <RotateCcw className="h-4 w-4" />
+          </button>
+          <button type="button" className="gs-code-action" onClick={() => setCanvasOpen(true)} aria-label="Open code in canvas" title="Open in canvas">
+            <SquarePen className="h-4 w-4" />
+          </button>
+          <button type="button" className="gs-code-action" onClick={downloadCode} aria-label={`Download ${filename}`} title="Download">
+            <Download className="h-4 w-4" />
+          </button>
+          <button type="button" className="gs-code-action" onClick={() => void copyCode()} aria-label={copied ? "Code copied" : "Copy code"} title="Copy code">
+            {copied ? <Check className="h-4 w-4 text-emerald-300" /> : <Copy className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
-      <pre className="max-h-80 overflow-auto px-3 py-2 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre">
+      <pre className={cn("max-h-80 overflow-auto px-3 py-2 text-[12px] leading-relaxed text-cyan-50/82 font-mono", wrapped ? "whitespace-pre-wrap break-words" : "whitespace-pre")}>
         <code>{code}</code>
       </pre>
+      {canvasOpen && (
+        <div className="fixed inset-0 z-[1200] flex items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label={`${filename} canvas`}>
+          <button type="button" className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setCanvasOpen(false)} aria-label="Close canvas" />
+          <div ref={canvasPanelRef} className="relative z-10 flex h-[min(88dvh,900px)] w-[min(96vw,1100px)] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#111318] shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-white/90">{filename}</div>
+                <div className="text-[10px] uppercase tracking-wide text-white/35">{label}</div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button type="button" className="gs-code-action" onClick={downloadCode} aria-label={`Download ${filename}`}><Download className="h-4 w-4" /></button>
+                <button type="button" className="gs-code-action" onClick={() => void copyCode()} aria-label="Copy canvas content"><Copy className="h-4 w-4" /></button>
+                <button type="button" className="gs-code-action" onClick={() => setCanvasOpen(false)} aria-label="Close canvas" autoFocus><X className="h-4 w-4" /></button>
+              </div>
+            </div>
+            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre p-4 font-mono text-[13px] leading-relaxed text-cyan-50/90"><code>{code}</code></pre>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function renderCodeBlock(code: string, language: string | undefined, key: string): React.ReactNode {
+  return <CodeBlock key={key} code={code} language={language} />;
 }
 
 // ── KaTeX math rendering ──────────────────────────────────────────────────────
@@ -1009,12 +1105,7 @@ const CANVAS_LANGUAGE_EXT: Record<string, string> = {
 };
 
 function normalizeCanvasLanguage(language?: string, content?: string): string {
-  const clean = String(language || "").trim().toLowerCase().replace(/[^a-z0-9+#.-]/g, "");
-  if (clean) return clean;
-  const sample = String(content || "").slice(0, 500).toLowerCase();
-  if (sample.includes("<!doctype html") || sample.includes("<html")) return "html";
-  if (/^\s*[{[]/.test(sample)) return "json";
-  return "text";
+  return inferCanvasLanguage(language, content);
 }
 
 function canvasFilename(language: string): string {
@@ -1084,7 +1175,7 @@ function extractCanvasCandidate(text: string): CanvasCandidate | null {
   const fenceCount = (text.match(/```/g) || []).length;
 
   const open = text.match(/```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*)$/);
-  if (open && isHtmlCanvas(open[1] || "", open[2] || "")) {
+  if (open && shouldPromoteFencedBlockToCanvas(open[1] || "", open[2] || "")) {
     // If there's an unclosed fence (odd count) OR no closed blocks, use the live block
     if (fenceCount % 2 === 1 || closed.length === 0) {
       match = open;
@@ -1093,12 +1184,15 @@ function extractCanvasCandidate(text: string): CanvasCandidate | null {
   }
   // Fall back to largest closed block only when no live canvas should take priority
   if (!match && closed.length > 0) {
-    match = closed.reduce((best, item) => (item[2].length > best[2].length ? item : best), closed[0]);
+    const canvasBlocks = closed.filter(item => shouldPromoteFencedBlockToCanvas(item[1] || "", item[2] || ""));
+    if (canvasBlocks.length > 0) {
+      match = canvasBlocks.reduce((best, item) => (item[2].length > best[2].length ? item : best), canvasBlocks[0]);
+    }
   }
 
   if (!match) return null;
   const content = (match[2] || "").trim();
-  if (!isHtmlCanvas(match[1] || "", content) || content.length < 80) return null;
+  if (!shouldPromoteFencedBlockToCanvas(match[1] || "", content)) return null;
   const language = normalizeCanvasLanguage(match[1], content);
   const displayText = text
     .replace(match[0], live ? "\n\nWriting in canvas..." : "\n\nCanvas created below.")
@@ -2053,9 +2147,17 @@ function ArtifactCard({ part, onNavigate, onOpenWorkspace }: { part: MessagePart
 // ── CopyBubble — copy button for assistant text bubbles ─────────────────────
 function CopyBubble({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => { void navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({ title: "Copy failed", description: "Select the message and copy it manually." });
+    }
+  };
   return (
-    <button onClick={copy} title="Copy" className="gs-message-action-btn">
+    <button type="button" onClick={() => void copy()} title="Copy" aria-label={copied ? "Message copied" : "Copy message"} className="gs-message-action-btn">
       {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
     </button>
   );
@@ -2083,7 +2185,7 @@ function ReadAloudButton({ text }: { text: string }) {
     window.speechSynthesis.speak(utterance);
   };
   return (
-    <button onClick={read} title={speaking ? "Stop reading" : "Read aloud"} className="gs-message-action-btn">
+    <button type="button" onClick={read} title={speaking ? "Stop reading" : "Read aloud"} aria-label={speaking ? "Stop reading message" : "Read message aloud"} className="gs-message-action-btn">
       <Volume2 className="w-3 h-3" />
     </button>
   );
@@ -2217,6 +2319,7 @@ function HistoryDrawer({
                           key={s.id}
                           role="button"
                           tabIndex={0}
+                          aria-label={`Open chat ${s.title || "Untitled"}`}
                           onClick={() => onPickSession(s.id)}
                           onKeyDown={e => { if (e.key === "Enter") onPickSession(s.id); }}
                           className={cn("agent-history-drawer-item group", active && "agent-history-drawer-item-active")}
@@ -2275,13 +2378,13 @@ function ChatMoreMenu({ isEmpty, onOpenWorkspace, onShare, onOpenHistory }: { is
         disabled={isEmpty}
       >
         <Share2 className="w-3.5 h-3.5 text-white/70" />
-        <span className="flex-1 text-left">Share chat</span>
+        <span className="flex-1 text-left">Copy chat</span>
       </button>
     </div>
   );
 }
 
-const MessageBubble = React.memo(function MessageBubble({ message, onNavigate, onRetry, isStreaming, onOpenWorkspace }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void; isStreaming?: boolean; onOpenWorkspace?: () => void }) {
+const MessageBubble = React.memo(function MessageBubble({ message, onNavigate, onRetry, onEdit, isStreaming, onOpenWorkspace }: { message: Message; onNavigate?: (tab: string) => void; onRetry?: () => void; onEdit?: () => void; isStreaming?: boolean; onOpenWorkspace?: () => void }) {
   const isUser = message.role === "user";
   return (
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
@@ -2344,6 +2447,13 @@ const MessageBubble = React.memo(function MessageBubble({ message, onNavigate, o
           if (part.kind === "artifact") return <ArtifactCard key={i} part={part} onNavigate={onNavigate} onOpenWorkspace={onOpenWorkspace} />;
           return null;
         })}
+        {isUser && onEdit && (
+          <div className="gs-message-actions gs-message-actions-user">
+            <button type="button" onClick={onEdit} title="Edit message" aria-label="Edit and resend message" className="gs-message-action-btn">
+              <Pencil className="w-3 h-3" />
+            </button>
+          </div>
+        )}
         {/* Message-level actions — render once after all parts when the assistant message is finished. */}
         {!isUser && !isStreaming && (() => {
           const allText = message.parts.filter(p => p.kind === "text").map(p => (p as any).content as string).join("\n").trim();
@@ -2353,7 +2463,7 @@ const MessageBubble = React.memo(function MessageBubble({ message, onNavigate, o
               <CopyBubble text={allText} />
               <ReadAloudButton text={allText} />
               {onRetry && (
-                <button onClick={onRetry} title="Regenerate" className="gs-message-action-btn">
+                <button type="button" onClick={onRetry} title="Regenerate" aria-label="Regenerate response from here" className="gs-message-action-btn">
                   <RefreshCw className="w-3 h-3" />
                 </button>
               )}
@@ -2474,6 +2584,8 @@ export function StudioCopilot({
     // null on unmount and the set is cleaned up by the next mount cycle.
   }, []);
   const [input, setInput] = useState("");
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const branchFromMessageIdRef = useRef<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [reconnectBanner, setReconnectBanner] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
@@ -2490,10 +2602,10 @@ export function StudioCopilot({
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>(readReasoningInitial);
   const activeReasoning = REASONING_OPTIONS.find(option => option.id === reasoningMode) ?? REASONING_OPTIONS[0];
   const ultra = activeReasoning.ultra;
-  const [suggestions, setSuggestions] = useState<string[]>([]);
   // ── Skills ──
   type SkillMeta = { id: string; name: string; description: string; icon: string; category: string; starters?: string[]; tags?: string[] };
   const [availableSkills, setAvailableSkills] = useState<SkillMeta[]>([]);
+  const [agentCapabilities, setAgentCapabilities] = useState({ createImage: false, createMusic: false });
   const [activeSkills, setActiveSkills] = useState<string[]>([]);
   const activeSkillsRef = useRef<string[]>([]);
   useEffect(() => {
@@ -2580,7 +2692,15 @@ export function StudioCopilot({
   useEffect(() => {
     fetch(`${import.meta.env.BASE_URL.replace(/\/$/, "")}/api/agent/skills`)
       .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d?.skills) setAvailableSkills(d.skills); })
+      .then(d => {
+        if (d?.skills) setAvailableSkills(d.skills);
+        if (d?.capabilities) {
+          setAgentCapabilities({
+            createImage: d.capabilities.createImage === true,
+            createMusic: d.capabilities.createMusic === true,
+          });
+        }
+      })
       .catch(() => {});
   }, []);
   // Click-outside for slash menu
@@ -2817,6 +2937,7 @@ export function StudioCopilot({
 
   // inputRef removed — textarea is uncontrolled height, no programmatic focus needed
   const abortRef = useRef<AbortController | null>(null);
+  const activeRequestIdRef = useRef<string | null>(null);
   const recognitionRef = useRef<any>(null);
   const sessionIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
@@ -2937,6 +3058,15 @@ export function StudioCopilot({
       return;
     }
     const sessionId = ensureSession();
+    const branchFromMessageId = branchFromMessageIdRef.current;
+    branchFromMessageIdRef.current = null;
+    setEditingMessageId(null);
+    const branchIndex = branchFromMessageId
+      ? messagesRef.current.findIndex(message => message.id === branchFromMessageId)
+      : -1;
+    const baseMessages = branchIndex >= 0
+      ? messagesRef.current.slice(0, branchIndex)
+      : messagesRef.current;
     resetComposerInput();
     activeSkillsRef.current = snapshotSkills;
     setActiveSkills(snapshotSkills);
@@ -2945,7 +3075,6 @@ export function StudioCopilot({
     // Keep preview object URLs alive here because persisted message bubbles and retry flows
     // may still reference `previewUrl` after send. Revoke them only when those consumers are removed.
     setPendingAttachments([]);
-    setSuggestions([]); // clear suggestions on new send
     const userMsgId = crypto.randomUUID();
     const assistantMsgId = crypto.randomUUID();
 
@@ -2964,7 +3093,7 @@ export function StudioCopilot({
         url: att.url,
       });
     }
-    updateSession(sessionId, msgs => [...msgs, {
+    updateSession(sessionId, () => [...baseMessages, {
       id: userMsgId, role: "user",
       parts: userParts,
       timestamp: new Date(),
@@ -2985,11 +3114,14 @@ export function StudioCopilot({
     lastUserAttachmentsRef.current = snapshotAttachments;
     try { sessionStorage.setItem("vm-agent-last-send", JSON.stringify({ text: messageText })); } catch { /* ignore */ }
     streamingAssistantIdRef.current = assistantMsgId; // track for Stop
-    abortRef.current = new AbortController();
+    const requestId = crypto.randomUUID();
+    const requestController = new AbortController();
+    activeRequestIdRef.current = requestId;
+    abortRef.current = requestController;
 
     // Build history — include completed tool results as text so the agent
     // has full multi-turn memory of what tools ran and what they returned.
-    const allMsgs = [...(messagesRef.current), { id: userMsgId, role: "user" as const, parts: userParts, timestamp: new Date() }];
+    const allMsgs = [...baseMessages, { id: userMsgId, role: "user" as const, parts: userParts, timestamp: new Date() }];
     
     // Find the index of the latest user message that has an image attachment with data
     let latestImageMsgIdx = -1;
@@ -3109,7 +3241,7 @@ export function StudioCopilot({
         return true;
       } catch (err) {
         surfaceStreamParseError(err, raw);
-        if (isTrailing && !sawDoneEvent && !abortRef.current?.signal.aborted) {
+        if (isTrailing && !sawDoneEvent && activeRequestIdRef.current === requestId && !requestController.signal.aborted) {
           patchAssistant(m => ({
             ...m,
             parts: [
@@ -3126,6 +3258,10 @@ export function StudioCopilot({
     };
 
     const handleEvent = (evt: SseEvent) => {
+      // A stopped request may still flush buffered frames while a replacement
+      // request is starting. Only the request that currently owns the UI may
+      // update run state, messages, tools, or artifacts.
+      if (activeRequestIdRef.current !== requestId) return;
       // SECURITY: Gate by runId to prevent stale stream events from corrupting
       // the active message after abort + new send (H1 fix).
       if (evt.type === "run_start") {
@@ -3475,14 +3611,13 @@ export function StudioCopilot({
         return;
       }
       if (evt.type === "done") { setThinking(false); setAgentStage("idle"); setAgentIteration(0); try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ } return; }
-      if (evt.type === "suggestions") { setSuggestions((evt as any).items ?? []); }
     };
 
     try {
       const resp = await fetch(`${BASE}/api/agent/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, messages: history, model: reasoningMode, skills: snapshotSkills }),
-        signal: abortRef.current.signal,
+        signal: requestController.signal,
       });
       if (!resp.ok || !resp.body) throw new Error(`Server error: ${resp.status}`);
       const reader = resp.body.getReader();
@@ -3501,7 +3636,7 @@ export function StudioCopilot({
       // trailing buffer
       parseSseFrame(buf, true);
     } catch (err: any) {
-      if (err?.name !== "AbortError") {
+      if (activeRequestIdRef.current === requestId && err?.name !== "AbortError") {
         if (err?.message?.includes("401") || err?.message?.includes("403")) {
           patchAssistant(m => ({ ...m, parts: [...m.parts, { kind: "text", content: "Authentication error — please refresh the page and try again." }] }));
         } else if (err?.message?.includes("503") || err?.message?.includes("502")) {
@@ -3515,15 +3650,73 @@ export function StudioCopilot({
           setReconnectBanner(lastUserTextRef.current);
         }
       }
-      try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ }
+      if (activeRequestIdRef.current === requestId) {
+        try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ }
+      }
     } finally {
-      streamingRef.current = false;
-      setStreaming(false);
-      setThinking(false);
-      setAgentStage("idle");
-      streamingAssistantIdRef.current = null;
+      if (activeRequestIdRef.current === requestId) {
+        activeRequestIdRef.current = null;
+        abortRef.current = null;
+        streamingRef.current = false;
+        setStreaming(false);
+        setThinking(false);
+        setAgentStage("idle");
+        streamingAssistantIdRef.current = null;
+      }
     }
   }, [streaming, reasoningMode, BASE, onNavigate, updateSession, ensureSession, upsertMsg, consumeLeadingSkillCommand, resetComposerInput]);
+
+  const messageText = useCallback((message: Message): string =>
+    message.parts
+      .filter((part): part is MessagePart & { kind: "text" } => part.kind === "text")
+      .map(part => part.content)
+      .join("\n")
+      .trim(), []);
+
+  const messageAttachments = useCallback((message: Message) => {
+    const previewByName = new Map(
+      message.parts
+        .filter((part): part is MessagePart & { kind: "image" } => part.kind === "image")
+        .map(part => [part.name, part.previewUrl]),
+    );
+    return message.parts
+      .filter((part): part is MessagePart & { kind: "attachment" } => part.kind === "attachment")
+      .map(part => ({
+        type: (["image", "video", "audio", "document"].includes(part.type)
+          ? part.type
+          : "document") as "image" | "video" | "audio" | "document",
+        name: part.name,
+        mimeType: part.mimeType,
+        data: part.data,
+        url: part.url,
+        previewUrl: previewByName.get(part.name),
+      }));
+  }, []);
+
+  const editUserMessage = useCallback((message: Message) => {
+    if (streamingRef.current) return;
+    branchFromMessageIdRef.current = message.id;
+    setEditingMessageId(message.id);
+    setInput(messageText(message));
+    setPendingAttachments(messageAttachments(message));
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(textareaRef.current.value.length, textareaRef.current.value.length);
+    });
+  }, [messageAttachments, messageText]);
+
+  const regenerateFromAssistant = useCallback((assistantIndex: number) => {
+    if (streamingRef.current) return;
+    for (let index = assistantIndex - 1; index >= 0; index--) {
+      const candidate = currentMessages[index];
+      if (candidate?.role !== "user") continue;
+      const text = messageText(candidate);
+      const attachments = messageAttachments(candidate);
+      branchFromMessageIdRef.current = candidate.id;
+      void sendMessage(text, attachments);
+      return;
+    }
+  }, [currentMessages, messageAttachments, messageText, sendMessage]);
 
   // Consume incoming pendingPrompt (sent from home screen)
   const consumedPromptRef = useRef<string | null>(null);
@@ -3539,6 +3732,11 @@ export function StudioCopilot({
 
   const handleStop = () => {
     abortRef.current?.abort();
+    activeRequestIdRef.current = null;
+    abortRef.current = null;
+    streamingRef.current = false;
+    currentRunIdRef.current = null;
+    setCurrentRunId(null);
     try { sessionStorage.removeItem("vm-agent-last-send"); } catch { /* ignore */ }
     // Mark any in-flight tool cards as cancelled so they don't spin forever (and persist a dead spinner)
     const aId = streamingAssistantIdRef.current;
@@ -3617,19 +3815,41 @@ export function StudioCopilot({
   const speechSupported = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
   const canSend = (input.trim().length > 0 || pendingAttachments.length > 0) && !streaming;
 
-  const handleShare = () => {
-    const textParts = currentMessages
-      .filter(m => m.role === "user")
-      .flatMap(m => m.parts.filter(p => p.kind === "text").map(p => (p as any).content as string))
-      .slice(0, 5);
-    const summary = textParts.length > 0 ? textParts.join("\n") : window.location.href;
-    if (navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(summary);
-      toast({ title: "Copied to clipboard", description: "Chat summary copied" });
+  const handleShare = async () => {
+    const transcript = currentMessages.map(message => {
+      const role = message.role === "user" ? "You" : "Super Agent";
+      const content = message.parts.map(part => {
+        if (part.kind === "text") return clientStripTags(part.content);
+        if (part.kind === "attachment") return `[Attachment: ${part.name}]`;
+        if (part.kind === "artifact") {
+          const location = part.downloadUrl || part.imageUrl || part.audioUrl || part.tab || "";
+          return `[Artifact: ${part.label}${location ? ` — ${location}` : ""}]`;
+        }
+        if (part.kind === "tool_start") return `[Action: ${prettifyToolName(part.name)}${part.done ? " completed" : ""}]`;
+        return "";
+      }).filter(Boolean).join("\n");
+      return `## ${role}\n\n${content}`;
+    }).filter(Boolean).join("\n\n");
+
+    try {
+      await navigator.clipboard.writeText(transcript);
+      toast({ title: "Chat copied", description: "The complete conversation was copied as Markdown." });
+      setShowMoreMenu(false);
+    } catch {
+      toast({ title: "Copy failed", description: "Your browser blocked clipboard access." });
     }
   };
 
-  const handleNewChat = () => { if (streaming) return; setCurrentSessionId(null); sessionIdRef.current = null; setShowHistory(false); };
+  const handleNewChat = () => {
+    if (streaming) return;
+    branchFromMessageIdRef.current = null;
+    setEditingMessageId(null);
+    resetComposerInput();
+    setPendingAttachments([]);
+    setCurrentSessionId(null);
+    sessionIdRef.current = null;
+    setShowHistory(false);
+  };
   const handleDeleteSession = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setSessions(prev => {
@@ -3637,7 +3857,14 @@ export function StudioCopilot({
       if (removed) revokeMessagePreviewUrls(removed.messages);
       return prev.filter(s => s.id !== id);
     });
-    if (currentSessionId === id) { setCurrentSessionId(null); sessionIdRef.current = null; }
+    if (currentSessionId === id) {
+      branchFromMessageIdRef.current = null;
+      setEditingMessageId(null);
+      resetComposerInput();
+      setPendingAttachments([]);
+      setCurrentSessionId(null);
+      sessionIdRef.current = null;
+    }
   };
 
   return (
@@ -3699,7 +3926,17 @@ export function StudioCopilot({
         sessions={sessions}
         currentSessionId={currentSessionId}
         onClose={() => setShowHistory(false)}
-        onPickSession={(id) => { setCurrentSessionId(id); sessionIdRef.current = id; setShowHistory(false); }}
+        onPickSession={(id) => {
+          if (editingMessageId) {
+            branchFromMessageIdRef.current = null;
+            setEditingMessageId(null);
+            resetComposerInput();
+            setPendingAttachments([]);
+          }
+          setCurrentSessionId(id);
+          sessionIdRef.current = id;
+          setShowHistory(false);
+        }}
         onDeleteSession={(id, e) => handleDeleteSession(id, e)}
         onNewChat={() => { handleNewChat(); setShowHistory(false); }}
       />
@@ -3713,7 +3950,7 @@ export function StudioCopilot({
           </h1>
           <p className="gs-welcome-sub">Download, clip, subtitle, translate, and analyze YouTube videos — or ask anything.</p>
           <div className="gs-welcome-starters">
-            {STARTERS.map((s, i) => (
+            {STARTERS.filter(s => !("capability" in s) || s.capability === "createImage" && agentCapabilities.createImage).map((s, i) => (
               <button
                 key={i}
                 onClick={() => void sendMessage(s.text)}
@@ -3738,8 +3975,11 @@ export function StudioCopilot({
             <AnimatePresence initial={false}>
               {currentMessages.map((msg, idx) => {
                 const isLastAssistant = msg.role === "assistant" && idx === currentMessages.length - 1;
-                const handleRetry = isLastAssistant && lastUserTextRef.current
-                  ? () => void sendMessage(lastUserTextRef.current, lastUserAttachmentsRef.current.length > 0 ? lastUserAttachmentsRef.current : undefined)
+                const handleRetry = msg.role === "assistant" && !streaming
+                  ? () => regenerateFromAssistant(idx)
+                  : undefined;
+                const handleEdit = msg.role === "user" && !streaming
+                  ? () => editUserMessage(msg)
                   : undefined;
                 const hasThoughts = thoughtText.trim().length > 0;
                 const showThinkingForMessage = isLastAssistant && (thinking || hasThoughts);
@@ -3790,7 +4030,7 @@ export function StudioCopilot({
                         </AnimatePresence>
                       </motion.div>
                     )}
-                    <MessageBubble message={msg} onNavigate={onNavigate} onRetry={handleRetry} isStreaming={isLastAssistant && streaming} onOpenWorkspace={openWorkspace} />
+                    <MessageBubble message={msg} onNavigate={onNavigate} onRetry={handleRetry} onEdit={handleEdit} isStreaming={isLastAssistant && streaming} onOpenWorkspace={openWorkspace} />
                   </React.Fragment>
                 );
               })}
@@ -3825,23 +4065,6 @@ export function StudioCopilot({
 
       {/* ── Genspark input bar ── */}
       <div className="gs-input-wrap">
-        {/* ── Suggestions chips ── */}
-        {suggestions.length > 0 && !streaming && (
-          <div className="gs-suggestions-row">
-            {suggestions.map((s, i) => (
-              <button
-                key={i}
-                type="button"
-                onClick={() => { setSuggestions([]); void sendMessage(s); }}
-                className="gs-suggestion-chip"
-              >
-                <span className="text-[11px] text-white/50 mr-1">↗</span>
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
-
         {/* URL paste pill */}
         {pasteUrl && !streaming && (
           <div className="gs-paste-pill-row">
@@ -3874,14 +4097,34 @@ export function StudioCopilot({
                   {a.previewUrl ? (
                     <img src={a.previewUrl} alt={a.name} className="w-6 h-6 rounded object-cover" />
                   ) : (
-                    <span className="text-white/50">{a.type === "video" ? "🎬" : a.type === "audio" ? "🎵" : "📎"}</span>
+                    <span className="text-white/50" aria-hidden="true">
+                      {a.type === "video" ? <Film className="h-3.5 w-3.5" /> : a.type === "audio" ? <Music2 className="h-3.5 w-3.5" /> : <Paperclip className="h-3.5 w-3.5" />}
+                    </span>
                   )}
                   <span className="max-w-[120px] truncate">{a.name}</span>
-                  <button type="button" onClick={() => removeAttachment(i)} className="ml-0.5 text-white/40 hover:text-white/80 transition-colors">
+                  <button type="button" onClick={() => removeAttachment(i)} className="ml-0.5 text-white/40 hover:text-white/80 transition-colors" aria-label={`Remove ${a.name}`}>
                     <X className="w-3 h-3" />
                   </button>
                 </div>
               ))}
+            </div>
+          )}
+          {editingMessageId && (
+            <div className="flex items-center justify-between gap-2 px-3 pt-2 text-[11px] text-sky-200/80">
+              <span>Editing message — sending will replace later replies</span>
+              <button
+                type="button"
+                className="rounded p-1 text-white/45 hover:bg-white/10 hover:text-white/80"
+                aria-label="Cancel editing message"
+                onClick={() => {
+                  branchFromMessageIdRef.current = null;
+                  setEditingMessageId(null);
+                  resetComposerInput();
+                  setPendingAttachments([]);
+                }}
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
             </div>
           )}
           {/* Active skill inline prefix inside textarea area */}
@@ -3920,17 +4163,18 @@ export function StudioCopilot({
           )}
           <div className="gs-input-textarea-wrap">
             {activeSkills.length > 0 && (
-              <span className="gs-inline-skill-prefix" onClick={() => removeActiveSkill(activeSkills[activeSkills.length - 1])}>
+              <button type="button" className="gs-inline-skill-prefix" onClick={() => removeActiveSkill(activeSkills[activeSkills.length - 1])} aria-label="Remove active skill">
                 {activeSkills.map(sid => {
                   const skill = availableSkills.find(s => s.id === sid);
                   return `/${skill?.id ?? sid}`;
                 }).join(" ")}
-              </span>
+              </button>
             )}
           <textarea
             ref={textareaRef}
             className="gs-input-textarea gs-input-textarea-inline"
             value={input}
+            aria-label="Message Super Agent"
             onChange={e => {
               const val = e.target.value;
               applyComposerValue(val);
@@ -3944,6 +4188,7 @@ export function StudioCopilot({
               });
             }}
             onKeyDown={e => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
               if (showSlashMenu && slashFilteredSkills.length > 0) {
                 if (e.key === "ArrowDown") {
                   e.preventDefault();
@@ -4009,14 +4254,17 @@ export function StudioCopilot({
                   className={cn("gs-input-circle-btn", showPlusMenu && "gs-input-circle-btn-active")}
                   title="More options"
                   aria-label="More options"
+                  aria-haspopup="menu"
+                  aria-expanded={showPlusMenu}
                   onClick={() => setShowPlusMenu(v => !v)}
                 >
                   <Plus className="w-4 h-4" />
                 </button>
                 {showPlusMenu && (
-                  <div className="gs-plus-menu">
+                  <div className="gs-plus-menu" role="menu" aria-label="Attachment options">
                     <button
                       type="button"
+                      role="menuitem"
                       className="gs-plus-menu-item"
                       disabled={uploading}
                       onClick={() => { fileInputRef.current?.click(); setShowPlusMenu(false); }}
@@ -4024,23 +4272,26 @@ export function StudioCopilot({
                       {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
                       <span>Upload Files</span>
                     </button>
-                    <button type="button" className="gs-plus-menu-item"
-                      onClick={() => {
-                        setInput(prev => prev ? `${prev}${prev.endsWith("\n") ? "" : "\n"}Create an image: ` : "Create an image: ");
-                        setShowPlusMenu(false);
-                      }}>
-                      <ImagePlus className="w-4 h-4" />
-                      <span>Create Image</span>
-                    </button>
-                    <button type="button" className="gs-plus-menu-item"
-                      onClick={() => {
-                        setInput(prev => prev ? `${prev}${prev.endsWith("\n") ? "" : "\n"}Make music: ` : "Make music: ");
-                        setShowPlusMenu(false);
-                      }}>
-                      <Music2 className="w-4 h-4" />
-                      <span>Create Music</span>
-                      <span className="gs-plus-menu-badge gs-plus-menu-badge-new">New</span>
-                    </button>
+                    {agentCapabilities.createImage && (
+                      <button type="button" role="menuitem" className="gs-plus-menu-item"
+                        onClick={() => {
+                          setInput(prev => prev ? `${prev}${prev.endsWith("\n") ? "" : "\n"}Create an image: ` : "Create an image: ");
+                          setShowPlusMenu(false);
+                        }}>
+                        <ImagePlus className="w-4 h-4" />
+                        <span>Create Image</span>
+                      </button>
+                    )}
+                    {agentCapabilities.createMusic && (
+                      <button type="button" role="menuitem" className="gs-plus-menu-item"
+                        onClick={() => {
+                          setInput(prev => prev ? `${prev}${prev.endsWith("\n") ? "" : "\n"}Make music: ` : "Make music: ");
+                          setShowPlusMenu(false);
+                        }}>
+                        <Music2 className="w-4 h-4" />
+                        <span>Create Music</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -4104,7 +4355,7 @@ export function StudioCopilot({
                 <span>{listening ? "Listening…" : "Speak"}</span>
               </button>
               {streaming ? (
-                <button type="button" onClick={handleStop} className="gs-stop-btn" title="Stop">
+                <button type="button" onClick={handleStop} className="gs-stop-btn" title="Stop" aria-label="Stop generating response">
                   <Square className="w-3.5 h-3.5 fill-current" />
                 </button>
               ) : (

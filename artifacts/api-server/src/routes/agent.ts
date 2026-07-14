@@ -52,6 +52,12 @@ import {
   getCleanAgentErrorMessage,
 } from "../lib/agent-tool-events";
 import {
+  assertPublicHttpUrl,
+  buildArtifactFetchInit,
+  fetchPublicUrl,
+  isInternalHost,
+} from "../lib/public-http";
+import {
   getAnalyzeYoutubeVideoDescription,
   getModelSpecificSystemPrompt,
 } from "../lib/agent-model-instructions";
@@ -890,7 +896,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "create_image",
     description:
-      "TEMPORARILY DISABLED. Do not call this tool. If the user asks to create or generate an image, reply that image generation is temporarily disabled and they will be notified once it becomes available.",
+      "Create a new image from a detailed production-quality prompt.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1189,7 +1195,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "generate_music",
     description:
-      "TEMPORARILY DISABLED. Do not call this tool. If the user asks to make, generate, compose, or create music/songs/soundtracks/background music, reply that music generation is temporarily disabled and they will be notified once it becomes available.",
+      "Generate an original music track from a detailed production-quality prompt.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1435,6 +1441,15 @@ function isNativeToolConfigError(error: unknown): boolean {
   );
 }
 
+const DISABLED_FEATURES_PROMPT = [
+  TEMPORARILY_DISABLED_TOOL_NAMES.has("create_image")
+    ? '- Image generation is temporarily disabled. If asked to generate an image from scratch, say: "Image generation is temporarily disabled. You\'ll be notified once it becomes available." You may still help with prompts and image understanding.'
+    : "",
+  TEMPORARILY_DISABLED_TOOL_NAMES.has("generate_music")
+    ? '- Music generation is temporarily disabled. If asked to generate music, say: "Music generation is temporarily disabled. You\'ll be notified once it becomes available." You may still help with lyrics and creative direction.'
+    : "",
+].filter(Boolean).join("\n");
+
 const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot, an action-focused assistant inside a YouTube/video production web app.
 
 Your job is to help the user create, edit, analyze, download, subtitle, translate, package, and publish video/media content.
@@ -1467,11 +1482,7 @@ Match the user's language:
 
 # TEMPORARILY DISABLED FEATURES
 
-Image generation and music generation are temporarily disabled.
-- If the user asks to create/generate an image from scratch, do NOT call create_image. Say: "Image generation is temporarily disabled. You'll be notified once it becomes available."
-- If the user asks to make/generate/compose music, songs, soundtracks, jingles, or background music, do NOT call generate_music. Say: "Music generation is temporarily disabled. You'll be notified once it becomes available."
-- Do not offer workarounds that pretend to generate the image or music. You may still help write prompts, concepts, scripts, lyrics, or creative direction if the user asks.
-- Image description, OCR, and attached-image understanding can still be answered normally.
+${DISABLED_FEATURES_PROMPT || "No temporarily disabled features."}
 
 # INTELLIGENCE FIRST — NO TOOL SPAM
 
@@ -1486,7 +1497,7 @@ Use your own intelligence first. Do NOT call tools for:
 
 Call tools only when the user needs a real app action or unavailable information:
 - YouTube metadata, captions, video analysis, download, clip, subtitles, timestamps, best clips, translation/dubbing
-- Image edit/enhancement that must produce an output image file. New image generation from scratch is temporarily disabled.
+- Image edit/enhancement that must produce an output image file.${TEMPORARILY_DISABLED_TOOL_NAMES.has("create_image") ? " New image generation from scratch is temporarily disabled." : " Use create_image for new image generation."}
 - File export/download or app navigation actions
 - Web research or current information
 - Job status, cancel, repeat artifact, tab navigation
@@ -1496,8 +1507,12 @@ Always use the smallest, cheapest correct tool. Do not call a more expensive or 
 
 # CANVAS AND CODE OUTPUT
 
-USE canvas for: a full HTML page, a complete script/program, a full document, any artifact the user will edit or download, or any code block longer than ~20 lines.
-DO NOT use canvas for: short inline snippets shown as examples, brief config lines, a single function quoted in an explanation, or any code that is part of a conversational answer rather than a deliverable.
+USE canvas for:
+- Every SRT or VTT subtitle file, even when it is short.
+- A complete HTML website/page (for example content containing <!doctype html> or an <html> document).
+- Any fenced code or editable artifact longer than 15 lines.
+- An artifact the user explicitly asks to open in canvas or download as a file.
+DO NOT use canvas for code examples of 15 lines or fewer, including brief config and single functions, unless the user explicitly requests canvas. Keep these in a normal chat code box.
 
 When canvas IS appropriate:
 - Write the artifact directly into canvas using this exact hidden protocol:
@@ -1505,11 +1520,11 @@ When canvas IS appropriate:
   ...complete artifact content only, no markdown fences inside...
   </canvas>
 - Use the right language value: html, css, javascript, typescript, python, json, markdown, text, srt, or vtt.
-- NEVER use markdown triple-backtick fences in chat for code — always use the canvas protocol above. Triple backticks break the UI.
+- For code, JSON, Markdown, and similar content of 15 lines or fewer, use normal markdown triple-backtick fences with the correct language identifier. The UI supports copy, download, wrapping, and manually opening these short blocks in canvas.
 - Keep the chat text outside canvas brief: one sentence before ("Creating this in canvas…") and one sentence after.
 
-When canvas is NOT appropriate (short explanatory snippet):
-- Use plain text or a single inline backtick — never triple-backtick fences.
+When canvas is NOT appropriate (short or medium explanatory content):
+- Use inline backticks for tiny fragments and fenced code blocks for multi-line content.
 - Do not call run_code_analysis or run_sandbox_command just to generate code or text.
 - Use run_code_analysis for supplied data calculations/statistics. For exact calculations, include task-specific pythonCode instead of relying on generic inspection.
 - Use run_sandbox_command when the user wants a ChatGPT-like sandbox: execute code, install packages, create/read files, inspect outputs, fetch public internet resources, or run shell commands in an isolated Linux environment.
@@ -1596,12 +1611,12 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "translate this video / dub in Hindi/Spanish" | translate_video only |
 | "what's trending / latest news / who is X" | web_search first, then maybe a video tool |
 | "read this article/page/source" | read_web_page |
-| "create/generate an image" | Do NOT call create_image. Say image generation is temporarily disabled and the user will be notified once it becomes available. |
+| "create/generate an image" | ${TEMPORARILY_DISABLED_TOOL_NAMES.has("create_image") ? "Say image generation is temporarily disabled; do not call a tool." : "create_image"} |
 | "make this attached image clearer / enhance / restore" | enhance_image |
 | "edit this attached image" | edit_image — craft a precise editing prompt from user intent (what to change, what to preserve, style, constraints) |
 | "what is in this image" | answer directly using Gemini vision |
 | "read text from this image" | extract_text_from_image only when user needs artifact/export; otherwise answer directly |
-| "make music / generate a song / compose / create soundtrack / background music" | Do NOT call generate_music. Say music generation is temporarily disabled and the user will be notified once it becomes available. |
+| "make music / generate a song / compose / create soundtrack / background music" | ${TEMPORARILY_DISABLED_TOOL_NAMES.has("generate_music") ? "Say music generation is temporarily disabled; do not call a tool." : "generate_music"} |
 | "write script / storyboard / shot list" | write_video_script — craft a detailed topic brief (audience, platform, tone, key points, emotional arc) before calling; only when user needs downloadable file, otherwise answer directly |
 | "SEO title/description/tags/thumbnail text" | generate_seo_pack — craft a detailed context brief (video content, niche, trends, goals) before calling; only when user needs structured artifact export, otherwise answer directly |
 | "full package / do everything / complete package" | do_full_package |
@@ -2601,30 +2616,9 @@ async function readAttachmentText(
     return { content, name: attachment.name, mimeType: attachment.mimeType };
   }
   if (url) {
-    // SECURITY: Validate URL before fetching — prevent SSRF to internal hosts
-    try {
-      const parsedUrl = new URL(url);
-      if (!["http:", "https:"].includes(parsedUrl.protocol)) {
-        throw new Error(
-          `Unsupported protocol for attachment URL: ${parsedUrl.protocol}`,
-        );
-      }
-      if (isInternalHost(parsedUrl.hostname)) {
-        throw new Error(
-          "Attachment URL resolves to an internal/private network address.",
-        );
-      }
-    } catch (err: any) {
-      if (
-        err.message.includes("internal/private") ||
-        err.message.includes("Unsupported protocol")
-      )
-        throw err;
-      // Invalid URL — let fetch fail naturally
-    }
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 30000);
-    const r = await fetch(url, { signal: ac.signal }).finally(() =>
+    const r = await fetchPublicUrl(url, { signal: ac.signal }).finally(() =>
       clearTimeout(timer),
     );
     if (!r.ok) throw new Error(`Could not read uploaded file: ${r.status}`);
@@ -2834,59 +2828,6 @@ function htmlToReadableText(html: string, maxChars = 200_000): string {
   return result;
 }
 
-function isInternalHost(hostname: string): boolean {
-  // Strip IPv6 brackets if present (e.g. "[::1]" → "::1").
-  const host =
-    hostname.startsWith("[") && hostname.endsWith("]")
-      ? hostname.slice(1, -1)
-      : hostname;
-
-  // Block AWS metadata, loopback, and private RFC-1918 ranges
-  if (
-    host === "localhost" ||
-    host === "::1" ||
-    host === "0.0.0.0" ||
-    host === "::"
-  )
-    return true;
-
-  // IPv4
-  const v4parts = host.split(".").map(Number);
-  if (
-    v4parts.length === 4 &&
-    v4parts.every((n) => Number.isFinite(n) && n >= 0 && n <= 255)
-  ) {
-    if (v4parts[0] === 127) return true; // 127.x.x.x loopback
-    if (v4parts[0] === 10) return true; // 10.x.x.x private
-    if (v4parts[0] === 172 && v4parts[1] >= 16 && v4parts[1] <= 31) return true; // 172.16-31.x.x private
-    if (v4parts[0] === 192 && v4parts[1] === 168) return true; // 192.168.x.x private
-    if (v4parts[0] === 169 && v4parts[1] === 254) return true; // 169.254.x.x AWS metadata / link-local
-    if (v4parts[0] === 0) return true; // 0.x.x.x
-    if (v4parts[0] === 100 && v4parts[1] >= 64 && v4parts[1] <= 127)
-      return true; // CGNAT 100.64.0.0/10
-    return false;
-  }
-
-  // IPv6 — coarse but covers the dangerous categories.
-  if (host.includes(":")) {
-    // Strip zone IDs (e.g. "fe80::1%eth0" or "fe80::1%25eth0")
-    const lower = host
-      .toLowerCase()
-      .replace(/%25.*$/, "")
-      .replace(/%.*$/, "");
-    // Loopback (::1) and unspecified (::) handled above.
-    if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return true; // link-local
-    if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true; // unique-local fc00::/7
-    if (lower.startsWith("ff")) return true; // multicast
-    // IPv4-mapped IPv6 (::ffff:127.0.0.1 etc): re-check the embedded v4.
-    const mapped = /^::ffff:([0-9a-f.]+)$/.exec(lower);
-    if (mapped) return isInternalHost(mapped[1]);
-    return false;
-  }
-
-  return false;
-}
-
 async function fetchReadableWebPage(
   url: string,
   maxChars: number,
@@ -2896,16 +2837,11 @@ async function fetchReadableWebPage(
   contentType: string;
   text: string;
 }> {
-  const parsed = new URL(url);
-  if (!["http:", "https:"].includes(parsed.protocol))
-    throw new Error("Only http/https URLs can be read.");
-  if (isInternalHost(parsed.hostname))
-    throw new Error("Cannot read internal/private network URLs.");
+  const parsed = await assertPublicHttpUrl(url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const r = await fetch(parsed.toString(), {
-      redirect: "follow",
+    const r = await fetchPublicUrl(parsed.toString(), {
       signal: controller.signal,
       headers: {
         "user-agent": "VideoMakingStudioAgent/1.0 (+https://videomaking.in)",
@@ -2914,20 +2850,7 @@ async function fetchReadableWebPage(
       },
     });
     if (!r.ok) throw new Error(`Page fetch failed: HTTP ${r.status}`);
-    // SECURITY: Re-validate post-redirect URL against internal hosts (SSRF).
-    // fetch() with redirect:"follow" may have been redirected to an internal IP.
     const finalUrl = r.url || parsed.toString();
-    try {
-      const finalParsed = new URL(finalUrl);
-      if (isInternalHost(finalParsed.hostname)) {
-        throw new Error(
-          "Redirect target resolves to an internal/private network address.",
-        );
-      }
-    } catch (err: any) {
-      if (err.message.includes("internal/private")) throw err;
-      // URL parse failure on finalUrl — very unusual; fetch already resolved it
-    }
     const contentType = r.headers.get("content-type") ?? "";
     const raw = await readResponseTextWithLimit(r, 5 * 1024 * 1024, controller);
     const title = /<title[^>]*>([\s\S]*?)<\/title>/i
@@ -5108,30 +5031,42 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isTrustedInternalArtifact = sourceUrl.startsWith("/api/");
+      if (sourceUrl.startsWith("/") && !isTrustedInternalArtifact) {
+        throw new Error("Only app /api/ artifact paths may be saved by relative URL.");
+      }
+      const resolvedUrl = isTrustedInternalArtifact
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: User/model-provided absolute URLs must never reach private
+      // networks. App-relative /api/ artifacts are the narrow trusted exception
+      // and are authenticated with X-Internal-Agent below.
+      if (!isTrustedInternalArtifact) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (!/^https?:$/.test(parsedResolved.protocol)) {
+            throw new Error("sourceUrl must use HTTP or HTTPS.");
+          }
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private") || err.message.includes("HTTP or HTTPS")) throw err;
+          throw new Error("sourceUrl must be a valid public HTTP(S) URL or an app /api/ path.");
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
-      const r = await fetch(resolvedUrl, {
-        headers: {
-          Cookie: req.headers.cookie ?? "",
-          "X-Internal-Agent": INTERNAL_AGENT_SECRET,
-        },
-        redirect: "follow",
-      });
+      const artifactFetchInit = buildArtifactFetchInit(
+        isTrustedInternalArtifact,
+        req.headers.cookie ?? "",
+        INTERNAL_AGENT_SECRET,
+      );
+      const r = isTrustedInternalArtifact
+        ? await fetch(resolvedUrl, { ...artifactFetchInit, redirect: "follow" })
+        : await fetchPublicUrl(resolvedUrl, artifactFetchInit);
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
@@ -5295,7 +5230,14 @@ except Exception as exc:
 
 // ── GET /api/agent/skills — list available skills ────────────────────────
 router.get("/agent/skills", (_req, res) => {
-  res.json({ skills: getSkillsManifest() });
+  const visibleToolNames = new Set(AGENT_VISIBLE_TOOLS.map(tool => tool.name));
+  res.json({
+    skills: getSkillsManifest(),
+    capabilities: {
+      createImage: visibleToolNames.has("create_image"),
+      createMusic: visibleToolNames.has("generate_music"),
+    },
+  });
 });
 
 function isLocalUrl(urlStr: string): boolean {
@@ -5592,6 +5534,17 @@ router.post("/agent/chat", async (req, res) => {
         (a: any) => a.type === "image",
       );
 
+      for (const attachment of attachments) {
+        if (!attachment?.url || String(attachment.url).startsWith("data:")) continue;
+        try {
+          await assertPublicHttpUrl(String(attachment.url));
+        } catch (error: any) {
+          throw new Error(
+            `Attachment "${String(attachment.name || "file")}" has an unsafe URL: ${error?.message ?? "invalid URL"}`,
+          );
+        }
+      }
+
       if (mediaAttachments.length > 0) {
         const ctxLines = mediaAttachments
           .map((a: any) => {
@@ -5626,7 +5579,10 @@ router.post("/agent/chat", async (req, res) => {
                   console.log(
                     `[agent] Downloading media attachment to upload to GCS: ${a.url}`,
                   );
-                  const tempPath = await downloadUrlToTempFile(a.url);
+                  const tempPath = await downloadUrlToTempFile(
+                    a.url,
+                    (url, init) => fetchPublicUrl(String(url), init),
+                  );
                   const destinationBlobName = `chat_attachments/${runId}/${randomUUID()}_${a.name || "file"}`;
                   const gsUri = await uploadLocalFileToGCS(
                     tempPath,
@@ -5916,45 +5872,9 @@ toolConfig: activeCacheName
           /<\/canvas>\s*\n```/gi,
           "</canvas>",
         );
-        // Convert standalone ```lang blocks → canvas protocol so the model's
-        // markdown fallback is silently promoted into a canvas artifact instead
-        // of appearing as raw code text in the chat.
-        const FENCE_LANG_MAP: Record<string, string> = {
-          js: "javascript",
-          ts: "typescript",
-          py: "python",
-          md: "markdown",
-        };
-        canvasRouteBuf = canvasRouteBuf.replace(
-          /```(html|css|javascript|js|typescript|ts|python|py|json|markdown|md|text|srt|vtt)\r?\n/gi,
-          (_m, lang) => {
-            const norm =
-              FENCE_LANG_MAP[lang.toLowerCase()] ?? lang.toLowerCase();
-            const ext =
-              norm === "javascript"
-                ? "js"
-                : norm === "typescript"
-                  ? "ts"
-                  : norm === "python"
-                    ? "py"
-                    : norm === "markdown"
-                      ? "md"
-                      : norm;
-            return `<canvas language="${norm}" title="code.${ext}">\n`;
-          },
-        );
-        // Convert bare closing fence only when it follows converted canvas content.
-        // Otherwise normal markdown code fences (bash, mermaid, etc.) get corrupted
-        // into stray </canvas> tags in the chat stream.
-        if (
-          activeCanvas ||
-          /<canvas\b[^>]*>(?:(?!<\/canvas>)[\s\S])*$/i.test(canvasRouteBuf)
-        ) {
-          canvasRouteBuf = canvasRouteBuf.replace(
-            /\n```[ \t]*(\r?\n|$)/g,
-            "\n</canvas>\n",
-          );
-        }
+        // Only the explicit hidden <canvas> protocol becomes a canvas. Normal
+        // fenced code/SRT stays in chat where the client provides copy,
+        // download, wrapping, and an optional "Open in canvas" action.
         const openRe = /<canvas\b([^>]*)>/i;
         const closeTag = "</canvas>";
         while (canvasRouteBuf) {
@@ -6164,10 +6084,8 @@ toolConfig: activeCacheName
 
       emptyResponseRetries = 0;
 
-      // ── 2b. No function calls → final answer, parse suggestions, done ─────
+      // ── 2b. No function calls → final answer, done ────────────────────────
       if (functionCalls.length === 0) {
-        // Extract [SUGGESTIONS: "a" | "b" | "c"] from the final text
-        const sugMatch = fullText.match(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s);
         const visibleText = fullText
           .replace(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s, "")
           .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
@@ -6177,14 +6095,6 @@ toolConfig: activeCacheName
           .replace(/https?:\/\/[^\s"]*\.s3[^\s"]*(?:X-Amz-[^\s"]*)+/gi, "")
           .replace(/\{"\w+(?:Url|url)":\s*"https?:\/\/[^"]*"[^}]*\}/g, "")
           .trimEnd();
-        if (sugMatch) {
-          const items = sugMatch[1]
-            .split("|")
-            .map((s) => s.trim().replace(/^"|"$/g, ""))
-            .filter(Boolean);
-          if (items.length > 0)
-            sseEvent(res, { type: "suggestions", items, runId } as any);
-        }
         // Only send full text event if we didn't already stream it via text_delta.
         // If text was held while waiting for a tool decision, it may contain the
         // hidden canvas protocol. Route it through the canvas parser instead of

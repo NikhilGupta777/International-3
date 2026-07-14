@@ -13488,3 +13488,42 @@ video.vse-stage-frame { z-index: 1; background: transparent; cursor: pointer; }
 .avs-chip-sub { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.03em; }
 .avs-chip-x { flex: none; width: 18px; height: 18px; border: none; background: transparent; color: #94a3b8; font-size: 15px; line-height: 1; cursor: pointer; border-radius: 50%; }
 .avs-chip-x:hover { background: rgba(100, 116, 139, 0.18); color: #0f172a; }
+.gs-code-action {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.52);
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+@media (max-width: 640px) {
+  .gs-code-action {
+    width: 44px;
+    height: 44px;
+  }
+
+  .copilot-wrap .gs-message-action-btn {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+.gs-code-action:hover,
+.gs-code-action:focus-visible {
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.gs-code-action:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.85);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gs-code-action {
+    transition: none;
+  }
+}
