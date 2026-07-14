@@ -69,8 +69,10 @@ import { putSettings, updateClipDispatch, getClipDispatch, type PitajiSettings }
 import { startClipCutInProcess, getClipCutProgress } from "./youtube";
 import { join } from "path";
 import crypto from "crypto";
+import { LoginRateLimiter } from "../lib/login-rate-limit";
 
 const router: IRouter = Router();
+const pitajiLoginLimiter = new LoginRateLimiter(5, 15 * 60 * 1000, 15 * 60 * 1000);
 
 // ── Feature gate ─────────────────────────────────────────────────────────────
 // If the workspace is disabled we 404 the entire prefix so it never appears.
@@ -103,17 +105,38 @@ router.post("/pitaji/auth", (req: Request, res: Response) => {
     res.status(503).json({ error: "Pita Ji password is not configured" });
     return;
   }
+  const clientKey = req.ip || req.socket.remoteAddress || "unknown";
+  const rateDecision = pitajiLoginLimiter.check(clientKey);
+  res.setHeader("X-RateLimit-Limit", String(rateDecision.limit));
+  res.setHeader("X-RateLimit-Remaining", String(rateDecision.remaining));
+  if (!rateDecision.allowed) {
+    res.setHeader("Retry-After", String(rateDecision.retryAfterSec ?? 60));
+    res.status(429).json({ error: "Too many login attempts. Please wait and try again." });
+    return;
+  }
   const { username, password } = extractPitajiCredentials(req);
-  const ok = typeof username === "string" && typeof password === "string" &&
+  const validShape = typeof username === "string" && username.length <= 256
+    && typeof password === "string" && password.length <= 1024;
+  const ok = validShape &&
     verifyPitajiCredentials(username, password);
   if (!ok) {
+    const failedDecision = pitajiLoginLimiter.recordFailure(clientKey);
+    res.setHeader("X-RateLimit-Remaining", String(failedDecision.remaining));
+    if (!failedDecision.allowed) {
+      res.setHeader("Retry-After", String(failedDecision.retryAfterSec ?? 60));
+    }
     req.log?.warn(
       { hasUsername: typeof username === "string", hasPassword: typeof password === "string" },
       "Pita Ji login failed",
     );
-    res.status(401).json({ error: "Invalid credentials" });
+    res.status(failedDecision.allowed ? 401 : 429).json({
+      error: failedDecision.allowed
+        ? "Invalid credentials"
+        : "Too many login attempts. Please wait and try again.",
+    });
     return;
   }
+  pitajiLoginLimiter.clear(clientKey);
   setPitajiAuthCookie(res, getPitajiUsername());
   res.json({ ok: true, user: { username: getPitajiUsername() } });
 });

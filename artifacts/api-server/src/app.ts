@@ -3,6 +3,7 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
+import { OAuth2Client } from "google-auth-library";
 import { existsSync } from "fs";
 import { join } from "path";
 import { fileURLToPath } from "url";
@@ -27,9 +28,12 @@ import {
   getSystemMetricsSnapshot,
   recordHttpMetrics,
 } from "./lib/ops-metrics";
+import { LoginRateLimiter } from "./lib/login-rate-limit";
 
 const app: Express = express();
-app.set("trust proxy", true);
+app.disable("x-powered-by");
+const TRUST_PROXY_HOPS = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? "1", 10);
+app.set("trust proxy", Number.isFinite(TRUST_PROXY_HOPS) ? Math.max(0, TRUST_PROXY_HOPS) : 1);
 const DISABLE_STATIC_SERVE = process.env.DISABLE_STATIC_SERVE === "true";
 const AUTH_COOKIE_NAME = "videomaking_auth";
 const AUTH_USER = process.env.WEBSITE_AUTH_USER ?? "kalki_avatar";
@@ -41,7 +45,12 @@ const AUTH_COOKIE_SECRET =
 const AUTH_COOKIE_SECURE = process.env.AUTH_COOKIE_SECURE === "false" ? false : true;
 const GOOGLE_AUTH_ENABLED = process.env.GOOGLE_AUTH_ENABLED === "true";
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? "";
+const googleOAuthClient = new OAuth2Client();
 const ADMIN_PANEL_ENABLED = process.env.ADMIN_PANEL_ENABLED === "true";
+const LOGIN_MAX_FAILURES = Math.max(1, Number.parseInt(process.env.LOGIN_MAX_FAILURES ?? "5", 10) || 5);
+const LOGIN_RATE_WINDOW_MS = Math.max(60_000, Number.parseInt(process.env.LOGIN_RATE_WINDOW_MS ?? "900000", 10) || 900_000);
+const LOGIN_BLOCK_MS = Math.max(60_000, Number.parseInt(process.env.LOGIN_BLOCK_MS ?? "900000", 10) || 900_000);
+const loginRateLimiter = new LoginRateLimiter(LOGIN_MAX_FAILURES, LOGIN_RATE_WINDOW_MS, LOGIN_BLOCK_MS);
 
 if (!AUTH_PASS) {
   throw new Error("WEBSITE_AUTH_PASSWORD must be set");
@@ -51,23 +60,14 @@ if (!AUTH_COOKIE_SECRET) {
   throw new Error("SESSION_SECRET or AUTH_COOKIE_SECRET must be set");
 }
 
-// Hydrate approved email allowlist from DynamoDB on cold start (best-effort,
-// falls back to env-var lists if ACCESS_TABLE is not set or DDB is unreachable).
+// Start allowlist hydration eagerly, but do not put it on every request's
+// critical path. Routes that require the persisted allowlist await it below.
 const allowlistHydrationPromise = hydrateAllowlistFromDdb().catch((err) => {
   console.warn("[app] allowlist hydration failed:", err);
 });
 
 // Start central API key circuit breaker synchronization loop
 startCooldownSyncLoop();
-
-app.use(async (_req: Request, _res: Response, next: NextFunction) => {
-  try {
-    await allowlistHydrationPromise;
-    next();
-  } catch (err) {
-    next(err);
-  }
-});
 
 function secureEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
@@ -132,10 +132,12 @@ function requestHost(req: Request): string {
   return (forwardedHost || req.get("host") || "").toLowerCase();
 }
 
-function isSameOriginAdminMutation(req: Request): boolean {
+function isTrustedBrowserMutation(req: Request): boolean {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method.toUpperCase())) return true;
   const origin = String(req.headers.origin ?? "").trim();
-  if (!origin) return true;
+  if (!origin) {
+    return String(req.headers["sec-fetch-site"] ?? "").toLowerCase() !== "cross-site";
+  }
   try {
     const originHost = new URL(origin).host.toLowerCase();
     const reqHost = requestHost(req);
@@ -200,15 +202,6 @@ function extractLoginCredentials(req: Request): {
     }
   }
 
-  const query = req.query as Record<string, unknown> | undefined;
-  if (query && typeof query === "object") {
-    const username = typeof query.username === "string" ? query.username : undefined;
-    const password = typeof query.password === "string" ? query.password : undefined;
-    if (username !== undefined || password !== undefined) {
-      return { username, password };
-    }
-  }
-
   // Fallback for Lambda adapters where parsed body is not populated.
   const eventBody = (req as Request & {
     apiGateway?: { event?: { body?: string; isBase64Encoded?: boolean } };
@@ -267,7 +260,34 @@ app.use(
     },
   }),
 );
-app.use(cors());
+const configuredPublicOrigin = (process.env.PUBLIC_SITE_URL ?? "https://videomaking.in").trim();
+const allowedCorsOrigins = new Set<string>();
+try {
+  const publicOrigin = new URL(
+    /^https?:\/\//i.test(configuredPublicOrigin)
+      ? configuredPublicOrigin
+      : `https://${configuredPublicOrigin}`,
+  ).origin;
+  allowedCorsOrigins.add(publicOrigin);
+  const publicUrl = new URL(publicOrigin);
+  publicUrl.hostname = publicUrl.hostname.startsWith("www.")
+    ? publicUrl.hostname.slice(4)
+    : `www.${publicUrl.hostname}`;
+  allowedCorsOrigins.add(publicUrl.origin);
+} catch {
+  logger.warn({ configuredPublicOrigin }, "PUBLIC_SITE_URL is invalid; cross-origin browser access disabled");
+}
+if (process.env.NODE_ENV !== "production") {
+  allowedCorsOrigins.add("http://localhost:5173");
+  allowedCorsOrigins.add("http://127.0.0.1:5173");
+}
+app.use(cors({
+  origin(origin, callback) {
+    callback(null, !origin || allowedCorsOrigins.has(origin));
+  },
+  credentials: true,
+  methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+}));
 app.use(cookieParser(AUTH_COOKIE_SECRET));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
@@ -330,11 +350,14 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-app.get("/api/auth/session", (req: Request, res: Response) => {
+app.get("/api/auth/session", async (req: Request, res: Response) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
   const session = getAuthSession(req);
+  // Existing Google sessions need persisted grants; anonymous and password
+  // sessions remain fast even when DynamoDB is cold or unavailable.
+  if (session.email) await allowlistHydrationPromise;
   res.json({
     authenticated: session.authenticated,
     user: session.authenticated
@@ -361,19 +384,43 @@ app.get("/api/auth/session", (req: Request, res: Response) => {
 });
 
 app.get("/api/auth/config", (_req: Request, res: Response) => {
-  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=3600");
   res.json({
     googleAuthEnabled: GOOGLE_AUTH_ENABLED,
     googleClientId: GOOGLE_AUTH_ENABLED ? GOOGLE_CLIENT_ID : "",
   });
 });
 
+function loginClientKey(req: Request): string {
+  return req.ip || req.socket.remoteAddress || "unknown";
+}
+
 app.post("/api/auth/login", (req: Request, res: Response) => {
+  if (!isTrustedBrowserMutation(req)) {
+    res.status(403).json({ error: "Login origin rejected" });
+    return;
+  }
+  const clientKey = loginClientKey(req);
+  const rateDecision = loginRateLimiter.check(clientKey);
+  res.setHeader("X-RateLimit-Limit", String(rateDecision.limit));
+  res.setHeader("X-RateLimit-Remaining", String(rateDecision.remaining));
+  if (!rateDecision.allowed) {
+    res.setHeader("Retry-After", String(rateDecision.retryAfterSec ?? 60));
+    res.status(429).json({ error: "Too many login attempts. Please wait and try again." });
+    return;
+  }
   const { username, password } = extractLoginCredentials(req);
 
-  const okUser = typeof username === "string" && secureEqual(username, AUTH_USER);
-  const okPass = typeof password === "string" && secureEqual(password, AUTH_PASS);
+  const validShape = typeof username === "string" && username.length <= 256
+    && typeof password === "string" && password.length <= 1024;
+  const okUser = validShape && secureEqual(username, AUTH_USER);
+  const okPass = validShape && secureEqual(password, AUTH_PASS);
   if (!okUser || !okPass) {
+    const failedDecision = loginRateLimiter.recordFailure(clientKey);
+    res.setHeader("X-RateLimit-Remaining", String(failedDecision.remaining));
+    if (!failedDecision.allowed) {
+      res.setHeader("Retry-After", String(failedDecision.retryAfterSec ?? 60));
+    }
     req.log.warn(
       {
         hasUsername: typeof username === "string",
@@ -381,10 +428,15 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
       },
       "Login failed due to invalid credentials",
     );
-    res.status(401).json({ error: "Invalid credentials" });
+    res.status(failedDecision.allowed ? 401 : 429).json({
+      error: failedDecision.allowed
+        ? "Invalid credentials"
+        : "Too many login attempts. Please wait and try again.",
+    });
     return;
   }
 
+  loginRateLimiter.clear(clientKey);
   setAuthCookie(res, {
     method: "password",
     role: "user",
@@ -394,6 +446,10 @@ app.post("/api/auth/login", (req: Request, res: Response) => {
 });
 
 app.post("/api/auth/google", async (req: Request, res: Response) => {
+  if (!isTrustedBrowserMutation(req)) {
+    res.status(403).json({ error: "Login origin rejected" });
+    return;
+  }
   if (!GOOGLE_AUTH_ENABLED) {
     res.status(404).json({ error: "Google sign-in is not enabled" });
     return;
@@ -415,28 +471,20 @@ app.post("/api/auth/google", async (req: Request, res: Response) => {
   }
 
   try {
-    const verifyUrl = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`;
-    const verifyRes = await fetch(verifyUrl, { method: "GET" });
-    if (!verifyRes.ok) {
-      res.status(401).json({ error: "Invalid Google credential" });
-      return;
-    }
-    const claims = await verifyRes.json() as {
-      aud?: string;
-      email?: string;
-      email_verified?: string;
-      name?: string;
-      picture?: string;
-    };
-    if (claims.aud !== GOOGLE_CLIENT_ID) {
-      res.status(401).json({ error: "Google credential audience mismatch" });
-      return;
-    }
-    if (claims.email_verified !== "true" || !claims.email) {
+    // Verify the signed ID token locally through Google's supported library.
+    // This validates signature, issuer, audience, and expiry without putting
+    // the credential into a tokeninfo query URL.
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken,
+      audience: GOOGLE_CLIENT_ID,
+    });
+    const claims = ticket.getPayload();
+    if (!claims?.email_verified || !claims.email) {
       res.status(401).json({ error: "Google account email is not verified" });
       return;
     }
 
+    await allowlistHydrationPromise;
     const approval = isEmailApproved(claims.email);
     if (!approval.approved) {
       res.status(403).json({ error: "This Google account is not approved yet" });
@@ -466,7 +514,11 @@ app.post("/api/auth/google", async (req: Request, res: Response) => {
   }
 });
 
-app.post("/api/auth/logout", (_req: Request, res: Response) => {
+app.post("/api/auth/logout", (req: Request, res: Response) => {
+  if (!isTrustedBrowserMutation(req)) {
+    res.status(403).json({ error: "Logout origin rejected" });
+    return;
+  }
   res.clearCookie(AUTH_COOKIE_NAME, {
     httpOnly: true,
     secure: AUTH_COOKIE_SECURE,
@@ -478,6 +530,10 @@ app.post("/api/auth/logout", (_req: Request, res: Response) => {
 });
 
 app.post("/api/email-submissions", async (req: Request, res: Response) => {
+  if (!isTrustedBrowserMutation(req)) {
+    res.status(403).json({ error: "Mutation origin rejected" });
+    return;
+  }
   const session = getAuthSession(req);
   if (!session.authenticated) {
     res.status(401).json({ error: "Authentication required" });
@@ -516,6 +572,10 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
   // The pitaji router enforces its own gating internally — bypass the
   // videomaking_auth check here so the two workspaces never share sessions.
   if (req.path.startsWith("/pitaji/") || req.path === "/pitaji") {
+    if (!isTrustedBrowserMutation(req)) {
+      res.status(403).json({ error: "Mutation origin rejected" });
+      return;
+    }
     next();
     return;
   }
@@ -528,7 +588,7 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
       res.status(403).json({ error: "Admin access required" });
       return;
     }
-    if (!isSameOriginAdminMutation(req)) {
+    if (!isTrustedBrowserMutation(req)) {
       res.status(403).json({ error: "Admin mutation origin rejected" });
       return;
     }
@@ -598,6 +658,10 @@ app.use("/api", async (req: Request, res: Response, next: NextFunction) => {
     return;
   }
   if (isAuthenticated(req)) {
+    if (!isTrustedBrowserMutation(req)) {
+      res.status(403).json({ error: "Mutation origin rejected" });
+      return;
+    }
     next();
     return;
   }
@@ -630,6 +694,17 @@ app.use("/api/thumbnail", (_req: Request, res: Response, next: NextFunction) => 
     socket.setNoDelay(true);
   }
   next();
+});
+
+// Admin access management needs the persisted allowlist, while ordinary API
+// traffic must never wait for this cold-start dependency.
+app.use("/api/admin", async (_req: Request, _res: Response, next: NextFunction) => {
+  try {
+    await allowlistHydrationPromise;
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 // Content Manager streams scrape and generation events — same Nagle bypass.

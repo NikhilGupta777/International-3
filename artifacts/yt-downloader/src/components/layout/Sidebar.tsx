@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Download, Sparkles, Captions, Scissors, Shield,
   AlarmClock, UploadCloud, Search, Menu, X,
@@ -179,9 +179,24 @@ export function Sidebar({
   translatorEnabled?: boolean;
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const hamburgerRef = useRef<HTMLButtonElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
 
-  const toggleDrawer = () => setDrawerOpen(o => !o);
-  const closeDrawer  = () => setDrawerOpen(false);
+  const toggleDrawer = () => setDrawerOpen(open => !open);
+  const closeDrawer = () => {
+    setDrawerOpen(false);
+    requestAnimationFrame(() => hamburgerRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (!drawerOpen) return;
+    closeButtonRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [drawerOpen]);
 
   return (
     <>
@@ -227,9 +242,12 @@ export function Sidebar({
 
       {/* Mobile hamburger */}
       <button
+        ref={hamburgerRef}
         className={cn("studio-hamburger", mode === "heygen" && "studio-hamburger-heygen")}
         onClick={toggleDrawer}
-        aria-label="Open navigation"
+        aria-label={drawerOpen ? "Close navigation" : "Open navigation"}
+        aria-expanded={drawerOpen}
+        aria-controls="studio-mobile-navigation"
       >
         <Menu className="w-5 h-5" />
       </button>
@@ -238,7 +256,14 @@ export function Sidebar({
         <div className="studio-drawer-backdrop cursor-pointer" onClick={closeDrawer} aria-hidden="true" />
       )}
 
-      <div className={cn("gs-drawer", drawerOpen && "gs-drawer-open")}>
+      {drawerOpen && <nav
+        id="studio-mobile-navigation"
+        className="gs-drawer gs-drawer-open"
+        aria-label="Mobile studio navigation"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") closeDrawer();
+        }}
+      >
         <div className="gs-drawer-header">
           <div className="flex items-center gap-2">
             <div className="gs-app-tile">
@@ -249,8 +274,9 @@ export function Sidebar({
             </span>
           </div>
           <button
+            ref={closeButtonRef}
             onClick={closeDrawer}
-            className="p-1.5 rounded-lg text-white/40 hover:text-white/80 hover:bg-white/8 transition-colors"
+            className="studio-drawer-close rounded-lg text-white/60 hover:text-white hover:bg-white/8 transition-colors"
             aria-label="Close navigation"
           >
             <X className="w-4 h-4" />
@@ -285,7 +311,7 @@ export function Sidebar({
             />
           ))}
         </div>
-      </div>
+      </nav>}
     </>
   );
 }

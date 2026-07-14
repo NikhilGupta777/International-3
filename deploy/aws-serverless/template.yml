@@ -423,6 +423,35 @@ Resources:
           return request;
         }
 
+  StaticSecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${Prefix}-static-security-headers"
+        Comment: Security headers for the SPA document and static assets
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "base-uri 'self'; frame-ancestors 'none'; object-src 'none'"
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            ReferrerPolicy: no-referrer
+            Override: true
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: false
+            Preload: false
+            Override: true
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Value: "camera=(), microphone=(), geolocation=()"
+              Override: true
+
   ApiRole:
     Type: AWS::IAM::Role
     Properties:
@@ -550,6 +579,10 @@ Resources:
           API_KEY_RATE_LIMIT_PER_MIN: !Ref ApiKeyRateLimitPerMin
           WEBHOOK_SIGNING_SECRET: !Ref WebhookSigningSecret
           ADMIN_PANEL_ENABLED: !Ref AdminPanelEnabled
+          TRUST_PROXY_HOPS: "1"
+          LOGIN_MAX_FAILURES: "5"
+          LOGIN_RATE_WINDOW_MS: "900000"
+          LOGIN_BLOCK_MS: "900000"
           TRANSLATOR_ENABLED: !Ref TranslatorEnabled
           SUPER_AGENT_ENABLED: !Ref SuperAgentEnabled
           PITAJI_FEATURE_ENABLED: !Ref PitajiFeatureEnabled
@@ -696,6 +729,7 @@ Resources:
           CachedMethods: [GET, HEAD, OPTIONS]
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
           Compress: true
+          ResponseHeadersPolicyId: !Ref StaticSecurityHeadersPolicy
           FunctionAssociations:
             - EventType: viewer-request
               FunctionARN: !GetAtt CloudFrontSpaRewriteFn.FunctionMetadata.FunctionARN

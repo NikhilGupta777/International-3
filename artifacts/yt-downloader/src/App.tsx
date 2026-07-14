@@ -1,10 +1,10 @@
 import { Switch, Route, Router as WouterRouter } from "wouter";
-import { useEffect, useState, type ReactNode, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import Home, { type AuthFeatures, type AuthUser } from "@/pages/Home";
+import type { AuthFeatures, AuthUser } from "@/pages/Home";
 import NotFound from "@/pages/not-found";
 import { cn } from "@/lib/utils";
 import { InstallBanner } from "@/components/InstallBanner";
@@ -12,6 +12,8 @@ import PitajiLogin from "@/pages/PitajiLogin";
 import PitajiHome from "@/pages/PitajiHome";
 import { getPitajiSession, logoutPitaji } from "@/lib/pitaji-api";
 import "@/styles/pitaji.css";
+
+const Home = lazy(() => import("@/pages/Home"));
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -25,7 +27,7 @@ const queryClient = new QueryClient({
 const AUTH_HINT_KEY = "videomaking.authenticated";
 const WORKSPACE_KEY = "vm.workspace";
 const PITAJI_WORKSPACE_ENABLED = false;
-const FALLBACK_GOOGLE_CLIENT_ID = "1088677655752-cfi64ufbpjd70j4junovqvau5fajbd2p.apps.googleusercontent.com";
+const FALLBACK_GOOGLE_CLIENT_ID = String(import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "").trim();
 type Workspace = "videomaking" | "pitaji";
 
 function readInitialWorkspace(): Workspace {
@@ -92,15 +94,24 @@ function Router({
   onLogout: () => void;
 }) {
   return (
-    <Switch>
-      <Route path="/">
-        <Home authUser={authUser} authFeatures={authFeatures} onLogout={onLogout} />
-      </Route>
-      <Route path="/*">
-        <Home authUser={authUser} authFeatures={authFeatures} onLogout={onLogout} />
-      </Route>
-      <Route component={NotFound} />
-    </Switch>
+    <Suspense fallback={(
+      <AuthOverlay
+        eyebrow="Secure Access"
+        title="Opening Narayan Bhakt Studio"
+        subtitle="Loading your workspace..."
+        compact
+      />
+    )}>
+      <Switch>
+        <Route path="/">
+          <Home authUser={authUser} authFeatures={authFeatures} onLogout={onLogout} />
+        </Route>
+        <Route path="/*">
+          <Home authUser={authUser} authFeatures={authFeatures} onLogout={onLogout} />
+        </Route>
+        <Route component={NotFound} />
+      </Switch>
+    </Suspense>
   );
 }
 
@@ -159,6 +170,7 @@ function App() {
   const [googleReady, setGoogleReady] = useState(false);
   const [googleButtonRendered, setGoogleButtonRendered] = useState(false);
   const [googleSubmitting, setGoogleSubmitting] = useState(false);
+  const usernameInputRef = useRef<HTMLInputElement>(null);
   const base = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   const refreshAuthSession = async (): Promise<AuthSessionResponse> => {
@@ -237,7 +249,10 @@ function App() {
         });
         if (!res.ok) {
           if (mounted) {
-            setAuthConfig({ googleAuthEnabled: true, googleClientId: FALLBACK_GOOGLE_CLIENT_ID });
+            setAuthConfig({
+              googleAuthEnabled: Boolean(FALLBACK_GOOGLE_CLIENT_ID),
+              googleClientId: FALLBACK_GOOGLE_CLIENT_ID,
+            });
           }
           return;
         }
@@ -250,7 +265,10 @@ function App() {
         }
       } catch {
         if (mounted) {
-          setAuthConfig({ googleAuthEnabled: true, googleClientId: FALLBACK_GOOGLE_CLIENT_ID });
+          setAuthConfig({
+            googleAuthEnabled: Boolean(FALLBACK_GOOGLE_CLIENT_ID),
+            googleClientId: FALLBACK_GOOGLE_CLIENT_ID,
+          });
         }
       } finally {
         if (mounted) setAuthConfigLoaded(true);
@@ -317,15 +335,19 @@ function App() {
     setSubmitting(true);
     setLoginError("");
     try {
-      const loginUrl = `${base}/api/auth/login?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
-      const res = await fetch(loginUrl, {
+      const res = await fetch(`${base}/api/auth/login`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
       if (!res.ok) {
-        setLoginError("Invalid username or password");
+        setLoginError(
+          res.status === 429
+            ? "Too many login attempts. Please wait and try again."
+            : "Invalid username or password",
+        );
+        requestAnimationFrame(() => usernameInputRef.current?.focus());
         return;
       }
       const session = await refreshAuthSession();
@@ -488,25 +510,40 @@ function App() {
               </p>
 
               <form onSubmit={submitLogin} className="auth-form">
+                <label className="auth-label" htmlFor="studio-username">Username</label>
                 <input
+                  ref={usernameInputRef}
+                  id="studio-username"
+                  name="username"
                   className="auth-input"
                   placeholder="Username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="username"
+                  maxLength={256}
+                  aria-invalid={Boolean(loginError)}
+                  aria-describedby={loginError ? "studio-login-error" : undefined}
                   required
                 />
+                <label className="auth-label" htmlFor="studio-password">Password</label>
                 <input
+                  id="studio-password"
+                  name="password"
                   className="auth-input"
                   type="password"
                   placeholder="Password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   autoComplete="current-password"
+                  maxLength={1024}
+                  aria-invalid={Boolean(loginError)}
+                  aria-describedby={loginError ? "studio-login-error" : undefined}
                   required
                 />
                 {loginError ? (
-                  <p className="auth-error">{loginError}</p>
+                  <p id="studio-login-error" className="auth-error" role="alert" aria-live="assertive">
+                    {loginError}
+                  </p>
                 ) : null}
                 <button className="auth-button" type="submit" disabled={submitting}>
                   {submitting ? "Entering..." : "Enter Studio"}

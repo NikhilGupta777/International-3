@@ -128,8 +128,9 @@ export function requirePitajiAuth(req: Request, res: Response, next: NextFunctio
 }
 
 /**
- * Pulls username + password from JSON body, query string, or raw event body
- * (Lambda Function URL fallback) — mirrors extractLoginCredentials() in app.ts.
+ * Pulls username + password from the JSON body or raw event body. Credentials
+ * are deliberately never accepted from query parameters because URLs are
+ * commonly retained by proxies, access logs, and monitoring systems.
  */
 export function extractPitajiCredentials(req: Request): {
   username?: string;
@@ -161,13 +162,6 @@ export function extractPitajiCredentials(req: Request): {
   if (typeof body === "string" && body) {
     const parsed = tryParse(body);
     if (parsed.username !== undefined || parsed.password !== undefined) return parsed;
-  }
-
-  const query = req.query as Record<string, unknown> | undefined;
-  if (query) {
-    const u = typeof query.username === "string" ? query.username : undefined;
-    const p = typeof query.password === "string" ? query.password : undefined;
-    if (u !== undefined || p !== undefined) return { username: u, password: p };
   }
 
   // Lambda Function URL raw fallback
