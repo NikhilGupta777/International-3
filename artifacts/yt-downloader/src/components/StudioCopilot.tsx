@@ -3700,8 +3700,14 @@ export function StudioCopilot({
     setInput(messageText(message));
     setPendingAttachments(messageAttachments(message));
     requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(textareaRef.current.value.length, textareaRef.current.value.length);
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.style.height = "auto";
+      const maxHeight = getInputMaxHeight();
+      textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+      textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
     });
   }, [messageAttachments, messageText]);
 
@@ -4087,11 +4093,15 @@ export function StudioCopilot({
             if (!input.trim() && pendingAttachments.length === 0) return;
             void sendMessage(input, pendingAttachments);
           }}
-          className="gs-input-card"
+          className={cn(
+            "gs-input-card",
+            editingMessageId && "gs-input-card-editing",
+            pendingAttachments.length > 0 && "gs-input-card-has-attachments",
+          )}
         >
           {/* Attachment preview chips */}
           {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+            <div className="gs-input-attachments flex flex-wrap gap-1.5 px-3 pt-2">
               {pendingAttachments.map((a, i) => (
                 <div key={i} className="flex items-center gap-1.5 bg-white/10 border border-white/15 rounded-lg px-2 py-1 text-xs text-white/80">
                   {a.previewUrl ? (
@@ -4110,11 +4120,15 @@ export function StudioCopilot({
             </div>
           )}
           {editingMessageId && (
-            <div className="flex items-center justify-between gap-2 px-3 pt-2 text-[11px] text-sky-200/80">
-              <span>Editing message — sending will replace later replies</span>
+            <div className="gs-editing-banner" role="status" aria-live="polite">
+              <span className="gs-editing-banner-icon" aria-hidden="true"><Pencil className="h-3.5 w-3.5" /></span>
+              <span className="gs-editing-banner-copy">
+                <strong>Editing your message</strong>
+                <span>Sending will replace the replies after it.</span>
+              </span>
               <button
                 type="button"
-                className="rounded p-1 text-white/45 hover:bg-white/10 hover:text-white/80"
+                className="gs-editing-cancel"
                 aria-label="Cancel editing message"
                 onClick={() => {
                   branchFromMessageIdRef.current = null;
@@ -4124,6 +4138,7 @@ export function StudioCopilot({
                 }}
               >
                 <X className="h-3.5 w-3.5" />
+                <span>Cancel</span>
               </button>
             </div>
           )}

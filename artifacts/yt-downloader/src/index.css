@@ -7135,10 +7135,101 @@ html.studio-light-mode [class*="placeholder-white/"]::placeholder {
   box-shadow: 0 18px 48px rgba(0,0,0,0.40);
 }
 
-.copilot-wrap .gs-input-card > .flex.flex-wrap {
+.copilot-wrap .gs-input-attachments {
   grid-column: 1 / -1;
   grid-row: 1;
   padding: 2px 4px 8px;
+}
+
+.copilot-wrap .gs-editing-banner {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 2px 4px 8px;
+  color: rgba(186, 230, 253, 0.92);
+}
+
+.copilot-wrap .gs-input-card-has-attachments .gs-editing-banner {
+  grid-row: 2;
+  padding-top: 4px;
+}
+
+.copilot-wrap .gs-editing-banner-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 999px;
+  background: rgba(14, 165, 233, 0.14);
+  border: 1px solid rgba(125, 211, 252, 0.16);
+}
+
+.copilot-wrap .gs-editing-banner-copy {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.copilot-wrap .gs-editing-banner-copy strong {
+  color: rgba(240, 249, 255, 0.96);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.copilot-wrap .gs-editing-banner-copy > span {
+  color: rgba(186, 230, 253, 0.66);
+}
+
+.copilot-wrap .gs-editing-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 36px;
+  flex: 0 0 auto;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.copilot-wrap .gs-editing-cancel:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.copilot-wrap .gs-editing-cancel:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.9);
+  outline-offset: 2px;
+}
+
+.copilot-wrap .gs-input-card-editing .gs-input-textarea-wrap,
+.copilot-wrap .gs-input-card-editing .gs-input-row-left,
+.copilot-wrap .gs-input-card-editing .gs-input-row-right,
+.copilot-wrap .gs-input-card-has-attachments .gs-input-textarea-wrap,
+.copilot-wrap .gs-input-card-has-attachments .gs-input-row-left,
+.copilot-wrap .gs-input-card-has-attachments .gs-input-row-right {
+  grid-row: 2;
+}
+
+.copilot-wrap .gs-input-card-editing.gs-input-card-has-attachments .gs-input-textarea-wrap,
+.copilot-wrap .gs-input-card-editing.gs-input-card-has-attachments .gs-input-row-left,
+.copilot-wrap .gs-input-card-editing.gs-input-card-has-attachments .gs-input-row-right {
+  grid-row: 3;
 }
 
 .copilot-wrap .gs-input-textarea-wrap {
@@ -7628,6 +7719,31 @@ html.studio-light-mode .copilot-wrap .gs-starter-text {
     justify-content: flex-end;
     align-self: center;
     gap: 6px;
+  }
+
+  .copilot-wrap .gs-input-card-editing .gs-input-textarea-wrap,
+  .copilot-wrap .gs-input-card-has-attachments .gs-input-textarea-wrap {
+    grid-row: 2;
+  }
+
+  .copilot-wrap .gs-input-card-editing .gs-input-row-left,
+  .copilot-wrap .gs-input-card-editing .gs-input-row-right,
+  .copilot-wrap .gs-input-card-has-attachments .gs-input-row-left,
+  .copilot-wrap .gs-input-card-has-attachments .gs-input-row-right {
+    grid-row: 3;
+  }
+
+  .copilot-wrap .gs-input-card-editing.gs-input-card-has-attachments .gs-input-textarea-wrap {
+    grid-row: 3;
+  }
+
+  .copilot-wrap .gs-input-card-editing.gs-input-card-has-attachments .gs-input-row-left,
+  .copilot-wrap .gs-input-card-editing.gs-input-card-has-attachments .gs-input-row-right {
+    grid-row: 4;
+  }
+
+  .copilot-wrap .gs-editing-banner-copy > span {
+    display: none;
   }
 
   .copilot-wrap .gs-reasoning-button {

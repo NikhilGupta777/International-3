@@ -17,13 +17,19 @@ test("short fenced code remains in chat instead of being rewritten server-side",
   assert.match(source, /Only the explicit hidden <canvas> protocol becomes a canvas/);
 });
 
-test("agent prompt routes subtitles, websites, and code over 15 lines to canvas", () => {
-  assert.match(source, /Every SRT or VTT subtitle file/);
+test("agent prompt keeps short subtitle examples in chat and routes substantial artifacts to canvas", () => {
+  assert.match(source, /more than 5 subtitle cues/);
+  assert.match(source, /5 cues or fewer in a normal fenced code block/);
   assert.match(source, /complete HTML website\/page/);
   assert.match(source, /longer than 15 lines/);
   assert.match(source, /15 lines or fewer[\s\S]*normal chat code box/);
   assert.match(source, /user explicitly asks to open in canvas/);
   assert.doesNotMatch(source, /Triple backticks break the UI/);
+});
+
+test("canvas stream routing retains partial opening markers across chunks", () => {
+  assert.match(source, /longest suffix[\s\S]*could still become "<canvas"/);
+  assert.match(source, /openToken\.startsWith\(lower\.slice\(-length\)\)/);
 });
 
 test("disabled creative capabilities are exposed from the same server policy as tools", () => {

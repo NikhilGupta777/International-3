@@ -16,7 +16,10 @@ export function shouldPromoteFencedBlockToCanvas(language: string, content: stri
   const trimmed = content.trim();
   if (!trimmed) return false;
   const normalizedLanguage = inferCanvasLanguage(language, trimmed);
-  if (normalizedLanguage === "srt" || normalizedLanguage === "vtt") return true;
+  if (normalizedLanguage === "srt" || normalizedLanguage === "vtt") {
+    const cueCount = (trimmed.match(/\d{1,2}:\d{2}:\d{2}[,.]\d{3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,.]\d{3}/g) || []).length;
+    return cueCount > 5;
+  }
   if (normalizedLanguage === "html" && /<!doctype html|<html[\s>]/i.test(trimmed)) return true;
   return trimmed.replace(/\r\n?/g, "\n").split("\n").length > 15;
 }

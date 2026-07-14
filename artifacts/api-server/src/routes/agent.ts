@@ -1508,7 +1508,7 @@ Always use the smallest, cheapest correct tool. Do not call a more expensive or 
 # CANVAS AND CODE OUTPUT
 
 USE canvas for:
-- Every SRT or VTT subtitle file, even when it is short.
+- A complete SRT or VTT subtitle file with more than 5 subtitle cues. Keep examples of 5 cues or fewer in a normal fenced code block.
 - A complete HTML website/page (for example content containing <!doctype html> or an <html> document).
 - Any fenced code or editable artifact longer than 15 lines.
 - An artifact the user explicitly asks to open in canvas or download as a file.
@@ -5931,19 +5931,29 @@ toolConfig: activeCacheName
 
           const open = openRe.exec(canvasRouteBuf);
           if (!open) {
-            const lower = canvasRouteBuf.toLowerCase();
-            const partialIdx = lower.lastIndexOf("<canvas");
-            if (
-              !final &&
-              partialIdx !== -1 &&
-              !canvasRouteBuf.slice(partialIdx).includes(">")
-            ) {
-              const chat = canvasRouteBuf.slice(0, partialIdx);
+            // A model stream may split the opening marker at any character
+            // (for example "<can" + "vas ...>"). Retain the longest suffix
+            // that could still become "<canvas" so hidden protocol text can
+            // never leak into the visible chat.
+            let partialLength = 0;
+            if (!final) {
+              const lower = canvasRouteBuf.toLowerCase();
+              const openToken = "<canvas";
+              const maxCandidate = Math.min(openToken.length - 1, lower.length);
+              for (let length = maxCandidate; length > 0; length--) {
+                if (openToken.startsWith(lower.slice(-length))) {
+                  partialLength = length;
+                  break;
+                }
+              }
+            }
+            if (partialLength > 0) {
+              const chat = canvasRouteBuf.slice(0, -partialLength);
               if (chat) {
                 sseEvent(res, { type: "text_delta", content: chat, runId });
                 streamedTextLive = true;
               }
-              canvasRouteBuf = canvasRouteBuf.slice(partialIdx);
+              canvasRouteBuf = canvasRouteBuf.slice(-partialLength);
               return;
             }
             sseEvent(res, {
