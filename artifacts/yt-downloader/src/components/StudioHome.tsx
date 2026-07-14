@@ -13,7 +13,9 @@ import { useToast } from "@/hooks/use-toast";
 type Mode =
   | "home" | "copilot" | "download" | "clips" | "subtitles"
   | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps"
-  | "upload" | "translator" | "findvideo" | "content-manager" | "videostudio" | "help" | "activity";
+  | "upload" | "translator" | "heygen" | "findvideo" | "thumbnail"
+  | "content-manager" | "videostudio" | "help" | "activity"
+  | "admin" | "developer" | "api-docs" | "settings";
 const ULTRA_KEY = "studio-ultra-mode";
 const REASONING_KEY = "studio-reasoning-mode";
 const HOME_UPDATES_KEY = "studio-home-updates-read-v1";
@@ -197,7 +199,7 @@ export function StudioHome({
     setUltra(next);
     try {
       localStorage.setItem(ULTRA_KEY, next ? "1" : "0");
-      localStorage.setItem(REASONING_KEY, next ? "advanced" : "flash");
+      if (next) localStorage.setItem(REASONING_KEY, "gemma-4-31b-it");
     } catch { }
   };
 

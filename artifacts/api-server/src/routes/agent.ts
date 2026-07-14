@@ -191,6 +191,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 
     case "cut_video_clip":
     case "download_video":
+    case "generate_subtitles":
     case "find_best_clips":
     case "generate_timestamps":
       return "youtube_processing";
@@ -1813,9 +1814,9 @@ const HEAVY_OP_COOLDOWNS: Record<string, number> = {
   generate_music: 60 * 1000, // 1 min
 };
 
-function checkHeavyOpRateLimit(req: any, opName: string): void {
+function checkHeavyOpRateLimit(req: any, opName: string): () => void {
   const cooldownMs = HEAVY_OP_COOLDOWNS[opName];
-  if (!cooldownMs) return;
+  if (!cooldownMs) return () => {};
   const sessionId = String(req.body?.sessionId ?? "anon").slice(0, 64);
   const authCookie = req.signedCookies?.videomaking_auth ?? "";
   const userPart = authCookie
@@ -1830,15 +1831,17 @@ function checkHeavyOpRateLimit(req: any, opName: string): void {
       `Rate limited: "${opName}" can be run once every ${cooldownMs / 1000}s. Please wait ${waitSec}s.`,
     );
   }
-  heavyOpCooldowns.set(key, Date.now());
-  // Periodic cleanup of stale entries (every ~50th call)
-  if (heavyOpCooldowns.size > 200) {
-    const cutoff =
-      Date.now() - Math.max(...Object.values(HEAVY_OP_COOLDOWNS)) * 2;
-    for (const [k, ts] of heavyOpCooldowns) {
-      if (ts < cutoff) heavyOpCooldowns.delete(k);
+  const recordCooldown = () => {
+    heavyOpCooldowns.set(key, Date.now());
+    if (heavyOpCooldowns.size > 200) {
+      const cutoff =
+        Date.now() - Math.max(...Object.values(HEAVY_OP_COOLDOWNS)) * 2;
+      for (const [k, ts] of heavyOpCooldowns) {
+        if (ts < cutoff) heavyOpCooldowns.delete(k);
+      }
     }
-  }
+  };
+  return recordCooldown;
 }
 
 function pruneExpiredSandboxEntries(): void {
@@ -2964,6 +2967,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3582,7 +3586,7 @@ async function executeTool(
     }
 
     case "translate_video": {
-      checkHeavyOpRateLimit(req, "translate_video");
+      const recordTranslateCooldown = checkHeavyOpRateLimit(req, "translate_video");
       // Detect uploaded file URL (S3/CDN) vs YouTube URL.
       // Uploaded files: POST to /translator/submit-from-url — no YouTube download needed.
       // YouTube URLs: download via youtube/stream → S3 → submit.
@@ -3705,6 +3709,7 @@ async function executeTool(
       } as any);
 
       sseEvent(res, { type: "navigate", runId, tab: "translator" });
+      recordTranslateCooldown();
       return {
         result: {
           jobId: tvJobId,
@@ -4098,7 +4103,7 @@ async function executeTool(
     }
 
     case "do_full_package": {
-      checkHeavyOpRateLimit(req, "do_full_package");
+      const recordFullPkgCooldown = checkHeavyOpRateLimit(req, "do_full_package");
       const url = String(args.url ?? "").trim();
       if (!url) throw new Error("YouTube URL is required.");
       const language = String(args.language ?? DEFAULT_CAPTION_LANGUAGE);
@@ -4167,6 +4172,7 @@ async function executeTool(
           );
       }
 
+      recordFullPkgCooldown();
       return {
         result: { completed: true, results },
         artifact: {
@@ -4500,7 +4506,7 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
     }
 
     case "generate_music": {
-      checkHeavyOpRateLimit(req, "generate_music");
+      const recordMusicCooldown = checkHeavyOpRateLimit(req, "generate_music");
       const musicPrompt = String(args.prompt ?? "").trim();
       if (!musicPrompt) throw new Error("Music prompt is required.");
       const durationMode =
@@ -4572,6 +4578,7 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
       }
 
       const label = `${durationMode === "full" ? "Full Song" : "30s Clip"} — ${musicPrompt.slice(0, 60)}${musicPrompt.length > 60 ? "…" : ""}`;
+      recordMusicCooldown();
       return {
         result: {
           audioUrl: audio.audioUrl,
