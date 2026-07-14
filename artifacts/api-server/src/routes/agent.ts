@@ -2964,6 +2964,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -5108,29 +5109,36 @@ except Exception as exc:
 
       // Resolve relative /api/... URLs against the internal API base so the
       // agent can save any artifact it just produced regardless of host.
-      const resolvedUrl = sourceUrl.startsWith("/")
+      const isInternalPath = sourceUrl.startsWith("/");
+      const resolvedUrl = isInternalPath
         ? `${apiBase.replace(/\/api$/, "")}${sourceUrl}`
         : sourceUrl;
 
-      // SECURITY: Validate resolved URL is not internal before fetching
-      try {
-        const parsedResolved = new URL(resolvedUrl);
-        if (isInternalHost(parsedResolved.hostname)) {
-          throw new Error(
-            "save_artifact_to_workspace URL resolves to an internal/private network address.",
-          );
+      // SECURITY: For external URLs, validate against SSRF and never send
+      // internal credentials. For internal /api/... paths, auth headers are
+      // required and the target is trusted (same-process localhost).
+      if (!isInternalPath) {
+        try {
+          const parsedResolved = new URL(resolvedUrl);
+          if (isInternalHost(parsedResolved.hostname)) {
+            throw new Error(
+              "save_artifact_to_workspace URL resolves to an internal/private network address.",
+            );
+          }
+        } catch (err: any) {
+          if (err.message.includes("internal/private")) throw err;
         }
-      } catch (err: any) {
-        if (err.message.includes("internal/private")) throw err;
-        // Invalid URL — let fetch fail naturally
       }
 
+      const fetchHeaders: Record<string, string> = isInternalPath
+        ? {
+            Cookie: req.headers.cookie ?? "",
+            "X-Internal-Agent": INTERNAL_AGENT_SECRET,
+          }
+        : {};
       const r = await fetch(resolvedUrl, {
-        headers: {
-          Cookie: req.headers.cookie ?? "",
-          "X-Internal-Agent": INTERNAL_AGENT_SECRET,
-        },
-        redirect: "follow",
+        headers: fetchHeaders,
+        redirect: isInternalPath ? "follow" : "manual",
       });
       if (!r.ok) throw new Error(`fetch failed: ${r.status} ${r.statusText}`);
       const contentType = r.headers.get("content-type") ?? undefined;
@@ -5301,16 +5309,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname) || u.hostname.endsWith(".local");
   } catch {
     return true;
   }
@@ -6489,6 +6488,7 @@ toolConfig: activeCacheName
       }
       sseEvent(res, {
         type: "error",
+        runId,
         message: errMsg || "Something went wrong — please try again.",
       });
     }
