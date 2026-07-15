@@ -5244,15 +5244,8 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    if (host.endsWith(".local")) return true;
+    return isInternalHost(host);
   } catch {
     return true;
   }
@@ -5684,12 +5677,14 @@ router.post("/agent/chat", async (req, res) => {
       let controller: AbortController | null = null;
       const streamFallbackModels = activeModel === "gemma-4-31b-it"
         ? [activeModel]
-        : Array.from(
-            new Set([
-              activeModel,
-              activeModel === "gemini-3.5-flash" ? "gemini-2.5-flash" : "gemini-3.5-flash",
-            ]),
-          );
+        : activeModel === "gemini-3.1-flash-lite"
+          ? [activeModel]
+          : Array.from(
+              new Set([
+                activeModel,
+                activeModel === "gemini-3.5-flash" ? "gemini-2.5-flash" : "gemini-3.5-flash",
+              ]),
+            );
       const keyCount = Math.max(1, Math.min(getPersonalGeminiApiKeysList().length || 1, 13));
       const MAX_STREAM_ATTEMPTS = Math.max(2, keyCount * streamFallbackModels.length);
       for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {

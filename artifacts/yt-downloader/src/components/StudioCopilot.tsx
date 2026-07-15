@@ -1134,12 +1134,13 @@ function isHtmlCanvas(language: string, content: string): boolean {
 function sanitizeSearchEntryPoint(html: string): string {
   const template = document.createElement("template");
   template.innerHTML = html;
-  template.content.querySelectorAll("script, iframe, object, embed, form, input, button").forEach(el => el.remove());
+  template.content.querySelectorAll("script, iframe, object, embed, form, input, button, base").forEach(el => el.remove());
+  const DANGEROUS_URL_ATTRS = new Set(["href", "src", "xlink:href", "formaction", "action", "poster", "srcset"]);
   template.content.querySelectorAll("*").forEach(el => {
     for (const attr of Array.from(el.attributes)) {
       const name = attr.name.toLowerCase();
       const value = attr.value.trim().toLowerCase();
-      if ((name === "href" || name === "src") && (value.startsWith("javascript:") || value.startsWith("data:"))) {
+      if (DANGEROUS_URL_ATTRS.has(name) && (value.startsWith("javascript:") || value.startsWith("data:"))) {
         el.remove();
         return;
       }
