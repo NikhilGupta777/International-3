@@ -240,7 +240,6 @@ jobs:
           GEMINI_API_KEY_12_SECRET: ${{ secrets.GEMINI_API_KEY_12 }}
           GEMINI_API_KEY_13_SECRET: ${{ secrets.GEMINI_API_KEY_13 }}
           GOOGLE_GENAI_USE_VERTEXAI_SECRET: ${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}
-          COPILOT_VERTEX_BROKER_SECRET_SECRET: ${{ secrets.COPILOT_VERTEX_BROKER_SECRET }}
         run: |
           WORKER_URI="${{ steps.push.outputs.image_uri }}"
 
@@ -682,6 +681,7 @@ jobs:
           GOOGLE_CLIENT_ID_SECRET: ${{ secrets.GOOGLE_CLIENT_ID }}
           NOTEBOOKLM_AUTH_JSON_B64_SECRET: ${{ secrets.NOTEBOOKLM_AUTH_JSON_B64 }}
           GOOGLE_GENAI_USE_VERTEXAI_SECRET: ${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}
+          COPILOT_VERTEX_BROKER_SECRET_SECRET: ${{ secrets.COPILOT_VERTEX_BROKER_SECRET }}
           E2B_API_KEY_SECRET: ${{ secrets.E2B_API_KEY }}
         run: |
           printf '%s' "$ENV_GREEN_CONTENT_SECRET" > /tmp/.env.green
