@@ -730,6 +730,10 @@ jobs:
           sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_JSON=/d' /tmp/.env.green
           sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_S3_KEY=/d' /tmp/.env.green
           upsert_env "COPILOT_VERTEX_BROKER_URL" "https://narayanbhakt.in/api/internal/vertex/copilot"
+          if [[ ! "$COPILOT_VERTEX_BROKER_SECRET_SECRET" =~ ^[a-f0-9]{64,}$ ]]; then
+            echo "::error::COPILOT_VERTEX_BROKER_SECRET must be a lowercase hex secret of at least 64 characters"
+            exit 1
+          fi
           upsert_env "COPILOT_VERTEX_BROKER_SECRET" "$COPILOT_VERTEX_BROKER_SECRET_SECRET"
           upsert_env "COPILOT_ULTRA_VERTEX_ENABLED" "true"
           upsert_env "NOTEBOOKLM_ENABLED" "${{ secrets.NOTEBOOKLM_ENABLED }}"
