@@ -385,8 +385,8 @@ export default function Home({
       const next = readRouteFromUrl();
       initialRouteRef.current = next;
       setMode(next.mode);
-      if (next.mode === "download" && next.subKind === "job") {
-        setJobId(next.subId ?? null);
+      if (next.mode === "download") {
+        setJobId(next.subKind === "job" ? (next.subId ?? null) : null);
       }
       if (next.mode === "videostudio") {
         if (next.subKind === "history") {
@@ -692,6 +692,7 @@ export default function Home({
         return;
       }
 
+      let needsChime = false;
       for (const key of snapshot) {
         if (seenCompletionRef.current.has(key)) continue;
 
@@ -717,9 +718,10 @@ export default function Home({
           if (entry && preferences.notificationsEnabled) notifyBackgroundCompletion("Translation", entry.filename);
         }
 
-        if (preferences.notificationSoundEnabled) playSoftCompletionChime();
+        needsChime = true;
       }
 
+      if (needsChime && preferences.notificationSoundEnabled) playSoftCompletionChime();
       seenCompletionRef.current = snapshot;
     };
 

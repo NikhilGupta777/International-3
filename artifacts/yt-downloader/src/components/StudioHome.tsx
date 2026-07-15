@@ -197,7 +197,7 @@ export function StudioHome({
     setUltra(next);
     try {
       localStorage.setItem(ULTRA_KEY, next ? "1" : "0");
-      localStorage.setItem(REASONING_KEY, next ? "advanced" : "flash");
+      localStorage.setItem(REASONING_KEY, next ? "gemma-4-31b-it" : "gemini-3.1-flash-lite-low");
     } catch { }
   };
 
@@ -232,12 +232,11 @@ export function StudioHome({
     }
     const rec = new SR();
     rec.continuous = false;
-    rec.interimResults = true;
+    rec.interimResults = false;
     rec.lang = navigator.language || "en-US";
     rec.onresult = (e: any) => {
-      let chunk = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript;
-      setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + chunk).trimStart());
+      const transcript = e.results[0]?.[0]?.transcript ?? "";
+      if (transcript) setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + transcript).trimStart());
       resizeTextarea();
     };
     rec.onend = () => { setListening(false); recognitionRef.current = null; };
