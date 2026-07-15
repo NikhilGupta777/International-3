@@ -132,7 +132,7 @@ function saveSessions(sessions: ChatSession[]) {
 function revokeMessagePreviewUrls(messages: Message[]) {
   for (const message of messages) {
     for (const part of message.parts) {
-      if (part.kind === "image" && part.previewUrl.startsWith("blob:")) {
+      if (part.kind === "image" && part.previewUrl?.startsWith("blob:")) {
         URL.revokeObjectURL(part.previewUrl);
       }
     }

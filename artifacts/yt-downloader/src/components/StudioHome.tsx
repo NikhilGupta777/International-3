@@ -197,7 +197,7 @@ export function StudioHome({
     setUltra(next);
     try {
       localStorage.setItem(ULTRA_KEY, next ? "1" : "0");
-      localStorage.setItem(REASONING_KEY, next ? "advanced" : "flash");
+      localStorage.setItem(REASONING_KEY, next ? "gemma-4-31b-it" : "gemini-3.1-flash-lite-high");
     } catch { }
   };
 
@@ -232,7 +232,7 @@ export function StudioHome({
     }
     const rec = new SR();
     rec.continuous = false;
-    rec.interimResults = true;
+    rec.interimResults = false;
     rec.lang = navigator.language || "en-US";
     rec.onresult = (e: any) => {
       let chunk = "";
