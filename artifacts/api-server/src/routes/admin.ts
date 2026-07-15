@@ -274,6 +274,7 @@ router.get("/overview", async (_req, res) => {
       translatorEnabled: runtime.features.translatorEnabled,
       translatorLipSyncEnabled: runtime.features.translatorLipSyncEnabled,
       superAgentEnabled: runtime.features.superAgentEnabled,
+      copilotUltraVertexEnabled: runtime.features.copilotUltraVertexEnabled,
       youtubeQueuePrimaryEnabled: enabled(process.env.YOUTUBE_QUEUE_PRIMARY_ENABLED),
       youtubeQueueShadowEnabled: enabled(process.env.YOUTUBE_QUEUE_SHADOW_ENABLED),
       subtitlesForceLambda: enabled(process.env.SUBTITLES_FORCE_LAMBDA, true),
@@ -575,7 +576,7 @@ router.post("/features", (req, res) => {
     const body = req.body as { key?: unknown; enabled?: unknown };
     const key = String(body.key ?? "") as RuntimeFeatureKey;
     if (
-      !["translatorEnabled", "translatorLipSyncEnabled", "superAgentEnabled"].includes(key)
+      !["translatorEnabled", "translatorLipSyncEnabled", "superAgentEnabled", "copilotUltraVertexEnabled"].includes(key)
     ) {
       res.status(400).json({ error: "Unsupported feature key" });
       return;

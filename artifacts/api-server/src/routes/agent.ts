@@ -30,13 +30,16 @@ import {
 import {
   createGeminiClient,
   isGeminiConfigured,
-  ensureVertexCredentials,
-  isVertexGeminiEnabled,
   buildThinkingConfig,
   generateContentWithRotation,
   getGeminiApiKeyForAttempt,
   getPersonalGeminiApiKeysList,
 } from "../lib/gemini-client";
+import {
+  isCopilotVertexBrokerConfigured,
+  streamCopilotViaOracle,
+} from "../lib/oracle-vertex-broker";
+import { isCopilotUltraVertexEnabled } from "../lib/admin-features";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { logger } from "../lib/logger";
@@ -70,9 +73,10 @@ const router = Router();
 // Model catalogue with per-model configurations:
 //   gemini-3-flash-preview — fast, standard Gemini 3 Flash, MEDIUM default
 //   gemini-3.5-flash       — fast + stronger, MEDIUM/HIGH thinking
-// Optional, not default: set COPILOT_ULTRA_MODEL=gemini-3.1-pro-preview if you want Pro.
+// Ultra is intentionally scoped to Vertex MaaS; other Copilot modes retain
+// their existing Gemini API-key routing.
 const AGENT_MODEL = process.env.COPILOT_MODEL ?? "gemini-3.5-flash";
-const ULTRA_MODEL = process.env.COPILOT_ULTRA_MODEL ?? "gemini-3.5-flash";
+const ULTRA_MODEL = "gemma-4-26b-a4b-it";
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash";
 const ALLOWED_MODELS = new Set([
   "gemini-2.5-flash",
@@ -81,7 +85,8 @@ const ALLOWED_MODELS = new Set([
   "gemini-3.1-flash-lite",
   "gemini-3.1-flash-lite-low",
   "gemini-3.1-flash-lite-high",
-  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it",
+  "gemma-4-26b-a4b-it-maas",
 ]);
 
 const DEFAULT_CAPTION_LANGUAGE = "hi";
@@ -92,7 +97,7 @@ function supportsNativeMediaInput(model: string): boolean {
 
 function getMaxOutputTokensForModel(model: string): number {
   const m = model.toLowerCase();
-  if (m === "gemma-4-31b-it") {
+  if (m === "gemma-4-26b-a4b-it" || m === "gemma-4-26b-a4b-it-maas") {
     return 262144;
   }
   if (m.startsWith("gemini-3.5")) {
@@ -5294,14 +5299,6 @@ router.post("/agent/chat", async (req, res) => {
     });
     return;
   }
-  // Ensure Vertex AI credentials are loaded before any model call.
-  // fetchCredentialsFromS3 runs async at cold start — awaiting here guarantees
-  // credentials are ready even if the first request races with the cold-start fetch.
-  try {
-    await ensureVertexCredentials();
-  } catch {
-    /* non-fatal — key may be env-based */
-  }
   (req as any).agentRunJobIds = new Set<string>();
 
   const {
@@ -5452,8 +5449,8 @@ router.post("/agent/chat", async (req, res) => {
   } else if (requestedModel === "gemini-3.1-flash-lite-high") {
     activeModel = "gemini-3.1-flash-lite";
     thinkingLevel = "HIGH";
-  } else if (requestedModel === "gemma-4-31b-it") {
-    activeModel = "gemma-4-31b-it";
+  } else if (requestedModel === "gemma-4-26b-a4b-it") {
+    activeModel = ULTRA_MODEL;
     thinkingLevel = "HIGH";
   } else if (
     requestedModel &&
@@ -5467,6 +5464,13 @@ router.post("/agent/chat", async (req, res) => {
   }
 
   const activeModelSupportsNativeMedia = supportsNativeMediaInput(activeModel);
+  // Vertex is available only to Ultra and only through the signed Oracle
+  // broker. AWS never loads or receives the Google service-account key.
+  const isUltra = activeModel === ULTRA_MODEL;
+  const useVertexBroker =
+    isUltra &&
+    isCopilotUltraVertexEnabled() &&
+    isCopilotVertexBrokerConfigured();
   const latestUserActionText = [...normalizedMessages]
     .reverse()
     .find((message) => message.role === "user")
@@ -5494,6 +5498,7 @@ router.post("/agent/chat", async (req, res) => {
     runId,
     ts: Date.now(),
     model: activeModel,
+    provider: useVertexBroker ? "vertex-oracle" : "api-key",
     ultra: requestedModel === "ultra" || requestedModel === "gemini-3.5-flash-high",
   });
   const skillPromptAddendum = buildSkillPrompt(activeSkills);
@@ -5508,8 +5513,6 @@ router.post("/agent/chat", async (req, res) => {
   }, 8000);
 
   try {
-    // Vertex AI is the primary path (checked first in createGeminiClient).
-    // Gemini API key is only a fallback when Vertex is not configured.
     const GEMINI_TIMEOUT_MS = 300_000; // 5 min
     let currentApiKey = getGeminiApiKeyForAttempt(undefined, 0);
     let ai = createGeminiClient({
@@ -5517,7 +5520,6 @@ router.post("/agent/chat", async (req, res) => {
       httpOptions: { timeout: GEMINI_TIMEOUT_MS },
     });
 
-    const useVertex = isVertexGeminiEnabled();
     let loopContents: any[] = [];
 
     for (const m of normalizedMessages) {
@@ -5567,7 +5569,7 @@ router.post("/agent/chat", async (req, res) => {
         for (const a of mediaAttachments) {
           if (activeModelSupportsNativeMedia && a.url && !isLocalUrl(a.url)) {
             let finalUri = a.url;
-            if (useVertex && (a.type === "video" || a.type === "audio")) {
+            if (useVertexBroker && (a.type === "video" || a.type === "audio")) {
               try {
                 const cacheKey = getStableCacheKey(a.url);
                 if (globalUrlToGcsCache.has(cacheKey)) {
@@ -5659,7 +5661,8 @@ router.post("/agent/chat", async (req, res) => {
     let iterations = 0;
     let emptyResponseRetries = 0;
     let streamReadRetries = 0;
-    let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH && activeModel !== "gemma-4-31b-it";
+    let vertexBrokerAttempted = false;
+    let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH && !activeModel.startsWith("gemma-");
     let finalAnswerSent = false;
 
     while (iterations < MAX_ITERATIONS && isConnected()) {
@@ -5682,7 +5685,7 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       let timeoutId: NodeJS.Timeout | null = null;
       let controller: AbortController | null = null;
-      const streamFallbackModels = activeModel === "gemma-4-31b-it"
+      const streamFallbackModels = isUltra
         ? [activeModel]
         : Array.from(
             new Set([
@@ -5691,24 +5694,28 @@ router.post("/agent/chat", async (req, res) => {
             ]),
           );
       const keyCount = Math.max(1, Math.min(getPersonalGeminiApiKeysList().length || 1, 13));
-      const MAX_STREAM_ATTEMPTS = Math.max(2, keyCount * streamFallbackModels.length);
+      const brokerAttemptCount = useVertexBroker && !vertexBrokerAttempted ? 1 : 0;
+      const MAX_STREAM_ATTEMPTS = brokerAttemptCount + keyCount * streamFallbackModels.length;
       for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
         if (timeoutId) clearTimeout(timeoutId);
         controller = new AbortController();
         const currentController = controller;
         timeoutId = setTimeout(() => {
-          console.warn(`[agent] Stream attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS} timed out after 20s. Aborting...`);
+          console.warn(`[agent] Stream attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS} timed out after ${GEMINI_TIMEOUT_MS}ms. Aborting...`);
           currentController.abort();
-        }, 20000);
+        }, GEMINI_TIMEOUT_MS);
+        let brokerAttempt = false;
         try {
+          brokerAttempt = brokerAttemptCount === 1 && attempt === 0;
+          const apiAttempt = attempt - brokerAttemptCount;
           const streamModel = streamFallbackModels[Math.min(
             streamFallbackModels.length - 1,
-            Math.floor(attempt / keyCount),
+            Math.floor(Math.max(0, apiAttempt) / keyCount),
           )];
-          if (attempt > 0) {
+          if (!brokerAttempt && (apiAttempt > 0 || useVertexBroker)) {
             await new Promise((r) => setTimeout(r, 150 + Math.random() * 100));
             // Retry attempts move to the next healthy API key; normal requests stay on the preferred key.
-            currentApiKey = getGeminiApiKeyForAttempt(undefined, attempt);
+            currentApiKey = getGeminiApiKeyForAttempt(undefined, Math.max(0, apiAttempt));
             ai = createGeminiClient({
               apiKey: currentApiKey,
               httpOptions: { timeout: GEMINI_TIMEOUT_MS },
@@ -5730,10 +5737,7 @@ router.post("/agent/chat", async (req, res) => {
             }
           }
 
-          const candidateStream = await ai.models.generateContentStream({
-            model: streamModel,
-            contents: generateContents,
-            config: {
+          const streamConfig = {
               abortSignal: controller.signal,
               systemInstruction: activeCacheName
                 ? undefined
@@ -5757,8 +5761,19 @@ toolConfig: activeCacheName
               },
 
               cachedContent: activeCacheName,
-            } as any,
-          });
+            } as any;
+          if (brokerAttempt) vertexBrokerAttempted = true;
+          const candidateStream = brokerAttempt
+            ? await streamCopilotViaOracle({
+                contents: generateContents,
+                config: { ...streamConfig, cachedContent: undefined },
+                signal: controller.signal,
+              })
+            : await ai.models.generateContentStream({
+                model: streamModel,
+                contents: generateContents,
+                config: streamConfig,
+              });
           // Stream live chunks directly to the client instead of blocking/buffering them
           stream = candidateStream;
           streamErr = null;
@@ -5798,6 +5813,10 @@ toolConfig: activeCacheName
           console.warn(
             `[agent] Chat stream failed on attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS}: ${errMsg}`
           );
+          if (brokerAttempt) {
+            console.warn("[agent] Oracle Vertex broker failed; falling back to Gemini API-key routing");
+            continue;
+          }
           const shouldRetryWithNextKey = isGeminiKeyRetryableError(e);
           if (currentApiKey) recordKeyFailure(currentApiKey, e).catch(() => {});
           if (!shouldRetryWithNextKey) {

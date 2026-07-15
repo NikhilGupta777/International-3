@@ -3,7 +3,8 @@ import { normalizeEmail } from "./auth-access";
 export type RuntimeFeatureKey =
   | "translatorEnabled"
   | "translatorLipSyncEnabled"
-  | "superAgentEnabled";
+  | "superAgentEnabled"
+  | "copilotUltraVertexEnabled";
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
 
@@ -26,6 +27,7 @@ const runtimeFeatures: Record<RuntimeFeatureKey, boolean> = {
   translatorEnabled: enabled(process.env.TRANSLATOR_ENABLED, true),
   translatorLipSyncEnabled: enabled(process.env.TRANSLATOR_LIP_SYNC_ENABLED),
   superAgentEnabled: enabled(process.env.SUPER_AGENT_ENABLED, true),
+  copilotUltraVertexEnabled: enabled(process.env.COPILOT_ULTRA_VERTEX_ENABLED, false),
 };
 
 const translatorAllowedEmails = parseEmailSet(process.env.TRANSLATOR_ALLOWED_EMAILS);
@@ -82,6 +84,10 @@ export function isTranslatorEnabled(): boolean {
 
 export function isSuperAgentEnabled(): boolean {
   return runtimeFeatures.superAgentEnabled;
+}
+
+export function isCopilotUltraVertexEnabled(): boolean {
+  return runtimeFeatures.copilotUltraVertexEnabled;
 }
 
 function canUseRestrictedFeature(enabledValue: boolean, emails: Set<string>, email?: string): boolean {

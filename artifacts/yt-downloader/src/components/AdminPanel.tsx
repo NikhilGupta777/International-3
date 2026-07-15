@@ -129,6 +129,7 @@ type AdminOverview = {
       translatorEnabled?: boolean;
       translatorLipSyncEnabled?: boolean;
       superAgentEnabled?: boolean;
+      copilotUltraVertexEnabled?: boolean;
     };
     permissions: {
       translatorAllowedEmails?: string[];
@@ -454,6 +455,7 @@ export function AdminPanel() {
   const lipSyncEnabled = Boolean(overview?.runtime?.features.translatorLipSyncEnabled);
   const translationEnabled = overview?.runtime?.features.translatorEnabled !== false;
   const superAgentEnabled = overview?.runtime?.features.superAgentEnabled !== false;
+  const copilotUltraVertexEnabled = Boolean(overview?.runtime?.features.copilotUltraVertexEnabled);
   const lipSyncAllowedEmails = overview?.runtime?.permissions.translatorLipSyncAllowedEmails ?? [];
   const translationAllowedEmails = overview?.runtime?.permissions.translatorAllowedEmails ?? [];
   const superAgentAllowedEmails = overview?.runtime?.permissions.superAgentAllowedEmails ?? [];
@@ -1105,6 +1107,13 @@ export function AdminPanel() {
             enabled={superAgentEnabled}
             busy={savingRuntime}
             onToggle={() => void setRuntimeFeatureFlag("superAgentEnabled", !superAgentEnabled)}
+          />
+          <ToggleRow
+            label="Copilot Ultra via Oracle Vertex"
+            detail="When enabled, only Ultra uses the signed Oracle Vertex broker. Any broker failure automatically falls back to the Gemini API-key route."
+            enabled={copilotUltraVertexEnabled}
+            busy={savingRuntime}
+            onToggle={() => void setRuntimeFeatureFlag("copilotUltraVertexEnabled", !copilotUltraVertexEnabled)}
           />
           <FlagList flags={overview?.features ?? {}} />
           {toolsMsg.text ? <ResultMsg msg={toolsMsg.text} isError={toolsMsg.error} /> : null}

@@ -19,3 +19,13 @@ test("agent streams visible model text chunks while reading Gemini stream", () =
     "chunkText should be emitted live instead of only buffered until final response",
   );
 });
+
+test("Copilot Ultra uses the Oracle Vertex broker and retains API-key fallback", () => {
+  const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
+  assert.match(source, /const ULTRA_MODEL = "gemma-4-26b-a4b-it"/);
+  assert.match(source, /isCopilotUltraVertexEnabled\(\)/);
+  assert.match(source, /streamCopilotViaOracle/);
+  assert.match(source, /falling back to Gemini API-key routing/);
+  assert.doesNotMatch(source, /ensureVertexCredentials\(true\)/);
+  assert.doesNotMatch(source, /vertex: useVertex/);
+});
