@@ -152,17 +152,16 @@ Parameters:
   GoogleCloudLocation:
     Type: String
     Default: "global"
-  GoogleApplicationCredentialsJson:
+  CopilotVertexBrokerUrl:
+    Type: String
+    Default: ""
+  CopilotVertexBrokerSecret:
     Type: String
     NoEcho: true
     Default: ""
-  GoogleApplicationCredentialsBase64:
+  CopilotUltraVertexEnabled:
     Type: String
-    NoEcho: true
-    Default: ""
-  GoogleApplicationCredentialsS3Key:
-    Type: String
-    Default: ""
+    Default: "false"
   AssemblyAiApiKey:
     Type: String
     NoEcho: true
@@ -607,7 +606,9 @@ Resources:
           GOOGLE_GENAI_USE_VERTEXAI: !Ref GoogleGenaiUseVertexai
           GOOGLE_CLOUD_PROJECT: !Ref GoogleCloudProject
           GOOGLE_CLOUD_LOCATION: !Ref GoogleCloudLocation
-          GOOGLE_APPLICATION_CREDENTIALS_S3_KEY: !Ref GoogleApplicationCredentialsS3Key
+          COPILOT_VERTEX_BROKER_URL: !Ref CopilotVertexBrokerUrl
+          COPILOT_VERTEX_BROKER_SECRET: !Ref CopilotVertexBrokerSecret
+          COPILOT_ULTRA_VERTEX_ENABLED: !Ref CopilotUltraVertexEnabled
           ASSEMBLYAI_API_KEY: !Ref AssemblyAiApiKey
           E2B_API_KEY: !Ref E2BApiKey
           YTDLP_COOKIES_FILE: !Ref YtdlpCookiesFile
