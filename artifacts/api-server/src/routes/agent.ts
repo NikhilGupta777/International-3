@@ -184,6 +184,8 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "check_job_status":
     case "check_active_jobs":
     case "repeat_last_artifact":
+    case "read_uploaded_file":
+    case "describe_image":
     case "extract_text_from_image":
     case "write_video_script":
     case "generate_seo_pack":
@@ -197,6 +199,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 
     case "cut_video_clip":
     case "download_video":
+    case "generate_subtitles":
     case "find_best_clips":
     case "generate_timestamps":
       return "youtube_processing";
@@ -2887,6 +2890,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -4218,6 +4222,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -6409,6 +6418,7 @@ toolConfig: activeCacheName
       }
       sseEvent(res, {
         type: "error",
+        runId,
         message: errMsg || "Something went wrong — please try again.",
       });
     }
