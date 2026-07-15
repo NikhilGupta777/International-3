@@ -502,7 +502,7 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
     sseFlush(res);
   };
 
-  const modelName = process.env.GEMINI_MODEL || "gemma-4-31b-it";
+  const modelName = process.env.FIND_VIDEO_MODEL || "gemini-3.1-flash-lite";
   const geminiKeys = getPersonalKeysForCaller("find-video");
 
   if (geminiKeys.length === 0) {
