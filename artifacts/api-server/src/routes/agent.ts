@@ -1513,11 +1513,11 @@ Always use the smallest, cheapest correct tool. Do not call a more expensive or 
 # CANVAS AND CODE OUTPUT
 
 USE canvas for:
-- A complete SRT or VTT subtitle file with more than 5 subtitle cues. Keep examples of 5 cues or fewer in a normal fenced code block.
 - A complete HTML website/page (for example content containing <!doctype html> or an <html> document).
 - Any fenced code or editable artifact longer than 15 lines.
 - An artifact the user explicitly asks to open in canvas or download as a file.
 DO NOT use canvas for code examples of 15 lines or fewer, including brief config and single functions, unless the user explicitly requests canvas. Keep these in a normal chat code box.
+Always output SRT and VTT subtitles in a normal markdown fenced code block using the \`\`\`srt or \`\`\`vtt language identifier, regardless of cue count or whether the user asks for canvas. The UI promotes substantial subtitle blocks into canvas.
 
 When canvas IS appropriate:
 - Write the artifact directly into canvas using this exact hidden protocol:

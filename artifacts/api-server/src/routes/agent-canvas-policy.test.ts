@@ -17,9 +17,10 @@ test("short fenced code remains in chat instead of being rewritten server-side",
   assert.match(source, /Only the explicit hidden <canvas> protocol becomes a canvas/);
 });
 
-test("agent prompt keeps short subtitle examples in chat and routes substantial artifacts to canvas", () => {
-  assert.match(source, /more than 5 subtitle cues/);
-  assert.match(source, /5 cues or fewer in a normal fenced code block/);
+test("agent prompt always keeps subtitle output fenced for client-side canvas promotion", () => {
+  assert.match(source, /Always output SRT and VTT subtitles in a normal markdown fenced code block/);
+  assert.match(source, /regardless of cue count or whether the user asks for canvas/);
+  assert.match(source, /UI promotes substantial subtitle blocks into canvas/);
   assert.match(source, /complete HTML website\/page/);
   assert.match(source, /longer than 15 lines/);
   assert.match(source, /15 lines or fewer[\s\S]*normal chat code box/);
