@@ -3956,7 +3956,7 @@ export function StudioCopilot({
           </h1>
           <p className="gs-welcome-sub">Download, clip, subtitle, translate, and analyze YouTube videos — or ask anything.</p>
           <div className="gs-welcome-starters">
-            {STARTERS.filter(s => !("capability" in s) || s.capability === "createImage" && agentCapabilities.createImage).map((s, i) => (
+            {STARTERS.filter(s => !("capability" in s) || (agentCapabilities as any)[s.capability]).map((s, i) => (
               <button
                 key={i}
                 onClick={() => void sendMessage(s.text)}

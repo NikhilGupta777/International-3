@@ -1438,11 +1438,8 @@ function isNativeToolConfigError(error: unknown): boolean {
   const message = String((error as any)?.message ?? error ?? "").toLowerCase();
   const status = Number((error as any)?.status ?? (error as any)?.code ?? 0);
   return (
-    /googleSearch|google_search|functionDeclarations|function_declarations|tools?|INVALID_ARGUMENT|INTERNAL|400|500/i.test(message) ||
-    status === 400 ||
-    status === 500 ||
-    status === 429 ||
-    /429|resource.?exhausted|quota|billing/i.test(message)
+    /googleSearch|google_search|functionDeclarations|function_declarations|INVALID_ARGUMENT/i.test(message) ||
+    status === 400
   );
 }
 
@@ -2893,6 +2890,7 @@ const ALLOWED_NAV_TABS = new Set([
   "findvideo",
   "thumbnail",
   "videostudio",
+  "content-manager",
   "help",
   "activity",
   "admin",
@@ -3207,6 +3205,15 @@ async function executeTool(
         toolId,
         runId,
       );
+      if (final.status !== "done") {
+        return {
+          result: {
+            jobId,
+            status: "processing",
+            message: "Download is still processing in the background. Check the Activity panel for completion.",
+          },
+        };
+      }
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: {
@@ -5249,15 +5256,20 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
       host.endsWith(".local")
-    );
+    ) return true;
+    const m = /^172\.(\d+)\./.exec(host);
+    if (m) {
+      const second = Number(m[1]);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
   } catch {
     return true;
   }
