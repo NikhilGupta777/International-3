@@ -1,11 +1,13 @@
 import { randomUUID } from "crypto";
 
 export const COPILOT_ULTRA_MODEL =
-  process.env.COPILOT_ULTRA_MODEL?.trim() || "gpt-oss:120b";
+  process.env.COPILOT_ULTRA_MODEL?.trim() || "z-ai/glm-5.2";
 export const COPILOT_FAST_MODEL =
-  process.env.COPILOT_FAST_MODEL?.trim() || "llama-3.1-8b-instant";
+  process.env.COPILOT_FAST_MODEL?.trim() || "openai/gpt-oss-120b";
+export const COPILOT_ULTRA_FALLBACK_MODEL = "gpt-oss:120b";
+export const COPILOT_FAST_FALLBACK_MODEL = "llama-3.1-8b-instant";
 
-type ExternalProvider = "ollama" | "groq";
+type ExternalProvider = "nvidia" | "ollama" | "groq";
 
 const PROVIDER_KEY_SLOTS = 4;
 const keyCooldowns = new Map<string, number>();
@@ -44,12 +46,26 @@ export class ExternalCopilotError extends Error {
 }
 
 export function getCopilotProvider(model: string): ExternalProvider | null {
-  if (model === COPILOT_ULTRA_MODEL || model.startsWith("gpt-oss:")) {
+  if (
+    model === COPILOT_ULTRA_MODEL ||
+    model === COPILOT_FAST_MODEL ||
+    model === "z-ai/glm-5.2" ||
+    model === "openai/gpt-oss-120b"
+  ) {
+    return "nvidia";
+  }
+  if (model === COPILOT_ULTRA_FALLBACK_MODEL || model.startsWith("gpt-oss:")) {
     return "ollama";
   }
-  if (model === COPILOT_FAST_MODEL || model === "llama-3.1-8b-instant") {
+  if (model === COPILOT_FAST_FALLBACK_MODEL) {
     return "groq";
   }
+  return null;
+}
+
+export function getCopilotFallbackModel(model: string): string | null {
+  if (model === COPILOT_ULTRA_MODEL) return COPILOT_ULTRA_FALLBACK_MODEL;
+  if (model === COPILOT_FAST_MODEL) return COPILOT_FAST_FALLBACK_MODEL;
   return null;
 }
 
@@ -60,7 +76,9 @@ export function isExternalCopilotModel(model: string): boolean {
 export function isExternalCopilotConfigured(model?: string): boolean {
   if (!model) {
     return (
-      getProviderKeys("ollama").length > 0 || getProviderKeys("groq").length > 0
+      getProviderKeys("nvidia").length > 0 ||
+      getProviderKeys("ollama").length > 0 ||
+      getProviderKeys("groq").length > 0
     );
   }
   const provider = getCopilotProvider(model);
@@ -69,7 +87,12 @@ export function isExternalCopilotConfigured(model?: string): boolean {
 }
 
 function getProviderKeys(provider: ExternalProvider): string[] {
-  const prefix = provider === "ollama" ? "OLLAMA_API_KEY" : "GROQ_API_KEY";
+  const prefix =
+    provider === "nvidia"
+      ? "NVIDIA_API_KEY"
+      : provider === "ollama"
+        ? "OLLAMA_API_KEY"
+        : "GROQ_API_KEY";
   const pooled = process.env[`${prefix}S`]
     ?.split(",")
     .map((value) => value.trim())
@@ -109,7 +132,7 @@ async function* streamWithKeyRotation(
   const keys = getProviderKeys(provider);
   if (!keys.length) {
     throw new ExternalCopilotError(
-      `${provider === "ollama" ? "Ollama Cloud" : "Groq"} is not configured`,
+      `${provider === "nvidia" ? "NVIDIA NIM" : provider === "ollama" ? "Ollama Cloud" : "Groq"} is not configured`,
       { provider, status: 503 },
     );
   }
@@ -186,7 +209,7 @@ async function providerHttpError(
     response.status === 429 ||
     response.status >= 500;
   return new ExternalCopilotError(
-    `${provider === "ollama" ? "Ollama Cloud" : "Groq"} request failed (${response.status})${detail ? `: ${detail}` : ""}`,
+    `${provider === "nvidia" ? "NVIDIA NIM" : provider === "ollama" ? "Ollama Cloud" : "Groq"} request failed (${response.status})${detail ? `: ${detail}` : ""}`,
     {
       provider,
       status: response.status,
@@ -430,21 +453,32 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
   }
 }
 
-async function* streamGroqWithKey(
+async function* streamOpenAiCompatibleWithKey(
   params: StreamExternalCopilotParams,
   apiKey: string,
+  provider: "nvidia" | "groq",
 ): AsyncGenerator<any> {
+  const isNvidia = provider === "nvidia";
+  const maxTokens = isNvidia
+    ? params.model === COPILOT_ULTRA_MODEL
+      ? Number(process.env.COPILOT_ULTRA_MAX_OUTPUT_TOKENS) || 60_000
+      : Number(process.env.COPILOT_FAST_MAX_OUTPUT_TOKENS) || 32_000
+    : Number(process.env.COPILOT_FAST_FALLBACK_MAX_OUTPUT_TOKENS) || 1_024;
   let response: Response;
   try {
     response = await fetch(
-      process.env.GROQ_API_URL?.trim() ||
-        "https://api.groq.com/openai/v1/chat/completions",
+      isNvidia
+        ? process.env.NVIDIA_API_URL?.trim() ||
+            "https://integrate.api.nvidia.com/v1/chat/completions"
+        : process.env.GROQ_API_URL?.trim() ||
+            "https://api.groq.com/openai/v1/chat/completions",
       {
         method: "POST",
         signal: params.signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
+          Accept: "text/event-stream",
         },
         body: JSON.stringify({
           model: params.model,
@@ -455,21 +489,26 @@ async function* streamGroqWithKey(
           tools: normalizeTools(params.tools),
           tool_choice: "auto",
           stream: true,
-          max_tokens:
-            Number(process.env.COPILOT_FAST_MAX_OUTPUT_TOKENS) || 1024,
+          max_tokens: maxTokens,
+          ...(isNvidia && params.model === "openai/gpt-oss-120b"
+            ? { reasoning_effort: "medium" }
+            : {}),
           temperature: 0.7,
           top_p: 1,
         }),
       },
     );
   } catch (error) {
-    throw new ExternalCopilotError("Unable to reach Groq", {
-      provider: "groq",
-      retryable: true,
-      cause: error,
-    });
+    throw new ExternalCopilotError(
+      `Unable to reach ${isNvidia ? "NVIDIA NIM" : "Groq"}`,
+      {
+        provider,
+        retryable: true,
+        cause: error,
+      },
+    );
   }
-  if (!response.ok) throw await providerHttpError("groq", response);
+  if (!response.ok) throw await providerHttpError(provider, response);
 
   const pendingCalls = new Map<
     number,
@@ -481,7 +520,7 @@ async function* streamGroqWithKey(
     if (event?.error) {
       throw new ExternalCopilotError(
         String(event.error?.message ?? event.error),
-        { provider: "groq", retryable: true },
+        { provider, retryable: true },
       );
     }
     const delta = event?.choices?.[0]?.delta ?? {};
@@ -514,6 +553,11 @@ export function streamExternalCopilot(
   params: StreamExternalCopilotParams,
 ): AsyncIterable<any> {
   const provider = getCopilotProvider(params.model);
+  if (provider === "nvidia") {
+    return streamWithKeyRotation("nvidia", params, (apiKey) =>
+      streamOpenAiCompatibleWithKey(params, apiKey, "nvidia"),
+    );
+  }
   if (provider === "ollama") {
     return streamWithKeyRotation("ollama", params, (apiKey) =>
       streamOllamaWithKey(params, apiKey),
@@ -521,7 +565,7 @@ export function streamExternalCopilot(
   }
   if (provider === "groq") {
     return streamWithKeyRotation("groq", params, (apiKey) =>
-      streamGroqWithKey(params, apiKey),
+      streamOpenAiCompatibleWithKey(params, apiKey, "groq"),
     );
   }
   throw new ExternalCopilotError(

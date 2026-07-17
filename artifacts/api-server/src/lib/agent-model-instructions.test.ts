@@ -17,8 +17,13 @@ test("getModelSpecificSystemPrompt does not add Gemma limitations to native medi
   assert.equal(getModelSpecificSystemPrompt("gemini-3.5-flash"), "");
 });
 
-test("getModelSpecificSystemPrompt routes GPT-OSS and Llama media through tools", () => {
-  for (const model of ["gpt-oss:120b", "llama-3.1-8b-instant"]) {
+test("getModelSpecificSystemPrompt routes all text-only Copilot models through tools", () => {
+  for (const model of [
+    "z-ai/glm-5.2",
+    "openai/gpt-oss-120b",
+    "gpt-oss:120b",
+    "llama-3.1-8b-instant",
+  ]) {
     const prompt = getModelSpecificSystemPrompt(model);
     assert.match(prompt, /text-only agent model/i);
     assert.match(prompt, /call describe_image/i);

@@ -20,11 +20,12 @@ test("agent streams visible model text chunks while reading provider stream", ()
   );
 });
 
-test("Copilot exposes Ollama Ultra with Groq fallback", () => {
+test("Copilot exposes NVIDIA primaries with model-specific fallbacks", () => {
   const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
   assert.match(source, /const ULTRA_MODEL = COPILOT_ULTRA_MODEL/);
   assert.match(source, /const FAST_MODEL = COPILOT_FAST_MODEL/);
   assert.match(source, /streamExternalCopilot/);
-  assert.match(source, /activeModel === ULTRA_MODEL \? FAST_MODEL : ULTRA_MODEL/);
+  assert.match(source, /getCopilotFallbackModel\(activeModel\)/);
+  assert.match(source, /getCopilotFallbackModel\(alternateModel\)/);
   assert.doesNotMatch(source, /streamCopilotViaOracle/);
 });

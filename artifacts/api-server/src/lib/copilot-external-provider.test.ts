@@ -3,6 +3,7 @@ import test from "node:test";
 
 process.env.OLLAMA_API_KEY = "test-ollama-key";
 process.env.GROQ_API_KEY = "test-groq-key";
+process.env.NVIDIA_API_KEY = "test-nvidia-key";
 
 const provider = await import("./copilot-external-provider");
 
@@ -101,6 +102,58 @@ test("Ollama streams separate thinking, text, and tool calls", async () => {
       chunks[2].candidates[0].content.parts[0].functionCall.name,
       "web_search",
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("NVIDIA streams GLM Ultra and GPT-OSS Fast with explicit output limits", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestBodies: any[] = [];
+  const requestUrls: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    requestUrls.push(String(input));
+    requestBodies.push(JSON.parse(String(init?.body)));
+    return new Response(
+      [
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: "checking" } }] })}`,
+        "",
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" } }] })}`,
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  try {
+    const ultra = await collect(
+      provider.streamExternalCopilot({
+        model: "z-ai/glm-5.2",
+        contents,
+        systemInstruction: "system",
+        tools,
+      }),
+    );
+    const fast = await collect(
+      provider.streamExternalCopilot({
+        model: "openai/gpt-oss-120b",
+        contents,
+        systemInstruction: "system",
+        tools,
+      }),
+    );
+    assert.equal(
+      requestUrls[0],
+      "https://integrate.api.nvidia.com/v1/chat/completions",
+    );
+    assert.equal(requestBodies[0].model, "z-ai/glm-5.2");
+    assert.equal(requestBodies[0].max_tokens, 60_000);
+    assert.equal(requestBodies[1].model, "openai/gpt-oss-120b");
+    assert.equal(requestBodies[1].max_tokens, 32_000);
+    assert.equal(requestBodies[1].reasoning_effort, "medium");
+    assert.equal(ultra[0].candidates[0].content.parts[0].thought, true);
+    assert.equal(fast[1].candidates[0].content.parts[0].text, "OK");
   } finally {
     globalThis.fetch = originalFetch;
   }

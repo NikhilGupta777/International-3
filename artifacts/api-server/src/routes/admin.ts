@@ -285,8 +285,12 @@ router.get("/overview", async (_req, res) => {
       geminiConfigured:
         isGeminiConfigured() ||
         configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
-      ollamaCopilotConfigured: configured(process.env.OLLAMA_API_KEY),
-      groqCopilotConfigured: configured(process.env.GROQ_API_KEY),
+      nvidiaCopilotConfigured:
+        configured(process.env.NVIDIA_API_KEYS) || configured(process.env.NVIDIA_API_KEY),
+      ollamaCopilotConfigured:
+        configured(process.env.OLLAMA_API_KEYS) || configured(process.env.OLLAMA_API_KEY),
+      groqCopilotConfigured:
+        configured(process.env.GROQ_API_KEYS) || configured(process.env.GROQ_API_KEY),
       allowlistPersistence: configured(process.env.ACCESS_TABLE),
     },
     limits: {

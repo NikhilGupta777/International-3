@@ -34,8 +34,10 @@ import {
   generateContentWithRotation,
 } from "../lib/gemini-client";
 import {
+  COPILOT_FAST_FALLBACK_MODEL,
   COPILOT_FAST_MODEL,
   COPILOT_ULTRA_MODEL,
+  getCopilotFallbackModel,
   getCopilotProvider,
   isExternalCopilotConfigured,
   isExternalCopilotModel,
@@ -63,9 +65,9 @@ import {
 
 const router = Router();
 
-// User-facing Copilot models. Ultra is the default and runs through Ollama
-// Cloud; Fast runs through Groq. Gemini remains an internal helper for native
-// media/vision operations that these text-only agent models cannot perform.
+// User-facing Copilot models run through NVIDIA NIM. The previous Ollama and
+// Groq models remain provider-diverse fallbacks. Gemini remains an internal
+// helper for media/vision operations that these text-only models cannot do.
 const ULTRA_MODEL = COPILOT_ULTRA_MODEL;
 const FAST_MODEL = COPILOT_FAST_MODEL;
 const AGENT_MODEL = ULTRA_MODEL;
@@ -87,8 +89,8 @@ function supportsNativeMediaInput(model: string): boolean {
 
 function getMaxOutputTokensForModel(model: string): number {
   const m = model.toLowerCase();
-  if (m === ULTRA_MODEL.toLowerCase()) return 32000;
-  if (m === FAST_MODEL.toLowerCase()) return 1024;
+  if (m === ULTRA_MODEL.toLowerCase()) return 60000;
+  if (m === FAST_MODEL.toLowerCase()) return 32000;
   if (m === "gemma-4-26b-a4b-it" || m === "gemma-4-26b-a4b-it-maas") {
     return 262144;
   }
@@ -5661,16 +5663,21 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       let timeoutId: NodeJS.Timeout | null = null;
       let controller: AbortController | null = null;
+      const alternateModel = activeModel === ULTRA_MODEL ? FAST_MODEL : ULTRA_MODEL;
+      const fastFamily = new Set([FAST_MODEL, COPILOT_FAST_FALLBACK_MODEL]);
       const configuredModels = [
         activeModel,
-        activeModel === ULTRA_MODEL ? FAST_MODEL : ULTRA_MODEL,
-      ].filter((model, index, models) =>
-        models.indexOf(model) === index &&
-        isExternalCopilotConfigured(model) &&
-        (model !== FAST_MODEL || fastModeEligible),
-      );
+        getCopilotFallbackModel(activeModel),
+        alternateModel,
+        getCopilotFallbackModel(alternateModel),
+      ].filter(
+        (model): model is string =>
+          Boolean(model) &&
+          isExternalCopilotConfigured(model!) &&
+          (!fastFamily.has(model!) || fastModeEligible),
+      ).filter((model, index, models) => models.indexOf(model) === index);
       if (!configuredModels.length) {
-        throw new Error("Neither Ollama Cloud nor Groq is configured.");
+        throw new Error("No NVIDIA NIM, Ollama Cloud, or Groq model is configured.");
       }
       // Two attempts per provider cover transient connection/quota failures,
       // then the other configured model is tried automatically.

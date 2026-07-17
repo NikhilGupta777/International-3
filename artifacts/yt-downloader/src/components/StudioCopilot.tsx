@@ -35,21 +35,23 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
-type ReasoningMode = "llama-3.1-8b-instant" | "gpt-oss:120b";
+type ReasoningMode = "openai/gpt-oss-120b" | "z-ai/glm-5.2";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "gpt-oss:120b",             label: "Ultra", description: "GPT-OSS 120B with high reasoning and full tools", ultra: true },
-  { id: "llama-3.1-8b-instant",     label: "Fast",  description: "Llama 3.1 8B for quick, short tasks", ultra: false },
+  { id: "z-ai/glm-5.2", label: "Ultra", description: "GLM 5.2 on NVIDIA with Ollama GPT-OSS fallback", ultra: true },
+  { id: "openai/gpt-oss-120b", label: "Fast", description: "GPT-OSS 120B on NVIDIA with Groq fallback", ultra: false },
 ];
 
 function readReasoningInitial(): ReasoningMode {
   try {
     const stored = localStorage.getItem(REASONING_KEY);
-    if (stored === "llama-3.1-8b-instant" || stored === "gpt-oss:120b") return stored;
+    if (stored === "openai/gpt-oss-120b" || stored === "z-ai/glm-5.2") return stored;
+    if (stored === "llama-3.1-8b-instant") return "openai/gpt-oss-120b";
+    if (stored === "gpt-oss:120b") return "z-ai/glm-5.2";
     // Backward compatibility for preferences saved by older model menus.
-    if (stored === "flash" || stored === "gemini-3-flash-preview" || stored === "gemini-2.5-flash" || stored === "gemini-3.1-flash-lite" || stored === "gemini-3.1-flash-lite-low") return "llama-3.1-8b-instant";
-    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high" || stored === "gemini-3.1-flash-lite-high" || stored === "gemma-4-31b-it" || stored === "gemma-4-26b-a4b-it") return "gpt-oss:120b";
+    if (stored === "flash" || stored === "gemini-3-flash-preview" || stored === "gemini-2.5-flash" || stored === "gemini-3.1-flash-lite" || stored === "gemini-3.1-flash-lite-low") return "openai/gpt-oss-120b";
+    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high" || stored === "gemini-3.1-flash-lite-high" || stored === "gemma-4-31b-it" || stored === "gemma-4-26b-a4b-it") return "z-ai/glm-5.2";
   } catch { /* localStorage unavailable */ }
-  return "gpt-oss:120b";
+  return "z-ai/glm-5.2";
 }
 
 function getInputMaxHeight(): number {

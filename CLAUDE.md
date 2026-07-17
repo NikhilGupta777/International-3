@@ -415,7 +415,7 @@ Single PUT for < 50 MB; 10 MB multipart parts for >= 50 MB; hard max 3 GB (`MAX_
 
 SSE event stream: `run_start` → `text` / `tool_start` / `tool_progress` / `tool_log` / `tool_done` / `artifact` / `navigate` → `done`. Heartbeat every 8 seconds to keep connection alive. Streamed text deltas preserve all whitespace; the final complete-message text is trimmed — necessary for correct word spacing during token-by-token rendering. Text stripping also removes leaked S3 presigned URLs and leaked tool-result JSON from visible output, which can occasionally eat an intentional share link the model tried to print.
 
-**Models:** Studio Copilot exposes exactly two chat modes. **Ultra** is the default and uses `gpt-oss:120b` through Ollama Cloud with high thinking, NDJSON streaming, up to 32K output tokens, and the full tool catalog. **Fast** uses `llama-3.1-8b-instant` through Groq with a compact prompt, a focused tool subset, and a 1K output cap so it stays within Groq free-tier limits. Each provider is retried for transient failures and then falls back to the other configured model. Gemini remains internal for native media/vision helper calls. Max iterations default is **49** (`COPILOT_MAX_ITERATIONS` ?? `"49"`).
+**Models:** Studio Copilot exposes exactly two chat modes. **Ultra** is the default and uses NVIDIA NIM `z-ai/glm-5.2` with up to 60K output tokens, falling back to Ollama Cloud `gpt-oss:120b`. **Fast** uses NVIDIA NIM `openai/gpt-oss-120b` with medium reasoning and up to 32K output tokens, falling back to Groq `llama-3.1-8b-instant`. Provider keys rotate on failures before the model-specific fallback is tried. Gemini remains internal for native media/vision helper calls. Max iterations default is **49** (`COPILOT_MAX_ITERATIONS` ?? `"49"`).
 
 Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-stream.ts` in production) to hit the same Express instance without a network round-trip — `getApiBase()` deliberately ignores `X-Forwarded-Host`/`Host` request headers to prevent header-injection redirecting internal calls. E2B sandboxes are keyed per sessionId (not per user) — same user in two tabs gets two separate, non-sharing sandboxes; max 20 concurrent sandbox entries. See [[feature_copilot_uploads_admin]] memory for full tool-by-tool detail.
 
@@ -767,7 +767,7 @@ Triggered on push to `main`. Four parallel jobs:
 
 **Image tagging rule:** Always use timestamped/commit-SHA tags. Never push `:latest` alone. CI uses `${GITHUB_SHA::8}`.
 
-**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `OLLAMA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally `OLLAMA_API_KEY_2` through `_4`, `GROQ_API_KEY_2` through `_4`, and `NOTEBOOKLM_*`.
+**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `NVIDIA_API_KEY`, `OLLAMA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally provider `_2` through `_4` keys and `NOTEBOOKLM_*`.
 *(Note: AWS authentication now uses GitHub OIDC via the `ytgrabber-green-gha-deployer` IAM role. Long-lived `AWS_ACCESS_KEY_ID` secrets are no longer needed.)*
 
 ---
@@ -849,12 +849,14 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `TRANSLATOR_BATCH_TIMEOUT_SECONDS` | | `3000` | GPU job timeout (50 min) |
 | `TRANSLATOR_MAX_VIDEO_SIZE_BYTES` | | `2147483648` | Max upload size (2 GB) |
 | `TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS` | | `1` | Allow HF/ModelScope downloads in worker |
-| `OLLAMA_API_KEY` | ✅ (Copilot Ultra) | — | Server-side Ollama Cloud credential |
+| `NVIDIA_API_KEY` | ✅ (Copilot primary) | — | NVIDIA NIM credential for GLM 5.2 and GPT-OSS 120B |
+| `NVIDIA_API_KEY_2` … `_4` | Optional | — | NVIDIA NIM failover credential slots |
+| `OLLAMA_API_KEY` | ✅ (Ultra fallback) | — | Server-side Ollama Cloud credential |
 | `OLLAMA_API_KEY_2` … `_4` | Optional | — | Ollama failover credential slots |
-| `GROQ_API_KEY` | ✅ (Copilot Fast) | — | Server-side Groq credential |
+| `GROQ_API_KEY` | ✅ (Fast fallback) | — | Server-side Groq credential |
 | `GROQ_API_KEY_2` … `_4` | Optional | — | Groq failover credential slots |
-| `COPILOT_ULTRA_MODEL` | | `gpt-oss:120b` | Ultra/default Copilot model through Ollama Cloud |
-| `COPILOT_FAST_MODEL` | | `llama-3.1-8b-instant` | Fast Copilot model through Groq |
+| `COPILOT_ULTRA_MODEL` | | `z-ai/glm-5.2` | Ultra/default Copilot model through NVIDIA NIM |
+| `COPILOT_FAST_MODEL` | | `openai/gpt-oss-120b` | Fast Copilot model through NVIDIA NIM |
 | `COPILOT_ULTRA_MAX_OUTPUT_TOKENS` | | `32000` | Ultra output-token cap |
 | `COPILOT_FAST_MAX_OUTPUT_TOKENS` | | `1024` | Fast output-token cap |
 | `COPILOT_GEMINI_HELPER_MODEL` | | `gemini-3.5-flash` | Internal media/vision helper model; not a public chat choice |
