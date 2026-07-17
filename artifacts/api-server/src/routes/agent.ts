@@ -1833,9 +1833,9 @@ const HEAVY_OP_COOLDOWNS: Record<string, number> = {
   generate_music: 60 * 1000, // 1 min
 };
 
-function checkHeavyOpRateLimit(req: any, opName: string): void {
+function checkHeavyOpRateLimit(req: any, opName: string): string {
   const cooldownMs = HEAVY_OP_COOLDOWNS[opName];
-  if (!cooldownMs) return;
+  if (!cooldownMs) return "";
   const sessionId = String(req.body?.sessionId ?? "anon").slice(0, 64);
   const authCookie = req.signedCookies?.videomaking_auth ?? "";
   const userPart = authCookie
@@ -1850,7 +1850,6 @@ function checkHeavyOpRateLimit(req: any, opName: string): void {
       `Rate limited: "${opName}" can be run once every ${cooldownMs / 1000}s. Please wait ${waitSec}s.`,
     );
   }
-  heavyOpCooldowns.set(key, Date.now());
   // Periodic cleanup of stale entries (every ~50th call)
   if (heavyOpCooldowns.size > 200) {
     const cutoff =
@@ -1859,6 +1858,11 @@ function checkHeavyOpRateLimit(req: any, opName: string): void {
       if (ts < cutoff) heavyOpCooldowns.delete(k);
     }
   }
+  return key;
+}
+
+function commitHeavyOpCooldown(key: string): void {
+  if (key) heavyOpCooldowns.set(key, Date.now());
 }
 
 function pruneExpiredSandboxEntries(): void {
@@ -2899,6 +2903,7 @@ const ALLOWED_NAV_TABS = new Set([
   "developer",
   "api-docs",
   "settings",
+  "content-manager",
 ]);
 
 async function generateAssemblyAiCaptionsFromUrl(params: {
@@ -3510,7 +3515,7 @@ async function executeTool(
     }
 
     case "translate_video": {
-      checkHeavyOpRateLimit(req, "translate_video");
+      const _cooldownKey = checkHeavyOpRateLimit(req, "translate_video");
       // Detect uploaded file URL (S3/CDN) vs YouTube URL.
       // Uploaded files: POST to /translator/submit-from-url — no YouTube download needed.
       // YouTube URLs: download via youtube/stream → S3 → submit.
@@ -3524,6 +3529,7 @@ async function executeTool(
         url: videoUrl,
         mode: isUploadedFile ? "uploaded-file" : "youtube",
       });
+      commitHeavyOpCooldown(_cooldownKey);
       sseEvent(res, {
         type: "tool_progress",
         runId,
@@ -4026,9 +4032,10 @@ async function executeTool(
     }
 
     case "do_full_package": {
-      checkHeavyOpRateLimit(req, "do_full_package");
+      const _cooldownKey = checkHeavyOpRateLimit(req, "do_full_package");
       const url = String(args.url ?? "").trim();
       if (!url) throw new Error("YouTube URL is required.");
+      commitHeavyOpCooldown(_cooldownKey);
       const language = String(args.language ?? DEFAULT_CAPTION_LANGUAGE);
       const quality = args.quality ?? "best";
       const results: Record<string, any> = {};
@@ -4428,9 +4435,10 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
     }
 
     case "generate_music": {
-      checkHeavyOpRateLimit(req, "generate_music");
+      const _cooldownKey = checkHeavyOpRateLimit(req, "generate_music");
       const musicPrompt = String(args.prompt ?? "").trim();
       if (!musicPrompt) throw new Error("Music prompt is required.");
+      commitHeavyOpCooldown(_cooldownKey);
       const durationMode =
         String(args.duration ?? "clip") === "full" ? "full" : "clip";
       const aspect = String(args.aspectRatio ?? "1:1");
@@ -5249,21 +5257,31 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
+      host === "[::1]" ||
+      host === "::1" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
+      host.startsWith("169.254.") ||
       host.endsWith(".local")
-    );
+    ) return true;
+    // RFC 1918: 172.16.0.0/12 covers 172.16.x.x through 172.31.x.x
+    const m172 = host.match(/^172\.(\d+)\./);
+    if (m172) {
+      const second = parseInt(m172[1], 10);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
   } catch {
     return true;
   }
 }
 
 // Global cache to store S3/HTTPS URL pathname -> GCS gs:// URI mappings
+const GCS_CACHE_MAX = 500;
 const globalUrlToGcsCache = new Map<string, string>();
 
 function getStableCacheKey(urlStr: string): string {
@@ -5592,6 +5610,10 @@ router.post("/agent/chat", async (req, res) => {
                     a.mimeType,
                   );
                   await deleteLocalFile(tempPath);
+                  if (globalUrlToGcsCache.size >= GCS_CACHE_MAX) {
+                    const oldest = globalUrlToGcsCache.keys().next().value!;
+                    globalUrlToGcsCache.delete(oldest);
+                  }
                   globalUrlToGcsCache.set(cacheKey, gsUri);
                   finalUri = gsUri;
                   console.log(
