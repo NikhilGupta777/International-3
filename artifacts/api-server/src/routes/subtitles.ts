@@ -2701,12 +2701,75 @@ ${params.draftSrt}
 Return the improved SRT:`;
 }
 
-// Fast 2-pass subtitles for a YouTube URL using the video URL directly as
+// Single prompt for the fast path: EVERYTHING the old two passes did, in one
+// call. Pass 1 (full transcription rules) + Pass 2 (re-watch, fix misheard
+// words, align timing, verify full coverage, translate) are merged: the model
+// drafts internally, then re-checks its draft against the video and returns
+// only the final verified SRT — already translated when requested.
+function buildFastAllInOnePrompt(language: string, durationSrt: string, translateTo?: string): string {
+  const isTranslation = !!translateTo && translateTo !== "none";
+
+  const sourceNote =
+    language === "auto"
+      ? "The speech may be in any language — understand it in its original language."
+      : `The speech is in ${language}.`;
+  const outputLangNote = isTranslation
+    ? `Write the subtitle text DIRECTLY in ${translateTo}. Translate what the speaker MEANS in context (natural ${translateTo}), not word-for-word. Particles and fillers (ना, तो, बस, ही, भी, हाँ, okay, right, so, and, but) — translate their FUNCTION in the sentence, never their dictionary meaning in isolation.`
+    : `Write the subtitle text in the original spoken language exactly as spoken — do NOT translate.`;
+  const scriptRules = buildNativeScriptRules(isTranslation ? translateTo! : language);
+  const finalLangLabel = isTranslation ? `${translateTo} ` : "";
+
+  return `You are a professional subtitle creator, QA editor${isTranslation ? ", and translator" : ""}. You will do the work of TWO passes in ONE response.
+
+STEP 1 — WATCH AND TRANSCRIBE:
+Watch and listen to the ENTIRE video deeply, from the very start to the very end. Draft a complete SRT covering every spoken word.
+
+${sourceNote}
+${outputLangNote}
+${scriptRules}
+
+STEP 2 — RE-CHECK AND VERIFY (do this BEFORE writing your final answer):
+Re-examine the audio and cross-reference your draft against what is actually spoken. Fix every issue you find:
+- Misheard or missing words — correct them from the actual audio.
+- Timing drift — each entry's timestamps must align to when the words are actually spoken.
+- MISSING TRAILING SPEECH: if any speech after your last entry is not yet transcribed, ADD entries for it. Do not stop early.
+- Entries longer than 6 words — split them with proportional timestamps.
+${isTranslation ? `- Translation quality — the ${translateTo} must convey the speaker's real meaning in context, natural and fluent.\n` : ""}Only after this verification, output the final SRT.
+
+VIDEO DURATION: The video is exactly ${durationSrt} long. You MUST cover ALL speech from 00:00:00 all the way to ${durationSrt}. Even if there are quiet sections or pauses, continue listening — more speech follows.
+
+CRITICAL TIMESTAMP FORMAT:
+- Every timestamp MUST use HH:MM:SS,mmm format with ALL THREE parts separated by colons
+- CORRECT: 00:01:23,456  (hours:minutes:seconds,milliseconds)
+- WRONG:   01:23,456 or 1:23,456 (missing hours — NEVER use these)
+- The hours part is ALWAYS required, even when it is 00
+- Use COMMA for milliseconds separator (not dot)
+- All timestamps MUST be within 00:00:00,000 to ${durationSrt},000 and follow the actual video timeline
+
+STRICT SRT FORMAT RULES:
+1. Each entry has exactly 3 parts, followed by a blank line:
+   (a) A sequential number (1, 2, 3 ...)
+   (b) A timestamp line: HH:MM:SS,mmm --> HH:MM:SS,mmm
+   (c) The ${finalLangLabel}text — MAXIMUM 6 WORDS per entry (1 line only)
+2. WORD LIMIT IS MANDATORY: no more than 6 words per entry. If 10 words are spoken in a stretch, split into 2 entries of ~5 words with proportional timestamps; 15 words → 3 entries.
+3. Each subtitle entry should cover 1-4 seconds of speech (shorter entries = better readability).
+4. Cover EVERY word spoken — do not skip, do not summarize.
+5. For unclear words, make your best guess from context and language.
+6. Do NOT write non-speech annotations like [music], [background noise], [silence], [applause], [inaudible] — only actual spoken words.
+7. Return ONLY the final verified SRT content — no draft, no explanations, no markdown fences, no extra text.
+
+Now watch the entire video, draft, verify against the audio, and return the final ${finalLangLabel}SRT:`;
+}
+
+// Fast SINGLE-PASS subtitles for a YouTube URL using the video URL directly as
 // Gemini fileData (no download, no files.upload) — the same mechanism the
 // High Accuracy path uses, so it never touches the file-upload code that was
 // crashing with "Cannot convert argument to a ByteString" on non-ASCII titles.
+// ONE Gemini call does everything the old two passes did — transcribe, then
+// self-verify against the audio (misheard words, timing, trailing speech), and
+// translate when requested — via buildFastAllInOnePrompt with HIGH thinking.
 // Returns true if it produced subtitles; false to let the caller fall back to
-// the audio download+upload pipeline.
+// the audio download+upload pipeline (which keeps its own 2-pass flow).
 async function processFastYoutubeVideoSrt(
   jobId: string,
   videoUrl: string,
@@ -2726,17 +2789,19 @@ async function processFastYoutubeVideoSrt(
   try {
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
 
-    // ── PASS 1: watch + transcribe ───────────────────────────────────────────
+    // ── Single pass: transcribe + self-verify (+ translate) in one call ─────
     job.status = "generating";
-    job.progressPct = 25;
+    job.progressPct = 30;
     job.durationSecs = durationSecs ?? undefined;
-    job.message = "Pass 1: AI is watching the video and writing subtitles...";
+    job.message = isTranslation
+      ? `AI is watching, verifying, and writing ${translateTo} subtitles...`
+      : "AI is watching the video, transcribing, and verifying subtitles...";
 
     const rawSrt = await generateWithPreferredModels(
       VIDEO_TRANSCRIPTION_MODELS,
       (model) => ({
         model,
-        contents: [{ role: "user", parts: [videoPart, { text: buildSrtPrompt(language, durationSrt) }] }],
+        contents: [{ role: "user", parts: [videoPart, { text: buildFastAllInOnePrompt(language, durationSrt, translateTo) }] }],
         config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
       }),
       "Fast YouTube subtitle transcription",
@@ -2744,47 +2809,8 @@ async function processFastYoutubeVideoSrt(
 
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
 
-    const draftSrt = cleanGeneratedSrt(rawSrt, durationSecs ?? undefined);
-    if (!validateSrt(draftSrt)) throw new Error("AI returned invalid subtitles from Pass 1");
-
-    // ── PASS 2: re-watch verify (+ optional translate) ───────────────────────
-    job.status = "verifying";
-    job.progressPct = 65;
-    job.message = isTranslation
-      ? `Pass 2: AI is verifying and translating subtitles to ${translateTo}...`
-      : "Pass 2: AI is re-watching video to verify and correct subtitles...";
-
-    let correctedFinalSrt = "";
-    try {
-      const pass2Raw = await generateWithPreferredModels(
-        VIDEO_VERIFICATION_MODELS,
-        (model) => ({
-          model,
-          contents: [{ role: "user", parts: [videoPart, { text: buildFastPass2Prompt({ draftSrt, language, translateTo, durationSrt }) }] }],
-          config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
-        }),
-        "Fast YouTube subtitle verification",
-      );
-      const pass2Clean = stripFences(pass2Raw ?? "").trim();
-      if (pass2Clean) {
-        if (isTranslation) {
-          // Strict 1:1 translation → restore original timing by position.
-          job.originalSrt = draftSrt;
-          job.originalFilename = filename.replace(/\.srt$/i, "-original.srt");
-          correctedFinalSrt = restoreTimestamps(draftSrt, pass2Clean);
-        } else {
-          const finalizedPass2 = cleanGeneratedSrt(pass2Clean, durationSecs ?? undefined);
-          correctedFinalSrt = isPass2Regressed(draftSrt, finalizedPass2) ? draftSrt : finalizedPass2;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err, jobId }, "Fast YouTube Pass 2 failed; delivering Pass 1 draft");
-    }
-
-    if (!correctedFinalSrt) correctedFinalSrt = draftSrt;
-    if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
-
-    correctedFinalSrt = cleanGeneratedSrt(correctedFinalSrt, durationSecs ?? undefined);
+    let correctedFinalSrt = cleanGeneratedSrt(rawSrt, durationSecs ?? undefined);
+    if (!validateSrt(correctedFinalSrt)) throw new Error("AI returned invalid subtitles from the fast pass");
     try {
       job.qualityWarnings = assertSubtitleQuality(
         correctedFinalSrt,
