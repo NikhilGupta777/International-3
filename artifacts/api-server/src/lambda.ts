@@ -8,6 +8,8 @@
  * `responseStream` is discarded by the runtime, so we just close it.
  */
 
+// Must run before route modules capture the compact production key pools.
+import "./lib/load-env";
 import dns from "dns";
 // Fix Node.js 18+ Windows IPv6 hanging issue with fetch
 dns.setDefaultResultOrder("ipv4first");
@@ -21,10 +23,7 @@ import {
   runSubtitleWorker,
   type SubtitleWorkerEvent,
 } from "./routes/subtitles";
-import {
-  runClipCutWorker,
-  type ClipCutWorkerEvent,
-} from "./routes/youtube";
+import { runClipCutWorker, type ClipCutWorkerEvent } from "./routes/youtube";
 import { runEditorRenderWorker } from "./routes/video-editor";
 import {
   ensureInternalServer,
@@ -68,7 +67,9 @@ function safeEnd(stream: any): void {
   if (!stream) return;
   try {
     if (typeof stream.end === "function") stream.end();
-  } catch { /* noop */ }
+  } catch {
+    /* noop */
+  }
 }
 
 export const handler = awslambda.streamifyResponse(
@@ -89,7 +90,9 @@ export const handler = awslambda.streamifyResponse(
         typeof e.videoTitle === "string" && typeof e.transcript === "string";
       if (!hasUrl && !hasLegacy) {
         safeEnd(responseStream);
-        throw new Error("Invalid Timestamps worker payload: need url or transcript");
+        throw new Error(
+          "Invalid Timestamps worker payload: need url or transcript",
+        );
       }
       try {
         await runTimestampWorker({
@@ -97,7 +100,8 @@ export const handler = awslambda.streamifyResponse(
           jobId: e.jobId,
           url: e.url,
           videoTitle: e.videoTitle,
-          videoDuration: typeof e.videoDuration === "number" ? e.videoDuration : 0,
+          videoDuration:
+            typeof e.videoDuration === "number" ? e.videoDuration : 0,
           transcript: e.transcript,
           instructions: e.instructions,
         } as TimestampWorkerEvent);
@@ -140,11 +144,14 @@ export const handler = awslambda.streamifyResponse(
     // ── Subtitles Lambda worker (async invocation) ──────────────────────
     if (event?.source === "videomaking.subtitles") {
       const e = event as WorkerEvent;
-      const hasUploadKey = typeof e.uploadS3Key === "string" && e.uploadS3Key.trim().length > 0;
+      const hasUploadKey =
+        typeof e.uploadS3Key === "string" && e.uploadS3Key.trim().length > 0;
       const hasUrl = typeof e.url === "string" && e.url.trim().length > 0;
       if (!e.jobId || (!hasUrl && !hasUploadKey)) {
         safeEnd(responseStream);
-        throw new Error("Invalid Subtitles worker payload: missing jobId or url/uploadS3Key");
+        throw new Error(
+          "Invalid Subtitles worker payload: missing jobId or url/uploadS3Key",
+        );
       }
       try {
         await runSubtitleWorker({
@@ -167,10 +174,17 @@ export const handler = awslambda.streamifyResponse(
 
     // ── Editor render Lambda worker (async self-invoke, fast path) ──────
     if (event?.source === "videomaking.editor") {
-      const e = event as { jobId?: string; workspaceId?: string; projectId?: string; kind?: "preview" | "final" };
+      const e = event as {
+        jobId?: string;
+        workspaceId?: string;
+        projectId?: string;
+        kind?: "preview" | "final";
+      };
       if (!e.jobId || !e.workspaceId || !e.projectId) {
         safeEnd(responseStream);
-        throw new Error("Invalid editor render worker payload: missing jobId/workspaceId/projectId");
+        throw new Error(
+          "Invalid editor render worker payload: missing jobId/workspaceId/projectId",
+        );
       }
       try {
         await runEditorRenderWorker({

@@ -144,7 +144,7 @@ test("Groq assembles streamed tool-call argument fragments", async () => {
 test("Groq rotates to the next configured key before output on provider failure", async () => {
   const originalFetch = globalThis.fetch;
   const authorizations: string[] = [];
-  process.env.GROQ_API_KEY_2 = "test-groq-key-2";
+  process.env.GROQ_API_KEYS = "test-groq-key,test-groq-key-2";
   globalThis.fetch = async (_input, init) => {
     authorizations.push(
       String((init?.headers as Record<string, string>)?.Authorization),
@@ -182,7 +182,7 @@ test("Groq rotates to the next configured key before output on provider failure"
     ]);
     assert.equal(chunks[0].candidates[0].content.parts[0].text, "OK");
   } finally {
-    delete process.env.GROQ_API_KEY_2;
+    delete process.env.GROQ_API_KEYS;
     globalThis.fetch = originalFetch;
   }
 });

@@ -38,7 +38,26 @@ if (process.env.NODE_ENV !== "production") {
   }
 }
 
+function expandEnvPool(
+  poolName: string,
+  itemPrefix: string,
+  maxItems: number,
+): void {
+  const values = (process.env[poolName] ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .slice(0, maxItems);
+  values.forEach((value, index) => {
+    const name = index === 0 ? itemPrefix : `${itemPrefix}_${index + 1}`;
+    if (process.env[name] === undefined) process.env[name] = value;
+  });
+}
+
+// Lambda has a 4 KB environment limit. Production compacts the Gemini key
+// ring into one variable; expand it before route modules capture config.
+expandEnvPool("GEMINI_API_KEYS", "GEMINI_API_KEY", 13);
+
 if (process.env.YTDLP_BIN && !existsSync(process.env.YTDLP_BIN)) {
   delete process.env.YTDLP_BIN;
 }
-

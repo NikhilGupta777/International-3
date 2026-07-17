@@ -70,11 +70,18 @@ export function isExternalCopilotConfigured(model?: string): boolean {
 
 function getProviderKeys(provider: ExternalProvider): string[] {
   const prefix = provider === "ollama" ? "OLLAMA_API_KEY" : "GROQ_API_KEY";
+  const pooled = process.env[`${prefix}S`]
+    ?.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
   return [
     ...new Set(
-      Array.from({ length: PROVIDER_KEY_SLOTS }, (_, index) =>
-        process.env[index === 0 ? prefix : `${prefix}_${index + 1}`]?.trim(),
-      ).filter((value): value is string => Boolean(value)),
+      [
+        ...(pooled ?? []),
+        ...Array.from({ length: PROVIDER_KEY_SLOTS }, (_, index) =>
+          process.env[index === 0 ? prefix : `${prefix}_${index + 1}`]?.trim(),
+        ),
+      ].filter((value): value is string => Boolean(value)),
     ),
   ];
 }

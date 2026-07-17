@@ -626,19 +626,21 @@ Resources:
           SUPER_AGENT_ENABLED: !Ref SuperAgentEnabled
           PITAJI_FEATURE_ENABLED: !Ref PitajiFeatureEnabled
           BHAGWAT_PASSWORD: !Ref BhagwatPassword
-          GEMINI_API_KEY: !Ref GeminiApiKey
-          GEMINI_API_KEY_2: !Ref GeminiApiKey2
-          GEMINI_API_KEY_3: !Ref GeminiApiKey3
-          GEMINI_API_KEY_4: !Ref GeminiApiKey4
-          GEMINI_API_KEY_5: !Ref GeminiApiKey5
-          GEMINI_API_KEY_6: !Ref GeminiApiKey6
-          GEMINI_API_KEY_7: !Ref GeminiApiKey7
-          GEMINI_API_KEY_8: !Ref GeminiApiKey8
-          GEMINI_API_KEY_9: !Ref GeminiApiKey9
-          GEMINI_API_KEY_10: !Ref GeminiApiKey10
-          GEMINI_API_KEY_11: !Ref GeminiApiKey11
-          GEMINI_API_KEY_12: !Ref GeminiApiKey12
-          GEMINI_API_KEY_13: !Ref GeminiApiKey13
+          GEMINI_API_KEYS: !Join
+            - ","
+            - - !Ref GeminiApiKey
+              - !Ref GeminiApiKey2
+              - !Ref GeminiApiKey3
+              - !Ref GeminiApiKey4
+              - !Ref GeminiApiKey5
+              - !Ref GeminiApiKey6
+              - !Ref GeminiApiKey7
+              - !Ref GeminiApiKey8
+              - !Ref GeminiApiKey9
+              - !Ref GeminiApiKey10
+              - !Ref GeminiApiKey11
+              - !Ref GeminiApiKey12
+              - !Ref GeminiApiKey13
           HEYGEN_API_KEY: !Ref HeyGenApiKey
           HEYGEN_UPLOAD_MAX_BYTES: !Ref HeyGenUploadMaxBytes
           HEYGEN_SRT_MODEL: !Ref HeyGenSrtModel
@@ -646,20 +648,18 @@ Resources:
           GOOGLE_GENAI_USE_VERTEXAI: !Ref GoogleGenaiUseVertexai
           GOOGLE_CLOUD_PROJECT: !Ref GoogleCloudProject
           GOOGLE_CLOUD_LOCATION: !Ref GoogleCloudLocation
-          OLLAMA_API_KEY: !Ref OllamaApiKey
-          OLLAMA_API_KEY_2: !Ref OllamaApiKey2
-          OLLAMA_API_KEY_3: !Ref OllamaApiKey3
-          OLLAMA_API_KEY_4: !Ref OllamaApiKey4
-          GROQ_API_KEY: !Ref GroqApiKey
-          GROQ_API_KEY_2: !Ref GroqApiKey2
-          GROQ_API_KEY_3: !Ref GroqApiKey3
-          GROQ_API_KEY_4: !Ref GroqApiKey4
-          COPILOT_ULTRA_MODEL: !Ref CopilotUltraModel
-          COPILOT_FAST_MODEL: !Ref CopilotFastModel
-          COPILOT_ULTRA_MAX_OUTPUT_TOKENS: !Ref CopilotUltraMaxOutputTokens
-          COPILOT_FAST_MAX_OUTPUT_TOKENS: !Ref CopilotFastMaxOutputTokens
-          COPILOT_FAST_INPUT_CHAR_LIMIT: !Ref CopilotFastInputCharLimit
-          COPILOT_GEMINI_HELPER_MODEL: !Ref CopilotGeminiHelperModel
+          OLLAMA_API_KEYS: !Join
+            - ","
+            - - !Ref OllamaApiKey
+              - !Ref OllamaApiKey2
+              - !Ref OllamaApiKey3
+              - !Ref OllamaApiKey4
+          GROQ_API_KEYS: !Join
+            - ","
+            - - !Ref GroqApiKey
+              - !Ref GroqApiKey2
+              - !Ref GroqApiKey3
+              - !Ref GroqApiKey4
           ASSEMBLYAI_API_KEY: !Ref AssemblyAiApiKey
           E2B_API_KEY: !Ref E2BApiKey
           YTDLP_COOKIES_FILE: !Ref YtdlpCookiesFile
