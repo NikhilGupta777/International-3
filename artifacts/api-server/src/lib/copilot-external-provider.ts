@@ -5,7 +5,8 @@ export const COPILOT_ULTRA_MODEL =
 export const COPILOT_FAST_MODEL =
   process.env.COPILOT_FAST_MODEL?.trim() || "openai/gpt-oss-120b";
 export const COPILOT_ULTRA_FALLBACK_MODEL = "gpt-oss:120b";
-export const COPILOT_FAST_FALLBACK_MODEL = "llama-3.1-8b-instant";
+export const NVIDIA_NEMOTRON_ULTRA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
+export const NVIDIA_NEMOTRON_SUPER_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 
 type ExternalProvider = "nvidia" | "ollama" | "groq";
 
@@ -50,23 +51,36 @@ export function getCopilotProvider(model: string): ExternalProvider | null {
     model === COPILOT_ULTRA_MODEL ||
     model === COPILOT_FAST_MODEL ||
     model === "z-ai/glm-5.2" ||
-    model === "openai/gpt-oss-120b"
+    model === "openai/gpt-oss-120b" ||
+    model.startsWith("nvidia/")
   ) {
     return "nvidia";
   }
   if (model === COPILOT_ULTRA_FALLBACK_MODEL || model.startsWith("gpt-oss:")) {
     return "ollama";
   }
-  if (model === COPILOT_FAST_FALLBACK_MODEL) {
+  if (model === "llama-3.1-8b-instant") {
     return "groq";
   }
   return null;
 }
 
-export function getCopilotFallbackModel(model: string): string | null {
-  if (model === COPILOT_ULTRA_MODEL) return COPILOT_ULTRA_FALLBACK_MODEL;
-  if (model === COPILOT_FAST_MODEL) return COPILOT_FAST_FALLBACK_MODEL;
-  return null;
+export function getCopilotFallbackModels(model: string): string[] {
+  if (model === COPILOT_ULTRA_MODEL) {
+    return [
+      COPILOT_ULTRA_FALLBACK_MODEL,
+      NVIDIA_NEMOTRON_ULTRA_MODEL,
+      NVIDIA_NEMOTRON_SUPER_MODEL,
+    ];
+  }
+  if (model === COPILOT_FAST_MODEL) {
+    return [
+      COPILOT_ULTRA_FALLBACK_MODEL,
+      NVIDIA_NEMOTRON_SUPER_MODEL,
+      NVIDIA_NEMOTRON_ULTRA_MODEL,
+    ];
+  }
+  return [];
 }
 
 export function isExternalCopilotModel(model: string): boolean {
@@ -234,6 +248,38 @@ function parseArguments(value: unknown): Record<string, any> {
   }
 }
 
+function normalizeJsonSchema(value: any): any {
+  if (Array.isArray(value)) return value.map(normalizeJsonSchema);
+  if (!value || typeof value !== "object") return value;
+
+  const normalized: Record<string, any> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (
+      child === undefined ||
+      key === "nullable" ||
+      key === "propertyOrdering"
+    ) {
+      continue;
+    }
+    if (key === "type") {
+      normalized.type = Array.isArray(child)
+        ? child.map((type) => String(type).toLowerCase())
+        : String(child).toLowerCase();
+      continue;
+    }
+    normalized[key] = normalizeJsonSchema(child);
+  }
+  if (value.nullable === true) {
+    const types = Array.isArray(normalized.type)
+      ? normalized.type
+      : normalized.type
+        ? [normalized.type]
+        : [];
+    normalized.type = [...new Set([...types, "null"])];
+  }
+  return normalized;
+}
+
 function normalizeTools(tools: any[]): any[] {
   const declarations = tools.flatMap((entry) =>
     Array.isArray(entry?.functionDeclarations)
@@ -245,10 +291,9 @@ function normalizeTools(tools: any[]): any[] {
     function: {
       name: declaration.name,
       description: declaration.description,
-      parameters: declaration.parameters ?? {
-        type: "object",
-        properties: {},
-      },
+      parameters: normalizeJsonSchema(
+        declaration.parameters ?? { type: "object", properties: {} },
+      ),
     },
   }));
 }
@@ -462,7 +507,7 @@ async function* streamOpenAiCompatibleWithKey(
   const maxTokens = isNvidia
     ? params.model === COPILOT_ULTRA_MODEL
       ? Number(process.env.COPILOT_ULTRA_MAX_OUTPUT_TOKENS) || 60_000
-      : Number(process.env.COPILOT_FAST_MAX_OUTPUT_TOKENS) || 32_000
+      : Number(process.env.COPILOT_FAST_MAX_OUTPUT_TOKENS) || 60_000
     : Number(process.env.COPILOT_FAST_FALLBACK_MAX_OUTPUT_TOKENS) || 1_024;
   let response: Response;
   try {

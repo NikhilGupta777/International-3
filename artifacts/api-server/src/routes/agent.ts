@@ -34,10 +34,9 @@ import {
   generateContentWithRotation,
 } from "../lib/gemini-client";
 import {
-  COPILOT_FAST_FALLBACK_MODEL,
   COPILOT_FAST_MODEL,
   COPILOT_ULTRA_MODEL,
-  getCopilotFallbackModel,
+  getCopilotFallbackModels,
   getCopilotProvider,
   isExternalCopilotConfigured,
   isExternalCopilotModel,
@@ -73,8 +72,6 @@ const FAST_MODEL = COPILOT_FAST_MODEL;
 const AGENT_MODEL = ULTRA_MODEL;
 const GEMINI_HELPER_MODEL =
   process.env.COPILOT_GEMINI_HELPER_MODEL ?? "gemini-3.5-flash";
-const FAST_INPUT_CHAR_LIMIT =
-  Number(process.env.COPILOT_FAST_INPUT_CHAR_LIMIT) || 10_000;
 const SEARCH_MODEL = process.env.COPILOT_SEARCH_MODEL ?? "gemini-2.5-flash";
 const ALLOWED_MODELS = new Set([
   ULTRA_MODEL,
@@ -90,7 +87,7 @@ function supportsNativeMediaInput(model: string): boolean {
 function getMaxOutputTokensForModel(model: string): number {
   const m = model.toLowerCase();
   if (m === ULTRA_MODEL.toLowerCase()) return 60000;
-  if (m === FAST_MODEL.toLowerCase()) return 32000;
+  if (m === FAST_MODEL.toLowerCase()) return 60000;
   if (m === "gemma-4-26b-a4b-it" || m === "gemma-4-26b-a4b-it-maas") {
     return 262144;
   }
@@ -5472,15 +5469,6 @@ router.post("/agent/chat", async (req, res) => {
 
   // Resolve the two public modes. Historical model values stored by older UI
   // versions migrate to Ultra so existing chats continue to work.
-  const totalInputChars = normalizedMessages.reduce(
-    (total, message) => total + message.content.length,
-    0,
-  );
-  const hasAnyAttachments = normalizedMessages.some(
-    (message) => message.attachments.length > 0,
-  );
-  const fastModeEligible =
-    totalInputChars <= FAST_INPUT_CHAR_LIMIT && !hasAnyAttachments;
   let activeModel = AGENT_MODEL;
   if (requestedModel === "fast" || requestedModel === "flash" || requestedModel === FAST_MODEL) {
     activeModel = FAST_MODEL;
@@ -5494,10 +5482,6 @@ router.post("/agent/chat", async (req, res) => {
   } else if (requestedModel && !ALLOWED_MODELS.has(requestedModel)) {
     activeModel = ULTRA_MODEL;
   }
-  if (activeModel === FAST_MODEL && !fastModeEligible) {
-    activeModel = ULTRA_MODEL;
-  }
-
   const activeModelSupportsNativeMedia = supportsNativeMediaInput(activeModel);
   const isUltra = activeModel === ULTRA_MODEL;
   const activeProvider = getCopilotProvider(activeModel);
@@ -5663,19 +5647,12 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       let timeoutId: NodeJS.Timeout | null = null;
       let controller: AbortController | null = null;
-      const alternateModel = activeModel === ULTRA_MODEL ? FAST_MODEL : ULTRA_MODEL;
-      const fastFamily = new Set([FAST_MODEL, COPILOT_FAST_FALLBACK_MODEL]);
       const configuredModels = [
         activeModel,
-        getCopilotFallbackModel(activeModel),
-        alternateModel,
-        getCopilotFallbackModel(alternateModel),
-      ].filter(
-        (model): model is string =>
-          Boolean(model) &&
-          isExternalCopilotConfigured(model!) &&
-          (!fastFamily.has(model!) || fastModeEligible),
-      ).filter((model, index, models) => models.indexOf(model) === index);
+        ...getCopilotFallbackModels(activeModel),
+      ]
+        .filter((model) => isExternalCopilotConfigured(model))
+        .filter((model, index, models) => models.indexOf(model) === index);
       if (!configuredModels.length) {
         throw new Error("No NVIDIA NIM, Ollama Cloud, or Groq model is configured.");
       }
@@ -5736,7 +5713,10 @@ router.post("/agent/chat", async (req, res) => {
             attempt += 1;
           }
           if (attempt >= MAX_STREAM_ATTEMPTS - 1) {
-            throw e;
+            throw new Error(
+              "AI models are temporarily unavailable. Please retry in a moment.",
+              { cause: e },
+            );
           }
           const waitMs = Math.min(Number(e?.retryAfterMs) || 250 * (attempt + 1), 5000);
           await new Promise((r) => setTimeout(r, waitMs));

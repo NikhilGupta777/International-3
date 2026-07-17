@@ -25,7 +25,8 @@ test("Copilot exposes NVIDIA primaries with model-specific fallbacks", () => {
   assert.match(source, /const ULTRA_MODEL = COPILOT_ULTRA_MODEL/);
   assert.match(source, /const FAST_MODEL = COPILOT_FAST_MODEL/);
   assert.match(source, /streamExternalCopilot/);
-  assert.match(source, /getCopilotFallbackModel\(activeModel\)/);
-  assert.match(source, /getCopilotFallbackModel\(alternateModel\)/);
+  assert.match(source, /getCopilotFallbackModels\(activeModel\)/);
+  assert.doesNotMatch(source, /FAST_INPUT_CHAR_LIMIT/);
+  assert.match(source, /AI models are temporarily unavailable/);
   assert.doesNotMatch(source, /streamCopilotViaOracle/);
 });

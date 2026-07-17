@@ -15,8 +15,8 @@ const tools = [
         name: "web_search",
         description: "Search the web",
         parameters: {
-          type: "object",
-          properties: { query: { type: "string" } },
+          type: "OBJECT",
+          properties: { query: { type: "STRING" } },
           required: ["query"],
         },
       },
@@ -92,6 +92,11 @@ test("Ollama streams separate thinking, text, and tool calls", async () => {
     assert.equal(requestBody.think, "medium");
     assert.equal(requestBody.options.num_predict, 32000);
     assert.equal(requestBody.tools[0].function.name, "web_search");
+    assert.equal(requestBody.tools[0].function.parameters.type, "object");
+    assert.equal(
+      requestBody.tools[0].function.parameters.properties.query.type,
+      "string",
+    );
     assert.deepEqual(
       requestBody.messages.slice(-3).map((message: any) => message.role),
       ["assistant", "tool", "user"],
@@ -150,13 +155,26 @@ test("NVIDIA streams GLM Ultra and GPT-OSS Fast with explicit output limits", as
     assert.equal(requestBodies[0].model, "z-ai/glm-5.2");
     assert.equal(requestBodies[0].max_tokens, 60_000);
     assert.equal(requestBodies[1].model, "openai/gpt-oss-120b");
-    assert.equal(requestBodies[1].max_tokens, 32_000);
+    assert.equal(requestBodies[1].max_tokens, 60_000);
     assert.equal(requestBodies[1].reasoning_effort, "medium");
     assert.equal(ultra[0].candidates[0].content.parts[0].thought, true);
     assert.equal(fast[1].candidates[0].content.parts[0].text, "OK");
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("public modes expose the required four-model fallback order", () => {
+  assert.deepEqual(provider.getCopilotFallbackModels("z-ai/glm-5.2"), [
+    "gpt-oss:120b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3-super-120b-a12b",
+  ]);
+  assert.deepEqual(provider.getCopilotFallbackModels("openai/gpt-oss-120b"), [
+    "gpt-oss:120b",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+  ]);
 });
 
 test("Groq assembles streamed tool-call argument fragments", async () => {

@@ -415,7 +415,7 @@ Single PUT for < 50 MB; 10 MB multipart parts for >= 50 MB; hard max 3 GB (`MAX_
 
 SSE event stream: `run_start` → `text` / `tool_start` / `tool_progress` / `tool_log` / `tool_done` / `artifact` / `navigate` → `done`. Heartbeat every 8 seconds to keep connection alive. Streamed text deltas preserve all whitespace; the final complete-message text is trimmed — necessary for correct word spacing during token-by-token rendering. Text stripping also removes leaked S3 presigned URLs and leaked tool-result JSON from visible output, which can occasionally eat an intentional share link the model tried to print.
 
-**Models:** Studio Copilot exposes exactly two chat modes. **Ultra** is the default and uses NVIDIA NIM `z-ai/glm-5.2` with up to 60K output tokens, falling back to Ollama Cloud `gpt-oss:120b`. **Fast** uses NVIDIA NIM `openai/gpt-oss-120b` with medium reasoning and up to 32K output tokens, falling back to Groq `llama-3.1-8b-instant`. Provider keys rotate on failures before the model-specific fallback is tried. Gemini remains internal for native media/vision helper calls. Max iterations default is **49** (`COPILOT_MAX_ITERATIONS` ?? `"49"`).
+**Models:** Studio Copilot exposes exactly two chat modes with no app-level input downgrade and explicit 60K provider output allowances. **Ultra** uses NVIDIA NIM `z-ai/glm-5.2` → Ollama Cloud `gpt-oss:120b` → NVIDIA `nvidia/nemotron-3-ultra-550b-a55b` → NVIDIA `nvidia/nemotron-3-super-120b-a12b`. **Fast** uses NVIDIA NIM `openai/gpt-oss-120b` with medium reasoning → Ollama Cloud `gpt-oss:120b` → NVIDIA Nemotron Super → NVIDIA Nemotron Ultra. Provider keys rotate before model fallback. Gemini remains internal for native media/vision helper calls. Max iterations default is **49** (`COPILOT_MAX_ITERATIONS` ?? `"49"`).
 
 Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-stream.ts` in production) to hit the same Express instance without a network round-trip — `getApiBase()` deliberately ignores `X-Forwarded-Host`/`Host` request headers to prevent header-injection redirecting internal calls. E2B sandboxes are keyed per sessionId (not per user) — same user in two tabs gets two separate, non-sharing sandboxes; max 20 concurrent sandbox entries. See [[feature_copilot_uploads_admin]] memory for full tool-by-tool detail.
 
@@ -857,8 +857,8 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `GROQ_API_KEY_2` … `_4` | Optional | — | Groq failover credential slots |
 | `COPILOT_ULTRA_MODEL` | | `z-ai/glm-5.2` | Ultra/default Copilot model through NVIDIA NIM |
 | `COPILOT_FAST_MODEL` | | `openai/gpt-oss-120b` | Fast Copilot model through NVIDIA NIM |
-| `COPILOT_ULTRA_MAX_OUTPUT_TOKENS` | | `32000` | Ultra output-token cap |
-| `COPILOT_FAST_MAX_OUTPUT_TOKENS` | | `1024` | Fast output-token cap |
+| `COPILOT_ULTRA_MAX_OUTPUT_TOKENS` | | `60000` | Explicit provider allowance for long Ultra outputs |
+| `COPILOT_FAST_MAX_OUTPUT_TOKENS` | | `60000` | Explicit provider allowance for long Fast outputs |
 | `COPILOT_GEMINI_HELPER_MODEL` | | `gemini-3.5-flash` | Internal media/vision helper model; not a public chat choice |
 | `COPILOT_SEARCH_MODEL` | | `gemini-2.5-flash` | Internal web-search helper model |
 | `COPILOT_MAX_ITERATIONS` | | `49` | Max agent tool calls per turn — corrected from prior `24` |

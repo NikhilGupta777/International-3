@@ -208,13 +208,10 @@ Parameters:
     Default: "openai/gpt-oss-120b"
   CopilotUltraMaxOutputTokens:
     Type: String
-    Default: "32000"
+    Default: "60000"
   CopilotFastMaxOutputTokens:
     Type: String
-    Default: "1024"
-  CopilotFastInputCharLimit:
-    Type: String
-    Default: "10000"
+    Default: "60000"
   CopilotGeminiHelperModel:
     Type: String
     Default: "gemini-3.5-flash"
