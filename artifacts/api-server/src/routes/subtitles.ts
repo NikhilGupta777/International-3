@@ -631,7 +631,7 @@ export interface SrtJob {
   qualityWarnings?: string[];
   notifyClientKey?: string | null;
   errorNotified?: boolean;
-  isFastPipeline?: boolean;
+  isFastPipeline?: boolean | string;
   forceAssemblyAI?: boolean;
 }
 const jobs = new Map<string, SrtJob>();
@@ -2761,13 +2761,11 @@ STRICT SRT FORMAT RULES:
 Now watch the entire video, draft, verify against the audio, and return the final ${finalLangLabel}SRT:`;
 }
 
-// Fast SINGLE-PASS subtitles for a YouTube URL using the video URL directly as
-// Gemini fileData (no download, no files.upload) — the same mechanism the
-// High Accuracy path uses, so it never touches the file-upload code that was
-// crashing with "Cannot convert argument to a ByteString" on non-ASCII titles.
-// ONE Gemini call does everything the old two passes did — transcribe, then
-// self-verify against the audio (misheard words, timing, trailing speech), and
-// translate when requested — via buildFastAllInOnePrompt with HIGH thinking.
+// Fast subtitles for a YouTube URL using the video URL directly as Gemini
+// fileData (no download, no files.upload) — same mechanism as High Accuracy.
+// Supports TWO modes selected by job.isFastPipeline:
+//   "fast-1pass" / true  → ONE Gemini call (buildFastAllInOnePrompt, HIGH thinking)
+//   "fast-2pass"         → TWO Gemini calls (Pass 1 transcribe + Pass 2 verify/translate)
 // Returns true if it produced subtitles; false to let the caller fall back to
 // the audio download+upload pipeline (which keeps its own 2-pass flow).
 async function processFastYoutubeVideoSrt(
@@ -2789,28 +2787,95 @@ async function processFastYoutubeVideoSrt(
   try {
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
 
-    // ── Single pass: transcribe + self-verify (+ translate) in one call ─────
-    job.status = "generating";
-    job.progressPct = 30;
-    job.durationSecs = durationSecs ?? undefined;
-    job.message = isTranslation
-      ? `AI is watching, verifying, and writing ${translateTo} subtitles...`
-      : "AI is watching the video, transcribing, and verifying subtitles...";
+    // Determine if this is a 1-pass or 2-pass fast run.
+    // Legacy boolean `true` maps to 1-pass (the current default for fast).
+    const use1Pass = job.isFastPipeline === "fast-1pass" || job.isFastPipeline === true;
 
-    const rawSrt = await generateWithPreferredModels(
-      VIDEO_TRANSCRIPTION_MODELS,
-      (model) => ({
-        model,
-        contents: [{ role: "user", parts: [videoPart, { text: buildFastAllInOnePrompt(language, durationSrt, translateTo) }] }],
-        config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
-      }),
-      "Fast YouTube subtitle transcription",
-    );
+    let correctedFinalSrt: string;
+
+    if (use1Pass) {
+      // ── 1-Pass: transcribe + self-verify (+ translate) in one call ────────
+      job.status = "generating";
+      job.progressPct = 30;
+      job.durationSecs = durationSecs ?? undefined;
+      job.message = isTranslation
+        ? `AI is watching, verifying, and writing ${translateTo} subtitles...`
+        : "AI is watching the video, transcribing, and verifying subtitles...";
+
+      const rawSrt = await generateWithPreferredModels(
+        VIDEO_TRANSCRIPTION_MODELS,
+        (model) => ({
+          model,
+          contents: [{ role: "user", parts: [videoPart, { text: buildFastAllInOnePrompt(language, durationSrt, translateTo) }] }],
+          config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
+        }),
+        "Fast YouTube subtitle transcription (1-pass)",
+      );
+
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+
+      correctedFinalSrt = cleanGeneratedSrt(rawSrt, durationSecs ?? undefined);
+      if (!validateSrt(correctedFinalSrt)) throw new Error("AI returned invalid subtitles from the fast 1-pass");
+    } else {
+      // ── 2-Pass: Pass 1 transcribe, then Pass 2 verify/translate ───────────
+      job.status = "generating";
+      job.progressPct = 25;
+      job.durationSecs = durationSecs ?? undefined;
+      job.message = "Pass 1: AI is watching the video and writing subtitles...";
+
+      const rawSrt = await generateWithPreferredModels(
+        VIDEO_TRANSCRIPTION_MODELS,
+        (model) => ({
+          model,
+          contents: [{ role: "user", parts: [videoPart, { text: buildSrtPrompt(language, durationSrt) }] }],
+          config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
+        }),
+        "Fast YouTube subtitle transcription (2-pass P1)",
+      );
+
+      if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
+
+      const draftSrt = cleanGeneratedSrt(rawSrt, durationSecs ?? undefined);
+      if (!validateSrt(draftSrt)) throw new Error("AI returned invalid subtitles from Pass 1");
+
+      // ── Pass 2: re-watch verify (+ optional translate) ────────────────────
+      job.status = "verifying";
+      job.progressPct = 65;
+      job.message = isTranslation
+        ? `Pass 2: AI is verifying and translating subtitles to ${translateTo}...`
+        : "Pass 2: AI is re-watching video to verify and correct subtitles...";
+
+      correctedFinalSrt = draftSrt;
+      try {
+        const pass2Raw = await generateWithPreferredModels(
+          VIDEO_VERIFICATION_MODELS,
+          (model) => ({
+            model,
+            contents: [{ role: "user", parts: [videoPart, { text: buildFastPass2Prompt({ draftSrt, language, translateTo, durationSrt }) }] }],
+            config: { maxOutputTokens: 65536, thinkingConfig: buildThinkingConfig(model, "HIGH") },
+          }),
+          "Fast YouTube subtitle verification (2-pass P2)",
+        );
+        const pass2Clean = stripFences(pass2Raw ?? "").trim();
+        if (pass2Clean) {
+          if (isTranslation) {
+            job.originalSrt = draftSrt;
+            job.originalFilename = filename.replace(/\.srt$/i, "-original.srt");
+            correctedFinalSrt = restoreTimestamps(draftSrt, pass2Clean);
+          } else {
+            const finalizedPass2 = cleanGeneratedSrt(pass2Clean, durationSecs ?? undefined);
+            correctedFinalSrt = isPass2Regressed(draftSrt, finalizedPass2) ? draftSrt : finalizedPass2;
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, jobId }, "Fast YouTube Pass 2 failed; delivering Pass 1 draft");
+      }
+
+      correctedFinalSrt = cleanGeneratedSrt(correctedFinalSrt, durationSecs ?? undefined);
+    }
 
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return true; }
 
-    let correctedFinalSrt = cleanGeneratedSrt(rawSrt, durationSecs ?? undefined);
-    if (!validateSrt(correctedFinalSrt)) throw new Error("AI returned invalid subtitles from the fast pass");
     try {
       job.qualityWarnings = assertSubtitleQuality(
         correctedFinalSrt,
@@ -3164,7 +3229,7 @@ async function processAudio(
   translateTo?: string,
   cleanup?: () => void,
   precomputedWav?: { path: string; mimeType: string; durationSecs: number },
-  isFastPipeline?: boolean,
+  isFastPipeline?: boolean | string,
   forceAssemblyAI?: boolean,
 ) {
   const job = jobs.get(jobId);
@@ -3215,7 +3280,7 @@ async function processAudio(
 
     if (job.cancelled) { job.status = "cancelled"; job.message = "Cancelled"; return; }
 
-    if (isFastPipeline) {
+    if (isFastPipeline === "fast-1pass" || isFastPipeline === "fast-2pass" || isFastPipeline === true) {
       await processFastAudioPipeline({
         jobId,
         processedPath,
@@ -3626,7 +3691,7 @@ export type SubtitleWorkerEvent = {
   language?: string;
   translateTo?: string;
   notifyClientKey?: string | null;
-  isFastPipeline?: boolean;
+  isFastPipeline?: boolean | string;
   forceAssemblyAI?: boolean;
 };
 
@@ -3636,7 +3701,7 @@ async function runSubtitleUrlJob(params: {
   language: string;
   translateLang?: string;
   notifyClientKey?: string | null;
-  isFastPipeline?: boolean;
+  isFastPipeline?: boolean | string;
   forceAssemblyAI?: boolean;
 }): Promise<void> {
   let job = jobs.get(params.jobId);
@@ -3672,7 +3737,7 @@ async function runSubtitleUrlJob(params: {
   // (no download, no files.upload), mirroring the High Accuracy path. This avoids
   // the file-upload code that crashes on non-ASCII (e.g. Hindi) video titles.
   const isYouTubeUrl = /(?:youtube\.com|youtu\.be)/i.test(params.normalizedUrl);
-  if (!params.forceAssemblyAI && params.isFastPipeline && isYouTubeUrl) {
+  if (!params.forceAssemblyAI && (params.isFastPipeline === "fast-1pass" || params.isFastPipeline === "fast-2pass" || params.isFastPipeline === true) && isYouTubeUrl) {
     const completedFast = await processFastYoutubeVideoSrt(
       params.jobId,
       params.normalizedUrl,
@@ -3688,7 +3753,7 @@ async function runSubtitleUrlJob(params: {
     );
   }
 
-  if (!params.forceAssemblyAI && !params.isFastPipeline && (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS)) {
+  if (!params.forceAssemblyAI && (!params.isFastPipeline || params.isFastPipeline === "standard") && (durationSecs == null || durationSecs <= SUBTITLES_GEMINI_VIDEO_MAX_DURATION_SECONDS)) {
     const completedViaVideo = await processYoutubeVideoSrt(
       params.jobId,
       params.normalizedUrl,
@@ -3806,7 +3871,7 @@ async function runSubtitleUploadJob(params: {
   language: string;
   translateLang?: string;
   notifyClientKey?: string | null;
-  isFastPipeline?: boolean;
+  isFastPipeline?: boolean | string;
 }): Promise<void> {
   const srtFilename = `${sanitizeUploadBaseName(params.originalFilename)}.srt`;
 
@@ -3899,7 +3964,7 @@ router.post("/subtitles/generate", subtitlesGenerateRateLimiter, async (req: Req
     url: string;
     language?: string;
     translateTo?: string;
-    isFastPipeline?: boolean;
+    isFastPipeline?: boolean | string;
     forceAssemblyAI?: boolean;
   };
 
@@ -4347,7 +4412,7 @@ router.post("/subtitles/upload/start", subtitlesUploadRateLimiter, async (req: R
     originalFilename?: string;
     language?: string;
     translateTo?: string;
-    isFastPipeline?: boolean;
+    isFastPipeline?: boolean | string;
   };
 
   if (!uploadKey || typeof uploadKey !== "string") {

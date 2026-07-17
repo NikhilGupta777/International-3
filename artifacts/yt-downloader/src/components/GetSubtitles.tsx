@@ -116,26 +116,34 @@ const BASE_STEPS_FILE = ["uploading", "generating", "correcting"];
 const TRANSLATE_STEPS = ["translating", "verifying"];
 const SUBTITLE_JOB_MISSING_GRACE_MS = 2 * 60 * 1000;
 
-function inferSubtitleStepFromProgress(status: string | null, message: string, progressPct: number, isFast: boolean): string | null {
+type PipelineMode = "standard" | "fast-2pass" | "fast-1pass";
+
+function inferSubtitleStepFromProgress(status: string | null, message: string, progressPct: number, isFast: PipelineMode): string | null {
   if (status !== "running") return status;
   const lower = message.toLowerCase();
   if (lower.includes("verif")) return "verifying";
   if (lower.includes("translat")) return "translating";
-  if (lower.includes("correct") || lower.includes("clean")) return isFast ? "verifying" : "correcting";
+  if (lower.includes("correct") || lower.includes("clean")) return isFast !== "standard" ? "verifying" : "correcting";
   if (lower.includes("generat") || lower.includes("transcrib") || lower.includes("pass 1") || lower.includes("pass 2")) {
     return lower.includes("pass 2") ? "verifying" : "generating";
   }
   if (lower.includes("upload") || lower.includes("fetch")) return "uploading";
   if (lower.includes("download") || lower.includes("audio") || lower.includes("queue")) return "audio";
-  if (progressPct >= 65) return isFast ? "verifying" : "correcting";
+  if (progressPct >= 65) return isFast !== "standard" ? "verifying" : "correcting";
   if (progressPct >= 25) return "generating";
   if (progressPct >= 10) return "uploading";
   return "audio";
 }
 
 /** Rough time estimate per pipeline mode */
-function estimateSeconds(durationSecs: number, hasTranslation: boolean, isFast: boolean): number {
-  if (isFast) {
+function estimateSeconds(durationSecs: number, hasTranslation: boolean, mode: PipelineMode): number {
+  if (mode === "fast-1pass") {
+    // Fast 1-pass: single Gemini call ~0.08s per second + small overhead
+    const perPassSecs = Math.ceil(durationSecs * 0.08);
+    const translationSecs = hasTranslation ? 30 : 0;
+    return Math.max(15, perPassSecs + translationSecs + 10);
+  }
+  if (mode === "fast-2pass") {
     // Fast 2-pass: ~0.08s per second of audio per pass + smaller overhead
     const perPassSecs = Math.ceil(durationSecs * 0.08);
     const translationSecs = hasTranslation ? 45 : 0;
@@ -188,10 +196,10 @@ export function GetSubtitles() {
   const [emptyError, setEmptyError] = useState(false);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_PAGE_SIZE);
   const [jobStartedAt, setJobStartedAt] = useState<number | null>(null);
-  const [isFastPipeline, setIsFastPipeline] = useState(false);
+  const [isFastPipeline, setIsFastPipeline] = useState<PipelineMode>("standard");
   // Mirrors jobIsFastPipelineRef as state so render logic stays in sync.
   // The ref is needed for closures (poll callbacks); state triggers re-renders.
-  const [jobIsFastPipelineState, setJobIsFastPipelineState] = useState(false);
+  const [jobIsFastPipelineState, setJobIsFastPipelineState] = useState<PipelineMode>("standard");
   const [history, setHistory] = useState<SubtitleHistoryEntry[]>(() => {
     const loaded = loadHistory();
     if (loaded.length === 0) {
@@ -256,11 +264,13 @@ export function GetSubtitles() {
   const { toast } = useToast();
 
   // Track if fast pipeline was used for THIS job
-  const jobIsFastPipelineRef = useRef<boolean>(false);
+  const jobIsFastPipelineRef = useRef<PipelineMode>("standard");
 
   // FIX 2 & 4: Derive step order from state (not ref) so the component re-renders
   // when a new job starts. jobIsFastPipelineState mirrors jobIsFastPipelineRef for rendering.
-  const jobStepBase = jobIsFastPipelineState
+  const jobStepBase = jobIsFastPipelineState === "fast-1pass"
+    ? (jobInputModeRef.current === "url" ? ["audio", "generating"] : ["uploading", "generating"])
+    : jobIsFastPipelineState === "fast-2pass"
     ? (jobInputModeRef.current === "url" ? ["audio", "uploading", "generating", "verifying"] : ["uploading", "generating", "verifying"])
     : (jobInputModeRef.current === "url" ? BASE_STEPS_URL : BASE_STEPS_FILE);
 
@@ -278,9 +288,9 @@ export function GetSubtitles() {
     // Restore refs so the done-handler can save the correct history entry
     jobInputModeRef.current = active.mode;
     jobTranslateToRef.current = active.translateTo;
-    jobIsFastPipelineRef.current = !!active.isFastPipeline;
+    jobIsFastPipelineRef.current = (typeof active.isFastPipeline === "string" ? active.isFastPipeline : active.isFastPipeline ? "fast-1pass" : "standard") as PipelineMode;
     // FIX 2: Also sync state so step tracker re-renders correctly on reconnect
-    setJobIsFastPipelineState(!!active.isFastPipeline);
+    setJobIsFastPipelineState((typeof active.isFastPipeline === "string" ? active.isFastPipeline : active.isFastPipeline ? "fast-1pass" : "standard") as PipelineMode);
     lastUrlRef.current = active.url ?? "";
     lastLangRef.current = active.language;
     lastTranslateRef.current = active.translateTo;
@@ -820,42 +830,31 @@ export function GetSubtitles() {
 
       {/* Pipeline Toggle Tabs */}
       <div className="flex bg-[#09090b]/80 border border-zinc-800 rounded-xl p-1 mb-4 select-none self-start relative">
-        <button
-          type="button"
-          disabled={loading}
-          onClick={() => setIsFastPipeline(false)}
-          className={cn(
-            "relative px-4 py-2 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
-            !isFastPipeline ? "text-white" : "text-zinc-500 hover:text-zinc-300"
-          )}
-        >
-          {!isFastPipeline && (
-            <motion.div
-              layoutId="activeSubTab"
-              className="absolute inset-0 bg-zinc-800 rounded-lg -z-10"
-              transition={{ type: "spring", stiffness: 380, damping: 30 }}
-            />
-          )}
-          High Accuracy (5-Pass)
-        </button>
-        <button
-          type="button"
-          disabled={loading}
-          onClick={() => setIsFastPipeline(true)}
-          className={cn(
-            "relative px-4 py-2 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
-            isFastPipeline ? "text-white" : "text-zinc-500 hover:text-zinc-300"
-          )}
-        >
-          {isFastPipeline && (
-            <motion.div
-              layoutId="activeSubTab"
-              className="absolute inset-0 bg-zinc-800 rounded-lg -z-10"
-              transition={{ type: "spring", stiffness: 380, damping: 30 }}
-            />
-          )}
-          Fast Subtitles (2-Pass)
-        </button>
+        {([
+          { key: "standard" as PipelineMode, label: "High Accuracy (5-Pass)" },
+          { key: "fast-2pass" as PipelineMode, label: "Fast (2-Pass)" },
+          { key: "fast-1pass" as PipelineMode, label: "Turbo (1-Pass) ⚡" },
+        ]).map(({ key, label }) => (
+          <button
+            key={key}
+            type="button"
+            disabled={loading}
+            onClick={() => setIsFastPipeline(key)}
+            className={cn(
+              "relative px-4 py-2 text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
+              isFastPipeline === key ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+            )}
+          >
+            {isFastPipeline === key && (
+              <motion.div
+                layoutId="activeSubTab"
+                className="absolute inset-0 bg-zinc-800 rounded-lg -z-10"
+                transition={{ type: "spring", stiffness: 380, damping: 30 }}
+              />
+            )}
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Unified Input Card with RGB Glow */}
