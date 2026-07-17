@@ -679,6 +679,11 @@ Resources:
               - !Ref NvidiaApiKey2
               - !Ref NvidiaApiKey3
               - !Ref NvidiaApiKey4
+          COPILOT_ULTRA_MODEL: !Ref CopilotUltraModel
+          COPILOT_FAST_MODEL: !Ref CopilotFastModel
+          COPILOT_ULTRA_MAX_OUTPUT_TOKENS: !Ref CopilotUltraMaxOutputTokens
+          COPILOT_FAST_MAX_OUTPUT_TOKENS: !Ref CopilotFastMaxOutputTokens
+          COPILOT_GEMINI_HELPER_MODEL: !Ref CopilotGeminiHelperModel
           ASSEMBLYAI_API_KEY: !Ref AssemblyAiApiKey
           E2B_API_KEY: !Ref E2BApiKey
           YTDLP_COOKIES_FILE: !Ref YtdlpCookiesFile
