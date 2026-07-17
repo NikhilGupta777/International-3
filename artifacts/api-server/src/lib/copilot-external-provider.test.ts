@@ -108,6 +108,12 @@ test("Ollama streams separate thinking, text, and tool calls", async () => {
       requestBody.messages.slice(-3).map((message: any) => message.role),
       ["assistant", "tool", "user"],
     );
+    assert.deepEqual(
+      requestBody.messages.at(-3).tool_calls[0].function.arguments,
+      { query: "old" },
+    );
+    assert.equal(requestBody.messages.at(-2).tool_name, "web_search");
+    assert.equal(requestBody.messages.at(-2).tool_call_id, undefined);
     assert.equal(chunks[0].candidates[0].content.parts[0].thought, true);
     assert.equal(chunks[1].candidates[0].content.parts[0].text, "Found it");
     assert.equal(

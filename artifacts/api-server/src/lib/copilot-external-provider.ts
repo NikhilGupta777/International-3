@@ -352,6 +352,31 @@ function normalizeMessages(contents: any[]): any[] {
   return messages;
 }
 
+function normalizeOllamaMessages(contents: any[]): any[] {
+  return normalizeMessages(contents).map((message) => {
+    if (message.role === "assistant" && Array.isArray(message.tool_calls)) {
+      return {
+        ...message,
+        tool_calls: message.tool_calls.map((call: any) => ({
+          ...call,
+          function: {
+            ...call.function,
+            arguments: parseArguments(call.function?.arguments),
+          },
+        })),
+      };
+    }
+    if (message.role === "tool") {
+      return {
+        role: "tool",
+        content: message.content,
+        tool_name: message.name,
+      };
+    }
+    return message;
+  });
+}
+
 function geminiTextChunk(text: string, thought = false): any {
   return {
     candidates: [
@@ -427,7 +452,7 @@ async function* streamOllamaWithKey(
           model: params.model,
           messages: [
             { role: "system", content: params.systemInstruction },
-            ...normalizeMessages(params.contents),
+            ...normalizeOllamaMessages(params.contents),
           ],
           tools: normalizeTools(params.tools),
           think: "medium",
