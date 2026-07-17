@@ -156,7 +156,31 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  OllamaApiKey2:
+    Type: String
+    NoEcho: true
+    Default: ""
+  OllamaApiKey3:
+    Type: String
+    NoEcho: true
+    Default: ""
+  OllamaApiKey4:
+    Type: String
+    NoEcho: true
+    Default: ""
   GroqApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GroqApiKey2:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GroqApiKey3:
+    Type: String
+    NoEcho: true
+    Default: ""
+  GroqApiKey4:
     Type: String
     NoEcho: true
     Default: ""
@@ -623,7 +647,13 @@ Resources:
           GOOGLE_CLOUD_PROJECT: !Ref GoogleCloudProject
           GOOGLE_CLOUD_LOCATION: !Ref GoogleCloudLocation
           OLLAMA_API_KEY: !Ref OllamaApiKey
+          OLLAMA_API_KEY_2: !Ref OllamaApiKey2
+          OLLAMA_API_KEY_3: !Ref OllamaApiKey3
+          OLLAMA_API_KEY_4: !Ref OllamaApiKey4
           GROQ_API_KEY: !Ref GroqApiKey
+          GROQ_API_KEY_2: !Ref GroqApiKey2
+          GROQ_API_KEY_3: !Ref GroqApiKey3
+          GROQ_API_KEY_4: !Ref GroqApiKey4
           COPILOT_ULTRA_MODEL: !Ref CopilotUltraModel
           COPILOT_FAST_MODEL: !Ref CopilotFastModel
           COPILOT_ULTRA_MAX_OUTPUT_TOKENS: !Ref CopilotUltraMaxOutputTokens

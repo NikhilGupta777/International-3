@@ -767,7 +767,7 @@ Triggered on push to `main`. Four parallel jobs:
 
 **Image tagging rule:** Always use timestamped/commit-SHA tags. Never push `:latest` alone. CI uses `${GITHUB_SHA::8}`.
 
-**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `OLLAMA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally `NOTEBOOKLM_*`.
+**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `OLLAMA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally `OLLAMA_API_KEY_2` through `_4`, `GROQ_API_KEY_2` through `_4`, and `NOTEBOOKLM_*`.
 *(Note: AWS authentication now uses GitHub OIDC via the `ytgrabber-green-gha-deployer` IAM role. Long-lived `AWS_ACCESS_KEY_ID` secrets are no longer needed.)*
 
 ---
@@ -850,7 +850,9 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `TRANSLATOR_MAX_VIDEO_SIZE_BYTES` | | `2147483648` | Max upload size (2 GB) |
 | `TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS` | | `1` | Allow HF/ModelScope downloads in worker |
 | `OLLAMA_API_KEY` | ✅ (Copilot Ultra) | — | Server-side Ollama Cloud credential |
+| `OLLAMA_API_KEY_2` … `_4` | Optional | — | Ollama failover credential slots |
 | `GROQ_API_KEY` | ✅ (Copilot Fast) | — | Server-side Groq credential |
+| `GROQ_API_KEY_2` … `_4` | Optional | — | Groq failover credential slots |
 | `COPILOT_ULTRA_MODEL` | | `gpt-oss:120b` | Ultra/default Copilot model through Ollama Cloud |
 | `COPILOT_FAST_MODEL` | | `llama-3.1-8b-instant` | Fast Copilot model through Groq |
 | `COPILOT_ULTRA_MAX_OUTPUT_TOKENS` | | `32000` | Ultra output-token cap |

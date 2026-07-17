@@ -676,7 +676,13 @@ jobs:
           GEMINI_API_KEY_12_SECRET: ${{ secrets.GEMINI_API_KEY_12 }}
           GEMINI_API_KEY_13_SECRET: ${{ secrets.GEMINI_API_KEY_13 }}
           OLLAMA_API_KEY_SECRET: ${{ secrets.OLLAMA_API_KEY }}
+          OLLAMA_API_KEY_2_SECRET: ${{ secrets.OLLAMA_API_KEY_2 }}
+          OLLAMA_API_KEY_3_SECRET: ${{ secrets.OLLAMA_API_KEY_3 }}
+          OLLAMA_API_KEY_4_SECRET: ${{ secrets.OLLAMA_API_KEY_4 }}
           GROQ_API_KEY_SECRET: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY_2_SECRET: ${{ secrets.GROQ_API_KEY_2 }}
+          GROQ_API_KEY_3_SECRET: ${{ secrets.GROQ_API_KEY_3 }}
+          GROQ_API_KEY_4_SECRET: ${{ secrets.GROQ_API_KEY_4 }}
           HEYGEN_API_KEY_SECRET: ${{ secrets.HEYGEN_API_KEY }}
           WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
           BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
@@ -720,7 +726,13 @@ jobs:
           upsert_env "GEMINI_API_KEY_12" "$GEMINI_API_KEY_12_SECRET"
           upsert_env "GEMINI_API_KEY_13" "$GEMINI_API_KEY_13_SECRET"
           upsert_env "OLLAMA_API_KEY" "$OLLAMA_API_KEY_SECRET"
+          upsert_env "OLLAMA_API_KEY_2" "$OLLAMA_API_KEY_2_SECRET"
+          upsert_env "OLLAMA_API_KEY_3" "$OLLAMA_API_KEY_3_SECRET"
+          upsert_env "OLLAMA_API_KEY_4" "$OLLAMA_API_KEY_4_SECRET"
           upsert_env "GROQ_API_KEY" "$GROQ_API_KEY_SECRET"
+          upsert_env "GROQ_API_KEY_2" "$GROQ_API_KEY_2_SECRET"
+          upsert_env "GROQ_API_KEY_3" "$GROQ_API_KEY_3_SECRET"
+          upsert_env "GROQ_API_KEY_4" "$GROQ_API_KEY_4_SECRET"
           upsert_env "COPILOT_ULTRA_MODEL" "gpt-oss:120b"
           upsert_env "COPILOT_FAST_MODEL" "llama-3.1-8b-instant"
           upsert_env "COPILOT_ULTRA_MAX_OUTPUT_TOKENS" "32000"

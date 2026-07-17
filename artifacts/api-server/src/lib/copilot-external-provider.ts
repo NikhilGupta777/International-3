@@ -7,6 +7,9 @@ export const COPILOT_FAST_MODEL =
 
 type ExternalProvider = "ollama" | "groq";
 
+const PROVIDER_KEY_SLOTS = 4;
+const keyCooldowns = new Map<string, number>();
+
 type StreamExternalCopilotParams = {
   model: string;
   contents: any[];
@@ -56,12 +59,87 @@ export function isExternalCopilotModel(model: string): boolean {
 
 export function isExternalCopilotConfigured(model?: string): boolean {
   if (!model) {
-    return Boolean(process.env.OLLAMA_API_KEY || process.env.GROQ_API_KEY);
+    return (
+      getProviderKeys("ollama").length > 0 || getProviderKeys("groq").length > 0
+    );
   }
   const provider = getCopilotProvider(model);
-  if (provider === "ollama") return Boolean(process.env.OLLAMA_API_KEY);
-  if (provider === "groq") return Boolean(process.env.GROQ_API_KEY);
+  if (provider) return getProviderKeys(provider).length > 0;
   return false;
+}
+
+function getProviderKeys(provider: ExternalProvider): string[] {
+  const prefix = provider === "ollama" ? "OLLAMA_API_KEY" : "GROQ_API_KEY";
+  return [
+    ...new Set(
+      Array.from({ length: PROVIDER_KEY_SLOTS }, (_, index) =>
+        process.env[index === 0 ? prefix : `${prefix}_${index + 1}`]?.trim(),
+      ).filter((value): value is string => Boolean(value)),
+    ),
+  ];
+}
+
+function shouldRotateKey(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) return false;
+  if (!(error instanceof ExternalCopilotError)) return true;
+  return error.retryable || error.status === 401 || error.status === 403;
+}
+
+function cooldownMs(error: unknown): number {
+  if (!(error instanceof ExternalCopilotError)) return 30_000;
+  if (error.retryAfterMs !== undefined) {
+    return Math.min(Math.max(error.retryAfterMs, 1_000), 15 * 60_000);
+  }
+  if (error.status === 401 || error.status === 403) return 5 * 60_000;
+  return 30_000;
+}
+
+async function* streamWithKeyRotation(
+  provider: ExternalProvider,
+  params: StreamExternalCopilotParams,
+  run: (apiKey: string) => AsyncIterable<any>,
+): AsyncGenerator<any> {
+  const keys = getProviderKeys(provider);
+  if (!keys.length) {
+    throw new ExternalCopilotError(
+      `${provider === "ollama" ? "Ollama Cloud" : "Groq"} is not configured`,
+      { provider, status: 503 },
+    );
+  }
+
+  const now = Date.now();
+  const candidates = keys
+    .map((apiKey, index) => ({
+      apiKey,
+      slot: `${provider}:${index}`,
+      availableAt: keyCooldowns.get(`${provider}:${index}`) ?? 0,
+    }))
+    .sort((a, b) => {
+      const aReady = a.availableAt <= now ? 0 : 1;
+      const bReady = b.availableAt <= now ? 0 : 1;
+      return aReady - bReady || a.availableAt - b.availableAt;
+    });
+
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    let emitted = false;
+    try {
+      for await (const chunk of run(candidate.apiKey)) {
+        emitted = true;
+        yield chunk;
+      }
+      keyCooldowns.delete(candidate.slot);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!shouldRotateKey(error, params.signal)) throw error;
+      keyCooldowns.set(candidate.slot, Date.now() + cooldownMs(error));
+      // Replaying after visible output would duplicate the response. The failed
+      // key is cooled down so the next request starts on another configured key.
+      if (emitted) throw error;
+    }
+  }
+  throw lastError;
 }
 
 export function isExternalProviderRetryableError(error: unknown): boolean {
@@ -128,7 +206,9 @@ function parseArguments(value: unknown): Record<string, any> {
 
 function normalizeTools(tools: any[]): any[] {
   const declarations = tools.flatMap((entry) =>
-    Array.isArray(entry?.functionDeclarations) ? entry.functionDeclarations : [],
+    Array.isArray(entry?.functionDeclarations)
+      ? entry.functionDeclarations
+      : [],
   );
   return declarations.map((declaration: any) => ({
     type: "function",
@@ -257,16 +337,10 @@ async function* readNdjson(response: Response): AsyncGenerator<any> {
   }
 }
 
-async function* streamOllama(
+async function* streamOllamaWithKey(
   params: StreamExternalCopilotParams,
+  apiKey: string,
 ): AsyncGenerator<any> {
-  const apiKey = process.env.OLLAMA_API_KEY;
-  if (!apiKey) {
-    throw new ExternalCopilotError("Ollama Cloud is not configured", {
-      provider: "ollama",
-      status: 503,
-    });
-  }
   let response: Response;
   try {
     response = await fetch(
@@ -285,10 +359,11 @@ async function* streamOllama(
             ...normalizeMessages(params.contents),
           ],
           tools: normalizeTools(params.tools),
-          think: "high",
+          think: "medium",
           stream: true,
           options: {
-            num_predict: Number(process.env.COPILOT_ULTRA_MAX_OUTPUT_TOKENS) || 32000,
+            num_predict:
+              Number(process.env.COPILOT_ULTRA_MAX_OUTPUT_TOKENS) || 32000,
             temperature: 0.7,
             top_p: 0.9,
             top_k: 40,
@@ -348,16 +423,10 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
   }
 }
 
-async function* streamGroq(
+async function* streamGroqWithKey(
   params: StreamExternalCopilotParams,
+  apiKey: string,
 ): AsyncGenerator<any> {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    throw new ExternalCopilotError("Groq is not configured", {
-      provider: "groq",
-      status: 503,
-    });
-  }
   let response: Response;
   try {
     response = await fetch(
@@ -438,8 +507,16 @@ export function streamExternalCopilot(
   params: StreamExternalCopilotParams,
 ): AsyncIterable<any> {
   const provider = getCopilotProvider(params.model);
-  if (provider === "ollama") return streamOllama(params);
-  if (provider === "groq") return streamGroq(params);
+  if (provider === "ollama") {
+    return streamWithKeyRotation("ollama", params, (apiKey) =>
+      streamOllamaWithKey(params, apiKey),
+    );
+  }
+  if (provider === "groq") {
+    return streamWithKeyRotation("groq", params, (apiKey) =>
+      streamGroqWithKey(params, apiKey),
+    );
+  }
   throw new ExternalCopilotError(
     `Unsupported external Copilot model: ${params.model}`,
     { provider: "ollama" },

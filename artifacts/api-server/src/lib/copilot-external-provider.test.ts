@@ -41,7 +41,9 @@ test("Ollama streams separate thinking, text, and tool calls", async () => {
         JSON.stringify({
           message: {
             tool_calls: [
-              { function: { name: "web_search", arguments: { query: "news" } } },
+              {
+                function: { name: "web_search", arguments: { query: "news" } },
+              },
             ],
           },
           done: true,
@@ -86,7 +88,7 @@ test("Ollama streams separate thinking, text, and tool calls", async () => {
         tools,
       }),
     );
-    assert.equal(requestBody.think, "high");
+    assert.equal(requestBody.think, "medium");
     assert.equal(requestBody.options.num_predict, 32000);
     assert.equal(requestBody.tools[0].function.name, "web_search");
     assert.deepEqual(
@@ -135,6 +137,52 @@ test("Groq assembles streamed tool-call argument fragments", async () => {
       { query: "weather" },
     );
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Groq rotates to the next configured key before output on provider failure", async () => {
+  const originalFetch = globalThis.fetch;
+  const authorizations: string[] = [];
+  process.env.GROQ_API_KEY_2 = "test-groq-key-2";
+  globalThis.fetch = async (_input, init) => {
+    authorizations.push(
+      String((init?.headers as Record<string, string>)?.Authorization),
+    );
+    if (authorizations.length === 1) {
+      return new Response(
+        JSON.stringify({ error: { message: "rate limited" } }),
+        {
+          status: 429,
+        },
+      );
+    }
+    return new Response(
+      [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" } }] })}`,
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  try {
+    const chunks = await collect(
+      provider.streamExternalCopilot({
+        model: "llama-3.1-8b-instant",
+        contents,
+        systemInstruction: "system",
+        tools,
+      }),
+    );
+    assert.deepEqual(authorizations, [
+      "Bearer test-groq-key",
+      "Bearer test-groq-key-2",
+    ]);
+    assert.equal(chunks[0].candidates[0].content.parts[0].text, "OK");
+  } finally {
+    delete process.env.GROQ_API_KEY_2;
     globalThis.fetch = originalFetch;
   }
 });
