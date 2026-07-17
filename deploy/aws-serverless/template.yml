@@ -152,16 +152,32 @@ Parameters:
   GoogleCloudLocation:
     Type: String
     Default: "global"
-  CopilotVertexBrokerUrl:
-    Type: String
-    Default: ""
-  CopilotVertexBrokerSecret:
+  OllamaApiKey:
     Type: String
     NoEcho: true
     Default: ""
-  CopilotUltraVertexEnabled:
+  GroqApiKey:
     Type: String
-    Default: "false"
+    NoEcho: true
+    Default: ""
+  CopilotUltraModel:
+    Type: String
+    Default: "gpt-oss:120b"
+  CopilotFastModel:
+    Type: String
+    Default: "llama-3.1-8b-instant"
+  CopilotUltraMaxOutputTokens:
+    Type: String
+    Default: "32000"
+  CopilotFastMaxOutputTokens:
+    Type: String
+    Default: "1024"
+  CopilotFastInputCharLimit:
+    Type: String
+    Default: "10000"
+  CopilotGeminiHelperModel:
+    Type: String
+    Default: "gemini-3.5-flash"
   AssemblyAiApiKey:
     Type: String
     NoEcho: true
@@ -606,9 +622,14 @@ Resources:
           GOOGLE_GENAI_USE_VERTEXAI: !Ref GoogleGenaiUseVertexai
           GOOGLE_CLOUD_PROJECT: !Ref GoogleCloudProject
           GOOGLE_CLOUD_LOCATION: !Ref GoogleCloudLocation
-          COPILOT_VERTEX_BROKER_URL: !Ref CopilotVertexBrokerUrl
-          COPILOT_VERTEX_BROKER_SECRET: !Ref CopilotVertexBrokerSecret
-          COPILOT_ULTRA_VERTEX_ENABLED: !Ref CopilotUltraVertexEnabled
+          OLLAMA_API_KEY: !Ref OllamaApiKey
+          GROQ_API_KEY: !Ref GroqApiKey
+          COPILOT_ULTRA_MODEL: !Ref CopilotUltraModel
+          COPILOT_FAST_MODEL: !Ref CopilotFastModel
+          COPILOT_ULTRA_MAX_OUTPUT_TOKENS: !Ref CopilotUltraMaxOutputTokens
+          COPILOT_FAST_MAX_OUTPUT_TOKENS: !Ref CopilotFastMaxOutputTokens
+          COPILOT_FAST_INPUT_CHAR_LIMIT: !Ref CopilotFastInputCharLimit
+          COPILOT_GEMINI_HELPER_MODEL: !Ref CopilotGeminiHelperModel
           ASSEMBLYAI_API_KEY: !Ref AssemblyAiApiKey
           E2B_API_KEY: !Ref E2BApiKey
           YTDLP_COOKIES_FILE: !Ref YtdlpCookiesFile
