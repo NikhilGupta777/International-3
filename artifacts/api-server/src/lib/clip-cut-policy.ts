@@ -17,6 +17,8 @@ export function evaluateClipHandoff(input: {
   durationSecs: number;
   progressPct: number | null;
   speedText: string | null;
+  /** ms since the visible progress percent last changed (caller-tracked). */
+  progressStalledMs?: number;
   sampleAfterMs: number;
   noProgressAfterMs: number;
   lambdaBudgetMs: number;
@@ -33,8 +35,14 @@ export function evaluateClipHandoff(input: {
   }
   const progressPct = Math.max(0, Math.min(95, input.progressPct ?? 0));
   if (!speed) {
+    // No ffmpeg-style "1.2x" speed — typical when yt-dlp downloads natively
+    // and reports byte rates ("5.2MiB/s") this parser can't use. A moving
+    // percent still means healthy progress; only hand off when the percent
+    // itself has been frozen past the no-progress window. Fall back to raw
+    // elapsed time when the caller doesn't track percent movement.
+    const stalledMs = input.progressStalledMs ?? input.elapsedMs;
     return {
-      shouldHandoff: input.elapsedMs >= input.noProgressAfterMs,
+      shouldHandoff: stalledMs >= input.noProgressAfterMs,
       projectedRemainingMs: null,
       speed: null,
     };

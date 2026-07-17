@@ -52,6 +52,8 @@ type QueueStatus = {
   progressPct: number | null;
   progressLine: string | null;
   progressSource: string | null;
+  speed: string | null;
+  eta: string | null;
   startedAt: number | null;
   completedAt: number | null;
   resultJson: string | null;
@@ -599,6 +601,8 @@ export async function updateYoutubeQueueLocalJob(
     durationSecs?: number | null;
     progressLine?: string | null;
     progressSource?: string | null;
+    speed?: string | null;
+    eta?: string | null;
     startedAt?: number | null;
     completedAt?: number | null;
     resultJson?: string | null;
@@ -631,6 +635,8 @@ export async function updateYoutubeQueueLocalJob(
   addNumber("durationSecs", fields.durationSecs);
   addString("progressLine", fields.progressLine);
   addString("progressSource", fields.progressSource);
+  addString("speed", fields.speed);
+  addString("eta", fields.eta);
   addNumber("startedAt", fields.startedAt);
   addNumber("completedAt", fields.completedAt);
   addString("resultJson", fields.resultJson);
@@ -833,6 +839,8 @@ export async function getYoutubeQueueJobStatus(jobId: string): Promise<QueueStat
     progressPct: out.Item.progressPct?.N ? Number(out.Item.progressPct.N) : null,
     progressLine: out.Item.progressLine?.S ?? null,
     progressSource: out.Item.progressSource?.S ?? null,
+    speed: out.Item.speed?.S || null,
+    eta: out.Item.eta?.S || null,
     startedAt: out.Item.startedAt?.N ? Number(out.Item.startedAt.N) : null,
     completedAt: out.Item.completedAt?.N ? Number(out.Item.completedAt.N) : null,
     resultJson: out.Item.resultJson?.S ?? null,

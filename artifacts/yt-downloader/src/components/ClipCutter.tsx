@@ -189,25 +189,6 @@ function extractYouTubeUrl(text: string): string | null {
   return match ? `https://www.youtube.com/watch?v=${match[1]}` : null;
 }
 
-function extractTimes(text: string): { start: number | null; end: number | null } {
-  const timeRegex = /(?:(\d{1,2}):)?(\d{1,2}):(\d{2})/g;
-  const matches = [...text.matchAll(timeRegex)];
-  
-  if (matches.length === 0) return { start: null, end: null };
-  
-  const parseTime = (match: RegExpMatchArray) => {
-    const hours = match[1] ? parseInt(match[1]) : 0;
-    const minutes = parseInt(match[2]);
-    const seconds = parseInt(match[3]);
-    return hours * 3600 + minutes * 60 + seconds;
-  };
-
-  const start = parseTime(matches[0]);
-  const end = matches.length > 1 ? parseTime(matches[1]) : null;
-
-  return { start, end };
-}
-
 export function ClipCutter() {
   const [command, setCommand] = useState("");
   const [quality, setQuality] = useState("best");
@@ -310,7 +291,10 @@ export function ClipCutter() {
       completedAt: null,
       elapsedMs: null,
       message: "Reconnecting…",
-      downloaded: false,
+      // Restored jobs must not auto-trigger a download when they poll to
+      // "done" — there is no user gesture, so browsers block or surprise the
+      // user. The Save button handles it instead.
+      downloaded: true,
       savedToHistory: false,
       startedAt: s.startedAt,
       reconnected: true,
@@ -395,6 +379,9 @@ export function ClipCutter() {
                   queueUpdatedAt: data.queue?.updatedAt ?? j.queueUpdatedAt,
                   completedAt: data.completedAt ?? (nextStatus === "done" ? Date.now() : j.completedAt),
                   elapsedMs: data.elapsedMs ?? j.elapsedMs,
+                  // A successful poll means we're back live — without this the
+                  // "Reconnecting to live progress..." line sticks forever.
+                  reconnected: false,
                 };
 
                 // Save to history when done
@@ -523,28 +510,48 @@ export function ClipCutter() {
     clips: Array<{ startTime: number; endTime: number }>,
     customQuality: string,
   ) => {
-    let started = 0;
-    const errors: string[] = [];
-    for (const clip of clips) {
-      try {
-        await startClipCutJob(url, clip.startTime, clip.endTime, customQuality);
-        started++;
-      } catch (err) {
-        errors.push(`${secsToLabel(clip.startTime)}→${secsToLabel(clip.endTime)}`);
-      }
+    // One batch request = one rate-limit tick. Firing a request per clip
+    // trips the 8/min per-IP limit and fails every clip after the eighth.
+    const limited = clips.slice(0, 20); // server caps batches at 20
+    const res = await fetch(`${BASE_URL}/api/youtube/clip-cut/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, clips: limited, quality: customQuality }),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      jobs?: Array<{ jobId: string; status?: string; message?: string; clip: { startTime: number; endTime: number } }>;
+      errors?: Array<{ clip: { startTime: number; endTime: number }; error: string }>;
+      error?: string;
+    };
+    if (!res.ok && !(data.jobs && data.jobs.length > 0)) {
+      throw new Error(data.error || "Failed to start clip cuts");
     }
-    if (errors.length > 0) {
+
+    const startedJobs = data.jobs ?? [];
+    for (const started of startedJobs) {
+      const newJob = buildActiveJob(started, url, started.clip.startTime, started.clip.endTime, customQuality);
+      setJobs((prev) => {
+        const updated = [newJob, ...prev];
+        persistActiveJobs(updated);
+        return updated;
+      });
+    }
+
+    const failures = data.errors ?? [];
+    if (failures.length > 0) {
       setNotification({
-        type: errors.length === clips.length ? "error" : "error",
-        message: `${started}/${clips.length} clips started. Failed: ${errors.join(", ")}`,
+        type: "error",
+        message: `${startedJobs.length}/${limited.length} clips started. Failed: ${failures
+          .map((f) => `${secsToLabel(f.clip.startTime)}→${secsToLabel(f.clip.endTime)}`)
+          .join(", ")}`,
       });
     } else {
       setNotification({
         type: "success",
-        message: `All ${started} clip cuts started successfully!`,
+        message: `All ${startedJobs.length} clip cuts started successfully!`,
       });
     }
-    return started;
+    return startedJobs.length;
   };
 
   const handleCut = async (e: React.FormEvent) => {
@@ -675,9 +682,12 @@ export function ClipCutter() {
       if (progressRes.ok) {
         const progress = (await progressRes.json().catch(() => null)) as ProgressPayload & { queue?: { s3Key?: string | null } } | null;
         if (progress?.status && normalizeJobStatus(progress.status, job.status) !== "done") {
+          const isExpired = String(progress.status).toLowerCase() === "expired";
           toast({
-            title: "Clip is not ready yet",
-            description: progress.message ?? "Please wait for processing to finish.",
+            title: isExpired ? "Clip has expired" : "Clip is not ready yet",
+            description: isExpired
+              ? "This file passed its 7-day retention and was deleted. Run the clip cut again."
+              : progress.message ?? "Please wait for processing to finish.",
             variant: "destructive",
           });
           return;

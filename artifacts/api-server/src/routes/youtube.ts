@@ -572,7 +572,7 @@ const RATE_LIMITS: Record<string, number> = {
   "POST /youtube/download-clip": 5,
   "POST /youtube/download": 5,
   "POST /youtube/clips": 5,
-  "POST /youtube/cancel/:jobId": 180, // 60/min
+  "POST /youtube/cancel/:jobId": 180, // 180/min
 };
 const RATE_LIMIT_BYPASS_IPS = new Set(
   (process.env.RATE_LIMIT_BYPASS_IPS ?? "")
@@ -2494,8 +2494,15 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
       }
     }, 2_000).unref?.();
   };
-  const handoffTimer = adaptiveHandoffEnabled
-    ? setInterval(() => {
+  // Track when the visible percent last moved — byte-based downloads report
+  // "5.2MiB/s" speeds the handoff policy can't parse, so percent movement is
+  // the reliable "still making progress" signal for those.
+  let lastObservedPercent = -1;
+  let lastPercentChangeAt = workerStartedAt;
+  // The control timer ALWAYS runs: it is the only way a cancel issued from a
+  // different Lambda environment (DynamoDB flag) reaches this worker. Only
+  // the Batch-handoff evaluation is gated on the queue being enabled.
+  const handoffTimer = setInterval(() => {
         if (controlCheckRunning) return;
         if (
           job.handoffRequested ||
@@ -2517,11 +2524,18 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
               return;
             }
             if (job.status === "done" || job.status === "error" || job.status === "cancelled") return;
+            if (!adaptiveHandoffEnabled) return;
+            const currentPercent = job.percent ?? 0;
+            if (currentPercent !== lastObservedPercent) {
+              lastObservedPercent = currentPercent;
+              lastPercentChangeAt = Date.now();
+            }
             const decision = evaluateClipHandoff({
               elapsedMs: Date.now() - workerStartedAt,
               durationSecs: clipDurationSecs,
               progressPct: job.percent,
               speedText: job.speed,
+              progressStalledMs: Date.now() - lastPercentChangeAt,
               sampleAfterMs: LAMBDA_CLIP_HANDOFF_SAMPLE_MS,
               noProgressAfterMs: LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS,
               lambdaBudgetMs: LAMBDA_CLIP_SAFE_BUDGET_MS,
@@ -2545,9 +2559,8 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
             controlCheckRunning = false;
           }
         })();
-      }, 5_000)
-    : null;
-  handoffTimer?.unref?.();
+      }, 5_000);
+  handoffTimer.unref?.();
 
   try {
     await processClipCut(e.jobId, job);
@@ -3400,6 +3413,8 @@ function persistClipJobState(jobId: string, job: DownloadJob): void {
     progressPct: job.percent,
     progressLine: job.progressLine ?? null,
     progressSource: job.progressSource ?? null,
+    speed: job.speed ?? null,
+    eta: job.eta ?? null,
     startedAt: job.startedAt ?? null,
     completedAt: job.completedAt ?? null,
     filename: job.filename,
@@ -3476,8 +3491,8 @@ router.get("/youtube/progress/:jobId", (req: Request, res: Response) => {
         jobId,
         status: queueStatus.status,
         percent: queueStatus.progressPct,
-        speed: null,
-        eta: null,
+        speed: queueStatus.speed,
+        eta: queueStatus.eta,
         filename: queueStatus.filename,
         filesize: queueStatus.filesize,
         message: queueStatus.message,
@@ -3515,6 +3530,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
     setupSse(res);
 
     const send = (payload: object) => {
+      if (res.writableEnded || res.socket?.destroyed) return;
       res.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
 
@@ -3529,8 +3545,8 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
         jobId,
         status: queueStatus.status,
         percent: queueStatus.progressPct,
-        speed: null,
-        eta: null,
+        speed: queueStatus.speed,
+        eta: queueStatus.eta,
         filename: queueStatus.filename,
         filesize: queueStatus.filesize,
         message: queueStatus.message,
@@ -3578,6 +3594,7 @@ router.get("/youtube/progress/stream/:jobId", (req: Request, res: Response) => {
   setupSse(res);
 
   const send = (payload: object) => {
+    if (res.writableEnded || res.socket?.destroyed) return;
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   };
 

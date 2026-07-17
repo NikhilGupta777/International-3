@@ -864,6 +864,10 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
       const pct = Number.parseFloat(progressMatch[1]);
       if (Number.isFinite(pct)) extra.progressPct = Math.min(95, Math.max(1, Math.round(pct)));
     }
+    const downloadSpeedMatch = compact.match(/\bat\s+([\d.]+[KMG]i?B\/s)/i);
+    if (downloadSpeedMatch) extra.speed = downloadSpeedMatch[1];
+    const downloadEtaMatch = compact.match(/\bETA\s+(\S+)/i);
+    if (downloadEtaMatch && downloadEtaMatch[1] !== "Unknown") extra.eta = downloadEtaMatch[1];
     const timeMatch = compact.match(/\btime=(\d+):(\d+):(\d+(?:\.\d+)?)/);
     if (timeMatch) {
       const processedSecs =
@@ -874,6 +878,8 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
       if (Number.isFinite(processedSecs)) {
         extra.progressPct = Math.min(95, Math.max(1, Math.round((processedSecs / duration) * 95)));
       }
+      const ffmpegSpeedMatch = compact.match(/\bspeed=\s*([\d.]+x)/i);
+      if (ffmpegSpeedMatch) extra.speed = ffmpegSpeedMatch[1];
     }
     void updateJobState(payload.jobId, "running", "Cutting selected section...", extra).catch((err) =>
       logger.warn({ err, jobId: payload.jobId }, "Failed to persist clip progress"),
