@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-test("agent streams visible model text chunks while reading Gemini stream", () => {
+test("agent streams visible model text chunks while reading provider stream", () => {
   const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
   const chunkTextBlock = source.match(
     /if \(chunkText\) \{[\s\S]*?pendingTextBuf \+= chunkText;[\s\S]*?\n\s*\}/,
@@ -20,12 +20,11 @@ test("agent streams visible model text chunks while reading Gemini stream", () =
   );
 });
 
-test("Copilot Ultra uses the Oracle Vertex broker and retains API-key fallback", () => {
+test("Copilot exposes Ollama Ultra with Groq fallback", () => {
   const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
-  assert.match(source, /const ULTRA_MODEL = "gemma-4-26b-a4b-it"/);
-  assert.match(source, /isCopilotUltraVertexEnabled\(\)/);
-  assert.match(source, /streamCopilotViaOracle/);
-  assert.match(source, /falling back to Gemini API-key routing/);
-  assert.doesNotMatch(source, /ensureVertexCredentials\(true\)/);
-  assert.doesNotMatch(source, /vertex: useVertex/);
+  assert.match(source, /const ULTRA_MODEL = COPILOT_ULTRA_MODEL/);
+  assert.match(source, /const FAST_MODEL = COPILOT_FAST_MODEL/);
+  assert.match(source, /streamExternalCopilot/);
+  assert.match(source, /activeModel === ULTRA_MODEL \? FAST_MODEL : ULTRA_MODEL/);
+  assert.doesNotMatch(source, /streamCopilotViaOracle/);
 });

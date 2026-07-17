@@ -675,13 +675,14 @@ jobs:
           GEMINI_API_KEY_11_SECRET: ${{ secrets.GEMINI_API_KEY_11 }}
           GEMINI_API_KEY_12_SECRET: ${{ secrets.GEMINI_API_KEY_12 }}
           GEMINI_API_KEY_13_SECRET: ${{ secrets.GEMINI_API_KEY_13 }}
+          OLLAMA_API_KEY_SECRET: ${{ secrets.OLLAMA_API_KEY }}
+          GROQ_API_KEY_SECRET: ${{ secrets.GROQ_API_KEY }}
           HEYGEN_API_KEY_SECRET: ${{ secrets.HEYGEN_API_KEY }}
           WEBSITE_AUTH_PASSWORD_SECRET: ${{ secrets.WEBSITE_AUTH_PASSWORD }}
           BHAGWAT_PASSWORD_SECRET: ${{ secrets.BHAGWAT_PASSWORD }}
           GOOGLE_CLIENT_ID_SECRET: ${{ secrets.GOOGLE_CLIENT_ID }}
           NOTEBOOKLM_AUTH_JSON_B64_SECRET: ${{ secrets.NOTEBOOKLM_AUTH_JSON_B64 }}
           GOOGLE_GENAI_USE_VERTEXAI_SECRET: ${{ secrets.GOOGLE_GENAI_USE_VERTEXAI }}
-          COPILOT_VERTEX_BROKER_SECRET_SECRET: ${{ secrets.COPILOT_VERTEX_BROKER_SECRET }}
           E2B_API_KEY_SECRET: ${{ secrets.E2B_API_KEY }}
         run: |
           printf '%s' "$ENV_GREEN_CONTENT_SECRET" > /tmp/.env.green
@@ -718,24 +719,26 @@ jobs:
           upsert_env "GEMINI_API_KEY_11" "$GEMINI_API_KEY_11_SECRET"
           upsert_env "GEMINI_API_KEY_12" "$GEMINI_API_KEY_12_SECRET"
           upsert_env "GEMINI_API_KEY_13" "$GEMINI_API_KEY_13_SECRET"
+          upsert_env "OLLAMA_API_KEY" "$OLLAMA_API_KEY_SECRET"
+          upsert_env "GROQ_API_KEY" "$GROQ_API_KEY_SECRET"
+          upsert_env "COPILOT_ULTRA_MODEL" "gpt-oss:120b"
+          upsert_env "COPILOT_FAST_MODEL" "llama-3.1-8b-instant"
+          upsert_env "COPILOT_ULTRA_MAX_OUTPUT_TOKENS" "32000"
+          upsert_env "COPILOT_FAST_MAX_OUTPUT_TOKENS" "1024"
+          upsert_env "COPILOT_FAST_INPUT_CHAR_LIMIT" "10000"
+          upsert_env "COPILOT_GEMINI_HELPER_MODEL" "gemini-3.5-flash"
           upsert_env "HEYGEN_API_KEY" "$HEYGEN_API_KEY_SECRET"
           upsert_env "HEYGEN_UPLOAD_MAX_BYTES" "5242880"
           upsert_env "HEYGEN_REQUEST_TIMEOUT_MS" "60000"
           upsert_env "E2B_API_KEY" "$E2B_API_KEY_SECRET"
-          # All AWS workloads use Gemini API keys. Only Copilot Ultra may call
-          # Vertex, through the signed Oracle broker; no Google credential is
-          # uploaded to or referenced from S3.
+          # Gemini remains available only for native media/vision helper calls.
           upsert_env "GOOGLE_GENAI_USE_VERTEXAI" "false"
           sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_BASE64=/d' /tmp/.env.green
           sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_JSON=/d' /tmp/.env.green
           sed -i '/^GOOGLE_APPLICATION_CREDENTIALS_S3_KEY=/d' /tmp/.env.green
-          upsert_env "COPILOT_VERTEX_BROKER_URL" "https://narayanbhakt.in/api/internal/vertex/copilot"
-          if [[ ! "$COPILOT_VERTEX_BROKER_SECRET_SECRET" =~ ^[a-f0-9]{64,}$ ]]; then
-            echo "::error::COPILOT_VERTEX_BROKER_SECRET must be a lowercase hex secret of at least 64 characters"
-            exit 1
-          fi
-          upsert_env "COPILOT_VERTEX_BROKER_SECRET" "$COPILOT_VERTEX_BROKER_SECRET_SECRET"
-          upsert_env "COPILOT_ULTRA_VERTEX_ENABLED" "true"
+          sed -i '/^COPILOT_VERTEX_BROKER_URL=/d' /tmp/.env.green
+          sed -i '/^COPILOT_VERTEX_BROKER_SECRET=/d' /tmp/.env.green
+          sed -i '/^COPILOT_ULTRA_VERTEX_ENABLED=/d' /tmp/.env.green
           upsert_env "NOTEBOOKLM_ENABLED" "${{ secrets.NOTEBOOKLM_ENABLED }}"
           upsert_env "NOTEBOOKLM_NOTEBOOK_ID" "${{ secrets.NOTEBOOKLM_NOTEBOOK_ID }}"
           sed -i '/^NOTEBOOKLM_AUTH_JSON=/d' /tmp/.env.green

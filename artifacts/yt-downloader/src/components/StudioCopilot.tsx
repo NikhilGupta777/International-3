@@ -35,25 +35,21 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
-type ReasoningMode = "gemini-3.1-flash-lite-low" | "gemini-3.1-flash-lite-high" | "gemma-4-26b-a4b-it";
+type ReasoningMode = "llama-3.1-8b-instant" | "gpt-oss:120b";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "gemini-3.1-flash-lite-low",   label: "Fast",      description: "Low thinking, cheap & fast", ultra: false },
-  { id: "gemini-3.1-flash-lite-high",  label: "Thinking",  description: "High thinking, deeper reasoning", ultra: false },
-  { id: "gemma-4-26b-a4b-it",          label: "Ultra",  description: "26B MoE with high thinking", ultra: true },
+  { id: "gpt-oss:120b",             label: "Ultra", description: "GPT-OSS 120B with high reasoning and full tools", ultra: true },
+  { id: "llama-3.1-8b-instant",     label: "Fast",  description: "Llama 3.1 8B for quick, short tasks", ultra: false },
 ];
 
 function readReasoningInitial(): ReasoningMode {
   try {
     const stored = localStorage.getItem(REASONING_KEY);
-    // New model IDs
-    if (stored === "gemini-3.1-flash-lite-low" || stored === "gemini-3.1-flash-lite-high" || stored === "gemma-4-26b-a4b-it") return stored;
-    // Backward compat: old keys map to new flash-lite modes
-    if (stored === "flash" || stored === "gemini-3-flash-preview" || stored === "gemini-2.5-flash") return "gemini-3.1-flash-lite-low";
-    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high" || stored === "gemma-4-31b-it") return "gemma-4-26b-a4b-it";
-    if (stored === "gemini-3.1-flash-lite") return "gemini-3.1-flash-lite-low";
+    if (stored === "llama-3.1-8b-instant" || stored === "gpt-oss:120b") return stored;
+    // Backward compatibility for preferences saved by older model menus.
+    if (stored === "flash" || stored === "gemini-3-flash-preview" || stored === "gemini-2.5-flash" || stored === "gemini-3.1-flash-lite" || stored === "gemini-3.1-flash-lite-low") return "llama-3.1-8b-instant";
+    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high" || stored === "gemini-3.1-flash-lite-high" || stored === "gemma-4-31b-it" || stored === "gemma-4-26b-a4b-it") return "gpt-oss:120b";
   } catch { /* localStorage unavailable */ }
-  // Default is Gemma 4 26B A4B IT with high thinking (Ultra).
-  return "gemma-4-26b-a4b-it";
+  return "gpt-oss:120b";
 }
 
 function getInputMaxHeight(): number {

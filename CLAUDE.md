@@ -415,7 +415,7 @@ Single PUT for < 50 MB; 10 MB multipart parts for >= 50 MB; hard max 3 GB (`MAX_
 
 SSE event stream: `run_start` → `text` / `tool_start` / `tool_progress` / `tool_log` / `tool_done` / `artifact` / `navigate` → `done`. Heartbeat every 8 seconds to keep connection alive. Streamed text deltas preserve all whitespace; the final complete-message text is trimmed — necessary for correct word spacing during token-by-token rendering. Text stripping also removes leaked S3 presigned URLs and leaked tool-result JSON from visible output, which can occasionally eat an intentional share link the model tried to print.
 
-**Models — verified against source, corrected from previous doc:** the main agentic loop uses a **hardcoded** `AGENT_MODEL = "gemini-3-flash-preview"` constant in `agent.ts` — despite an inline comment claiming "environment overrides take precedence in production," **`COPILOT_MODEL` is not actually read anywhere in the loop**. Only Ultra mode (`COPILOT_ULTRA_MODEL`, default `gemini-3.1-pro-preview`) and Search mode (`COPILOT_SEARCH_MODEL`, default `gemini-3.5-flash`) genuinely read their env vars. Max iterations default is **49**, not 24 (`COPILOT_MAX_ITERATIONS` ?? `"49"`). Max output tokens: 16,384 (`COPILOT_MAX_OUTPUT_TOKENS`), but most individual Gemini calls clamp to `Math.min(AGENT_MAX_OUTPUT_TOKENS, 8192)`. `cut_video_clip` gets a 15-min job-poll timeout vs 8-min standard for other job-backed tools. Per-user cooldowns on heavy ops: `do_full_package` 90s, `translate_video` 5 min, `generate_music` 1 min.
+**Models:** Studio Copilot exposes exactly two chat modes. **Ultra** is the default and uses `gpt-oss:120b` through Ollama Cloud with high thinking, NDJSON streaming, up to 32K output tokens, and the full tool catalog. **Fast** uses `llama-3.1-8b-instant` through Groq with a compact prompt, a focused tool subset, and a 1K output cap so it stays within Groq free-tier limits. Each provider is retried for transient failures and then falls back to the other configured model. Gemini remains internal for native media/vision helper calls. Max iterations default is **49** (`COPILOT_MAX_ITERATIONS` ?? `"49"`).
 
 Internal tool calls go to `process.env.INTERNAL_API_BASE/api` (set by `lambda-stream.ts` in production) to hit the same Express instance without a network round-trip — `getApiBase()` deliberately ignores `X-Forwarded-Host`/`Host` request headers to prevent header-injection redirecting internal calls. E2B sandboxes are keyed per sessionId (not per user) — same user in two tabs gets two separate, non-sharing sandboxes; max 20 concurrent sandbox entries. See [[feature_copilot_uploads_admin]] memory for full tool-by-tool detail.
 
@@ -767,7 +767,7 @@ Triggered on push to `main`. Four parallel jobs:
 
 **Image tagging rule:** Always use timestamped/commit-SHA tags. Never push `:latest` alone. CI uses `${GITHUB_SHA::8}`.
 
-**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally `GOOGLE_GENAI_USE_VERTEXAI`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_APPLICATION_CREDENTIALS_BASE64`, `NOTEBOOKLM_*`.
+**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `OLLAMA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally `NOTEBOOKLM_*`.
 *(Note: AWS authentication now uses GitHub OIDC via the `ytgrabber-green-gha-deployer` IAM role. Long-lived `AWS_ACCESS_KEY_ID` secrets are no longer needed.)*
 
 ---
@@ -849,9 +849,14 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `TRANSLATOR_BATCH_TIMEOUT_SECONDS` | | `3000` | GPU job timeout (50 min) |
 | `TRANSLATOR_MAX_VIDEO_SIZE_BYTES` | | `2147483648` | Max upload size (2 GB) |
 | `TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS` | | `1` | Allow HF/ModelScope downloads in worker |
-| `COPILOT_MODEL` | | n/a | **Dead env var** — `AGENT_MODEL` is hardcoded to `"gemini-3-flash-preview"` in `agent.ts`; this var is not read despite a misleading inline comment |
-| `COPILOT_ULTRA_MODEL` | | `gemini-3.1-pro-preview` | Ultra mode model (genuinely read from env) |
-| `COPILOT_SEARCH_MODEL` | | `gemini-3.5-flash` | Web search model (genuinely read from env) |
+| `OLLAMA_API_KEY` | ✅ (Copilot Ultra) | — | Server-side Ollama Cloud credential |
+| `GROQ_API_KEY` | ✅ (Copilot Fast) | — | Server-side Groq credential |
+| `COPILOT_ULTRA_MODEL` | | `gpt-oss:120b` | Ultra/default Copilot model through Ollama Cloud |
+| `COPILOT_FAST_MODEL` | | `llama-3.1-8b-instant` | Fast Copilot model through Groq |
+| `COPILOT_ULTRA_MAX_OUTPUT_TOKENS` | | `32000` | Ultra output-token cap |
+| `COPILOT_FAST_MAX_OUTPUT_TOKENS` | | `1024` | Fast output-token cap |
+| `COPILOT_GEMINI_HELPER_MODEL` | | `gemini-3.5-flash` | Internal media/vision helper model; not a public chat choice |
+| `COPILOT_SEARCH_MODEL` | | `gemini-2.5-flash` | Internal web-search helper model |
 | `COPILOT_MAX_ITERATIONS` | | `49` | Max agent tool calls per turn — corrected from prior `24` |
 | `COPILOT_MAX_OUTPUT_TOKENS` | | `16384` | Max agent response tokens |
 | `VIDEO_EDITOR_BATCH_ENABLED` | | `false` | Route AI Video Editor renders to AWS Batch. **Required `true` in Lambda prod** or final renders hard-error |

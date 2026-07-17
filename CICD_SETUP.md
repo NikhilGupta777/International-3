@@ -33,6 +33,8 @@ Add this secret:
 | Secret Name | Value |
 |-------------|-------|
 | `ENV_GREEN_CONTENT` | Full contents of `deploy/ec2/.env.green` (see below) |
+| `OLLAMA_API_KEY` | Ollama Cloud key for Copilot Ultra (`gpt-oss:120b`) |
+| `GROQ_API_KEY` | Groq key for Copilot Fast (`llama-3.1-8b-instant`) |
 
 *(Note: We used to require `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` here, but they are no longer needed since we migrated to GitHub OIDC.)*
 
