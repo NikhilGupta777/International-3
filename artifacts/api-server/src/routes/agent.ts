@@ -231,6 +231,14 @@ function rememberAgentJob(req: any, jobId: unknown): void {
   (req as any).agentRunJobIds.add(id);
 }
 
+// Once a job is handed off to the user (Activity panel / Translator tab),
+// it must no longer be auto-cancelled when the agent run errors or aborts.
+function forgetAgentJob(req: any, jobId: unknown): void {
+  const id = String(jobId ?? "").trim();
+  if (!id) return;
+  ((req as any).agentRunJobIds as Set<string> | undefined)?.delete(id);
+}
+
 async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
   const ids = Array.from(
     ((req as any).agentRunJobIds ?? new Set<string>()) as Set<string>,
@@ -254,6 +262,29 @@ async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
         }
       }
     }),
+  );
+}
+
+// ── Detect "announced an action but called no tool" turns ──────────────────
+// With functionCallingConfig AUTO the model sometimes emits its announcement
+// ("Okay — I'll cut the 40–57 second section right now") and ends the turn
+// without the function call. Without a guard the loop treats that as a final
+// answer and the run dies with an empty promise. Match intent phrasing
+// (English + Hinglish) followed near an action verb, plus leaked text-form
+// tool syntax the model may imitate from history.
+const PROMISE_INTENT_RE =
+  /\b(?:i(?:'|’)?ll|i\s+will|i(?:'|’)?m\s+(?:going|about)\s+to|let\s+me|going\s+to|about\s+to|abhi|turant|shuru\s+kar|kar(?:ta|ti)\s+h(?:oon|u)n?|kar\s+(?:raha|rahi|deta|deti|dete))\b[\s\S]{0,100}?\b(?:cut|clip|download|subtitle|caption|timestamp|translat|dub|generat|creat|render|analy[sz]|search|fetch|extract|convert|upload|check|run|start|kaat|nikaal)/i;
+const GERUND_INTENT_RE =
+  /\b(?:cutting|downloading|generating|translating|analyzing|rendering|creating|fetching|extracting|starting)\b[\s\S]{0,60}?\b(?:now|right\s+away|abhi|for\s+you)\b/i;
+const TEXT_TOOL_SYNTAX_RE = /\[Tool:\s*\w+/i;
+
+function looksLikeUnfulfilledActionPromise(text: string): boolean {
+  const t = String(text ?? "");
+  if (!t.trim()) return false;
+  return (
+    TEXT_TOOL_SYNTAX_RE.test(t) ||
+    PROMISE_INTENT_RE.test(t) ||
+    GERUND_INTENT_RE.test(t)
   );
 }
 
@@ -353,14 +384,28 @@ async function pollJobUntilDone(
     toolName === "cut_video_clip" ? CLIP_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS;
   const deadline = startedAt + timeoutMs;
   let lastLogMsg: string | null = null;
+  let consecutivePollErrors = 0;
   while (Date.now() < deadline && isConnected()) {
-    const r = await fetch(progressUrl, {
-      headers: { ...headers, "Cache-Control": "no-cache" },
-      cache: "no-store",
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
-    const data = (await r.json()) as any;
+    // A single flaky progress request must not fail the whole tool — the
+    // underlying job keeps running server-side. Tolerate a few in a row.
+    let data: any;
+    try {
+      const r = await fetch(progressUrl, {
+        headers: { ...headers, "Cache-Control": "no-cache" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!r.ok) throw new Error(`Progress check failed: ${r.status}`);
+      data = (await r.json()) as any;
+      consecutivePollErrors = 0;
+    } catch (pollErr) {
+      consecutivePollErrors++;
+      if (consecutivePollErrors >= 4) {
+        throw pollErr instanceof Error ? pollErr : new Error(String(pollErr));
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS * 2));
+      continue;
+    }
     const { status, percent, message, filename } = data;
     const elapsedSeconds = Math.max(
       0,
@@ -425,13 +470,26 @@ async function pollSubtitleUntilDone(
 ): Promise<{ status: string; srtFilename?: string; srt?: string | null; originalSrt?: string | null }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   let lastLogMsg: string | null = null;
+  let consecutivePollErrors = 0;
   while (Date.now() < deadline && isConnected()) {
-    const r = await fetch(statusUrl, {
-      headers: { ...headers, "Cache-Control": "no-cache" },
-      cache: "no-store",
-    });
-    if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
-    const data = (await r.json()) as any;
+    let data: any;
+    try {
+      const r = await fetch(statusUrl, {
+        headers: { ...headers, "Cache-Control": "no-cache" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!r.ok) throw new Error(`Subtitle status check failed: ${r.status}`);
+      data = (await r.json()) as any;
+      consecutivePollErrors = 0;
+    } catch (pollErr) {
+      consecutivePollErrors++;
+      if (consecutivePollErrors >= 4) {
+        throw pollErr instanceof Error ? pollErr : new Error(String(pollErr));
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS * 2));
+      continue;
+    }
     const { status, progressPct, message, srtFilename } = data;
     const subtitleMsg =
       progressPct != null
@@ -486,13 +544,26 @@ async function pollTimestampsUntilDone(
 ): Promise<{ status: string; timestamps?: any }> {
   const deadline = Date.now() + JOB_TIMEOUT_MS;
   let lastLogMsg: string | null = null;
+  let consecutivePollErrors = 0;
   while (Date.now() < deadline && isConnected()) {
-    const r = await fetch(statusUrl, {
-      headers: { ...headers, "Cache-Control": "no-cache" },
-      cache: "no-store",
-    });
-    if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
-    const data = (await r.json()) as any;
+    let data: any;
+    try {
+      const r = await fetch(statusUrl, {
+        headers: { ...headers, "Cache-Control": "no-cache" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!r.ok) throw new Error(`Timestamp status check failed: ${r.status}`);
+      data = (await r.json()) as any;
+      consecutivePollErrors = 0;
+    } catch (pollErr) {
+      consecutivePollErrors++;
+      if (consecutivePollErrors >= 4) {
+        throw pollErr instanceof Error ? pollErr : new Error(String(pollErr));
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS * 2));
+      continue;
+    }
     const { status, progressPct, message, timestamps } = data;
     const tsMsg =
       progressPct != null
@@ -1474,6 +1545,11 @@ Examples:
   "Okay — I'll cut the 40–57 second section for you right now ... ()."
 - check status:
   "I'll check the latest job status now."
+
+CRITICAL — NO EMPTY PROMISES:
+- The announcement and the tool call MUST be in the SAME response. Your turn ends when you stop emitting — an announcement without an attached function call means NOTHING happens and the user is left waiting.
+- Never end a response with "I'll do X now", "starting the cut", "abhi karta hoon" or similar unless the corresponding tool call is included in that same response.
+- Never write tool syntax as plain text (like "[Tool: cut_video_clip | ...]" or JSON pretending to be a call). Only real function calls execute. If you cannot perform the action, say why instead of promising it.
 
 Answer at the length the task deserves:
 - Completed tool tasks (download, clip, subtitle, translate queued): short final confirmation.
@@ -3119,6 +3195,9 @@ async function executeTool(
         runId,
       );
       if (final.status !== "done") {
+        // Handed off to the Activity panel — a later run error/abort must not
+        // cancel a clip the user was just told to watch there.
+        forgetAgentJob(req, jobId);
         return {
           result: {
             jobId,
@@ -3633,6 +3712,9 @@ async function executeTool(
       } as any);
 
       sseEvent(res, { type: "navigate", runId, tab: "translator" });
+      // The translation continues in the Translator tab — don't cancel it if
+      // the agent run later errors or the client disconnects.
+      forgetAgentJob(req, tvJobId);
       return {
         result: {
           jobId: tvJobId,
@@ -5499,7 +5581,7 @@ router.post("/agent/chat", async (req, res) => {
     ts: Date.now(),
     model: activeModel,
     provider: useVertexBroker ? "vertex-oracle" : "api-key",
-    ultra: requestedModel === "ultra" || requestedModel === "gemini-3.5-flash-high",
+    ultra: isUltra || requestedModel === "gemini-3.5-flash-high",
   });
   const skillPromptAddendum = buildSkillPrompt(activeSkills);
   console.log(
@@ -5660,6 +5742,7 @@ router.post("/agent/chat", async (req, res) => {
 
     let iterations = 0;
     let emptyResponseRetries = 0;
+    let noActionNudges = 0;
     let streamReadRetries = 0;
     let vertexBrokerAttempted = false;
     let useNativeSearchTools = ENABLE_NATIVE_AGENT_SEARCH && !activeModel.startsWith("gemma-");
@@ -5685,6 +5768,9 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       let timeoutId: NodeJS.Timeout | null = null;
       let controller: AbortController | null = null;
+      // Ultra stays on the Gemma model everywhere: the Oracle Vertex broker is
+      // tried first, and if it fails the API-key rotation calls the SAME Gemma
+      // model directly — never a silent swap to a different model.
       const streamFallbackModels = isUltra
         ? [activeModel]
         : Array.from(
@@ -5712,6 +5798,11 @@ router.post("/agent/chat", async (req, res) => {
             streamFallbackModels.length - 1,
             Math.floor(Math.max(0, apiAttempt) / keyCount),
           )];
+          // The model that will actually serve this attempt — the broker runs
+          // activeModel (gemma), direct API attempts run streamModel (gemini).
+          const attemptModel = brokerAttemptCount === 1 && attempt === 0
+            ? activeModel
+            : streamModel;
           if (!brokerAttempt && (apiAttempt > 0 || useVertexBroker)) {
             await new Promise((r) => setTimeout(r, 150 + Math.random() * 100));
             // Retry attempts move to the next healthy API key; normal requests stay on the preferred key.
@@ -5742,21 +5833,21 @@ router.post("/agent/chat", async (req, res) => {
               systemInstruction: activeCacheName
                 ? undefined
                 : SYSTEM_PROMPT +
-                  getModelSpecificSystemPrompt(activeModel) +
+                  getModelSpecificSystemPrompt(attemptModel) +
                   skillPromptAddendum,
 
               tools: activeCacheName
                 ? undefined
-                : buildAgentTools(useNativeSearchTools, activeModel),
+                : buildAgentTools(useNativeSearchTools, attemptModel),
 
 toolConfig: activeCacheName
                 ? undefined
                 : { functionCallingConfig: { mode: "AUTO" as any } },
 
-              maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(activeModel)),
+              maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(attemptModel)),
 
               thinkingConfig: {
-                ...buildThinkingConfig(streamModel, thinkingLevel),
+                ...buildThinkingConfig(attemptModel, thinkingLevel),
                 includeThoughts: true,
               },
 
@@ -6115,6 +6206,45 @@ toolConfig: activeCacheName
 
       // ── 2b. No function calls → final answer, done ────────────────────────
       if (functionCalls.length === 0) {
+        // Announce-then-stop guard: the model promised an action (or emitted
+        // tool syntax as text) without an actual function call. Push a hidden
+        // correction turn and let it execute for real — this is what makes the
+        // agent follow through instead of ending on "Okay, I'll cut it now".
+        if (
+          noActionNudges < 2 &&
+          looksLikeUnfulfilledActionPromise(cleanedText || fullText)
+        ) {
+          noActionNudges++;
+          console.warn(
+            `[agent] run ${runId} iter ${iterations}: text-only turn looks like an unfulfilled action promise — nudging (${noActionNudges}/2)`,
+          );
+          // Close any canvas left open by this turn so the UI doesn't hang.
+          if (activeCanvas) {
+            sseEvent(res, {
+              type: "canvas_done",
+              runId,
+              canvasId: (activeCanvas as { id: string }).id,
+            });
+            activeCanvas = null;
+          }
+          // Show the announcement if it wasn't already streamed live.
+          if (!streamedTextLive && cleanedText) {
+            sseEvent(res, { type: "text", content: cleanedText, runId });
+          }
+          loopContents = [
+            ...loopContents,
+            { role: "model" as const, parts: [{ text: fullText }] },
+            {
+              role: "user" as const,
+              parts: [
+                {
+                  text: "[SYSTEM CHECK] Your previous message announced an action but did NOT include any function call, so nothing was executed. Do not repeat the announcement and do not write tool syntax as text. Call the required tool(s) now via real function calling. If the action is impossible, state clearly why instead.",
+                },
+              ],
+            },
+          ];
+          continue;
+        }
         const visibleText = fullText
           .replace(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s, "")
           .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
@@ -6135,6 +6265,16 @@ toolConfig: activeCacheName
           } else {
             sseEvent(res, { type: "text", content: visibleText, runId });
           }
+        }
+        // If live streaming left a <canvas> block unclosed (model never sent
+        // </canvas>), close it so the artifact card doesn't spin forever.
+        if (activeCanvas) {
+          sseEvent(res, {
+            type: "canvas_done",
+            runId,
+            canvasId: (activeCanvas as { id: string }).id,
+          });
+          activeCanvas = null;
         }
         finalAnswerSent = true;
         // Emit grounding sources if native Google Search grounding was used.
@@ -6159,6 +6299,19 @@ toolConfig: activeCacheName
           }
         }
         break;
+      }
+
+      // Flush any text/canvas state still buffered from this turn — a turn
+      // that ends in tool calls otherwise silently drops held characters and
+      // leaves an open canvas spinning as "live" forever.
+      if (canvasRouteBuf) emitCanvasRoutedText("", true);
+      if (activeCanvas) {
+        sseEvent(res, {
+          type: "canvas_done",
+          runId,
+          canvasId: (activeCanvas as { id: string }).id,
+        });
+        activeCanvas = null;
       }
 
       // ── 3. Emit plan event — what tools are about to run ──────────────────

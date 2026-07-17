@@ -102,6 +102,10 @@ export function FindVideo() {
   // Keep refs in sync with state
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
   useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+  useEffect(() => () => {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+  }, []);
 
   // Suggestions rotation interval
   useEffect(() => {
@@ -446,6 +450,7 @@ export function FindVideo() {
 
         clearInterval(thoughtTimer);
         clearInterval(textTimer);
+        if (abortControllerRef.current === controller) abortControllerRef.current = null;
         setStreaming(false);
         setThinkingText("");
 

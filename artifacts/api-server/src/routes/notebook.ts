@@ -151,7 +151,12 @@ function searchRateLimiter(req: Request, res: Response, next: NextFunction) {
 }
 
 // === Tool Implementations ===
-const SEARCH_RESULT_LIMIT = 32;
+const SEARCH_RESULT_LIMIT = 8;
+const MAX_TOOL_CALLS_PER_TURN = 2;
+const MAX_TOOL_CALLS_PER_REQUEST = 4;
+const MAX_HISTORY_MESSAGES = 12;
+const MAX_MESSAGE_CHARS = 6000;
+const MAX_CONTEXT_TOKENS_ESTIMATE = 7_500;
 
 function searchDatabase(query: string) {
   if (!miniSearchInstance) return { error: "Database index is not available." };
@@ -340,58 +345,26 @@ async function executeTool(name: string, args: any) {
 
 // Compact history to stay within token budget.
 // Always guarantees the returned array starts with a `user` role message.
-function compactHistory(contents: any[], maxTokensEstimate = 180000) {
-  let totalChars = 0;
-  contents.forEach(msg => {
-    msg.parts.forEach((p: any) => {
-      if (p.text) totalChars += p.text.length;
-    });
-  });
+function estimateTokens(value: unknown): number {
+  // JSON includes text, function calls, and function responses. Dividing by
+  // three is deliberately conservative for mixed English/Devanagari content.
+  return Math.ceil(JSON.stringify(value).length / 3);
+}
 
-  const estimatedTokens = totalChars / 4;
+function compactHistory(contents: any[], maxTokensEstimate = MAX_CONTEXT_TOKENS_ESTIMATE) {
+  const estimatedTokens = estimateTokens(contents);
   if (estimatedTokens < maxTokensEstimate) {
     return enforceUserFirst(contents);
   }
 
   logger.info(`[Compactor] History size (${Math.round(estimatedTokens)} tokens) exceeds threshold. Compacting...`);
-  if (contents.length <= 3) return enforceUserFirst(contents);
-
-  const untouchedCount = 3;
-  const historyToCompact = contents.slice(0, contents.length - untouchedCount);
-  const untouchedHistory = contents.slice(contents.length - untouchedCount);
-
-  const compacted: any[] = [];
-  historyToCompact.forEach(msg => {
-    if (msg.role === 'user') {
-      const cleanParts = msg.parts.filter((p: any) => p.text && !p.functionResponse);
-      if (cleanParts.length > 0) {
-        compacted.push({ role: 'user', parts: cleanParts });
-      }
-    } else if (msg.role === 'model') {
-      const cleanParts = msg.parts.filter((p: any) => p.text && !p.functionCall && !p.thought);
-      if (cleanParts.length > 0) {
-        compacted.push({ role: 'model', parts: cleanParts });
-      }
-    }
-  });
-
-  const combined = [...compacted, ...untouchedHistory];
-  const finalContents: any[] = [];
-  combined.forEach(msg => {
-    if (!msg.parts || msg.parts.length === 0) return;
-    if (finalContents.length === 0) {
-      finalContents.push(JSON.parse(JSON.stringify(msg)));
-    } else {
-      const lastMsg = finalContents[finalContents.length - 1];
-      if (lastMsg.role === msg.role) {
-        lastMsg.parts = lastMsg.parts.concat(JSON.parse(JSON.stringify(msg.parts)));
-      } else {
-        finalContents.push(JSON.parse(JSON.stringify(msg)));
-      }
-    }
-  });
-
-  return enforceUserFirst(finalContents);
+  let compacted = enforceUserFirst(JSON.parse(JSON.stringify(contents)));
+  // Remove the oldest complete user/model exchanges. Keep the latest three
+  // messages intact because they may contain a function-call/response pair.
+  while (compacted.length > 3 && estimateTokens(compacted) > maxTokensEstimate) {
+    compacted = enforceUserFirst(compacted.slice(2));
+  }
+  return compacted;
 }
 
 // Gemini requires contents[0] to be role:"user". Drop leading model messages.
@@ -415,9 +388,9 @@ Here is a compact directory of the top videos in the database. Use this prior kn
 [Video 1] Title: "यशवंत दास मालिका में कल्कि जी के  जन्म नाभि मंडल, जाजनग्र में होगा | पण्डित काशीनाथ मिश्र जी" | Date: 2023-10-13\n  Topics: I have two questions. First, I don't eat non-vegetarian food, but sometimes we visit relatives where it is cooked. Can we eat the ...\n\n[Video 2] Title: "नीम के पेड़ से निरंतर दूध निकलना, कलियुग अंत की प्रमुख सूचना.-- LIVE" | Date: 2022-02-03\n  Topics: I am asking, will the 51 Shakti Peeths survive this apocalyptic period? The 51 Shakti Peeths and the four Dhams (sacred abodes)?, ...\n\n[Video 3] Title: "मृत्यु से विजय का रास्ता क्या है-- LIVE" | Date: 2022-01-06\n  Topics: I am Navjyoti Das from Assam. The day before yesterday, at 5 AM, I had a dream. I saw such a powerful storm that only the building...\n\n[Video 4] Title: "''कलि आगत भविष्यांत'' में कल्कि जी के जन्म स्थान का वर्णन | पण्डित काशीनाथ मिश्र जी" | Date: 2023-10-11\n  Topics: I am not able to remember the Tri-Sandhya prayers. Even if I remember them, I forget. I feel very scared to start anything. It's b...\n\n[Video 5] Title: "त्रिकाल संध्या का तत्त्व | पण्डित श्री काशीनाथ मिश्र जी" | Date: 2024-03-04\n  Topics: After the Chandigarh assembly, there are assemblies in Bangalore and Toronto. Is this the last assembly? Will there be more after ...\n\n[Video 6] Title: "ईरान और यूक्रेन में युद्ध रुकेगा या तीव्र होगा? | पंडित काशीनाथ मिश्रा" | Date: 2024-04-28\n  Topics: Pandit ji, I am Abhishek from Bareilly. When I meditate, I see my elder brother who committed suicide in 2017. He appears in my dr...\n\n[Video 7] Title: "भारत का चीन के साथ कब युद्ध होगा ? | पण्डित काशीनाथ मिश्र जी" | Date: 2021-06-19\n  Topics: What is God's form like?, Pandit ji, this is Ram Kumar Sharma. I have quit eating non-vegetarian food. Could you please guide my w...\n\n[Video 8] Title: "ट्रंप की गद्दारी और 13 मुस्लिम देशों का हमला | Pt. Kashinath Mishra" | Date: 2025-03-26\n  Topics: Why is the Bhavishya Malika being propagated?, Why was this called a secret matter?, What is the goal of Bhavishya Malika?, And wh...\n\n[Video 9] Title: "2025 में मीन-शनि चलन से ब्रह्मांड में महाविनाश का योग है | पण्डित श्री काशीनाथ मिश्र जी" | Date: 2024-03-03\n  Topics: Pandit ji, in which year is the India-Pakistan war certain to happen?, Yes, Pandit ji, I was saying that it was wonderful that you...\n\n[Video 10] Title: "अमेरिका 70% पानी में डूब जायेगा! | 2025 Bhavishya Malika Predictions" | Date: 2024-06-06\n  Topics: Jai Shri Madhav, Father. I needed your blessings., The Lord's divine play, his secret play, is ongoing. Can human beings understan...\n\n[Video 11] Title: "पाकिस्तान-चीन और तुर्की में भूकंप की तबाही | Pt. Kashinath Mishra" | Date: 2024-05-05\n  Topics: Why is this climate change happening?, I wanted to ask... my father is having an angiography. Please ask everyone here to pray for...\n\n[Video 12] Title: "श्री कल्कि इंग्लैंड को युद्ध में पराजित करके कोहिनूर भारत लाएंगे" | Date: 2021-08-29\n  Topics: You had mentioned that Muslim countries will unite to fight and bombs will explode. Is what is happening now in Kabul, Afghanistan...\n\n[Video 13] Title: "तृतीय विश्व युद्ध में रशिया-फ्रांस-जापान-जर्मनी भारत की तरफ से युद्ध करेंगे" | Date: 2021-09-05\n  Topics: How will the connection between the devotee and God be established? How will devotees connect with God? And the biggest question i...\n\n[Video 14] Title: "JAMMU | DAY 1 | श्रीमद्भागवत महापुराण एवं भविष्य मालिका कथा | PANDIT KASHINATH MISHRA" | Date: 2021-07-11\n  Topics: So the question is, where is this secret scripture?, Where has that scripture been kept?, I had a Satyanarayan Katha (a ritual pra...\n\n[Video 15] Title: "PATHANKOT | DAY 3 | श्रीमद्भागवत महापुराण एवं भविष्य मालिका कथा | PANDIT KASHINATH MISHRA" | Date: 2021-11-14\n  Topics: What is the significance of the devastating rains we are seeing in Chennai and other parts of South India?, Panditji, I wanted to ...\n\n[Video 16] Title: "KOLKATA | DAY 5 | श्रीमद्भागवत महापुराण एवं भविष्य मालिका कथा" | Date: 2023-10-15\n  Topics: A few years ago, my elder brother and his wife passed away. We have been facing constant problems in the house ever since. What sh...\n\n[Video 17] Title: "DELHI | DAY 3 | श्रीमद्भागवत महापुराण एवं भविष्य मालिका कथा" | Date: 2023-10-16\n  Topics: Guruji, I am from a village in Uttar Pradesh. I urinated near a Peepal (sacred fig) tree without realizing it at first. Since retu...\n\n[Video 18] Title: "ROURKELA | DAY 2 | श्रीमद्भागवत महापुराण एवं भविष्य मालिका कथा" | Date: 2024-05-13\n  Topics: Guruji, I have been married twice, and now I am doing my post-graduation. I wanted to know about my future., I wanted to ask, you ...\n\n[Video 19] Title: "Cuttack Assembly | Day 7 | Final Discourse on Bhavishya Malika" | Date: 2024-01-02\n  Topics: I have a question and a request. The question is, for the past week, a new COVID JN variant has emerged with over 4,000 cases. Will...\n\n[Video 20] Title: "MUMBAI | DAY 4 | श्रीमद्भागवत महापुराण एवं भविष्य मालिका कथा" | Date: 2021-12-19\n  Topics: Pandit ji, I had a dream a few days ago that I was walking on a mountain, and there were many snakes lying on the path. They weren...
 
 Search Strategy Rules:
-1. Thorough Multi-Search: Do NOT rely on just a single search query. To ensure you find ALL matching videos, you MUST perform 2 to 3 distinct search queries using different methods, synonyms, and related terms (e.g. if the user asks about 'USA flood', query 'usa flood', 'America cataclysm', and 'western disasters' in parallel or sequential turns).
-2. Bilingual Query Generation (Crucial for Hindi Transcripts): Since the database contains original Q&A records in English and new raw transcript records in Hindi (Devanagari script), you MUST search in BOTH English and Hindi. For any query, translate the key search terms into Hindi (Devanagari) and run search queries in both English and Hindi. For example, if searching for "Delhi earthquake", you should query "Delhi earthquake" in English, and "दिल्ली भूकंप" or "दिल्ली भूकंप मालिका" in Hindi (Devanagari) in parallel.
-3. Execute searches in parallel in a single turn if possible, or execute them in subsequent turns if you need to refine the queries.
+1. Run at most TWO concise database searches total for normal requests. Never issue duplicate or near-duplicate queries.
+2. For broad searches, use one English query and one Hindi (Devanagari) query. For an exact title or phrase, one search is enough.
+3. Never call more than two tools in one turn. Use the returned results to answer instead of repeatedly broadening the search.
 4. Merge and consolidate the search results, removing any duplicate Q&A records.
 5. Once you have complete coverage, proceed to generate the final response.
 
@@ -477,7 +450,15 @@ router.get("/notebook/health", (_req: Request, res: Response) => {
 router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res: Response) => {
   setupSse(res);
   const rawMessage = typeof req.body?.message === "string" ? req.body.message : "";
-  const requestMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const requestMessages = Array.isArray(req.body?.messages)
+    ? req.body.messages
+        .slice(-MAX_HISTORY_MESSAGES)
+        .filter((msg: any) => msg?.role === "user" || msg?.role === "assistant")
+        .map((msg: any) => ({
+          role: msg.role,
+          content: typeof msg.content === "string" ? msg.content.slice(0, MAX_MESSAGE_CHARS) : "",
+        }))
+    : [];
 
   const messagesList = [...requestMessages];
   if (messagesList.length === 0 && rawMessage.trim()) {
@@ -513,6 +494,12 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
 
   if (messagesList.length === 0) {
     sendSseEvent("error", { message: "Enter a question first." });
+    res.end();
+    return;
+  }
+
+  if (!miniSearchInstance) {
+    sendSseEvent("error", { message: indexLoadError || "The search database is not available." });
     res.end();
     return;
   }
@@ -572,6 +559,8 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
     const maxIterations = 5;
     let iteration = 0;
     let finalResponse: string | null = null;
+    let totalToolCalls = 0;
+    const executedQueries = new Set<string>();
 
     while (iteration < maxIterations) {
       if (closed) break;
@@ -598,6 +587,8 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
         }
       };
 
+      logger.info({ estimatedInputTokens: estimateTokens(requestBody), iteration }, "Find Video Gemini request");
+
       let response: any;
       let retries = 3;
       let delayMs = 1000;
@@ -621,11 +612,27 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
 
           const errorText = await response.text();
           logger.warn(`[Retry Warning] Attempt ${attempt} failed with status ${response.status}: ${errorText}`);
-          if (attempt === retries) {
+          const retryable = response.status === 429 || response.status >= 500;
+          if (!retryable || attempt === retries) {
             throw new Error(`Gemini API returned error: ${response.status} - ${errorText}`);
+          }
+          try {
+            const parsed = JSON.parse(errorText);
+            const retryInfo = parsed?.error?.details?.find((detail: any) =>
+              String(detail?.["@type"] || "").endsWith("RetryInfo")
+            );
+            const seconds = Number.parseFloat(String(retryInfo?.retryDelay || "").replace(/s$/, ""));
+            if (Number.isFinite(seconds) && seconds > 0) {
+              delayMs = Math.min(60_000, Math.max(delayMs, Math.ceil(seconds * 1000)));
+            }
+          } catch {
+            // Use exponential backoff when the provider did not return JSON RetryInfo.
           }
         } catch (fetchErr: any) {
           logger.error(`[Retry Error] Attempt ${attempt} threw: ${fetchErr.message}`);
+          if (/Gemini API returned error:\s*4(?!29)/i.test(String(fetchErr?.message || ""))) {
+            throw fetchErr;
+          }
           if (attempt === retries) {
             throw fetchErr;
           }
@@ -750,9 +757,25 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
         logger.info(`[Agent Loop] Model requested ${currentFunctionCalls.length} tool execution(s).`);
 
         const responseParts: any[] = [];
-        for (const call of currentFunctionCalls) {
+        for (const [callIndex, call] of currentFunctionCalls.entries()) {
           const callName = call.name;
           const callArgs = call.args;
+
+          const normalizedQuery = String(callArgs?.query || callArgs?.video_title || "")
+            .trim().toLocaleLowerCase();
+          const overBudget = callIndex >= MAX_TOOL_CALLS_PER_TURN || totalToolCalls >= MAX_TOOL_CALLS_PER_REQUEST;
+          const duplicate = Boolean(normalizedQuery && executedQueries.has(`${callName}:${normalizedQuery}`));
+          if (overBudget || duplicate) {
+            responseParts.push({
+              functionResponse: {
+                name: callName,
+                response: { error: duplicate ? "Duplicate query skipped." : "Tool-call budget reached; answer from existing results." },
+              },
+            });
+            continue;
+          }
+          if (normalizedQuery) executedQueries.add(`${callName}:${normalizedQuery}`);
+          totalToolCalls += 1;
 
           let logMsg = "";
           if (callName === 'search_database') {
@@ -804,7 +827,7 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
           contents.push({
             role: "user",
             parts: [{
-              text: "You returned only hidden reasoning. Now call search_database with 2-3 concise bilingual search queries, or provide the final formatted answer if you already have records.",
+              text: "You returned only hidden reasoning. Call search_database with one or two concise, non-duplicate queries, or provide the final formatted answer from existing records.",
             }],
           });
           continue;

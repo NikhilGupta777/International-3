@@ -3147,7 +3147,11 @@ export function StudioCopilot({
               const resultStr = p.result?.error
                 ? `ERROR: ${p.result.error}`
                 : JSON.stringify(p.result ?? {}).slice(0, 2000);
-              return `[Tool: ${p.name} | Args: ${compactArgs} | Result: ${resultStr}]`;
+              // Past-tense narrative, NOT a bracketed protocol — the model
+              // imitates whatever format appears in its own prior turns, and
+              // the old "[Tool: ...]" markers taught it to emit tool calls as
+              // plain text instead of real function calls.
+              return `(context: earlier in this conversation the tool ${p.name} was executed with arguments ${compactArgs} and returned: ${resultStr})`;
             })
             .join("\n")
           : "";
@@ -3155,16 +3159,16 @@ export function StudioCopilot({
           ? m.parts
             .filter((p: any) => p.kind === "artifact")
             .map((p: any) => {
-              if (p.artifactType === "text" && p.content) return `[TextArtifact: ${p.label}] ${String(p.content).slice(0, 4000)}`;
+              if (p.artifactType === "text" && p.content) return `(context: a text artifact "${p.label}" was delivered earlier with this content): ${String(p.content).slice(0, 4000)}`;
               const fields = [
-                `Artifact: ${p.artifactType}`,
-                `Label: ${p.label}`,
-                p.downloadUrl ? `URL: ${p.downloadUrl}` : "",
-                p.imageUrl ? `Image: ${p.imageUrl}` : "",
-                p.tab ? `Tab: ${p.tab}` : "",
-                p.jobId ? `Job: ${p.jobId}` : "",
-              ].filter(Boolean).join(" | ");
-              return `[${fields}]`;
+                `type: ${p.artifactType}`,
+                `label: ${p.label}`,
+                p.downloadUrl ? `url: ${p.downloadUrl}` : "",
+                p.imageUrl ? `image: ${p.imageUrl}` : "",
+                p.tab ? `tab: ${p.tab}` : "",
+                p.jobId ? `job: ${p.jobId}` : "",
+              ].filter(Boolean).join(", ");
+              return `(context: an artifact was delivered earlier — ${fields})`;
             })
             .join("\n")
           : "";
@@ -3225,6 +3229,7 @@ export function StudioCopilot({
       });
     };
     let sawDoneEvent = false;
+    let sawErrorEvent = false;
 
     const parseSseFrame = (frame: string, isTrailing = false): boolean => {
       const raw = frame
@@ -3237,6 +3242,7 @@ export function StudioCopilot({
       try {
         const evt = JSON.parse(raw) as SseEvent;
         if (evt.type === "done") sawDoneEvent = true;
+        if (evt.type === "error") sawErrorEvent = true;
         handleEvent(evt);
         return true;
       } catch (err) {
@@ -3635,6 +3641,24 @@ export function StudioCopilot({
       }
       // trailing buffer
       parseSseFrame(buf, true);
+      // Stream ended cleanly but the server never sent a terminal event —
+      // the run was cut mid-flight (Lambda timeout, CDN drop, server crash).
+      // Without this the UI goes idle and the half-finished run looks done.
+      if (
+        !sawDoneEvent &&
+        !sawErrorEvent &&
+        activeRequestIdRef.current === requestId &&
+        !requestController.signal.aborted
+      ) {
+        patchAssistant(m => ({
+          ...m,
+          parts: m.parts.map(p =>
+            p.kind === "tool_start" && !(p as any).done
+              ? { ...p, done: true, cancelled: true, progress: null, progressMsg: "Connection lost", result: { error: "Connection lost before the tool finished" } }
+              : p),
+        }));
+        setReconnectBanner(lastUserTextRef.current);
+      }
     } catch (err: any) {
       if (activeRequestIdRef.current === requestId && err?.name !== "AbortError") {
         if (err?.message?.includes("401") || err?.message?.includes("403")) {
