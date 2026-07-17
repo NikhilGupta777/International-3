@@ -16,7 +16,10 @@ const tools = [
         description: "Search the web",
         parameters: {
           type: "OBJECT",
-          properties: { query: { type: "STRING" } },
+          properties: {
+            query: { type: "STRING" },
+            limit: { type: "INTEGER", nullable: true },
+          },
           required: ["query"],
         },
       },
@@ -96,6 +99,10 @@ test("Ollama streams separate thinking, text, and tool calls", async () => {
     assert.equal(
       requestBody.tools[0].function.parameters.properties.query.type,
       "string",
+    );
+    assert.deepEqual(
+      requestBody.tools[0].function.parameters.properties.limit,
+      { type: "integer" },
     );
     assert.deepEqual(
       requestBody.messages.slice(-3).map((message: any) => message.role),

@@ -269,14 +269,10 @@ function normalizeJsonSchema(value: any): any {
     }
     normalized[key] = normalizeJsonSchema(child);
   }
-  if (value.nullable === true) {
-    const types = Array.isArray(normalized.type)
-      ? normalized.type
-      : normalized.type
-        ? [normalized.type]
-        : [];
-    normalized.type = [...new Set([...types, "null"])];
-  }
+  // Gemini's `nullable` extension is not part of the tool-schema subset
+  // consistently accepted by OpenAI-compatible and Ollama endpoints. Dropping
+  // it keeps the declared base type portable; tool arguments are optional
+  // unless their property name is present in the parent's `required` array.
   return normalized;
 }
 
