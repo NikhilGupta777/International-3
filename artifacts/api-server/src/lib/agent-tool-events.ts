@@ -54,12 +54,20 @@ export function getArtifactValidationError(
 }
 
 function stripInternalErrorNoise(message: string): string {
-  return message
+  const cleaned = message
     .split(/\.?\s*Please refer to https?:\/\//)
     .shift()!
     .replace(/\[JUDGE\][^\]]*\]/gi, "")
     .replace(/thought_signature/gi, "")
     .trim();
+  if (
+    /(?:NVIDIA NIM|Ollama Cloud|Groq) request failed|invalid JSON schema|params\.json|tools?\[\d+\]\.function\.parameters/i.test(
+      cleaned,
+    )
+  ) {
+    return "AI models are temporarily unavailable. Please retry in a moment.";
+  }
+  return cleaned;
 }
 
 function parseAgentErrorPayload(raw: string): string | null {

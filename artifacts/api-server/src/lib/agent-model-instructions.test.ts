@@ -22,6 +22,8 @@ test("getModelSpecificSystemPrompt routes all text-only Copilot models through t
     "z-ai/glm-5.2",
     "openai/gpt-oss-120b",
     "gpt-oss:120b",
+    "nvidia/nemotron-3-ultra-550b-a55b",
+    "nvidia/nemotron-3-super-120b-a12b",
     "llama-3.1-8b-instant",
   ]) {
     const prompt = getModelSpecificSystemPrompt(model);

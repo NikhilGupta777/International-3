@@ -22,6 +22,7 @@ import {
 import { getSubtitlesOpsSnapshot } from "./subtitles";
 import { getYoutubeOpsSnapshot } from "./youtube";
 import { isGeminiConfigured } from "../lib/gemini-client";
+import { getExternalCopilotKeyCount } from "../lib/copilot-external-provider";
 import {
   getRuntimeFeatureState,
   setRuntimeFeature,
@@ -286,11 +287,11 @@ router.get("/overview", async (_req, res) => {
         isGeminiConfigured() ||
         configured(process.env.GOOGLE_GENERATIVE_AI_API_KEY),
       nvidiaCopilotConfigured:
-        configured(process.env.NVIDIA_API_KEYS) || configured(process.env.NVIDIA_API_KEY),
+        getExternalCopilotKeyCount("nvidia") > 0,
       ollamaCopilotConfigured:
-        configured(process.env.OLLAMA_API_KEYS) || configured(process.env.OLLAMA_API_KEY),
+        getExternalCopilotKeyCount("ollama") > 0,
       groqCopilotConfigured:
-        configured(process.env.GROQ_API_KEYS) || configured(process.env.GROQ_API_KEY),
+        getExternalCopilotKeyCount("groq") > 0,
       allowlistPersistence: configured(process.env.ACCESS_TABLE),
     },
     limits: {

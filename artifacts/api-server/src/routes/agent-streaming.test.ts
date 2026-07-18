@@ -29,4 +29,18 @@ test("Copilot exposes NVIDIA primaries with model-specific fallbacks", () => {
   assert.doesNotMatch(source, /FAST_INPUT_CHAR_LIMIT/);
   assert.match(source, /AI models are temporarily unavailable/);
   assert.doesNotMatch(source, /streamCopilotViaOracle/);
+  assert.match(
+    source,
+    /const visibleTools = activeModel === FAST_MODEL/,
+    "Ollama Ultra fallback should retain the full tool catalog",
+  );
+  assert.match(
+    source,
+    /model === COPILOT_ULTRA_FALLBACK_MODEL[\s\S]*?return OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT/,
+    "Ollama fallback should use a compact Ultra-capable prompt",
+  );
+  assert.doesNotMatch(
+    source.match(/const OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT = `[\s\S]*?`;/)?.[0] ?? "",
+    /switch to Ultra/i,
+  );
 });

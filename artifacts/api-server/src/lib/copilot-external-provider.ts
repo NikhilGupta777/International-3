@@ -8,7 +8,7 @@ export const COPILOT_ULTRA_FALLBACK_MODEL = "gpt-oss:120b";
 export const NVIDIA_NEMOTRON_ULTRA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
 export const NVIDIA_NEMOTRON_SUPER_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 
-type ExternalProvider = "nvidia" | "ollama" | "groq";
+export type ExternalProvider = "nvidia" | "ollama" | "groq";
 
 const PROVIDER_KEY_SLOTS = 4;
 const keyCooldowns = new Map<string, number>();
@@ -26,6 +26,7 @@ export class ExternalCopilotError extends Error {
   readonly status: number;
   readonly retryable: boolean;
   readonly retryAfterMs?: number;
+  readonly keysExhausted: boolean;
 
   constructor(
     message: string,
@@ -34,6 +35,7 @@ export class ExternalCopilotError extends Error {
       status?: number;
       retryable?: boolean;
       retryAfterMs?: number;
+      keysExhausted?: boolean;
       cause?: unknown;
     },
   ) {
@@ -43,6 +45,7 @@ export class ExternalCopilotError extends Error {
     this.status = options.status ?? 0;
     this.retryable = options.retryable ?? false;
     this.retryAfterMs = options.retryAfterMs;
+    this.keysExhausted = options.keysExhausted ?? false;
   }
 }
 
@@ -91,8 +94,7 @@ export function isExternalCopilotConfigured(model?: string): boolean {
   if (!model) {
     return (
       getProviderKeys("nvidia").length > 0 ||
-      getProviderKeys("ollama").length > 0 ||
-      getProviderKeys("groq").length > 0
+      getProviderKeys("ollama").length > 0
     );
   }
   const provider = getCopilotProvider(model);
@@ -118,9 +120,18 @@ function getProviderKeys(provider: ExternalProvider): string[] {
         ...Array.from({ length: PROVIDER_KEY_SLOTS }, (_, index) =>
           process.env[index === 0 ? prefix : `${prefix}_${index + 1}`]?.trim(),
         ),
-      ].filter((value): value is string => Boolean(value)),
+      ].filter(
+        (value): value is string =>
+          Boolean(value) && value !== "-" && value !== "***",
+      ),
     ),
   ];
+}
+
+export function getExternalCopilotKeyCount(
+  provider: ExternalProvider,
+): number {
+  return getProviderKeys(provider).length;
 }
 
 function shouldRotateKey(error: unknown, signal?: AbortSignal): boolean {
@@ -153,41 +164,82 @@ async function* streamWithKeyRotation(
 
   const now = Date.now();
   const candidates = keys
-    .map((apiKey, index) => ({
-      apiKey,
-      slot: `${provider}:${index}`,
-      availableAt: keyCooldowns.get(`${provider}:${index}`) ?? 0,
-    }))
+    .map((apiKey, index) => {
+      const globalSlot = `${provider}:${index}:global`;
+      const modelSlot = `${provider}:${index}:${params.model}`;
+      return {
+        apiKey,
+        globalSlot,
+        modelSlot,
+        availableAt: Math.max(
+          keyCooldowns.get(globalSlot) ?? 0,
+          keyCooldowns.get(modelSlot) ?? 0,
+        ),
+      };
+    })
     .sort((a, b) => {
       const aReady = a.availableAt <= now ? 0 : 1;
       const bReady = b.availableAt <= now ? 0 : 1;
       return aReady - bReady || a.availableAt - b.availableAt;
     });
+  const readyCandidates = candidates.filter(
+    (candidate) => candidate.availableAt <= now,
+  );
+  if (!readyCandidates.length) {
+    const retryAfterMs = Math.max(1_000, candidates[0].availableAt - now);
+    throw new ExternalCopilotError(
+      `${provider === "nvidia" ? "NVIDIA NIM" : provider === "ollama" ? "Ollama Cloud" : "Groq"} keys are cooling down`,
+      {
+        provider,
+        status: 429,
+        retryable: true,
+        retryAfterMs,
+        keysExhausted: true,
+      },
+    );
+  }
 
   let lastError: unknown;
-  for (const candidate of candidates) {
+  for (const candidate of readyCandidates) {
     let emitted = false;
     try {
       for await (const chunk of run(candidate.apiKey)) {
         emitted = true;
         yield chunk;
       }
-      keyCooldowns.delete(candidate.slot);
+      keyCooldowns.delete(candidate.modelSlot);
       return;
     } catch (error) {
       lastError = error;
       if (!shouldRotateKey(error, params.signal)) throw error;
-      keyCooldowns.set(candidate.slot, Date.now() + cooldownMs(error));
+      const cooldownSlot =
+        error instanceof ExternalCopilotError &&
+        (error.status === 401 || error.status === 403)
+          ? candidate.globalSlot
+          : candidate.modelSlot;
+      keyCooldowns.set(cooldownSlot, Date.now() + cooldownMs(error));
       // Replaying after visible output would duplicate the response. The failed
       // key is cooled down so the next request starts on another configured key.
       if (emitted) throw error;
     }
   }
+  if (lastError instanceof ExternalCopilotError) {
+    throw new ExternalCopilotError(lastError.message, {
+      provider: lastError.provider,
+      status: lastError.status,
+      retryable: lastError.retryable,
+      retryAfterMs: lastError.retryAfterMs,
+      keysExhausted: true,
+      cause: lastError,
+    });
+  }
   throw lastError;
 }
 
 export function isExternalProviderRetryableError(error: unknown): boolean {
-  if (error instanceof ExternalCopilotError) return error.retryable;
+  if (error instanceof ExternalCopilotError) {
+    return error.retryable && !error.keysExhausted;
+  }
   const message = String((error as any)?.message ?? error ?? "");
   return /abort|timeout|timed out|fetch failed|socket|ECONNRESET|EAI_AGAIN|429|502|503|504/i.test(
     message,

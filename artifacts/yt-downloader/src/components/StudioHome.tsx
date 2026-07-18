@@ -197,7 +197,10 @@ export function StudioHome({
     setUltra(next);
     try {
       localStorage.setItem(ULTRA_KEY, next ? "1" : "0");
-      localStorage.setItem(REASONING_KEY, next ? "advanced" : "flash");
+      localStorage.setItem(
+        REASONING_KEY,
+        next ? "z-ai/glm-5.2" : "openai/gpt-oss-120b",
+      );
     } catch { }
   };
 
@@ -699,7 +702,7 @@ export function StudioHome({
               <button
                 type="button"
                 className={cn("gs-pill-ultra", ultra && "gs-pill-ultra-active")}
-                title={ultra ? "Ultra mode ON — uses Pro model" : "Ultra mode OFF — uses default model"}
+                title={ultra ? "Ultra — GLM 5.2 with automatic fallbacks" : "Fast — GPT-OSS 120B with automatic fallbacks"}
                 aria-pressed={ultra}
                 onClick={() => setUltraMode(!ultra)}
               >

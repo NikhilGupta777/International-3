@@ -190,6 +190,62 @@ test("public modes expose the required four-model fallback order", () => {
   ]);
 });
 
+test("provider key pools ignore empty placeholders and duplicates", () => {
+  process.env.GROQ_API_KEYS = "test-groq-key,-,***,test-groq-key";
+  try {
+    assert.equal(provider.getExternalCopilotKeyCount("groq"), 1);
+  } finally {
+    delete process.env.GROQ_API_KEYS;
+  }
+});
+
+test("a model-specific NVIDIA cooldown does not suppress Nemotron fallbacks", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    if (fetchCalls === 1) {
+      return new Response(
+        JSON.stringify({ error: { message: "model is at capacity" } }),
+        { status: 429 },
+      );
+    }
+    return new Response(
+      [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" } }] })}`,
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  try {
+    await assert.rejects(() =>
+      collect(
+        provider.streamExternalCopilot({
+          model: "z-ai/glm-5.2",
+          contents,
+          systemInstruction: "system",
+          tools,
+        }),
+      ),
+    );
+    const chunks = await collect(
+      provider.streamExternalCopilot({
+        model: "nvidia/nemotron-3-ultra-550b-a55b",
+        contents,
+        systemInstruction: "system",
+        tools,
+      }),
+    );
+    assert.equal(fetchCalls, 2);
+    assert.equal(chunks[0].candidates[0].content.parts[0].text, "OK");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("Groq assembles streamed tool-call argument fragments", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -273,11 +329,14 @@ test("Groq rotates to the next configured key before output on provider failure"
 
 test("provider HTTP errors are bounded and marked retryable", async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls++;
+    return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
       status: 429,
       headers: { "retry-after": "1" },
     });
+  };
   try {
     await assert.rejects(
       () =>
@@ -293,9 +352,29 @@ test("provider HTTP errors are bounded and marked retryable", async () => {
         assert.equal(error.status, 429);
         assert.equal(error.retryable, true);
         assert.equal(error.retryAfterMs, 1000);
+        assert.equal(error.keysExhausted, true);
+        assert.equal(provider.isExternalProviderRetryableError(error), false);
         return true;
       },
     );
+    const callsAfterExhaustion = fetchCalls;
+    await assert.rejects(
+      () =>
+        collect(
+          provider.streamExternalCopilot({
+            model: "gpt-oss:120b",
+            contents,
+            systemInstruction: "system",
+            tools,
+          }),
+        ),
+      (error: any) => {
+        assert.equal(error.status, 429);
+        assert.equal(error.keysExhausted, true);
+        return true;
+      },
+    );
+    assert.equal(fetchCalls, callsAfterExhaustion);
   } finally {
     globalThis.fetch = originalFetch;
   }

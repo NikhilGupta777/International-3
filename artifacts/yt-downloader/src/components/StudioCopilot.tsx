@@ -27,9 +27,7 @@ import { upsertActiveTranslatorJob } from "@/lib/translator-history";
 import { getToolResultError } from "@/lib/copilot-tool-state";
 
 const ULTRA_KEY = "studio-ultra-mode";
-// Separate key persists the full reasoning mode (flash/pro/advanced).
-// Without this, only `ultra` (advanced) was preserved across reloads — `pro`
-// silently reverted to `flash` and `advanced` reverted to `pro` after refresh.
+// Separate key persists the selected production model across reloads.
 const REASONING_KEY = "studio-reasoning-mode";
 function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
@@ -37,8 +35,8 @@ function readUltraInitial(): boolean {
 
 type ReasoningMode = "openai/gpt-oss-120b" | "z-ai/glm-5.2";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "z-ai/glm-5.2", label: "Ultra", description: "GLM 5.2 on NVIDIA with Ollama GPT-OSS fallback", ultra: true },
-  { id: "openai/gpt-oss-120b", label: "Fast", description: "GPT-OSS 120B on NVIDIA with Groq fallback", ultra: false },
+  { id: "z-ai/glm-5.2", label: "Ultra", description: "GLM 5.2 → Ollama GPT-OSS → Nemotron Ultra → Super", ultra: true },
+  { id: "openai/gpt-oss-120b", label: "Fast", description: "NVIDIA GPT-OSS → Ollama GPT-OSS → Nemotron Super → Ultra", ultra: false },
 ];
 
 function readReasoningInitial(): ReasoningMode {

@@ -711,6 +711,15 @@ jobs:
               printf '\n%s=%s\n' "$key" "$value" >> /tmp/.env.green
             fi
           }
+          sync_optional_secret() {
+            local key="$1"
+            local value="$2"
+            if [ -n "$value" ]; then
+              upsert_env "$key" "$value"
+            else
+              sed -i "/^${key}=/d" /tmp/.env.green
+            fi
+          }
           read_env() {
             local key="$1"
             grep -m1 "^${key}=" /tmp/.env.green | cut -d= -f2- | tr -d '\r' || true
@@ -730,17 +739,17 @@ jobs:
           upsert_env "GEMINI_API_KEY_12" "$GEMINI_API_KEY_12_SECRET"
           upsert_env "GEMINI_API_KEY_13" "$GEMINI_API_KEY_13_SECRET"
           upsert_env "OLLAMA_API_KEY" "$OLLAMA_API_KEY_SECRET"
-          upsert_env "OLLAMA_API_KEY_2" "$OLLAMA_API_KEY_2_SECRET"
-          upsert_env "OLLAMA_API_KEY_3" "$OLLAMA_API_KEY_3_SECRET"
-          upsert_env "OLLAMA_API_KEY_4" "$OLLAMA_API_KEY_4_SECRET"
+          sync_optional_secret "OLLAMA_API_KEY_2" "$OLLAMA_API_KEY_2_SECRET"
+          sync_optional_secret "OLLAMA_API_KEY_3" "$OLLAMA_API_KEY_3_SECRET"
+          sync_optional_secret "OLLAMA_API_KEY_4" "$OLLAMA_API_KEY_4_SECRET"
           upsert_env "GROQ_API_KEY" "$GROQ_API_KEY_SECRET"
-          upsert_env "GROQ_API_KEY_2" "$GROQ_API_KEY_2_SECRET"
-          upsert_env "GROQ_API_KEY_3" "$GROQ_API_KEY_3_SECRET"
-          upsert_env "GROQ_API_KEY_4" "$GROQ_API_KEY_4_SECRET"
+          sync_optional_secret "GROQ_API_KEY_2" "$GROQ_API_KEY_2_SECRET"
+          sync_optional_secret "GROQ_API_KEY_3" "$GROQ_API_KEY_3_SECRET"
+          sync_optional_secret "GROQ_API_KEY_4" "$GROQ_API_KEY_4_SECRET"
           upsert_env "NVIDIA_API_KEY" "$NVIDIA_API_KEY_SECRET"
-          upsert_env "NVIDIA_API_KEY_2" "$NVIDIA_API_KEY_2_SECRET"
-          upsert_env "NVIDIA_API_KEY_3" "$NVIDIA_API_KEY_3_SECRET"
-          upsert_env "NVIDIA_API_KEY_4" "$NVIDIA_API_KEY_4_SECRET"
+          sync_optional_secret "NVIDIA_API_KEY_2" "$NVIDIA_API_KEY_2_SECRET"
+          sync_optional_secret "NVIDIA_API_KEY_3" "$NVIDIA_API_KEY_3_SECRET"
+          sync_optional_secret "NVIDIA_API_KEY_4" "$NVIDIA_API_KEY_4_SECRET"
           upsert_env "COPILOT_ULTRA_MODEL" "z-ai/glm-5.2"
           upsert_env "COPILOT_FAST_MODEL" "openai/gpt-oss-120b"
           upsert_env "COPILOT_ULTRA_MAX_OUTPUT_TOKENS" "60000"

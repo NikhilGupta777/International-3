@@ -34,3 +34,18 @@ test("getCleanAgentErrorMessage extracts embedded Gemini error payloads", () => 
     "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.",
   );
 });
+
+test("getCleanAgentErrorMessage never exposes provider or schema internals", () => {
+  assert.equal(
+    getCleanAgentErrorMessage(
+      "Groq request failed (400): invalid JSON schema for tool get_video_info, tools[0].function.parameters: params.json compilation failed",
+    ),
+    "AI models are temporarily unavailable. Please retry in a moment.",
+  );
+  assert.equal(
+    getCleanAgentErrorMessage(
+      "NVIDIA NIM request failed (429): account rate limited",
+    ),
+    "AI models are temporarily unavailable. Please retry in a moment.",
+  );
+});
