@@ -9,6 +9,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { decodeS3ListedKey } from "./s3-listing";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { logger } from "./logger";
 
@@ -378,6 +379,7 @@ export async function cleanupOldS3ObjectsDetailed(params: {
         Prefix: prefix,
         ContinuationToken: continuationToken,
         MaxKeys: 1000,
+        EncodingType: "url",
       }),
     );
 
@@ -387,7 +389,7 @@ export async function cleanupOldS3ObjectsDetailed(params: {
       if (!object.Key || !object.LastModified) continue;
       if (object.LastModified.getTime() >= cutoff) continue;
       bytesFreed += object.Size ?? 0;
-      await deleteS3Object(object.Key);
+      await deleteS3Object(decodeS3ListedKey(object.Key));
       deletedCount += 1;
     }
 

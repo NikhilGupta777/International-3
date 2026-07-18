@@ -20,6 +20,7 @@ import {
   ListObjectsV2Command,
   DeleteObjectsCommand,
 } from "@aws-sdk/client-s3";
+import { decodeS3ListedKey } from "../lib/s3-listing";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled } from "../lib/gemini-client";
 import { setupSse, sseFlush } from "../lib/sse";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
@@ -176,10 +177,11 @@ async function cleanupOldTranslatorJobs(): Promise<void> {
         Prefix: "translator-jobs/",
         ContinuationToken: token,
         MaxKeys: 1000,
+        EncodingType: "url",
       }));
       for (const obj of result.Contents ?? []) {
         if (obj.Key && obj.LastModified && obj.LastModified.getTime() < cutoff) {
-          toDelete.push({ Key: obj.Key });
+          toDelete.push({ Key: decodeS3ListedKey(obj.Key) });
         }
       }
       token = result.NextContinuationToken;

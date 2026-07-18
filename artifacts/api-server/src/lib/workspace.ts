@@ -21,6 +21,7 @@ import {
   CopyObjectCommand,
   HeadObjectCommand,
 } from "@aws-sdk/client-s3";
+import { decodeS3ListedKey } from "./s3-listing";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { logger } from "./logger";
 
@@ -192,9 +193,10 @@ class S3WorkspaceAdapter implements WorkspaceAdapter {
       Prefix,
       MaxKeys: limit,
       ContinuationToken: opts?.cursor,
+      EncodingType: "url",
     }));
     const files: WorkspaceFile[] = (res.Contents ?? []).map((obj) => ({
-      path: this.rel(obj.Key ?? ""),
+      path: this.rel(decodeS3ListedKey(obj.Key ?? "")),
       size: obj.Size ?? 0,
       modifiedAt: obj.LastModified ? obj.LastModified.getTime() : Date.now(),
     }));
