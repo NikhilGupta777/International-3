@@ -154,7 +154,8 @@ function Get-ExistingStackParameterMap {
 function Remove-BlankExistingStackOverrides {
   param(
     [string[]]$Overrides,
-    [hashtable]$ExistingParams
+    [hashtable]$ExistingParams,
+    [string[]]$ClearableBlankKeys = @()
   )
 
   if (-not $ExistingParams -or $ExistingParams.Count -eq 0) {
@@ -171,7 +172,11 @@ function Remove-BlankExistingStackOverrides {
 
     $key = $parts[0]
     $value = $parts[1]
-    if ([string]::IsNullOrWhiteSpace($value) -and $ExistingParams.ContainsKey($key)) {
+    if (
+      [string]::IsNullOrWhiteSpace($value) -and
+      $ExistingParams.ContainsKey($key) -and
+      $key -notin $ClearableBlankKeys
+    ) {
       Write-Host "Preserving existing CloudFormation parameter because local override is blank: $key"
       continue
     }
@@ -390,7 +395,12 @@ $parameterOverrides = @(
 
 $parameterOverrides = Remove-BlankExistingStackOverrides `
   -Overrides $parameterOverrides `
-  -ExistingParams $existingStackParams
+  -ExistingParams $existingStackParams `
+  -ClearableBlankKeys @(
+    "OllamaApiKey2", "OllamaApiKey3", "OllamaApiKey4",
+    "GroqApiKey2", "GroqApiKey3", "GroqApiKey4",
+    "NvidiaApiKey2", "NvidiaApiKey3", "NvidiaApiKey4"
+  )
 
 Remove-RollbackCompleteStackIfNeeded -Region $Region -StackName $StackName
 
