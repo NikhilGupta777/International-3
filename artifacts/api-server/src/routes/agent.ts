@@ -3282,6 +3282,16 @@ async function executeTool(
         toolId,
         runId,
       );
+      if (final.status !== "done") {
+        forgetAgentJob(req, jobId);
+        return {
+          result: {
+            jobId,
+            status: "processing",
+            message: "Download is still processing in the background. Check the Activity panel for completion.",
+          },
+        };
+      }
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: {
@@ -3370,7 +3380,7 @@ async function executeTool(
         status: "processing",
         message: "Starting subtitle generation...",
         jobId: subtitleJobId,
-        url: args.url,
+        url: inputUrl,
       } as any);
 
       const final = await pollSubtitleUntilDone(
@@ -3440,7 +3450,7 @@ async function executeTool(
       } as any);
 
       // Poll until analysis is done (same pattern as clip/download)
-      await pollJobUntilDone(
+      const clipsResult = await pollJobUntilDone(
         res,
         name,
         `${apiBase}/youtube/progress/${jobId}`,
@@ -3450,6 +3460,16 @@ async function executeTool(
         toolId,
         runId,
       );
+      if (clipsResult.status !== "done") {
+        forgetAgentJob(req, jobId);
+        return {
+          result: {
+            jobId,
+            status: "processing",
+            message: "Best clips analysis is still processing in the background. Check the Activity panel for completion.",
+          },
+        };
+      }
       return {
         result: {
           jobId,
@@ -5327,15 +5347,23 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
+      host === "::1" ||
+      host === "[::1]" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
+      host.startsWith("169.254.") ||
       host.endsWith(".local")
-    );
+    ) return true;
+    const m = host.match(/^172\.(\d+)\./);
+    if (m) {
+      const second = parseInt(m[1], 10);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
   } catch {
     return true;
   }

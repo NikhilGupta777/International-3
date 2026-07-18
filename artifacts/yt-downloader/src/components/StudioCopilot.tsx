@@ -2142,6 +2142,7 @@ function ArtifactCard({ part, onNavigate, onOpenWorkspace }: { part: MessagePart
 // ── MessageBubble ─────────────────────────────────────────────────────────────
 // ── CopyBubble — copy button for assistant text bubbles ─────────────────────
 function CopyBubble({ text }: { text: string }) {
+  const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
