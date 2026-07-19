@@ -235,7 +235,7 @@ export function StudioHome({
     }
     const rec = new SR();
     rec.continuous = false;
-    rec.interimResults = true;
+    rec.interimResults = false;
     rec.lang = navigator.language || "en-US";
     rec.onresult = (e: any) => {
       let chunk = "";

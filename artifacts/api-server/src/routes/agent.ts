@@ -2964,6 +2964,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3370,7 +3371,7 @@ async function executeTool(
         status: "processing",
         message: "Starting subtitle generation...",
         jobId: subtitleJobId,
-        url: args.url,
+        url: inputUrl,
       } as any);
 
       const final = await pollSubtitleUntilDone(
@@ -4415,10 +4416,8 @@ async function executeTool(
         name,
         message: "Inspecting image...",
       });
-      // Flash is plenty for image description / scene tagging; reserve ULTRA
-      // for genuinely heavy reasoning (analyze_youtube_video, PDF analysis).
       const resp = await generateContentWithRotation({
-        model: AGENT_MODEL,
+        model: GEMINI_HELPER_MODEL,
         contents: [
           {
             role: "user",
@@ -4430,7 +4429,7 @@ async function executeTool(
             ],
           },
         ],
-        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(AGENT_MODEL)) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(GEMINI_HELPER_MODEL)) },
       });
       const content = stripReasoningTags(
         (resp.candidates?.[0]?.content?.parts ?? [])
@@ -4456,9 +4455,8 @@ async function executeTool(
         name,
         message: "Reading image text...",
       });
-      // OCR is a Flash-level task. ULTRA here was needless cost + latency.
       const resp = await generateContentWithRotation({
-        model: AGENT_MODEL,
+        model: GEMINI_HELPER_MODEL,
         contents: [
           {
             role: "user",
@@ -4470,7 +4468,7 @@ async function executeTool(
             ],
           },
         ],
-        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(AGENT_MODEL)) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(GEMINI_HELPER_MODEL)) },
       });
       const content = stripReasoningTags(
         (resp.candidates?.[0]?.content?.parts ?? [])
@@ -5861,6 +5859,14 @@ router.post("/agent/chat", async (req, res) => {
                 if (openToken.startsWith(lower.slice(-length))) {
                   partialLength = length;
                   break;
+                }
+              }
+              // Hold back a trailing partial S3 URL so the stripping regex in
+              // sseEvent can match the complete URL once the next chunk arrives.
+              if (partialLength === 0) {
+                const urlMatch = /https?:\/\/[^\s"]*\.s3[^\s"]*$/.exec(canvasRouteBuf);
+                if (urlMatch) {
+                  partialLength = canvasRouteBuf.length - urlMatch.index;
                 }
               }
             }
