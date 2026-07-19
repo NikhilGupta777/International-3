@@ -43,4 +43,20 @@ test("Copilot exposes NVIDIA primaries with model-specific fallbacks", () => {
     source.match(/const OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT = `[\s\S]*?`;/)?.[0] ?? "",
     /switch to Ultra/i,
   );
+  assert.match(
+    source,
+    /const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot in Ultra mode[\s\S]{0,500}selected app mode for this request is Ultra[\s\S]{0,500}Never claim that the user is on Fast mode/,
+  );
+  assert.match(source, /type: "model_status"[\s\S]*?fallback: true/);
+});
+
+test("YouTube caption tool keeps the complete fetched SRT in model context", () => {
+  const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
+  const captionCase = source.match(
+    /case "get_youtube_captions":[\s\S]*?case "generate_captions_with_assemblyai":/,
+  )?.[0] ?? "";
+
+  assert.match(captionCase, /const content = rawText;/);
+  assert.match(captionCase, /fullContentInContext: true/);
+  assert.doesNotMatch(captionCase, /rawText\.slice\(/);
 });

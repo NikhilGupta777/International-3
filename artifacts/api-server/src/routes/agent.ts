@@ -1509,7 +1509,9 @@ const DISABLED_FEATURES_PROMPT = [
     : "",
 ].filter(Boolean).join("\n");
 
-const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot, an action-focused assistant inside a YouTube/video production web app.
+const SYSTEM_PROMPT = `You are VideoMaking Studio Copilot in Ultra mode, an action-focused assistant inside a YouTube/video production web app.
+
+The selected app mode for this request is Ultra. Never claim that the user is on Fast mode, even if the request is served by an automatic fallback model. Do not expose model or provider names.
 
 Your job is to help the user create, edit, analyze, download, subtitle, translate, package, and publish video/media content.
 
@@ -3741,14 +3743,16 @@ async function executeTool(
         `${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`,
         { headers: internalHeaders },
       );
-      // SECURITY: Cap caption text size while still allowing long SRT files in model context.
-      const MAX_CAPTION_CHARS = 1_200_000;
+      // Keep the complete fetched SRT in model context. The byte guard protects
+      // the Lambda from an unbounded upstream response; it must never silently
+      // slice a valid caption file.
+      const MAX_CAPTION_BYTES = 9 * 1024 * 1024;
       const rawText = await readResponseTextWithLimit(
         r,
-        MAX_CAPTION_CHARS * 3,
+        MAX_CAPTION_BYTES,
         new AbortController(),
       );
-      const content = rawText.slice(0, MAX_CAPTION_CHARS);
+      const content = rawText;
       if (!r.ok) {
         let message = content || `Captions fetch failed: ${r.status}`;
         try {
@@ -3771,7 +3775,7 @@ async function executeTool(
           language,
           bytes: Buffer.byteLength(rawText, "utf8"),
           contentBytes: Buffer.byteLength(content, "utf8"),
-          fullContentInContext: rawText.length <= MAX_CAPTION_CHARS,
+          fullContentInContext: true,
           subtitleSource: r.headers.get("x-subtitle-source") ?? undefined,
           subtitleCoverageEndSec: Number(r.headers.get("x-subtitle-coverage-end") ?? "") || undefined,
           videoDurationSec: Number(r.headers.get("x-video-duration") ?? "") || undefined,
@@ -5706,6 +5710,12 @@ router.post("/agent/chat", async (req, res) => {
           streamErr = null;
           if (attemptModel !== activeModel) {
             console.warn(`[agent] run ${runId}: using fallback model ${attemptModel}`);
+            sseEvent(res, {
+              type: "model_status",
+              runId,
+              mode: isUltra ? "ultra" : "fast",
+              fallback: true,
+            });
           }
           break; // success
         } catch (e: any) {

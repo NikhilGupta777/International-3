@@ -137,7 +137,8 @@ function revokeMessagePreviewUrls(messages: Message[]) {
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type SseEvent =
-  | { type: "run_start"; runId: string; ts?: number }
+  | { type: "run_start"; runId: string; ts?: number; model?: string; provider?: string; ultra?: boolean }
+  | { type: "model_status"; runId?: string; mode: "ultra" | "fast"; fallback: boolean }
   | { type: "thinking"; runId?: string; stage?: string; iteration?: number; total?: number }
   | { type: "heartbeat"; runId?: string; ts?: number }
   | { type: "text"; content: string; runId?: string }
@@ -2598,6 +2599,7 @@ export function StudioCopilot({
   const [reasoningMode, setReasoningMode] = useState<ReasoningMode>(readReasoningInitial);
   const activeReasoning = REASONING_OPTIONS.find(option => option.id === reasoningMode) ?? REASONING_OPTIONS[0];
   const ultra = activeReasoning.ultra;
+  const [runFallbackActive, setRunFallbackActive] = useState(false);
   // ── Skills ──
   type SkillMeta = { id: string; name: string; description: string; icon: string; category: string; starters?: string[]; tags?: string[] };
   const [availableSkills, setAvailableSkills] = useState<SkillMeta[]>([]);
@@ -2621,6 +2623,7 @@ export function StudioCopilot({
   // Persist the full reasoning mode so flash/pro/advanced all survive a reload.
   useEffect(() => {
     try { localStorage.setItem(REASONING_KEY, reasoningMode); } catch { }
+    setRunFallbackActive(false);
   }, [reasoningMode]);
   const bottomRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -3269,10 +3272,22 @@ export function StudioCopilot({
       if (evt.type === "run_start") {
         setCurrentRunId(evt.runId);
         currentRunIdRef.current = evt.runId;
+        setRunFallbackActive(false);
+        // The server is authoritative. Correct stale browser preferences if a
+        // cached client ever sends a value that resolves to the other mode.
+        if (evt.ultra === true && reasoningMode !== "z-ai/glm-5.2") {
+          setReasoningMode("z-ai/glm-5.2");
+        } else if (evt.ultra === false && reasoningMode !== "openai/gpt-oss-120b") {
+          setReasoningMode("openai/gpt-oss-120b");
+        }
         return;
       }
       // Drop events from a previous run (aborted stream trailing frames)
       if ((evt as any).runId && currentRunIdRef.current && (evt as any).runId !== currentRunIdRef.current) return;
+      if (evt.type === "model_status") {
+        setRunFallbackActive(evt.fallback);
+        return;
+      }
       // Drop events after the user aborted
       if (abortRef.current?.signal.aborted && evt.type !== "done") return;
       if (evt.type === "heartbeat") return;
@@ -4342,7 +4357,7 @@ export function StudioCopilot({
                   title={activeReasoning.description}
                   onClick={() => setShowReasoningMenu(v => !v)}
                 >
-                  <span>{activeReasoning.label}</span>
+                  <span>{activeReasoning.label}{runFallbackActive ? " · Fallback" : ""}</span>
                   <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", showReasoningMenu && "rotate-180")} />
                 </button>
                 {showReasoningMenu && (
