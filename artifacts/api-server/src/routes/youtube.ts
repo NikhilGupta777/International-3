@@ -2214,7 +2214,11 @@ async function tryProcessClipCutViaFullSource(
   return true;
 }
 
-async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
+async function processClipCut(
+  jobId: string,
+  job: DownloadJob,
+  abortSignal?: AbortSignal,
+): Promise<void> {
   const jobRef = jobs.get(jobId)!;
   if (jobRef.cancelled) throw new Error(CANCELLED_BY_USER);
   const { clipStart = 0, clipEnd, clipQuality = "best" } = jobRef;
@@ -2298,6 +2302,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
           timeoutMs: attemptTimeoutMs,
           stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
           onProgress: persistProgress,
+          abortSignal,
         });
         lastErr = null;
         break;
@@ -2339,6 +2344,7 @@ async function processClipCut(jobId: string, job: DownloadJob): Promise<void> {
               timeoutMs: attemptTimeoutMs,
               stallTimeoutMs: LAMBDA_CLIP_STALL_TIMEOUT_MS,
               onProgress: persistProgress,
+              abortSignal,
             });
             lastErr = null;
             break;
@@ -2483,17 +2489,8 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
   const workerStartedAt = Date.now();
   const clipDurationSecs = Math.max(0, e.endTime - e.startTime);
   const adaptiveHandoffEnabled = isYoutubeQueuePrimaryEnabledFor("clip-cut");
+  const workerAbort = new AbortController();
   let controlCheckRunning = false;
-  const stopActiveProcess = () => {
-    const proc = job.activeProc;
-    if (!proc) return;
-    try { proc.kill("SIGTERM"); } catch {}
-    setTimeout(() => {
-      if (job.activeProc === proc) {
-        try { proc.kill("SIGKILL"); } catch {}
-      }
-    }, 2_000).unref?.();
-  };
   // Track when the visible percent last moved — byte-based downloads report
   // "5.2MiB/s" speeds the handoff policy can't parse, so percent movement is
   // the reliable "still making progress" signal for those.
@@ -2520,7 +2517,7 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
               job.cancelled = true;
               job.status = "cancelled";
               job.message = CANCELLED_BY_USER;
-              stopActiveProcess();
+              workerAbort.abort(CANCELLED_BY_USER);
               return;
             }
             if (job.status === "done" || job.status === "error" || job.status === "cancelled") return;
@@ -2542,17 +2539,31 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
               completionReserveMs: LAMBDA_CLIP_COMPLETION_RESERVE_MS,
             });
             if (!decision.shouldHandoff) return;
-            job.handoffRequested = true;
-            job.cancelled = true;
-            job.message = "Taking longer than expected - continuing in background...";
-            persistClipJobState(e.jobId, job);
             logger.info({
               jobId: e.jobId,
               speed: decision.speed,
               projectedRemainingMs: decision.projectedRemainingMs,
               elapsedMs: Date.now() - workerStartedAt,
             }, "Handing slow clip-cut Lambda job to Batch");
-            stopActiveProcess();
+            // Submit first. Waiting for yt-dlp's `close` event before creating
+            // the Batch job can deadlock when its ffmpeg descendant keeps the
+            // inherited pipes open after yt-dlp is killed.
+            const batchJobId = await handoffYoutubeQueuePrimaryJob({
+              jobId: e.jobId,
+              jobType: "clip-cut",
+              sourceUrl: e.url,
+              meta: {
+                startTime: e.startTime,
+                endTime: e.endTime,
+                quality: e.quality,
+                notifyClientKey: e.notifyClientKey ?? null,
+              },
+            });
+            if (!batchJobId) throw new Error("Background queue is unavailable");
+            job.handoffRequested = true;
+            job.cancelled = true;
+            job.message = "Taking longer than expected - continuing in background...";
+            workerAbort.abort("Clip handed to Batch");
           } catch (err) {
             logger.warn({ err, jobId: e.jobId }, "ClipCut worker control check failed");
           } finally {
@@ -2563,35 +2574,13 @@ export async function runClipCutWorker(e: ClipCutWorkerEvent): Promise<void> {
   handoffTimer.unref?.();
 
   try {
-    await processClipCut(e.jobId, job);
+    await processClipCut(e.jobId, job, workerAbort.signal);
   } catch (err) {
     const j = jobs.get(e.jobId);
     if (!j) return;
     const message = err instanceof Error ? err.message : "Clip cut failed";
     if (j.handoffRequested) {
-      try {
-        const batchJobId = await handoffYoutubeQueuePrimaryJob({
-          jobId: e.jobId,
-          jobType: "clip-cut",
-          sourceUrl: e.url,
-          meta: {
-            startTime: e.startTime,
-            endTime: e.endTime,
-            quality: e.quality,
-            notifyClientKey: e.notifyClientKey ?? null,
-          },
-        });
-        if (!batchJobId) throw new Error("Background queue is unavailable");
-        return;
-      } catch (handoffErr) {
-        logger.error({ err: handoffErr, jobId: e.jobId }, "Failed to hand clip-cut job to Batch");
-        j.cancelled = false;
-        j.status = "error";
-        j.message = "Clip was too slow for the fast worker and could not be moved to background processing. Please retry.";
-        j.percent = 0;
-        persistClipJobState(e.jobId, j);
-        return;
-      }
+      return;
     }
     if (message === CANCELLED_BY_USER || j.cancelled) {
       j.status = "cancelled";
@@ -2973,7 +2962,12 @@ function spawnDownloadOnce(
   extraArgs: string[],
   cmdArgs: string[],
   jobRef: DownloadJob,
-  options: { timeoutMs?: number; stallTimeoutMs?: number; onProgress?: () => void } = {},
+  options: {
+    timeoutMs?: number;
+    stallTimeoutMs?: number;
+    onProgress?: () => void;
+    abortSignal?: AbortSignal;
+  } = {},
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (jobRef.cancelled) {
@@ -2995,8 +2989,20 @@ function spawnDownloadOnce(
       { command, args: commandArgs, ffmpegPath: FFMPEG_PATH, path: PYTHON_ENV.PATH },
       "Starting yt-dlp download command",
     );
-    const proc = spawn(command, commandArgs, { env: PYTHON_ENV });
+    // A separate process group lets cancellation terminate yt-dlp and every
+    // ffmpeg descendant instead of leaving a child holding stdio pipes open.
+    const useProcessGroup = process.platform !== "win32";
+    const proc = spawn(command, commandArgs, {
+      env: PYTHON_ENV,
+      detached: useProcessGroup,
+    });
     jobRef.activeProc = proc;
+    const terminateProcessTree = (signal: NodeJS.Signals) => {
+      try {
+        if (useProcessGroup && proc.pid) process.kill(-proc.pid, signal);
+        else proc.kill(signal);
+      } catch {}
+    };
     let stderr = "";
     let timedOut = false;
     let timeoutReason = "";
@@ -3006,15 +3012,9 @@ function spawnDownloadOnce(
             timedOut = true;
             timeoutReason = `yt-dlp command timed out after ${Math.round(options.timeoutMs! / 1000)} seconds`;
             stderr += `\n${timeoutReason}`;
-            try {
-              proc.kill("SIGTERM");
-            } catch {}
+            terminateProcessTree("SIGTERM");
             setTimeout(() => {
-              if (jobRef.activeProc === proc) {
-                try {
-                  proc.kill("SIGKILL");
-                } catch {}
-              }
+              terminateProcessTree("SIGKILL");
             }, 5000).unref?.();
           }, options.timeoutMs)
         : null;
@@ -3027,15 +3027,9 @@ function spawnDownloadOnce(
         timedOut = true;
         timeoutReason = `yt-dlp made no progress for ${Math.round(options.stallTimeoutMs! / 1000)} seconds`;
         stderr += `\n${timeoutReason}`;
-        try {
-          proc.kill("SIGTERM");
-        } catch {}
+        terminateProcessTree("SIGTERM");
         setTimeout(() => {
-          if (jobRef.activeProc === proc) {
-            try {
-              proc.kill("SIGKILL");
-            } catch {}
-          }
+          terminateProcessTree("SIGKILL");
         }, 5000).unref?.();
       }, options.stallTimeoutMs);
       stallTimeout.unref?.();
@@ -3184,7 +3178,24 @@ function spawnDownloadOnce(
       }
     });
 
+    const abortDownload = () => {
+      if (timeout) clearTimeout(timeout);
+      if (stallTimeout) clearTimeout(stallTimeout);
+      terminateProcessTree("SIGTERM");
+      setTimeout(() => terminateProcessTree("SIGKILL"), 2_000).unref?.();
+      reject(
+        new Error(
+          typeof options.abortSignal?.reason === "string"
+            ? options.abortSignal.reason
+            : CANCELLED_BY_USER,
+        ),
+      );
+    };
+    options.abortSignal?.addEventListener("abort", abortDownload, { once: true });
+    if (options.abortSignal?.aborted) abortDownload();
+
     proc.on("close", (code: number | null) => {
+      options.abortSignal?.removeEventListener("abort", abortDownload);
       if (timeout) clearTimeout(timeout);
       if (stallTimeout) clearTimeout(stallTimeout);
       jobRef.activeProc = null;
@@ -3209,6 +3220,7 @@ function spawnDownloadOnce(
     });
 
     proc.on("error", (err: Error) => {
+      options.abortSignal?.removeEventListener("abort", abortDownload);
       if (timeout) clearTimeout(timeout);
       if (stallTimeout) clearTimeout(stallTimeout);
       jobRef.activeProc = null;

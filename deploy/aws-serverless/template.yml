@@ -320,7 +320,7 @@ Parameters:
     Default: download,clip-cut
   LambdaClipMaxDurationSeconds:
     Type: Number
-    Default: 600
+    Default: 420
   LambdaClipCommandTimeoutMs:
     Type: Number
     Default: 840000
@@ -610,7 +610,7 @@ Resources:
       Code:
         ImageUri: !Ref ImageUri
       Role: !GetAtt ApiRole.Arn
-      MemorySize: 1536
+      MemorySize: 3008
       Timeout: 900
       EphemeralStorage:
         Size: 5120
@@ -719,6 +719,14 @@ Resources:
           TRANSLATOR_LIP_SYNC_ENABLED: !Ref TranslatorLipSyncEnabled
           RATE_LIMIT_BYPASS_IPS: !Ref RateLimitBypassIps
           DISABLE_STATIC_SERVE: "true"
+
+  ApiFunctionAsyncInvokeConfig:
+    Type: AWS::Lambda::EventInvokeConfig
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Qualifier: "$LATEST"
+      MaximumEventAgeInSeconds: 3600
+      MaximumRetryAttempts: 0
 
   # ── Lambda Function URL with response streaming ──────────────────────────
   # Replaces the previous API Gateway HTTP API. Function URLs invoked with

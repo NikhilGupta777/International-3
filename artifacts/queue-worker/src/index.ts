@@ -50,7 +50,7 @@ const YTDLP_VISITOR_DATA = process.env.YTDLP_VISITOR_DATA ?? "";
 const YTDLP_POT_PROVIDER_URL = process.env.YTDLP_POT_PROVIDER_URL ?? "";
 const YTDLP_COMMAND_TIMEOUT_MS = Math.max(
   60_000,
-  Number.parseInt(process.env.YTDLP_COMMAND_TIMEOUT_MS ?? "2700000", 10) || 2_700_000,
+  Number.parseInt(process.env.YTDLP_COMMAND_TIMEOUT_MS ?? "1200000", 10) || 1_200_000,
 );
 const YTDLP_STALL_TIMEOUT_MS = Math.max(
   30_000,
@@ -331,26 +331,11 @@ function buildYtDlpBaseArgs(): string[] {
   ];
 
   if (YTDLP_PROXY) args.push("--proxy", YTDLP_PROXY);
-
-  const cookiePath = ensureCookieFileIfNeeded();
-  if (cookiePath) args.push("--cookies", cookiePath);
-
   if (YTDLP_POT_PROVIDER_URL) {
     args.push(
       "--extractor-args",
       `youtubepot-bgutilhttp:base_url=${YTDLP_POT_PROVIDER_URL}`,
     );
-  }
-
-  if (YTDLP_PO_TOKEN && YTDLP_VISITOR_DATA) {
-    args.push(
-      "--extractor-args",
-      `youtube:player_client=web,web_embedded,mweb;po_token=web.gvs+${YTDLP_PO_TOKEN};visitor_data=${YTDLP_VISITOR_DATA}`,
-    );
-  } else if (cookiePath) {
-    args.push("--extractor-args", "youtube:player_client=web,web_embedded,tv_embedded");
-  } else {
-    args.push("--extractor-args", "youtube:player_client=tv_embedded,android_vr,mweb,-android_sdkless");
   }
   return args;
 }
@@ -441,9 +426,11 @@ function runYtDlp(
 
   return new Promise<void>((resolve, reject) => {
     logger.info({ jobId, args }, "Running yt-dlp command");
+    const useProcessGroup = process.platform !== "win32";
     const proc = spawn(PYTHON_BIN, ["-m", "yt_dlp", ...args], {
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: useProcessGroup,
     });
 
     let stderr = "";
@@ -451,9 +438,15 @@ function runYtDlp(
     let stalled = false;
 
     const killProc = () => {
-      try { proc.kill("SIGTERM"); } catch {}
+      const terminate = (signal: NodeJS.Signals) => {
+        try {
+          if (useProcessGroup && proc.pid) process.kill(-proc.pid, signal);
+          else proc.kill(signal);
+        } catch {}
+      };
+      terminate("SIGTERM");
       setTimeout(() => {
-        try { proc.kill("SIGKILL"); } catch {}
+        terminate("SIGKILL");
       }, 5000).unref?.();
     };
 
@@ -478,6 +471,10 @@ function runYtDlp(
       }, stallTimeoutMs);
       stallTimer.unref?.();
     };
+    const isRealProgress = (line: string) =>
+      /\[download\]\s+(?:Destination:|\d+(?:\.\d+)?%|100% of)|\b(?:frame|time)=\s*\S+|Merging formats|has already been downloaded/i.test(
+        line,
+      );
     resetStallTimer();
 
     proc.stdout?.on("data", (chunk: Buffer) => {
@@ -485,7 +482,7 @@ function runYtDlp(
       for (const line of text.split(/\r?\n|\r/)) {
         const trimmed = line.trim();
         if (trimmed) {
-          resetStallTimer();
+          if (isRealProgress(trimmed)) resetStallTimer();
           onProgress?.(trimmed, "stdout");
         }
       }
@@ -497,7 +494,7 @@ function runYtDlp(
       for (const line of text.split(/\r?\n|\r/)) {
         const trimmed = line.trim();
         if (trimmed) {
-          resetStallTimer();
+          if (isRealProgress(trimmed)) resetStallTimer();
           onProgress?.(trimmed, "stderr");
         }
       }
