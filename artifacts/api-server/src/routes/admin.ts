@@ -6,6 +6,7 @@ import {
 } from "../lib/ops-metrics";
 import {
   listApprovedAccess,
+  refreshAllowlist,
   removeApprovedEmail,
   setApprovedEmail,
   setApiAccessEmail,
@@ -218,6 +219,9 @@ router.get("/overview", async (_req, res) => {
   const system = getSystemMetricsSnapshot();
   const youtube = getYoutubeOpsSnapshot();
   const subtitles = getSubtitlesOpsSnapshot();
+  // Always show the stored allowlist, not this container's stale cache —
+  // otherwise the panel appears to "lose" emails added on another container.
+  await refreshAllowlist(true);
   const access = listApprovedAccess();
   const runtime = getRuntimeFeatureState();
   const s3 = getS3StorageConfig();
@@ -436,7 +440,8 @@ router.get("/email-submissions", async (_req, res) => {
   }
 });
 
-router.get("/settings", (_req, res) => {
+router.get("/settings", async (_req, res) => {
+  await refreshAllowlist(true);
   const access = listApprovedAccess();
   res.json({
     auth: {
@@ -521,6 +526,10 @@ router.post("/maintenance/s3-cleanup", async (req, res) => {
   }
 });
 
+function isValidationError(message: string): boolean {
+  return message === "Email is required" || message === "Invalid email address";
+}
+
 // ── POST /approved-emails ─────────────────────────────────────────────────────
 router.post("/approved-emails", async (req, res) => {
   try {
@@ -530,9 +539,10 @@ router.post("/approved-emails", async (req, res) => {
     const result = await setApprovedEmail(email, role);
     res.json({ ok: true, ...result, access: listApprovedAccess() });
   } catch (err) {
-    res
-      .status(400)
-      .json({ error: err instanceof Error ? err.message : "Failed to update approved email" });
+    const message = err instanceof Error ? err.message : "Failed to update approved email";
+    // Storage failures used to be swallowed, so the panel reported success while
+    // nothing was saved. Report them as 5xx so the admin actually sees them.
+    res.status(isValidationError(message) ? 400 : 500).json({ error: message });
   }
 });
 
@@ -558,9 +568,8 @@ router.post("/api-access", async (req, res) => {
     const result = await setApiAccessEmail(email);
     res.json({ ok: true, ...result, access: listApprovedAccess() });
   } catch (err) {
-    res
-      .status(400)
-      .json({ error: err instanceof Error ? err.message : "Failed to grant API access" });
+    const message = err instanceof Error ? err.message : "Failed to grant API access";
+    res.status(isValidationError(message) ? 400 : 500).json({ error: message });
   }
 });
 

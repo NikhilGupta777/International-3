@@ -9,7 +9,7 @@ import { join } from "path";
 import { fileURLToPath } from "url";
 import router from "./routes";
 import { logger } from "./lib/logger";
-import { isEmailApproved, hydrateAllowlistFromDdb, isApiAccessAllowed, type AuthRole } from "./lib/auth-access";
+import { isEmailApproved, hydrateAllowlistFromDdb, refreshAllowlist, isApiAccessAllowed, type AuthRole } from "./lib/auth-access";
 import {
   extractApiKey,
   looksLikeApiKey,
@@ -357,7 +357,10 @@ app.get("/api/auth/session", async (req: Request, res: Response) => {
   const session = getAuthSession(req);
   // Existing Google sessions need persisted grants; anonymous and password
   // sessions remain fast even when DynamoDB is cold or unavailable.
-  if (session.email) await allowlistHydrationPromise;
+  if (session.email) {
+    await allowlistHydrationPromise;
+    await refreshAllowlist();
+  }
   res.json({
     authenticated: session.authenticated,
     user: session.authenticated
@@ -484,7 +487,12 @@ app.post("/api/auth/google", async (req: Request, res: Response) => {
       return;
     }
 
+    // Await the cold-start hydration, then pick up any approval made on another
+    // Lambda container since this one last refreshed (TTL-gated, usually a
+    // no-op). Without this, a warm container rejects an email an admin just
+    // approved elsewhere with "not approved yet".
     await allowlistHydrationPromise;
+    await refreshAllowlist();
     const approval = isEmailApproved(claims.email);
     if (!approval.approved) {
       res.status(403).json({ error: "This Google account is not approved yet" });
