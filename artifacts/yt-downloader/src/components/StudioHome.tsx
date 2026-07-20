@@ -238,10 +238,14 @@ export function StudioHome({
     rec.interimResults = true;
     rec.lang = navigator.language || "en-US";
     rec.onresult = (e: any) => {
-      let chunk = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript;
-      setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + chunk).trimStart());
-      resizeTextarea();
+      let final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      }
+      if (final) {
+        setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + final).trimStart());
+        resizeTextarea();
+      }
     };
     rec.onend = () => { setListening(false); recognitionRef.current = null; };
     rec.onerror = () => { setListening(false); recognitionRef.current = null; };

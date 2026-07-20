@@ -2973,8 +2973,11 @@ export function StudioCopilot({
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (sessions.length === 0) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (sessions.length === 0) {
+      try { localStorage.removeItem(HISTORY_KEY); } catch { /* ignore */ }
+      return;
+    }
     saveTimerRef.current = setTimeout(() => saveSessions(sessions), 500);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
   }, [sessions]);

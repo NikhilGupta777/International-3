@@ -2966,6 +2966,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -4305,6 +4306,9 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(`Unknown tab: "${tab}". Available: ${[...ALLOWED_NAV_TABS].join(", ")}`);
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -5330,15 +5334,19 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
+    const host = u.hostname.replace(/^\[|\]$/g, "").toLowerCase();
     return (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
+      host === "::1" ||
+      host === "::ffff:127.0.0.1" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
+      host.startsWith("169.254.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      host.endsWith(".local") ||
+      host.endsWith(".internal")
     );
   } catch {
     return true;
@@ -6406,7 +6414,7 @@ router.post("/agent/chat", async (req, res) => {
       // The previous fire-and-forget pattern risked Lambda freezing before
       // cancels reached the internal API.
       if (clientConnected) {
-        void cancelAgentRunJobs(req, "agent_error");
+        await cancelAgentRunJobs(req, "agent_error").catch(() => {});
       } else {
         await cancelAgentRunJobs(req, "client_abort").catch(() => {});
       }
