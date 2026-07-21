@@ -190,6 +190,8 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "check_active_jobs":
     case "repeat_last_artifact":
     case "extract_text_from_image":
+    case "describe_image":
+    case "read_uploaded_file":
     case "write_video_script":
     case "generate_seo_pack":
     case "list_workspace_files":
@@ -202,6 +204,7 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
 
     case "cut_video_clip":
     case "download_video":
+    case "generate_subtitles":
     case "find_best_clips":
     case "generate_timestamps":
       return "youtube_processing";
@@ -2892,6 +2895,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -4590,7 +4594,7 @@ Return: 8 title options, one optimized description, tags, hashtags, thumbnail te
           );
         }
         const resp = await generateContentWithRotation({
-          model: ULTRA_MODEL,
+          model: AGENT_MODEL,
           contents: [
             {
               role: "user",
@@ -4803,7 +4807,7 @@ except Exception as exc:
         );
       }
       const resp = await generateContentWithRotation({
-        model: ULTRA_MODEL,
+        model: AGENT_MODEL,
         contents: [
           {
             role: "user",
@@ -4816,7 +4820,7 @@ except Exception as exc:
         ],
         config: {
           tools: [{ codeExecution: {} }] as any,
-          maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(ULTRA_MODEL)),
+          maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(AGENT_MODEL)),
         },
       } as any);
       const content = stripReasoningTags(
