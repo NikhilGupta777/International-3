@@ -2966,6 +2966,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3284,6 +3285,16 @@ async function executeTool(
         toolId,
         runId,
       );
+      if (final.status !== "done") {
+        forgetAgentJob(req, jobId);
+        return {
+          result: {
+            jobId,
+            status: "processing",
+            message: "Download is still processing in the background. Check the Activity panel for completion.",
+          },
+        };
+      }
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: {
@@ -4305,6 +4316,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -5331,15 +5347,21 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
       host.endsWith(".local")
-    );
+    ) return true;
+    // RFC 1918: 172.16.0.0/12 covers 172.16.x.x through 172.31.x.x
+    const m172 = host.match(/^172\.(\d+)\./);
+    if (m172) {
+      const second = Number(m172[1]);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
   } catch {
     return true;
   }
@@ -6402,11 +6424,11 @@ router.post("/agent/chat", async (req, res) => {
   } finally {
     clearInterval(keepAlive);
     if (!runCompleted) {
-      // LA-2 fix: Await job cancellation when the client disconnected.
-      // The previous fire-and-forget pattern risked Lambda freezing before
-      // cancels reached the internal API.
+      // LA-2 fix: Await job cancellation so Lambda doesn't freeze mid-request.
+      // Both paths must await — fire-and-forget risks Lambda freezing after
+      // res.end() before the cancellation HTTP calls complete.
       if (clientConnected) {
-        void cancelAgentRunJobs(req, "agent_error");
+        await cancelAgentRunJobs(req, "agent_error").catch(() => {});
       } else {
         await cancelAgentRunJobs(req, "client_abort").catch(() => {});
       }
