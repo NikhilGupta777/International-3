@@ -17,10 +17,10 @@ Originally designed for AWS serverless deployment (Lambda + Batch/Fargate + S3 +
 ## Tech Stack
 
 - **Frontend**: React 19, Vite, TypeScript, Tailwind CSS 4, Radix UI, Framer Motion
-- **Backend**: Node.js, Express.js (AWS Lambda via serverless-http), TypeScript
+- **Backend**: Node.js, Express.js (AWS Lambda Function URL streaming bridge), TypeScript
 - **Database**: DynamoDB with Drizzle ORM
 - **AI/Processing**: Google Gemini AI, AssemblyAI, yt-dlp, ffmpeg
-- **Infrastructure**: AWS Lambda, AWS Batch/Fargate, S3, CloudFront, API Gateway
+- **Infrastructure**: AWS Lambda Function URL, AWS Batch/Fargate, S3, CloudFront
 
 ## Monorepo Structure
 
@@ -88,7 +88,7 @@ Render jobs use an in-memory `renderJobs` Map that is wiped when the API server 
 `"Fetching video info…"`. Root cause: the API Lambda's `setImmediate` block
 ran `runYtDlpMetadata` + `fetchTranscript` before invoking the worker Lambda
 for Gemini. AWS Lambda freezes the request container the moment the response
-is returned to API Gateway, so any async work scheduled via `setImmediate`
+is returned from the HTTP invocation, so any async work scheduled via `setImmediate`
 after `res.json` is suspended and effectively never finishes.
 
 **Fix (`artifacts/api-server/src/routes/timestamps.ts` + `lambda.ts`):**

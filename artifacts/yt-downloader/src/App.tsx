@@ -155,6 +155,8 @@ function App() {
   const [pitajiAuthed, setPitajiAuthed] = useState(false);
   const [pitajiUser, setPitajiUser] = useState<string>("");
   const [authChecked, setAuthChecked] = useState(false);
+  const [authSessionUnavailable, setAuthSessionUnavailable] = useState(false);
+  const [authCheckVersion, setAuthCheckVersion] = useState(0);
   const [authenticated, setAuthenticated] = useState(() => {
     if (typeof window === "undefined") return false;
     return window.localStorage.getItem(AUTH_HINT_KEY) === "1";
@@ -179,7 +181,15 @@ function App() {
       cache: "no-store",
     });
     if (!res.ok) throw new Error("Could not refresh auth session");
-    return (await res.json()) as AuthSessionResponse;
+    const session = (await res.json()) as AuthSessionResponse;
+    if (
+      !session.authenticated ||
+      !session.features ||
+      typeof session.features.superAgentAllowed !== "boolean"
+    ) {
+      throw new Error("Auth session response is incomplete");
+    }
+    return session;
   };
 
   useEffect(() => {
@@ -192,9 +202,9 @@ function App() {
     const check = async () => {
       let sessionOk = false;
       let sawDefiniteUnauthenticated = false;
-      try {
-        const maxAttempts = hadAuthHint ? 3 : 1;
-        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const maxAttempts = hadAuthHint ? 3 : 2;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
           const res = await fetch(`${base}/api/auth/session`, {
             credentials: "include",
             cache: "no-store",
@@ -202,42 +212,61 @@ function App() {
           if (!mounted) return;
           if (res.ok) {
             const data = (await res.json()) as AuthSessionResponse;
-            setAuthFeatures(data.features ?? null);
             if (data.authenticated) {
+              // An authenticated response without feature entitlements is incomplete.
+              // Never turn that transient/invalid state into an access-denied screen.
+              if (!data.features || typeof data.features.superAgentAllowed !== "boolean") {
+                throw new Error("Auth session response is missing feature entitlements");
+              }
               sessionOk = true;
               setAuthUser(data.user ?? { method: "password", role: "user" });
+              setAuthFeatures(data.features);
               break;
             }
             setAuthUser(null);
+            setAuthFeatures(data.features ?? null);
             sawDefiniteUnauthenticated = true;
+            break;
           }
-          if (attempt < maxAttempts - 1) {
-            await delay(350);
-          }
+        } catch {
+          // Retry transient network, non-2xx, malformed JSON, and incomplete-session failures.
         }
-      } catch {
-        sawDefiniteUnauthenticated = false;
-      } finally {
-        if (!mounted) return;
-        if (sessionOk) {
-          window.localStorage.setItem(AUTH_HINT_KEY, "1");
-          setAuthenticated(true);
-        } else if (hadAuthHint && !sawDefiniteUnauthenticated) {
-          window.localStorage.setItem(AUTH_HINT_KEY, "1");
-          setAuthenticated(true);
-        } else {
-          window.localStorage.removeItem(AUTH_HINT_KEY);
-          setAuthenticated(false);
-          setAuthUser(null);
+        if (attempt < maxAttempts - 1) {
+          await delay(350 * (attempt + 1));
         }
-        setAuthChecked(true);
       }
+
+      if (!mounted) return;
+      if (sessionOk) {
+        window.localStorage.setItem(AUTH_HINT_KEY, "1");
+        setAuthenticated(true);
+        setAuthSessionUnavailable(false);
+      } else if (!sawDefiniteUnauthenticated) {
+        // Preserve the login hint, but do not open the app with unknown permissions.
+        // The user can retry without being falsely told that their account is restricted.
+        setAuthenticated(false);
+        setAuthUser(null);
+        setAuthFeatures(null);
+        setAuthSessionUnavailable(true);
+      } else {
+        window.localStorage.removeItem(AUTH_HINT_KEY);
+        setAuthenticated(false);
+        setAuthUser(null);
+        setAuthSessionUnavailable(false);
+      }
+      setAuthChecked(true);
     };
     void check();
     return () => {
       mounted = false;
     };
-  }, [base]);
+  }, [base, authCheckVersion]);
+
+  const retryAuthSession = () => {
+    setAuthSessionUnavailable(false);
+    setAuthChecked(false);
+    setAuthCheckVersion((version) => version + 1);
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -355,6 +384,7 @@ function App() {
       setAuthUser(session.user ?? { method: "password", role: "user" });
       setAuthFeatures(session.features ?? null);
       setAuthenticated(true);
+      setAuthSessionUnavailable(false);
       setAuthChecked(true);
     } catch {
       setLoginError("Login failed. Please try again.");
@@ -383,6 +413,7 @@ function App() {
       setAuthUser(session.user ?? data?.user ?? { method: "google", role: "user" });
       setAuthFeatures(session.features ?? null);
       setAuthenticated(true);
+      setAuthSessionUnavailable(false);
       setAuthChecked(true);
     } catch {
       setLoginError("Google sign-in failed. Please try again.");
@@ -404,6 +435,7 @@ function App() {
       setAuthenticated(false);
       setAuthUser(null);
       setAuthFeatures(null);
+      setAuthSessionUnavailable(false);
       setAuthChecked(true);
     }
   };
@@ -495,6 +527,17 @@ function App() {
               subtitle="Verifying session..."
               compact
             />
+          ) : authSessionUnavailable ? (
+            <AuthOverlay
+              eyebrow="Connection"
+              title="Could not verify your session"
+              subtitle="The service is temporarily unavailable. Your account has not been marked as restricted."
+              compact
+            >
+              <button className="auth-button" type="button" onClick={retryAuthSession}>
+                Retry
+              </button>
+            </AuthOverlay>
           ) : authenticated ? (
             <WouterRouter base={base} key="auth">
               <Router authUser={authUser} authFeatures={authFeatures} onLogout={submitLogout} />

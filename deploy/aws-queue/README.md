@@ -58,20 +58,30 @@ This creates alarms for:
 - Batch failed jobs
 - EC2 CPU + status checks (when `-InstanceId` is provided)
 
-Current primary coverage in this phase:
+Historical primary coverage in this phase:
 
 - `download`
 - `clip-cut` (including legacy `download-clip`)
 
-Recommended env pinning:
+Live production state as of 2026-07-22:
 
-- `YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=download,clip-cut`
-- `YOUTUBE_QUEUE_SHADOW_JOB_TYPES=download,clip-cut`
+- `YOUTUBE_QUEUE_PRIMARY_JOB_TYPES=bhagwat-analyze,bhagwat-render,clip-cut,subtitles`
+- `YOUTUBE_BATCH_JOB_QUEUE=ytgrabber-green-job-queue`
+- `YOUTUBE_BATCH_JOB_DEFINITION=ytgrabber-green-worker-job:744`
+- Batch compute environment: `ytgrabber-green-compute-fargate`
+- Max Fargate vCPUs: `16`
+- Batch is not 24/7. Fargate capacity scales to zero and costs only when jobs run.
+- Cost Explorer for 2026-07-01 through 2026-07-22 showed about `$0.0022` positive ECS/Fargate usage and effectively `$0.00` net unblended account cost after offsets/free-tier credits.
+- Short clip cuts at or under `LAMBDA_CLIP_MAX_DURATION_SECONDS=420` try the Lambda fast path first; long clips and slow observed Lambda jobs use Batch.
 
-Not yet migrated to worker primary mode:
+Do not copy the old phase defaults into production without checking live Lambda env first:
 
-- `best-clips`
-- `subtitles`
+```powershell
+aws lambda get-function-configuration `
+  --region us-east-1 `
+  --function-name ytgrabber-green-api `
+  --query "Environment.Variables.{YOUTUBE_QUEUE_PRIMARY_JOB_TYPES:YOUTUBE_QUEUE_PRIMARY_JOB_TYPES,YOUTUBE_BATCH_JOB_DEFINITION:YOUTUBE_BATCH_JOB_DEFINITION,LAMBDA_CLIP_MAX_DURATION_SECONDS:LAMBDA_CLIP_MAX_DURATION_SECONDS}"
+```
 
 This repository now includes a worker under:
 

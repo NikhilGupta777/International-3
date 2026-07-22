@@ -24,8 +24,9 @@ Last verified good:
 - `/api/healthz` returns `200`
 - `/api/auth/config` has Google auth enabled
 - Vertex Gemini path is enabled
-- Clip-cut Lambda fast path is `660` seconds, i.e. 11 minutes
-- Queued worker job definition is `ytgrabber-green-worker-job:598`
+- Clip-cut Lambda fast path is `420` seconds, i.e. clips up to 7 minutes try Lambda first
+- Queued worker job definition is `ytgrabber-green-worker-job:744`
+- Lambda account concurrency quota applied value is still `10`; Service Quotas request `b45fb4bb5e2841748ab225a45d806248bg1HnYLc` asks for `1001` and is `CASE_OPENED`
 
 ## Critical Backup
 
@@ -139,6 +140,7 @@ Not critical to current site uptime, but still left:
   - markdown/canvas rendering issues
   - red cursor/line while tools run
   - black overlay when switching to agent or starting a message
+  - Root cause fixed 2026-07-22: the frontend no longer opens Home from a stale login hint when `/api/auth/session` fails or omits feature entitlements. It retries per attempt and shows a session Retry screen; live backend currently allows Super Agent.
 - DynamoDB continuous backups are enabled, but PITR is disabled for:
   - `ytgrabber-green-jobs`
   - `ytgrabber-green-access`
@@ -157,10 +159,9 @@ Invoke-WebRequest https://videomaking.in/api/auth/config -UseBasicParsing
 
 Expected important values:
 
-- `LambdaClipMaxDurationSeconds=660`
-- `YoutubeBatchJobDefinition=ytgrabber-green-worker-job:598`
+- `LambdaClipMaxDurationSeconds=420`
+- `YoutubeBatchJobDefinition=ytgrabber-green-worker-job:744`
 - `GoogleAuthEnabled=true`
 - `GoogleGenaiUseVertexai=true`
 - `SiteDomainName=videomaking.in`
 - CloudFront certificate ARN present
-

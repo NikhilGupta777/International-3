@@ -13,7 +13,7 @@ GitHub Actions runs 4 parallel jobs:
     └── Build Frontend           → upload to S3
 
 All 3 done → Deploy job:
-    ├── CloudFormation update    → Lambda + API Gateway
+    ├── CloudFormation update    → Lambda Function URL + CloudFront/S3
     ├── S3 sync                  → frontend files live
     └── CloudFront invalidation  → cache cleared, site is live instantly
 ```

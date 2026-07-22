@@ -194,7 +194,10 @@ Browser → CloudFront (videomaking.in / d2bcwj2idfdwb4.cloudfront.net)
 ```
 API Handler
   ├── creates DynamoDB record { status: "queued" }
-  ├── if YOUTUBE_QUEUE_PRIMARY_ENABLED=true → submits AWS Batch job
+  ├── short eligible clip-cut jobs self-invoke a dedicated Lambda worker
+  │     worker runs inside ytgrabber-green-api and writes progress to DynamoDB
+  │
+  ├── long clips, slow observed Lambda clips, and configured primary jobs submit AWS Batch
   │     Batch worker runs in Fargate container (queue-worker/src/index.ts)
   │     Worker writes progress updates to DynamoDB every few seconds
   │
@@ -223,7 +226,7 @@ Two independent auth layers:
 - A separate **API key auth path** also exists (`Authorization: Bearer vms_live_...` or `X-API-Key`): validates the key, blocks `/admin` and key-management paths via an allowlist, scopes the request via `x-client-id: key:{keyId}` (reusing the same owner-isolation as logged-in users), and meters rate limit/monthly quota only on the first external request (an internal `_apiKeyMetered` flag prevents double-counting on in-process re-dispatches)
 - Login username default: `"kalki_avatar"` (env var `WEBSITE_AUTH_USER`, not "AUTH_USER")
 - `ADMIN_PANEL_ENABLED` env flag gates `/api/admin/*` to admin-role sessions only
-- Email allowlists (`lib/auth-access.ts`) enforce mutual exclusion between user/admin sets — promoting a user to admin removes them from the user set first; DynamoDB sync to `ACCESS_TABLE` is best-effort, env vars are always the fallback of record
+- Email allowlists (`lib/auth-access.ts`) enforce mutual exclusion between user/admin sets — promoting a user to admin removes them from the user set first. Since production commit `84da200c`, `ACCESS_TABLE` is the cross-container source of truth when present; env vars seed/fallback the allowlist and Google login/session reads refresh with a short TTL so all Lambda containers see admin-approved users.
 
 **Bhagwat auth** (`bhagwat.ts`):
 - Separate signed cookie: `bhagwat_auth` (30-day max age)
@@ -248,7 +251,7 @@ sseFlush(res)   // flushes socket + Express
 ### Gemini Client (`lib/gemini-client.ts`)
 
 Supports two modes controlled by env:
-- **API key mode** (default): `GEMINI_API_KEY` (+ `_2` through `_6` for rotation)
+- **API key mode** (default): `GEMINI_API_KEY` (+ `_2` through `_13` for rotation). Production can compact the key ring into `GEMINI_API_KEYS` (CSV); `lib/load-env.ts` expands it back to numbered keys at cold start.
 - **Vertex AI mode**: `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION`
 
 Vertex credentials can be provided as: `GOOGLE_APPLICATION_CREDENTIALS_JSON` (inline JSON), `GOOGLE_APPLICATION_CREDENTIALS_BASE64` (base64), or `GOOGLE_APPLICATION_CREDENTIALS_S3_KEY` (S3 path — fetched on cold start and written to `/tmp`).
@@ -310,6 +313,8 @@ Metadata cached 5 min per video ID (`extractVideoId()` means `youtube.com/watch?
 
 Production clip-cut fast-path jobs are dispatched to a dedicated async Lambda worker invocation; never run ffmpeg as fire-and-forget work after the HTTP response. The worker uses yt-dlp `--download-sections`, observes actual ffmpeg speed, and hands slow/no-progress jobs to the primary Batch queue while preserving the public job ID. The handoff policy is controlled by `LAMBDA_CLIP_HANDOFF_*`, `LAMBDA_CLIP_SAFE_BUDGET_MS`, and `LAMBDA_CLIP_COMPLETION_RESERVE_MS`. A command deadline is still checked before retries. `tryProcessClipCutViaFullSource()` exists as an experimental helper but is not currently wired into the production pipeline. yt-dlp player-client fallback cascade: web → web_embedded → tv_embedded → android_vr. Best Clips job results live only in an in-memory map (`clipJobsState`) — lost on Lambda restart, no DynamoDB persistence of the analysis itself (only job status). The queue worker (`queue-worker/src/index.ts`) handles one `WorkerPayload.jobType` per invocation (`"download"|"clip-cut"|"subtitles"|"best-clips"|"bhagwat-analyze"|"bhagwat-render"|"editor-render"`); its Best Clips handler dynamically imports `runClipAnalysis` from api-server at runtime — this is why the worker image must also have api-server installed (see Docker Images section). See [[feature_download_clipcutter_bestclips]] memory for more.
 
+Live production values verified 2026-07-22: `LAMBDA_CLIP_MAX_DURATION_SECONDS=420`, `MAX_CONCURRENT_CLIP_JOBS=3`, Lambda memory `3008 MB`, timeout `900s`. A direct 5-second Lambda-worker clip smoke test completed in 11.41s with DynamoDB status `done` and no Batch handoff.
+
 ### `/api/subtitles/*` (`routes/subtitles.ts`)
 
 | Method | Path | Description |
@@ -324,7 +329,7 @@ Production clip-cut fast-path jobs are dispatched to a dedicated async Lambda wo
 
 Actually a multi-pass pipeline, not strictly two-pass: (1) transcription — AssemblyAI if duration >600s, else yt-dlp audio + Gemini (`gemini-3.1-pro-preview` primary, `gemini-3.5-flash` fallback, 5-min per-key timeout); (2) correction — enforces ≤6 words per SRT entry, explicitly told to add MISSING ENTRIES for speech after the last existing entry; (3) translation (optional) — strict "do not reshape timestamps" rule, per-language script rules (e.g. Devanagari for Hindi, no romanization); (4) verification (optional, video-based only) — checks SRT against actual video playback. Both `srt` (final) and `originalSrt` (pre-translation) are returned when translation runs.
 
-Key env vars: `ASSEMBLYAI_API_KEY`, `GEMINI_API_KEY` (+ `_2` through `_10` for rotation), `SUBTITLES_FORCE_LAMBDA` (default **true**, not false — gates whether long videos route to a separate Lambda worker via queue), `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS` (default 600s), `SUBTITLES_GEMINI_VIDEO_ENABLED` (default true, direct video→Gemini path for short videos), `SUBTITLES_WORKER_FUNCTION_NAME`. In-memory job map cleans up 2h after completion (1h if still running); S3 cleanup sweep every 30 min, 7-day TTL on subtitles/subtitles-original/subtitles-uploads namespaces. Max 3 concurrent subtitle jobs server-side. See [[feature_subtitles_timestamps]] memory for more.
+Key env vars: `ASSEMBLYAI_API_KEY`, `GEMINI_API_KEY` (+ `_2` through `_10` for rotation), `SUBTITLES_FORCE_LAMBDA` (default **true**, not false — gates whether long videos route to a separate Lambda worker via queue), `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS` (source default 600s; live prod 780s), `SUBTITLES_GEMINI_VIDEO_ENABLED` (default true, direct video→Gemini path for short videos), `SUBTITLES_WORKER_FUNCTION_NAME`. In-memory job map cleans up 2h after completion (1h if still running); S3 cleanup sweep every 30 min, 7-day TTL on subtitles/subtitles-original/subtitles-uploads namespaces. Max 3 concurrent subtitle jobs server-side. See [[feature_subtitles_timestamps]] memory for more.
 
 ### `/api/youtube/timestamps*` (`routes/timestamps.ts`)
 
@@ -688,14 +693,16 @@ Replit-specific Gemini client variant. Requires `AI_INTEGRATIONS_GEMINI_BASE_URL
 | Resource | AWS Name | Description |
 |----------|----------|-------------|
 | CloudFront | `EDTEON6GFBEZH` | CDN, routes to Lambda Function URL + S3 |
-| Lambda | `ytgrabber-green-api` | API server (1536 MB, 900s timeout, 5 GB ephemeral storage) |
+| Lambda | `ytgrabber-green-api` | API server (3008 MB, 900s timeout, 5 GB ephemeral storage) |
 | Lambda Function URL | (auto) | `InvokeMode: RESPONSE_STREAM` — replaces API Gateway |
-| Batch Job Queue | `ytgrabber-green-job-queue` | Fargate worker queue (max 6 vCPUs) |
-| Batch Compute | `ytgrabber-green-compute-fargate` | Fargate compute environment |
-| Batch Job Def | `ytgrabber-green-worker-job` | Fargate worker job definition (revisioned) |
+| Batch Job Queue | `ytgrabber-green-job-queue` | Fargate worker queue |
+| Batch Compute | `ytgrabber-green-compute-fargate` | Fargate compute environment (max 16 vCPUs, scale-to-zero) |
+| Batch Job Def | `ytgrabber-green-worker-job:744` | Fargate worker job definition (revision pinned) |
 | Batch GPU Queue | `ytgrabber-green-gpu-queue` | GPU Batch queue for translator |
 | Batch GPU Job Def | `ytgrabber-green-translator-job` | GPU translator job (1 GPU, 15 GB RAM, 3000s timeout) |
 | DynamoDB | `ytgrabber-green-jobs` | All job state (download, clip, subtitle, bhagwat, translator) |
+| DynamoDB | `ytgrabber-green-access` | Admin/user allowlist source of truth when present |
+| DynamoDB | `ytgrabber-green-cooldowns` | Per-user feature cooldown state |
 | S3 Static | `ytgrabber-green-serverless-staticsitebucket-kxndjlgbcvgh` | Frontend files |
 | S3 Output | `malikaeditorr` | Video outputs + yt-dlp cookies + Vertex credentials |
 | ECR API | `ytgrabber-green-api-lambda` | Lambda container images |
@@ -745,11 +752,15 @@ Both ECR repos auto-expire: keep last 3 tagged images, delete untagged after 1 d
 
 | Alarm | Threshold |
 |-------|-----------|
-| `ytgrabber-green-lambda-5xx` | > 5 Lambda errors in 5 min |
-| `ytgrabber-green-lambda-throttles` | > 3 throttles in 10 min |
+| `ytgrabber-green-lambda-5xx` | > 5 Lambda errors across 2 consecutive 5-min periods |
+| `ytgrabber-green-lambda-throttles` | > 3 throttles across 2 consecutive 5-min periods |
 | `ytgrabber-green-batch-failures` | > 3 Batch failures in 5 min |
 
 No SNS email configured yet. Monitor via AWS Console.
+
+### Lambda Concurrency Quota
+
+Live applied account concurrency quota in `us-east-1` is `10`. AWS's default quota is `1000`, so Service Quotas rejected a request for `100` as below-default. A request for `1001` is open: `b45fb4bb5e2841748ab225a45d806248bg1HnYLc`, status `CASE_OPENED` as of 2026-07-22. This quota is a ceiling only; it does not create 24/7 cost by itself.
 
 ---
 
@@ -767,7 +778,7 @@ Triggered on push to `main`. Four parallel jobs:
 
 **Image tagging rule:** Always use timestamped/commit-SHA tags. Never push `:latest` alone. CI uses `${GITHUB_SHA::8}`.
 
-**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `NVIDIA_API_KEY`, `OLLAMA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally provider `_2` through `_4` keys and `NOTEBOOKLM_*`.
+**Required GitHub Secrets:** `ENV_GREEN_CONTENT` (base production env file), `NVIDIA_API_KEY`, `OLLAMA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, `WEBSITE_AUTH_PASSWORD`, `BHAGWAT_PASSWORD`, and optionally provider `_2` through `_4` keys and `NOTEBOOKLM_*`. The deploy workflow/template compacts provider pools into plural Lambda env vars (`GEMINI_API_KEYS`, `NVIDIA_API_KEYS`, `OLLAMA_API_KEYS`, `GROQ_API_KEYS`) to stay under Lambda's env-size limits; code still also supports the singular/numbered variables.
 *(Note: AWS authentication now uses GitHub OIDC via the `ytgrabber-green-gha-deployer` IAM role. Long-lived `AWS_ACCESS_KEY_ID` secrets are no longer needed.)*
 
 ---
@@ -805,7 +816,8 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `ADMIN_PANEL_ENABLED` | | `false` | Enable `/api/admin/*` routes |
 | `BHAGWAT_PASSWORD` | ✅ (Bhagwat) | — | Password for Bhagwat AI Editor |
 | `GEMINI_API_KEY` | ✅ | — | Primary Gemini API key |
-| `GEMINI_API_KEY_2`..`_6` | | — | Additional keys for rate limit rotation |
+| `GEMINI_API_KEY_2`..`_13` | | — | Additional keys for rate limit rotation |
+| `GEMINI_API_KEYS` | ✅ (prod compact form) | — | CSV key pool expanded by `lib/load-env.ts` into `GEMINI_API_KEY[_N]` |
 | `GOOGLE_GENAI_USE_VERTEXAI` | | `false` | Use Vertex AI instead of API key |
 | `GOOGLE_CLOUD_PROJECT` | ✅ (Vertex) | — | GCP project ID for Vertex |
 | `GOOGLE_CLOUD_LOCATION` | | `global` | Vertex AI region |
@@ -828,11 +840,11 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `YTDLP_DOWNLOAD_STALL_TIMEOUT_MS` | | `60000` | yt-dlp stall detection |
 | `YTDLP_MAX_DOWNLOAD_ATTEMPTS` | | `4` | yt-dlp retry count |
 | `YOUTUBE_QUEUE_PRIMARY_ENABLED` | | `false` | Enable AWS Batch queue (false = in-process) |
-| `YOUTUBE_QUEUE_PRIMARY_JOB_TYPES` | | `clip-cut` | CSV of job types that use Batch |
+| `YOUTUBE_QUEUE_PRIMARY_JOB_TYPES` | | source default `clip-cut`; live `bhagwat-analyze,bhagwat-render,clip-cut,subtitles` | CSV of job types that use Batch |
 | `YOUTUBE_QUEUE_JOB_TABLE` | ✅ (prod) | — | DynamoDB table for job state |
 | `YOUTUBE_BATCH_JOB_QUEUE` | ✅ (prod) | — | Batch job queue name |
 | `YOUTUBE_BATCH_JOB_DEFINITION` | ✅ (prod) | — | Batch job definition + revision (pin revision!) |
-| `LAMBDA_CLIP_MAX_DURATION_SECONDS` | | `600` | Max clip-cut duration before queueing to Batch |
+| `LAMBDA_CLIP_MAX_DURATION_SECONDS` | | source default `600`; live `420` | Max clip-cut duration that tries Lambda fast path before queueing/handing off to Batch |
 | `LAMBDA_CLIP_COMMAND_TIMEOUT_MS` | | `840000` | Clip-cut command timeout |
 | `LAMBDA_CLIP_STALL_TIMEOUT_MS` | | `60000` | Clip-cut stall detection |
 | `LAMBDA_CLIP_HANDOFF_SAMPLE_MS` | | `75000` | Earliest fast-worker speed evaluation |
@@ -841,7 +853,7 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `LAMBDA_CLIP_COMPLETION_RESERVE_MS` | | `120000` | Time reserved for shutdown, handoff, and upload |
 | `MAX_CONCURRENT_CLIP_JOBS` | | `3` | Parallel in-process clip jobs |
 | `SUBTITLES_FORCE_LAMBDA` | | `true` | Force subtitles to run in Lambda (not Batch) — default verified `true` in source, corrected from prior `false` |
-| `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS` | | `600` | Subtitle in-Lambda max duration |
+| `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS` | | source default `600`; live `780` | Subtitle in-Lambda max duration |
 | `SUBTITLES_WORKER_FUNCTION_NAME` | | — | Lambda function name for subtitle worker self-invoke |
 | `TIMESTAMPS_WORKER_FUNCTION_NAME` | | — | Lambda function name for timestamps worker self-invoke |
 | `TRANSLATOR_BATCH_JOB_QUEUE` | ✅ (translator) | — | GPU Batch queue |
@@ -851,10 +863,13 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS` | | `1` | Allow HF/ModelScope downloads in worker |
 | `NVIDIA_API_KEY` | ✅ (Copilot primary) | — | NVIDIA NIM credential for GLM 5.2 and GPT-OSS 120B |
 | `NVIDIA_API_KEY_2` … `_4` | Optional | — | NVIDIA NIM failover credential slots |
+| `NVIDIA_API_KEYS` | ✅ (prod compact form) | — | CSV NVIDIA key pool; `copilot-external-provider.ts` reads plural plus numbered slots |
 | `OLLAMA_API_KEY` | ✅ (Ultra fallback) | — | Server-side Ollama Cloud credential |
 | `OLLAMA_API_KEY_2` … `_4` | Optional | — | Ollama failover credential slots |
+| `OLLAMA_API_KEYS` | ✅ (prod compact form) | — | CSV Ollama key pool; read along with numbered slots |
 | `GROQ_API_KEY` | ✅ (Fast fallback) | — | Server-side Groq credential |
 | `GROQ_API_KEY_2` … `_4` | Optional | — | Groq failover credential slots |
+| `GROQ_API_KEYS` | ✅ (prod compact form) | — | CSV Groq key pool; read along with numbered slots |
 | `COPILOT_ULTRA_MODEL` | | `z-ai/glm-5.2` | Ultra/default Copilot model through NVIDIA NIM |
 | `COPILOT_FAST_MODEL` | | `openai/gpt-oss-120b` | Fast Copilot model through NVIDIA NIM |
 | `COPILOT_ULTRA_MAX_OUTPUT_TOKENS` | | `60000` | Explicit provider allowance for long Ultra outputs |
@@ -929,7 +944,7 @@ No test runner is configured. Use `pnpm run typecheck` to verify type correctnes
 
 **Always rebuild api-server after source changes.** The `dev` script builds then starts; there is no watch mode.
 
-**Batch job definition revisions must be pinned.** `YOUTUBE_BATCH_JOB_DEFINITION=ytgrabber-green-worker-job:20` (with revision number). Using `ytgrabber-green-worker-job` without a revision runs the latest, which may not match what's deployed.
+**Batch job definition revisions must be pinned.** Live prod is `YOUTUBE_BATCH_JOB_DEFINITION=ytgrabber-green-worker-job:744` (with revision number). Using `ytgrabber-green-worker-job` without a revision runs the latest, which may not match what's deployed.
 
 **Lambda async context.** After `res.json()` returns, AWS Lambda freezes the container. Any `setImmediate`/`setTimeout` callbacks scheduled after the response will not run. Use worker Lambda self-invocation (`InvocationType: Event`) for work that outlives the HTTP response.
 
