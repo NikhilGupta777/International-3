@@ -1,5 +1,7 @@
 # VideoMaking Studio — Deployment Runbook
 
+For a complete new-account move, use [`AWS-MASTER-SETUP-AND-MIGRATION.md`](AWS-MASTER-SETUP-AND-MIGRATION.md) as the authoritative checklist.
+
 ## Architecture Summary
 
 ```
@@ -28,7 +30,7 @@ Cookies: S3 object ytgrabber-green/secrets/ytdlp-cookies-base64.txt
 | CloudFront            | `EDTEON6GFBEZH` / `d2bcwj2idfdwb4.cloudfront.net`                  |
 | Lambda Function URL   | `https://3x4swcbqciemcdvfawhlsv7xiu0byxcs.lambda-url.us-east-1.on.aws/`, `InvokeMode=RESPONSE_STREAM`, `AuthType=NONE` |
 | Region                | `us-east-1` / Account `596596146505`                                |
-| Lambda quota          | Applied concurrency `10`; quota request `1001` is `CASE_OPENED` (`b45fb4bb5e2841748ab225a45d806248bg1HnYLc`) |
+| Lambda quota          | Applied concurrency `1000`; quota request `1001` remains `CASE_OPENED` (`b45fb4bb5e2841748ab225a45d806248bg1HnYLc`) |
 
 ---
 
@@ -117,13 +119,13 @@ On 2026-07-22, a direct Lambda worker test for a 5-second clip completed in 11.4
 | `ytgrabber-green-lambda-throttles`   | > 3 Lambda throttles per 5-minute period for 2 periods |
 | `ytgrabber-green-batch-failures`     | > 3 Batch failures in 5 min          |
 
-> No SNS topic is configured yet — alarms fire but no email notification. Add `--alarm-actions arn:aws:sns:...` when ready.
+> SNS topic `ytgrabber-green-alerts` exists but has zero confirmed subscribers. Queue/DLQ alarms reference it; Lambda and Batch failure alarms have no actions. Add and confirm a subscriber, then attach the topic to every critical alarm.
 
 ## 2026-07-22 Auth / Capacity Notes
 
 - Production had no deploy or CloudFormation config change on 2026-07-22 morning. Last deploy was commit `84da200c` on 2026-07-20 18:47-18:48 IST.
 - Lambda hit the account concurrency cap at 2026-07-22 02:32 IST: max concurrency `10`, throttles `5`.
-- The applied Lambda account concurrency quota is `10`, while AWS's normal default is `1000`. Service Quotas rejected a direct `100` request because it is below the default, so request `b45fb4bb5e2841748ab225a45d806248bg1HnYLc` was opened for `1001` and is `CASE_OPENED`.
+- The applied Lambda account concurrency quota is now `1000` as verified 2026-07-23. Service Quotas previously rejected a direct `100` request because it was below the normal default; request `b45fb4bb5e2841748ab225a45d806248bg1HnYLc` for `1001` remains `CASE_OPENED`.
 - Cost Explorer for 2026-07-01 through 2026-07-22 showed about `$0.0079` positive usage before offsets/free-tier credits and effectively `$0.00` net unblended cost. Batch max vCPUs and Lambda concurrency are ceilings, not 24/7 reserved spend.
 - Super Agent is currently enabled in backend config. The 2026-07-22 frontend fix prevents failed or incomplete `/api/auth/session` responses from becoming a false "Super Agent is restricted" card: it retries, refuses to open the workspace with unknown entitlements, and offers a session Retry screen. The restricted card is frontend feature gating, not a clip-cut worker status.
 - The fixed frontend was deployed to production through S3/CloudFront; invalidation `IAUHXXAW2Y46OG0GIYVG9BFJXC` completed and live index/session checks returned HTTP `200`.
@@ -131,7 +133,7 @@ On 2026-07-22, a direct Lambda worker test for a 5-second clip completed in 11.4
 ## ECR Lifecycle Policy
 
 Both `ytgrabber-green-api-lambda` and `ytgrabber-green-worker` are configured to:
-- Keep last **5** tagged images
+- Keep last **3** images (`tagStatus=any`)
 - Delete untagged images after **1 day**
 
 ## Key Files

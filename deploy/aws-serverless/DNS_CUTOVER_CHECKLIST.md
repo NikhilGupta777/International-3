@@ -1,53 +1,42 @@
-# DNS Cutover Checklist (`videomaking.in` -> Serverless CloudFront)
+# DNS Cutover Checklist (`videomaking.in` -> CloudFront)
 
-Current serverless target:
+This file describes the current AWS account. For a new-account migration, do not reuse
+the certificate ARN, distribution ID, or validation records below. Follow the complete
+cutover and rollback process in
+[`../../AWS-MASTER-SETUP-AND-MIGRATION.md`](../../AWS-MASTER-SETUP-AND-MIGRATION.md).
 
-- CloudFront domain: `d2bcwj2idfdwb4.cloudfront.net`
-- CloudFront distribution id: `EDTEON6GFBEZH`
+## Current verified state (2026-07-23)
 
-Current blocker:
+- CloudFront: `EDTEON6GFBEZH` / `d2bcwj2idfdwb4.cloudfront.net`, deployed.
+- Aliases: `videomaking.in`, `www.videomaking.in`.
+- `www` CNAME: `d2bcwj2idfdwb4.cloudfront.net`.
+- Authoritative DNS: `ns1.dns-parking.com`, `ns2.dns-parking.com` (external to Route 53).
+- ACM certificate: issued, in use, `us-east-1`, SANs for apex + `www`.
+- TLS: `TLSv1.2_2021`, SNI.
+- API origin: Lambda Function URL; static origin: private S3 through OAC.
 
-- Public domain still resolves to EC2 (`3.238.114.190`), so 24/7 EC2 billing continues.
+The old note that the public domain still points to EC2 is obsolete.
 
-## 1) ACM certificate requested (us-east-1)
+## Existing certificate records
 
-- Certificate ARN: `arn:aws:acm:us-east-1:596596146505:certificate/62ff8b55-8a4b-4634-97e8-75924181c9f5`
+These records belong to the current certificate only:
 
-DNS validation CNAMEs to add in the DNS provider:
+1. `_1f22665c298ecd09748a05def5550c75.videomaking.in` CNAME
+   `_43bc9247aa50c1d1b23c0801dad62ebf.jkddzztszm.acm-validations.aws`
+2. `_b53f775d27fba2f8ccbbeef12047fb6c.www.videomaking.in` CNAME
+   `_c01e8ede080a84e6903eb288bffcb4e8.jkddzztszm.acm-validations.aws`
 
-1. `Name`: `_1f22665c298ecd09748a05def5550c75.videomaking.in`
-   - `Type`: `CNAME`
-   - `Value`: `_43bc9247aa50c1d1b23c0801dad62ebf.jkddzztszm.acm-validations.aws`
-2. `Name`: `_b53f775d27fba2f8ccbbeef12047fb6c.www.videomaking.in`
-   - `Type`: `CNAME`
-   - `Value`: `_c01e8ede080a84e6903eb288bffcb4e8.jkddzztszm.acm-validations.aws`
+Do not remove them while the current certificate is needed for rollback or renewal.
 
-## 2) After cert is `ISSUED`, update serverless stack
+## New-account cutover summary
 
-Run:
+1. Lower DNS TTL before the maintenance window.
+2. Request a new ACM certificate in `us-east-1` for apex + `www`.
+3. Add the new certificate's validation CNAMEs and wait for `ISSUED`.
+4. Deploy and fully test the new CloudFront domain before changing traffic.
+5. Pause writes and perform final S3/DynamoDB sync.
+6. Update apex/`www` to the new CloudFront target.
+7. Verify health, auth, Super Agent, Lambda clips, Fargate jobs, downloads, and alarms.
+8. Keep the old distribution/certificate/DNS values for rollback until acceptance ends.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File deploy\aws-serverless\deploy-serverless.ps1 `
-  -EnvFilePath scratch\.env.green.deploytmp `
-  -Prefix ytgrabber-green `
-  -Region us-east-1 `
-  -SiteDomainName www.videomaking.in `
-  -CloudFrontCertificateArn arn:aws:acm:us-east-1:596596146505:certificate/62ff8b55-8a4b-4634-97e8-75924181c9f5
-```
-
-## 3) DNS records for traffic cutover
-
-Recommended with DNS providers that do not support apex ALIAS to CloudFront:
-
-1. Set `www` as CNAME to `d2bcwj2idfdwb4.cloudfront.net`
-2. Set apex `@` HTTP redirect to `https://www.videomaking.in`
-3. Remove old apex A record to EC2 (`3.238.114.190`) after validation
-
-## 4) Post-cutover verification
-
-1. `https://www.videomaking.in/api/healthz` returns 200 with CloudFront headers.
-2. Auth login works.
-3. `clip-cut`, `best-clips`, and `subtitles` each reach terminal status (`done` or clear `error`) via worker queue.
-4. `https://www.videomaking.in/api/youtube/progress/not-a-real-job` returns JSON (not HTML fallback).
-5. EC2 runtime services can be stopped/decommissioned.
-
+Never remove old DNS or AWS resources before the final data sync and rollback window.

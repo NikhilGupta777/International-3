@@ -354,11 +354,11 @@ Both ECR repos auto-delete:
 | `ytgrabber-green-lambda-throttles` | > 3 throttles per 5-minute period for 2 periods |
 | `ytgrabber-green-batch-failures` | > 3 Batch failures in 5 min |
 
-> Alarms are active but **no SNS email is configured yet**. A single 5-minute Lambda throttle burst can still leave the alarm in OK because the current evaluation period count is 2.
+> Alarms are active. The SNS topic `ytgrabber-green-alerts` exists, but it has zero confirmed subscribers; Lambda and Batch failure alarms also have no alarm action. Alerts are therefore not reliably delivered. A single 5-minute Lambda throttle burst can still leave the alarm in OK because the current evaluation period count is 2.
 
 ### Lambda Concurrency Quota
 
-As of 2026-07-22, the live applied Lambda account concurrency quota in `us-east-1` is `10`, lower than AWS's normal default of `1000`. Production hit that limit at `2026-07-22 02:32 IST` and recorded 5 throttles. A quota increase request is open:
+As of the 2026-07-23 recheck, the live applied Lambda account concurrency quota in `us-east-1` is `1000`. Production previously hit the old applied limit of `10` at `2026-07-22 02:32 IST` and recorded 5 throttles. The earlier quota request remains open:
 
 ```powershell
 aws service-quotas list-requested-service-quota-change-history-by-quota `

@@ -26,7 +26,7 @@ Last verified good:
 - Vertex Gemini path is enabled
 - Clip-cut Lambda fast path is `420` seconds, i.e. clips up to 7 minutes try Lambda first
 - Queued worker job definition is `ytgrabber-green-worker-job:744`
-- Lambda account concurrency quota applied value is still `10`; Service Quotas request `b45fb4bb5e2841748ab225a45d806248bg1HnYLc` asks for `1001` and is `CASE_OPENED`
+- Lambda account concurrency quota applied value is now `1000` (verified 2026-07-23); Service Quotas request `b45fb4bb5e2841748ab225a45d806248bg1HnYLc` asks for `1001` and remains `CASE_OPENED`
 
 ## Critical Backup
 

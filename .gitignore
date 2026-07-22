@@ -116,7 +116,6 @@ setup_oidc.ps1
 incident-session-log.md
 live-openapi.json
 run_log.txt
-AWS-MASTER-SETUP-AND-MIGRATION.md
 artifacts/malware-quarantine/
 artifacts/malware-scan-report-*.txt
 *.hi-orig.srv1

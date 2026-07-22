@@ -1,5 +1,7 @@
 # CI/CD Setup Guide — GitHub → AWS Auto-Deploy
 
+For new-account migration, hardcoded account/role/certificate values, data copy, and cutover sequencing, follow [`AWS-MASTER-SETUP-AND-MIGRATION.md`](AWS-MASTER-SETUP-AND-MIGRATION.md). This file describes the current-account CI flow only.
+
 ## How It Works
 
 Every time you `git push` to the `main` branch:
@@ -40,7 +42,7 @@ Add this secret:
 | `GROQ_API_KEY` | Groq key for Fast fallback (`llama-3.1-8b-instant`) |
 | `GROQ_API_KEY_2` … `GROQ_API_KEY_4` | Optional Groq failover keys; unhealthy keys are cooled down and rotated automatically |
 
-*(Note: We used to require `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` here, but they are no longer needed since we migrated to GitHub OIDC.)*
+*(Note: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are no longer needed because CI uses OIDC. Legacy repository secrets with those names still existed at the 2026-07-23 audit and should be deleted after OIDC is verified.)*
 
 ---
 
@@ -48,7 +50,7 @@ Add this secret:
 
 The repository uses OpenID Connect (OIDC) to authenticate with AWS. This means GitHub Actions assumes a temporary, short-lived IAM role (`ytgrabber-green-gha-deployer`) instead of using permanent credentials.
 
-This role has already been provisioned in the AWS account using the `setup_oidc.ps1` script and is explicitly bound to the `NikhilGupta777/International-3` repository.
+This role is explicitly bound to the `NikhilGupta777/International-3` repository. At the 2026-07-23 audit it also had `AdministratorAccess` in addition to a scoped inline deploy policy. Remove administrator access after verifying the scoped policy.
 
 You do not need to configure any AWS credentials manually. The `.github/workflows/deploy.yml` workflow automatically assumes this role during deployment.
 
@@ -58,7 +60,7 @@ You do not need to configure any AWS credentials manually. The `.github/workflow
 
 Copy the **entire content** of your local `deploy/ec2/.env.green` file and paste it as the `ENV_GREEN_CONTENT` secret.
 
-> ⚠️ The file is gitignored and never committed — this is the secure way to pass it.
+> ⚠️ Gitignored does not mean encrypted. The local file contains plaintext credentials and can be stale relative to live Lambda. Build it from an approved secret inventory, rotate locally exposed credentials, validate resource revisions, and prefer individually managed secrets where practical.
 > Every deploy auto-updates `YOUTUBE_BATCH_JOB_DEFINITION` with the new worker revision.
 
 ---

@@ -756,11 +756,11 @@ Both ECR repos auto-expire: keep last 3 tagged images, delete untagged after 1 d
 | `ytgrabber-green-lambda-throttles` | > 3 throttles across 2 consecutive 5-min periods |
 | `ytgrabber-green-batch-failures` | > 3 Batch failures in 5 min |
 
-No SNS email configured yet. Monitor via AWS Console.
+SNS topic `ytgrabber-green-alerts` exists, but it has zero confirmed subscribers. Queue/DLQ alarms reference it; Lambda and Batch failure alarms have no actions. Monitor via AWS Console until a subscriber is confirmed and all critical alarms are attached.
 
 ### Lambda Concurrency Quota
 
-Live applied account concurrency quota in `us-east-1` is `10`. AWS's default quota is `1000`, so Service Quotas rejected a request for `100` as below-default. A request for `1001` is open: `b45fb4bb5e2841748ab225a45d806248bg1HnYLc`, status `CASE_OPENED` as of 2026-07-22. This quota is a ceiling only; it does not create 24/7 cost by itself.
+Live applied account concurrency quota in `us-east-1` is `1000` as verified 2026-07-23. A request for `1001` remains open: `b45fb4bb5e2841748ab225a45d806248bg1HnYLc`, status `CASE_OPENED`. This quota is a ceiling only; it does not create 24/7 cost by itself.
 
 ---
 
