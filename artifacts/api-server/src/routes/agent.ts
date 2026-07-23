@@ -711,7 +711,7 @@ const STUDIO_TOOLS: any[] = [
         tab: {
           type: Type.STRING,
           description:
-            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
+            "Tab name: 'home', 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'copilot', 'translator', 'heygen', 'findvideo', 'thumbnail', 'content-manager', 'videostudio', 'help', 'activity', 'admin', 'developer', 'api-docs', 'settings'",
         },
       },
       required: ["tab"],
@@ -940,7 +940,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "send_result_to_tab",
     description:
-      "Open the relevant tab for a result or workflow: download, clips, subtitles, clipcutter, translator, timestamps, upload.",
+      "Open the relevant tab for a result or workflow. Valid tabs: home, download, clips, subtitles, clipcutter, bhagwat, scenefinder, timestamps, upload, copilot, translator, heygen, findvideo, thumbnail, content-manager, videostudio, help, activity, admin, developer, api-docs, settings.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -2966,6 +2966,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3372,7 +3373,7 @@ async function executeTool(
         status: "processing",
         message: "Starting subtitle generation...",
         jobId: subtitleJobId,
-        url: args.url,
+        url: inputUrl,
       } as any);
 
       const final = await pollSubtitleUntilDone(
@@ -3388,7 +3389,7 @@ async function executeTool(
         result: {
           jobId: subtitleJobId,
           srtFilename: final.srtFilename,
-          url: args.url,
+          url: inputUrl,
           language: args.language,
           translateTo: args.translateTo,
         },
@@ -4305,6 +4306,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -5330,16 +5336,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname);
   } catch {
     return true;
   }
