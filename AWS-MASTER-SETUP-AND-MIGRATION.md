@@ -15,6 +15,84 @@ reported `IN_SYNC` with zero drifted resources.
 > cutting, normal Fargate worker, CPU/non-GPU features, Super Agent, storage, auth, and
 > external integrations remain in scope.
 
+## Target-account progress — 2026-07-23 IST
+
+Target account: `386318011485`, region `us-east-1`. This section records live work
+already completed in the migration account. It does not change the source-production
+inventory documented below.
+
+Completed and verified:
+
+- CloudFormation stack `ytgrabber-green-serverless` is deployed with Lambda, Function
+  URL, static S3, OAC, CloudFront distribution `E36OKTEHMEZQ4N`, and SPA rewrite.
+- Target CloudFront domain is `dq163fbjr1do7.cloudfront.net`; `/api/healthz` and
+  `/api/auth/config` return HTTP 200. The direct Lambda Function URL health check also
+  returns HTTP 200.
+- Lambda memory is 3008 MB, timeout 900 seconds, and ephemeral storage 5120 MB.
+- Lambda fast-path cutoff is 420 seconds and normal Batch primary job types are
+  `bhagwat-analyze,bhagwat-render,clip-cut,subtitles`.
+- Current API image `migration-eb8a425-20260723-lambda` is deployed from a clean build
+  of commit `eb8a425`; resolved target ECR digest is
+  `sha256:6a8b3e49d5407cc955664257b40b703fab30e450385e8113c3f05501ec03537b`.
+- `ytgrabber-green-cooldowns` is active with TTL on `expiresAt`. The API role has scoped
+  cooldown-table access and scoped self-`lambda:InvokeFunction` permission.
+- Authenticated Lambda-fast clip job `98723a6c-4583-42c3-8387-59e5ef99efc1`
+  completed in 11.73 seconds, wrote a 413,450-byte MP4 to target S3, and created no
+  Batch job.
+- Current normal worker image `migration-eb8a425-20260723` is in target ECR at digest
+  `sha256:d0b96c837a0e15b99375edbdbe95eb710682058c3ef00261cbad6012c79ad354`.
+  Batch job definition revision 2 uses this image with 2 vCPU, 4096 MB, and a
+  2700-second attempt timeout; Lambda points to revision 2.
+- Direct Fargate acceptance job `codex-batch-smoke-7cae2bf1388f` succeeded with exit
+  code 0, DynamoDB status `done`, and a 413,451-byte MP4 in target S3.
+- The authenticated `/api/youtube/file/:jobId` route redirected to the target bucket and
+  a ranged pre-signed S3 download returned HTTP 206.
+- Password login, `/api/auth/session`, and `/api/agent/skills` returned HTTP 200;
+  the session reported `authenticated=true` and `superAgentAllowed=true`.
+- Lambda concurrent executions quota is applied at 1000. AWS case
+  `178479729200992` is closed.
+- Normal Fargate compute environment is enabled/valid with `maxvCpus=16`.
+- Access-table TTL is enabled on `expiresAt`.
+- Output bucket `videomaking-backup-386318011485` has encryption, public-access block,
+  required temporary migration CORS, and clip/download/share lifecycle expiration.
+- Multi-region CloudTrail `videomaking-management-events` is logging with validation.
+- Monthly cost budget `videomaking-monthly-100-usd` exists with a USD 100 limit.
+- Six baseline CloudWatch alarms are attached to SNS topic
+  `ytgrabber-green-alerts`. The topic has no subscriber yet.
+- `/aws/lambda/ytgrabber-green-api`, `/aws/batch/job`, and the active worker group
+  `/aws/batch/job/ytgrabber-green-worker` have 30-day retention.
+
+Remaining blockers and required work:
+
+- Obtain old-account read access or a temporary cross-account migration policy. The
+  target currently has only 1 access record, 11 sample/test job records, and 10 S3
+  objects; this is not a production data migration.
+- Copy the full required S3 prefixes and DynamoDB access records, optionally jobs
+  history, then compare source/target counts and bytes. Run a final incremental copy at
+  cutover.
+- Build and validate the complete secret/config inventory. Target Lambda currently has
+  fewer environment keys than the 74 in audited source production. Do not copy values into
+  this document or command output.
+- Reconcile the manually created cooldown table through CloudFormation import or an
+  equivalent controlled stack procedure. The repository template defines the table,
+  but the deployed target stack does not yet own it.
+- Reconcile CloudFormation drift and direct runtime updates: `ApiFunction.MemorySize`
+  expects 1536 while live is 3008; the stack also expects worker revision 1, a 600-second
+  cutoff, and the broader old routing list. `ApiRole` drift contains only the required
+  cooldown-table and self-invoke permissions. Preserve all verified live values and the
+  current API image in the next controlled stack deployment.
+- Add and confirm an operator email subscription to `ytgrabber-green-alerts`; then test
+  alarm delivery. Add a budget recipient as well.
+- After the data import, enable DynamoDB PITR and deletion protection as intended.
+- Complete the remaining authenticated acceptance tests: workspace, uploads, subtitles,
+  Bhagwat, Pita Ji, Google login, and retained external integrations. Password login,
+  Super Agent entitlement/skills, signed download, one short Lambda clip without Batch,
+  and one normal Fargate job have passed.
+- GitHub/OIDC workflow migration and ACM/domain/DNS cutover were explicitly deferred by
+  the owner. They remain necessary before final production traffic cutover.
+
+No GPU translation infrastructure is included in the target migration.
+
 ---
 
 ## 1. Migration success criteria
