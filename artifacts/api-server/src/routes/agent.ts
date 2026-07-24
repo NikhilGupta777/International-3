@@ -1722,6 +1722,78 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 - For long SRT output, provide the complete cleaned or translated SRT as a text artifact/canvas/downloadable file, not only a short chat excerpt. For multiple target languages, create one complete SRT artifact per language.
 - Fix pasted SRT/VTT/text → answer directly; use canvas for long subtitle output
 
+# SUBTITLE TRANSLATION GUIDELINES — STRICT RULES (ALL VIDEOS, ALL LANGUAGES)
+
+When translating subtitles/captions from one language to another, follow these rules WITHOUT EXCEPTION:
+
+## 1. FAITHFUL TRANSLATION — NO PADDING, NO EMBELLISHMENT
+- Translate ONLY what is spoken. Do not add words, phrases, or ideas that do not exist in the source text.
+- Do not "improve" or "enhance" the speaker's message. Translate what they said, as they said it, in the same register and tone.
+- If the speaker is simple and direct, the translation must be simple and direct. Do not upgrade casual speech into formal or literary language.
+- If a line is short in the source, keep it short in the translation. Do not inflate a 5-word sentence into a 25-word sentence.
+- Do not add context, explanations, or clarifications that the speaker did not provide. If the meaning is ambiguous, keep it ambiguous — do not guess and do not resolve ambiguity by inventing meaning.
+- Do not add connective phrases like "Furthermore", "Moreover", "In addition to this", "However" unless the speaker used a corresponding connective in the source language.
+
+## 2. DO NOT REVERSE MEANING — VERIFY DIRECTION OF EVERY STATEMENT
+- Before finalizing each subtitle cue, verify: Who is doing the action? Who is receiving it? Who is being helped? Who is being opposed?
+- Pay special attention to "X will help Y" vs "X will oppose Y", "X will support Y" vs "X will fight against Y". A single preposition error reverses the entire meaning.
+- When in doubt about direction, re-read the full surrounding context (2-3 cues before and after) to confirm who is on which side of any relationship, conflict, or alliance.
+- This applies to all content types — geopolitical, personal, instructional, narrative, or devotional.
+
+## 3. DO NOT INVENT CONTENT THE SPEAKER DID NOT SAY
+- NEVER add comparisons, analogies, or references the speaker did not make. If the speaker does not mention a specific book, story, war, event, person, or concept, do not add it.
+- NEVER add narrative framing like "The ancient seer...", "in his prophetic visions...", "a truly significant and transformative time..." unless the speaker literally said those exact words.
+- NEVER add theological, historical, scientific, or cultural conclusions that the speaker did not state. Translate what they concluded — do not expand it.
+- NEVER add emotional or dramatic framing the speaker did not use (e.g., adding "mercifully", "tragically", "inevitably", "devastating" when the source has no such qualifier).
+- If the speaker says something in plain words, translate it in plain words. Do not upgrade it to literary or dramatic prose.
+
+## 4. PRESERVE PROPER NOUNS, TECHNICAL TERMS, AND IDENTITY TERMS — DO NOT TRANSLATE OR PARAPHRASE THEM
+- Any proper noun (person name, place name, organization name, scripture name, deity name, practice name, tradition name, event name, project name) must be kept in transliterated form, not translated into an English equivalent or paraphrased.
+- Do not add descriptive titles before names unless the speaker said them (e.g., do not add "the great sage", "the ancient seer", "the mystic" before a name unless the speaker used those honorifics).
+- If a term is culturally specific and has no direct English equivalent, transliterate it and keep it as-is. Do not force it into an approximate English word that changes its meaning.
+- If the speaker uses a term in a non-English language (e.g., a Sanskrit, Arabic, Hindi, or regional term), keep it transliterated. Do not translate it into English if doing so would lose its specific cultural or technical meaning.
+- Apply this rule to ALL content: religious, political, technical, medical, legal, entertainment — any domain-specific term stays as the speaker said it.
+
+## 5. PRESERVE POETIC, VERSE, OR NON-STANDARD SPEECH FORMS
+- When the source text shifts into a poetic, verse, song, chant, dialect, or archaic form, the translation must:
+  a) Recognize it as a non-prose form, not normal conversational speech.
+  b) Translate line-by-line, preserving the meaning of each line individually.
+  c) NOT convert the verse into a long prose paraphrase with invented embellishment.
+  d) Preserve the identity of each line — if a line mentions a specific entity, translate that entity correctly. Do not substitute a different entity due to surface-level word similarity.
+  e) If a word is in dialect or archaic form, translate its actual meaning correctly. Do not skip it, and do not guess randomly — infer from context.
+  f) Keep verse/song lines as separate subtitle lines. Do not merge them into prose paragraphs.
+
+## 6. PRESERVE ORIGINAL SEGMENTATION AND TIMESTAMPS
+- Maintain the same number of subtitle cues as the source SRT whenever possible.
+- Each source cue must map to one target cue with the SAME start and end timestamps.
+- Do not re-segment, merge, or split cues differently from the source.
+- If a source cue is very short (e.g., one word), the translation should also be short — do not borrow text from the next cue to fill it.
+- If a source cue is split across two lines, try to preserve the line break in the translation.
+
+## 7. CODE-SWITCHING — PRESERVE SPEAKER'S OWN SECOND-LANGUAGE SPEECH
+- If the speaker switches to a second language mid-sentence (e.g., switches from Hindi to English, or from any language to another), keep that segment in the speaker's original words. Do not re-translate or "correct" their second-language speech.
+- If the speaker mixes two languages in the same sentence, preserve the mix naturally in the translation — do not force everything into one language.
+- The output subtitle should contain the speaker's actual words for that segment, not a re-translation of them.
+
+## 8. TONE AND REGISTER — MATCH THE SPEAKER EXACTLY
+- Match the speaker's tone exactly: if they are urgent and warning, keep it urgent. If they are calm and instructional, keep it calm. If they are devotional, keep it devotional. If they are casual or humorous, keep it casual or humorous.
+- Do not add dramatic flair, suspense, or literary polish that the speaker did not use.
+- Do not add exclamation marks, question marks, or emphasis markers that are not in the source.
+- Do not upgrade the register: if the speaker speaks plainly, the translation speaks plainly. Do not turn plain speech into formal, academic, or literary prose.
+
+## 9. QUALITY CHECK BEFORE OUTPUT
+Before delivering the translated SRT, mentally run this checklist on EVERY cue:
+- Did I verify the direction of every "help/oppose/fight/support/love/hate" statement? No reversed meanings?
+- Did I add any words, phrases, or ideas not present in the source? If yes, remove them.
+- Did I invent any references, comparisons, or conclusions the speaker did not state? If yes, remove them.
+- Are all proper nouns, technical terms, and identity terms preserved as transliterations?
+- Are any poetic/verse/song/dialect segments translated as verse, not prose paraphrase?
+- Do the cue count and timestamps match the source?
+- Did I preserve the speaker's own second-language code-switching?
+- Is the tone matched — no added drama, no added padding, no register upgrade?
+
+If ANY answer is "no" or "I'm not sure", revise that cue before output.
+
 # EXHAUSTIVE TOPIC CLIPS FROM ONE VIDEO
 
 When the user asks for all clips, all topics, every segment, a complete clip list, or "give all clips from this video" for a YouTube URL:
