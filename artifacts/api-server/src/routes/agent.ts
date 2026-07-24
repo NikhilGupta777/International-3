@@ -2966,6 +2966,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3342,7 +3343,8 @@ async function executeTool(
           throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
         }
         const d = (await r.json()) as any;
-        subtitleJobId = d.id ?? d.jobId;
+        subtitleJobId = String(d.id ?? d.jobId ?? "");
+        if (!subtitleJobId) throw new Error("Subtitle job did not return a jobId");
       } else {
         const r = await fetch(`${apiBase}/subtitles/generate`, {
           method: "POST",
@@ -3359,7 +3361,8 @@ async function executeTool(
           throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
         }
         const d = (await r.json()) as any;
-        subtitleJobId = d.id ?? d.jobId;
+        subtitleJobId = String(d.id ?? d.jobId ?? "");
+        if (!subtitleJobId) throw new Error("Subtitle job did not return a jobId");
       }
       rememberAgentJob(req, subtitleJobId);
       logTool("Subtitles job accepted", { jobId: subtitleJobId });
@@ -4304,7 +4307,11 @@ async function executeTool(
 
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
-      if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -5331,15 +5338,23 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
+      host === "[::1]" ||
+      host === "::1" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
       host.endsWith(".local")
-    );
+    ) return true;
+    // RFC1918 172.16.0.0/12 covers 172.16.x.x through 172.31.x.x
+    const m = host.match(/^172\.(\d+)\./);
+    if (m) {
+      const second = parseInt(m[1], 10);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
   } catch {
     return true;
   }
