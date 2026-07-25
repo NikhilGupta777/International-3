@@ -33,6 +33,7 @@ import { AiVideoStudio, type AiVideoStudioHandle } from "@/components/AiVideoStu
 import { FindVideo } from "@/components/FindVideo";
 import { Thumbnail } from "@/components/Thumbnail";
 import { YouTubeContentManager } from "@/components/YouTubeContentManager";
+import { NewTabStudio } from "@/components/NewTabStudio";
 import VideoTranslator from "./VideoTranslator";
 import HeyGenTranslator from "./HeyGenTranslator";
 import {
@@ -61,7 +62,7 @@ import {
   subscribeToPreferenceChanges,
 } from "@/lib/user-preferences";
 
-type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "content-manager" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings";
+type Mode = "home" | "download" | "clips" | "subtitles" | "clipcutter" | "bhagwat" | "scenefinder" | "timestamps" | "upload" | "copilot" | "translator" | "heygen" | "findvideo" | "thumbnail" | "content-manager" | "videostudio" | "help" | "activity" | "admin" | "developer" | "api-docs" | "settings" | "newtabstudio";
 
 export type AuthUser = {
   method?: "password" | "google";
@@ -115,6 +116,7 @@ const MODE_LABELS: Record<Mode, string> = {
   developer: "Developer",
   "api-docs": "API Docs",
   settings: "Settings",
+  newtabstudio: "New Tab Studio",
 };
 
 const VALID_MODES = new Set<Mode>(Object.keys(MODE_LABELS) as Mode[]);
@@ -141,6 +143,7 @@ const MODE_PATHS: Record<Mode, string> = {
   developer: "/developer",
   "api-docs": "/developer/docs",
   settings: "/settings",
+  newtabstudio: "/new-tab-studio",
 };
 const PATH_MODES = new Map<string, Mode>(
   Object.entries(MODE_PATHS).map(([mode, path]) => [path, mode as Mode]),
@@ -562,6 +565,7 @@ export default function Home({
   const showThumbnail = mode === "thumbnail";
   const showContentManager = mode === "content-manager";
   const showVideoStudio = mode === "videostudio";
+  const showNewTabStudio = mode === "newtabstudio";
   const showAdmin = mode === "admin";
   const showDeveloper = mode === "developer";
   const showApiDocs = mode === "api-docs";
@@ -1222,6 +1226,37 @@ export default function Home({
                 >
                   <StudioHome
                     onSwitchMode={(m) => switchMode(m as Mode)}
+                    onLaunchAgent={(prompt) => {
+                      if (!canUseSuperAgent) {
+                        switchMode("copilot");
+                        return;
+                      }
+                      setPendingCopilotPrompt(prompt);
+                      setCopilotResetKey(k => k + 1);
+                      switchMode("copilot");
+                    }}
+                  />
+                </motion.div>
+              )}
+
+              {/* New Tab Video Studio */}
+              {showNewTabStudio && (
+                <motion.div
+                  key="newtabstudio-panel"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.3 }}
+                  className="w-full h-full flex-1 flex flex-col"
+                >
+                  <NewTabStudio
+                    onSwitchMode={(m) => switchMode(m as Mode)}
+                    onOpenVideoStudio={(projectId) => {
+                      initialRouteRef.current = { mode: "videostudio", subKind: "project", subId: projectId };
+                      pushCurrentPath(`/ai-studio/project/${projectId}`);
+                      setMode("videostudio");
+                      studioRef.current?.openProject(projectId, true);
+                    }}
                     onLaunchAgent={(prompt) => {
                       if (!canUseSuperAgent) {
                         switchMode("copilot");

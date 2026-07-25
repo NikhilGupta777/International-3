@@ -382,9 +382,14 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   const [copied, setCopied] = useState(false);
   const [wrapped, setWrapped] = useState(false);
   const [canvasOpen, setCanvasOpen] = useState(false);
+  const [editedCode, setEditedCode] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
   const canvasPanelRef = useRef<HTMLDivElement | null>(null);
   const label = normalizeCanvasLanguage(language, code);
   const filename = canvasFilename(label);
+
+  const currentCode = editedCode !== null ? editedCode : code;
+  const isDirty = editedCode !== null && editedCode !== code;
 
   useEffect(() => {
     if (!canvasOpen) return;
@@ -419,7 +424,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
 
   const copyCode = async () => {
     try {
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(currentCode);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -428,7 +433,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   };
 
   const downloadCode = () => {
-    const blob = new Blob([code], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([currentCode], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -442,10 +447,13 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
   return (
     <div className="my-2 overflow-hidden rounded-lg border border-white/10 bg-black/30">
       <div className="flex items-center justify-between border-b border-white/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-white/35">
-        <span className="normal-case tracking-normal">{filename}</span>
+        <span className="normal-case tracking-normal">{filename}{isDirty ? " (edited)" : ""}</span>
         <div className="flex items-center gap-0.5">
           <button type="button" className="gs-code-action" onClick={() => setWrapped(v => !v)} aria-pressed={wrapped} aria-label={wrapped ? "Disable code wrapping" : "Wrap code"} title={wrapped ? "Disable wrapping" : "Wrap code"}>
             <RotateCcw className="h-4 w-4" />
+          </button>
+          <button type="button" className="gs-code-action" onClick={() => { setCanvasOpen(true); setIsEditing(true); }} aria-label="Edit in canvas" title="Edit in canvas">
+            <Pencil className="h-4 w-4 text-amber-300" />
           </button>
           <button type="button" className="gs-code-action" onClick={() => setCanvasOpen(true)} aria-label="Open code in canvas" title="Open in canvas">
             <SquarePen className="h-4 w-4" />
@@ -459,7 +467,7 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
         </div>
       </div>
       <pre className={cn("max-h-80 overflow-auto px-3 py-2 text-[12px] leading-relaxed text-cyan-50/82 font-mono", wrapped ? "whitespace-pre-wrap break-words" : "whitespace-pre")}>
-        <code>{code}</code>
+        <code>{currentCode}</code>
       </pre>
       {canvasOpen && (
         <div className="fixed inset-0 z-[1200] flex items-center justify-center p-3 sm:p-6" role="dialog" aria-modal="true" aria-label={`${filename} canvas`}>
@@ -468,15 +476,37 @@ function CodeBlock({ code, language }: { code: string; language?: string }) {
             <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-white/90">{filename}</div>
-                <div className="text-[10px] uppercase tracking-wide text-white/35">{label}</div>
+                <div className="text-[10px] uppercase tracking-wide text-white/35">{label}{isDirty ? " · Modified" : ""}</div>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setIsEditing(!isEditing)}
+                  className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors", isEditing ? "bg-amber-500/22 text-amber-100 border-amber-400/35" : "bg-white/7 hover:bg-white/12 text-white/75 border-white/10")}
+                >
+                  <Pencil className="h-3.5 w-3.5 text-amber-300" /> {isEditing ? "Editing" : "Edit"}
+                </button>
+                {isDirty && (
+                  <button type="button" className="gs-code-action text-white/60 hover:text-white" onClick={() => { setEditedCode(null); setIsEditing(false); }} aria-label="Reset canvas content" title="Reset to original">
+                    <RotateCcw className="h-4 w-4" />
+                  </button>
+                )}
                 <button type="button" className="gs-code-action" onClick={downloadCode} aria-label={`Download ${filename}`}><Download className="h-4 w-4" /></button>
                 <button type="button" className="gs-code-action" onClick={() => void copyCode()} aria-label="Copy canvas content"><Copy className="h-4 w-4" /></button>
                 <button type="button" className="gs-code-action" onClick={() => setCanvasOpen(false)} aria-label="Close canvas" autoFocus><X className="h-4 w-4" /></button>
               </div>
             </div>
-            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre p-4 font-mono text-[13px] leading-relaxed text-cyan-50/90"><code>{code}</code></pre>
+            {isEditing ? (
+              <textarea
+                value={currentCode}
+                onChange={(e) => setEditedCode(e.target.value)}
+                spellCheck={false}
+                placeholder="Edit code here..."
+                className="flex-1 min-h-0 w-full p-4 font-mono text-[13px] leading-relaxed text-cyan-50/90 bg-[#080c10] resize-none outline-none border-none"
+              />
+            ) : (
+              <pre className="min-h-0 flex-1 overflow-auto whitespace-pre p-4 font-mono text-[13px] leading-relaxed text-cyan-50/90"><code>{currentCode}</code></pre>
+            )}
           </div>
         </div>
       )}
@@ -1553,22 +1583,47 @@ function CompactTextArtifact({ label, content, downloadUrl }: { label: string; c
 function TextArtifact({ label, content, downloadUrl, language, live }: { label: string; content: string; downloadUrl?: string; language?: string; live?: boolean }) {
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
-  const [view, setView] = useState<"code" | "preview">("preview");
-  const normalizedLanguage = normalizeCanvasLanguage(language, content);
-  const canPreview = isHtmlCanvas(normalizedLanguage, content);
+  const [editedContent, setEditedContent] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [view, setView] = useState<"code" | "preview" | "edit">("preview");
+
+  const currentContent = editedContent !== null ? editedContent : content;
+  const isDirty = editedContent !== null && editedContent !== content;
+
+  const normalizedLanguage = normalizeCanvasLanguage(language, currentContent);
+  const canPreview = isHtmlCanvas(normalizedLanguage, currentContent);
   const canRenderMarkdown = isMarkdownArtifact(normalizedLanguage, label);
   const downloadName = label || canvasFilename(normalizedLanguage);
   const artifactUrl = React.useMemo(
-    () => downloadUrl || `data:${canPreview ? "text/html" : "text/plain"};charset=utf-8,${encodeURIComponent(content)}`,
-    [canPreview, content, downloadUrl],
+    () => downloadUrl && !isDirty ? downloadUrl : `data:${canPreview ? "text/html" : "text/plain"};charset=utf-8,${encodeURIComponent(currentContent)}`,
+    [canPreview, currentContent, downloadUrl, isDirty],
   );
+
   // For short non-live, non-previewable content, drop the heavy "canvas" UI and
   // show a tight inline card. Canvas is for real artifacts the user will edit/download.
-  if (!live && !canPreview && content.length <= 500) {
-    return <CompactTextArtifact label={label} content={content} downloadUrl={downloadUrl} />;
+  if (!live && !canPreview && currentContent.length <= 500 && !isDirty) {
+    return <CompactTextArtifact label={label} content={currentContent} downloadUrl={downloadUrl} />;
   }
-  const copyText = () => { void navigator.clipboard.writeText(content); setCopied(true); setTimeout(() => setCopied(false), 2000); };
-  const preview = content.length > 3200 ? `${content.slice(0, 3200)}\n\n...` : content;
+
+  const copyText = () => { void navigator.clipboard.writeText(currentContent); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+  const preview = currentContent.length > 3200 ? `${currentContent.slice(0, 3200)}\n\n...` : currentContent;
+
+  const toggleEditMode = () => {
+    if (!isEditing) {
+      setIsEditing(true);
+      setView("edit");
+    } else {
+      setIsEditing(false);
+      setView(canPreview || canRenderMarkdown ? "preview" : "code");
+    }
+  };
+
+  const resetContent = () => {
+    setEditedContent(null);
+    setIsEditing(false);
+    setView(canPreview || canRenderMarkdown ? "preview" : "code");
+  };
+
   return (
     <>
       <ArtifactShell
@@ -1576,16 +1631,19 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
         defaultOpen={!!live}
         icon={<SquarePen className="w-4 h-4 text-cyan-200" />}
         title={label}
-        subtitle={`${content.length.toLocaleString()} chars${live ? " · writing live" : ""}${canPreview ? " · HTML preview" : ""}`}
+        subtitle={`${currentContent.length.toLocaleString()} chars${live ? " · writing live" : ""}${canPreview ? " · HTML preview" : ""}${isDirty ? " · Modified" : ""}`}
         actions={
           <>
             {canPreview && (
-              <button onClick={() => { setView("preview"); setOpen(true); }} className="hidden sm:inline-flex items-center text-[11px] text-emerald-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-emerald-500/14 hover:bg-emerald-500/22 border border-emerald-300/15 font-semibold">Preview</button>
+              <button onClick={() => { setView("preview"); setIsEditing(false); setOpen(true); }} className="hidden sm:inline-flex items-center text-[11px] text-emerald-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-emerald-500/14 hover:bg-emerald-500/22 border border-emerald-300/15 font-semibold">Preview</button>
             )}
+            <button onClick={() => { setIsEditing(true); setView("edit"); setOpen(true); }} className="inline-flex items-center text-[11px] text-amber-200 hover:text-white px-2 py-1.5 rounded-lg bg-amber-400/14 hover:bg-amber-400/22 border border-amber-300/15 font-semibold gap-1" title="Edit canvas content">
+              <Pencil className="w-3.5 h-3.5 text-amber-300" /> Edit
+            </button>
             <button onClick={() => setOpen(true)} className="inline-flex items-center text-[11px] text-cyan-100 hover:text-white px-2.5 py-1.5 rounded-lg bg-cyan-400/14 hover:bg-cyan-400/22 border border-cyan-300/15 font-semibold">Canvas</button>
             <ShellIconButton icon={copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} onClick={copyText} title="Copy" />
             <ShellIconButton icon={<Download className="w-3.5 h-3.5" />} href={artifactUrl} download={downloadName} title="Download" />
-            <SaveTextToWorkspaceBtn content={content} suggestedName={downloadName} className="!p-1.5" />
+            <SaveTextToWorkspaceBtn content={currentContent} suggestedName={downloadName} className="!p-1.5" />
           </>
         }
       >
@@ -1619,18 +1677,32 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-bold text-white truncate">{label}</p>
-                  <p className="text-[11px] text-white/40">Agent canvas - {live ? "live writing, " : ""}preview, copy, download</p>
+                  <p className="text-[11px] text-white/40">Agent canvas - {live ? "live writing, " : ""}{isEditing ? "editing in progress, " : ""}{isDirty ? "modified, " : ""}preview, copy, download</p>
                 </div>
-                {(canPreview || canRenderMarkdown) && (
-                  <div className="hidden sm:flex items-center gap-1 p-1 rounded-xl bg-white/6 border border-white/8">
-                    <button onClick={() => setView("code")} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "code" ? "bg-cyan-400/18 text-cyan-100" : "text-white/55 hover:text-white")}>
+                <div className="hidden sm:flex items-center gap-1.5">
+                  <div className="flex items-center gap-1 p-1 rounded-xl bg-white/6 border border-white/8">
+                    {(canPreview || canRenderMarkdown) && (
+                      <button onClick={() => { setView("preview"); setIsEditing(false); }} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "preview" && !isEditing ? "bg-emerald-500/18 text-emerald-100" : "text-white/55 hover:text-white")}>
+                        <Eye className="w-3.5 h-3.5" /> Preview
+                      </button>
+                    )}
+                    <button onClick={() => { setView("code"); setIsEditing(false); }} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "code" && !isEditing ? "bg-cyan-400/18 text-cyan-100" : "text-white/55 hover:text-white")}>
                       <Terminal className="w-3.5 h-3.5" /> Raw
                     </button>
-                    <button onClick={() => setView("preview")} className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold", view === "preview" ? "bg-emerald-500/18 text-emerald-100" : "text-white/55 hover:text-white")}>
-                      <Eye className="w-3.5 h-3.5" /> Preview
-                    </button>
                   </div>
-                )}
+                  <button
+                    onClick={toggleEditMode}
+                    className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors", isEditing ? "bg-amber-500/22 text-amber-100 border-amber-400/35" : "bg-white/7 hover:bg-white/12 text-white/75 border-white/10")}
+                    title="Toggle canvas editor"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-amber-300" /> {isEditing ? "Editing" : "Edit"}
+                  </button>
+                  {isDirty && (
+                    <button onClick={resetContent} title="Reset to original agent output" className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-white/7 hover:bg-white/12 text-white/60 hover:text-white border border-white/10">
+                      <RotateCcw className="w-3.5 h-3.5" /> Reset
+                    </button>
+                  )}
+                </div>
                 <button onClick={copyText} className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-white/7 hover:bg-white/12 text-xs font-semibold text-white/75">
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} {copied ? "Copied" : "Copy"}
                 </button>
@@ -1641,31 +1713,48 @@ function TextArtifact({ label, content, downloadUrl, language, live }: { label: 
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              {canPreview && view === "preview" ? (
+              {isEditing || view === "edit" ? (
+                <div className="flex-1 min-h-0 relative flex flex-col bg-[#070a0e]">
+                  <div className="flex items-center justify-between px-4 py-2 bg-black/40 border-b border-white/8 text-[11px] text-white/40 font-mono">
+                    <span>Editable Canvas ({currentContent.length.toLocaleString()} chars)</span>
+                    {isDirty && <span className="text-amber-300 font-semibold">• Modified</span>}
+                  </div>
+                  <textarea
+                    value={currentContent}
+                    onChange={(e) => setEditedContent(e.target.value)}
+                    placeholder="Edit canvas content here..."
+                    spellCheck={false}
+                    className="flex-1 min-h-0 w-full p-4 sm:p-6 text-[12px] leading-relaxed text-cyan-50/90 font-mono bg-transparent resize-none outline-none border-none"
+                  />
+                </div>
+              ) : canPreview && view === "preview" ? (
                 <iframe
                   title={downloadName}
                   sandbox="allow-scripts"
                   referrerPolicy="no-referrer"
-                  srcDoc={injectContentSecurityPolicy(content)}
+                  srcDoc={injectContentSecurityPolicy(currentContent)}
                   className="flex-1 w-full bg-white"
                 />
               ) : canRenderMarkdown && view === "preview" ? (
                 <div className="agent-canvas-markdown agent-canvas-markdown-full copilot-md flex-1 min-h-0 overflow-auto p-4 sm:p-6">
-                  <MarkdownContent text={content} />
+                  <MarkdownContent text={currentContent} />
                 </div>
               ) : (
-                <pre className="flex-1 min-h-0 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{content}</pre>
+                <pre className="flex-1 min-h-0 overflow-auto p-4 sm:p-5 text-[12px] leading-relaxed text-cyan-50/82 font-mono whitespace-pre-wrap bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.10),transparent_32%),linear-gradient(180deg,rgba(255,255,255,0.025),rgba(0,0,0,0.18))]">{currentContent}</pre>
               )}
               <div className="relative z-10 sm:hidden grid grid-cols-2 gap-2 p-3 border-t border-white/10 bg-white/[0.035] shrink-0">
+                <button onClick={toggleEditMode} className={cn("flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold", isEditing ? "bg-amber-500/20 text-amber-100" : "bg-white/8 text-white/75")}>
+                  <Pencil className="w-3.5 h-3.5 text-amber-300" /> {isEditing ? "Editing" : "Edit"}
+                </button>
                 {(canPreview || canRenderMarkdown) && (
-                  <>
-                    <button onClick={() => setView("code")} className={cn("flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold", view === "code" ? "bg-cyan-400/18 text-cyan-100" : "bg-white/8 text-white/75")}>
-                      <Terminal className="w-3.5 h-3.5" /> Raw
-                    </button>
-                    <button onClick={() => setView("preview")} className={cn("flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold", view === "preview" ? "bg-emerald-500/20 text-emerald-100" : "bg-white/8 text-white/75")}>
-                      <Eye className="w-3.5 h-3.5" /> Preview
-                    </button>
-                  </>
+                  <button onClick={() => { setView(view === "preview" ? "code" : "preview"); setIsEditing(false); }} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold bg-white/8 text-white/75">
+                    {view === "preview" ? <Terminal className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />} {view === "preview" ? "Raw" : "Preview"}
+                  </button>
+                )}
+                {isDirty && (
+                  <button onClick={resetContent} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white/8 text-xs font-semibold text-white/75">
+                    <RotateCcw className="w-3.5 h-3.5" /> Reset
+                  </button>
                 )}
                 <button onClick={copyText} className="flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white/8 text-xs font-semibold text-white/75">
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />} {copied ? "Copied" : "Copy"}
@@ -1782,78 +1871,15 @@ function MusicArtifactCard({ part }: { part: MessagePart & { kind: "artifact" } 
 
 // ── SaveTextToWorkspaceBtn ────────────────────────────────────────────────────
 // Save inline text content (scripts, SEO packs, subtitles) directly via writeText.
-function SaveTextToWorkspaceBtn({ content, suggestedName, contentType, className }: { content: string; suggestedName?: string; contentType?: string; className?: string }) {
-  const { toast } = useToast();
-  const [state, setState] = useState<"idle" | "saving" | "done">("idle");
-  const onSave = async () => {
-    setState("saving");
-    try {
-      const fallback = (suggestedName || "note.txt").replace(/[^\w.\-() ]/g, "_").slice(0, 160) || "note.txt";
-      const path = `notes/${fallback}`;
-      const { workspaceApi } = await import("@/lib/workspace-api");
-      await workspaceApi.writeText(path, content, contentType);
-      setState("done");
-      toast({ title: "Saved to workspace", description: path });
-      setTimeout(() => setState("idle"), 2500);
-    } catch (err) {
-      setState("idle");
-      toast({ title: "Save failed", description: (err as Error).message, variant: "destructive" });
-    }
-  };
-  return (
-    <button
-      type="button"
-      onClick={onSave}
-      disabled={state !== "idle"}
-      className={cn("p-1.5 rounded-lg bg-white/6 hover:bg-white/10 text-white/55 hover:text-white disabled:opacity-60", className)}
-      title="Save to my workspace"
-    >
-      {state === "saving" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : state === "done" ? <CheckCircle className="w-3.5 h-3.5 text-green-400" /> : <FolderOpen className="w-3.5 h-3.5" />}
-    </button>
-  );
+function SaveTextToWorkspaceBtn(_props: { content: string; suggestedName?: string; contentType?: string; className?: string }) {
+  return null;
 }
 
 // ── SaveToWorkspaceBtn ────────────────────────────────────────────────────────
 // Imports an artifact's downloadUrl/imageUrl into the user's workspace under
 // uploads/ via the workspace API. Falls back gracefully when the URL is empty.
-function SaveToWorkspaceBtn({ sourceUrl, suggestedName, className }: { sourceUrl?: string; suggestedName?: string; className?: string }) {
-  const { toast } = useToast();
-  const [state, setState] = useState<"idle" | "saving" | "done">("idle");
-  if (!sourceUrl) return null;
-  const onSave = async () => {
-    setState("saving");
-    try {
-      const r = await fetch(sourceUrl, { credentials: "include" });
-      if (!r.ok) throw new Error(`source fetch failed: ${r.status}`);
-      const blob = await r.blob();
-      const inferredFromUrl = sourceUrl.split("?")[0].split("/").pop() ?? "file";
-      const fallback = suggestedName || inferredFromUrl;
-      const safe = fallback.replace(/[^\w.\-() ]/g, "_").slice(0, 160) || "file";
-      const path = `uploads/${safe}`;
-      const { workspaceApi } = await import("@/lib/workspace-api");
-      const { uploadUrl } = await workspaceApi.presignPut(path, blob.size, blob.type || undefined);
-      const put = await fetch(uploadUrl, { method: "PUT", body: blob, headers: blob.type ? { "Content-Type": blob.type } : undefined });
-      if (!put.ok) throw new Error(`workspace upload failed: ${put.status}`);
-      setState("done");
-      toast({ title: "Saved to workspace", description: path });
-      setTimeout(() => setState("idle"), 2500);
-    } catch (err) {
-      setState("idle");
-      toast({ title: "Save failed", description: (err as Error).message, variant: "destructive" });
-    }
-  };
-  return (
-    <button
-      type="button"
-      onClick={onSave}
-      disabled={state !== "idle"}
-      className={cn("shrink-0 inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-white/8 hover:bg-white/12 border border-white/10 text-white/70 text-[11px] font-medium transition-colors disabled:opacity-60", className)}
-      title="Save to my workspace"
-    >
-      {state === "saving" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : state === "done" ? <CheckCircle className="w-3.5 h-3.5 text-green-400" /> : <FolderOpen className="w-3.5 h-3.5" />}
-      <span className="hidden sm:inline">{state === "saving" ? "Saving…" : state === "done" ? "Saved" : "Save"}</span>
-    </button>
-  );
+function SaveToWorkspaceBtn(_props: { sourceUrl?: string; suggestedName?: string; className?: string }) {
+  return null;
 }
 
 // ── ArtifactShell ────────────────────────────────────────────────────────────

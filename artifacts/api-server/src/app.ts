@@ -142,6 +142,7 @@ function isTrustedBrowserMutation(req: Request): boolean {
     const originHost = new URL(origin).host.toLowerCase();
     const reqHost = requestHost(req);
     if (originHost === reqHost) return true;
+    if (originHost.startsWith("localhost:") && reqHost.startsWith("localhost:")) return true;
     // CloudFront may not forward x-forwarded-host, so reqHost falls back to the
     // Lambda Function URL which doesn't match the public domain in Origin.
     // Also accept the configured public site URL as a trusted admin origin.
