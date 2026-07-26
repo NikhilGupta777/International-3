@@ -1249,24 +1249,7 @@ export default function Home({
                   transition={{ duration: 0.3 }}
                   className="w-full h-full flex-1 flex flex-col"
                 >
-                  <NewTabStudio
-                    onSwitchMode={(m) => switchMode(m as Mode)}
-                    onOpenVideoStudio={(projectId) => {
-                      initialRouteRef.current = { mode: "videostudio", subKind: "project", subId: projectId };
-                      pushCurrentPath(`/ai-studio/project/${projectId}`);
-                      setMode("videostudio");
-                      studioRef.current?.openProject(projectId, true);
-                    }}
-                    onLaunchAgent={(prompt) => {
-                      if (!canUseSuperAgent) {
-                        switchMode("copilot");
-                        return;
-                      }
-                      setPendingCopilotPrompt(prompt);
-                      setCopilotResetKey(k => k + 1);
-                      switchMode("copilot");
-                    }}
-                  />
+                  <NewTabStudio />
                 </motion.div>
               )}
 
