@@ -2328,12 +2328,13 @@ function normalizeSandboxPath(value: unknown, fallback = "/home/user"): string {
   const path = String(value ?? fallback).trim() || fallback;
   if (!path.startsWith("/"))
     throw new Error(`Sandbox paths must be absolute: ${path}`);
-  // Block directory traversal via .. segments to prevent models from
-  // escaping the sandbox home directory.
+  if (path.includes("\0")) {
+    throw new Error("Sandbox path contains null bytes");
+  }
   if (path.split("/").some((seg) => seg === "..")) {
     throw new Error(`Sandbox path traversal blocked: ${path}`);
   }
-  return path.replace(/\0/g, "");
+  return path;
 }
 
 async function runE2BSandboxCommand(
@@ -5403,15 +5404,25 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
+      host === "[::1]" ||
+      host === "::1" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
+      host.startsWith("169.254.") ||
       host.endsWith(".local")
-    );
+    )
+      return true;
+    // RFC 1918: 172.16.0.0 – 172.31.255.255
+    const m172 = host.match(/^172\.(\d+)\./);
+    if (m172) {
+      const second = Number(m172[1]);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
   } catch {
     return true;
   }

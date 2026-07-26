@@ -238,10 +238,14 @@ export function StudioHome({
     rec.interimResults = true;
     rec.lang = navigator.language || "en-US";
     rec.onresult = (e: any) => {
-      let chunk = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript;
-      setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + chunk).trimStart());
-      resizeTextarea();
+      let finalChunk = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) finalChunk += e.results[i][0].transcript;
+      }
+      if (finalChunk) {
+        setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + finalChunk).trimStart());
+        resizeTextarea();
+      }
     };
     rec.onend = () => { setListening(false); recognitionRef.current = null; };
     rec.onerror = () => { setListening(false); recognitionRef.current = null; };
@@ -335,6 +339,8 @@ export function StudioHome({
     const items = Array.from(e.clipboardData.items);
     const imageItem = items.find(i => i.type.startsWith("image/"));
     if (!imageItem) return; // let normal text paste through
+    const rawFile = imageItem.getAsFile();
+    if (!rawFile) return; // can't get file — let default paste handle it
     const pastedText = e.clipboardData.getData("text/plain");
     e.preventDefault();
     if (pastedText) {
@@ -344,8 +350,6 @@ export function StudioHome({
       setText(prev => prev.slice(0, start) + pastedText + prev.slice(end));
       resizeTextarea();
     }
-    const rawFile = imageItem.getAsFile();
-    if (!rawFile) return;
     // Clipboard images often have an empty or generic name — give them a timestamped one
     const ext = imageItem.type.split("/")[1] ?? "png";
     const named = rawFile.name && rawFile.name !== "image.png"
