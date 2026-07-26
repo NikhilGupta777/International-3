@@ -697,7 +697,7 @@ Replit-specific Gemini client variant. Requires `AI_INTEGRATIONS_GEMINI_BASE_URL
 | Lambda Function URL | (auto) | `InvokeMode: RESPONSE_STREAM` — replaces API Gateway |
 | Batch Job Queue | `ytgrabber-green-job-queue` | Fargate worker queue |
 | Batch Compute | `ytgrabber-green-compute-fargate` | Fargate compute environment (max 16 vCPUs, scale-to-zero) |
-| Batch Job Def | `ytgrabber-green-worker-job:744` | Fargate worker job definition (revision pinned) |
+| Batch Job Def | `ytgrabber-green-worker-job:747` | Fargate worker job definition (revision pinned) |
 | Batch GPU Queue | `ytgrabber-green-gpu-queue` | GPU Batch queue for translator |
 | Batch GPU Job Def | `ytgrabber-green-translator-job` | GPU translator job (1 GPU, 15 GB RAM, 3000s timeout) |
 | DynamoDB | `ytgrabber-green-jobs` | All job state (download, clip, subtitle, bhagwat, translator) |
@@ -944,7 +944,7 @@ No test runner is configured. Use `pnpm run typecheck` to verify type correctnes
 
 **Always rebuild api-server after source changes.** The `dev` script builds then starts; there is no watch mode.
 
-**Batch job definition revisions must be pinned.** Live prod is `YOUTUBE_BATCH_JOB_DEFINITION=ytgrabber-green-worker-job:744` (with revision number). Using `ytgrabber-green-worker-job` without a revision runs the latest, which may not match what's deployed.
+**Batch job definition revisions must be pinned.** Live prod is `YOUTUBE_BATCH_JOB_DEFINITION=ytgrabber-green-worker-job:747` (with revision number). Using `ytgrabber-green-worker-job` without a revision runs the latest, which may not match what's deployed.
 
 **Lambda async context.** After `res.json()` returns, AWS Lambda freezes the container. Any `setImmediate`/`setTimeout` callbacks scheduled after the response will not run. Use worker Lambda self-invocation (`InvocationType: Event`) for work that outlives the HTTP response.
 

@@ -22,10 +22,10 @@ Cookies: S3 object ytgrabber-green/secrets/ytdlp-cookies-base64.txt
 
 | Resource              | Value                                                               |
 |-----------------------|---------------------------------------------------------------------|
-| Lambda image          | commit `84da200c`, digest `sha256:7d634b3d164fd30ad802edf93720a70fc1688e8b3359cf3a8c5808aa1966d31d` |
-| Lambda config         | `3008 MB`, `900s`, last modified `2026-07-20T13:17:28Z`             |
-| Worker image (ECR)    | `ytgrabber-green-worker:84da200c`                                   |
-| Batch Job Definition  | `ytgrabber-green-worker-job:744`                                    |
+| Lambda image          | commit/tag `60d5c1cb`, digest `sha256:e18c4d1bf4b05ec7b7fcc9cf2849ad782b4bfca1ef0989d450d44c43bf83b4fd` |
+| Lambda config         | `3008 MB`, `900s`, last modified `2026-07-25T18:01:12Z`             |
+| Worker image (ECR)    | `ytgrabber-green-worker:60d5c1cb`, digest `sha256:eacc56fb01ad...`  |
+| Batch Job Definition  | `ytgrabber-green-worker-job:747`                                    |
 | Batch compute         | `ytgrabber-green-compute-fargate`, max `16` vCPUs, scale-to-zero    |
 | CloudFront            | `EDTEON6GFBEZH` / `d2bcwj2idfdwb4.cloudfront.net`                  |
 | Lambda Function URL   | `https://3x4swcbqciemcdvfawhlsv7xiu0byxcs.lambda-url.us-east-1.on.aws/`, `InvokeMode=RESPONSE_STREAM`, `AuthType=NONE` |

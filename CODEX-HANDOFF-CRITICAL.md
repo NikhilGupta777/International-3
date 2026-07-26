@@ -23,10 +23,40 @@ Last verified good:
 - Site `/` returns `200`
 - `/api/healthz` returns `200`
 - `/api/auth/config` has Google auth enabled
-- Vertex Gemini path is enabled
+- Vertex Gemini path is disabled in current production
 - Clip-cut Lambda fast path is `420` seconds, i.e. clips up to 7 minutes try Lambda first
-- Queued worker job definition is `ytgrabber-green-worker-job:744`
+- API image is `60d5c1cb` at digest `sha256:e18c4d1bf4b0...`
+- Queued worker job definition is `ytgrabber-green-worker-job:747`
+- Worker image is `60d5c1cb` at digest `sha256:eacc56fb01ad...`
 - Lambda account concurrency quota applied value is now `1000` (verified 2026-07-23); Service Quotas request `b45fb4bb5e2841748ab225a45d806248bg1HnYLc` asks for `1001` and remains `CASE_OPENED`
+
+## New Account Migration — Current State
+
+- Target AWS account: `386318011485`; use CLI profile `new-account`.
+- Never write to source account `596596146505` during migration work.
+- Target CloudFront: `E36OKTEHMEZQ4N` / `https://dq163fbjr1do7.cloudfront.net`.
+- Target output bucket: `videomaking-backup-386318011485`.
+- Target Lambda runs the exact production API digest and has 74 transformed production
+  environment entries.
+- Target Batch job definition: `ytgrabber-green-worker-job:3`, cloned from source
+  revision `747` and tested successfully.
+- Translation/lip sync/Vertex are intentionally disabled; no GPU infrastructure exists
+  in target.
+- Frontend, access records, job history, and filtered S3 data were migrated and verified
+  on 2026-07-26. Final snapshot: access 29, jobs 3165, cooldowns 0; S3 863 approved
+  objects / 3,099,827,444 bytes; 187 media objects older than 120 hours excluded.
+- Target DynamoDB tables have PITR and deletion protection. Target output S3 has
+  versioning; `migration-backup/` contains rollback objects.
+- Target CloudFront login/session/Super Agent passed; a 5-second Lambda clip finished in
+  14.58 seconds without Batch; a revision-3 Fargate job succeeded.
+- Do not run a full CloudFormation deployment yet. Drift detection reports modified
+  `ApiFunction` and `ApiRole`, and manually reconciled resources/config must first be
+  brought under the template.
+- Before DNS cutover: pause source writes, rerun incremental S3/DynamoDB sync, finish
+  remaining feature tests, configure/confirm alert and budget recipients, and complete
+  the owner-deferred GitHub/OIDC plus ACM/DNS work.
+- Target cost was effectively USD 0.00 net in Cost Explorer through July 26 at query
+  time, but billing can lag and storage/PITR/actual compute usage can incur cost.
 
 ## Critical Backup
 
@@ -160,8 +190,8 @@ Invoke-WebRequest https://videomaking.in/api/auth/config -UseBasicParsing
 Expected important values:
 
 - `LambdaClipMaxDurationSeconds=420`
-- `YoutubeBatchJobDefinition=ytgrabber-green-worker-job:744`
+- `YoutubeBatchJobDefinition=ytgrabber-green-worker-job:747`
 - `GoogleAuthEnabled=true`
-- `GoogleGenaiUseVertexai=true`
+- `GoogleGenaiUseVertexai=false`
 - `SiteDomainName=videomaking.in`
 - CloudFront certificate ARN present

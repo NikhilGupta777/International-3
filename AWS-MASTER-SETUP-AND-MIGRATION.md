@@ -2,8 +2,9 @@
 
 **Authoritative source for migrating VideoMaking Studio to a new AWS account.**
 
-Last audited: **2026-07-23 IST** from the repository and live AWS account
-`596596146505` in `us-east-1`. Secret values are intentionally not recorded.
+Last audited: **2026-07-26 IST** from the repository, source account
+`596596146505`, and migration target account `386318011485` in `us-east-1`.
+Secret values are intentionally not recorded.
 
 This document supersedes older AWS architecture and migration notes wherever they
 disagree. The production CloudFormation stack was drift-checked during this audit and
@@ -25,11 +26,103 @@ reported `IN_SYNC` with zero drifted resources.
 > secrets, images, thumbnails, and workspace documents. Recalculate the rolling cutoff
 > for the final incremental pass; do not use a permanently hardcoded date.
 
-## Target-account progress — 2026-07-23 IST
+## Target-account migration snapshot — 2026-07-26 IST
+
+Source account `596596146505` remained strictly read-only during this migration. All
+AWS mutations described below were made only in target account `386318011485`.
+
+Completed and verified in the target account:
+
+- Copied the exact live production API image tag `60d5c1cb` into target ECR. Source and
+  target resolve to digest
+  `sha256:e18c4d1bf4b05ec7b7fcc9cf2849ad782b4bfca1ef0989d450d44c43bf83b4fd`.
+- Copied the exact live production worker image tag `60d5c1cb` into target ECR. Source
+  and target resolve to digest
+  `sha256:eacc56fb01adf533c6ff12b670df77d6aa0f755476ec1f828c9d6ed39b2b9a69`.
+- Lambda `ytgrabber-green-api` now runs the immutable target API digest with 3008 MB
+  memory, 900-second timeout, and 5120 MB ephemeral storage. Its 74 production
+  environment entries were copied without logging values and transformed only for
+  target-account resources/endpoints.
+- A secret-safe final scan found zero old account IDs, old bucket names, old Lambda URL
+  hostnames, or old CloudFront hostnames in the 74 Lambda environment entries or the
+  32 Batch environment entries.
+- Registered `ytgrabber-green-worker-job:3` from source live revision `747`, using the
+  target worker image, target IAM roles, 2 vCPU, 4096 MB, and a 2700-second timeout.
+  Lambda points to revision `3`.
+- GPU/translation exclusions are explicit: `TRANSLATOR_ENABLED=false`,
+  `TRANSLATOR_LIP_SYNC_ENABLED=false`, and `GOOGLE_GENAI_USE_VERTEXAI=false`. No GPU
+  compute, queue, AMI, image, job definition, or GPU resource requirement was added.
+- Lambda async invocation now matches production: zero retries and a 3600-second
+  maximum event age.
+- Copied the current 75-object production frontend to the target static bucket,
+  removed seven stale target-only hashed assets with recoverable versioned deletes,
+  and invalidated CloudFront. Production S3, target S3, and served CloudFront
+  `index.html` all had SHA-256
+  `2093fa447e9c612d76fc8ba8117e1fe6302a5e8a60f55f50e02750131b05c094`.
+- Recreated and attached the production security-headers policy. Target CloudFront
+  returns HTTP 200 plus HSTS, CSP, frame denial, no-referrer, nosniff, and
+  Permissions-Policy headers.
+- Copied all access and jobs metadata. Final parity snapshot at
+  `2026-07-26T16:14:57Z`: access `29/29`, jobs `3165/3165`, cooldowns `0/0`.
+  Sensitive record contents were never printed.
+- Applied the rolling 120-hour media rule globally. Final S3 snapshot at the same time:
+  1050 source objects; 863 approved objects / 3,099,827,444 bytes in target; 187 old
+  media objects excluded; zero approved-object size mismatches; zero unapproved regular
+  target objects. Eleven `migration-backup/` rollback objects remain intentionally.
+- Source cookies and NotebookLM state were included as non-media state. The stale
+  target-only Vertex credential object was removed by the final target reconciliation;
+  its version remains recoverable because target versioning is enabled.
+- Target output S3 now has versioning, AES256 default encryption, bucket-owner-enforced
+  ownership, full public-access block, production-equivalent lifecycle, and CORS with
+  GET/PUT/POST/DELETE/HEAD.
+- Target access, jobs, and cooldown tables now have PITR and deletion protection.
+- Target API and worker ECR repositories now use production's keep-last-3 lifecycle.
+- Target Lambda, Batch, worker, and CodeBuild log groups have 30-day retention. The
+  temporary migration Lambda, its empty log group, local transfer data, and ECR auth
+  file were deleted after verification.
+- Authenticated checks through target CloudFront passed: password login, session,
+  Super Agent entitlement, skills, client access, `/api/healthz`, and
+  `/api/auth/config`.
+- A real revision-3 Fargate job succeeded with DynamoDB `done` and target S3 output.
+  A separate 5-second clip completed through Lambda in 14.58 seconds with no Batch
+  handoff. Exact smoke-test records and outputs were removed afterward.
+- Lambda concurrency is 1000, normal Fargate max is 16 vCPU and scale-to-zero,
+  CloudTrail is logging, six alarms exist, and the USD 100 monthly budget exists.
+- Cost Explorer for target account July 1-26 showed effectively USD 0.00 net at query
+  time. Billing can lag; versioned S3/ECR storage, PITR, requests, Lambda, Fargate, and
+  CloudFront usage can create later charges. Quota and max-vCPU ceilings do not create
+  24/7 compute charges by themselves.
+
+Remaining before production traffic cutover:
+
+- Run one final incremental S3 and DynamoDB pass after pausing source writes. The parity
+  numbers above are a verified live snapshot, not a substitute for the cutover freeze.
+- Target stack drift is `DRIFTED` with two drifted resources: `ApiFunction` and
+  `ApiRole`. Reconcile the live image/config, cooldown table, async config, security
+  headers policy, and scoped role additions into CloudFormation before any full stack
+  deployment. A stale full deploy could revert working settings.
+- SNS topic `ytgrabber-green-alerts` has zero subscriptions, and the USD 100 budget has
+  zero notification rules/subscribers. An operator email is required before either can
+  be completed and delivery-tested.
+- Complete the still-unrun feature acceptance tests: Google login, workspace/upload,
+  subtitles, Bhagwat, Pita Ji, HeyGen, NotebookLM, E2B/provider fallbacks, and
+  Katha/Supabase.
+- GitHub/OIDC migration and ACM/custom-domain/external-DNS cutover remain deliberately
+  deferred by the owner. Target therefore continues to use
+  `dq163fbjr1do7.cloudfront.net` with the CloudFront default certificate.
+- Target IAM user `newbackup` still has overlapping administrator policies and
+  long-lived access keys. GuardDuty, Security Hub, and AWS Config are not enabled.
+  Replace agent-accessible admin keys with short-lived scoped access and decide on the
+  paid security services before cutover; no key was deleted automatically.
+
+No source resource was changed or deleted. Old production remains the rollback system.
+
+## Historical target-account progress — 2026-07-23 IST
 
 Target account: `386318011485`, region `us-east-1`. This section records live work
 already completed in the migration account. It does not change the source-production
-inventory documented below.
+inventory documented below. It is retained as an audit trail and is superseded by the
+2026-07-26 snapshot above; its “remaining” items are not the current remaining list.
 
 Completed and verified:
 
@@ -193,8 +286,8 @@ CloudFront details to preserve:
 | Worker ECR | `ytgrabber-green-worker` | Rebuild or copy current image |
 | Fargate compute | `ytgrabber-green-compute-fargate`, enabled/valid, max 16 vCPU, scale-to-zero | Recreate |
 | Job queue | `ytgrabber-green-job-queue`, priority 10 | Recreate |
-| Worker definition | `ytgrabber-green-worker-job:744`, 2 vCPU, 4096 MB, 2700 s | Register a new revision |
-| Worker image | tag `84da200c`, digest begins `sha256:a629c607...` | Copy/rebuild by immutable tag |
+| Worker definition | `ytgrabber-green-worker-job:747`, 2 vCPU, 4096 MB, 2700 s | Target revision 3 cloned and tested |
+| Worker image | tag `60d5c1cb`, digest `sha256:eacc56fb01ad...` | Exact immutable image copied |
 | Worker IAM | task role + execution role + Batch service role | Recreate with scoped policies |
 | Network | default VPC public subnet/security group; task public IP enabled | Recreate with explicit IDs |
 
@@ -205,7 +298,7 @@ reservation.
 
 | Table | Schema and live state | Migration action |
 |---|---|---|
-| `ytgrabber-green-jobs` | PK `jobId` (S); GSI `status-createdAt-index`; on-demand; 3,090 items / ~2.8 MB; TTL disabled; PITR disabled | Copy if history/workspace metadata must survive; otherwise start empty only by explicit decision |
+| `ytgrabber-green-jobs` | PK `jobId` (S); GSI `status-createdAt-index`; on-demand; 3,165 items at the 2026-07-26 snapshot; TTL disabled; source PITR disabled | Copied to target; target PITR/deletion protection enabled |
 | `ytgrabber-green-access` | PK `pk` + SK `sk`; on-demand; 29 items; TTL `expiresAt`; PITR disabled | **Must copy** for users, admins, API keys/webhooks, and access state |
 | `ytgrabber-green-cooldowns` | PK `pk`; on-demand; TTL `expiresAt`; currently empty | Recreate empty through CloudFormation |
 | `ytgrabber-uploads` | PK `fileId`; empty and not selected by live Lambda | Do not migrate unless separately re-enabled |
@@ -221,7 +314,7 @@ API, or auth/API-key persistence will be incomplete.
 
 #### Output/data bucket: `malikaeditorr`
 
-- `us-east-1`, about 1,020 objects / 3.48 GB at audit time.
+- `us-east-1`, 1,050 objects / about 4.52 GB at the 2026-07-26 final snapshot.
 - SSE-S3/AES256, bucket-owner-enforced object ownership.
 - Versioning is disabled; replication and notifications are absent.
 - Public-access-block flags are all false, although there is no public bucket policy.
@@ -260,9 +353,9 @@ Known secret objects:
 
 | Repository | Current production tag | Lifecycle |
 |---|---|---|
-| `ytgrabber-green-api-lambda` | `84da200c`; resolved digest `sha256:7d634b3d...` | keep last 3 |
-| `ytgrabber-green-worker` | `84da200c`; digest `sha256:a629c607...` | keep last 3 |
-| `ytgrabber-green-translator-cpu` | `84da200c`; optional non-GPU path | keep last 3 |
+| `ytgrabber-green-api-lambda` | `60d5c1cb`; resolved digest `sha256:e18c4d1bf4b0...` | copied exactly; target keeps last 3 |
+| `ytgrabber-green-worker` | `60d5c1cb`; digest `sha256:eacc56fb01ad...` | copied exactly; target keeps last 3 |
+| `ytgrabber-green-translator-cpu` | excluded from this migration | do not copy while translation remains disabled |
 
 Do not use mutable `latest` for migration. Record source digest, copy or rebuild, push an
 immutable tag, and point Lambda/Batch at that exact tag or digest.

@@ -215,10 +215,10 @@ Fargate workers take **45-90 seconds** to spin up from cold. This is expected �
 
 | Resource | Tag/Revision |
 |----------|-------------|
-| Lambda API image | commit `84da200c`, digest `sha256:7d634b3d164fd30ad802edf93720a70fc1688e8b3359cf3a8c5808aa1966d31d` |
-| Worker image | `ytgrabber-green-worker:84da200c` |
-| Batch Job Definition | `ytgrabber-green-worker-job:744` |
-| Last production deploy | 2026-07-20 18:47-18:48 IST |
+| Lambda API image | commit/tag `60d5c1cb`, digest `sha256:e18c4d1bf4b05ec7b7fcc9cf2849ad782b4bfca1ef0989d450d44c43bf83b4fd` |
+| Worker image | `ytgrabber-green-worker:60d5c1cb`, digest `sha256:eacc56fb01ad...` |
+| Batch Job Definition | `ytgrabber-green-worker-job:747` |
+| Last production deploy | 2026-07-25 23:31 IST |
 
 ### Full Deploy (Most Common)
 
@@ -332,7 +332,7 @@ curl.exe -s https://d2bcwj2idfdwb4.cloudfront.net/api/healthz
 | Lambda | `ytgrabber-green-api` | API server and Lambda-fast workers (3008 MB, 900s timeout) |
 | Batch Job Queue | `ytgrabber-green-job-queue` | FIFO queue for worker jobs |
 | Batch Compute | `ytgrabber-green-compute-fargate` | Fargate, 16 max vCPUs, scale-to-zero |
-| Batch Job Def | `ytgrabber-green-worker-job:744` | Worker container spec |
+| Batch Job Def | `ytgrabber-green-worker-job:747` | Worker container spec |
 | DynamoDB | `ytgrabber-green-jobs` | Job state tracking |
 | S3 Static | `ytgrabber-green-serverless-staticsitebucket-kxndjlgbcvgh` | Frontend files |
 | S3 Output | `malikaeditorr` | Video output + cookies |
@@ -413,7 +413,7 @@ The production env lives in `deploy/ec2/.env.green` (gitignored — never commit
 | `YOUTUBE_QUEUE_PRIMARY_JOB_TYPES` | ✅ | live: `bhagwat-analyze,bhagwat-render,clip-cut,subtitles` |
 | `YOUTUBE_QUEUE_JOB_TABLE` | ✅ | `ytgrabber-green-jobs` |
 | `YOUTUBE_BATCH_JOB_QUEUE` | ✅ | `ytgrabber-green-job-queue` |
-| `YOUTUBE_BATCH_JOB_DEFINITION` | ✅ | live: `ytgrabber-green-worker-job:744` (pin to revision!) |
+| `YOUTUBE_BATCH_JOB_DEFINITION` | ✅ | live: `ytgrabber-green-worker-job:747` (pin to revision!) |
 | `LAMBDA_CLIP_MAX_DURATION_SECONDS` | ✅ | live: `420`; clips at or under this duration try Lambda fast path first |
 | `SUBTITLES_LAMBDA_MAX_DURATION_SECONDS` | ✅ | live: `780` |
 | `MAX_CONCURRENT_CLIP_JOBS` | ✅ | live: `3`; global clip worker lease limit before handoff to Batch |

@@ -267,3 +267,65 @@ Production deployment verification:
   `index-CeCYjXEx.js` bundle.
 - The live bundle contains the new session-verification recovery UI.
 - `https://videomaking.in/api/auth/session` returned HTTP `200` after deploy.
+
+---
+
+## Addendum — 2026-07-26 target-account migration execution
+
+This addendum supersedes earlier image/revision facts where production changed after
+the original July 22 audit. Source account `596596146505` was accessed read-only. All
+mutations were restricted to target account `386318011485`.
+
+### Source state selected for migration
+
+- Production stack updated July 25 and remained `UPDATE_COMPLETE`.
+- Live API image: tag `60d5c1cb`, digest
+  `sha256:e18c4d1bf4b05ec7b7fcc9cf2849ad782b4bfca1ef0989d450d44c43bf83b4fd`.
+- Live worker reference: `ytgrabber-green-worker-job:747`, image tag `60d5c1cb`,
+  digest
+  `sha256:eacc56fb01adf533c6ff12b670df77d6aa0f755476ec1f828c9d6ed39b2b9a69`.
+- Production Lambda had 74 environment variables and
+  `GOOGLE_GENAI_USE_VERTEXAI=false`.
+
+### Target state completed
+
+- Exact API and worker digests copied to target ECR; keep-last-3 lifecycle applied.
+- Lambda moved to the immutable production API digest. All 74 environment entries were
+  migrated without printing values and mapped to target resources.
+- Target Batch revision `3` cloned source revision `747`: 2 vCPU, 4096 MB, 2700-second
+  timeout, no GPU resources. Translation, lip sync, and Vertex were kept disabled.
+- Lambda async configuration now matches production: zero retries, 3600-second event
+  age.
+- Current 75-object frontend copied exactly; target CloudFront serves the same
+  `index.html` hash and the production security-header set.
+- Target output S3 enabled versioning and retained stricter full public blocking. CORS,
+  lifecycle, ownership, and encryption behavior were reconciled for app compatibility.
+- DynamoDB final parity: access `29/29`, jobs `3165/3165`, cooldowns `0/0`. All three
+  target tables have PITR and deletion protection.
+- Final rolling S3 cutoff snapshot at `2026-07-26T16:14:57Z`: 1,050 source objects;
+  863 approved objects / 3,099,827,444 bytes in target; 187 old media objects excluded;
+  zero approved-object mismatches and zero unapproved regular target objects. Eleven
+  rollback objects under `migration-backup/` were intentionally retained.
+- CloudFront health/config, password login, authenticated session, Super Agent
+  entitlement, skills, and client access passed through the target distribution.
+- Batch revision `3` completed a real Fargate download job successfully. A five-second
+  clip completed through Lambda in 14.58 seconds with no Batch handoff. Exact smoke
+  artifacts were removed afterward.
+- Temporary migration Lambda, its log group, local object fragments, and registry auth
+  file were removed after verification.
+
+### Cost and remaining risks
+
+- Target Cost Explorer for July 1-26 showed effectively USD 0.00 net when queried.
+  Billing may lag. Versioned S3/ECR storage, PITR, requests, and actual Lambda/Fargate
+  use can create later charges; capacity ceilings alone are not 24/7 charges.
+- CloudFormation drift detection is `DRIFTED`: `ApiFunction` and `ApiRole` are modified.
+  The target cooldown table, async config, and security-headers policy also require
+  controlled ownership/reconciliation before a future full deploy.
+- SNS has zero subscriptions and the USD 100 budget has no notification rule or
+  subscriber. An operator email is required to complete alert delivery.
+- GitHub/OIDC and ACM/custom-domain/external-DNS cutover remain owner-deferred.
+- The target admin CLI user and disabled GuardDuty/Security Hub/Config remain security
+  follow-ups. No access key was automatically deleted or rotated.
+- Because source production remains writable, run one more incremental DynamoDB/S3 pass
+  after pausing writes immediately before DNS cutover.
