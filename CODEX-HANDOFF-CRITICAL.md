@@ -49,9 +49,13 @@ Last verified good:
   versioning; `migration-backup/` contains rollback objects.
 - Target CloudFront login/session/Super Agent passed; a 5-second Lambda clip finished in
   14.58 seconds without Batch; a revision-3 Fargate job succeeded.
-- Do not run a full CloudFormation deployment yet. Drift detection reports modified
-  `ApiFunction` and `ApiRole`, and manually reconciled resources/config must first be
-  brought under the template.
+- Target CloudFormation drift for `ApiFunction` and `ApiRole` was reconciled on
+  2026-07-26. The stack is `UPDATE_COMPLETE`; drift detection is `IN_SYNC` with zero
+  drifted resources. The live image, 74-value environment hash, IAM policy hash,
+  Function URL, CloudFront headers, login, and Super Agent behavior were unchanged.
+- Do not run a repository-driven full deployment yet. The live target stack is safe,
+  but the repository template and ownership of manual cooldown/async/security-policy
+  resources still need a separate reviewed change.
 - Before DNS cutover: pause source writes, rerun incremental S3/DynamoDB sync, finish
   remaining feature tests, configure/confirm alert and budget recipients, and complete
   the owner-deferred GitHub/OIDC plus ACM/DNS work.

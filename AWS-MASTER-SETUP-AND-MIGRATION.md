@@ -97,10 +97,18 @@ Remaining before production traffic cutover:
 
 - Run one final incremental S3 and DynamoDB pass after pausing source writes. The parity
   numbers above are a verified live snapshot, not a substitute for the cutover freeze.
-- Target stack drift is `DRIFTED` with two drifted resources: `ApiFunction` and
-  `ApiRole`. Reconcile the live image/config, cooldown table, async config, security
-  headers policy, and scoped role additions into CloudFormation before any full stack
-  deployment. A stale full deploy could revert working settings.
+- Target stack drift for `ApiFunction` and `ApiRole` was reconciled target-only on
+  2026-07-26. CloudFormation finished `UPDATE_COMPLETE`; a new drift detection returned
+  `IN_SYNC` with zero drifted resources. The exact image digest, 74-variable environment
+  hash, role-policy hash, Function URL, response-headers policy, and authenticated
+  behavior were unchanged after the update. Lambda version `2` and the pre-change
+  template under `migration-backup/pre-cfn-reconcile-20260726T163016Z/` are rollback
+  points.
+- Do not treat this as authorization for a repository-driven full deploy. The live
+  target stack now preserves the verified configuration, but the repository template
+  still requires a separate reviewed update, and the manually created cooldown table,
+  async invoke config, and response-headers policy are not all stack-owned resources.
+  A stale local/full deploy can still undo working settings.
 - SNS topic `ytgrabber-green-alerts` has zero subscriptions, and the USD 100 budget has
   zero notification rules/subscribers. An operator email is required before either can
   be completed and delivery-tested.

@@ -319,9 +319,13 @@ mutations were restricted to target account `386318011485`.
 - Target Cost Explorer for July 1-26 showed effectively USD 0.00 net when queried.
   Billing may lag. Versioned S3/ECR storage, PITR, requests, and actual Lambda/Fargate
   use can create later charges; capacity ceilings alone are not 24/7 charges.
-- CloudFormation drift detection is `DRIFTED`: `ApiFunction` and `ApiRole` are modified.
-  The target cooldown table, async config, and security-headers policy also require
-  controlled ownership/reconciliation before a future full deploy.
+- The `ApiFunction` and `ApiRole` drift was reconciled target-only later on 2026-07-26.
+  CloudFormation completed `UPDATE_COMPLETE`, and a fresh drift scan returned `IN_SYNC`
+  with zero drifted resources. Pre/post hashes proved the image, all 74 environment
+  values, and role policy were unchanged; the Function URL and CloudFront security
+  headers also remained unchanged. Repository-template alignment and ownership of the
+  manual cooldown/async/security-policy resources still require a separate reviewed
+  change before any repository-driven full deployment.
 - SNS has zero subscriptions and the USD 100 budget has no notification rule or
   subscriber. An operator email is required to complete alert delivery.
 - GitHub/OIDC and ACM/custom-domain/external-DNS cutover remain owner-deferred.
