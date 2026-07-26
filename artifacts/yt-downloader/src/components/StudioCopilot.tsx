@@ -2978,11 +2978,15 @@ export function StudioCopilot({
   useEffect(() => { sessionIdRef.current = currentSessionId; }, [currentSessionId]);
   useEffect(() => { messagesRef.current = currentMessages; }, [currentMessages]);
 
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionsLoadedRef = useRef(false);
+
   // Load sessions on mount; runs AFTER the ref-sync effects above so
   // sessionIdRef.current isn't overwritten with null from the initial state.
   useEffect(() => {
     const loaded = loadSessions();
     setSessions(loaded);
+    sessionsLoadedRef.current = true;
     if (loaded.length > 0) {
       setCurrentSessionId(null);
       sessionIdRef.current = null;
@@ -2996,10 +3000,8 @@ export function StudioCopilot({
       }
     } catch { /* ignore storage errors */ }
   }, []);
-
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (sessions.length === 0) return;
+    if (!sessionsLoadedRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => saveSessions(sessions), 500);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
