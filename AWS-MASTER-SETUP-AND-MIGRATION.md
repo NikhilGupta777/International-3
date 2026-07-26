@@ -15,6 +15,16 @@ reported `IN_SYNC` with zero drifted resources.
 > cutting, normal Fargate worker, CPU/non-GPU features, Super Agent, storage, auth, and
 > external integrations remain in scope.
 
+> Media-retention decision: during S3 migration, do not copy video or audio objects
+> whose S3 `LastModified` timestamp is older than 120 hours at the time each migration
+> pass starts. Apply this rule across every prefix, including `ytgrabber-green/`,
+> `workspace/`, `translator/`, uploads, downloads, and clip outputs. Media extensions
+> covered by the rule are `.mp4`, `.mov`, `.mkv`, `.webm`, `.avi`, `.m4v`, `.mpeg`,
+> `.mpg`, `.ts`, `.mp3`, `.wav`, `.m4a`, `.aac`, `.flac`, `.ogg`, `.opus`, and `.wma`.
+> Keep non-media state regardless of age, including JSON/metadata, subtitles, presets,
+> secrets, images, thumbnails, and workspace documents. Recalculate the rolling cutoff
+> for the final incremental pass; do not use a permanently hardcoded date.
+
 ## Target-account progress — 2026-07-23 IST
 
 Target account: `386318011485`, region `us-east-1`. This section records live work
@@ -68,8 +78,9 @@ Remaining blockers and required work:
   target currently has only 1 access record, 11 sample/test job records, and 10 S3
   objects; this is not a production data migration.
 - Copy the full required S3 prefixes and DynamoDB access records, optionally jobs
-  history, then compare source/target counts and bytes. Run a final incremental copy at
-  cutover.
+  history, then compare source/target counts and bytes. For S3, copy all required
+  non-media state but exclude video/audio objects older than the rolling five-day
+  cutoff. Run a final incremental copy at cutover using a newly calculated cutoff.
 - Build and validate the complete secret/config inventory. Target Lambda currently has
   fewer environment keys than the 74 in audited source production. Do not copy values into
   this document or command output.
@@ -500,6 +511,14 @@ testing pre-signed uploads, enable full public-access blocking and restrict CORS
 production origins.
 
 ### Phase 4 — copy S3 state
+
+Before either S3 pass, inventory source objects and calculate `now UTC - 120 hours`.
+Copy all required non-media objects, but copy video/audio extensions listed in the
+media-retention decision only when `LastModified` is at or after that cutoff. Plain
+`aws s3 sync` cannot express a `LastModified` cutoff, so use a reviewed paginated
+manifest/copy script or AWS SDK process; do not rely only on prefix include/exclude
+patterns. Record eligible, skipped, copied, and failed object counts and bytes without
+logging secret contents.
 
 Preferred direct cross-account method:
 
