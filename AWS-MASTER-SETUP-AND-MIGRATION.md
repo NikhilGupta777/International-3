@@ -1089,3 +1089,24 @@ has since gained 37 parameters and 3 resources. CI therefore **no longer runs
 See the CI/CD section of `CLAUDE.md`. Reconciliation requires importing the
 existing `ytgrabber-green-cooldowns` table into the stack and regenerating the
 `ENV_GREEN_CONTENT` secret from the live function.
+
+
+### Reconciliation step 1 — cooldowns table imported (2026-07-28)
+
+`ytgrabber-green-cooldowns` existed in the account but was created outside the
+stack, so `deploy/aws-serverless/template.yml` (which declares it) could never be
+deployed — CloudFormation would attempt CREATE and fail on the existing name.
+
+Imported via change set `import-cooldowns-20260728`
+(`--change-set-type IMPORT`, `DeletionPolicy: Retain`). The live table's schema was
+verified against the template definition first — `pk`/`S` HASH key,
+`PAY_PER_REQUEST`, TTL `expiresAt` enabled — since import fails on mismatch. The
+change set contained exactly one change (`Import CooldownsTable`) and no
+modifications to any other resource. Result `IMPORT_COMPLETE`; the stack now
+manages 11 resources and the table is unchanged (`ACTIVE`, 0 items).
+
+Still outstanding before the repo template can be deployed: `ApiFunctionAsyncInvokeConfig`
+and `StaticSecurityHeadersPolicy` are absent from the stack, 37 parameters are
+missing, and the function environment must move off the `LiveEnv001`–`LiveEnv074`
+snapshot onto named parameters — which rewrites all 75 env vars in one operation
+and requires `ENV_GREEN_CONTENT` to be correct for this account.

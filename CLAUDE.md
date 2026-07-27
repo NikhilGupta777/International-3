@@ -782,7 +782,10 @@ Triggered on push to `main`. Four parallel jobs:
 - **The Lambda environment is not managed by CI.** `/tmp/.env.green` is still written by the workflow but nothing consumes it. Env changes must be applied directly to the function.
 - `deploy-serverless.ps1` is still in the repo but is not invoked by the pipeline.
 
-Reconciling the template (importing the existing cooldowns table, folding the `LiveEnv` snapshot back into `template.yml`, regenerating the `ENV_GREEN_CONTENT` secret from the live function) is outstanding work.
+Reconciliation progress:
+
+- ✅ **Done (2026-07-28):** `ytgrabber-green-cooldowns` was imported into the stack via an `IMPORT` change set, so the table-already-exists collision no longer applies. The stack now manages 11 resources.
+- ⬜ **Remaining:** the stack is still missing `ApiFunctionAsyncInvokeConfig` and `StaticSecurityHeadersPolicy`, and 37 parameters the repo template has since gained. Switching the stack onto `template.yml` also means moving the function environment off the `LiveEnv*` snapshot and onto named parameters — a single operation that rewrites all 75 env vars, and one that depends on the `ENV_GREEN_CONTENT` GitHub secret being correct for this account. Do that deliberately, with an env snapshot taken first, not as part of an unrelated change.
 
 **Image tagging rule:** Always use timestamped/commit-SHA tags. Never push `:latest` alone. CI uses `${GITHUB_SHA::8}`.
 
