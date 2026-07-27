@@ -109,9 +109,10 @@ Remaining before production traffic cutover:
   still requires a separate reviewed update, and the manually created cooldown table,
   async invoke config, and response-headers policy are not all stack-owned resources.
   A stale local/full deploy can still undo working settings.
-- SNS topic `ytgrabber-green-alerts` has zero subscriptions, and the USD 100 budget has
-  zero notification rules/subscribers. An operator email is required before either can
-  be completed and delivery-tested.
+- The USD 100 target budget now has the same three notification rules and operator
+  recipient as source. The attempted SNS email subscription moved from
+  `PendingConfirmation` to `Deleted`, so alarm email remains non-deliverable. The
+  operator must supply/confirm a valid SNS endpoint before delivery can be tested.
 - Acceptance testing on 2026-07-27 covered the allowed core tabs and is recorded below.
   Google OAuth's persistent AWS configuration and allowlists have exact source/target
   parity. A real Google login still needs a short-lived browser-issued ID token; AWS CLI
@@ -1000,3 +1001,29 @@ approved secret manager or encrypted operational vault, never in this repository
   Lambda is active at 3008 MB / 900 seconds with 75 environment entries and no active
   CloudWatch alarm. The repository template and deploy parameter mapping now include
   `PublicSiteUrl`/`PUBLIC_SITE_URL` so a future reviewed deployment preserves this fix.
+
+## 12. Final configuration comparison and cutover remediation — 2026-07-27 IST
+
+- A fresh old/new audit kept source strictly read-only. Lambda compute/streaming/async
+  settings, SQS/DLQ behavior, normal Fargate Batch resources, effective API IAM actions,
+  Google/access configuration, CloudFront paths/security headers, S3 CORS/lifecycle,
+  and all 75 static-site objects match functionally. Target API is intentionally newer
+  because it contains the Content Manager fixes; target storage protections are stronger.
+- The source worker advanced to revision 749/tag `d439597e`, but the commits since the
+  target worker's `60d5c1cb` changed only frontend/docs. Worker source did not change;
+  both definitions retain 2 vCPU, 4096 MB, 2700 seconds, and 32 environment entries,
+  differing only in target account queue/bucket values.
+- One target-native active `Untitled key` with wildcard scope and no expiry was found and
+  revoked in place. Its audit record remains; the credential can no longer authenticate.
+- Target budget notification parity is restored: three source-equivalent rules and the
+  same operator recipient. One SNS email subscription was requested, but AWS moved it
+  from `PendingConfirmation` to `Deleted`; a valid confirmed endpoint is still required.
+- ACM certificate
+  `arn:aws:acm:us-east-1:386318011485:certificate/d849e124-73a0-41bd-ae85-2a378a51ba43`
+  was requested for `videomaking.in` and `www.videomaking.in`. It is pending two DNS
+  CNAME validations at the external `dns-parking.com` nameservers; neither AWS account
+  hosts the authoritative zone.
+- Non-media parity is current: 819 source non-media objects, zero missing target keys,
+  and zero size mismatches. Source job/access keys are all represented in target; target
+  contains only target-native additions. A final repeat is still required after source
+  writes are paused at the cutover boundary.

@@ -326,9 +326,11 @@ mutations were restricted to target account `386318011485`.
   headers also remained unchanged. Repository-template alignment and ownership of the
   manual cooldown/async/security-policy resources still require a separate reviewed
   change before any repository-driven full deployment.
-- SNS has zero subscriptions and the USD 100 budget has no notification rule or
-  subscriber. An operator email is required to complete alert delivery.
-- GitHub/OIDC and ACM/custom-domain/external-DNS cutover remain owner-deferred.
+- The target budget now has three source-equivalent notification rules and the same
+  operator recipient. The attempted SNS email subscription became `Deleted`; alarm
+  delivery still needs a valid confirmed endpoint.
+- GitHub/OIDC remains owner-deferred. A target ACM certificate has been requested, but
+  external DNS validation and custom-domain attachment remain incomplete.
 - The target admin CLI user and disabled GuardDuty/Security Hub/Config remain security
   follow-ups. No access key was automatically deleted or rotated.
 - Because source production remains writable, run one more incremental DynamoDB/S3 pass
@@ -403,3 +405,18 @@ filter excluded 184 older media objects. Verification found zero source job IDs 
 zero eligible S3 keys missing, and zero size mismatches. CloudFormation is
 `UPDATE_COMPLETE`; drift detection `36c22410-8983-11f1-ada6-0affd079d93f` is `IN_SYNC`
 with zero drifted resources and zero active alarm.
+
+### Configuration parity and go-live remediation — 2026-07-27
+
+The normal non-GPU runtime is functionally aligned: Lambda settings, SQS/DLQ, Fargate
+Batch resources, effective API-role actions, CloudFront behavior/security headers, S3
+CORS/lifecycle, and the frontend match. Static-site parity is exact at 75 objects.
+Target protections are stronger (PITR/deletion protection, output-bucket versioning and
+public-access block). The target API is intentionally ahead with Content Manager fixes.
+
+An unexplained target-native active wildcard API key was revoked in place. Three budget
+notification rules and the source operator recipient were copied to the target budget;
+the attempted SNS email subscription moved to `Deleted` and cannot deliver. ACM certificate
+`d849e124-73a0-41bd-ae85-2a378a51ba43` was requested for apex + `www` and is pending two
+external DNS validation CNAMEs. A media-excluding comparison found all 819 source
+non-media objects present with zero size mismatches.

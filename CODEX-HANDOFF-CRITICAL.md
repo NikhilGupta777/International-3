@@ -77,9 +77,10 @@ Last verified good:
 - Do not run a repository-driven full deployment yet. The live target stack is safe,
   but the repository template and ownership of manual cooldown/async/security-policy
   resources still need a separate reviewed change.
-- Before DNS cutover: pause source writes, rerun incremental S3/DynamoDB sync, finish
-  remaining feature tests, configure/confirm alert and budget recipients, and complete
-  the owner-deferred GitHub/OIDC plus ACM/DNS work.
+- Before DNS cutover: add and confirm a valid SNS email subscription, publish the two ACM
+  validation CNAMEs in the external DNS provider, wait for certificate issuance, attach
+  it to target CloudFront, pause source writes, rerun incremental S3/DynamoDB sync, and
+  finish remaining feature tests. GitHub/OIDC remains owner-deferred.
 - Target cost was effectively USD 0.00 net in Cost Explorer through July 26 at query
   time, but billing can lag and storage/PITR/actual compute usage can incur cost.
 - On 2026-07-27 a target-only CloudFormation update fixed `Login origin rejected` on the
@@ -90,6 +91,12 @@ Last verified good:
   (1,322,622,067 bytes). Final comparison found zero source job IDs missing, zero eligible
   S3 keys missing, and zero size mismatches; 184 media objects older than 120 hours remain
   intentionally excluded.
+- A subsequent full configuration comparison found functional parity across the normal
+  non-GPU runtime and exact static-site parity (75 objects). The target-only active
+  wildcard `Untitled key` was revoked. Target budget notification parity is restored;
+  the attempted SNS email subscription became `Deleted` and is not deliverable. A target ACM certificate for apex
+  and `www` was requested and awaits two CNAMEs at the external DNS provider. Non-media
+  S3 parity is 819/819 with zero missing keys or size mismatches.
 
 ## Critical Backup
 
