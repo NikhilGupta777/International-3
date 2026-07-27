@@ -618,7 +618,7 @@ jobs:
 
       - uses: aws-actions/amazon-ecr-login@v2
 
-      # pnpm + node needed because deploy-serverless.ps1 runs pnpm build internally
+      # pnpm + node needed to build the frontend bundle in the deploy step
       - uses: pnpm/action-setup@v4
         with: { version: 10.33.0 }
 
@@ -629,6 +629,11 @@ jobs:
 
       # Write env file and inject fresh runtime settings.
       # SECURITY: All sensitive values read from GitHub Secrets — no plaintext passwords.
+      #
+      # NOTE: while CloudFormation is bypassed (see the deploy step below), nothing
+      # consumes /tmp/.env.green — the Lambda's environment is managed directly on
+      # the function and is NOT updated by this workflow. Environment changes must
+      # be applied out of band until the stack template is reconciled.
       - name: Write .env.green
         env:
           ENV_GREEN_CONTENT_SECRET: ${{ secrets.ENV_GREEN_CONTENT }}
@@ -783,8 +788,9 @@ jobs:
           # target environment and are not built or overwritten by this workflow.
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
-      # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.
-      - name: Deploy (CloudFormation + S3 + Lambda)
+      # Deploys the application only: Lambda image + static site + invalidation.
+      # CloudFormation is intentionally not run — see the comment in the step body.
+      - name: Deploy (Lambda image + S3 + CloudFront)
         shell: pwsh
         run: |
           try {
@@ -842,14 +848,75 @@ jobs:
               }
             }
 
-            ./deploy/aws-serverless/deploy-serverless.ps1 `
-              -Region "${{ env.AWS_REGION }}" `
-              -Prefix "${{ env.CF_STACK_PREFIX }}" `
-              -SkipImageBuild `
-              -ImageUri "${{ needs.build-api.outputs.image_uri }}" `
-              -SiteDomainName "${{ env.SITE_DOMAIN_NAME }}" `
-              -CloudFrontCertificateArn "${{ env.CLOUDFRONT_CERTIFICATE_ARN }}" `
-              -EnvFilePath "/tmp/.env.green"
+            # NOTE: deploy-serverless.ps1 is deliberately NOT called here.
+            #
+            # The live stack was created from a migration-snapshot template that
+            # binds every Lambda env var to a LiveEnv001..LiveEnv074 parameter and
+            # the image to LiveApiImageUri. deploy/aws-serverless/template.yml has
+            # neither, and additionally declares a CooldownsTable whose physical
+            # name (${{ env.CF_STACK_PREFIX }}-cooldowns) already exists outside the
+            # stack. Running `cloudformation deploy` with the repo template would
+            # therefore (a) fail on the table-already-exists collision and (b)
+            # rebuild the function env from stale named parameters.
+            #
+            # Until the template is reconciled, application deploys update the
+            # Lambda image and the static site directly, and infrastructure changes
+            # are made as explicit change sets. See AWS-MASTER-SETUP-AND-MIGRATION.md.
+            $stack = aws cloudformation describe-stacks `
+              --region "${{ env.AWS_REGION }}" `
+              --stack-name "${{ env.CF_STACK_PREFIX }}-serverless" | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "describe-stacks failed" }
+            $outputs = @{}
+            foreach ($output in $stack.Stacks[0].Outputs) {
+              $outputs[$output.OutputKey] = $output.OutputValue
+            }
+            $functionName  = $outputs["ApiFunctionName"]
+            $siteBucket    = $outputs["StaticSiteBucketName"]
+            $distributionId = $outputs["CloudFrontDistributionId"]
+            if (-not $functionName -or -not $siteBucket -or -not $distributionId) {
+              throw "Failed to resolve deploy outputs from stack"
+            }
+
+            Write-Host "Updating $functionName to ${{ needs.build-api.outputs.image_uri }}"
+            aws lambda update-function-code `
+              --region "${{ env.AWS_REGION }}" `
+              --function-name $functionName `
+              --image-uri "${{ needs.build-api.outputs.image_uri }}" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "lambda update-function-code failed" }
+
+            aws lambda wait function-updated `
+              --region "${{ env.AWS_REGION }}" `
+              --function-name $functionName
+            if ($LASTEXITCODE -ne 0) { throw "lambda did not reach updated state" }
+
+            pnpm --filter @workspace/yt-downloader run build
+            if ($LASTEXITCODE -ne 0) { throw "yt-downloader build failed" }
+
+            aws s3 sync `
+              "artifacts/yt-downloader/dist/public" `
+              "s3://$siteBucket/" `
+              --region "${{ env.AWS_REGION }}" `
+              --delete `
+              --exclude "*.html" `
+              --cache-control "public, max-age=31536000, immutable"
+            if ($LASTEXITCODE -ne 0) { throw "frontend asset sync failed" }
+
+            aws s3 sync `
+              "artifacts/yt-downloader/dist/public" `
+              "s3://$siteBucket/" `
+              --region "${{ env.AWS_REGION }}" `
+              --delete `
+              --exclude "*" --include "*.html" `
+              --cache-control "no-cache, no-store, must-revalidate" `
+              --content-type "text/html; charset=utf-8"
+            if ($LASTEXITCODE -ne 0) { throw "frontend html sync failed" }
+
+            aws cloudfront create-invalidation `
+              --distribution-id $distributionId `
+              --paths "/*" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "cloudfront invalidation failed" }
+
+            Write-Host "Deploy complete (Lambda image + static site; stack untouched)."
           } catch {
             Write-Host "::error::DEPLOY_SCRIPT_ERROR $($_.Exception.Message)"
             if ($_.ScriptStackTrace) {

@@ -1029,3 +1029,63 @@ approved secret manager or encrypted operational vault, never in this repository
   and zero size mismatches. Source job/access keys are all represented in target; target
   contains only target-native additions. A final repeat is still required after source
   writes are paused at the cutover boundary.
+
+---
+
+## Cutover completed — 2026-07-28
+
+`videomaking.in` and `www.videomaking.in` now serve from account `386318011485`.
+
+### What was done
+
+1. **DNS (manual, Hostinger).** Apex `ALIAS @` and `CNAME www` repointed to
+   `dq163fbjr1do7.cloudfront.net`. Both ACM validation CNAMEs
+   (`_66f1c649ca9d94398ac8f8fe70dcb953`, `_7852a1d6163e9c05f74b482154a97f6f.www`)
+   were retained.
+2. **Alias release (old account).** CloudFront `EDTEON6GFBEZH` had both alternate
+   domain names removed and was switched to the default CloudFront certificate.
+   The distribution remains **enabled and otherwise intact** as a rollback target.
+   Pre-change config backup: `old-dist-BACKUP.json` (kept outside the repo).
+3. **Alias attach (new account).** Change set `domain-cutover-20260728b` —
+   162 parameters, 159 `UsePreviousValue`, overriding only `SiteDomainName`,
+   `CloudFrontCertificateArn` and `PublicSiteUrl`. Result `UPDATE_COMPLETE`
+   with 3 modifications and no replacements.
+
+### Why two attempts failed first
+
+- 09:55Z — CloudFront 409: *"incorrectly configured DNS record that points to
+  another CloudFront distribution"*. DNS had not yet been changed.
+- 18:51Z — CloudFront 409: *"One or more of the CNAMEs you provided are already
+  associated with a different resource"*. DNS was correct by then; the old
+  distribution still held the alias. **An alias cannot be moved between AWS
+  accounts without releasing it from the source distribution first**
+  (`associate-alias` is same-account only), which is why a short outage window
+  is unavoidable.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Served cert serial, apex and www | `06AD7ADE8F080F09A00B57711A7CF645` = new account ACM cert (old was `0B3992C1…`) |
+| apex / www / `/api/healthz` | 200 / 200 / `{"status":"ok"}` |
+| Lambda env drift after stack update | 0 of 75 vars |
+| Auth gate | 8 protected routes 401; `/api/admin/*` 403 |
+| SPA rewrite | unknown routes → 200 |
+| `/api*` behavior | `Compress: false`, `OriginReadTimeout: 60` (SSE-safe) |
+| Alarms | 6, all `OK` |
+
+### Rollback
+
+Re-add both aliases to `EDTEON6GFBEZH` with cert `62ff8b55-…`, remove them from
+`E36OKTEHMEZQ4N`, and repoint Hostinger to `d2bcwj2idfdwb4.cloudfront.net`.
+Same downtime characteristics in reverse.
+
+### Known drift, still outstanding
+
+The deployed stack template is a migration snapshot (`LiveEnv001`–`LiveEnv074`,
+`LiveApiImageUri`) and does not match `deploy/aws-serverless/template.yml`, which
+has since gained 37 parameters and 3 resources. CI therefore **no longer runs
+`cloudformation deploy`** — it updates the Lambda image and static site directly.
+See the CI/CD section of `CLAUDE.md`. Reconciliation requires importing the
+existing `ytgrabber-green-cooldowns` table into the stack and regenerating the
+`ENV_GREEN_CONTENT` secret from the live function.

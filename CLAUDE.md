@@ -173,7 +173,7 @@ ASSEMBLYAI_API_KEY=<key>             # for subtitles/timestamps
 ### Production Request Flow
 
 ```
-Browser → CloudFront (videomaking.in / d2bcwj2idfdwb4.cloudfront.net)
+Browser → CloudFront (videomaking.in / dq163fbjr1do7.cloudfront.net)
   │
   ├── /* static   → S3 (ytgrabber-green-serverless-staticsitebucket-*)
   │                 CloudFront SPA rewrite function: /anything → index.html
@@ -264,13 +264,13 @@ Note: `lib/integrations-gemini-ai` (used by Bhagwat's priority-1 image path) has
 
 yt-dlp requires authenticated YouTube cookies for downloading. Cookies are stored in S3 as base64-encoded Netscape format:
 ```
-s3://malikaeditorr/ytgrabber-green/secrets/ytdlp-cookies-base64.txt
+s3://videomaking-backup-386318011485/ytgrabber-green/secrets/ytdlp-cookies-base64.txt
 ```
 Both `youtube.ts` and `bhagwat.ts` lazy-load and cache this file on first use. When downloads fail with bot-detection errors, update the cookie file:
 ```powershell
 $encoded = [Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.txt"))
 [IO.File]::WriteAllText("tmp.txt", $encoded, [Text.UTF8Encoding]::new($false))
-aws s3 cp tmp.txt s3://malikaeditorr/ytgrabber-green/secrets/ytdlp-cookies-base64.txt
+aws s3 cp tmp.txt s3://videomaking-backup-386318011485/ytgrabber-green/secrets/ytdlp-cookies-base64.txt
 ```
 No Lambda restart needed — worker fetches fresh on every job.
 
@@ -688,11 +688,11 @@ Replit-specific Gemini client variant. Requires `AI_INTEGRATIONS_GEMINI_BASE_URL
 
 ## Production Infrastructure
 
-### AWS Resources (region: `us-east-1`, account: `596596146505`)
+### AWS Resources (region: `us-east-1`, account: `386318011485`)
 
 | Resource | AWS Name | Description |
 |----------|----------|-------------|
-| CloudFront | `EDTEON6GFBEZH` | CDN, routes to Lambda Function URL + S3 |
+| CloudFront | `E36OKTEHMEZQ4N` | CDN, routes to Lambda Function URL + S3 |
 | Lambda | `ytgrabber-green-api` | API server (3008 MB, 900s timeout, 5 GB ephemeral storage) |
 | Lambda Function URL | (auto) | `InvokeMode: RESPONSE_STREAM` — replaces API Gateway |
 | Batch Job Queue | `ytgrabber-green-job-queue` | Fargate worker queue |
@@ -704,13 +704,13 @@ Replit-specific Gemini client variant. Requires `AI_INTEGRATIONS_GEMINI_BASE_URL
 | DynamoDB | `ytgrabber-green-access` | Admin/user allowlist source of truth when present |
 | DynamoDB | `ytgrabber-green-cooldowns` | Per-user feature cooldown state |
 | S3 Static | `ytgrabber-green-serverless-staticsitebucket-kxndjlgbcvgh` | Frontend files |
-| S3 Output | `malikaeditorr` | Video outputs + yt-dlp cookies + Vertex credentials |
+| S3 Output | `videomaking-backup-386318011485` | Video outputs + yt-dlp cookies + Vertex credentials |
 | ECR API | `ytgrabber-green-api-lambda` | Lambda container images |
 | ECR Worker | `ytgrabber-green-worker` | Fargate worker images |
 | ECR Translator | `ytgrabber-green-translator` | GPU translator images |
 | CloudFormation | `ytgrabber-green-serverless` | Manages all of the above |
 
-Health check: `curl https://d2bcwj2idfdwb4.cloudfront.net/api/healthz` → `{"status":"ok"}`
+Health check: `curl https://videomaking.in/api/healthz` → `{"status":"ok"}`
 
 ### CloudFormation Template (`deploy/aws-serverless/template.yml`)
 
@@ -724,7 +724,7 @@ Key CloudFormation design decisions:
 ### S3 Object Layout
 
 ```
-malikaeditorr/
+videomaking-backup-386318011485/
   ytgrabber-green/
     YYYY-MM-DD/          # date-partitioned download outputs
       <jobId>-<filename>.<ext>
@@ -774,7 +774,15 @@ Triggered on push to `main`. Four parallel jobs:
 
 3. **build-translator** — Only runs if `artifacts/video-translator-service/` changed (Dockerfile, requirements.txt, worker.py, runtime_deps.py, constraints.txt) OR manually triggered via `workflow_dispatch`. Image is ~20 GB — do not trigger unnecessarily. GPU container: CUDA 12.1, CosyVoice 3.0, LatentSync 1.6.
 
-4. **deploy** — Runs `deploy/aws-serverless/deploy-serverless.ps1 -SkipImageBuild` with the built image URIs. Script: writes `/tmp/.env.green` from secrets, calls `aws cloudformation deploy`, builds + syncs frontend to S3, invalidates CloudFront.
+4. **deploy** — Updates the Lambda to the newly built image (`aws lambda update-function-code` + `wait function-updated`), builds and syncs the frontend to S3, and invalidates CloudFront.
+
+**CloudFormation is deliberately NOT run by CI** (since the 2026-07-28 account migration). The live stack was created from a migration-snapshot template that binds every Lambda env var to a `LiveEnv001`–`LiveEnv074` parameter and the image to `LiveApiImageUri`; `deploy/aws-serverless/template.yml` has neither, and additionally declares a `CooldownsTable` whose physical name `ytgrabber-green-cooldowns` already exists outside the stack. Deploying the repo template would fail on that collision and rebuild the function env from stale named parameters. Consequences while this holds:
+
+- **Infrastructure changes must be made as explicit change sets**, not by pushing. Use `UsePreviousTemplate: true` with `UsePreviousValue` on every parameter except the ones being changed — see `deploy/aws-serverless/domain-cutover-20260727.json` for the pattern.
+- **The Lambda environment is not managed by CI.** `/tmp/.env.green` is still written by the workflow but nothing consumes it. Env changes must be applied directly to the function.
+- `deploy-serverless.ps1` is still in the repo but is not invoked by the pipeline.
+
+Reconciling the template (importing the existing cooldowns table, folding the `LiveEnv` snapshot back into `template.yml`, regenerating the `ENV_GREEN_CONTENT` secret from the live function) is outstanding work.
 
 **Image tagging rule:** Always use timestamped/commit-SHA tags. Never push `:latest` alone. CI uses `${GITHUB_SHA::8}`.
 
@@ -826,7 +834,7 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `AI_INTEGRATIONS_GEMINI_BASE_URL` | ✅ (Replit) | — | Replit Gemini integration URL |
 | `AI_INTEGRATIONS_GEMINI_API_KEY` | ✅ (Replit) | — | Replit Gemini integration key |
 | `ASSEMBLYAI_API_KEY` | ✅ (subtitles) | — | AssemblyAI transcription key |
-| `S3_BUCKET` | ✅ | — | Output S3 bucket (`malikaeditorr`) |
+| `S3_BUCKET` | ✅ | — | Output S3 bucket (`videomaking-backup-386318011485`) |
 | `S3_REGION` | | `us-east-1` | S3 region |
 | `S3_OBJECT_PREFIX` | | `ytgrabber` | S3 key prefix |
 | `S3_SIGNED_URL_TTL_SEC` | | `7200` | Presigned URL TTL (2 hours) |
