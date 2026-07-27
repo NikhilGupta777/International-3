@@ -65,8 +65,10 @@ Last verified good:
   structured packs, and omits invalid empty tool configuration. Final live image digest:
   `sha256:e3b8a1694c614ec27ca8b24e2e6e0ae44788a7ba708408a37265c6e23b856695`.
   A strict live request returned all required pack fields with zero error events.
-- Google login and admin/developer authorization still need a real approved Google
-  token. Per owner instruction, do not test HeyGen, Pita Ji, Workspace/Drive, or
+- Google OAuth flags, client ID, admin seed, and the 39-user/1-admin DynamoDB allowlist
+  have exact source/target parity. AWS profiles cannot supply the short-lived Google ID
+  token; full admin/developer acceptance needs the approved admin to complete browser
+  sign-in. Per owner instruction, do not test HeyGen, Pita Ji, Workspace/Drive, or
   Translator in the next acceptance pass unless explicitly re-authorized.
 - Target CloudFormation drift for `ApiFunction` and `ApiRole` was reconciled on
   2026-07-26. The stack is `UPDATE_COMPLETE`; drift detection is `IN_SYNC` with zero
@@ -80,6 +82,14 @@ Last verified good:
   the owner-deferred GitHub/OIDC plus ACM/DNS work.
 - Target cost was effectively USD 0.00 net in Cost Explorer through July 26 at query
   time, but billing can lag and storage/PITR/actual compute usage can incur cost.
+- On 2026-07-27 a target-only CloudFormation update fixed `Login origin rejected` on the
+  CloudFront domain by setting `PUBLIC_SITE_URL=https://dq163fbjr1do7.cloudfront.net`.
+  Password login/session now return HTTP 200; Function URL and CloudFront hostname did
+  not change. Stack drift is `IN_SYNC` with zero drifted resources.
+- The same pass copied the 16 newly missing source job records and 15 eligible S3 objects
+  (1,322,622,067 bytes). Final comparison found zero source job IDs missing, zero eligible
+  S3 keys missing, and zero size mismatches; 184 media objects older than 120 hours remain
+  intentionally excluded.
 
 ## Critical Backup
 

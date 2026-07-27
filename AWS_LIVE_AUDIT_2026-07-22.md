@@ -383,3 +383,23 @@ entries with the exact prior hash, 3008 MB memory, 900-second timeout, zero Lamb
 errors/throttles, zero active alarms, HTTP 200 health/config, and stack
 `UPDATE_COMPLETE`. Existing migrated tokens were reused without logging or changing
 their values.
+
+### CloudFront login origin and incremental migration closure — 2026-07-27
+
+The target CloudFront login displayed `Login origin rejected`. This was not a missing
+password or Google token: the Lambda lacked `PUBLIC_SITE_URL`, so its CSRF/CORS origin
+logic defaulted to the old `videomaking.in` hostname. A target-only CloudFormation
+update set the new CloudFront URL. Password login and signed-session verification then
+passed with HTTP 200; the Function URL and distribution hostname remained unchanged.
+
+Google's persistent configuration is fully migrated and matches source exactly: auth
+enablement, client ID, approved-admin seed, and the DynamoDB allowlist (39 users, 1
+admin, 0 separate API-access users). A Google ID token cannot be copied from an AWS CLI
+profile; Google issues it interactively in the browser and it is short-lived.
+
+The final incremental comparison copied 16 missing job records and 15 eligible S3
+objects (1,322,622,067 bytes) while keeping the source read-only. The rolling five-day
+filter excluded 184 older media objects. Verification found zero source job IDs missing,
+zero eligible S3 keys missing, and zero size mismatches. CloudFormation is
+`UPDATE_COMPLETE`; drift detection `36c22410-8983-11f1-ada6-0affd079d93f` is `IN_SYNC`
+with zero drifted resources and zero active alarm.

@@ -113,8 +113,10 @@ Remaining before production traffic cutover:
   zero notification rules/subscribers. An operator email is required before either can
   be completed and delivery-tested.
 - Acceptance testing on 2026-07-27 covered the allowed core tabs and is recorded below.
-  Remaining blocked or excluded surfaces are Google login, admin/developer authorization,
-  Pita Ji, HeyGen, Workspace/Drive, Translator, and Katha/Supabase. The latter four app
+  Google OAuth's persistent AWS configuration and allowlists have exact source/target
+  parity. A real Google login still needs a short-lived browser-issued ID token; AWS CLI
+  profiles do not contain or mint that token. Remaining excluded surfaces are Pita Ji,
+  HeyGen, Workspace/Drive, Translator, and Katha/Supabase. The latter four app
   areas were not exercised further after the owner's explicit exclusion; no GPU or
   translation test was run.
 - GitHub/OIDC migration and ACM/custom-domain/external-DNS cutover remain deliberately
@@ -187,9 +189,11 @@ Confirmed defects and blockers:
   description, 197 characters of tags, three must-dos, one channel signal, and upload
   time. Earlier controlled runs proved plain conversation and fallback keepalive paths.
   All nine external-provider regression tests, API typecheck, and Lambda build passed.
-- Admin and Developer endpoints correctly return 403 to the password session; a valid
-  Google admin identity token is required for their full acceptance. Full Google login
-  likewise cannot be proven without a real ID token.
+- Admin and Developer endpoints correctly return 403 to the password session. Their
+  persistent configuration is migrated: Google client ID/auth flags/admin seed match,
+  and the DynamoDB allowlist matches exactly (39 users, 1 admin, 0 additional API-access
+  users). Full acceptance still requires that approved admin to complete Google sign-in,
+  which supplies a fresh short-lived ID token.
 - New tests of HeyGen, Pita Ji, Workspace/Drive, and Translator were stopped by explicit
   owner instruction. Translation remains intentionally disabled and no GPU test ran.
 
@@ -976,3 +980,23 @@ After deployment, run CloudFormation drift detection and require `IN_SYNC`.
 
 This runbook records configuration and procedure only. Secret values must live in an
 approved secret manager or encrypted operational vault, never in this repository.
+
+## 11. Target incremental reconciliation and login-origin repair — 2026-07-27 IST
+
+- The old account was read-only throughout. A new live comparison found 16 source job
+  records and 15 eligible S3 objects created after the prior snapshot. All 16 jobs and
+  all 15 objects (1,322,622,067 bytes) were copied into the target. The rolling
+  `now UTC - 120 hours` rule excluded 184 older media objects.
+- Final live parity was: zero source job IDs missing in target; zero eligible S3 keys
+  missing; zero eligible-object size mismatches. Target has two target-native job IDs
+  from its own activity, which are not source-migration gaps.
+- Password login on the CloudFront target had returned `Login origin rejected` because
+  the API had no `PUBLIC_SITE_URL` and therefore trusted the old `videomaking.in` default.
+  A reviewed target-only CloudFormation change added
+  `PUBLIC_SITE_URL=https://dq163fbjr1do7.cloudfront.net`. Password login and the signed
+  session then returned HTTP 200. The Function URL and CloudFront hostname were unchanged.
+- The stack finished `UPDATE_COMPLETE`; drift detection
+  `36c22410-8983-11f1-ada6-0affd079d93f` returned `IN_SYNC` with zero drifted resources.
+  Lambda is active at 3008 MB / 900 seconds with 75 environment entries and no active
+  CloudWatch alarm. The repository template and deploy parameter mapping now include
+  `PublicSiteUrl`/`PUBLIC_SITE_URL` so a future reviewed deployment preserves this fix.

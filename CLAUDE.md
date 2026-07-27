@@ -809,6 +809,7 @@ Base: `nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04`. Installs: PyTorch 2.3.1 C
 | `SESSION_SECRET` | ✅ | — | Cookie signing secret (do NOT rotate — invalidates all sessions) |
 | `WEBSITE_AUTH_USER` | | `kalki_avatar` | Login username |
 | `AUTH_COOKIE_SECURE` | | `true` | Set false for HTTP local dev |
+| `PUBLIC_SITE_URL` | | `https://videomaking.in` | Canonical browser origin used by login CSRF/CORS checks and absolute public URLs |
 | `GOOGLE_AUTH_ENABLED` | | `false` | Enable Google OAuth login |
 | `GOOGLE_CLIENT_ID` | | — | Google OAuth client ID |
 | `APPROVED_USER_EMAILS` | | — | CSV of authorized Google user emails |

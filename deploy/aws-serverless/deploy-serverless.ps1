@@ -276,6 +276,7 @@ $parameterOverrides = @(
   "ImageUri=$resolvedImageUri"
   "SiteBucketName=$SiteBucketName"
   "SiteDomainName=$SiteDomainName"
+  "PublicSiteUrl=$(Get-OptionalEnv $envMap 'PUBLIC_SITE_URL')"
   "CloudFrontCertificateArn=$CloudFrontCertificateArn"
   "SessionSecret=$(Get-RequiredEnv $envMap 'SESSION_SECRET')"
   "WebsiteAuthUser=$(Get-OptionalEnv $envMap 'WEBSITE_AUTH_USER' 'kalki_avatar')"

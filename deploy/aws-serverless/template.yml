@@ -12,6 +12,9 @@ Parameters:
   SiteDomainName:
     Type: String
     Default: ""
+  PublicSiteUrl:
+    Type: String
+    Default: ""
   CloudFrontCertificateArn:
     Type: String
     Default: ""
@@ -623,6 +626,7 @@ Resources:
           WEBSITE_AUTH_PASSWORD: !Ref WebsiteAuthPassword
           GOOGLE_AUTH_ENABLED: !Ref GoogleAuthEnabled
           GOOGLE_CLIENT_ID: !Ref GoogleClientId
+          PUBLIC_SITE_URL: !Ref PublicSiteUrl
           APPROVED_USER_EMAILS: !Ref ApprovedUserEmails
           APPROVED_ADMIN_EMAILS: !Ref ApprovedAdminEmails
           ACCESS_TABLE: !Ref AccessTable
