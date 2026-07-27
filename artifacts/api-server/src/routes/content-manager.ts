@@ -114,7 +114,16 @@ async function generateContentManagerChunks(params: ContentManagerStreamParams):
     });
   };
 
-  for (const model of externalModels) {
+  // CloudFront closes an otherwise healthy streaming response when a model
+  // takes too long without producing bytes. Attempts are intentionally
+  // buffered for safe failover, so keep the client stream alive separately.
+  const heartbeat = setInterval(() => {
+    if (params.res.writableEnded || (params.res as any).closed) return;
+    send(params.res, { type: "heartbeat", runId: params.runId });
+  }, 8_000);
+
+  try {
+    for (const model of externalModels) {
     for (let providerAttempt = 0; providerAttempt < CONTENT_MANAGER_PROVIDER_RETRIES; providerAttempt += 1) {
       attemptNumber += 1;
       announceFallback();
@@ -139,11 +148,11 @@ async function generateContentManagerChunks(params: ContentManagerStreamParams):
         clearTimeout(timeout);
       }
     }
-  }
+    }
 
-  if (isGeminiConfigured()) {
-    const geminiAttempts = Math.max(1, geminiKeys.length);
-    for (let keyAttempt = 0; keyAttempt < geminiAttempts; keyAttempt += 1) {
+    if (isGeminiConfigured()) {
+      const geminiAttempts = Math.max(1, geminiKeys.length);
+      for (let keyAttempt = 0; keyAttempt < geminiAttempts; keyAttempt += 1) {
       attemptNumber += 1;
       announceFallback();
       try {
@@ -164,12 +173,15 @@ async function generateContentManagerChunks(params: ContentManagerStreamParams):
           `[content-manager] Gemini attempt ${keyAttempt + 1}/${geminiAttempts} failed: ${String(err?.message ?? err)}`,
         );
       }
+      }
     }
-  }
 
-  throw new Error("All configured AI models are temporarily unavailable. Please retry in a moment.", {
-    cause: lastError,
-  });
+    throw new Error("All configured AI models are temporarily unavailable. Please retry in a moment.", {
+      cause: lastError,
+    });
+  } finally {
+    clearInterval(heartbeat);
+  }
 }
 
 function normalizeAiErrorMessage(err: any): string {
