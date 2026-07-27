@@ -145,7 +145,7 @@ async function generateContentManagerChunks(params: ContentManagerStreamParams):
         const chunks = await collectStream(streamExternalCopilot({
           model,
           contents: params.contents,
-          systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
+          systemInstruction: String(params.config.systemInstruction ?? CONTENT_MANAGER_SYSTEM_PROMPT),
           tools: params.tools ?? [],
           signal: controller.signal,
         }));
@@ -640,7 +640,7 @@ router.post("/content-manager/generate", async (req, res) => {
           const packChunks = await generateContentManagerChunks({
             contents: [{ role: "user", parts: [{ text: buildPhase2Prompt(sourcePrompts[attempt]) }] }],
             config: {
-              systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
+              systemInstruction: CONTENT_MANAGER_PACK_SYSTEM_PROMPT,
               maxOutputTokens: 50000,
               thinkingConfig: {
                 ...buildThinkingConfig(CONTENT_MANAGER_MODEL, "HIGH"),
@@ -729,6 +729,17 @@ Only when the user actually asks for video help — a title, titles, an SEO desc
 - Never claim private analytics (CTR, retention, impressions, returning viewers, audience demographics, or YouTube Studio-only data) unless those exact fields are present in the input.
 - Only cite facts you actually found via web_search. Never invent sources.`;
 
+const CONTENT_MANAGER_PACK_SYSTEM_PROMPT = `You are the structured-output stage of a YouTube Content Manager.
+Return exactly one complete JSON object and no conversational prose, markdown, or code fences.
+The JSON must contain all of these fields:
+- titles: exactly 5 objects, each with non-empty title and rationale strings
+- description: a complete, ready-to-paste SEO description
+- tagsCsv: a non-empty comma-separated tag string
+- bestUploadTime: non-empty day, time, timezone, and rationale strings
+- mustDo: 1 to 3 non-empty recommendation strings
+- channelSignals: at least 1 non-empty channel-specific signal
+Use only the supplied channel context and research notes. Never invent private analytics.`;
+
 const CONTENT_MANAGER_TOOLS: any[] = [
   {
     name: "web_search",
@@ -791,7 +802,16 @@ const CONTENT_PACK_SCHEMA = {
 
 function parseJson(text: string): unknown {
   const clean = String(text ?? "").trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
-  return JSON.parse(clean);
+  try {
+    return JSON.parse(clean);
+  } catch (initialError) {
+    // Some compatible providers wrap valid JSON in a short sentence or fence.
+    // Extract only a complete outer object; strict validation still runs next.
+    const start = clean.indexOf("{");
+    const end = clean.lastIndexOf("}");
+    if (start >= 0 && end > start) return JSON.parse(clean.slice(start, end + 1));
+    throw initialError;
+  }
 }
 
 // The model sometimes leaks hidden HTML/comments ("<div style=display:none>",
