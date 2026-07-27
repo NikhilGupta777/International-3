@@ -49,7 +49,7 @@
         "dynamodb:UntagResource",
         "dynamodb:ListTagsOfResource"
       ],
-      "Resource": "arn:aws:dynamodb:us-east-1:596596146505:table/ytgrabber-green-*"
+      "Resource": "arn:aws:dynamodb:us-east-1:386318011485:table/ytgrabber-green-*"
     },
     {
       "Effect": "Allow",
@@ -58,7 +58,7 @@
         "lambda:UpdateFunctionCode",
         "lambda:UpdateFunctionConfiguration"
       ],
-      "Resource": "arn:aws:lambda:us-east-1:596596146505:function:ytgrabber-green-*"
+      "Resource": "arn:aws:lambda:us-east-1:386318011485:function:ytgrabber-green-*"
     },
     {
       "Effect": "Allow",
@@ -70,8 +70,8 @@
         "s3:PutBucketPolicy"
       ],
       "Resource": [
-        "arn:aws:s3:::malikaeditorr",
-        "arn:aws:s3:::malikaeditorr/*",
+        "arn:aws:s3:::videomaking-backup-386318011485",
+        "arn:aws:s3:::videomaking-backup-386318011485/*",
         "arn:aws:s3:::ytgrabber-green-*",
         "arn:aws:s3:::ytgrabber-green-*/*"
       ]
@@ -82,7 +82,7 @@
         "cloudfront:CreateInvalidation",
         "cloudfront:GetDistribution"
       ],
-      "Resource": "arn:aws:cloudfront::596596146505:distribution/EDTEON6GFBEZH"
+      "Resource": "arn:aws:cloudfront::386318011485:distribution/E36OKTEHMEZQ4N"
     },
     {
       "Effect": "Allow",
@@ -106,7 +106,7 @@
         "iam:DetachRolePolicy",
         "iam:UpdateAssumeRolePolicy"
       ],
-      "Resource": "arn:aws:iam::596596146505:role/ytgrabber-green-*"
+      "Resource": "arn:aws:iam::386318011485:role/ytgrabber-green-*"
     }
   ]
 }

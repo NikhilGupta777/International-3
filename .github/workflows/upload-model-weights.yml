@@ -12,7 +12,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  S3_BUCKET: malikaeditorr
+  S3_BUCKET: videomaking-backup-386318011485
   S3_PREFIX: ytgrabber-green/model-weights
 
 jobs:
@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: actions/setup-python@v5

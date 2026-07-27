@@ -5,31 +5,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-    inputs:
-      rebuild_translator:
-        description: "Rebuild the translator image"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
-      download_models_at_build:
-        description: "Bake CosyVoice/LatentSync model weights into translator image"
-        required: false
-        default: "true"
-        type: choice
-        options:
-          - "false"
-          - "true"
-      rebuild_gpu_ami:
-        description: "Rebuild custom GPU AMI with pre-pulled translator image (runs after translator build)"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
 
 concurrency:
   group: deploy-production
@@ -42,7 +17,7 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   AWS_REGION: us-east-1
-  AWS_ACCOUNT_ID: "596596146505"
+  AWS_ACCOUNT_ID: "386318011485"
   ECR_API_REPO: ytgrabber-green-api-lambda
   ECR_WORKER_REPO: ytgrabber-green-worker
   ECR_TRANSLATOR_REPO: ytgrabber-green-translator
@@ -51,11 +26,12 @@ env:
   CF_STACK_PREFIX: ytgrabber-green
   YTDLP_VERSION: "2026.03.17"
   SITE_DOMAIN_NAME: videomaking.in
-  CLOUDFRONT_CERTIFICATE_ARN: arn:aws:acm:us-east-1:596596146505:certificate/62ff8b55-8a4b-4634-97e8-75924181c9f5
+  CLOUDFRONT_CERTIFICATE_ARN: arn:aws:acm:us-east-1:386318011485:certificate/d849e124-73a0-41bd-ae85-2a378a51ba43
 
 jobs:
   detect-translator-changes:
     name: Detect Translator Changes
+    if: ${{ false }} # Translation/GPU deployment is intentionally excluded from this account.
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.detect.outputs.changed }}
@@ -99,7 +75,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
@@ -185,7 +161,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
@@ -336,7 +312,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
@@ -534,7 +510,7 @@ jobs:
     steps:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Resolve current active translator Batch job definition
@@ -564,6 +540,7 @@ jobs:
   # Triggers: whenever Dockerfile.cpu, requirements.cpu.txt, or worker.py changes.
   build-translator-cpu:
     name: Build CPU Translator Image
+    if: ${{ false }} # Translation deployment is intentionally excluded from this account.
     runs-on: ubuntu-latest
     outputs:
       image_uri: ${{ steps.push.outputs.image_uri }}
@@ -576,7 +553,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
@@ -625,15 +602,8 @@ jobs:
   deploy:
     name: Deploy to AWS
     runs-on: ubuntu-latest
-    needs:
-      [
-        build-api,
-        build-worker,
-        build-translator,
-        resolve-translator,
-        build-translator-cpu,
-      ]
-    if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' && (needs.build-translator.result == 'success' || needs.build-translator.result == 'skipped') && (needs.build-translator.result == 'success' || needs.resolve-translator.result == 'success') && needs.build-translator-cpu.result == 'success' }}
+    needs: [build-api, build-worker]
+    if: ${{ always() && needs.build-api.result == 'success' && needs.build-worker.result == 'success' }}
     # No environment gate — secrets are repo-level, no approval required
     steps:
       - uses: actions/checkout@v4
@@ -643,7 +613,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
@@ -809,33 +779,8 @@ jobs:
           upsert_env "SUBTITLES_FORCE_LAMBDA" "false"
           upsert_env "SUBTITLES_LAMBDA_MAX_DURATION_SECONDS" "780"
           upsert_env "YTDLP_COOKIES_FILE" "/tmp/yt-cookies.txt"
-          # Use the newly built translator job def if available, otherwise use the resolved existing one
-          TRANSLATOR_JOB_DEF="${{ needs.build-translator.outputs.batch_job_def || needs.resolve-translator.outputs.batch_job_def }}"
-          upsert_env "TRANSLATOR_BATCH_JOB_DEFINITION" "$TRANSLATOR_JOB_DEF"
-          # Default to Spot queue (cheaper). On-Demand fast queue available as
-          # TRANSLATOR_BATCH_JOB_QUEUE_FAST for urgent/admin-triggered jobs.
-          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-gpu-queue"
-          upsert_env "TRANSLATOR_BATCH_JOB_QUEUE_FAST" "${{ env.CF_STACK_PREFIX }}-gpu-fast-queue"
-          upsert_env "TRANSLATOR_BATCH_TIMEOUT_SECONDS" "10800"
-          upsert_env "TRANSLATOR_BATCH_FALLBACK_TIMEOUT_SECONDS" "3000"
-          upsert_env "TRANSLATOR_MAX_VIDEO_SIZE_BYTES" "2147483648"
-          # All models are baked into the Docker image — disable runtime downloads.
-          upsert_env "TRANSLATOR_ALLOW_RUNTIME_MODEL_DOWNLOADS" "0"
-          # CosyVoice3 model ID passed explicitly to every Batch job.
-          upsert_env "TRANSLATOR_COSYVOICE_MODEL_ID" "FunAudioLLM/Fun-CosyVoice3-0.5B-2512"
-          # Allow neural-voice fallback when clone fails (matches UI messaging).
-          # LatentSync failures still mux dubbed audio into the original video and record a warning.
-          upsert_env "TRANSLATOR_ALLOW_VOICE_CLONE_FALLBACK" "true"
-          upsert_env "TRANSLATOR_ALLOW_LIP_SYNC_FALLBACK" "true"
-          # Keep lip sync hidden/disabled for normal users until we add
-          # per-user permissions. When enabled later, API routes these jobs to
-          # the g5 fast queue via TRANSLATOR_BATCH_JOB_QUEUE_FAST.
-          upsert_env "TRANSLATOR_LIP_SYNC_ENABLED" "false"
-          upsert_env "TRANSLATOR_LIP_SYNC_ALLOWED_EMAILS" "guptanikhil2056@gmail.com"
-          # CPU Fargate queue for Neural Voice (no GPU) jobs — edge-tts dubbing.
-          # Starts in ~30 sec (Fargate), 10x cheaper than GPU.
-          upsert_env "TRANSLATOR_CPU_BATCH_JOB_QUEUE"      "${{ env.CF_STACK_PREFIX }}-translator-cpu-queue"
-          upsert_env "TRANSLATOR_CPU_BATCH_JOB_DEFINITION" "${{ needs.build-translator-cpu.outputs.batch_job_def }}"
+          # Translation/GPU settings are intentionally preserved from the live
+          # target environment and are not built or overwritten by this workflow.
           echo ".env.green ready ($(wc -l < /tmp/.env.green) lines)"
 
       # Run the existing deploy script. It handles CloudFormation, S3, and CloudFront.
@@ -919,18 +864,13 @@ jobs:
           # All repos keep last 3 images — translator image is large (~20GB) and
           # 10-tag retention was costing ~$14/month in ECR storage with no rollback benefit.
           # 3 tags = current + 2 rollback versions, which is sufficient.
-          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} ${{ env.ECR_TRANSLATOR_REPO }} ${{ env.ECR_TRANSLATOR_CPU_REPO }} ${{ env.ECR_TRANSLATOR_BASE_REPO }} malika-editor; do
+          for REPO in ${{ env.ECR_API_REPO }} ${{ env.ECR_WORKER_REPO }} malika-editor; do
             aws ecr put-lifecycle-policy \
               --repository-name "$REPO" \
               --lifecycle-policy-text "$POLICY_3" \
               --region "${{ env.AWS_REGION }}" \
               2>/dev/null && echo "✅ Lifecycle policy (keep 3) applied to $REPO" || echo "⚠️ Could not apply lifecycle policy to $REPO (repo may not exist yet)"
           done
-          aws ecr put-lifecycle-policy \
-            --repository-name "${{ env.ECR_TRANSLATOR_REPO }}" \
-            --lifecycle-policy-text "$POLICY_3" \
-            --region "${{ env.AWS_REGION }}" \
-            2>/dev/null && echo "✅ Lifecycle policy (keep 3) applied to ${{ env.ECR_TRANSLATOR_REPO }}" || echo "⚠️ Could not apply lifecycle policy to ${{ env.ECR_TRANSLATOR_REPO }}"
 
       - name: Summary
         run: |
@@ -941,9 +881,7 @@ jobs:
           echo "| **Commit** | \`${GITHUB_SHA::8}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **API image** | \`${{ needs.build-api.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Worker image** | \`${{ needs.build-worker.outputs.image_uri }}\` |" >> $GITHUB_STEP_SUMMARY
-          TRANSLATOR_JOB_DEF="${{ needs.build-translator.outputs.batch_job_def || needs.resolve-translator.outputs.batch_job_def }}"
           echo "| **Worker Batch job** | \`${{ needs.build-worker.outputs.batch_job_def }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Translator Batch job** | \`${TRANSLATOR_JOB_DEF}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Live** | https://videomaking.in |" >> $GITHUB_STEP_SUMMARY
 
   # ─── Job 5: Refresh custom GPU AMI with pre-pulled translator image ───────────
@@ -977,7 +915,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::596596146505:role/ytgrabber-green-gha-deployer
+          role-to-assume: arn:aws:iam::386318011485:role/ytgrabber-green-gha-deployer
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: aws-actions/amazon-ecr-login@v2
