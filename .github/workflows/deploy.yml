@@ -889,6 +889,44 @@ jobs:
               --function-name $functionName
             if ($LASTEXITCODE -ne 0) { throw "lambda did not reach updated state" }
 
+            # build-worker registers a NEW Batch job definition revision on every run.
+            # The function env pins an exact revision, so it must be repointed here or
+            # queued jobs keep running the previous worker image. This is the only env
+            # key the pipeline manages; everything else is managed out of band.
+            $jobDef = "${{ needs.build-worker.outputs.batch_job_def }}"
+            if ([string]::IsNullOrWhiteSpace($jobDef)) { throw "build-worker did not emit a job definition" }
+
+            $cfg = aws lambda get-function-configuration `
+              --region "${{ env.AWS_REGION }}" `
+              --function-name $functionName | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw "get-function-configuration failed" }
+
+            $vars = @{}
+            foreach ($prop in $cfg.Environment.Variables.PSObject.Properties) {
+              $vars[$prop.Name] = $prop.Value
+            }
+            if ($vars["YOUTUBE_BATCH_JOB_DEFINITION"] -ne $jobDef) {
+              Write-Host "Repointing YOUTUBE_BATCH_JOB_DEFINITION: $($vars['YOUTUBE_BATCH_JOB_DEFINITION']) -> $jobDef"
+              $vars["YOUTUBE_BATCH_JOB_DEFINITION"] = $jobDef
+              @{ Variables = $vars } | ConvertTo-Json -Depth 5 -Compress |
+                Out-File -FilePath env-update.json -Encoding utf8 -NoNewline
+
+              aws lambda update-function-configuration `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name $functionName `
+                --environment file://env-update.json | Out-Null
+              $updateFailed = ($LASTEXITCODE -ne 0)
+              Remove-Item env-update.json -Force -ErrorAction SilentlyContinue
+              if ($updateFailed) { throw "lambda update-function-configuration failed" }
+
+              aws lambda wait function-updated `
+                --region "${{ env.AWS_REGION }}" `
+                --function-name $functionName
+              if ($LASTEXITCODE -ne 0) { throw "lambda did not settle after env update" }
+            } else {
+              Write-Host "YOUTUBE_BATCH_JOB_DEFINITION already $jobDef"
+            }
+
             pnpm --filter @workspace/yt-downloader run build
             if ($LASTEXITCODE -ne 0) { throw "yt-downloader build failed" }
 
