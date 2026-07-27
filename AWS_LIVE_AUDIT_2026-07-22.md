@@ -327,8 +327,8 @@ mutations were restricted to target account `386318011485`.
   manual cooldown/async/security-policy resources still require a separate reviewed
   change before any repository-driven full deployment.
 - The target budget now has three source-equivalent notification rules and the same
-  operator recipient. The attempted SNS email subscription became `Deleted`; alarm
-  delivery still needs a valid confirmed endpoint.
+  operator recipient. Replacement topic `ytgrabber-green-alerts-email` is attached to
+  all six alarms and its operator email subscription is pending confirmation.
 - GitHub/OIDC remains owner-deferred. A target ACM certificate has been requested, but
   external DNS validation and custom-domain attachment remain incomplete.
 - The target admin CLI user and disabled GuardDuty/Security Hub/Config remain security
@@ -416,7 +416,8 @@ public-access block). The target API is intentionally ahead with Content Manager
 
 An unexplained target-native active wildcard API key was revoked in place. Three budget
 notification rules and the source operator recipient were copied to the target budget;
-the attempted SNS email subscription moved to `Deleted` and cannot deliver. ACM certificate
+replacement SNS topic `ytgrabber-green-alerts-email` is now attached to all six alarms,
+with its email subscription pending confirmation. ACM certificate
 `d849e124-73a0-41bd-ae85-2a378a51ba43` was requested for apex + `www` and is pending two
 external DNS validation CNAMEs. A media-excluding comparison found all 819 source
 non-media objects present with zero size mismatches.

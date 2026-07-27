@@ -110,9 +110,10 @@ Remaining before production traffic cutover:
   async invoke config, and response-headers policy are not all stack-owned resources.
   A stale local/full deploy can still undo working settings.
 - The USD 100 target budget now has the same three notification rules and operator
-  recipient as source. The attempted SNS email subscription moved from
-  `PendingConfirmation` to `Deleted`, so alarm email remains non-deliverable. The
-  operator must supply/confirm a valid SNS endpoint before delivery can be tested.
+  recipient as source. Because the original topic retained that endpoint as `Deleted`,
+  replacement topic `ytgrabber-green-alerts-email` was created and attached to all six
+  target alarms. Its email subscription is `PendingConfirmation`; the operator must
+  accept AWS's confirmation email before alarm delivery can be tested.
 - Acceptance testing on 2026-07-27 covered the allowed core tabs and is recorded below.
   Google OAuth's persistent AWS configuration and allowlists have exact source/target
   parity. A real Google login still needs a short-lived browser-issued ID token; AWS CLI
@@ -1016,8 +1017,9 @@ approved secret manager or encrypted operational vault, never in this repository
 - One target-native active `Untitled key` with wildcard scope and no expiry was found and
   revoked in place. Its audit record remains; the credential can no longer authenticate.
 - Target budget notification parity is restored: three source-equivalent rules and the
-  same operator recipient. One SNS email subscription was requested, but AWS moved it
-  from `PendingConfirmation` to `Deleted`; a valid confirmed endpoint is still required.
+  same operator recipient. The original SNS topic retained its endpoint as `Deleted`, so
+  replacement topic `ytgrabber-green-alerts-email` was created and added to all six
+  alarms. Its operator email subscription is pending confirmation.
 - ACM certificate
   `arn:aws:acm:us-east-1:386318011485:certificate/d849e124-73a0-41bd-ae85-2a378a51ba43`
   was requested for `videomaking.in` and `www.videomaking.in`. It is pending two DNS

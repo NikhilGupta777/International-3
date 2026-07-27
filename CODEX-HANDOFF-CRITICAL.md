@@ -94,7 +94,8 @@ Last verified good:
 - A subsequent full configuration comparison found functional parity across the normal
   non-GPU runtime and exact static-site parity (75 objects). The target-only active
   wildcard `Untitled key` was revoked. Target budget notification parity is restored;
-  the attempted SNS email subscription became `Deleted` and is not deliverable. A target ACM certificate for apex
+  replacement topic `ytgrabber-green-alerts-email` is attached to all six alarms and its
+  operator email is pending confirmation. A target ACM certificate for apex
   and `www` was requested and awaits two CNAMEs at the external DNS provider. Non-media
   S3 parity is 819/819 with zero missing keys or size mismatches.
 
