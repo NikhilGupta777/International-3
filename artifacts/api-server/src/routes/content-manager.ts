@@ -18,8 +18,17 @@ import {
   buildThinkingConfig,
   createGeminiClient,
   ensureVertexCredentials,
+  getGeminiApiKeyForAttempt,
+  getPersonalKeysForCaller,
   isGeminiConfigured,
 } from "../lib/gemini-client";
+import {
+  COPILOT_FAST_MODEL,
+  getCopilotFallbackModels,
+  isExternalCopilotConfigured,
+  isExternalProviderRetryableError,
+  streamExternalCopilot,
+} from "../lib/copilot-external-provider";
 import { isTavilyConfigured, searchWithTavily } from "../lib/tavily-search";
 
 const router = Router();
@@ -28,6 +37,11 @@ const MAX_AGENT_ITERATIONS = 6;
 const MAX_SEARCHES_PER_RUN = 4;
 const MAX_VIDEO_CAPTION_CHARS = 220_000;
 const DEFAULT_CAPTION_LANGUAGE = "hi";
+const CONTENT_MANAGER_AI_TIMEOUT_MS = Math.max(
+  30_000,
+  Number(process.env.CONTENT_MANAGER_AI_TIMEOUT_MS) || 120_000,
+);
+const CONTENT_MANAGER_PROVIDER_RETRIES = 2;
 
 type ContentPack = {
   titles: Array<{ title: string; rationale: string }>;
@@ -57,6 +71,105 @@ function send(res: any, payload: object): void {
   if (res.writableEnded) return;
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
   sseFlush(res);
+}
+
+type ContentManagerStreamParams = {
+  contents: any[];
+  config: Record<string, any>;
+  tools?: any[];
+  runId: string;
+  res: any;
+};
+
+async function collectStream(stream: AsyncIterable<any>): Promise<any[]> {
+  const chunks: any[] = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  if (chunks.length === 0) throw new Error("AI provider returned an empty response");
+  return chunks;
+}
+
+/**
+ * Content Manager uses the same public-provider ladder and per-provider key
+ * rotation as Super Agent, then falls back through every configured Gemini key.
+ * A full attempt is buffered before it is exposed to the route so a provider
+ * that fails halfway through a stream cannot leave duplicate partial text in
+ * the user's conversation when the next provider takes over.
+ */
+async function generateContentManagerChunks(params: ContentManagerStreamParams): Promise<any[]> {
+  const externalModels = [COPILOT_FAST_MODEL, ...getCopilotFallbackModels(COPILOT_FAST_MODEL)]
+    .filter((model) => isExternalCopilotConfigured(model))
+    .filter((model, index, models) => models.indexOf(model) === index);
+  const geminiKeys = getPersonalKeysForCaller("content-manager");
+  const totalAttempts = externalModels.length * CONTENT_MANAGER_PROVIDER_RETRIES
+    + (isGeminiConfigured() ? Math.max(1, geminiKeys.length) : 0);
+  let attemptNumber = 0;
+  let lastError: any = null;
+
+  const announceFallback = () => {
+    if (attemptNumber <= 1) return;
+    send(params.res, {
+      type: "status",
+      runId: params.runId,
+      message: "The primary AI is busy. Trying another available model...",
+    });
+  };
+
+  for (const model of externalModels) {
+    for (let providerAttempt = 0; providerAttempt < CONTENT_MANAGER_PROVIDER_RETRIES; providerAttempt += 1) {
+      attemptNumber += 1;
+      announceFallback();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), CONTENT_MANAGER_AI_TIMEOUT_MS);
+      try {
+        return await collectStream(streamExternalCopilot({
+          model,
+          contents: params.contents,
+          systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
+          tools: params.tools ?? [],
+          signal: controller.signal,
+        }));
+      } catch (err: any) {
+        lastError = err;
+        console.warn(
+          `[content-manager] external attempt ${attemptNumber}/${totalAttempts} failed: ${String(err?.message ?? err)}`,
+        );
+        if (!isExternalProviderRetryableError(err)) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(Number(err?.retryAfterMs) || 250, 2_000)));
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  if (isGeminiConfigured()) {
+    const geminiAttempts = Math.max(1, geminiKeys.length);
+    for (let keyAttempt = 0; keyAttempt < geminiAttempts; keyAttempt += 1) {
+      attemptNumber += 1;
+      announceFallback();
+      try {
+        const apiKey = getGeminiApiKeyForAttempt("content-manager", keyAttempt);
+        const client = createGeminiClient({
+          caller: "content-manager",
+          apiKey: apiKey || undefined,
+          httpOptions: { timeout: CONTENT_MANAGER_AI_TIMEOUT_MS },
+        });
+        return await collectStream(await client.models.generateContentStream({
+          model: CONTENT_MANAGER_MODEL,
+          contents: params.contents,
+          config: params.config,
+        }));
+      } catch (err: any) {
+        lastError = err;
+        console.warn(
+          `[content-manager] Gemini attempt ${keyAttempt + 1}/${geminiAttempts} failed: ${String(err?.message ?? err)}`,
+        );
+      }
+    }
+  }
+
+  throw new Error("All configured AI models are temporarily unavailable. Please retry in a moment.", {
+    cause: lastError,
+  });
 }
 
 function normalizeAiErrorMessage(err: any): string {
@@ -304,8 +417,10 @@ router.post("/content-manager/channels/scrape", async (req, res) => {
 });
 
 router.post("/content-manager/generate", async (req, res) => {
-  if (!isGeminiConfigured()) {
-    res.status(503).json({ error: "AI generation is not configured. Add Gemini API keys first." });
+  const hasExternalAi = [COPILOT_FAST_MODEL, ...getCopilotFallbackModels(COPILOT_FAST_MODEL)]
+    .some((model) => isExternalCopilotConfigured(model));
+  if (!hasExternalAi && !isGeminiConfigured()) {
+    res.status(503).json({ error: "AI generation is not configured. Add an AI provider key first." });
     return;
   }
   try { await ensureVertexCredentials(); } catch { /* API-key mode */ }
@@ -323,7 +438,7 @@ router.post("/content-manager/generate", async (req, res) => {
 
   setupSse(res);
   const runId = randomUUID();
-  send(res, { type: "ready", runId, model: CONTENT_MANAGER_MODEL });
+  send(res, { type: "ready", runId, model: "auto" });
   try {
     const record = await getContentProfile(profileId);
     if (!record) throw new Error("Channel profile not found. Add or refresh the channel first.");
@@ -334,7 +449,6 @@ router.post("/content-manager/generate", async (req, res) => {
     const videoSource = sourceUrl ? await fetchVideoSourceContext(req, res, runId, sourceUrl) : null;
     const context = buildContentManagerModelContext({ profile: record.profile, topic: effectiveTopic });
     const videoContext = buildVideoSourcePrompt(videoSource);
-    const client = createGeminiClient({ caller: "content-manager" });
     const isVideoSourceRequest = Boolean(videoSource);
 
     // ── PHASE 1: converse, optionally search, decide intent ──────────────────
@@ -357,8 +471,7 @@ router.post("/content-manager/generate", async (req, res) => {
 
     for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS && !wantsPack; iteration += 1) {
       send(res, { type: "thinking", runId, stage: iteration === 0 ? "analyzing" : "refining" });
-      const stream = await client.models.generateContentStream({
-        model: CONTENT_MANAGER_MODEL,
+      const chunks = await generateContentManagerChunks({
         contents,
         config: {
           systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
@@ -370,12 +483,15 @@ router.post("/content-manager/generate", async (req, res) => {
           tools: [{ functionDeclarations: CONTENT_MANAGER_TOOLS }],
           toolConfig: { functionCallingConfig: { mode: "AUTO" as any } },
         },
+        tools: [{ functionDeclarations: CONTENT_MANAGER_TOOLS }],
+        runId,
+        res,
       });
 
       const modelParts: any[] = [];
-      const functionCalls: Array<{ name: string; args: Record<string, any> }> = [];
+      const functionCalls: Array<{ id?: string; name: string; args: Record<string, any> }> = [];
       let turnText = "";
-      for await (const chunk of stream) {
+      for (const chunk of chunks) {
         const parts = chunk.candidates?.[0]?.content?.parts ?? [];
         for (const part of parts) {
           if (part.thought && part.text) {
@@ -383,6 +499,7 @@ router.post("/content-manager/generate", async (req, res) => {
           } else if (part.functionCall?.name) {
             modelParts.push({ functionCall: part.functionCall });
             functionCalls.push({
+              id: part.functionCall.id,
               name: part.functionCall.name,
               args: (part.functionCall.args ?? {}) as Record<string, any>,
             });
@@ -415,21 +532,21 @@ router.post("/content-manager/generate", async (req, res) => {
         if (call.name === "request_content_pack") {
           wantsPack = true;
           packAngle = String(call.args?.angle ?? "").trim();
-          responseParts.push({ functionResponse: { name: call.name, response: { result: { ok: true } } } });
+          responseParts.push({ functionResponse: { id: call.id, name: call.name, response: { result: { ok: true } } } });
           continue;
         }
         if (call.name === "web_search") {
           const query = String(call.args?.query ?? "").trim();
           if (!query) {
-            responseParts.push({ functionResponse: { name: call.name, response: { result: { error: "query is required" } } } });
+            responseParts.push({ functionResponse: { id: call.id, name: call.name, response: { result: { error: "query is required" } } } });
             continue;
           }
           if (searchCount >= MAX_SEARCHES_PER_RUN) {
-            responseParts.push({ functionResponse: { name: call.name, response: { result: { error: "Search budget reached. Use the notes you already have." } } } });
+            responseParts.push({ functionResponse: { id: call.id, name: call.name, response: { result: { error: "Search budget reached. Use the notes you already have." } } } });
             continue;
           }
           if (!isTavilyConfigured()) {
-            responseParts.push({ functionResponse: { name: call.name, response: { result: { error: "Web search is unavailable. Rely on the saved channel data." } } } });
+            responseParts.push({ functionResponse: { id: call.id, name: call.name, response: { result: { error: "Web search is unavailable. Rely on the saved channel data." } } } });
             continue;
           }
           searchCount += 1;
@@ -441,14 +558,14 @@ router.post("/content-manager/generate", async (req, res) => {
             }
             if (search.notes) researchNotes.push(`Search "${query}":\n${search.notes}`);
             send(res, { type: "search_done", runId, query, count: search.sources.length });
-            responseParts.push({ functionResponse: { name: call.name, response: { result: { notes: search.notes, sources: search.sources } } } });
+            responseParts.push({ functionResponse: { id: call.id, name: call.name, response: { result: { notes: search.notes, sources: search.sources } } } });
           } catch (searchErr: any) {
             send(res, { type: "search_done", runId, query, count: 0 });
-            responseParts.push({ functionResponse: { name: call.name, response: { result: { error: searchErr?.message ?? "Search failed" } } } });
+            responseParts.push({ functionResponse: { id: call.id, name: call.name, response: { result: { error: searchErr?.message ?? "Search failed" } } } });
           }
           continue;
         }
-        responseParts.push({ functionResponse: { name: call.name, response: { result: { error: `Unknown tool: ${call.name}` } } } });
+        responseParts.push({ functionResponse: { id: call.id, name: call.name, response: { result: { error: `Unknown tool: ${call.name}` } } } });
       }
       contents.push({ role: "user", parts: responseParts });
     }
@@ -492,8 +609,7 @@ router.post("/content-manager/generate", async (req, res) => {
       for (let attempt = 0; attempt < sourcePrompts.length; attempt += 1) {
         builtText = "";
         try {
-          const packStream = await client.models.generateContentStream({
-            model: CONTENT_MANAGER_MODEL,
+          const packChunks = await generateContentManagerChunks({
             contents: [{ role: "user", parts: [{ text: buildPhase2Prompt(sourcePrompts[attempt]) }] }],
             config: {
               systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
@@ -505,8 +621,11 @@ router.post("/content-manager/generate", async (req, res) => {
               responseMimeType: "application/json",
               responseSchema: CONTENT_PACK_SCHEMA,
             },
+            tools: [],
+            runId,
+            res,
           });
-          for await (const chunk of packStream) {
+          for (const chunk of packChunks) {
             const parts = chunk.candidates?.[0]?.content?.parts ?? [];
             for (const part of parts) {
               if (part.thought && part.text) {
