@@ -41,7 +41,7 @@ const CONTENT_MANAGER_AI_TIMEOUT_MS = Math.min(
   60_000,
   Math.max(10_000, Number(process.env.CONTENT_MANAGER_AI_TIMEOUT_MS) || 30_000),
 );
-const CONTENT_MANAGER_PROVIDER_RETRIES = 2;
+const CONTENT_MANAGER_PROVIDER_RETRIES = 1;
 
 type ContentPack = {
   titles: Array<{ title: string; rationale: string }>;
