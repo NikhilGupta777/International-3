@@ -41,7 +41,7 @@ const CONTENT_MANAGER_AI_TIMEOUT_MS = Math.min(
   60_000,
   Math.max(10_000, Number(process.env.CONTENT_MANAGER_AI_TIMEOUT_MS) || 30_000),
 );
-const CONTENT_MANAGER_PROVIDER_RETRIES = 1;
+const CONTENT_MANAGER_PROVIDER_RETRIES = 2;
 
 type ContentPack = {
   titles: Array<{ title: string; rationale: string }>;
@@ -79,6 +79,7 @@ type ContentManagerStreamParams = {
   tools?: any[];
   runId: string;
   res: any;
+  validate?: (chunks: any[]) => void;
 };
 
 async function collectStream(stream: AsyncIterable<any>): Promise<any[]> {
@@ -86,6 +87,17 @@ async function collectStream(stream: AsyncIterable<any>): Promise<any[]> {
   for await (const chunk of stream) chunks.push(chunk);
   if (chunks.length === 0) throw new Error("AI provider returned an empty response");
   return chunks;
+}
+
+function textFromChunks(chunks: any[]): string {
+  let text = "";
+  for (const chunk of chunks) {
+    const parts = chunk.candidates?.[0]?.content?.parts ?? [];
+    for (const part of parts) {
+      if (!part.thought && part.text) text += part.text;
+    }
+  }
+  return text;
 }
 
 /**
@@ -130,13 +142,15 @@ async function generateContentManagerChunks(params: ContentManagerStreamParams):
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), CONTENT_MANAGER_AI_TIMEOUT_MS);
       try {
-        return await collectStream(streamExternalCopilot({
+        const chunks = await collectStream(streamExternalCopilot({
           model,
           contents: params.contents,
           systemInstruction: CONTENT_MANAGER_SYSTEM_PROMPT,
           tools: params.tools ?? [],
           signal: controller.signal,
         }));
+        params.validate?.(chunks);
+        return chunks;
       } catch (err: any) {
         lastError = err;
         console.warn(
@@ -162,11 +176,13 @@ async function generateContentManagerChunks(params: ContentManagerStreamParams):
           apiKey: apiKey || undefined,
           httpOptions: { timeout: CONTENT_MANAGER_AI_TIMEOUT_MS },
         });
-        return await collectStream(await client.models.generateContentStream({
+        const chunks = await collectStream(await client.models.generateContentStream({
           model: CONTENT_MANAGER_MODEL,
           contents: params.contents,
           config: params.config,
         }));
+        params.validate?.(chunks);
+        return chunks;
       } catch (err: any) {
         lastError = err;
         console.warn(
@@ -636,6 +652,9 @@ router.post("/content-manager/generate", async (req, res) => {
             tools: [],
             runId,
             res,
+            validate: (chunks) => {
+              coerceContentPack(parseJson(textFromChunks(chunks)));
+            },
           });
           for (const chunk of packChunks) {
             const parts = chunk.candidates?.[0]?.content?.parts ?? [];
