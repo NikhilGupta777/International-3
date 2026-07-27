@@ -653,7 +653,7 @@ router.post("/content-manager/generate", async (req, res) => {
             runId,
             res,
             validate: (chunks) => {
-              coerceContentPack(parseJson(textFromChunks(chunks)));
+              requireCompleteContentPack(parseJson(textFromChunks(chunks)));
             },
           });
           for (const chunk of packChunks) {
@@ -682,7 +682,7 @@ router.post("/content-manager/generate", async (req, res) => {
     }
     let pack: ContentPack;
     try {
-      pack = coerceContentPack(parseJson(builtText));
+      pack = requireCompleteContentPack(parseJson(builtText));
     } catch {
       throw new Error("The AI returned an unreadable content pack. Please try again.");
     }
@@ -831,6 +831,32 @@ function coerceContentPack(value: unknown): ContentPack {
     mustDo: (Array.isArray(obj.mustDo) ? obj.mustDo : []).map((item: unknown) => String(item).trim()).filter(Boolean).slice(0, 3),
     channelSignals: (Array.isArray(obj.channelSignals) ? obj.channelSignals : []).map((item: unknown) => String(item).trim()).filter(Boolean).slice(0, 8),
   };
+}
+
+function requireCompleteContentPack(value: unknown): ContentPack {
+  const raw = value && typeof value === "object" ? value as any : {};
+  const rawTitles = Array.isArray(raw.titles) ? raw.titles : [];
+  const pack = coerceContentPack(value);
+  const hasFiveRealTitles = rawTitles.length >= 5
+    && pack.titles.length === 5
+    && pack.titles.every((item) => item.title.length > 0 && item.rationale.length > 0);
+  const hasUploadTime = [
+    pack.bestUploadTime.day,
+    pack.bestUploadTime.time,
+    pack.bestUploadTime.timezone,
+    pack.bestUploadTime.rationale,
+  ].every((item) => item.length > 0);
+  if (
+    !hasFiveRealTitles
+    || pack.description.length === 0
+    || pack.tagsCsv.length === 0
+    || !hasUploadTime
+    || pack.mustDo.length === 0
+    || pack.channelSignals.length === 0
+  ) {
+    throw new Error("AI provider returned an incomplete content pack");
+  }
+  return pack;
 }
 
 export default router;
