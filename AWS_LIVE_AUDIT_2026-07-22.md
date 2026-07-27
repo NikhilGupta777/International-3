@@ -333,3 +333,53 @@ mutations were restricted to target account `386318011485`.
   follow-ups. No access key was automatically deleted or rotated.
 - Because source production remains writable, run one more incremental DynamoDB/S3 pass
   after pausing writes immediately before DNS cutover.
+
+---
+
+## Addendum — 2026-07-27 target-only CLI feature acceptance
+
+No source-account call, browser automation, application-code edit, GPU test, or
+translation test was made. The target account remained `386318011485`.
+
+- Passed real target flows: auth/config/session, Super Agent stream, Find Video stream,
+  213-second metadata, 11,829,048-byte Download, five-second Lambda Clip Cut,
+  11-chapter Timestamps, 4,948-character Batch Subtitles, ten-second Batch Bhagwat
+  analysis with a completed SSE result, and AI Studio CRUD/chat.
+- Best Clips completed with transcript and duration metadata but selected zero clips for
+  the music-video test source; execution passed, representative quality is unproven.
+- New Tab Studio is confirmed unavailable in the deployed API image (`POST` returns
+  404), despite the frontend tab being present.
+- Content Manager loaded four profiles but failed twice at AI generation with Gemini
+  `429 RESOURCE_EXHAUSTED`, specifically the `gemma-4-31b` free-tier 16,000 input-token
+  per-minute quota. The route reports this inside an SSE `error` event while HTTP is 200.
+- Admin/Developer and Google-login acceptance remain blocked on a valid approved Google
+  identity token. HeyGen, Pita Ji, Workspace/Drive, and Translator were excluded from
+  further tests by owner instruction.
+- Both controlled Batch jobs succeeded with exit code 0. Exact test S3 current objects
+  and all five persistent test DDB records were removed; a verification scan found no
+  matching IDs. CloudWatch showed 93 Lambda invocations, zero errors, zero throttles,
+  zero alarms in `ALARM`, and the stack remained `UPDATE_COMPLETE`.
+- Repository-wide TypeScript typechecking passed, including API, frontend, worker,
+  scripts, shared libraries, and mockup sandbox. Uncommitted local New Tab work remains
+  undeployed and was not edited by this acceptance pass.
+
+### Content Manager fallback remediation — 2026-07-27
+
+The earlier Gemini free-tier 429 was remediated in target account `386318011485` only.
+Content Manager now uses the Super Agent external model/provider ladder and provider key
+rotation, then every configured Gemini key. It buffers each attempt to prevent duplicate
+partial text, emits eight-second SSE heartbeats, bounds provider attempts at 30 seconds,
+preserves tool-call IDs, uses a dedicated JSON-only pack prompt, and rejects incomplete
+packs before fallback success. The shared OpenAI-compatible bridge now omits
+`tools`/`tool_choice` when no tools exist.
+
+The deployed immutable API digest is
+`sha256:e3b8a1694c614ec27ca8b24e2e6e0ae44788a7ba708408a37265c6e23b856695`.
+The strict live acceptance request returned HTTP 200 plus `result` and `done`, zero error
+events, five titles, a non-empty description and tags, three must-dos, one channel
+signal, and upload time after four automatic fallback transitions. Provider tests were
+9/9, typecheck and Lambda build passed. Post-deploy configuration remained 74 environment
+entries with the exact prior hash, 3008 MB memory, 900-second timeout, zero Lambda
+errors/throttles, zero active alarms, HTTP 200 health/config, and stack
+`UPDATE_COMPLETE`. Existing migrated tokens were reused without logging or changing
+their values.

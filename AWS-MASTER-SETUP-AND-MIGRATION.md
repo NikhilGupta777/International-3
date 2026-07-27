@@ -2,7 +2,7 @@
 
 **Authoritative source for migrating VideoMaking Studio to a new AWS account.**
 
-Last audited: **2026-07-26 IST** from the repository, source account
+Last audited: **2026-07-27 IST** from the repository, source account
 `596596146505`, and migration target account `386318011485` in `us-east-1`.
 Secret values are intentionally not recorded.
 
@@ -112,9 +112,11 @@ Remaining before production traffic cutover:
 - SNS topic `ytgrabber-green-alerts` has zero subscriptions, and the USD 100 budget has
   zero notification rules/subscribers. An operator email is required before either can
   be completed and delivery-tested.
-- Complete the still-unrun feature acceptance tests: Google login, workspace/upload,
-  subtitles, Bhagwat, Pita Ji, HeyGen, NotebookLM, E2B/provider fallbacks, and
-  Katha/Supabase.
+- Acceptance testing on 2026-07-27 covered the allowed core tabs and is recorded below.
+  Remaining blocked or excluded surfaces are Google login, admin/developer authorization,
+  Pita Ji, HeyGen, Workspace/Drive, Translator, and Katha/Supabase. The latter four app
+  areas were not exercised further after the owner's explicit exclusion; no GPU or
+  translation test was run.
 - GitHub/OIDC migration and ACM/custom-domain/external-DNS cutover remain deliberately
   deferred by the owner. Target therefore continues to use
   `dq163fbjr1do7.cloudfront.net` with the CloudFront default certificate.
@@ -124,6 +126,92 @@ Remaining before production traffic cutover:
   paid security services before cutover; no key was deleted automatically.
 
 No source resource was changed or deleted. Old production remains the rollback system.
+
+## Target CLI acceptance — 2026-07-27 IST
+
+All checks in this section used AWS CLI or direct HTTP/API calls against target account
+`386318011485` and `https://dq163fbjr1do7.cloudfront.net`. The old/source AWS profile
+was not called, no browser automation was used, and no application code was edited.
+The local `new-account` profile's invalid default output value (`\`) was corrected to
+`json`; a follow-up STS call again resolved account `386318011485`.
+
+Passed:
+
+- Home auth/config, password login/session, Super Agent skills and a real streamed agent
+  reply, Find Video health and a real streamed answer, client access, and API v1 health.
+- Download metadata for a 213-second public video and a real format-18 download. The
+  download completed at 100% with an 11,829,048-byte MP4.
+- A fresh five-second Clip Cut completed through Lambda at 100%, produced a valid
+  732,773-byte MP4, and had no Batch job ID.
+- Timestamps completed through the Lambda worker at 100% with 11 chapters.
+- Subtitles completed through Batch job `fb5f0e2a-456a-4266-a880-5cdcbc37a5e6` with
+  exit code 0 and a 4,948-character SRT.
+- Bhagwat authenticated successfully; a controlled ten-second analysis completed through
+  Batch job `487e8a15-0e95-455c-bdc9-5fb3d38c2a75` with exit code 0, and its SSE status
+  route emitted `done` with a persisted result.
+- AI Studio project creation, retrieval/deletion, and a real assistant chat passed. The
+  chat emitted `run_start`, project/user, thinking, thought, text, assistant, and `done`
+  events. The temporary project was deleted.
+- Best Clips completed with a transcript and the correct 213-second duration. It returned
+  zero selected clips for the music-video test input, so transport/execution passed but
+  result quality remains inconclusive for representative spoken content.
+- Earlier target-only controlled checks in this migration also passed Share upload,
+  Workspace create/read/delete, Google Drive status, and Super Agent/NotebookLM paths;
+  Workspace/Drive was excluded from further testing when the owner requested it.
+
+Confirmed defects and blockers:
+
+- **New Tab Studio is broken in the deployed target image:** authenticated
+  `POST /api/newtab-studio/chat` returns HTTP 404. The frontend tab is deployed, while
+  the exact migrated production API image does not expose its backend route. Local
+  uncommitted New Tab route work exists but was not modified or deployed during this
+  audit. Fix requires reviewing that work, including the router registration, then
+  building and deploying a new API image through a controlled target-only update.
+- **Content Manager quota blocker resolved 2026-07-27:** the route now uses Super
+  Agent's configured external-provider/model ladder first, including provider-level key
+  rotation, then rotates through every configured Content Manager Gemini key. Complete
+  attempts are buffered before exposure, with eight-second SSE heartbeats so CloudFront
+  cannot close an idle fallback attempt. The default provider timeout is bounded at 30
+  seconds (configurable from 10 to 60 seconds). Tool-call IDs are preserved across
+  multi-turn fallback conversations.
+- Structured pack generation now has a separate JSON-only system prompt, tolerates a
+  harmless prose/fence wrapper around an outer JSON object, omits invalid empty
+  `tools`/`tool_choice` fields for OpenAI-compatible providers, and rejects incomplete
+  packs before declaring a provider successful. Required acceptance fields are five real
+  titles with rationales, description, tags, complete upload time, at least one must-do,
+  and at least one channel signal.
+- The final target image is
+  `sha256:e3b8a1694c614ec27ca8b24e2e6e0ae44788a7ba708408a37265c6e23b856695`.
+  A live strict pack request completed in 150.15 seconds after four fallback transitions
+  with HTTP 200, `result` and `done`, zero errors, five titles, a 665-character
+  description, 197 characters of tags, three must-dos, one channel signal, and upload
+  time. Earlier controlled runs proved plain conversation and fallback keepalive paths.
+  All nine external-provider regression tests, API typecheck, and Lambda build passed.
+- Admin and Developer endpoints correctly return 403 to the password session; a valid
+  Google admin identity token is required for their full acceptance. Full Google login
+  likewise cannot be proven without a real ID token.
+- New tests of HeyGen, Pita Ji, Workspace/Drive, and Translator were stopped by explicit
+  owner instruction. Translation remains intentionally disabled and no GPU test ran.
+
+Cleanup and post-test health:
+
+- Exact current S3 objects for the new clip, subtitle, and download were deleted with
+  versioned delete markers. All five persistent test job records were deleted; a full
+  projected table scan found zero matching test IDs afterward. The Best Clips job was
+  in-memory only. Batch history remains as normal AWS execution history.
+- Over the two-hour test window, CloudWatch reported 93 Lambda invocations, zero Lambda
+  errors, and zero throttles. No CloudWatch alarm was in `ALARM`. The target stack
+  remained `UPDATE_COMPLETE`.
+- Repository-wide `pnpm run typecheck` also passed for shared libraries, API server,
+  frontend, queue worker, scripts, and mockup sandbox. This validates the current dirty
+  working tree but does not mean its uncommitted New Tab implementation is deployed.
+- After the Content Manager deployment, Lambda still had 74 environment entries with
+  the exact pre-change hash
+  `43848a8a8b1701c8900da6b46fd18ba3a5ded869aeffb6ee57763ec77dcc09db`,
+  3008 MB memory, 900-second timeout, zero Lambda errors/throttles in the verification
+  window, zero alarms in `ALARM`, HTTP 200 health/config, and stack
+  `UPDATE_COMPLETE`. Existing migrated provider token values were reused without being
+  printed or modified.
 
 ## Historical target-account progress — 2026-07-23 IST
 

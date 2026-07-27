@@ -33,6 +33,8 @@ Last verified good:
 ## New Account Migration — Current State
 
 - Target AWS account: `386318011485`; use CLI profile `new-account`.
+- The local `new-account` profile default output is `json` (corrected 2026-07-27) and
+  STS resolves account `386318011485`.
 - Never write to source account `596596146505` during migration work.
 - Target CloudFront: `E36OKTEHMEZQ4N` / `https://dq163fbjr1do7.cloudfront.net`.
 - Target output bucket: `videomaking-backup-386318011485`.
@@ -49,6 +51,23 @@ Last verified good:
   versioning; `migration-backup/` contains rollback objects.
 - Target CloudFront login/session/Super Agent passed; a 5-second Lambda clip finished in
   14.58 seconds without Batch; a revision-3 Fargate job succeeded.
+- Target-only CLI acceptance on 2026-07-27 additionally passed real Download, a fresh
+  Lambda Clip Cut, Timestamps, Batch Subtitles, Batch Bhagwat analysis, Find Video,
+  Super Agent, and AI Studio chat. Exact test S3/DynamoDB artifacts were cleaned; the
+  two new Batch jobs both exited 0. CloudWatch showed zero Lambda errors/throttles and
+  no active alarm during the test window.
+- Confirmed target gap: deployed New Tab Studio API returns 404. Best Clips executed
+  successfully with a transcript but selected zero clips for the music-video test
+  source, so quality needs a spoken-content test.
+- Content Manager's Gemini 429 blocker was fixed and deployed target-only on 2026-07-27.
+  It now uses the Super Agent external fallback ladder and key rotation before all
+  configured Gemini keys, keeps buffered attempts alive over SSE, validates complete
+  structured packs, and omits invalid empty tool configuration. Final live image digest:
+  `sha256:e3b8a1694c614ec27ca8b24e2e6e0ae44788a7ba708408a37265c6e23b856695`.
+  A strict live request returned all required pack fields with zero error events.
+- Google login and admin/developer authorization still need a real approved Google
+  token. Per owner instruction, do not test HeyGen, Pita Ji, Workspace/Drive, or
+  Translator in the next acceptance pass unless explicitly re-authorized.
 - Target CloudFormation drift for `ApiFunction` and `ApiRole` was reconciled on
   2026-07-26. The stack is `UPDATE_COMPLETE`; drift detection is `IN_SYNC` with zero
   drifted resources. The live image, 74-value environment hash, IAM policy hash,
