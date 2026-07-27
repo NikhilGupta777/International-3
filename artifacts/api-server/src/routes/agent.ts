@@ -178,10 +178,13 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "delete_workspace_file":
     case "list_drive_files":
     case "import_from_drive":
+    case "read_uploaded_file":
+    case "describe_image":
       return "light";
 
     case "cut_video_clip":
     case "download_video":
+    case "generate_subtitles":
     case "find_best_clips":
     case "generate_timestamps":
       return "youtube_processing";
@@ -711,7 +714,7 @@ const STUDIO_TOOLS: any[] = [
         tab: {
           type: Type.STRING,
           description:
-            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
+            "Tab name: 'home', 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'copilot', 'translator', 'heygen', 'findvideo', 'thumbnail', 'content-manager', 'videostudio', 'help', 'activity', 'admin', 'developer', 'api-docs', 'settings'",
         },
       },
       required: ["tab"],
@@ -3038,6 +3041,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -5403,15 +5407,17 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
       host === "127.0.0.1" ||
       host === "0.0.0.0" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
       host.endsWith(".local")
-    );
+    ) return true;
+    const m = /^172\.(\d+)\./.exec(host);
+    if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+    return false;
   } catch {
     return true;
   }
