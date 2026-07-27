@@ -177,6 +177,37 @@ test("NVIDIA streams GLM Ultra and GPT-OSS Fast with explicit output limits", as
   }
 });
 
+test("NVIDIA omits tool_choice when a request has no tools", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestBody: any;
+  globalThis.fetch = async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body));
+    return new Response(
+      [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '{"ok":true}' } }] })}`,
+        "",
+        "data: [DONE]",
+        "",
+      ].join("\n"),
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    );
+  };
+  try {
+    await collect(
+      provider.streamExternalCopilot({
+        model: "openai/gpt-oss-120b",
+        contents,
+        systemInstruction: "Return JSON",
+        tools: [],
+      }),
+    );
+    assert.equal("tools" in requestBody, false);
+    assert.equal("tool_choice" in requestBody, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("public modes expose the required four-model fallback order", () => {
   assert.deepEqual(provider.getCopilotFallbackModels("z-ai/glm-5.2"), [
     "gpt-oss:120b",

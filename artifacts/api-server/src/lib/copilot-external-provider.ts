@@ -577,6 +577,7 @@ async function* streamOpenAiCompatibleWithKey(
   provider: "nvidia" | "groq",
 ): AsyncGenerator<any> {
   const isNvidia = provider === "nvidia";
+  const normalizedTools = normalizeTools(params.tools);
   const maxTokens = isNvidia
     ? params.model === COPILOT_ULTRA_MODEL
       ? Number(process.env.COPILOT_ULTRA_MAX_OUTPUT_TOKENS) || 60_000
@@ -604,8 +605,9 @@ async function* streamOpenAiCompatibleWithKey(
             { role: "system", content: params.systemInstruction },
             ...normalizeMessages(params.contents),
           ],
-          tools: normalizeTools(params.tools),
-          tool_choice: "auto",
+          ...(normalizedTools.length
+            ? { tools: normalizedTools, tool_choice: "auto" }
+            : {}),
           stream: true,
           max_tokens: maxTokens,
           ...(isNvidia && params.model === "openai/gpt-oss-120b"
