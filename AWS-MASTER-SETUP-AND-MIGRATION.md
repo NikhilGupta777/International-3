@@ -1129,10 +1129,10 @@ cutover blockers. GPU/Translator, HeyGen, Pita Ji, and Workspace/Drive were not 
   `d849e124-73a0-41bd-ae85-2a378a51ba43` is `ISSUED` and in use by that distribution.
 - The old distribution has no production aliases and remains enabled only as a rollback
   target. Do not change or remove it without separate authorization.
-- The final API image is
-  `386318011485.dkr.ecr.us-east-1.amazonaws.com/ytgrabber-green-api-lambda:89ee9903`.
-  The active normal worker is Batch definition `ytgrabber-green-worker-job:11`, using
-  `386318011485.dkr.ecr.us-east-1.amazonaws.com/ytgrabber-green-worker:89ee9903`.
+- The subtitle fix was first validated in API and worker images tagged `89ee9903`.
+  Because the current workflow rebuilds both images on every `main` push, including
+  documentation-only pushes, the active tag and Batch revision advance without an API
+  source change. Resolve them live rather than treating a recorded revision as static.
 
 ### Subtitle failure root cause and verified fix
 
@@ -1171,6 +1171,8 @@ that never execute clips.
   `batch:TagResource`; only that action was added. Full OIDC workflow run `30364032848`
   then passed ECR builds/pushes, Batch registration, Lambda update, static S3 sync,
   CloudFront invalidation, and ECR lifecycle application.
+- The pushed closeout commit was independently exercised by workflow run `30364693485`,
+  which passed the same complete deployment path with GPU/Translator jobs skipped.
 - Obsolete repository secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` were
   deleted. Deployments are OIDC-only.
 - IAM user `newbackup` still has the active key used by local profile `new-account`.
