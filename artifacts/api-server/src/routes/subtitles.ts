@@ -1321,13 +1321,6 @@ function getReplitGenAI(): GoogleGenAI | null {
   return null;
 }
 
-// Passes 1 & 2 (audio-dependent): use personal keys only with key rotation.
-// Gemini 3.5 Flash is primary for subtitle generation.
-// Falls back across configured keys/models on rate limits and transient failures.
-const KEY_ROTATION_MODELS = [
-  "gemini-3.5-flash",
-];
-
 function csvModels(value: string | undefined, fallback: string[]): string[] {
   const parsed = (value ?? "")
     .split(",")
@@ -1335,6 +1328,15 @@ function csvModels(value: string | undefined, fallback: string[]): string[] {
     .filter(Boolean);
   return parsed.length ? parsed : fallback;
 }
+
+// Passes 1 & 2 (audio-dependent) and the text-only correction/translation
+// passes use personal keys with both key and model rotation. A provider-wide
+// 503 on the primary model must not make every configured key repeat the same
+// failing request with no model fallback.
+const KEY_ROTATION_MODELS = csvModels(process.env.SUBTITLES_TEXT_MODELS, [
+  "gemini-3.5-flash",
+  "gemini-2.5-flash",
+]);
 
 const VIDEO_TRANSCRIPTION_MODELS = csvModels(process.env.SUBTITLES_VIDEO_TRANSCRIPTION_MODELS, [
   "gemini-3.5-flash",
@@ -3599,23 +3601,34 @@ async function processAudio(
       job.progressPct = 95;
       job.message = `Verifying ${translateTo} translation...`;
 
-      const verifiedRaw = await generateWithReplitFirst(
-        "gemini-3.5-flash",
-        (model) => ({
-          model,
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: buildTranslationVerifyPrompt(correctedFinalSrt, translatedSrt, language, translateTo) }],
+      let verificationWarning: string | null = null;
+      let verifiedRaw: string;
+      try {
+        verifiedRaw = await generateWithReplitFirst(
+          "gemini-3.5-flash",
+          (model) => ({
+            model,
+            contents: [
+              {
+                role: "user",
+                parts: [{ text: buildTranslationVerifyPrompt(correctedFinalSrt, translatedSrt, language, translateTo) }],
+              },
+            ],
+            config: {
+              maxOutputTokens: 65536,
+              thinkingConfig: buildThinkingConfig(model, "HIGH"),
             },
-          ],
-          config: {
-            maxOutputTokens: 65536,
-            thinkingConfig: buildThinkingConfig(model, "HIGH"),
-          },
-        }),
-        "Subtitle verification pass",
-      );
+          }),
+          "Subtitle verification pass",
+        );
+      } catch (err) {
+        // Translation already succeeded. Provider unavailability during the
+        // optional second AI pass should not discard that valid result; the
+        // deterministic timestamp and structural quality checks below still run.
+        verificationWarning = "AI translation verification was temporarily unavailable; structural subtitle checks passed.";
+        verifiedRaw = translatedSrt;
+        logger.warn({ err }, "Subtitle verification unavailable - using translated output after structural checks");
+      }
       const verifiedClean = verifiedRaw.length > 10
         ? stripFences(verifiedRaw)
         : translatedSrt;
@@ -3624,7 +3637,10 @@ async function processAudio(
 
       const finalSrt = strictFilterMalformedTimestamps(cleanupHallucinatedEntries(normalizeSrtTimestamps(verifiedSrt)));
       try {
-        job.qualityWarnings = assertSubtitleQuality(finalSrt, durationSecs, "translated");
+        const qualityWarnings = assertSubtitleQuality(finalSrt, durationSecs, "translated");
+        job.qualityWarnings = verificationWarning
+          ? [verificationWarning, ...qualityWarnings]
+          : qualityWarnings;
       } catch (err) {
         job.status = "error";
         job.error = err instanceof Error ? err.message : "AI returned an unsafe translated subtitle file - please try again";
