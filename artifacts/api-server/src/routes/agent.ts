@@ -62,6 +62,7 @@ import {
   getAnalyzeYoutubeVideoDescription,
   getModelSpecificSystemPrompt,
 } from "../lib/agent-model-instructions";
+import { findIncompleteCanvasOpeningTagStart } from "./agent-canvas-stream";
 
 const router = Router();
 
@@ -1575,17 +1576,17 @@ Always use the smallest, cheapest correct tool. Do not call a more expensive or 
 
 USE canvas for:
 - A complete HTML website/page (for example content containing <!doctype html> or an <html> document).
-- Any fenced code or editable artifact longer than 15 lines.
-- An artifact the user explicitly asks to open in canvas or download as a file.
+- Any non-subtitle fenced code or editable artifact longer than 15 lines.
+- A non-subtitle artifact the user explicitly asks to open in canvas.
 DO NOT use canvas for code examples of 15 lines or fewer, including brief config and single functions, unless the user explicitly requests canvas. Keep these in a normal chat code box.
-Always output SRT and VTT subtitles in a normal markdown fenced code block using the \`\`\`srt or \`\`\`vtt language identifier, regardless of cue count or whether the user asks for canvas. The UI promotes substantial subtitle blocks into canvas.
+Always output SRT and VTT subtitles in a normal markdown fenced code block using the \`\`\`srt or \`\`\`vtt language identifier, regardless of cue count or whether the user asks for canvas. Never wrap subtitles in the hidden <canvas> protocol. The UI promotes substantial subtitle blocks into a downloadable canvas automatically.
 
 When canvas IS appropriate:
 - Write the artifact directly into canvas using this exact hidden protocol:
   <canvas title="Descriptive Filename.html" language="html">
   ...complete artifact content only, no markdown fences inside...
   </canvas>
-- Use the right language value: html, css, javascript, typescript, python, json, markdown, text, srt, or vtt.
+- Use the right language value for non-subtitle canvases: html, css, javascript, typescript, python, json, markdown, or text. SRT/VTT always use fenced blocks instead.
 - For code, JSON, Markdown, and similar content of 15 lines or fewer, use normal markdown triple-backtick fences with the correct language identifier. The UI supports copy, download, wrapping, and manually opening these short blocks in canvas.
 - Keep the chat text outside canvas brief: one sentence before ("Creating this in canvas…") and one sentence after.
 
@@ -1668,7 +1669,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "give me the captions / subtitles already on YouTube" | get_youtube_captions (instant, no transcription) |
 | "transcribe / give SRT for this YouTube video" | get_youtube_captions, then clean terminology if needed while preserving all indexes and timestamps |
 | "translate this existing SRT / translate these captions" | Use the SRT already in context from get_youtube_captions; do not call get_youtube_captions again unless no SRT is available |
-| "fix / clean pasted SRT/VTT/TXT" | answer directly with cleaned text; use canvas for long subtitle output |
+| "fix / clean pasted SRT/VTT/TXT" | answer directly with the complete cleaned text in a correctly labelled \`\`\`srt, \`\`\`vtt, or \`\`\`text fenced block; never use the hidden canvas protocol |
 | "cut from X to Y / make a clip" | cut_video_clip |
 | "download the whole video / get the audio" | download_video (use quality='audio_only' for audio) |
 | "give all clips from this video / all topics / every segment" | get_youtube_captions, then analyze the full SRT and answer in chat (never find_best_clips) |
@@ -1691,7 +1692,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "cancel all / stop all running jobs" | cancel_active_jobs |
 | "send/open result in tab" | send_result_to_tab |
 | "read/summarize uploaded text/PDF/CSV/JSON/SRT/TXT already in context" | answer directly from Gemini context |
-| "convert small SRT/VTT/TXT text" | answer directly with converted content; use canvas for long output |
+| "convert small SRT/VTT/TXT text" | answer directly with converted content in a correctly labelled fenced block |
 | "compare two subtitle blocks/files in context" | answer directly with comparison |
 | "export this as file / download this text" | export_text_file |
 | "calculate/analyze CSV/JSON/table/chart" | run_code_analysis |
@@ -1719,8 +1720,8 @@ Use artifact memory: if the user asks for a previous result/link/file again, cal
 - If the user asks for an SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, and similar names/terms inferred from context. Do not rewrite meaning.
 - If the user asks for generating SRT/transcript from a YouTube URL, fetch captions, then lightly clean YouTube caption wording while preserving every subtitle index, timestamp, ordering, and line count as much as accurately possible. Fix obvious Hindi/spiritual terminology and grammar mistakes such as these should be kept in set file even in translated srt too, speaker may say these words u have to understand think and reserve them as they are as brand assets in wording not to be changed - Madhav naam, Shreemad Bhagwat Mahapuran, Trisandhya, Trikal Sandhya, Pandit Shree Kashinath Mishra ji, Vishwa Sanatan Dharma Seva Trust, Sudharma Maha Maha Sangh, Bhavishya Malika Puran, Garga Samhita, Gupta Padmak, Nitya Panchasakha, Mahapurush Achyutananda Das, Kalki Avatar, Kalki Bhagwan, Jagannath Mahaprabhu, Balabhadra, Subhadra, Sudarshan Mahaprabhu, Chaturdha Vigraha, Darubrahma, Neela Chakra, Patit Pavan Dhwaja, Bais Pahacha, Kalpavriksha, Nilakandara, Ratna Singhasan, Snan Mandap, Anavasar Ghar, Dhari Pahandi, Goti Pahandi, Shunya Pahandi, Dhool Govind, Thakur Raja Dibyasingha Deb, Panch Balveer, Sapta Chiranjeevi, Maru, Devapi, Khatu Shyam Baba, Chausath Yogini Mata, Panchabhoota, Dashadikpal, Gupta Maruni, Operation Sindoor, Brahma Pralay, Golok Vaikuntha, Sambhal Kalki Dham, Satya Yuga, and similar names/terms inferred from context. Do not rewrite meaning.
 - If the user asks to translate captions/SRT after captions were already fetched, translate from the existing full SRT in context. Do not call get_youtube_captions again unless the caption content is missing.
-- For long SRT output, provide the complete cleaned or translated SRT as a text artifact/canvas/downloadable file, not only a short chat excerpt. For multiple target languages, create one complete SRT artifact per language.
-- Fix pasted SRT/VTT/text → answer directly; use canvas for long subtitle output
+- For every SRT/VTT output, provide the complete cleaned or translated content in a correctly labelled \`\`\`srt or \`\`\`vtt fenced block, not only a short chat excerpt. The UI automatically promotes substantial subtitle blocks into a downloadable canvas. Never emit <canvas> tags for subtitles. If the user explicitly asks for a separate downloadable file, call export_text_file with the same complete content. For multiple target languages, create one complete fenced block or exported file per language.
+- Fix pasted SRT/VTT/text → answer directly in a correctly labelled fenced block; never use the hidden canvas protocol
 
 # SUBTITLE TRANSLATION GUIDELINES — STRICT RULES (ALL VIDEOS, ALL LANGUAGES)
 
@@ -5930,29 +5931,24 @@ router.post("/agent/chat", async (req, res) => {
 
           const open = openRe.exec(canvasRouteBuf);
           if (!open) {
-            // A model stream may split the opening marker at any character
-            // (for example "<can" + "vas ...>"). Retain the longest suffix
-            // that could still become "<canvas" so hidden protocol text can
-            // never leak into the visible chat.
-            let partialLength = 0;
-            if (!final) {
-              const lower = canvasRouteBuf.toLowerCase();
-              const openToken = "<canvas";
-              const maxCandidate = Math.min(openToken.length - 1, lower.length);
-              for (let length = maxCandidate; length > 0; length--) {
-                if (openToken.startsWith(lower.slice(-length))) {
-                  partialLength = length;
-                  break;
-                }
-              }
-            }
-            if (partialLength > 0) {
-              const chat = canvasRouteBuf.slice(0, -partialLength);
+            // Model streams may split either inside the token ("<can" +
+            // "vas") or anywhere in its attributes ("<canvas" + title +
+            // ">"). Retain the entire incomplete opening tag so no hidden
+            // protocol text can leak into visible chat.
+            const incompleteOpenStart =
+              findIncompleteCanvasOpeningTagStart(canvasRouteBuf);
+            if (incompleteOpenStart !== -1) {
+              const chat = canvasRouteBuf.slice(0, incompleteOpenStart);
               if (chat) {
                 sseEvent(res, { type: "text_delta", content: chat, runId });
                 streamedTextLive = true;
               }
-              canvasRouteBuf = canvasRouteBuf.slice(-partialLength);
+              // An unfinished hidden tag at end-of-stream is malformed model
+              // protocol, not user-visible content. Drop it instead of leaking
+              // implementation markup into chat.
+              canvasRouteBuf = final
+                ? ""
+                : canvasRouteBuf.slice(incompleteOpenStart);
               return;
             }
             sseEvent(res, {
