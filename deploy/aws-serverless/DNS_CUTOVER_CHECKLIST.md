@@ -1,42 +1,51 @@
 # DNS Cutover Checklist (`videomaking.in` -> CloudFront)
 
-This file describes the current AWS account. For a new-account migration, do not reuse
-the certificate ARN, distribution ID, or validation records below. Follow the complete
-cutover and rollback process in
+This file describes the post-cutover production state. Follow the complete migration,
+cutover, and rollback record in
 [`../../AWS-MASTER-SETUP-AND-MIGRATION.md`](../../AWS-MASTER-SETUP-AND-MIGRATION.md).
 
-## Current verified state (2026-07-23)
+## Current verified state (2026-07-28 IST)
 
-- CloudFront: `EDTEON6GFBEZH` / `d2bcwj2idfdwb4.cloudfront.net`, deployed.
+- AWS account: `386318011485`, region `us-east-1`.
+- CloudFront: `E36OKTEHMEZQ4N` / `dq163fbjr1do7.cloudfront.net`, deployed.
 - Aliases: `videomaking.in`, `www.videomaking.in`.
-- `www` CNAME: `d2bcwj2idfdwb4.cloudfront.net`.
+- Hostinger DNS: apex `ALIAS @` and `CNAME www` point to
+  `dq163fbjr1do7.cloudfront.net` with TTL 300.
 - Authoritative DNS: `ns1.dns-parking.com`, `ns2.dns-parking.com` (external to Route 53).
-- ACM certificate: issued, in use, `us-east-1`, SANs for apex + `www`.
+- ACM certificate: `d849e124-73a0-41bd-ae85-2a378a51ba43`, `ISSUED`, in use,
+  `us-east-1`, SANs for apex + `www`.
 - TLS: `TLSv1.2_2021`, SNI.
 - API origin: Lambda Function URL; static origin: private S3 through OAC.
+- Apex, `www`, and `/api/healthz` return HTTP 200.
 
-The old note that the public domain still points to EC2 is obsolete.
+The old distribution `EDTEON6GFBEZH` / `d2bcwj2idfdwb4.cloudfront.net` is enabled but
+owns no production aliases. It is a rollback target only.
 
-## Existing certificate records
+## Active certificate validation records
 
-These records belong to the current certificate only:
+Retain both records for ACM renewal:
 
-1. `_1f22665c298ecd09748a05def5550c75.videomaking.in` CNAME
-   `_43bc9247aa50c1d1b23c0801dad62ebf.jkddzztszm.acm-validations.aws`
-2. `_b53f775d27fba2f8ccbbeef12047fb6c.www.videomaking.in` CNAME
-   `_c01e8ede080a84e6903eb288bffcb4e8.jkddzztszm.acm-validations.aws`
+1. `_66f1c649ca9d94398ac8f8fe70dcb953.videomaking.in` CNAME
+   `_83d2718c0ff3da0b0d8a112d4e56189b.jkddzztszm.acm-validations.aws`
+2. `_7852a1d6163e9c05f74b482154a97f6f.www.videomaking.in` CNAME
+   `_935a7b2156447f676c681f194c527035.jkddzztszm.acm-validations.aws`
 
-Do not remove them while the current certificate is needed for rollback or renewal.
+Do not replace these with the old certificate's validation records.
 
-## New-account cutover summary
+## Completed cutover summary
 
-1. Lower DNS TTL before the maintenance window.
-2. Request a new ACM certificate in `us-east-1` for apex + `www`.
-3. Add the new certificate's validation CNAMEs and wait for `ISSUED`.
-4. Deploy and fully test the new CloudFront domain before changing traffic.
-5. Pause writes and perform final S3/DynamoDB sync.
-6. Update apex/`www` to the new CloudFront target.
-7. Verify health, auth, Super Agent, Lambda clips, Fargate jobs, downloads, and alarms.
-8. Keep the old distribution/certificate/DNS values for rollback until acceptance ends.
+1. Target ACM validation completed and the certificate became `ISSUED`.
+2. Hostinger apex/`www` records moved to the new CloudFront distribution.
+3. The old distribution released both aliases; the new distribution attached them.
+4. Production TLS, HTTP, health, auth, Lambda, normal Fargate, and allowed feature
+   checks passed. GPU/Translator, HeyGen, Pita Ji, and Workspace/Drive were excluded.
+5. The old distribution remains intact for rollback. Historical job migration is not
+   required by owner decision.
 
-Never remove old DNS or AWS resources before the final data sync and rollback window.
+## Rollback
+
+Rollback requires an explicitly coordinated alias move: release apex/`www` from
+`E36OKTEHMEZQ4N`, restore them and the old certificate on `EDTEON6GFBEZH`, then point
+Hostinger apex/`www` to `d2bcwj2idfdwb4.cloudfront.net`. Cross-account CloudFront
+aliases cannot be attached to both distributions simultaneously, so plan a short outage
+window. Do not perform rollback or delete either distribution without owner approval.

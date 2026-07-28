@@ -2,8 +2,9 @@
 
 **Authoritative source for migrating VideoMaking Studio to a new AWS account.**
 
-Last audited: **2026-07-27 IST** from the repository, source account
-`596596146505`, and migration target account `386318011485` in `us-east-1`.
+Last audited: **2026-07-28 IST** from the repository and migration target account
+`386318011485` in `us-east-1`. The source account was not called during the final
+closeout documented in section 13.
 Secret values are intentionally not recorded.
 
 This document supersedes older AWS architecture and migration notes wherever they
@@ -1110,3 +1111,90 @@ and `StaticSecurityHeadersPolicy` are absent from the stack, 37 parameters are
 missing, and the function environment must move off the `LiveEnv001`–`LiveEnv074`
 snapshot onto named parameters — which rewrites all 75 env vars in one operation
 and requires `ENV_GREEN_CONTENT` to be correct for this account.
+
+## 13. Target-only production closeout — 2026-07-28 IST
+
+This section supersedes earlier “remaining” lists where they conflict. Every AWS call
+in this closeout used only profile `new-account` / account `386318011485`. The old
+account was neither queried nor changed. Historical job migration is explicitly out of
+scope by owner decision; the earlier eligible-media/job parity gaps are therefore not
+cutover blockers. GPU/Translator, HeyGen, Pita Ji, and Workspace/Drive were not tested.
+
+### Live production state
+
+- `https://videomaking.in`, `https://www.videomaking.in`, and
+  `https://videomaking.in/api/healthz` return HTTP 200; health reports `ok`.
+- CloudFront distribution `E36OKTEHMEZQ4N`
+  (`dq163fbjr1do7.cloudfront.net`) owns both production aliases. ACM certificate
+  `d849e124-73a0-41bd-ae85-2a378a51ba43` is `ISSUED` and in use by that distribution.
+- The old distribution has no production aliases and remains enabled only as a rollback
+  target. Do not change or remove it without separate authorization.
+- The final API image is
+  `386318011485.dkr.ecr.us-east-1.amazonaws.com/ytgrabber-green-api-lambda:89ee9903`.
+  The active normal worker is Batch definition `ytgrabber-green-worker-job:11`, using
+  `386318011485.dkr.ecr.us-east-1.amazonaws.com/ytgrabber-green-worker:89ee9903`.
+
+### Subtitle failure root cause and verified fix
+
+Two production subtitle jobs failed because Gemini returned repeated HTTP 503
+high-demand/quota responses. The first fallback implementation still failed because a
+primary-model 503 put every key into a global cooldown during that same request, so the
+alternate model skipped all keys. Commits `f35b681c` and `89ee990` now:
+
+- use an environment-configurable text model ladder, defaulting to
+  `gemini-3.5-flash,gemini-2.5-flash`;
+- preserve alternate-model attempts for keys that were not cooling before the request;
+- retain deterministic SRT structural checks; and
+- deliver the translated SRT with a warning when only the optional AI verification pass
+  is unavailable.
+
+GitHub deployment run `30363120699` succeeded. A real CLI-only production smoke test
+then completed upload, transcription, Hindi translation, verification, and delivery in
+about 90 seconds. Its exact S3 output and both the failed and successful test job records
+were removed; a follow-up prefix query found zero matching S3 objects.
+
+The locally modified New Tab implementation was typechecked and reviewed but remains
+undeployed. It creates/plans project records, while its Phase 2 execution runner and
+cancellation are explicitly not implemented; deploying it now would create projects
+that never execute clips.
+
+### GitHub deployment security
+
+- GitHub OIDC role `ytgrabber-green-gha-deployer` no longer has
+  `AdministratorAccess` or any other attached managed policy.
+- Its inline `deploy` policy is repository-controlled in `deploy-policy.json` and is
+  limited to the target ECR repositories, target Lambda, target static/output S3 paths,
+  target CloudFront distribution, live stack read, Batch job-definition registration,
+  and passing only the two Batch runtime roles. AWS Access Analyzer reports zero policy
+  findings.
+- The first least-privilege test exposed one required action,
+  `batch:TagResource`; only that action was added. Full OIDC workflow run `30364032848`
+  then passed ECR builds/pushes, Batch registration, Lambda update, static S3 sync,
+  CloudFront invalidation, and ECR lifecycle application.
+- Obsolete repository secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` were
+  deleted. Deployments are OIDC-only.
+- IAM user `newbackup` still has the active key used by local profile `new-account`.
+  Do not deactivate it until an alternate CLI login (for example IAM Identity Center or
+  another short-lived credential path) is configured and proven; then rotate/remove it.
+
+### CloudFormation ownership boundary
+
+The imported stack is healthy: status `IMPORT_COMPLETE`, 11 owned resources, and zero
+drifted resources. It still has 162 migration-snapshot parameters, whereas repository
+`deploy/aws-serverless/template.yml` has 121 named parameters and additionally defines
+`ApiFunctionAsyncInvokeConfig` and `StaticSecurityHeadersPolicy`. A blind repository
+deploy was deliberately not executed because it would rewrite the complete Lambda
+environment and change resource ownership in one operation.
+
+Required safe follow-up: generate the target account's complete named parameter set
+from live configuration without logging secrets, create a no-execute UPDATE change set,
+require zero replacements/deletions and explicit review of both additions, then execute
+and rerun drift plus authenticated acceptance. Until then, CI's direct Lambda/static
+deployment path is the verified production path.
+
+### Remaining human-only item
+
+SNS topic `ytgrabber-green-alerts-email` is connected to all six alarms, but its email
+subscription remains `PendingConfirmation`. The operator must click the AWS confirmation
+email; only then can end-to-end alarm delivery be tested. This is the sole required
+human action recorded by this closeout.
