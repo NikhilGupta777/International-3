@@ -23,11 +23,15 @@ export function setupSse(res: Response): void {
 }
 
 export function sseFlush(res: Response): void {
-  if (typeof (res as any).flush === "function") {
-    (res as any).flush();
-  }
-  const socket = (res as any).socket;
-  if (socket && !socket.destroyed && typeof socket.write === "function") {
-    socket.write("");
+  try {
+    if (typeof (res as any).flush === "function") {
+      (res as any).flush();
+    }
+    const socket = (res as any).socket;
+    if (socket && !socket.destroyed && typeof socket.write === "function") {
+      socket.write(":\n");
+    }
+  } catch {
+    // socket destroyed between check and write — safe to ignore
   }
 }

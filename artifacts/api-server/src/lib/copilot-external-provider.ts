@@ -94,7 +94,8 @@ export function isExternalCopilotConfigured(model?: string): boolean {
   if (!model) {
     return (
       getProviderKeys("nvidia").length > 0 ||
-      getProviderKeys("ollama").length > 0
+      getProviderKeys("ollama").length > 0 ||
+      getProviderKeys("groq").length > 0
     );
   }
   const provider = getCopilotProvider(model);
@@ -136,7 +137,7 @@ export function getExternalCopilotKeyCount(
 
 function shouldRotateKey(error: unknown, signal?: AbortSignal): boolean {
   if (signal?.aborted) return false;
-  if (!(error instanceof ExternalCopilotError)) return true;
+  if (!(error instanceof ExternalCopilotError)) return false;
   return error.retryable || error.status === 401 || error.status === 403;
 }
 
@@ -636,7 +637,12 @@ async function* streamOpenAiCompatibleWithKey(
   >();
   for await (const data of readSseData(response)) {
     if (data === "[DONE]") break;
-    const event = JSON.parse(data);
+    let event: any;
+    try {
+      event = JSON.parse(data);
+    } catch {
+      continue;
+    }
     if (event?.error) {
       throw new ExternalCopilotError(
         String(event.error?.message ?? event.error),
@@ -690,6 +696,6 @@ export function streamExternalCopilot(
   }
   throw new ExternalCopilotError(
     `Unsupported external Copilot model: ${params.model}`,
-    { provider: "ollama" },
+    { provider: "nvidia" },
   );
 }
