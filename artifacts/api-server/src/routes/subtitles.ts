@@ -1363,11 +1363,17 @@ async function generateWithPreferredModels(
 
   let lastErr: unknown;
   const hasAvailableKey = clients.some(({ apiKey }) => !apiKey || !isKeyCooledDown(apiKey));
+  const initiallyCooledKeys = new Set(
+    clients.flatMap(({ apiKey }) => apiKey && isKeyCooledDown(apiKey) ? [apiKey] : []),
+  );
   for (const model of models) {
     for (let offset = 0; offset < clients.length; offset++) {
       const i = offset;
       const { client, keyLabel, apiKey } = clients[i];
-      if (apiKey && hasAvailableKey && isKeyCooledDown(apiKey)) {
+      // Only honor cooldowns that existed before this request. A 503 from the
+      // primary model may cool a key, but that same key must still be tried on
+      // the next model because provider demand is often model-specific.
+      if (apiKey && hasAvailableKey && initiallyCooledKeys.has(apiKey)) {
         logger.info({ keyLabel, label }, `${label} skipping cooled-down Gemini key`);
         continue;
       }
@@ -1422,12 +1428,15 @@ async function generateWithKeyRotation(
 
   let lastErr: unknown;
   const hasAvailableKey = apiKeys.length === 0 || apiKeys.some((apiKey) => !isKeyCooledDown(apiKey));
+  const initiallyCooledKeys = new Set(apiKeys.filter((apiKey) => isKeyCooledDown(apiKey)));
   // Outer loop: model. Inner loop: key.
   for (const model of KEY_ROTATION_MODELS) {
     for (let offset = 0; offset < clients.length; offset++) {
       const i = offset;
       const keyLabel = `key ${i + 1}`;
-      if (apiKeys[i] && hasAvailableKey && isKeyCooledDown(apiKeys[i])) {
+      // Do not let failures recorded for the primary model during this request
+      // suppress the alternate-model attempt on every key.
+      if (apiKeys[i] && hasAvailableKey && initiallyCooledKeys.has(apiKeys[i])) {
         logger.info({ model, keyLabel, label }, `${label} skipping cooled-down Gemini key`);
         continue;
       }
