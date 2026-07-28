@@ -1158,6 +1158,25 @@ undeployed. It creates/plans project records, while its Phase 2 execution runner
 cancellation are explicitly not implemented; deploying it now would create projects
 that never execute clips.
 
+### Super Agent subtitle canvas-stream fix — 2026-07-28 IST
+
+A mobile production recording showed the hidden `<canvas>` protocol and SRT body
+streaming directly into visible chat. The exact cause was a regression from commit
+`13cc806a`: its partial-token protection retained `<can` + `vas`, but no longer retained
+a complete `<canvas` token while attributes and the closing `>` arrived in later stream
+chunks. Conflicting older prompt lines also still encouraged canvas output for long
+subtitles despite the newer fenced-SRT rule.
+
+Commit `01d0bd8` restores full incomplete-opening-tag buffering, discards malformed
+unfinished hidden tags at end-of-stream, and makes every subtitle instruction require a
+normal labelled `srt`/`vtt` Markdown fence. The client continues to promote subtitle
+blocks with more than five cues into its downloadable canvas UI. Regression coverage
+replays the recording's exact four-part opening sequence (`<canvas`, title, language,
+then `>`) and requires zero hidden markup to reach chat. API tests, typecheck, build, and
+deployment run `30372212042` passed. A target-only authenticated live Ultra request
+returned all six requested cues in a labelled SRT fence, with zero canvas protocol or
+error events; the client policy classified it as SRT and promoted it.
+
 ### GitHub deployment security
 
 - GitHub OIDC role `ytgrabber-green-gha-deployer` no longer has
