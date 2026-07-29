@@ -3039,7 +3039,9 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
+  "newtabstudio",
   "help",
   "activity",
   "admin",
@@ -4378,6 +4380,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -5403,16 +5410,7 @@ router.get("/agent/skills", (_req, res) => {
 function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
-    const host = u.hostname.toLowerCase();
-    return (
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+    return isInternalHost(u.hostname);
   } catch {
     return true;
   }
@@ -6470,14 +6468,7 @@ router.post("/agent/chat", async (req, res) => {
   } finally {
     clearInterval(keepAlive);
     if (!runCompleted) {
-      // LA-2 fix: Await job cancellation when the client disconnected.
-      // The previous fire-and-forget pattern risked Lambda freezing before
-      // cancels reached the internal API.
-      if (clientConnected) {
-        void cancelAgentRunJobs(req, "agent_error");
-      } else {
-        await cancelAgentRunJobs(req, "client_abort").catch(() => {});
-      }
+      await cancelAgentRunJobs(req, clientConnected ? "agent_error" : "client_abort").catch(() => {});
     }
     if (!res.writableEnded) res.end();
   }
