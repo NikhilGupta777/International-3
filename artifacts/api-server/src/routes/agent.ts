@@ -712,7 +712,7 @@ const STUDIO_TOOLS: any[] = [
         tab: {
           type: Type.STRING,
           description:
-            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
+            "Tab name: 'home', 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator', 'heygen', 'findvideo', 'thumbnail', 'content-manager', 'videostudio', 'help', 'activity', 'admin', 'developer', 'api-docs', 'settings'",
         },
       },
       required: ["tab"],
@@ -3039,6 +3039,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3464,6 +3465,8 @@ async function executeTool(
           url: args.url,
           language: args.language,
           translateTo: args.translateTo,
+          srt: final.srt ?? null,
+          originalSrt: final.originalSrt ?? null,
         },
         artifact: {
           artifactType: "tab_link",
@@ -4378,6 +4381,8 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab))
+        throw new Error(`Unknown tab "${tab}". Valid tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`);
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -6474,7 +6479,7 @@ router.post("/agent/chat", async (req, res) => {
       // The previous fire-and-forget pattern risked Lambda freezing before
       // cancels reached the internal API.
       if (clientConnected) {
-        void cancelAgentRunJobs(req, "agent_error");
+        await cancelAgentRunJobs(req, "agent_error").catch(() => {});
       } else {
         await cancelAgentRunJobs(req, "client_abort").catch(() => {});
       }
