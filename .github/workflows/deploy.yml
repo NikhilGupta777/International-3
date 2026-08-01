@@ -900,6 +900,36 @@ jobs:
           if ($vars["UPLOADS_TABLE_KEY"] -eq "jobId") {
             $vars.Remove("UPLOADS_TABLE_KEY")
           }
+          # Lambda counts the encrypted environment payload toward a strict
+          # 4 KiB limit. Remove values that are identical to application
+          # defaults; the guarded comparison preserves any intentional
+          # production override.
+          $applicationDefaults = @{
+            COPILOT_GEMINI_HELPER_MODEL = "gemini-3.5-flash"
+            HEYGEN_REQUEST_TIMEOUT_MS = "60000"
+            HEYGEN_UPLOAD_MAX_BYTES = "5242880"
+            LAMBDA_CLIP_COMMAND_TIMEOUT_MS = "840000"
+            LAMBDA_CLIP_COMPLETION_RESERVE_MS = "120000"
+            LAMBDA_CLIP_HANDOFF_NO_PROGRESS_MS = "120000"
+            LAMBDA_CLIP_HANDOFF_SAMPLE_MS = "75000"
+            LAMBDA_CLIP_SAFE_BUDGET_MS = "660000"
+            LAMBDA_CLIP_STALL_TIMEOUT_MS = "180000"
+            LOGIN_BLOCK_MS = "900000"
+            LOGIN_MAX_FAILURES = "5"
+            LOGIN_RATE_WINDOW_MS = "900000"
+            MAX_CONCURRENT_CLIP_JOBS = "3"
+            PORT = "8080"
+            TRUST_PROXY_HOPS = "1"
+            VIDEO_EDITOR_FARGATE_THRESHOLD_SEC = "600"
+            YTDLP_MAX_DOWNLOAD_ATTEMPTS = "4"
+            GOOGLE_CLOUD_LOCATION = "global"
+            GOOGLE_GENAI_USE_VERTEXAI = "false"
+          }
+          foreach ($entry in $applicationDefaults.GetEnumerator()) {
+            if ($vars[$entry.Key] -eq $entry.Value) {
+              $vars.Remove($entry.Key)
+            }
+          }
           $providerSecrets = @{
             MISTRAL_API_KEY = $env:MISTRAL_API_KEY_SECRET
             SAMBANOVA_API_KEY = $env:SAMBANOVA_API_KEY_SECRET
