@@ -2560,6 +2560,7 @@ export function StudioCopilot({
 }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const sessionsRef = useRef<ChatSession[]>([]);
+  const sessionsLoadedRef = useRef(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
 
@@ -2995,11 +2996,12 @@ export function StudioCopilot({
         if (parsed?.text) setReconnectBanner(parsed.text);
       }
     } catch { /* ignore storage errors */ }
+    sessionsLoadedRef.current = true;
   }, []);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (sessions.length === 0) return;
+    if (!sessionsLoadedRef.current) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => saveSessions(sessions), 500);
     return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
@@ -3722,6 +3724,7 @@ export function StudioCopilot({
         setStreaming(false);
         setThinking(false);
         setAgentStage("idle");
+        setThoughtText(""); setThoughtLabel("");
         streamingAssistantIdRef.current = null;
       }
     }
@@ -3823,6 +3826,7 @@ export function StudioCopilot({
     }
     streamingAssistantIdRef.current = null;
     setStreaming(false); setThinking(false); setAgentStage("idle"); setAgentIteration(0);
+    setThoughtText(""); setThoughtLabel("");
   };
 
   // Cleanup: abort any in-flight stream and stop speech recognition on unmount
@@ -3994,6 +3998,7 @@ export function StudioCopilot({
         currentSessionId={currentSessionId}
         onClose={() => setShowHistory(false)}
         onPickSession={(id) => {
+          if (streaming) return;
           if (editingMessageId) {
             branchFromMessageIdRef.current = null;
             setEditingMessageId(null);
@@ -4002,6 +4007,8 @@ export function StudioCopilot({
           }
           setCurrentSessionId(id);
           sessionIdRef.current = id;
+          setThoughtText("");
+          setThoughtLabel("");
           setShowHistory(false);
         }}
         onDeleteSession={(id, e) => handleDeleteSession(id, e)}

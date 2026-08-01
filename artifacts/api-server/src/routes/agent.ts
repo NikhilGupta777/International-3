@@ -2719,6 +2719,7 @@ async function readResponseTextWithLimit(
 ): Promise<string> {
   const sizeHeader = response.headers.get("content-length");
   if (sizeHeader && Number(sizeHeader) > limitBytes) {
+    await response.body?.cancel().catch(() => {});
     throw new Error(
       `Response too large (${sizeHeader} bytes, limit ${limitBytes} bytes).`,
     );
@@ -2729,18 +2730,23 @@ async function readResponseTextWithLimit(
   const decoder = new TextDecoder();
   let totalBytes = 0;
   let text = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    totalBytes += value.byteLength;
-    if (totalBytes > limitBytes) {
-      abort?.abort();
-      throw new Error(`Response exceeds size limit of ${limitBytes} bytes.`);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > limitBytes) {
+        abort?.abort();
+        throw new Error(`Response exceeds size limit of ${limitBytes} bytes.`);
+      }
+      text += decoder.decode(value, { stream: true });
     }
-    text += decoder.decode(value, { stream: true });
+    text += decoder.decode();
+    return text;
+  } catch (err) {
+    await reader.cancel().catch(() => {});
+    throw err;
   }
-  text += decoder.decode();
-  return text;
 }
 
 async function readAttachmentText(
@@ -2776,6 +2782,7 @@ async function readAttachmentText(
     if (!r.ok) throw new Error(`Could not read uploaded file: ${r.status}`);
     const contentType = r.headers.get("content-type") ?? attachment.mimeType;
     if (contentType.includes("pdf")) {
+      await r.body?.cancel().catch(() => {});
       return {
         content: `[PDF attachment: ${url}]`,
         name: attachment.name,
@@ -3039,6 +3046,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3812,9 +3820,10 @@ async function executeTool(
       });
       const language = args.language ?? DEFAULT_CAPTION_LANGUAGE;
       const downloadUrl = `/api/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`;
+      const captionAbort = new AbortController();
       const r = await fetch(
         `${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`,
-        { headers: internalHeaders },
+        { headers: internalHeaders, signal: captionAbort.signal },
       );
       // Keep the complete fetched SRT in model context. The byte guard protects
       // the Lambda from an unbounded upstream response; it must never silently
@@ -3823,7 +3832,7 @@ async function executeTool(
       const rawText = await readResponseTextWithLimit(
         r,
         MAX_CAPTION_BYTES,
-        new AbortController(),
+        captionAbort,
       );
       const content = rawText;
       if (!r.ok) {

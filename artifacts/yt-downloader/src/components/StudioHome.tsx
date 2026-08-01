@@ -235,11 +235,14 @@ export function StudioHome({
     }
     const rec = new SR();
     rec.continuous = false;
-    rec.interimResults = true;
+    rec.interimResults = false;
     rec.lang = navigator.language || "en-US";
     rec.onresult = (e: any) => {
       let chunk = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) chunk += e.results[i][0].transcript;
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) chunk += e.results[i][0].transcript;
+      }
+      if (!chunk) return;
       setText(prev => (prev + (prev && !prev.endsWith(" ") ? " " : "") + chunk).trimStart());
       resizeTextarea();
     };
