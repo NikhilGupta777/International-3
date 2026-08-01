@@ -225,10 +225,10 @@ Parameters:
     Default: ""
   CopilotUltraModel:
     Type: String
-    Default: "mistral:mistral-medium-latest"
+    Default: "ollama:gpt-oss:120b"
   CopilotFastModel:
     Type: String
-    Default: "mistral:mistral-small-latest"
+    Default: "ollama:gpt-oss:120b"
   CopilotUltraMaxOutputTokens:
     Type: String
     Default: "60000"

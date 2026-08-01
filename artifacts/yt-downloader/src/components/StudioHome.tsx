@@ -199,7 +199,7 @@ export function StudioHome({
       localStorage.setItem(ULTRA_KEY, next ? "1" : "0");
       localStorage.setItem(
         REASONING_KEY,
-        next ? "mistral:mistral-medium-latest" : "mistral:mistral-small-latest",
+        next ? "ultra" : "fast",
       );
     } catch { }
   };

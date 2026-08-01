@@ -94,6 +94,7 @@ type AdminOverview = {
     month: TokenRollup;
     todayByMode: { ultra: TokenRollup; fast: TokenRollup };
     todayByModel: Record<string, TokenRollup>;
+    todayByProvider: Record<string, TokenRollup>;
     last7Days: Array<TokenRollup & { day: string }>;
   };
   alerts: Array<{ level: "info" | "warning" | "critical"; title: string; detail: string }>;
@@ -167,6 +168,8 @@ type AdminOverview = {
 
 type TokenRollup = {
   calls: number;
+  failedCalls: number;
+  timedOutCalls: number;
   usageUnavailable: number;
   inputTokens: number;
   outputTokens: number;
@@ -831,6 +834,8 @@ export function AdminPanel() {
             <Stat icon={<UploadCloud className="w-4 h-4" />} label="Output today" value={formatTokens(overview?.copilotUsage?.today.outputTokens)} />
             <Stat icon={<Activity className="w-4 h-4" />} label="Tokens this month" value={formatTokens(overview?.copilotUsage?.month.totalTokens)} />
             <Stat icon={<Bot className="w-4 h-4" />} label="Calls today" value={overview?.copilotUsage?.today.calls ?? 0} />
+            <Stat icon={<XCircle className="w-4 h-4" />} label="Failed calls" value={overview?.copilotUsage?.today.failedCalls ?? 0} tone={(overview?.copilotUsage?.today.failedCalls ?? 0) > 0 ? "warn" : "good"} />
+            <Stat icon={<Clock className="w-4 h-4" />} label="Timed out" value={overview?.copilotUsage?.today.timedOutCalls ?? 0} tone={(overview?.copilotUsage?.today.timedOutCalls ?? 0) > 0 ? "warn" : "good"} />
             <Stat icon={<Sparkles className="w-4 h-4" />} label="Ultra today" value={formatTokens(overview?.copilotUsage?.todayByMode.ultra.totalTokens)} />
             <Stat icon={<Gauge className="w-4 h-4" />} label="Fast today" value={formatTokens(overview?.copilotUsage?.todayByMode.fast.totalTokens)} />
             <Stat
@@ -848,6 +853,32 @@ export function AdminPanel() {
                 <Stat key={day.day} icon={<Activity className="w-4 h-4" />} label={day.day.slice(5)} value={formatTokens(day.totalTokens)} detail={`${day.calls} calls`} />
               ))}
             </div>
+          ) : null}
+          {Object.values(overview?.copilotUsage?.todayByModel ?? {}).some((usage) => usage.calls > 0) ? (
+            <>
+              <div className="admin-section-title admin-section-title--sub">Today by model</div>
+              <div className="admin-stats">
+                {Object.entries(overview!.copilotUsage!.todayByModel)
+                  .filter(([, usage]) => usage.calls > 0)
+                  .sort(([, a], [, b]) => b.totalTokens - a.totalTokens)
+                  .map(([model, usage]) => (
+                    <Stat key={model} icon={<Bot className="w-4 h-4" />} label={model} value={formatTokens(usage.totalTokens)} detail={`${usage.calls} calls · ${usage.failedCalls} failed`} />
+                  ))}
+              </div>
+            </>
+          ) : null}
+          {Object.values(overview?.copilotUsage?.todayByProvider ?? {}).some((usage) => usage.calls > 0) ? (
+            <>
+              <div className="admin-section-title admin-section-title--sub">Today by provider</div>
+              <div className="admin-stats">
+                {Object.entries(overview!.copilotUsage!.todayByProvider)
+                  .filter(([, usage]) => usage.calls > 0)
+                  .sort(([, a], [, b]) => b.totalTokens - a.totalTokens)
+                  .map(([provider, usage]) => (
+                    <Stat key={provider} icon={<Activity className="w-4 h-4" />} label={provider} value={formatTokens(usage.totalTokens)} detail={`${usage.calls} calls · ${usage.failedCalls} failed`} />
+                  ))}
+              </div>
+            </>
           ) : null}
         </Section>
 

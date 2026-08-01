@@ -211,15 +211,22 @@ test("NVIDIA omits tool_choice when a request has no tools", async () => {
 });
 
 test("public modes put proven long-context routes before short-context fallbacks", () => {
+  assert.equal(provider.COPILOT_ULTRA_MODEL, "ollama:gpt-oss:120b");
+  assert.equal(provider.COPILOT_FAST_MODEL, "ollama:gpt-oss:120b");
   const ultra = provider.getCopilotFallbackModels(provider.COPILOT_ULTRA_MODEL);
   const fast = provider.getCopilotFallbackModels(provider.COPILOT_FAST_MODEL);
   assert.deepEqual(ultra.slice(0, 4), [
     "mistral:mistral-small-latest",
-    "sambanova:gpt-oss-120b",
-    "ollama:gpt-oss:120b",
-    "nvidia:nvidia/nemotron-3-super-120b-a12b",
+    "mistral:mistral-medium-latest",
+    "mistral:devstral-latest",
+    "mistral:mistral-large-latest",
   ]);
-  assert.equal(fast[0], "mistral:mistral-medium-latest");
+  assert.deepEqual(fast.slice(0, 4), [
+    "mistral:mistral-small-latest",
+    "mistral:mistral-medium-latest",
+    "mistral:devstral-latest",
+    "mistral:mistral-large-latest",
+  ]);
   assert.ok(ultra.indexOf("groq:llama-3.3-70b-versatile") > ultra.indexOf("nvidia:openai/gpt-oss-120b"));
   assert.equal(ultra.includes("z-ai/glm-5.2"), false);
 });

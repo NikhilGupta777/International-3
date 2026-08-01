@@ -1,9 +1,9 @@
 import { randomUUID } from "crypto";
 
 export const COPILOT_ULTRA_MODEL =
-  process.env.COPILOT_ULTRA_MODEL?.trim() || "mistral:mistral-medium-latest";
+  process.env.COPILOT_ULTRA_MODEL?.trim() || "ollama:gpt-oss:120b";
 export const COPILOT_FAST_MODEL =
-  process.env.COPILOT_FAST_MODEL?.trim() || "mistral:mistral-small-latest";
+  process.env.COPILOT_FAST_MODEL?.trim() || "ollama:gpt-oss:120b";
 export const COPILOT_ULTRA_FALLBACK_MODEL = "gpt-oss:120b";
 export const NVIDIA_NEMOTRON_ULTRA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
 export const NVIDIA_NEMOTRON_SUPER_MODEL = "nvidia/nemotron-3-super-120b-a12b";
@@ -13,13 +13,13 @@ export type ExternalProvider =
   | "openrouter" | "aion" | "kilo";
 
 const LONG_CONTEXT_MODELS = [
-  "mistral:mistral-medium-latest",
-  "mistral:mistral-small-latest",
-  "sambanova:gpt-oss-120b",
   "ollama:gpt-oss:120b",
-  "nvidia:nvidia/nemotron-3-super-120b-a12b",
-  "mistral:mistral-large-latest",
+  "mistral:mistral-small-latest",
+  "mistral:mistral-medium-latest",
   "mistral:devstral-latest",
+  "mistral:mistral-large-latest",
+  "sambanova:gpt-oss-120b",
+  "nvidia:nvidia/nemotron-3-super-120b-a12b",
   "nvidia:openai/gpt-oss-120b",
 ] as const;
 
@@ -122,9 +122,11 @@ export function getCopilotProvider(model: string): ExternalProvider | null {
 
 export function getCopilotFallbackModels(model: string): string[] {
   if (model === COPILOT_ULTRA_MODEL || model === COPILOT_FAST_MODEL) {
-    const preferred = model === COPILOT_FAST_MODEL
-      ? ["mistral:mistral-small-latest", "mistral:mistral-medium-latest"]
-      : ["mistral:mistral-medium-latest", "mistral:mistral-small-latest"];
+    const preferred = [
+      "ollama:gpt-oss:120b",
+      "mistral:mistral-small-latest",
+      "mistral:mistral-medium-latest",
+    ];
     return [...new Set([...preferred, ...COPILOT_FALLBACK_MODELS])]
       .filter((candidate) => candidate !== model);
   }

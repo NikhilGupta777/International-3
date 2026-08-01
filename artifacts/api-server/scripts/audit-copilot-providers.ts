@@ -19,6 +19,7 @@ const tool = {
     },
   }],
 };
+let unhealthyRoutes = 0;
 
 for (const model of routes) {
   if (!isExternalCopilotConfigured(model)) {
@@ -50,12 +51,15 @@ for (const model of routes) {
         outputTokens = Number(chunk.usageMetadata.candidatesTokenCount ?? 0);
       }
     }
+    const status = toolName === "lookup_video" && query === "cats" ? "pass" : "fail";
+    if (status !== "pass") unhealthyRoutes++;
     console.log(JSON.stringify({
       model, provider: getCopilotProvider(model),
-      status: toolName === "lookup_video" && query === "cats" ? "pass" : "fail",
+      status,
       durationMs: Date.now() - startedAt, toolName, query, inputTokens, outputTokens,
     }));
   } catch (error: any) {
+    unhealthyRoutes++;
     console.log(JSON.stringify({
       model, provider: getCopilotProvider(model), status: "error",
       durationMs: Date.now() - startedAt,
@@ -65,3 +69,5 @@ for (const model of routes) {
     clearTimeout(timeout);
   }
 }
+
+if (unhealthyRoutes > 0) process.exitCode = 1;

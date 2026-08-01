@@ -349,10 +349,16 @@ export async function generateContentWithRotation(
   const startedAt = Date.now();
   if (isVertexGeminiEnabled()) {
     const client = createGeminiClient(options);
-    const result = await client.models.generateContent(params);
-    const { recordCopilotHelperUsage } = await import("./copilot-usage");
-    await recordCopilotHelperUsage({ provider: "vertex-gemini", model: params.model, operation: options.caller ?? "gemini-helper", startedAt, metadata: result?.usageMetadata }).catch(() => {});
-    return result;
+    try {
+      const result = await client.models.generateContent(params);
+      const { recordCopilotHelperUsage } = await import("./copilot-usage");
+      await recordCopilotHelperUsage({ provider: "vertex-gemini", model: params.model, operation: options.caller ?? "gemini-helper", startedAt, metadata: result?.usageMetadata }).catch(() => {});
+      return result;
+    } catch (error) {
+      const { recordCopilotHelperUsage } = await import("./copilot-usage");
+      await recordCopilotHelperUsage({ provider: "vertex-gemini", model: params.model, operation: options.caller ?? "gemini-helper", startedAt, metadata: null, outcome: "error" }).catch(() => {});
+      throw error;
+    }
   }
 
   const keys = getPersonalKeysForCaller(options.caller);
@@ -367,6 +373,7 @@ export async function generateContentWithRotation(
   for (const model of models) {
     for (let keyAttempt = 0; keyAttempt < Math.min(keys.length, 13); keyAttempt++) {
       attempt++;
+      const attemptStartedAt = Date.now();
       const apiKey = getGeminiApiKeyForAttempt(options.caller, keyAttempt);
 
       const baseKeys = getPersonalGeminiApiKeysList();
@@ -381,9 +388,11 @@ export async function generateContentWithRotation(
           config: params.config,
         });
         const { recordCopilotHelperUsage } = await import("./copilot-usage");
-        await recordCopilotHelperUsage({ provider: "gemini", model, operation: options.caller ?? "gemini-helper", startedAt, metadata: result?.usageMetadata }).catch(() => {});
+        await recordCopilotHelperUsage({ provider: "gemini", model, operation: options.caller ?? "gemini-helper", startedAt: attemptStartedAt, metadata: result?.usageMetadata }).catch(() => {});
         return result;
       } catch (err: any) {
+        const { recordCopilotHelperUsage } = await import("./copilot-usage");
+        await recordCopilotHelperUsage({ provider: "gemini", model, operation: options.caller ?? "gemini-helper", startedAt: attemptStartedAt, metadata: null, outcome: "error" }).catch(() => {});
         lastErr = err;
         const errMsg = err?.message ?? String(err);
         const shouldRetry = isRetryableGeminiError(err);

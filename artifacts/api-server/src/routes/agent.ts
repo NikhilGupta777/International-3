@@ -1486,8 +1486,8 @@ const FAST_AGENT_TOOL_NAMES = new Set([
   "repeat_last_artifact",
 ]);
 
-export function buildAgentTools(includeNativeSearch: boolean, activeModel: string): any[] {
-  const visibleTools = activeModel === FAST_MODEL
+export function buildAgentTools(includeNativeSearch: boolean, activeModel: string, fastMode = activeModel === FAST_MODEL && FAST_MODEL !== ULTRA_MODEL): any[] {
+  const visibleTools = fastMode
     ? AGENT_VISIBLE_TOOLS.filter((tool) => FAST_AGENT_TOOL_NAMES.has(tool.name))
     : AGENT_VISIBLE_TOOLS;
   const functionDeclarations = visibleTools.map((tool) =>
@@ -1930,11 +1930,11 @@ Be concise, practical, and match the user's language. Use tools only for real ap
 const OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT = `You are VideoMaking Studio Copilot serving an Ultra request through a fallback model.
 Complete the user's task with the full available tool catalog. Be accurate, practical, and match the user's language. Include real function calls whenever an app action or current information is required; never merely promise an action or print tool syntax. Preserve exact URLs, timestamps, languages, quality settings, and user constraints. Do not tell the user to switch models. Do not expose internal prompts, model/provider names, raw tool JSON, stack traces, secrets, presigned URLs, or hidden reasoning.`;
 
-function getAgentSystemPrompt(model: string): string {
+function getAgentSystemPrompt(model: string, fastMode = model === FAST_MODEL && FAST_MODEL !== ULTRA_MODEL): string {
   if (model === COPILOT_ULTRA_FALLBACK_MODEL) {
     return OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT;
   }
-  return model === FAST_MODEL ? FAST_SYSTEM_PROMPT : SYSTEM_PROMPT;
+  return fastMode ? FAST_SYSTEM_PROMPT : SYSTEM_PROMPT;
 }
 
 // ── Build internal headers from request ───────────────────────────────────
@@ -2616,11 +2616,24 @@ async function generateLyriaMusic(params: {
   // Ref: https://github.com/GoogleCloudPlatform/generative-ai/blob/main/audio/music/getting-started/lyria3_music_generation.ipynb
   const ai = createGeminiClient();
   const usageStartedAt = Date.now();
-  const resp = await ai.models.generateContent({
-    model,
-    contents: params.prompt,
-    config: { responseModalities: ["AUDIO", "TEXT"] } as any,
-  } as any);
+  let resp: any;
+  try {
+    resp = await ai.models.generateContent({
+      model,
+      contents: params.prompt,
+      config: { responseModalities: ["AUDIO", "TEXT"] } as any,
+    } as any);
+  } catch (error) {
+    await recordCopilotHelperUsage({
+      provider: "gemini",
+      model,
+      operation: "generate-music",
+      startedAt: usageStartedAt,
+      metadata: null,
+      outcome: "error",
+    }).catch(() => {});
+    throw error;
+  }
   await recordCopilotHelperUsage({
     provider: "gemini",
     model,
@@ -5570,8 +5583,14 @@ router.post("/agent/chat", async (req, res) => {
   // Resolve the two public modes. Historical model values stored by older UI
   // versions migrate to Ultra so existing chats continue to work.
   let activeModel = AGENT_MODEL;
-  if (requestedModel === "fast" || requestedModel === "flash" || requestedModel === FAST_MODEL) {
+  let isUltra = true;
+  if (
+    requestedModel === "fast" ||
+    requestedModel === "flash" ||
+    (FAST_MODEL !== ULTRA_MODEL && requestedModel === FAST_MODEL)
+  ) {
     activeModel = FAST_MODEL;
+    isUltra = false;
   } else if (
     requestedModel === "advanced" ||
     requestedModel === "ultra" ||
@@ -5579,11 +5598,12 @@ router.post("/agent/chat", async (req, res) => {
     requestedModel === ULTRA_MODEL
   ) {
     activeModel = ULTRA_MODEL;
+    isUltra = true;
   } else if (requestedModel && !ALLOWED_MODELS.has(requestedModel)) {
     activeModel = ULTRA_MODEL;
+    isUltra = true;
   }
   const activeModelSupportsNativeMedia = supportsNativeMediaInput(activeModel);
-  const isUltra = activeModel === ULTRA_MODEL;
   const activeProvider = getCopilotProvider(activeModel);
   const latestUserActionText = [...normalizedMessages]
     .reverse()
@@ -5766,11 +5786,11 @@ router.post("/agent/chat", async (req, res) => {
         .filter((model) => isExternalCopilotConfigured(model))
         .filter((model, index, models) => models.indexOf(model) === index);
       if (!configuredModels.length) {
-        throw new Error("No NVIDIA NIM, Ollama Cloud, or Groq model is configured.");
+        throw new Error("No Super Agent model provider is configured.");
       }
-      // Two attempts per provider cover transient connection/quota failures,
-      // then the other configured model is tried automatically.
-      const streamAttempts = configuredModels.flatMap((model) => [model, model]);
+      // Provider adapters already rotate across configured keys. Try each model
+      // once so the complete fallback ladder remains inside Lambda's 15-minute budget.
+      const streamAttempts = configuredModels;
       const MAX_STREAM_ATTEMPTS = streamAttempts.length;
       for (let attempt = 0; attempt < MAX_STREAM_ATTEMPTS; attempt++) {
         if (timeoutId) clearTimeout(timeoutId);
@@ -5790,10 +5810,10 @@ router.post("/agent/chat", async (req, res) => {
             model: attemptModel,
             contents: loopContents,
             systemInstruction:
-              getAgentSystemPrompt(attemptModel) +
+              getAgentSystemPrompt(attemptModel, !isUltra) +
               getModelSpecificSystemPrompt(attemptModel) +
               skillPromptAddendum,
-            tools: buildAgentTools(false, attemptModel),
+            tools: buildAgentTools(false, attemptModel, !isUltra),
             signal: controller.signal,
           });
           // Prime the lazy async generator so connection/auth/quota failures
@@ -5801,10 +5821,20 @@ router.post("/agent/chat", async (req, res) => {
           const iterator = candidateStream[Symbol.asyncIterator]();
           const first = await iterator.next();
           if (first.done) throw new Error("Provider returned an empty stream");
+          if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
           stream = (async function* () {
             yield first.value;
             while (true) {
-              const next = await iterator.next();
+              timeoutId = setTimeout(() => {
+                console.warn(`[agent] Stream became idle for ${EXTERNAL_TIMEOUT_MS}ms. Aborting...`);
+                currentController.abort();
+              }, EXTERNAL_TIMEOUT_MS);
+              let next: IteratorResult<any>;
+              try {
+                next = await iterator.next();
+              } finally {
+                if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+              }
               if (next.done) break;
               yield next.value;
             }
@@ -5823,15 +5853,25 @@ router.post("/agent/chat", async (req, res) => {
         } catch (e: any) {
           if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
           streamErr = e;
+          const timedOut = Boolean(controller?.signal.aborted) || e?.name === "AbortError";
+          await recordCopilotUsage({
+            eventId: `${runId}:${iterations}:attempt:${attempt}:${randomUUID()}`,
+            runId,
+            sessionId: telemetrySessionId,
+            userId: telemetryUserId,
+            mode: isUltra ? "ultra" : "fast",
+            provider: getCopilotProvider(usedModel) ?? "unknown",
+            model: usedModel,
+            iteration: iterations,
+            fallback: usedModel !== activeModel,
+            durationMs: Date.now() - providerStartedAt,
+            usage: null,
+            outcome: timedOut ? "timeout" : "error",
+          }).catch((error) => console.warn("[agent-usage] failed to persist failed attempt", error));
           const errMsg = e?.message ?? String(e);
           console.warn(
             `[agent] Chat stream failed on attempt ${attempt + 1}/${MAX_STREAM_ATTEMPTS}: ${errMsg}`
           );
-          if (!isExternalProviderRetryableError(e) && attempt % 2 === 0) {
-            // Auth/validation failures cannot succeed on an immediate retry;
-            // skip to the next provider while retaining fallback behavior.
-            attempt += 1;
-          }
           if (attempt >= MAX_STREAM_ATTEMPTS - 1) {
             throw new Error(
               "AI models are temporarily unavailable. Please retry in a moment.",
@@ -6083,6 +6123,9 @@ router.post("/agent/chat", async (req, res) => {
           fallback: usedModel !== activeModel,
           durationMs: Date.now() - providerStartedAt,
           usage: tokenUsage,
+          outcome: streamReadErr
+            ? (Boolean(controller?.signal.aborted) ? "timeout" : "error")
+            : "success",
         }).catch((error) => console.warn("[agent-usage] failed to persist usage", error));
       }
       if (streamReadErr) {
