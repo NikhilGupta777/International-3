@@ -1,17 +1,67 @@
 import { randomUUID } from "crypto";
 
 export const COPILOT_ULTRA_MODEL =
-  process.env.COPILOT_ULTRA_MODEL?.trim() || "z-ai/glm-5.2";
+  process.env.COPILOT_ULTRA_MODEL?.trim() || "mistral:mistral-medium-latest";
 export const COPILOT_FAST_MODEL =
-  process.env.COPILOT_FAST_MODEL?.trim() || "openai/gpt-oss-120b";
+  process.env.COPILOT_FAST_MODEL?.trim() || "mistral:mistral-small-latest";
 export const COPILOT_ULTRA_FALLBACK_MODEL = "gpt-oss:120b";
 export const NVIDIA_NEMOTRON_ULTRA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
 export const NVIDIA_NEMOTRON_SUPER_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 
-export type ExternalProvider = "nvidia" | "ollama" | "groq";
+export type ExternalProvider =
+  | "nvidia" | "ollama" | "groq" | "mistral" | "sambanova"
+  | "openrouter" | "aion" | "kilo";
+
+const LONG_CONTEXT_MODELS = [
+  "mistral:mistral-medium-latest",
+  "mistral:mistral-small-latest",
+  "sambanova:gpt-oss-120b",
+  "ollama:gpt-oss:120b",
+  "nvidia:nvidia/nemotron-3-super-120b-a12b",
+  "mistral:mistral-large-latest",
+  "mistral:devstral-latest",
+  "nvidia:openai/gpt-oss-120b",
+] as const;
+
+const SHORT_CONTEXT_MODELS = [
+  "groq:llama-3.3-70b-versatile",
+  "groq:qwen/qwen3.6-27b",
+  "groq:openai/gpt-oss-120b",
+  "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
+  "kilo:kilo-auto/free",
+  "openrouter:qwen/qwen3.6-27b",
+  "openrouter:moonshotai/kimi-k2.6",
+  "aion:aion-labs/aion-2.5",
+  "sambanova:DeepSeek-V3.2",
+  "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
+] as const;
+
+export const COPILOT_FALLBACK_MODELS = [
+  ...LONG_CONTEXT_MODELS,
+  ...SHORT_CONTEXT_MODELS,
+] as const;
 
 const PROVIDER_KEY_SLOTS = 4;
 const keyCooldowns = new Map<string, number>();
+
+const providerLabel = (provider: ExternalProvider): string => ({
+  nvidia: "NVIDIA NIM", ollama: "Ollama Cloud", groq: "Groq",
+  mistral: "Mistral", sambanova: "SambaNova", openrouter: "OpenRouter",
+  aion: "AionLabs", kilo: "Kilo Gateway",
+})[provider];
+
+const providerModel = (provider: ExternalProvider, route: string): string =>
+  route.startsWith(`${provider}:`) ? route.slice(provider.length + 1) : route;
+
+const providerUrl = (provider: Exclude<ExternalProvider, "ollama">): string => ({
+  nvidia: process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions",
+  groq: process.env.GROQ_API_URL?.trim() || "https://api.groq.com/openai/v1/chat/completions",
+  mistral: process.env.MISTRAL_API_URL?.trim() || "https://api.mistral.ai/v1/chat/completions",
+  sambanova: process.env.SAMBANOVA_API_URL?.trim() || "https://api.sambanova.ai/v1/chat/completions",
+  openrouter: process.env.OPENROUTER_API_URL?.trim() || "https://openrouter.ai/api/v1/chat/completions",
+  aion: process.env.AION_API_URL?.trim() || "https://api.aionlabs.ai/v1/chat/completions",
+  kilo: process.env.KILO_API_URL?.trim() || "https://api.kilo.ai/api/gateway/v1/chat/completions",
+})[provider];
 
 type StreamExternalCopilotParams = {
   model: string;
@@ -50,10 +100,12 @@ export class ExternalCopilotError extends Error {
 }
 
 export function getCopilotProvider(model: string): ExternalProvider | null {
+  for (const provider of ["mistral", "sambanova", "openrouter", "aion", "kilo", "groq", "nvidia", "ollama"] as const) {
+    if (model.startsWith(`${provider}:`)) return provider;
+  }
   if (
     model === COPILOT_ULTRA_MODEL ||
     model === COPILOT_FAST_MODEL ||
-    model === "z-ai/glm-5.2" ||
     model === "openai/gpt-oss-120b" ||
     model.startsWith("nvidia/")
   ) {
@@ -69,19 +121,12 @@ export function getCopilotProvider(model: string): ExternalProvider | null {
 }
 
 export function getCopilotFallbackModels(model: string): string[] {
-  if (model === COPILOT_ULTRA_MODEL) {
-    return [
-      COPILOT_ULTRA_FALLBACK_MODEL,
-      NVIDIA_NEMOTRON_ULTRA_MODEL,
-      NVIDIA_NEMOTRON_SUPER_MODEL,
-    ];
-  }
-  if (model === COPILOT_FAST_MODEL) {
-    return [
-      COPILOT_ULTRA_FALLBACK_MODEL,
-      NVIDIA_NEMOTRON_SUPER_MODEL,
-      NVIDIA_NEMOTRON_ULTRA_MODEL,
-    ];
+  if (model === COPILOT_ULTRA_MODEL || model === COPILOT_FAST_MODEL) {
+    const preferred = model === COPILOT_FAST_MODEL
+      ? ["mistral:mistral-small-latest", "mistral:mistral-medium-latest"]
+      : ["mistral:mistral-medium-latest", "mistral:mistral-small-latest"];
+    return [...new Set([...preferred, ...COPILOT_FALLBACK_MODELS])]
+      .filter((candidate) => candidate !== model);
   }
   return [];
 }
@@ -92,10 +137,8 @@ export function isExternalCopilotModel(model: string): boolean {
 
 export function isExternalCopilotConfigured(model?: string): boolean {
   if (!model) {
-    return (
-      getProviderKeys("nvidia").length > 0 ||
-      getProviderKeys("ollama").length > 0
-    );
+    return (["mistral", "sambanova", "ollama", "nvidia", "groq", "openrouter", "kilo", "aion"] as ExternalProvider[])
+      .some((provider) => getProviderKeys(provider).length > 0);
   }
   const provider = getCopilotProvider(model);
   if (provider) return getProviderKeys(provider).length > 0;
@@ -103,12 +146,7 @@ export function isExternalCopilotConfigured(model?: string): boolean {
 }
 
 function getProviderKeys(provider: ExternalProvider): string[] {
-  const prefix =
-    provider === "nvidia"
-      ? "NVIDIA_API_KEY"
-      : provider === "ollama"
-        ? "OLLAMA_API_KEY"
-        : "GROQ_API_KEY";
+  const prefix = `${provider.toUpperCase()}_API_KEY`;
   const pooled = process.env[`${prefix}S`]
     ?.split(",")
     .map((value) => value.trim())
@@ -157,7 +195,7 @@ async function* streamWithKeyRotation(
   const keys = getProviderKeys(provider);
   if (!keys.length) {
     throw new ExternalCopilotError(
-      `${provider === "nvidia" ? "NVIDIA NIM" : provider === "ollama" ? "Ollama Cloud" : "Groq"} is not configured`,
+      `${providerLabel(provider)} is not configured`,
       { provider, status: 503 },
     );
   }
@@ -188,7 +226,7 @@ async function* streamWithKeyRotation(
   if (!readyCandidates.length) {
     const retryAfterMs = Math.max(1_000, candidates[0].availableAt - now);
     throw new ExternalCopilotError(
-      `${provider === "nvidia" ? "NVIDIA NIM" : provider === "ollama" ? "Ollama Cloud" : "Groq"} keys are cooling down`,
+      `${providerLabel(provider)} keys are cooling down`,
       {
         provider,
         status: 429,
@@ -275,7 +313,7 @@ async function providerHttpError(
     response.status === 429 ||
     response.status >= 500;
   return new ExternalCopilotError(
-    `${provider === "nvidia" ? "NVIDIA NIM" : provider === "ollama" ? "Ollama Cloud" : "Groq"} request failed (${response.status})${detail ? `: ${detail}` : ""}`,
+    `${providerLabel(provider)} request failed (${response.status})${detail ? `: ${detail}` : ""}`,
     {
       provider,
       status: response.status,
@@ -501,7 +539,7 @@ async function* streamOllamaWithKey(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: params.model,
+          model: providerModel("ollama", params.model),
           messages: [
             { role: "system", content: params.systemInstruction },
             ...normalizeOllamaMessages(params.contents),
@@ -542,6 +580,17 @@ async function* streamOllamaWithKey(
         retryable: true,
       });
     }
+    if (event?.done && (event?.prompt_eval_count != null || event?.eval_count != null)) {
+      const promptTokens = Number(event.prompt_eval_count ?? 0);
+      const completionTokens = Number(event.eval_count ?? 0);
+      yield {
+        usageMetadata: {
+          promptTokenCount: promptTokens,
+          candidatesTokenCount: completionTokens,
+          totalTokenCount: promptTokens + completionTokens,
+        },
+      };
+    }
   }
 }
 
@@ -574,23 +623,22 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
 async function* streamOpenAiCompatibleWithKey(
   params: StreamExternalCopilotParams,
   apiKey: string,
-  provider: "nvidia" | "groq",
+  provider: Exclude<ExternalProvider, "ollama">,
 ): AsyncGenerator<any> {
   const isNvidia = provider === "nvidia";
+  const model = providerModel(provider, params.model);
   const normalizedTools = normalizeTools(params.tools);
   const maxTokens = isNvidia
     ? params.model === COPILOT_ULTRA_MODEL
       ? Number(process.env.COPILOT_ULTRA_MAX_OUTPUT_TOKENS) || 60_000
       : Number(process.env.COPILOT_FAST_MAX_OUTPUT_TOKENS) || 60_000
-    : Number(process.env.COPILOT_FAST_FALLBACK_MAX_OUTPUT_TOKENS) || 1_024;
+    : (["groq", "openrouter", "aion", "kilo"] as ExternalProvider[]).includes(provider)
+      ? Number(process.env.COPILOT_CONSTRAINED_MAX_OUTPUT_TOKENS) || 4_096
+      : Number(process.env.COPILOT_FAST_FALLBACK_MAX_OUTPUT_TOKENS) || 16_384;
   let response: Response;
   try {
     response = await fetch(
-      isNvidia
-        ? process.env.NVIDIA_API_URL?.trim() ||
-            "https://integrate.api.nvidia.com/v1/chat/completions"
-        : process.env.GROQ_API_URL?.trim() ||
-            "https://api.groq.com/openai/v1/chat/completions",
+      providerUrl(provider),
       {
         method: "POST",
         signal: params.signal,
@@ -600,7 +648,7 @@ async function* streamOpenAiCompatibleWithKey(
           Accept: "text/event-stream",
         },
         body: JSON.stringify({
-          model: params.model,
+          model,
           messages: [
             { role: "system", content: params.systemInstruction },
             ...normalizeMessages(params.contents),
@@ -609,8 +657,9 @@ async function* streamOpenAiCompatibleWithKey(
             ? { tools: normalizedTools, tool_choice: "auto" }
             : {}),
           stream: true,
+          stream_options: { include_usage: true },
           max_tokens: maxTokens,
-          ...(isNvidia && params.model === "openai/gpt-oss-120b"
+          ...(isNvidia && model === "openai/gpt-oss-120b"
             ? { reasoning_effort: "medium" }
             : {}),
           temperature: 0.7,
@@ -620,7 +669,7 @@ async function* streamOpenAiCompatibleWithKey(
     );
   } catch (error) {
     throw new ExternalCopilotError(
-      `Unable to reach ${isNvidia ? "NVIDIA NIM" : "Groq"}`,
+      `Unable to reach ${providerLabel(provider)}`,
       {
         provider,
         retryable: true,
@@ -642,6 +691,21 @@ async function* streamOpenAiCompatibleWithKey(
         String(event.error?.message ?? event.error),
         { provider, retryable: true },
       );
+    }
+    if (event?.usage) {
+      yield {
+        usageMetadata: {
+          promptTokenCount: Number(event.usage.prompt_tokens ?? 0),
+          candidatesTokenCount: Number(event.usage.completion_tokens ?? 0),
+          totalTokenCount: Number(event.usage.total_tokens ?? 0),
+          cachedContentTokenCount: Number(
+            event.usage.prompt_tokens_details?.cached_tokens ?? 0,
+          ),
+          thoughtsTokenCount: Number(
+            event.usage.completion_tokens_details?.reasoning_tokens ?? 0,
+          ),
+        },
+      };
     }
     const delta = event?.choices?.[0]?.delta ?? {};
     const thought = delta.reasoning ?? delta.reasoning_content;
@@ -673,19 +737,14 @@ export function streamExternalCopilot(
   params: StreamExternalCopilotParams,
 ): AsyncIterable<any> {
   const provider = getCopilotProvider(params.model);
-  if (provider === "nvidia") {
-    return streamWithKeyRotation("nvidia", params, (apiKey) =>
-      streamOpenAiCompatibleWithKey(params, apiKey, "nvidia"),
-    );
-  }
   if (provider === "ollama") {
     return streamWithKeyRotation("ollama", params, (apiKey) =>
       streamOllamaWithKey(params, apiKey),
     );
   }
-  if (provider === "groq") {
-    return streamWithKeyRotation("groq", params, (apiKey) =>
-      streamOpenAiCompatibleWithKey(params, apiKey, "groq"),
+  if (provider) {
+    return streamWithKeyRotation(provider, params, (apiKey) =>
+      streamOpenAiCompatibleWithKey(params, apiKey, provider),
     );
   }
   throw new ExternalCopilotError(

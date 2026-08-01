@@ -203,12 +203,32 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  MistralApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  SambaNovaApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  OpenRouterApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  AionApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+  KiloApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
   CopilotUltraModel:
     Type: String
-    Default: "z-ai/glm-5.2"
+    Default: "mistral:mistral-medium-latest"
   CopilotFastModel:
     Type: String
-    Default: "openai/gpt-oss-120b"
+    Default: "mistral:mistral-small-latest"
   CopilotUltraMaxOutputTokens:
     Type: String
     Default: "60000"
@@ -428,6 +448,25 @@ Resources:
         AttributeName: expiresAt
         Enabled: true
 
+  AiUsageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${Prefix}-ai-usage"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
   StaticSiteBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -531,9 +570,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
                   - dynamodb:PutItem
                   - dynamodb:Scan
                   - dynamodb:UpdateItem
+                  - dynamodb:TransactWriteItems
                   - dynamodb:DeleteItem
                 Resource:
                   - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${YoutubeQueueJobTable}"
@@ -546,6 +587,7 @@ Resources:
                     - !Sub "arn:aws:dynamodb:${YoutubeQueueRegion}:${AWS::AccountId}:table/${ApiKeysTable}"
                     - !Ref AWS::NoValue
                   - !GetAtt CooldownsTable.Arn
+                  - !GetAtt AiUsageTable.Arn
               - Effect: Allow
                 Action:
                   - batch:SubmitJob
@@ -683,6 +725,11 @@ Resources:
               - !Ref NvidiaApiKey2
               - !Ref NvidiaApiKey3
               - !Ref NvidiaApiKey4
+          MISTRAL_API_KEY: !Ref MistralApiKey
+          SAMBANOVA_API_KEY: !Ref SambaNovaApiKey
+          OPENROUTER_API_KEY: !Ref OpenRouterApiKey
+          AION_API_KEY: !Ref AionApiKey
+          KILO_API_KEY: !Ref KiloApiKey
           COPILOT_ULTRA_MODEL: !Ref CopilotUltraModel
           COPILOT_FAST_MODEL: !Ref CopilotFastModel
           COPILOT_ULTRA_MAX_OUTPUT_TOKENS: !Ref CopilotUltraMaxOutputTokens
@@ -718,6 +765,7 @@ Resources:
           YOUTUBE_QUEUE_REGION: !Ref YoutubeQueueRegion
           YOUTUBE_QUEUE_JOB_TABLE: !Ref YoutubeQueueJobTable
           COOLDOWNS_TABLE: !Ref CooldownsTable
+          AI_USAGE_TABLE: !Ref AiUsageTable
           YOUTUBE_BATCH_JOB_QUEUE: !Ref YoutubeBatchJobQueue
           YOUTUBE_BATCH_JOB_DEFINITION: !Ref YoutubeBatchJobDefinition
           TRANSLATOR_LIP_SYNC_ENABLED: !Ref TranslatorLipSyncEnabled

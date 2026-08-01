@@ -24,6 +24,7 @@ import { getSubtitlesOpsSnapshot } from "./subtitles";
 import { getYoutubeOpsSnapshot } from "./youtube";
 import { isGeminiConfigured } from "../lib/gemini-client";
 import { getExternalCopilotKeyCount } from "../lib/copilot-external-provider";
+import { getCopilotUsageOverview } from "../lib/copilot-usage";
 import {
   getRuntimeFeatureState,
   setRuntimeFeature,
@@ -219,6 +220,10 @@ router.get("/overview", async (_req, res) => {
   const system = getSystemMetricsSnapshot();
   const youtube = getYoutubeOpsSnapshot();
   const subtitles = getSubtitlesOpsSnapshot();
+  const copilotUsage = await getCopilotUsageOverview().catch((err) => {
+    console.warn("[admin] failed to load Copilot usage", err);
+    return null;
+  });
   // Always show the stored allowlist, not this container's stale cache —
   // otherwise the panel appears to "lose" emails added on another container.
   await refreshAllowlist(true);
@@ -259,6 +264,7 @@ router.get("/overview", async (_req, res) => {
       disk: system.disk,
     },
     traffic: http,
+    copilotUsage,
     alerts: buildAlerts({ http, system, youtube, subtitles }),
     queues: {
       youtube,
@@ -296,6 +302,11 @@ router.get("/overview", async (_req, res) => {
         getExternalCopilotKeyCount("ollama") > 0,
       groqCopilotConfigured:
         getExternalCopilotKeyCount("groq") > 0,
+      mistralCopilotConfigured: getExternalCopilotKeyCount("mistral") > 0,
+      sambaNovaCopilotConfigured: getExternalCopilotKeyCount("sambanova") > 0,
+      openRouterCopilotConfigured: getExternalCopilotKeyCount("openrouter") > 0,
+      aionCopilotConfigured: getExternalCopilotKeyCount("aion") > 0,
+      kiloCopilotConfigured: getExternalCopilotKeyCount("kilo") > 0,
       allowlistPersistence: configured(process.env.ACCESS_TABLE),
     },
     limits: {

@@ -63,6 +63,13 @@ import {
   getModelSpecificSystemPrompt,
 } from "../lib/agent-model-instructions";
 import { findIncompleteCanvasOpeningTagStart } from "./agent-canvas-stream";
+import {
+  normalizeCopilotUsage,
+  recordCopilotUsage,
+  recordCopilotHelperUsage,
+  enterCopilotUsageContext,
+  type CopilotTokenUsage,
+} from "../lib/copilot-usage";
 
 const router = Router();
 
@@ -2608,11 +2615,19 @@ async function generateLyriaMusic(params: {
   // This works with the existing Vertex AI client — no REST workaround needed.
   // Ref: https://github.com/GoogleCloudPlatform/generative-ai/blob/main/audio/music/getting-started/lyria3_music_generation.ipynb
   const ai = createGeminiClient();
+  const usageStartedAt = Date.now();
   const resp = await ai.models.generateContent({
     model,
     contents: params.prompt,
     config: { responseModalities: ["AUDIO", "TEXT"] } as any,
   } as any);
+  await recordCopilotHelperUsage({
+    provider: "gemini",
+    model,
+    operation: "generate-music",
+    startedAt: usageStartedAt,
+    metadata: (resp as any)?.usageMetadata,
+  }).catch(() => {});
 
   // Response: candidates[0].content.parts — audio in part.inlineData.data
   for (const part of (resp as any).candidates?.[0]?.content?.parts ?? []) {
@@ -5592,6 +5607,16 @@ router.post("/agent/chat", async (req, res) => {
   const isConnected = () => clientConnected && !res.writableEnded;
 
   const runId = randomUUID();
+  const telemetrySessionId = String(req.body?.sessionId ?? "unknown").slice(0, 128);
+  const telemetryUserId = String(
+    res.locals?.authSession?.email ?? req.headers["x-client-id"] ?? "unknown",
+  ).slice(0, 256);
+  enterCopilotUsageContext({
+    runId,
+    sessionId: telemetrySessionId,
+    userId: telemetryUserId,
+    mode: isUltra ? "ultra" : "fast",
+  });
   sseEvent(res, {
     type: "run_start",
     runId,
@@ -5612,7 +5637,7 @@ router.post("/agent/chat", async (req, res) => {
   }, 8000);
 
   try {
-    const EXTERNAL_TIMEOUT_MS = 300_000; // gpt-oss high thinking can be slow
+    const EXTERNAL_TIMEOUT_MS = 30_000;
 
     let loopContents: any[] = [];
 
@@ -5732,6 +5757,8 @@ router.post("/agent/chat", async (req, res) => {
       let streamErr: Error | null = null;
       let timeoutId: NodeJS.Timeout | null = null;
       let controller: AbortController | null = null;
+      let usedModel = activeModel;
+      let providerStartedAt = Date.now();
       const configuredModels = [
         activeModel,
         ...getCopilotFallbackModels(activeModel),
@@ -5755,6 +5782,8 @@ router.post("/agent/chat", async (req, res) => {
         }, EXTERNAL_TIMEOUT_MS);
         try {
           const attemptModel = streamAttempts[attempt];
+          usedModel = attemptModel;
+          providerStartedAt = Date.now();
           if (isConnected())
             sseEvent(res, { type: "heartbeat", runId, ts: Date.now() });
           const candidateStream = streamExternalCopilot({
@@ -5986,10 +6015,14 @@ router.post("/agent/chat", async (req, res) => {
         }
       };
       let lastGroundingMeta: any = null;
+      let tokenUsage: CopilotTokenUsage | null = null;
       let firstChunkReceived = false;
       let streamReadErr: unknown = null;
       try {
         for await (const chunk of stream!) {
+          if (chunk?.usageMetadata) {
+            tokenUsage = normalizeCopilotUsage(chunk.usageMetadata);
+          }
           if (!firstChunkReceived) {
             firstChunkReceived = true;
           }
@@ -6038,6 +6071,19 @@ router.post("/agent/chat", async (req, res) => {
         streamReadErr = err;
       } finally {
         if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
+        await recordCopilotUsage({
+          eventId: `${runId}:${iterations}:${randomUUID()}`,
+          runId,
+          sessionId: telemetrySessionId,
+          userId: telemetryUserId,
+          mode: isUltra ? "ultra" : "fast",
+          provider: getCopilotProvider(usedModel) ?? "unknown",
+          model: usedModel,
+          iteration: iterations,
+          fallback: usedModel !== activeModel,
+          durationMs: Date.now() - providerStartedAt,
+          usage: tokenUsage,
+        }).catch((error) => console.warn("[agent-usage] failed to persist usage", error));
       }
       if (streamReadErr) {
         if (

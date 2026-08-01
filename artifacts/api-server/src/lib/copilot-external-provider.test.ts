@@ -4,6 +4,7 @@ import test from "node:test";
 process.env.OLLAMA_API_KEY = "test-ollama-key";
 process.env.GROQ_API_KEY = "test-groq-key";
 process.env.NVIDIA_API_KEY = "test-nvidia-key";
+process.env.MISTRAL_API_KEY = "test-mistral-key";
 
 const provider = await import("./copilot-external-provider");
 
@@ -125,7 +126,7 @@ test("Ollama streams separate thinking, text, and tool calls", async () => {
   }
 });
 
-test("NVIDIA streams GLM Ultra and GPT-OSS Fast with explicit output limits", async () => {
+test("NVIDIA streams Nemotron Ultra and GPT-OSS Fast with explicit output limits", async () => {
   const originalFetch = globalThis.fetch;
   const requestBodies: any[] = [];
   const requestUrls: string[] = [];
@@ -147,7 +148,7 @@ test("NVIDIA streams GLM Ultra and GPT-OSS Fast with explicit output limits", as
   try {
     const ultra = await collect(
       provider.streamExternalCopilot({
-        model: "z-ai/glm-5.2",
+        model: "nvidia/nemotron-3-ultra-550b-a55b",
         contents,
         systemInstruction: "system",
         tools,
@@ -165,8 +166,9 @@ test("NVIDIA streams GLM Ultra and GPT-OSS Fast with explicit output limits", as
       requestUrls[0],
       "https://integrate.api.nvidia.com/v1/chat/completions",
     );
-    assert.equal(requestBodies[0].model, "z-ai/glm-5.2");
+    assert.equal(requestBodies[0].model, "nvidia/nemotron-3-ultra-550b-a55b");
     assert.equal(requestBodies[0].max_tokens, 60_000);
+    assert.deepEqual(requestBodies[0].stream_options, { include_usage: true });
     assert.equal(requestBodies[1].model, "openai/gpt-oss-120b");
     assert.equal(requestBodies[1].max_tokens, 60_000);
     assert.equal(requestBodies[1].reasoning_effort, "medium");
@@ -208,17 +210,44 @@ test("NVIDIA omits tool_choice when a request has no tools", async () => {
   }
 });
 
-test("public modes expose the required four-model fallback order", () => {
-  assert.deepEqual(provider.getCopilotFallbackModels("z-ai/glm-5.2"), [
-    "gpt-oss:120b",
-    "nvidia/nemotron-3-ultra-550b-a55b",
-    "nvidia/nemotron-3-super-120b-a12b",
+test("public modes put proven long-context routes before short-context fallbacks", () => {
+  const ultra = provider.getCopilotFallbackModels(provider.COPILOT_ULTRA_MODEL);
+  const fast = provider.getCopilotFallbackModels(provider.COPILOT_FAST_MODEL);
+  assert.deepEqual(ultra.slice(0, 4), [
+    "mistral:mistral-small-latest",
+    "sambanova:gpt-oss-120b",
+    "ollama:gpt-oss:120b",
+    "nvidia:nvidia/nemotron-3-super-120b-a12b",
   ]);
-  assert.deepEqual(provider.getCopilotFallbackModels("openai/gpt-oss-120b"), [
-    "gpt-oss:120b",
-    "nvidia/nemotron-3-super-120b-a12b",
-    "nvidia/nemotron-3-ultra-550b-a55b",
-  ]);
+  assert.equal(fast[0], "mistral:mistral-medium-latest");
+  assert.ok(ultra.indexOf("groq:llama-3.3-70b-versatile") > ultra.indexOf("nvidia:openai/gpt-oss-120b"));
+  assert.equal(ultra.includes("z-ai/glm-5.2"), false);
+});
+
+test("provider-qualified Mistral routes use the right endpoint and upstream model id", async () => {
+  const originalFetch = globalThis.fetch;
+  let url = "";
+  let requestBody: any;
+  globalThis.fetch = async (input, init) => {
+    url = String(input);
+    requestBody = JSON.parse(String(init?.body));
+    return new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" } }] })}`,
+      "",
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } })}`,
+      "",
+      "data: [DONE]", "",
+    ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  try {
+    const chunks = await collect(provider.streamExternalCopilot({
+      model: "mistral:mistral-medium-latest", contents,
+      systemInstruction: "system", tools,
+    }));
+    assert.equal(url, "https://api.mistral.ai/v1/chat/completions");
+    assert.equal(requestBody.model, "mistral-medium-latest");
+    assert.equal(chunks.at(-1).usageMetadata.totalTokenCount, 12);
+  } finally { globalThis.fetch = originalFetch; }
 });
 
 test("provider key pools ignore empty placeholders and duplicates", () => {
@@ -255,7 +284,7 @@ test("a model-specific NVIDIA cooldown does not suppress Nemotron fallbacks", as
     await assert.rejects(() =>
       collect(
         provider.streamExternalCopilot({
-          model: "z-ai/glm-5.2",
+          model: "openai/gpt-oss-120b",
           contents,
           systemInstruction: "system",
           tools,

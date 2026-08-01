@@ -33,23 +33,23 @@ function readUltraInitial(): boolean {
   try { return localStorage.getItem(ULTRA_KEY) === "1"; } catch { return false; }
 }
 
-type ReasoningMode = "openai/gpt-oss-120b" | "z-ai/glm-5.2";
+type ReasoningMode = "mistral:mistral-small-latest" | "mistral:mistral-medium-latest";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "z-ai/glm-5.2", label: "Ultra", description: "GLM 5.2 → Ollama GPT-OSS → Nemotron Ultra → Super", ultra: true },
-  { id: "openai/gpt-oss-120b", label: "Fast", description: "NVIDIA GPT-OSS → Ollama GPT-OSS → Nemotron Super → Ultra", ultra: false },
+  { id: "mistral:mistral-medium-latest", label: "Ultra", description: "Mistral Medium → proven long-context provider ladder", ultra: true },
+  { id: "mistral:mistral-small-latest", label: "Fast", description: "Mistral Small → fastest proven long-context ladder", ultra: false },
 ];
 
 function readReasoningInitial(): ReasoningMode {
   try {
     const stored = localStorage.getItem(REASONING_KEY);
-    if (stored === "openai/gpt-oss-120b" || stored === "z-ai/glm-5.2") return stored;
-    if (stored === "llama-3.1-8b-instant") return "openai/gpt-oss-120b";
-    if (stored === "gpt-oss:120b") return "z-ai/glm-5.2";
+    if (stored === "mistral:mistral-small-latest" || stored === "mistral:mistral-medium-latest") return stored;
+    if (stored === "llama-3.1-8b-instant" || stored === "openai/gpt-oss-120b") return "mistral:mistral-small-latest";
+    if (stored === "gpt-oss:120b" || stored === "z-ai/glm-5.2") return "mistral:mistral-medium-latest";
     // Backward compatibility for preferences saved by older model menus.
-    if (stored === "flash" || stored === "gemini-3-flash-preview" || stored === "gemini-2.5-flash" || stored === "gemini-3.1-flash-lite" || stored === "gemini-3.1-flash-lite-low") return "openai/gpt-oss-120b";
-    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high" || stored === "gemini-3.1-flash-lite-high" || stored === "gemma-4-31b-it" || stored === "gemma-4-26b-a4b-it") return "z-ai/glm-5.2";
+    if (stored === "flash" || stored === "gemini-3-flash-preview" || stored === "gemini-2.5-flash" || stored === "gemini-3.1-flash-lite" || stored === "gemma-4-31b-it" || stored === "gemini-3.1-flash-lite-low") return "mistral:mistral-small-latest";
+    if (stored === "pro" || stored === "advanced" || stored === "gemini-3.5-flash" || stored === "gemini-3.5-flash-high" || stored === "gemini-3.1-flash-lite-high" || stored === "gemma-4-31b-it" || stored === "gemma-4-26b-a4b-it" || stored === "nvidia/nemotron-3-ultra-550b-a55b") return "mistral:mistral-medium-latest";
   } catch { /* localStorage unavailable */ }
-  return "z-ai/glm-5.2";
+  return "mistral:mistral-medium-latest";
 }
 
 function getInputMaxHeight(): number {
@@ -3301,10 +3301,10 @@ export function StudioCopilot({
         setRunFallbackActive(false);
         // The server is authoritative. Correct stale browser preferences if a
         // cached client ever sends a value that resolves to the other mode.
-        if (evt.ultra === true && reasoningMode !== "z-ai/glm-5.2") {
-          setReasoningMode("z-ai/glm-5.2");
-        } else if (evt.ultra === false && reasoningMode !== "openai/gpt-oss-120b") {
-          setReasoningMode("openai/gpt-oss-120b");
+        if (evt.ultra === true && reasoningMode !== "mistral:mistral-medium-latest") {
+          setReasoningMode("mistral:mistral-medium-latest");
+        } else if (evt.ultra === false && reasoningMode !== "mistral:mistral-small-latest") {
+          setReasoningMode("mistral:mistral-small-latest");
         }
         return;
       }

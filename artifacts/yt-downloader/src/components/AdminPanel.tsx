@@ -88,6 +88,14 @@ type AdminOverview = {
     disk?: { rootUsedPct: number | null };
   };
   traffic: HttpMetrics;
+  copilotUsage: null | {
+    enabled: boolean;
+    today: TokenRollup;
+    month: TokenRollup;
+    todayByMode: { ultra: TokenRollup; fast: TokenRollup };
+    todayByModel: Record<string, TokenRollup>;
+    last7Days: Array<TokenRollup & { day: string }>;
+  };
   alerts: Array<{ level: "info" | "warning" | "critical"; title: string; detail: string }>;
   queues: {
     youtube?: QueueSnapshot;
@@ -155,6 +163,16 @@ type AdminOverview = {
       updatedAt: number;
     }>;
   };
+};
+
+type TokenRollup = {
+  calls: number;
+  usageUnavailable: number;
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  cachedTokens: number;
+  totalTokens: number;
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -315,6 +333,11 @@ function JobsTable({ jobs }: { jobs: AdminJob[] }) {
       ))}
     </div>
   );
+}
+
+function formatTokens(value: number | null | undefined): string {
+  if (value == null) return "-";
+  return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 /** Email pill list with per-item remove loading */
@@ -799,6 +822,34 @@ export function AdminPanel() {
 
       {/* Grid — sections tagged with data-section-tab for CSS show/hide */}
       <div className={cn("admin-grid", `admin-grid--${tab}`)}>
+
+        {/* Super Agent token accounting — intentionally excludes every other app tab. */}
+        <Section icon={<Bot className="w-4 h-4" />} title="Super Agent token usage" tab="overview" wide>
+          <div className="admin-stats">
+            <Stat icon={<Sparkles className="w-4 h-4" />} label="Tokens today" value={formatTokens(overview?.copilotUsage?.today.totalTokens)} />
+            <Stat icon={<Download className="w-4 h-4" />} label="Input today" value={formatTokens(overview?.copilotUsage?.today.inputTokens)} />
+            <Stat icon={<UploadCloud className="w-4 h-4" />} label="Output today" value={formatTokens(overview?.copilotUsage?.today.outputTokens)} />
+            <Stat icon={<Activity className="w-4 h-4" />} label="Tokens this month" value={formatTokens(overview?.copilotUsage?.month.totalTokens)} />
+            <Stat icon={<Bot className="w-4 h-4" />} label="Calls today" value={overview?.copilotUsage?.today.calls ?? 0} />
+            <Stat icon={<Sparkles className="w-4 h-4" />} label="Ultra today" value={formatTokens(overview?.copilotUsage?.todayByMode.ultra.totalTokens)} />
+            <Stat icon={<Gauge className="w-4 h-4" />} label="Fast today" value={formatTokens(overview?.copilotUsage?.todayByMode.fast.totalTokens)} />
+            <Stat
+              icon={<CheckCircle2 className="w-4 h-4" />}
+              label="Exact usage coverage"
+              value={overview?.copilotUsage?.today.calls
+                ? `${Math.round(((overview.copilotUsage.today.calls - overview.copilotUsage.today.usageUnavailable) / overview.copilotUsage.today.calls) * 100)}%`
+                : overview?.copilotUsage?.enabled ? "No calls" : "Not configured"}
+              tone={overview?.copilotUsage?.enabled ? "good" : "warn"}
+            />
+          </div>
+          {(overview?.copilotUsage?.last7Days?.length ?? 0) > 0 ? (
+            <div className="admin-stats">
+              {overview!.copilotUsage!.last7Days.map((day) => (
+                <Stat key={day.day} icon={<Activity className="w-4 h-4" />} label={day.day.slice(5)} value={formatTokens(day.totalTokens)} detail={`${day.calls} calls`} />
+              ))}
+            </div>
+          ) : null}
+        </Section>
 
         {/* ── OVERVIEW tab sections ─────────────────────────────────────── */}
         <Section icon={<Activity className="w-4 h-4" />} title="Health" tab="overview">

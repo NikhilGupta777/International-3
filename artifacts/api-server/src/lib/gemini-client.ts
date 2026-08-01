@@ -346,9 +346,13 @@ export async function generateContentWithRotation(
   },
   options: GeminiClientOptions = {},
 ): Promise<any> {
+  const startedAt = Date.now();
   if (isVertexGeminiEnabled()) {
     const client = createGeminiClient(options);
-    return client.models.generateContent(params);
+    const result = await client.models.generateContent(params);
+    const { recordCopilotHelperUsage } = await import("./copilot-usage");
+    await recordCopilotHelperUsage({ provider: "vertex-gemini", model: params.model, operation: options.caller ?? "gemini-helper", startedAt, metadata: result?.usageMetadata }).catch(() => {});
+    return result;
   }
 
   const keys = getPersonalKeysForCaller(options.caller);
@@ -376,6 +380,8 @@ export async function generateContentWithRotation(
           contents: params.contents,
           config: params.config,
         });
+        const { recordCopilotHelperUsage } = await import("./copilot-usage");
+        await recordCopilotHelperUsage({ provider: "gemini", model, operation: options.caller ?? "gemini-helper", startedAt, metadata: result?.usageMetadata }).catch(() => {});
         return result;
       } catch (err: any) {
         lastErr = err;
