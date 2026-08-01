@@ -73,9 +73,9 @@ import {
 
 const router = Router();
 
-// User-facing Copilot models run through NVIDIA NIM. The previous Ollama and
-// Groq models remain provider-diverse fallbacks. Gemini remains an internal
-// helper for media/vision operations that these text-only models cannot do.
+// User-facing Copilot models run through the configured external-provider
+// ladder. Gemini remains an internal helper for media/vision operations that
+// the public text models cannot perform.
 const ULTRA_MODEL = COPILOT_ULTRA_MODEL;
 const FAST_MODEL = COPILOT_FAST_MODEL;
 const AGENT_MODEL = ULTRA_MODEL;
@@ -219,6 +219,14 @@ function rememberAgentJob(req: any, jobId: unknown): void {
   (req as any).agentRunJobIds.add(id);
 }
 
+function requireAgentJobId(value: unknown, operation: string): string {
+  const jobId = String(value ?? "").trim();
+  if (!jobId) {
+    throw new Error(`${operation} did not return a jobId.`);
+  }
+  return jobId;
+}
+
 // Once a job is handed off to the user (Activity panel / Translator tab),
 // it must no longer be auto-cancelled when the agent run errors or aborts.
 function forgetAgentJob(req: any, jobId: unknown): void {
@@ -241,9 +249,11 @@ async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
         `${apiBase}/subtitles/cancel/${jobId}`,
         `${apiBase}/translator/cancel/${jobId}`,
       ]) {
-        const res = await fetch(endpoint, { method: "POST", headers }).catch(
-          () => null,
-        );
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers,
+          signal: AbortSignal.timeout(5_000),
+        }).catch(() => null);
         if (res?.ok) {
           console.log(`[agent] cancelled ${jobId} after ${reason}`);
           return;
@@ -3125,8 +3135,10 @@ async function generateAssemblyAiCaptionsFromUrl(params: {
     );
   }
   const started = (await start.json()) as any;
-  const jobId = String(started.jobId ?? started.id ?? "");
-  if (!jobId) throw new Error("Caption generation fallback did not return a jobId");
+  const jobId = requireAgentJobId(
+    started.jobId ?? started.id,
+    "Caption generation fallback",
+  );
   rememberAgentJob(req, jobId);
 
   const final = await pollSubtitleUntilDone(
@@ -3139,6 +3151,7 @@ async function generateAssemblyAiCaptionsFromUrl(params: {
     runId,
     "generate_captions_with_assemblyai",
   );
+  forgetAgentJob(req, jobId);
   const srt = final.srt ?? final.originalSrt;
   if (!srt?.trim()) {
     throw new Error("Caption generation fallback completed without SRT text");
@@ -3265,7 +3278,10 @@ async function executeTool(
         const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Clip cut failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const jobId = requireAgentJobId(
+        ((await r.json()) as any).jobId,
+        "Clip cut",
+      );
       rememberAgentJob(req, jobId);
       logTool("Clip cut job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
@@ -3305,6 +3321,7 @@ async function executeTool(
           },
         };
       }
+      forgetAgentJob(req, jobId);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: {
@@ -3360,7 +3377,10 @@ async function executeTool(
         const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Download failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const jobId = requireAgentJobId(
+        ((await r.json()) as any).jobId,
+        "Video download",
+      );
       rememberAgentJob(req, jobId);
       logTool("Download job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
@@ -3385,6 +3405,7 @@ async function executeTool(
         toolId,
         runId,
       );
+      forgetAgentJob(req, jobId);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
         result: {
@@ -3443,7 +3464,10 @@ async function executeTool(
           throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
         }
         const d = (await r.json()) as any;
-        subtitleJobId = d.id ?? d.jobId;
+        subtitleJobId = requireAgentJobId(
+          d.id ?? d.jobId,
+          "Uploaded-file subtitle generation",
+        );
       } else {
         const r = await fetch(`${apiBase}/subtitles/generate`, {
           method: "POST",
@@ -3460,7 +3484,10 @@ async function executeTool(
           throw new Error(err.error ?? `Subtitle job failed: ${r.status}`);
         }
         const d = (await r.json()) as any;
-        subtitleJobId = d.id ?? d.jobId;
+        subtitleJobId = requireAgentJobId(
+          d.id ?? d.jobId,
+          "YouTube subtitle generation",
+        );
       }
       rememberAgentJob(req, subtitleJobId);
       logTool("Subtitles job accepted", { jobId: subtitleJobId });
@@ -3485,6 +3512,7 @@ async function executeTool(
         toolId,
         runId,
       );
+      forgetAgentJob(req, subtitleJobId);
       return {
         result: {
           jobId: subtitleJobId,
@@ -3527,7 +3555,10 @@ async function executeTool(
         const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Best clips job failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const jobId = requireAgentJobId(
+        ((await r.json()) as any).jobId,
+        "Best-clips analysis",
+      );
       rememberAgentJob(req, jobId);
       logTool("Best clips job accepted — polling for results...", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
@@ -3553,6 +3584,7 @@ async function executeTool(
         toolId,
         runId,
       );
+      forgetAgentJob(req, jobId);
       return {
         result: {
           jobId,
@@ -3589,7 +3621,10 @@ async function executeTool(
         const err = (await r.json().catch(() => ({}))) as any;
         throw new Error(err.error ?? `Timestamps failed: ${r.status}`);
       }
-      const { jobId } = (await r.json()) as any;
+      const jobId = requireAgentJobId(
+        ((await r.json()) as any).jobId,
+        "Timestamp generation",
+      );
       rememberAgentJob(req, jobId);
       logTool("Timestamps job accepted", { jobId });
       // Emit initial progress so frontend can track in Activity Panel
@@ -3613,6 +3648,7 @@ async function executeTool(
         toolId,
         runId,
       );
+      forgetAgentJob(req, jobId);
       // Format timestamps as readable text
       let tsContent = "";
       if (final.timestamps) {
@@ -3688,11 +3724,12 @@ async function executeTool(
     }
 
     case "translate_video": {
-      checkHeavyOpRateLimit(req, "translate_video");
       // Detect uploaded file URL (S3/CDN) vs YouTube URL.
       // Uploaded files: POST to /translator/submit-from-url — no YouTube download needed.
       // YouTube URLs: download via youtube/stream → S3 → submit.
       const videoUrl = (args.url ?? args.fileUrl ?? "") as string;
+      if (!String(videoUrl).trim()) throw new Error("Video URL is required.");
+      checkHeavyOpRateLimit(req, "translate_video");
       const isUploadedFile =
         !!videoUrl &&
         !videoUrl.includes("youtube.com") &&
@@ -3734,7 +3771,7 @@ async function executeTool(
           );
         }
         const d = (await submitR.json()) as any;
-        tvJobId = d.jobId;
+        tvJobId = requireAgentJobId(d.jobId, "Uploaded-video translation");
       } else {
         const presignR = await fetch(
           `${apiBase}/translator/presign?filename=input.mp4&contentType=video/mp4`,
@@ -3747,7 +3784,7 @@ async function executeTool(
           presignedUrl,
           s3Key,
         } = (await presignR.json()) as any;
-        tvJobId = pJobId;
+        tvJobId = requireAgentJobId(pJobId, "Translation upload setup");
         sseEvent(res, {
           type: "tool_progress",
           runId,
@@ -3958,6 +3995,7 @@ async function executeTool(
         if (r?.ok) {
           data = await r.json().catch(() => ({ ok: true }));
           outcome = `Job ${String(args.jobId).slice(0, 8)}… cancelled.`;
+          forgetAgentJob(req, args.jobId);
           break;
         }
       }
@@ -4209,9 +4247,9 @@ async function executeTool(
     }
 
     case "do_full_package": {
-      checkHeavyOpRateLimit(req, "do_full_package");
       const url = String(args.url ?? "").trim();
       if (!url) throw new Error("YouTube URL is required.");
+      checkHeavyOpRateLimit(req, "do_full_package");
       const language = String(args.language ?? DEFAULT_CAPTION_LANGUAGE);
       const quality = args.quality ?? "best";
       const results: Record<string, any> = {};
@@ -4245,46 +4283,68 @@ async function executeTool(
       // Phase 1: metadata first (needed by SEO pack)
       await runStep("get_video_info", { url });
 
-      // Phase 2: run independent heavy tasks in parallel
-      const phase2 = await Promise.allSettled([
-        runStep("download_video", { url, quality }),
-        runStep("analyze_youtube_video", {
-          url,
-          question: `Summarize this video for a creator. Include key points, emotional hooks, reusable quotes, and content opportunities.${args.instructions ? ` Focus: ${args.instructions}` : ""}`,
-        }),
-        runStep("generate_timestamps", { url }),
-        runStep("generate_seo_pack", {
-          topic: results.get_video_info?.title ?? url,
-          audience: args.instructions ?? "YouTube audience",
-        }),
-        (async () => {
-          try {
-            await runStep("get_youtube_captions", { url, language });
-          } catch (err: any) {
-            results.get_youtube_captions = {
-              error: err?.message ?? "Direct captions unavailable",
-            };
-          }
-        })(),
-        runStep("find_best_clips", {
-          url,
-          instructions: args.instructions ?? "",
-        }),
-      ]);
-      for (const r of phase2) {
-        if (r.status === "rejected")
-          console.warn(
-            `[agent] full_package step failed: ${r.reason?.message ?? r.reason}`,
-          );
-      }
+      // Phase 2: run independent heavy tasks in parallel. Keep each promise
+      // paired with its name so partial failures are reported truthfully
+      // instead of returning "completed" while silently omitting results.
+      const phase2Steps = [
+        {
+          name: "download_video",
+          promise: runStep("download_video", { url, quality }),
+        },
+        {
+          name: "analyze_youtube_video",
+          promise: runStep("analyze_youtube_video", {
+            url,
+            question: `Summarize this video for a creator. Include key points, emotional hooks, reusable quotes, and content opportunities.${args.instructions ? ` Focus: ${args.instructions}` : ""}`,
+          }),
+        },
+        {
+          name: "generate_timestamps",
+          promise: runStep("generate_timestamps", { url }),
+        },
+        {
+          name: "generate_seo_pack",
+          promise: runStep("generate_seo_pack", {
+            topic: results.get_video_info?.title ?? url,
+            audience: args.instructions ?? "YouTube audience",
+          }),
+        },
+        {
+          name: "get_youtube_captions",
+          promise: runStep("get_youtube_captions", { url, language }),
+        },
+        {
+          name: "find_best_clips",
+          promise: runStep("find_best_clips", {
+            url,
+            instructions: args.instructions ?? "",
+          }),
+        },
+      ];
+      const phase2 = await Promise.allSettled(
+        phase2Steps.map((step) => step.promise),
+      );
+      const failures: Array<{ step: string; error: string }> = [];
+      phase2.forEach((outcome, index) => {
+        if (outcome.status !== "rejected") return;
+        const step = phase2Steps[index].name;
+        const error = String(
+          outcome.reason?.message ?? outcome.reason ?? "Unknown failure",
+        );
+        results[step] = { error };
+        failures.push({ step, error });
+        console.warn(`[agent] full_package step ${step} failed: ${error}`);
+      });
+      const completed = failures.length === 0;
 
       return {
-        result: { completed: true, results },
+        result: { completed, partial: !completed, failures, results },
         artifact: {
           artifactType: "text",
-          label: "Full Package Summary",
-          content:
-            "Full package completed: metadata, download, summary, timestamps, SEO, subtitles/captions, and best-clips analysis.",
+          label: completed ? "Full Package Summary" : "Partial Package Summary",
+          content: completed
+            ? "Full package completed: metadata, download, summary, timestamps, SEO, subtitles/captions, and best-clips analysis."
+            : `Full package partially completed. Failed steps: ${failures.map((failure) => failure.step).join(", ")}. Successful steps were preserved in the package result.`,
         },
       };
     }
@@ -4406,6 +4466,11 @@ async function executeTool(
     case "send_result_to_tab": {
       const tab = String(args.tab ?? "").trim();
       if (!tab) throw new Error("Tab is required.");
+      if (!ALLOWED_NAV_TABS.has(tab)) {
+        throw new Error(
+          `Unknown tab: "${tab}". Available tabs: ${[...ALLOWED_NAV_TABS].join(", ")}`,
+        );
+      }
       sseEvent(res, { type: "navigate", runId, tab });
       return {
         result: { navigated: true, tab },
@@ -4520,10 +4585,10 @@ async function executeTool(
         name,
         message: "Inspecting image...",
       });
-      // Flash is plenty for image description / scene tagging; reserve ULTRA
-      // for genuinely heavy reasoning (analyze_youtube_video, PDF analysis).
+      // Vision must use the Gemini helper. The public Copilot ladder is
+      // text-only and cannot consume inline image data.
       const resp = await generateContentWithRotation({
-        model: AGENT_MODEL,
+        model: GEMINI_HELPER_MODEL,
         contents: [
           {
             role: "user",
@@ -4535,7 +4600,7 @@ async function executeTool(
             ],
           },
         ],
-        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(AGENT_MODEL)) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(GEMINI_HELPER_MODEL)) },
       });
       const content = stripReasoningTags(
         (resp.candidates?.[0]?.content?.parts ?? [])
@@ -4561,9 +4626,9 @@ async function executeTool(
         name,
         message: "Reading image text...",
       });
-      // OCR is a Flash-level task. ULTRA here was needless cost + latency.
+      // OCR also requires the Gemini vision helper rather than a text model.
       const resp = await generateContentWithRotation({
-        model: AGENT_MODEL,
+        model: GEMINI_HELPER_MODEL,
         contents: [
           {
             role: "user",
@@ -4575,7 +4640,7 @@ async function executeTool(
             ],
           },
         ],
-        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(AGENT_MODEL)) },
+        config: { maxOutputTokens: Math.min(AGENT_MAX_OUTPUT_TOKENS, getMaxOutputTokensForModel(GEMINI_HELPER_MODEL)) },
       });
       const content = stripReasoningTags(
         (resp.candidates?.[0]?.content?.parts ?? [])
@@ -4611,9 +4676,9 @@ Include: hook, narration, scene/shot directions, on-screen text, pacing notes, a
     }
 
     case "generate_music": {
-      checkHeavyOpRateLimit(req, "generate_music");
       const musicPrompt = String(args.prompt ?? "").trim();
       if (!musicPrompt) throw new Error("Music prompt is required.");
+      checkHeavyOpRateLimit(req, "generate_music");
       const durationMode =
         String(args.duration ?? "clip") === "full" ? "full" : "clip";
       const aspect = String(args.aspectRatio ?? "1:1");
@@ -5446,22 +5511,68 @@ function isLocalUrl(urlStr: string): boolean {
   }
 }
 
+const AGENT_ATTACHMENT_TYPES = new Set([
+  "image",
+  "video",
+  "audio",
+  "document",
+]);
+
+function normalizeAgentAttachments(value: unknown): Array<{
+  type: "image" | "video" | "audio" | "document";
+  name: string;
+  mimeType: string;
+  data?: string;
+  url?: string;
+}> {
+  if (!Array.isArray(value)) return [];
+  const normalized: Array<{
+    type: "image" | "video" | "audio" | "document";
+    name: string;
+    mimeType: string;
+    data?: string;
+    url?: string;
+  }> = [];
+  for (const item of value.slice(0, 12)) {
+    if (!item || typeof item !== "object") continue;
+    const type = String((item as any).type ?? "").trim();
+    if (!AGENT_ATTACHMENT_TYPES.has(type)) continue;
+    const data =
+      typeof (item as any).data === "string" ? (item as any).data : undefined;
+    const url =
+      typeof (item as any).url === "string"
+        ? (item as any).url.trim().slice(0, 16_384)
+        : undefined;
+    normalized.push({
+      type: type as "image" | "video" | "audio" | "document",
+      name: String((item as any).name ?? "attachment").slice(0, 255),
+      mimeType: String(
+        (item as any).mimeType ?? "application/octet-stream",
+      ).slice(0, 255),
+      ...(data ? { data } : {}),
+      ...(url ? { url } : {}),
+    });
+  }
+  return normalized;
+}
+
 // ── POST /api/agent/chat ──────────────────────────────────────────────────
 router.post("/agent/chat", async (req, res) => {
   if (!isExternalCopilotConfigured()) {
     res.status(503).json({
-      error:
-        "AI Copilot not configured - add NVIDIA_API_KEY or OLLAMA_API_KEY.",
+      error: "AI Copilot is not configured. Add a Super Agent provider key.",
     });
     return;
   }
   (req as any).agentRunJobIds = new Set<string>();
 
+  const body =
+    req.body && typeof req.body === "object" ? req.body : Object.create(null);
   const {
     messages = [],
     model: requestedModel,
     skills: requestedSkills = [],
-  } = req.body as {
+  } = body as {
     messages: Array<{
       role: "user" | "model" | "assistant";
       content?: string;
@@ -5493,7 +5604,7 @@ router.post("/agent/chat", async (req, res) => {
   const activeSkills = Array.isArray(requestedSkills)
     ? requestedSkills.filter(
         (skill): skill is string => typeof skill === "string",
-      )
+      ).map((skill) => skill.trim().slice(0, 100)).filter(Boolean).slice(0, 32)
     : [];
 
   if (!messages.length) {
@@ -5538,9 +5649,7 @@ router.post("/agent/chat", async (req, res) => {
         ...message,
         role,
         content,
-        attachments: Array.isArray(message.attachments)
-          ? message.attachments
-          : [],
+        attachments: normalizeAgentAttachments(message.attachments),
       };
     })
     .filter(Boolean) as Array<{
@@ -5605,12 +5714,6 @@ router.post("/agent/chat", async (req, res) => {
   }
   const activeModelSupportsNativeMedia = supportsNativeMediaInput(activeModel);
   const activeProvider = getCopilotProvider(activeModel);
-  const latestUserActionText = [...normalizedMessages]
-    .reverse()
-    .find((message) => message.role === "user")
-    ?.content ?? "";
-  let anyToolAttemptedForTurn = false;
-  const shouldHoldToolDependentOutput = () => false;
 
   // ── Setup SSE — see lib/sse.ts for streaming-buffer fix details ─────────
   setupSse(res);
@@ -6056,15 +6159,11 @@ router.post("/agent/chat", async (req, res) => {
       };
       let lastGroundingMeta: any = null;
       let tokenUsage: CopilotTokenUsage | null = null;
-      let firstChunkReceived = false;
       let streamReadErr: unknown = null;
       try {
         for await (const chunk of stream!) {
           if (chunk?.usageMetadata) {
             tokenUsage = normalizeCopilotUsage(chunk.usageMetadata);
-          }
-          if (!firstChunkReceived) {
-            firstChunkReceived = true;
           }
           if (!isConnected()) break;
 
@@ -6298,7 +6397,7 @@ router.post("/agent/chat", async (req, res) => {
       const toolResults: any[] = [];
       let iterationHadError = false;
       // Only emit pre-tool text if it wasn't already streamed live
-      if (!streamedTextLive && !shouldHoldToolDependentOutput()) {
+      if (!streamedTextLive) {
         const preToolText = stripReasoningTags(fullText);
         if (preToolText) {
           sseEvent(res, {
@@ -6373,8 +6472,6 @@ router.post("/agent/chat", async (req, res) => {
             level: "error",
           });
         }
-        anyToolAttemptedForTurn = true;
-
         if (!hadError && toolArtifact) {
           const artifactError = getArtifactValidationError(toolArtifact as any);
           if (artifactError) {
@@ -6559,14 +6656,14 @@ router.post("/agent/chat", async (req, res) => {
   } finally {
     clearInterval(keepAlive);
     if (!runCompleted) {
-      // LA-2 fix: Await job cancellation when the client disconnected.
-      // The previous fire-and-forget pattern risked Lambda freezing before
-      // cancels reached the internal API.
-      if (clientConnected) {
-        void cancelAgentRunJobs(req, "agent_error");
-      } else {
-        await cancelAgentRunJobs(req, "client_abort").catch(() => {});
-      }
+      // Always await cleanup. Lambda can freeze immediately after the handler
+      // resolves, so fire-and-forget cancellation leaks jobs on agent errors.
+      await cancelAgentRunJobs(
+        req,
+        clientConnected ? "agent_error" : "client_abort",
+      ).catch((error) =>
+        logger.warn({ error, runId }, "Could not cancel agent-run jobs"),
+      );
     }
     if (!res.writableEnded) res.end();
   }

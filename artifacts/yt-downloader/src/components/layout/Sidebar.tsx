@@ -47,7 +47,6 @@ const SUPER_AGENT_ITEM: NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { mode: "home",        icon: <HomeIcon className="gs-icon" />,        label: "Home" },
-  { mode: "newtabstudio", icon: <Sparkles className="gs-icon" />,       label: "New Tab Studio", tone: "accent" },
   SUPER_AGENT_ITEM,
   { mode: "content-manager", icon: <Newspaper className="gs-icon" />,    label: "Content", badge: "New" },
   { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video", badge: "New" },

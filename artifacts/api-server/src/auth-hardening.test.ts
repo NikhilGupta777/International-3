@@ -24,7 +24,10 @@ test("Pita Ji credentials are also body-only", () => {
 
 test("anonymous auth endpoints are not globally blocked by allowlist hydration", () => {
   assert.doesNotMatch(source, /app\.use\(async \(_req[\s\S]*?await allowlistHydrationPromise/);
-  assert.match(source, /if \(session\.email\) await allowlistHydrationPromise/);
+  assert.match(
+    source,
+    /if \(session\.email\) \{[\s\S]{0,120}await allowlistHydrationPromise/,
+  );
   assert.match(source, /app\.use\("\/api\/admin"[\s\S]*?await allowlistHydrationPromise/);
 });
 
