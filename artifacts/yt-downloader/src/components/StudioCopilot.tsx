@@ -35,8 +35,8 @@ function readUltraInitial(): boolean {
 
 type ReasoningMode = "mistral:mistral-small-latest" | "mistral:mistral-medium-latest";
 const REASONING_OPTIONS: Array<{ id: ReasoningMode; label: string; description: string; ultra: boolean }> = [
-  { id: "mistral:mistral-medium-latest", label: "Ultra", description: "Mistral Medium → proven long-context provider ladder", ultra: true },
-  { id: "mistral:mistral-small-latest", label: "Fast", description: "Mistral Small → fastest proven long-context ladder", ultra: false },
+  { id: "mistral:mistral-medium-latest", label: "Ultra", description: "Best quality with long-transcript support", ultra: true },
+  { id: "mistral:mistral-small-latest", label: "Fast", description: "Fast responses with long-transcript support", ultra: false },
 ];
 
 function readReasoningInitial(): ReasoningMode {
