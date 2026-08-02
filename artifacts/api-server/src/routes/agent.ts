@@ -5685,20 +5685,16 @@ router.post("/agent/chat", async (req, res) => {
     return;
   }
 
-  // Guard: limit incoming history to prevent excessively large payloads
-  const MAX_HISTORY_MESSAGES = 80;
-  const truncatedMessages =
-    messages.length > MAX_HISTORY_MESSAGES
-      ? messages.slice(-MAX_HISTORY_MESSAGES)
-      : messages;
-
   const normalizeGeminiRole = (role: unknown): "user" | "model" | null => {
     if (role === "user") return "user";
     if (role === "model" || role === "assistant") return "model";
     return null;
   };
 
-  const normalizedMessagesRaw = truncatedMessages
+  // Preserve the complete conversation supplied by the client. The request
+  // body limit already provides a hard transport/memory bound, while silently
+  // dropping older turns breaks long transcript and follow-up workflows.
+  const normalizedMessagesRaw = messages
     .map((message: any) => {
       const role = normalizeGeminiRole(message?.role);
       if (!role) return null;

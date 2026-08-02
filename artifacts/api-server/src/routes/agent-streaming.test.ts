@@ -93,6 +93,13 @@ test("chat input normalizes missing bodies and malformed attachments", () => {
   assert.match(source, /value\.slice\(0, 12\)/);
 });
 
+test("ordinary conversation history is never silently truncated", () => {
+  const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
+  assert.doesNotMatch(source, /MAX_HISTORY_MESSAGES/);
+  assert.doesNotMatch(source, /messages\.slice\(-/);
+  assert.match(source, /const normalizedMessagesRaw = messages/);
+});
+
 test("YouTube caption tool keeps the complete fetched SRT in model context", () => {
   const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
   const captionCase = source.match(
