@@ -263,6 +263,27 @@ async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
   );
 }
 
+/*
+ * Disabled legacy unfinished-action guard.
+ *
+ * It tried to detect model replies such as "I'll download it now" when no
+ * function call followed, then injected a hidden correction turn. It also
+ * produced false corrections for normal capability answers, so it must remain
+ * non-executable unless a safer intent-aware design replaces it.
+ *
+ * const PROMISE_INTENT_RE =
+ *   /\b(?:i(?:'|’)?ll|i\s+will|i(?:'|’)?m\s+(?:going|about)\s+to|let\s+me|going\s+to|about\s+to|abhi|turant|shuru\s+kar|kar(?:ta|ti)\s+h(?:oon|u)n?|kar\s+(?:raha|rahi|deta|deti|dete))\b[\s\S]{0,100}?\b(?:cut|clip|download|subtitle|caption|timestamp|translat|dub|generat|creat|render|analy[sz]|search|fetch|extract|convert|upload|check|run|start|kaat|nikaal)/i;
+ * const GERUND_INTENT_RE =
+ *   /\b(?:cutting|downloading|generating|translating|analyzing|rendering|creating|fetching|extracting|starting)\b[\s\S]{0,60}?\b(?:now|right\s+away|abhi|for\s+you)\b/i;
+ * const TEXT_TOOL_SYNTAX_RE = /\[Tool:\s*\w+/i;
+ *
+ * function looksLikeUnfulfilledActionPromise(text: string): boolean {
+ *   const t = String(text ?? "");
+ *   if (!t.trim()) return false;
+ *   return TEXT_TOOL_SYNTAX_RE.test(t) || PROMISE_INTENT_RE.test(t) || GERUND_INTENT_RE.test(t);
+ * }
+ */
+
 // ── Strip model-internal tags before sending to client ─────────────────────
 // Gemini 3 Flash / Pro can emit reasoning, thought, response wrappers, and our
 // own [SUGGESTIONS:] marker. None of these should reach the browser as raw text.
@@ -5872,6 +5893,7 @@ router.post("/agent/chat", async (req, res) => {
     // Vertex is disabled in gemini-client.ts, so countTokens/cache preflight is skipped.
     let iterations = 0;
     let emptyResponseRetries = 0;
+    // Disabled with the legacy unfinished-action guard: let noActionNudges = 0;
     let streamReadRetries = 0;
     let finalAnswerSent = false;
 
@@ -6288,6 +6310,27 @@ router.post("/agent/chat", async (req, res) => {
 
       // ── 2b. No function calls → final answer, done ────────────────────────
       if (functionCalls.length === 0) {
+        /*
+         * Disabled legacy behavior:
+         *
+         * if (
+         *   noActionNudges < 2 &&
+         *   looksLikeUnfulfilledActionPromise(cleanedText || fullText)
+         * ) {
+         *   noActionNudges++;
+         *   loopContents = [
+         *     ...loopContents,
+         *     { role: "model" as const, parts: [{ text: fullText }] },
+         *     {
+         *       role: "user" as const,
+         *       parts: [{
+         *         text: "[SYSTEM CHECK] Your previous message announced an action but did NOT include any function call, so nothing was executed. Call the required tool now.",
+         *       }],
+         *     },
+         *   ];
+         *   continue;
+         * }
+         */
         const visibleText = fullText
           .replace(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s, "")
           .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")

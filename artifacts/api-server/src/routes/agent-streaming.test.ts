@@ -118,6 +118,7 @@ test("clip discovery returns recommendations in chat instead of only a tab", () 
 
 test("text-only answers are never rewritten as unfinished actions", () => {
   const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
-  assert.doesNotMatch(source, /looksLikeUnfulfilledActionPromise/);
-  assert.doesNotMatch(source, /Your previous message announced an action but did NOT include any function call/);
+  assert.match(source, /Disabled legacy unfinished-action guard/);
+  assert.doesNotMatch(source, /^function looksLikeUnfulfilledActionPromise/m);
+  assert.doesNotMatch(source, /^\s*let noActionNudges\s*=/m);
 });
