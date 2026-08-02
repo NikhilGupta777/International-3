@@ -95,7 +95,8 @@ function cookiesToNetscape(cookieList: ExportedBrowserCookie[]): string | null {
       domainLower.includes("youtube.com") ||
       domainLower.includes("youtu.be") ||
       domainLower.includes("google.com") ||
-      domainLower.includes("googlevideo.com");
+      domainLower.includes("googlevideo.com") ||
+      domainLower.includes("instagram.com");
     if (!keepCookie) continue;
 
     const path = typeof cookie.path === "string" && cookie.path.trim() ? cookie.path.trim() : "/";
@@ -347,6 +348,38 @@ function isYouTubeUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isInstagramUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      /(^|\.)instagram\.com$/i.test(parsed.hostname) &&
+      /^\/(?:p|reel|reels|tv|stories)\/[^/?#]+/i.test(parsed.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getDownloadPlatformArgs(url: string): string[] {
+  if (isInstagramUrl(url)) {
+    return [
+      "--add-headers",
+      "Referer:https://www.instagram.com/",
+      "--add-headers",
+      "Origin:https://www.instagram.com",
+    ];
+  }
+  if (isYouTubeUrl(url)) {
+    return [
+      "--add-headers",
+      "Referer:https://www.youtube.com/",
+      "--add-headers",
+      "Origin:https://www.youtube.com",
+    ];
+  }
+  return [];
 }
 
 function isYouTubeBlockedError(message: string): boolean {
@@ -733,10 +766,13 @@ async function handleDownload(payload: WorkerPayload): Promise<void> {
 
   const isYt = isYouTubeUrl(payload.sourceUrl);
   const cookieArgs = getCookieArgs();
-  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const defaultPlatformArgs = [
+    ...getDownloadPlatformArgs(payload.sourceUrl),
+    ...(isYt ? getDefaultYouTubeExtractorArgs() : []),
+  ];
   const attemptPlans: string[][] = [];
-  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
-  attemptPlans.push(defaultYoutubeArgs);
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultPlatformArgs]);
+  attemptPlans.push(defaultPlatformArgs);
   const downloadFallbacks: string[][] = getYouTubeFallbacks();
   const attempted = new Set<string>();
   let lastErr: Error | null = null;
@@ -884,7 +920,10 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
   };
   const isYt = isYouTubeUrl(payload.sourceUrl);
   const cookieArgs = getCookieArgs();
-  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const defaultPlatformArgs = [
+    ...getDownloadPlatformArgs(payload.sourceUrl),
+    ...(isYt ? getDefaultYouTubeExtractorArgs() : []),
+  ];
   const downloadFallbacks = getYouTubeFallbacks();
 
   let lastErr: Error | null = null;
@@ -900,8 +939,8 @@ async function handleClipCut(payload: WorkerPayload): Promise<void> {
     ];
 
     const attemptPlans: string[][] = [];
-    if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
-    attemptPlans.push(defaultYoutubeArgs);
+    if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultPlatformArgs]);
+    attemptPlans.push(defaultPlatformArgs);
     const attempted = new Set<string>();
     lastErr = null;
 

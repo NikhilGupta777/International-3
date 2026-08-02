@@ -499,7 +499,7 @@ export default function Home({
     if (!downloadUrl) {
       toast({
         title: "Missing URL",
-        description: "Please paste a valid YouTube URL first.",
+        description: "Please paste a valid YouTube or Instagram URL first.",
         variant: "destructive",
       });
       return;
@@ -515,6 +515,9 @@ export default function Home({
   };
 
   const video = getInfo.data;
+  const isInstagramDownload = /^https?:\/\/(?:[^./]+\.)?instagram\.com\//i.test(
+    submittedUrl || url.trim(),
+  );
   
   const videoFormats = video?.formats?.filter(
     f => f.hasVideo && f.hasAudio && (f.ext === "mp4" || f.formatId.includes("+")),
@@ -915,8 +918,9 @@ export default function Home({
               <div className="flex flex-col gap-5 relative max-w-[720px] mx-auto w-full pt-8 sm:pt-14">
                 <div className="mb-5 max-w-none sm:mb-6">
                   <h1 className="text-4xl font-bold tracking-tight text-white sm:text-5xl lg:text-[38px]">Download</h1>
+                  <p className="mt-3 text-sm font-semibold text-white">YouTube and Instagram supported</p>
                   <p className="mt-3 text-sm leading-relaxed text-zinc-400 sm:text-base lg:text-[15px]">
-                    Download any YouTube video in <strong className="font-semibold text-white/90">MP4, Audio, or 4K</strong> — just paste a link.
+                    Download videos in <strong className="font-semibold text-white/90">MP4 or Audio</strong> — just paste a YouTube video or Instagram post/reel link.
                   </p>
                 </div>
 
@@ -954,11 +958,11 @@ export default function Home({
                         <Search className="h-4.5 w-4.5 text-zinc-500 shrink-0" />
                         <input
                           type="url"
-                          name="youtube_url"
+                          name="video_url"
                           inputMode="url"
                           autoComplete="off"
                           spellCheck={false}
-                          aria-label="YouTube URL"
+                          aria-label="YouTube or Instagram URL"
                           value={url}
                           onChange={(e) => setUrl(e.target.value)}
                           onKeyDown={(e) => {
@@ -969,7 +973,7 @@ export default function Home({
                               }
                             }
                           }}
-                          placeholder={isDownloadInputBlocked ? "Download input is disabled" : "Paste YouTube URL..."}
+                          placeholder={isDownloadInputBlocked ? "Download input is disabled" : "Paste YouTube or Instagram URL..."}
                           disabled={isDownloadInputBlocked}
                           className="flex-1 bg-transparent text-sm leading-5 text-white outline-none placeholder:text-zinc-500 disabled:opacity-60"
                         />
@@ -999,7 +1003,7 @@ export default function Home({
                       <div className="flex-1 min-w-0">
                         <p className="text-amber-200 font-semibold text-sm">Download tab access is limited</p>
                         <p className="text-amber-100/80 text-sm mt-1">
-                          Download support for YouTube, Instagram, and Twitter videos is managed via Telegram.
+                          Download support for YouTube and Instagram videos is managed via Telegram.
                         </p>
                         <a
                           href={telegramUrl}
@@ -1091,9 +1095,9 @@ export default function Home({
                       <div className="flex flex-wrap items-center gap-x-6 gap-y-3 text-white/70">
                         <div className="flex items-center gap-2">
                           <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-900 border border-white/10 flex items-center justify-center font-bold text-xs text-white uppercase shadow-inner">
-                            {video.uploader?.charAt(0) || 'Y'}
+                            {video.uploader?.charAt(0) || (isInstagramDownload ? 'I' : 'Y')}
                           </div>
-                          <span className="font-medium text-white/90">{video.uploader}</span>
+                          <span className="font-medium text-white/90">{video.uploader || (isInstagramDownload ? 'Instagram' : 'YouTube')}</span>
                         </div>
                         <div className="flex items-center gap-2 text-sm">
                           <Eye className="w-4 h-4 text-white/40" />
@@ -1124,7 +1128,7 @@ export default function Home({
                             />
                           ))}
                         </div>
-                        <SubtitleDownloadRow url={submittedUrl} />
+                        {!isInstagramDownload && <SubtitleDownloadRow url={submittedUrl} />}
                       </div>
                     )}
                     {audioFormats.length > 0 && (

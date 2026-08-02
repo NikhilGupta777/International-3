@@ -45,6 +45,12 @@ import {
 import { logger } from "../lib/logger";
 import { evaluateClipHandoff } from "../lib/clip-cut-policy";
 import { normalizeClipRange } from "../lib/clip-cut-validation";
+import {
+  getDownloadPlatform,
+  getDownloadPlatformArgs,
+  isInstagramUrl,
+  isSupportedDownloadUrl,
+} from "../lib/download-source";
 import { createGeminiClient, isGeminiConfigured, isVertexGeminiEnabled, buildThinkingConfig, getPersonalGeminiApiKeysList, generateContentWithRotation } from "../lib/gemini-client";
 import {
   getNotifyClientKey,
@@ -169,7 +175,8 @@ function cookiesToNetscape(cookieList: ExportedBrowserCookie[]): string | null {
       domainLower.includes("youtube.com") ||
       domainLower.includes("youtu.be") ||
       domainLower.includes("google.com") ||
-      domainLower.includes("googlevideo.com");
+      domainLower.includes("googlevideo.com") ||
+      domainLower.includes("instagram.com");
     if (!keepCookie) continue;
 
     const path = typeof cookie.path === "string" && cookie.path.trim() ? cookie.path.trim() : "/";
@@ -911,12 +918,7 @@ function getYtdlpCookieArgs(): string[] {
 }
 
 export function isYouTubeUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i.test(u.hostname);
-  } catch {
-    return false;
-  }
+  return getDownloadPlatform(url) === "youtube";
 }
 
 function isYouTubeBlockedError(message: string): boolean {
@@ -953,6 +955,24 @@ function getUserFriendlyYtError(message: string): string {
     return "Could not find a compatible video format. Please try again.";
   }
   return "Failed to fetch video information";
+}
+
+function getUserFriendlyInfoError(message: string, url: string): string {
+  if (!isInstagramUrl(url)) return getUserFriendlyYtError(message);
+
+  if (/login|log in|sign.?in|cookies?|checkpoint|challenge/i.test(message)) {
+    return "Instagram requires a refreshed login session for this video. Please try again later.";
+  }
+  if (/private|permission|not authorized|not accessible/i.test(message)) {
+    return "This Instagram video is private or cannot be accessed.";
+  }
+  if (/http error 429|too many requests|rate.?limit/i.test(message)) {
+    return "Instagram is rate-limiting our server. Please wait a moment and try again.";
+  }
+  if (/unsupported|unavailable|removed|not found|no video formats/i.test(message)) {
+    return "This Instagram post is unavailable or does not contain a downloadable video.";
+  }
+  return "Failed to fetch Instagram video information";
 }
 
 function getDownloaderFailureMessage(message: string): string {
@@ -1020,18 +1040,17 @@ async function runYtDlp(
   const maybeUrl = [...args].reverse().find((v) => /^https?:\/\//i.test(v));
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = !!(maybeUrl && isYouTubeUrl(maybeUrl));
-  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const platformArgs = maybeUrl ? getDownloadPlatformArgs(maybeUrl) : [];
+  const defaultPlatformArgs = [
+    ...platformArgs,
+    ...(isYt ? getDefaultYouTubeExtractorArgs() : []),
+  ];
   const maxAttempts = Math.max(1, options.maxAttempts ?? Number.POSITIVE_INFINITY);
   let attemptsUsed = 0;
 
   const attemptPlans: string[][] = [];
-  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
-  attemptPlans.push(defaultYoutubeArgs);
-  if (!isYt) {
-    attemptPlans.length = 0;
-    if (cookieArgs.length) attemptPlans.push(cookieArgs);
-    attemptPlans.push([]);
-  }
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultPlatformArgs]);
+  attemptPlans.push(defaultPlatformArgs);
 
   // Fallback player clients ordered by reliability on AWS/GCP datacenter IPs.
   // tv_embedded (YouTube TV embedded player) is least bot-checked on server IPs.
@@ -1702,14 +1721,9 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     return;
   }
 
-  if (
-    !extractVideoId(normalizedUrl) &&
-    !normalizedUrl.includes("youtube.com") &&
-    !normalizedUrl.includes("youtu.be")
-  ) {
+  if (!isSupportedDownloadUrl(normalizedUrl)) {
     res.status(400).json({
-      error:
-        "Invalid YouTube URL. Use a link like https://www.youtube.com/watch?v=...",
+      error: "Invalid URL. Paste a YouTube video or Instagram post/reel link.",
     });
     return;
   }
@@ -1718,6 +1732,13 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     const data = await runYtDlpMetadata(normalizedUrl);
 
     const formats = buildFormats(data.formats ?? [], data.duration ?? null);
+
+    if (isInstagramUrl(normalizedUrl) && !formats.some((format) => format.hasVideo)) {
+      res.status(400).json({
+        error: "This Instagram post does not contain a downloadable video.",
+      });
+      return;
+    }
 
     const thumbnail =
       data.thumbnail ??
@@ -1767,7 +1788,7 @@ router.post("/youtube/info", async (req: Request, res: Response) => {
     const message = err instanceof Error ? err.message : "Unknown error";
     res
       .status(500)
-      .json({ error: getUserFriendlyYtError(message), details: message });
+      .json({ error: getUserFriendlyInfoError(message, normalizedUrl), details: message });
   }
 });
 
@@ -1786,6 +1807,12 @@ router.post("/youtube/download", downloadRateLimiter, async (req: Request, res: 
 
   const jobId = randomUUID();
   const normalizedUrl = normalizeInputUrl(url);
+  if (!isSupportedDownloadUrl(normalizedUrl)) {
+    res.status(400).json({
+      error: "Invalid URL. Paste a YouTube video or Instagram post/reel link.",
+    });
+    return;
+  }
   const notifyClientKey = getNotifyClientKey(req);
 
   if (isYoutubeQueuePrimaryEnabledFor("download")) {
@@ -2138,19 +2165,17 @@ async function tryProcessClipCutViaFullSource(
   await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = isYouTubeUrl(jobRef.url);
-  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const defaultPlatformArgs = [
+    ...getDownloadPlatformArgs(jobRef.url),
+    ...(isYt ? getDefaultYouTubeExtractorArgs() : []),
+  ];
   const downloadFallbacks = isYt ? getYouTubeFallbacks() : [];
   const attemptPlans: string[][] = [];
-  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
-  attemptPlans.push(defaultYoutubeArgs);
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultPlatformArgs]);
+  attemptPlans.push(defaultPlatformArgs);
   for (const fallback of downloadFallbacks) {
     if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...fallback]);
     attemptPlans.push(fallback);
-  }
-  if (!isYt) {
-    attemptPlans.length = 0;
-    if (cookieArgs.length) attemptPlans.push(cookieArgs);
-    attemptPlans.push([]);
   }
 
   let lastErr: Error | null = null;
@@ -2249,7 +2274,10 @@ async function processClipCut(
   await ensureYtdlpCookiesLoaded();
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = isYouTubeUrl(job.url);
-  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const defaultPlatformArgs = [
+    ...getDownloadPlatformArgs(job.url),
+    ...(isYt ? getDefaultYouTubeExtractorArgs() : []),
+  ];
   const downloadFallbacks: string[][] = getYouTubeFallbacks();
 
   let lastErr: Error | null = null;
@@ -2277,8 +2305,8 @@ async function processClipCut(
     }
 
     const attemptPlans: string[][] = [];
-    if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
-    attemptPlans.push(defaultYoutubeArgs);
+    if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultPlatformArgs]);
+    attemptPlans.push(defaultPlatformArgs);
 
     const attempted = new Set<string>();
     lastErr = null;
@@ -3279,11 +3307,14 @@ async function processDownload(jobId: string, job: DownloadJob): Promise<void> {
   const cookieArgs = getYtdlpCookieArgs();
   const isYt = isYouTubeUrl(job.url);
 
-  const defaultYoutubeArgs = isYt ? getDefaultYouTubeExtractorArgs() : [];
+  const defaultPlatformArgs = [
+    ...getDownloadPlatformArgs(job.url),
+    ...(isYt ? getDefaultYouTubeExtractorArgs() : []),
+  ];
   // Attempt order: (1) default mode [+cookies], (2) each client fallback [+cookies]
   const attemptPlans: string[][] = [];
-  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultYoutubeArgs]);
-  attemptPlans.push(defaultYoutubeArgs);
+  if (cookieArgs.length) attemptPlans.push([...cookieArgs, ...defaultPlatformArgs]);
+  attemptPlans.push(defaultPlatformArgs);
 
   const downloadFallbacks: string[][] = getYouTubeFallbacks();
 
