@@ -4157,6 +4157,7 @@ router.get("/youtube/subtitles", async (req: Request, res: Response) => {
     const bestBeforeFiles = pickFullestSubtitleCandidate(candidates);
     const shouldTryFiles =
       !bestBeforeFiles ||
+      videoDurationSec == null ||
       (videoDurationSec != null &&
         bestBeforeFiles.coverageEndSec > 0 &&
         bestBeforeFiles.coverageEndSec < videoDurationSec * 0.8 &&

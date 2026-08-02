@@ -25,6 +25,7 @@ import { loadActiveClipJobs, saveActiveClipJobs, saveToClipHistory } from "@/lib
 import { saveToMusicHistory } from "@/lib/music-history";
 import { upsertActiveTranslatorJob } from "@/lib/translator-history";
 import { getToolResultError } from "@/lib/copilot-tool-state";
+import { captionResultForHistory } from "@/lib/copilot-caption-memory";
 
 const ULTRA_KEY = "studio-ultra-mode";
 // Separate key persists the selected production model across reloads.
@@ -3169,9 +3170,12 @@ export function StudioCopilot({
             .filter((p: any) => p.kind === "tool_start" && p.done)
             .map((p: any) => {
               const compactArgs = JSON.stringify(p.args ?? {}).slice(0, 1200);
+              const historyResult = captionResultForHistory(allMsgs, idx, p);
               const resultStr = p.result?.error
                 ? `ERROR: ${p.result.error}`
-                : JSON.stringify(p.result ?? {}).slice(0, 2000);
+                : p.name === "get_youtube_captions"
+                  ? JSON.stringify(historyResult ?? {})
+                  : JSON.stringify(p.result ?? {}).slice(0, 2000);
               // Past-tense narrative, NOT a bracketed protocol — the model
               // imitates whatever format appears in its own prior turns, and
               // the old "[Tool: ...]" markers taught it to emit tool calls as
