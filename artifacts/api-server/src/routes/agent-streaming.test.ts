@@ -115,3 +115,9 @@ test("clip discovery returns recommendations in chat instead of only a tab", () 
   assert.match(bestClipsCase, /Present every returned clip in the visible chat/);
   assert.match(source, /never respond with only the table, Best Clips tab, tool card/);
 });
+
+test("text-only answers are never rewritten as unfinished actions", () => {
+  const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
+  assert.doesNotMatch(source, /looksLikeUnfulfilledActionPromise/);
+  assert.doesNotMatch(source, /Your previous message announced an action but did NOT include any function call/);
+});

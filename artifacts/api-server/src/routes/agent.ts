@@ -263,29 +263,6 @@ async function cancelAgentRunJobs(req: any, reason: string): Promise<void> {
   );
 }
 
-// ── Detect "announced an action but called no tool" turns ──────────────────
-// With functionCallingConfig AUTO the model sometimes emits its announcement
-// ("Okay — I'll cut the 40–57 second section right now") and ends the turn
-// without the function call. Without a guard the loop treats that as a final
-// answer and the run dies with an empty promise. Match intent phrasing
-// (English + Hinglish) followed near an action verb, plus leaked text-form
-// tool syntax the model may imitate from history.
-const PROMISE_INTENT_RE =
-  /\b(?:i(?:'|’)?ll|i\s+will|i(?:'|’)?m\s+(?:going|about)\s+to|let\s+me|going\s+to|about\s+to|abhi|turant|shuru\s+kar|kar(?:ta|ti)\s+h(?:oon|u)n?|kar\s+(?:raha|rahi|deta|deti|dete))\b[\s\S]{0,100}?\b(?:cut|clip|download|subtitle|caption|timestamp|translat|dub|generat|creat|render|analy[sz]|search|fetch|extract|convert|upload|check|run|start|kaat|nikaal)/i;
-const GERUND_INTENT_RE =
-  /\b(?:cutting|downloading|generating|translating|analyzing|rendering|creating|fetching|extracting|starting)\b[\s\S]{0,60}?\b(?:now|right\s+away|abhi|for\s+you)\b/i;
-const TEXT_TOOL_SYNTAX_RE = /\[Tool:\s*\w+/i;
-
-function looksLikeUnfulfilledActionPromise(text: string): boolean {
-  const t = String(text ?? "");
-  if (!t.trim()) return false;
-  return (
-    TEXT_TOOL_SYNTAX_RE.test(t) ||
-    PROMISE_INTENT_RE.test(t) ||
-    GERUND_INTENT_RE.test(t)
-  );
-}
-
 // ── Strip model-internal tags before sending to client ─────────────────────
 // Gemini 3 Flash / Pro can emit reasoning, thought, response wrappers, and our
 // own [SUGGESTIONS:] marker. None of these should reach the browser as raw text.
@@ -5895,7 +5872,6 @@ router.post("/agent/chat", async (req, res) => {
     // Vertex is disabled in gemini-client.ts, so countTokens/cache preflight is skipped.
     let iterations = 0;
     let emptyResponseRetries = 0;
-    let noActionNudges = 0;
     let streamReadRetries = 0;
     let finalAnswerSent = false;
 
@@ -6312,45 +6288,6 @@ router.post("/agent/chat", async (req, res) => {
 
       // ── 2b. No function calls → final answer, done ────────────────────────
       if (functionCalls.length === 0) {
-        // Announce-then-stop guard: the model promised an action (or emitted
-        // tool syntax as text) without an actual function call. Push a hidden
-        // correction turn and let it execute for real — this is what makes the
-        // agent follow through instead of ending on "Okay, I'll cut it now".
-        if (
-          noActionNudges < 2 &&
-          looksLikeUnfulfilledActionPromise(cleanedText || fullText)
-        ) {
-          noActionNudges++;
-          console.warn(
-            `[agent] run ${runId} iter ${iterations}: text-only turn looks like an unfulfilled action promise — nudging (${noActionNudges}/2)`,
-          );
-          // Close any canvas left open by this turn so the UI doesn't hang.
-          if (activeCanvas) {
-            sseEvent(res, {
-              type: "canvas_done",
-              runId,
-              canvasId: (activeCanvas as { id: string }).id,
-            });
-            activeCanvas = null;
-          }
-          // Show the announcement if it wasn't already streamed live.
-          if (!streamedTextLive && cleanedText) {
-            sseEvent(res, { type: "text", content: cleanedText, runId });
-          }
-          loopContents = [
-            ...loopContents,
-            { role: "model" as const, parts: [{ text: fullText }] },
-            {
-              role: "user" as const,
-              parts: [
-                {
-                  text: "[SYSTEM CHECK] Your previous message announced an action but did NOT include any function call, so nothing was executed. Do not repeat the announcement and do not write tool syntax as text. Call the required tool(s) now via real function calling. If the action is impossible, state clearly why instead.",
-                },
-              ],
-            },
-          ];
-          continue;
-        }
         const visibleText = fullText
           .replace(/\[SUGGESTIONS:\s*(.+?)\]\s*$/s, "")
           .replace(/\[SUGGEST(?:IONS|OESTIONS):[^\]]*\]\s*$/gi, "")
