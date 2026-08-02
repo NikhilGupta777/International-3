@@ -36,9 +36,10 @@ test("Copilot exposes configured primaries with model-specific fallbacks", () =>
   );
   assert.match(
     source,
-    /model === COPILOT_ULTRA_FALLBACK_MODEL[\s\S]*?return OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT/,
+    /model === COPILOT_ULTRA_FALLBACK_MODEL[\s\S]*?basePrompt = OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT/,
     "Ollama fallback should use a compact Ultra-capable prompt",
   );
+  assert.match(source, /return `\$\{basePrompt\}\\n\\n\$\{CLIP_DELIVERY_PROMPT\}`/);
   assert.doesNotMatch(
     source.match(/const OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT = `[\s\S]*?`;/)?.[0] ?? "",
     /switch to Ultra/i,
@@ -100,6 +101,8 @@ test("YouTube caption tool keeps the complete fetched SRT in model context", () 
 
   assert.match(captionCase, /const content = rawText;/);
   assert.match(captionCase, /fullContentInContext: true/);
+  assert.match(captionCase, /signal: captionController\.signal/);
+  assert.match(captionCase, /MAX_CAPTION_BYTES,\s*captionController/);
   assert.doesNotMatch(captionCase, /rawText\.slice\(/);
 });
 
@@ -111,9 +114,12 @@ test("clip discovery returns recommendations in chat instead of only a tab", () 
   const bestClipsCase = source.slice(bestClipsStart, bestClipsEnd);
 
   assert.match(bestClipsCase, /youtube\/clips\/status/);
+  assert.doesNotMatch(bestClipsCase, /youtube\/progress/);
   assert.match(bestClipsCase, /clips: clipResult\.clips/);
   assert.match(bestClipsCase, /Present every returned clip in the visible chat/);
   assert.match(source, /never respond with only the table, Best Clips tab, tool card/);
+  assert.match(source, /Clip discovery rules for every mode/);
+  assert.match(source, /Use the complete available context for long documents and transcripts/);
 });
 
 test("text-only answers are never rewritten as unfinished actions", () => {

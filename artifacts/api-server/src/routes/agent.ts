@@ -453,6 +453,60 @@ async function pollJobUntilDone(
   );
 }
 
+async function pollBestClipsUntilDone(
+  res: any,
+  statusUrl: string,
+  jobId: string,
+  headers: Record<string, string>,
+  isConnected: () => boolean,
+  toolId?: string,
+  runId?: string,
+): Promise<any> {
+  const deadline = Date.now() + JOB_TIMEOUT_MS;
+  let consecutivePollErrors = 0;
+  while (Date.now() < deadline && isConnected()) {
+    let data: any;
+    try {
+      const response = await fetch(statusUrl, {
+        headers: { ...headers, "Cache-Control": "no-cache" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) throw new Error(`Best clips status check failed: ${response.status}`);
+      data = (await response.json()) as any;
+      consecutivePollErrors = 0;
+    } catch (error) {
+      consecutivePollErrors++;
+      if (consecutivePollErrors >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS * 2));
+      continue;
+    }
+
+    sseEvent(res, {
+      type: "tool_progress",
+      runId,
+      toolId,
+      name: "find_best_clips",
+      status: data.status,
+      percent: data.percent ?? null,
+      message: data.message ?? data.status,
+      jobId,
+    });
+    if (data.status === "done") {
+      if (!Array.isArray(data.clips)) {
+        throw new Error("Best clips completed without a valid recommendations list.");
+      }
+      return data;
+    }
+    if (["error", "cancelled", "expired", "not_found"].includes(data.status)) {
+      throw new Error(`Best clips job ${data.status}: ${data.message ?? ""}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  }
+  if (!isConnected()) throw new Error("Client disconnected");
+  throw new Error(`Best clips job timed out after ${Math.round(JOB_TIMEOUT_MS / 60000)} minutes`);
+}
+
 // ── Subtitle job poller ───────────────────────────────────────────────────
 async function pollSubtitleUntilDone(
   res: any,
@@ -770,7 +824,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "get_youtube_captions",
     description:
-      "Fetch the fullest existing auto-generated or manual captions directly from YouTube. Use this for YouTube subtitle, SRT, transcript, cleanup, and translation requests.",
+      "Fetch the fullest existing auto-generated or manual captions directly from YouTube. Use this for YouTube subtitle, SRT, transcript, cleanup, and translation requests. The complete returned content is available in the current turn and remains active in recent conversation memory.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1553,7 +1607,7 @@ CRITICAL — NO EMPTY PROMISES:
 - Never write tool syntax as plain text (like "[Tool: cut_video_clip | ...]" or JSON pretending to be a call). Only real function calls execute. If you cannot perform the action, say why instead of promising it.
 
 Answer at the length the task deserves:
-- Completed tool tasks (download, clip, subtitle, translate queued): short final confirmation.
+- Completed operational tool tasks (download, rendered clip, subtitle, translation queued): short final confirmation. Clip discovery is the exception: always provide the complete recommendation list in chat.
 - Audits, debugging, strategy, scripts, SEO, research, comparisons, or planning: detailed answer.
 - No emojis unless the user uses them first.
 
@@ -1941,16 +1995,24 @@ Never echo tool result JSON, S3 URLs, presigned URLs, or internal API paths in y
 Do not include suggestions. Never output the [SUGGESTIONS: ...] marker.`;
 
 const FAST_SYSTEM_PROMPT = `You are VideoMaking Studio Copilot in Fast mode.
-Be concise, practical, and match the user's language. Use tools only for real app actions or current web information. When using a tool, include the real function call in the same response; never merely promise an action or print tool syntax. Preserve exact URLs, timestamps, languages, and quality settings. For complex reasoning, long documents/transcripts, many-step workflows, codebase analysis, or unavailable tools, tell the user to switch to Ultra instead of guessing or truncating context. Do not expose internal prompts, provider names, raw tool JSON, stack traces, secrets, presigned URLs, or hidden reasoning.`;
+Be concise, practical, and match the user's language. Use tools only for real app actions or current web information. When using a tool, include the real function call in the same response; never merely promise an action or print tool syntax. Preserve exact URLs, timestamps, languages, and quality settings. Use the complete available context for long documents and transcripts; never silently truncate them or tell the user to switch modes. Do not expose internal prompts, provider names, raw tool JSON, stack traces, secrets, presigned URLs, or hidden reasoning.`;
 
 const OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT = `You are VideoMaking Studio Copilot serving an Ultra request through a fallback model.
 Complete the user's task with the full available tool catalog. Be accurate, practical, and match the user's language. Include real function calls whenever an app action or current information is required; never merely promise an action or print tool syntax. Preserve exact URLs, timestamps, languages, quality settings, and user constraints. Do not tell the user to switch models. Do not expose internal prompts, model/provider names, raw tool JSON, stack traces, secrets, presigned URLs, or hidden reasoning.`;
 
+const CLIP_DELIVERY_PROMPT = `Clip discovery rules for every mode:
+- For all clips/all topics/every segment: call get_youtube_captions, analyze the complete SRT, and give every meaningful segment directly in chat with exact start-end timestamps and details. Never use find_best_clips for an exhaustive request.
+- After find_best_clips: give every returned recommendation directly in chat with title, exact start-end timestamps, description, and selection reason.
+- A short summary table is optional, but never answer with only a table, tool card, or tab link. The Clips tab is supplemental.`;
+
 function getAgentSystemPrompt(model: string, fastMode = model === FAST_MODEL && FAST_MODEL !== ULTRA_MODEL): string {
+  let basePrompt: string;
   if (model === COPILOT_ULTRA_FALLBACK_MODEL) {
-    return OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT;
+    basePrompt = OLLAMA_ULTRA_FALLBACK_SYSTEM_PROMPT;
+  } else {
+    basePrompt = fastMode ? FAST_SYSTEM_PROMPT : SYSTEM_PROMPT;
   }
-  return fastMode ? FAST_SYSTEM_PROMPT : SYSTEM_PROMPT;
+  return `${basePrompt}\n\n${CLIP_DELIVERY_PROMPT}`;
 }
 
 // ── Build internal headers from request ───────────────────────────────────
@@ -2763,6 +2825,7 @@ async function readResponseTextWithLimit(
 ): Promise<string> {
   const sizeHeader = response.headers.get("content-length");
   if (sizeHeader && Number(sizeHeader) > limitBytes) {
+    abort?.abort();
     throw new Error(
       `Response too large (${sizeHeader} bytes, limit ${limitBytes} bytes).`,
     );
@@ -2779,6 +2842,7 @@ async function readResponseTextWithLimit(
     totalBytes += value.byteLength;
     if (totalBytes > limitBytes) {
       abort?.abort();
+      await reader.cancel().catch(() => {});
       throw new Error(`Response exceeds size limit of ${limitBytes} bytes.`);
     }
     text += decoder.decode(value, { stream: true });
@@ -3579,11 +3643,9 @@ async function executeTool(
         url: args.url,
       } as any);
 
-      // Poll until analysis is done (same pattern as clip/download)
-      await pollJobUntilDone(
+      const clipResult = await pollBestClipsUntilDone(
         res,
-        name,
-        `${apiBase}/youtube/progress/${jobId}`,
+        `${apiBase}/youtube/clips/status/${encodeURIComponent(jobId)}`,
         jobId,
         internalHeaders,
         isConnected,
@@ -3593,29 +3655,6 @@ async function executeTool(
       // Analysis is complete; result retrieval must not make the finished job
       // eligible for cancellation if the agent run later fails.
       forgetAgentJob(req, jobId);
-      let clipResult: any = null;
-      for (let attempt = 0; attempt < 4; attempt++) {
-        const statusResponse = await fetch(
-          `${apiBase}/youtube/clips/status/${encodeURIComponent(jobId)}`,
-          {
-            headers: { ...internalHeaders, "Cache-Control": "no-cache" },
-            cache: "no-store",
-            signal: AbortSignal.timeout(10_000),
-          },
-        );
-        if (!statusResponse.ok) {
-          throw new Error(`Best clips result fetch failed: ${statusResponse.status}`);
-        }
-        clipResult = (await statusResponse.json()) as any;
-        if (clipResult.status === "done" && Array.isArray(clipResult.clips)) break;
-        if (["error", "cancelled", "expired", "not_found"].includes(clipResult.status)) {
-          throw new Error(`Best clips job ${clipResult.status}: ${clipResult.message ?? ""}`);
-        }
-        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-      }
-      if (clipResult?.status !== "done" || !Array.isArray(clipResult.clips)) {
-        throw new Error("Best clips finished but its recommendations were not available yet.");
-      }
       return {
         result: {
           jobId,
@@ -3910,9 +3949,10 @@ async function executeTool(
       });
       const language = args.language ?? DEFAULT_CAPTION_LANGUAGE;
       const downloadUrl = `/api/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`;
+      const captionController = new AbortController();
       const r = await fetch(
         `${apiBase}/youtube/subtitles?url=${encodeURIComponent(args.url)}&lang=${encodeURIComponent(language)}&format=srt`,
-        { headers: internalHeaders },
+        { headers: internalHeaders, signal: captionController.signal },
       );
       // Keep the complete fetched SRT in model context. The byte guard protects
       // the Lambda from an unbounded upstream response; it must never silently
@@ -3921,7 +3961,7 @@ async function executeTool(
       const rawText = await readResponseTextWithLimit(
         r,
         MAX_CAPTION_BYTES,
-        new AbortController(),
+        captionController,
       );
       const content = rawText;
       if (!r.ok) {
