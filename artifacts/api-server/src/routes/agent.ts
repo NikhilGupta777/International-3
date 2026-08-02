@@ -674,7 +674,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "find_best_clips",
     description:
-      "Find a selective set of the most valuable highlight segments from a long YouTube video. Polls until analysis is complete and returns a Best Clips tab artifact. Use for highlights, shorts, viral moments, or best clips. Do NOT use when the user asks for all clips/all topics/every segment from a video; for that exhaustive topic breakdown, fetch captions with get_youtube_captions and answer in chat.",
+      "Find a selective set of the most valuable highlight segments from a long YouTube video. Polls until analysis is complete and returns the actual clip titles, timestamps, descriptions, and selection reasons for a required chat answer, plus an optional Best Clips tab artifact. Use for highlights, shorts, viral moments, or best clips. Never answer only with a table, tool card, or tab link. Do NOT use when the user asks for all clips/all topics/every segment from a video; for that exhaustive topic breakdown, fetch captions with get_youtube_captions and answer in chat.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -1637,6 +1637,7 @@ Do not run a heavy tool just because a URL exists in context:
 - User asks for summary/quotes/moments → answer directly using native YouTube capabilities, do NOT use analyze_youtube_video
 - User asks for existing YouTube captions, an SRT file, a transcript, or "transcribe this YouTube video" → get_youtube_captions
 - User asks "give all clips from this video", "all topics from this video", "all segments", "every clip", or similar exhaustive clip/topic breakdown for a YouTube URL → get_youtube_captions first, then analyze the full returned SRT in chat. Do NOT call find_best_clips, do NOT open/use the Best Clips tab, and do NOT cut/render clips unless the user gives exact ranges later.
+- For every clip-discovery request, put the actual clip recommendations in the visible chat. A short table is allowed only as a summary; it must not replace the numbered clip details. Never give only a tool card, table, or tab link.
 - User gives exact clip times → cut_video_clip directly, not web_search first
 - User asks for SEO/title/script from their own idea → answer directly unless they ask for export/download
 - User asks for visible text from image in chat → answer directly unless they need the text extracted as a file
@@ -1825,6 +1826,13 @@ When the user asks for all clips, all topics, every segment, a complete clip lis
   1. A numbered list where each clip has: "Clip title", "Time: HH:MM:SS - HH:MM:SS", and "Details:" with 2-4 bullets explaining what is said.
   2. After the list, add a short "Coverage summary" explaining why these segments were chosen.
   3. End with a short italic conclusion note listing any dropped time ranges and why they were not included.
+
+# SELECTIVE BEST CLIPS IN CHAT
+
+After find_best_clips completes, always use the returned clips to answer visibly in chat:
+- Give a numbered list containing every returned clip, with its title, exact start-end timestamps, description, and why it was selected.
+- A small summary table may appear before the list, but never respond with only the table, Best Clips tab, tool card, or "view results" message.
+- The Best Clips tab is supplemental: mention it briefly for downloading or continuing work only after the complete chat list.
 
 # MULTI-STEP REASONING
 
@@ -3584,12 +3592,39 @@ async function executeTool(
         toolId,
         runId,
       );
+      // Analysis is complete; result retrieval must not make the finished job
+      // eligible for cancellation if the agent run later fails.
       forgetAgentJob(req, jobId);
+      let clipResult: any = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const statusResponse = await fetch(
+          `${apiBase}/youtube/clips/status/${encodeURIComponent(jobId)}`,
+          {
+            headers: { ...internalHeaders, "Cache-Control": "no-cache" },
+            cache: "no-store",
+            signal: AbortSignal.timeout(10_000),
+          },
+        );
+        if (!statusResponse.ok) {
+          throw new Error(`Best clips result fetch failed: ${statusResponse.status}`);
+        }
+        clipResult = (await statusResponse.json()) as any;
+        if (clipResult.status === "done" && Array.isArray(clipResult.clips)) break;
+        if (["error", "cancelled", "expired", "not_found"].includes(clipResult.status)) {
+          throw new Error(`Best clips job ${clipResult.status}: ${clipResult.message ?? ""}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+      if (clipResult?.status !== "done" || !Array.isArray(clipResult.clips)) {
+        throw new Error("Best clips finished but its recommendations were not available yet.");
+      }
       return {
         result: {
           jobId,
-          message:
-            "Best clips analysis complete. View results in the Best Clips tab.",
+          clips: clipResult.clips,
+          hasTranscript: Boolean(clipResult.hasTranscript),
+          videoDuration: Number(clipResult.videoDuration) || 0,
+          message: "Best clips analysis complete. Present every returned clip in the visible chat with title, exact timestamps, description, and selection reason. The Best Clips tab is supplemental.",
         },
         artifact: {
           artifactType: "tab_link",

@@ -102,3 +102,16 @@ test("YouTube caption tool keeps the complete fetched SRT in model context", () 
   assert.match(captionCase, /fullContentInContext: true/);
   assert.doesNotMatch(captionCase, /rawText\.slice\(/);
 });
+
+test("clip discovery returns recommendations in chat instead of only a tab", () => {
+  const source = readFileSync(join(__dirname, "agent.ts"), "utf8");
+  const executorStart = source.indexOf("async function executeTool");
+  const bestClipsStart = source.indexOf('case "find_best_clips":', executorStart);
+  const bestClipsEnd = source.indexOf('case "generate_timestamps":', bestClipsStart);
+  const bestClipsCase = source.slice(bestClipsStart, bestClipsEnd);
+
+  assert.match(bestClipsCase, /youtube\/clips\/status/);
+  assert.match(bestClipsCase, /clips: clipResult\.clips/);
+  assert.match(bestClipsCase, /Present every returned clip in the visible chat/);
+  assert.match(source, /never respond with only the table, Best Clips tab, tool card/);
+});
