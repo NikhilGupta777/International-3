@@ -48,6 +48,7 @@ import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { logger } from "../lib/logger";
 import { normalizeInputUrl, isYouTubeUrl } from "./youtube";
+import { isSupportedDownloadUrl } from "../lib/download-source";
 import {
   getArtifactValidationError,
   getCleanAgentErrorMessage,
@@ -709,11 +710,15 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "download_video",
     description:
-      "Download a full YouTube video and deliver a download link. WAITS for completion and returns a download link.",
+      "Download a full YouTube video or supported Instagram post/reel/video and deliver a download link. Use only for full downloads; Instagram captions, analysis, subtitles, and clip cutting are unsupported. WAITS for completion and returns a download link.",
     parameters: {
       type: Type.OBJECT,
       properties: {
-        url: { type: Type.STRING, description: "YouTube video URL" },
+        url: {
+          type: Type.STRING,
+          description:
+            "YouTube video URL or supported Instagram post/reel/video URL",
+        },
         quality: {
           type: Type.STRING,
           description:
@@ -1691,6 +1696,7 @@ Do not run a heavy tool just because a URL exists in context:
 - User asks "give all clips from this video", "all topics from this video", "all segments", "every clip", or similar exhaustive clip/topic breakdown for a YouTube URL → get_youtube_captions first, then analyze the full returned SRT in chat. Do NOT call find_best_clips, do NOT open/use the Best Clips tab, and do NOT cut/render clips unless the user gives exact ranges later.
 - For every clip-discovery request, put the actual clip recommendations in the visible chat. A short table is allowed only as a summary; it must not replace the numbered clip details. Never give only a tool card, table, or tab link.
 - User gives exact clip times → cut_video_clip directly, not web_search first
+- User asks to download an Instagram post, reel, or video → download_video directly. Never send Instagram URLs to captions, transcript, analysis, subtitle, timestamp, best-clips, or clip-cutting tools.
 - User asks for SEO/title/script from their own idea → answer directly unless they ask for export/download
 - User asks for visible text from image in chat → answer directly unless they need the text extracted as a file
 
@@ -1741,7 +1747,7 @@ Do not ask "should I continue?" after partial work if the user clearly asked for
 | "translate this existing SRT / translate these captions" | Use the SRT already in context from get_youtube_captions; do not call get_youtube_captions again unless no SRT is available |
 | "fix / clean pasted SRT/VTT/TXT" | answer directly with the complete cleaned text in a correctly labelled \`\`\`srt, \`\`\`vtt, or \`\`\`text fenced block; never use the hidden canvas protocol |
 | "cut from X to Y / make a clip" | cut_video_clip |
-| "download the whole video / get the audio" | download_video (use quality='audio_only' for audio) |
+| "download the whole YouTube or Instagram video / get the audio" | download_video (use quality='audio_only' for audio; Instagram supports full downloads only) |
 | "give all clips from this video / all topics / every segment" | get_youtube_captions, then analyze the full SRT and answer in chat (never find_best_clips) |
 | "find best moments / highlights / shorts" | find_best_clips |
 | "make chapter timestamps" | generate_timestamps |
@@ -1911,6 +1917,7 @@ When the user assigns a task, complete the full workflow without asking for step
 - Always pass startTime/endTime as 'MM:SS' or 'HH:MM:SS' exactly as the user typed them.
 - cut_video_clip: default 1080p unless user asks otherwise.
 - download_video: default best (omit quality) unless user picked one. For audio/mp3 use quality='audio_only'.
+- Instagram post/reel/video download requests: call download_video directly. Instagram captions, transcript analysis, subtitles, timestamps, best clips, and clip cutting are unsupported and must remain YouTube-only.
 - translate_video: voiceClone defaults to true (preserves original speaker), lipSync defaults to false (slow + GPU-heavy).
 
 # UPLOADED FILES
@@ -3412,6 +3419,12 @@ async function executeTool(
     }
 
     case "download_video": {
+      const url = String(args.url ?? "").trim();
+      if (!isSupportedDownloadUrl(url)) {
+        throw new Error(
+          "Paste a supported YouTube video or Instagram post/reel/video link.",
+        );
+      }
       const quality = args.quality ?? "best";
       logTool("Calling internal API", {
         method: "POST",
@@ -3441,7 +3454,7 @@ async function executeTool(
       const r = await fetch(`${apiBase}/youtube/download`, {
         method: "POST",
         headers: internalHeaders,
-        body: JSON.stringify({ url: args.url, formatId }),
+        body: JSON.stringify({ url, formatId }),
       });
       if (!r.ok) {
         const err = (await r.json().catch(() => ({}))) as any;
@@ -3462,7 +3475,7 @@ async function executeTool(
         status: "processing",
         message: "Starting download...",
         jobId,
-        url: args.url,
+        url,
       } as any);
 
       const final = await pollJobUntilDone(
@@ -3482,7 +3495,7 @@ async function executeTool(
           jobId,
           downloadUrl,
           filename: final.filename,
-          url: args.url,
+          url,
           quality,
         },
         artifact: {

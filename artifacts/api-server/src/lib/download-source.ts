@@ -2,6 +2,7 @@ export type DownloadPlatform = "youtube" | "instagram";
 
 const YOUTUBE_HOST_RE = /(^|\.)youtube\.com$|(^|\.)youtu\.be$/i;
 const INSTAGRAM_HOST_RE = /(^|\.)instagram\.com$/i;
+const YOUTUBE_VIDEO_PATH_RE = /^\/(?:watch|shorts|live|embed|v)(?:\/|$)/i;
 const INSTAGRAM_VIDEO_PATH_RE = /^\/(?:p|reel|reels|tv|stories)\/[^/?#]+/i;
 
 export function getDownloadPlatform(rawUrl: string): DownloadPlatform | null {
@@ -9,7 +10,13 @@ export function getDownloadPlatform(rawUrl: string): DownloadPlatform | null {
     const url = new URL(rawUrl);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
 
-    if (YOUTUBE_HOST_RE.test(url.hostname)) return "youtube";
+    if (YOUTUBE_HOST_RE.test(url.hostname)) {
+      const isShortUrl = /(^|\.)youtu\.be$/i.test(url.hostname);
+      const isSupportedVideoPath = isShortUrl
+        ? /^\/[^/?#]+/.test(url.pathname)
+        : YOUTUBE_VIDEO_PATH_RE.test(url.pathname);
+      if (isSupportedVideoPath) return "youtube";
+    }
     if (
       INSTAGRAM_HOST_RE.test(url.hostname) &&
       INSTAGRAM_VIDEO_PATH_RE.test(url.pathname)
