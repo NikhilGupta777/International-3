@@ -7,6 +7,10 @@ import pino from "pino";
 import MiniSearch from "minisearch";
 import { setupSse, sseFlush } from "../lib/sse";
 import { getGeminiApiKeyForAttempt, getPersonalKeysForCaller } from "../lib/gemini-client";
+import {
+  isExternalCopilotConfigured,
+  streamExternalCopilot,
+} from "../lib/copilot-external-provider";
 
 const router = Router();
 const logger = pino({ name: "notebook-search" });
@@ -428,6 +432,8 @@ FORMATTING CONSTRAINTS:
   ]
 };
 
+const systemInstructionText = String(systemInstruction.parts[0]?.text ?? "");
+
 router.get("/notebook/health", (_req: Request, res: Response) => {
   try {
     const stats = getDatabaseStats();
@@ -484,6 +490,9 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
   };
 
   const modelName = process.env.FIND_VIDEO_MODEL || "gemini-3.1-flash-lite";
+  // Groq Compound's base 70K TPM allowance is above Find Video's 60K/min
+  // requirement. Gemini remains the provider fallback and is still required.
+  const primaryModel = process.env.FIND_VIDEO_PRIMARY_MODEL || "groq:compound";
   const geminiKeys = getPersonalKeysForCaller("find-video");
 
   if (geminiKeys.length === 0) {
@@ -565,7 +574,7 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
     while (iteration < maxIterations) {
       if (closed) break;
       iteration++;
-      logger.info(`[Agent Loop] Iteration ${iteration} for model ${modelName}`);
+      logger.info(`[Agent Loop] Iteration ${iteration}; primary ${primaryModel}, fallback ${modelName}`);
       sendSseEvent("thinking", { message: `Thinking (step ${iteration})...` });
 
       contents = compactHistory(contents);
@@ -590,10 +599,32 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
       logger.info({ estimatedInputTokens: estimateTokens(requestBody), iteration }, "Find Video Gemini request");
 
       let response: any;
+      let primaryChunks: any[] | null = null;
       let retries = 3;
       let delayMs = 1000;
 
-      for (let attempt = 1; attempt <= retries; attempt++) {
+      if (isExternalCopilotConfigured(primaryModel)) {
+        try {
+          primaryChunks = [];
+          for await (const chunk of streamExternalCopilot({
+            model: primaryModel,
+            contents,
+            systemInstruction: systemInstructionText,
+            tools: toolsConfig,
+          })) {
+            primaryChunks.push(chunk);
+          }
+          logger.info({ model: primaryModel, iteration }, "Find Video primary model succeeded");
+        } catch (primaryError) {
+          primaryChunks = null;
+          logger.warn(
+            { err: primaryError, model: primaryModel, iteration },
+            "Find Video primary model failed; falling back to Gemini",
+          );
+        }
+      }
+
+      for (let attempt = 1; primaryChunks === null && attempt <= retries; attempt++) {
         if (closed) break;
         const apiKey = getGeminiApiKeyForAttempt("find-video", attempt - 1);
         try {
@@ -643,21 +674,55 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
         delayMs *= 2;
       }
 
-      if (closed || !response || !response.body) break;
-
-      const reader = response.body.getReader();
-      activeReader = reader;
-
-      const decoder = new TextDecoder("utf-8");
-      let sseBuffer = "";
-
       let accumulatedParts: any[] = [];
       let currentFunctionCalls: any[] = [];
       let isThinking = false;
       let pendingVisibleText = "";
 
-      try {
-        while (true) {
+      const consumeContent = (content: any) => {
+        if (!content?.parts) return;
+        for (const part of content.parts) {
+          let text = part.text || "";
+          const isThoughtPart = part.thought === true;
+
+          if (isThoughtPart) {
+            if (text) sendSseEvent("thought_chunk", { content: text });
+          } else if (text) {
+            if (text.includes("<think>") || text.includes("<|think|>")) {
+              isThinking = true;
+              text = text.replace("<think>", "").replace("<|think|>", "");
+            }
+            if (text.includes("</think>") || text.includes("</|think|>")) {
+              isThinking = false;
+              const parts = text.split(/<\/think>|<\/\|think\|>/);
+              if (parts[0]) sendSseEvent("thought_chunk", { content: parts[0] });
+              if (parts[1]) pendingVisibleText += parts[1];
+            } else if (isThinking) {
+              sendSseEvent("thought_chunk", { content: text });
+            } else {
+              pendingVisibleText += text;
+            }
+          }
+
+          if (part.functionCall) currentFunctionCalls.push(part.functionCall);
+          accumulatedParts.push(part);
+        }
+      };
+
+      if (primaryChunks !== null) {
+        for (const chunk of primaryChunks) {
+          consumeContent(chunk?.candidates?.[0]?.content);
+        }
+      } else {
+        if (closed || !response || !response.body) break;
+
+        const reader = response.body.getReader();
+        activeReader = reader;
+        const decoder = new TextDecoder("utf-8");
+        let sseBuffer = "";
+
+        try {
+          while (true) {
           if (closed) break;
           const { value, done } = await reader.read();
           if (done) break;
@@ -673,54 +738,17 @@ router.post("/notebook/ask/stream", searchRateLimiter, async (req: Request, res:
             try {
               const chunk = JSON.parse(trimmed.substring(5).trim());
               const candidate = chunk.candidates?.[0];
-              const content = candidate?.content;
-
-              if (content && content.parts) {
-                for (const part of content.parts) {
-                  let text = part.text || "";
-                  const isThoughtPart = (part.thought === true);
-
-                  if (isThoughtPart) {
-                    if (text) {
-                      sendSseEvent("thought_chunk", { content: text });
-                    }
-                  } else if (text) {
-                    // Fallback: parse inline thinking tags
-                    if (text.includes('<think>') || text.includes('<|think|>')) {
-                      isThinking = true;
-                      text = text.replace('<think>', '').replace('<|think|>', '');
-                    }
-
-                    if (text.includes('</think>') || text.includes('</|think|>')) {
-                      isThinking = false;
-                      const parts = text.split(/<\/think>|<\/\|think\|>/);
-                      if (parts[0]) sendSseEvent("thought_chunk", { content: parts[0] });
-                      if (parts[1]) pendingVisibleText += parts[1];
-                    } else {
-                      if (isThinking) {
-                        sendSseEvent("thought_chunk", { content: text });
-                      } else {
-                        pendingVisibleText += text;
-                      }
-                    }
-                  }
-
-                  if (part.functionCall) {
-                    currentFunctionCalls.push(part.functionCall);
-                  }
-
-                  accumulatedParts.push(part);
-                }
-              }
+              consumeContent(candidate?.content);
             } catch (e) {
               // parsing error or keep-alive tick, ignore
             }
           }
         }
-      } finally {
-        // Always release the reader reference after the inner loop
-        if (activeReader === reader) activeReader = null;
-        await reader.cancel().catch(() => {});
+        } finally {
+          // Always release the reader reference after the inner loop
+          if (activeReader === reader) activeReader = null;
+          await reader.cancel().catch(() => {});
+        }
       }
 
       if (closed) break;

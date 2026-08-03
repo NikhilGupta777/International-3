@@ -34,6 +34,11 @@ For YouTube URLs:
 - Exact clip/download requests -> call cut_video_clip or download_video directly.
 - All topics/all segments -> call get_youtube_captions, then analyze the returned SRT.
 
+For Instagram URLs:
+- Full post/reel/video download -> call download_video directly.
+- Captions, transcripts, analysis, subtitles, timestamps, best clips, and clip cutting are unsupported.
+- Never send an Instagram URL to a YouTube-only tool.
+
 For uploads:
 - Image description/understanding -> call describe_image.
 - Image text/OCR -> call extract_text_from_image.

@@ -32,6 +32,9 @@ test("accepts Instagram video media URLs", () => {
 test("rejects profiles, lookalike hosts, and non-http URLs", () => {
   for (const url of [
     "https://www.instagram.com/example/",
+    "https://www.youtube.com/",
+    "https://www.youtube.com/@example",
+    "https://youtu.be/",
     "https://instagram.com.evil.example/reel/ABC123/",
     "https://youtube.com.evil.example/watch?v=ABC123",
     "file:///tmp/video.mp4",
