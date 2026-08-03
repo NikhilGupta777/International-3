@@ -110,6 +110,13 @@ type AdminOverview = {
     currentMonthUsageUsd: number | null;
     gpuMaxRuntimeMinutes: number;
     gpuConcurrency: number;
+    agentRouter?: {
+      model: string;
+      creditUsd: number;
+      usedUsd: number | null;
+      remainingUsd: number | null;
+      usedPct: number | null;
+    };
     notes: string[];
   };
   storage: {
@@ -477,6 +484,14 @@ export function AdminPanel() {
     overview?.cost.currentMonthUsageUsd && overview.cost.monthlyBudgetUsd
       ? Math.round((overview.cost.currentMonthUsageUsd / overview.cost.monthlyBudgetUsd) * 100)
       : null;
+  // AgentRouter has no usage API, so spend only appears once it is recorded server-side.
+  const agentRouterUsedPct = overview?.cost.agentRouter?.usedPct ?? null;
+  const agentRouterDetail =
+    agentRouterUsedPct === null
+      ? "spend not recorded"
+      : `${agentRouterUsedPct}% used`;
+  const agentRouterTone =
+    agentRouterUsedPct !== null && agentRouterUsedPct > 80 ? "warn" : "neutral";
   const lipSyncEnabled = Boolean(overview?.runtime?.features.translatorLipSyncEnabled);
   const translationEnabled = overview?.runtime?.features.translatorEnabled !== false;
   const superAgentEnabled = overview?.runtime?.features.superAgentEnabled !== false;
@@ -942,6 +957,24 @@ export function AdminPanel() {
             <Stat icon={<Activity className="w-4 h-4" />} label="GPU concurrency" value={overview?.cost.gpuConcurrency ?? 1} />
             <Stat icon={<Archive className="w-4 h-4" />} label="ECR keep" value={`${overview?.limits.ecrKeepTaggedImages ?? 3} images`} />
             <Stat icon={<Scissors className="w-4 h-4" />} label="Lambda clip max" value={`${overview?.limits.lambdaClipMaxDurationSeconds ?? 480}s`} />
+            <Stat
+              icon={<DollarSign className="w-4 h-4" />}
+              label="AgentRouter credit"
+              value={`$${overview?.cost.agentRouter?.creditUsd ?? 175}`}
+              detail={agentRouterDetail}
+              tone={agentRouterTone}
+            />
+            <Stat
+              icon={<DollarSign className="w-4 h-4" />}
+              label="AgentRouter left"
+              value={
+                overview?.cost.agentRouter?.remainingUsd == null
+                  ? "not recorded"
+                  : `$${overview.cost.agentRouter.remainingUsd}`
+              }
+              detail={overview?.cost.agentRouter?.model ?? "agentrouter:gpt-5.6-sol"}
+              tone={agentRouterTone}
+            />
           </div>
           <ul className="admin-note-list">
             {(overview?.cost.notes ?? []).map((note) => <li key={note}>{note}</li>)}

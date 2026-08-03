@@ -10,7 +10,7 @@ function isTextOnlyAgentModel(model: string): boolean {
     isGemmaModel(normalized) ||
     normalized.startsWith("gpt-oss:") ||
     normalized.startsWith("nvidia/nemotron-") ||
-    /^(mistral|sambanova|openrouter|aion|kilo|groq|nvidia|ollama):/.test(normalized) ||
+    /^(mistral|sambanova|openrouter|aion|kilo|groq|nvidia|ollama|agentrouter):/.test(normalized) ||
     normalized === "openai/gpt-oss-120b" ||
     normalized === "z-ai/glm-5.2" ||
     normalized === "llama-3.1-8b-instant"

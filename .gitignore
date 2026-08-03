@@ -127,3 +127,6 @@ temp_interactive_push.bat
 # transient esbuild bundle from verify:scopes
 .verify-scopes-*.mjs
 artifacts/api-server/.verify-scopes-*.mjs
+
+# Production env snapshots (contain live secrets — never commit)
+deploy/backups/
