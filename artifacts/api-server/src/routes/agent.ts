@@ -3039,6 +3039,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3514,20 +3515,21 @@ async function executeTool(
         url: args.url,
       } as any);
 
-      // Poll until analysis is done (same pattern as clip/download)
-      await pollJobUntilDone(
+      // Poll the clips-specific status endpoint (not /youtube/progress/)
+      const clipsResult = await pollSubtitleUntilDone(
         res,
-        name,
-        `${apiBase}/youtube/progress/${jobId}`,
+        `${apiBase}/youtube/clips/status/${jobId}`,
         jobId,
         internalHeaders,
         isConnected,
         toolId,
         runId,
+        "find_best_clips",
       );
       return {
         result: {
           jobId,
+          status: clipsResult.status,
           message:
             "Best clips analysis complete. View results in the Best Clips tab.",
         },
@@ -5231,7 +5233,7 @@ except Exception as exc:
       const contentType = r.headers.get("content-type") ?? undefined;
       const sizeHeader = r.headers.get("content-length");
       const size = sizeHeader ? Number(sizeHeader) : null;
-      if (!size || !Number.isFinite(size)) {
+      if (size === null || !Number.isFinite(size)) {
         throw new Error(
           "source size is unknown; cannot stream artifact safely",
         );

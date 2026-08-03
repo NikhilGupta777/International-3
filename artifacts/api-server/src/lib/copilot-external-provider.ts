@@ -359,20 +359,27 @@ function partText(part: any): string {
 
 function normalizeMessages(contents: any[]): any[] {
   const messages: any[] = [];
+  // Build a map from functionCall name → generated ID so functionResponse
+  // can reference the same ID even when explicit IDs are absent.
+  const callIdByName = new Map<string, string>();
   for (const content of contents) {
     const parts = Array.isArray(content?.parts) ? content.parts : [];
     const role = content?.role === "model" ? "assistant" : "user";
     const text = parts.map(partText).filter(Boolean).join("\n");
     const functionCalls = parts
       .filter((part: any) => part?.functionCall?.name)
-      .map((part: any) => ({
-        id: part.functionCall.id || `call_${randomUUID().replace(/-/g, "")}`,
-        type: "function",
-        function: {
-          name: part.functionCall.name,
-          arguments: JSON.stringify(part.functionCall.args ?? {}),
-        },
-      }));
+      .map((part: any) => {
+        const id = part.functionCall.id || `call_${randomUUID().replace(/-/g, "")}`;
+        callIdByName.set(part.functionCall.name, id);
+        return {
+          id,
+          type: "function",
+          function: {
+            name: part.functionCall.name,
+            arguments: JSON.stringify(part.functionCall.args ?? {}),
+          },
+        };
+      });
     const functionResponses = parts.filter(
       (part: any) => part?.functionResponse?.name,
     );
@@ -389,11 +396,12 @@ function normalizeMessages(contents: any[]): any[] {
     // A judge/correction text part belongs after those tool messages.
     for (const part of functionResponses) {
       const response = part.functionResponse.response ?? {};
+      const fnName = part.functionResponse.name;
       messages.push({
         role: "tool",
         tool_call_id:
-          part.functionResponse.id || `call_${part.functionResponse.name}`,
-        name: part.functionResponse.name,
+          part.functionResponse.id || callIdByName.get(fnName) || `call_${fnName}`,
+        name: fnName,
         content: JSON.stringify(response),
       });
     }
@@ -565,6 +573,15 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
         if (data) yield data;
       }
       if (done) break;
+    }
+    // Process any trailing data left in the buffer (stream ended without final \n\n)
+    if (buffer.trim()) {
+      const data = buffer
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n");
+      if (data) yield data;
     }
   } finally {
     reader.releaseLock();
