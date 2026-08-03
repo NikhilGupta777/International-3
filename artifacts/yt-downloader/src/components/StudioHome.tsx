@@ -20,6 +20,17 @@ const HOME_UPDATES_KEY = "studio-home-updates-read-v1";
 
 const HOME_UPDATES = [
   {
+    id: "instagram-downloads-2026-08-03",
+    label: "New",
+    date: "3/8/26",
+    title: "Instagram downloads are here",
+    summary: "Download Instagram reels and posts, YouTube videos, images, and more. Just paste the link to the agent, or open the Download tab.",
+    mode: "download" as Mode,
+    visual: "download" as const,
+    // Without this the CTA would read "Open Instagram downloads are here".
+    cta: "Open Download tab",
+  },
+  {
     id: "content-manager-video-link-2026-07-07",
     label: "New",
     date: "7/7/26",
@@ -119,15 +130,26 @@ function readHomeUpdatesInitial(): string[] {
 
 function HomeUpdateVisual({ type }: { type: HomeUpdate["visual"] }) {
   const BASE = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
-  const imgSrc = type === "content" 
-    ? `${BASE}/content_manager_preview.png` 
+
+  // No preview screenshot exists for downloads — render an icon tile rather than
+  // pointing <img> at a file that would 404.
+  if (type === "download") {
+    return (
+      <div className="home-update-visual home-update-visual-download" aria-hidden="true">
+        <Download className="home-update-visual-icon" />
+      </div>
+    );
+  }
+
+  const imgSrc = type === "content"
+    ? `${BASE}/content_manager_preview.png`
     : `${BASE}/find_video_preview.png`;
-    
+
   return (
     <div className={`home-update-visual home-update-visual-${type}`} aria-hidden="true">
-      <img 
-        src={imgSrc} 
-        alt={type === "content" ? "Content Manager" : "Find Video"} 
+      <img
+        src={imgSrc}
+        alt={type === "content" ? "Content Manager" : "Find Video"}
         className="home-update-visual-image"
       />
     </div>
@@ -580,7 +602,9 @@ export function StudioHome({
                   onSwitchMode(activeUpdate.mode);
                 }}
               >
-                Open {activeUpdate.title}
+                {"cta" in activeUpdate && activeUpdate.cta
+                  ? activeUpdate.cta
+                  : `Open ${activeUpdate.title}`}
               </button>
             </div>
             <HomeUpdateVisual type={activeUpdate.visual} />

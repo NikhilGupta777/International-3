@@ -3885,6 +3885,24 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   transform: scale(1.06);
 }
 
+/* Icon tile used by updates that have no preview screenshot. */
+.home-update-visual-download {
+  background:
+    radial-gradient(120% 120% at 50% 0%, rgba(125, 211, 252, 0.16), transparent 62%),
+    rgba(10, 10, 14, 0.85);
+}
+
+.home-update-visual-icon {
+  width: 26px;
+  height: 26px;
+  color: rgba(125, 211, 252, 0.92);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.home-update-card:hover .home-update-visual-icon {
+  transform: translateY(2px) scale(1.08);
+}
+
 .home-update-modal-backdrop {
   position: fixed;
   inset: 0;
