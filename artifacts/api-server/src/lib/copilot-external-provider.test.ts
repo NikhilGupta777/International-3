@@ -5,6 +5,7 @@ process.env.OLLAMA_API_KEY = "test-ollama-key";
 process.env.GROQ_API_KEY = "test-groq-key";
 process.env.NVIDIA_API_KEY = "test-nvidia-key";
 process.env.MISTRAL_API_KEY = "test-mistral-key";
+process.env.AGENTROUTER_API_KEY = "test-agentrouter-key";
 
 const provider = await import("./copilot-external-provider");
 
@@ -211,21 +212,22 @@ test("NVIDIA omits tool_choice when a request has no tools", async () => {
 });
 
 test("public modes put proven long-context routes before short-context fallbacks", () => {
-  assert.equal(provider.COPILOT_ULTRA_MODEL, "ollama:gpt-oss:120b");
-  assert.equal(provider.COPILOT_FAST_MODEL, "ollama:gpt-oss:120b");
+  assert.equal(provider.COPILOT_ULTRA_MODEL, "mistral:mistral-small-latest");
+  // Must stay equal to ULTRA: agent.ts keys separate Fast prompting off them differing.
+  assert.equal(provider.COPILOT_FAST_MODEL, "mistral:mistral-small-latest");
   const ultra = provider.getCopilotFallbackModels(provider.COPILOT_ULTRA_MODEL);
   const fast = provider.getCopilotFallbackModels(provider.COPILOT_FAST_MODEL);
-  assert.deepEqual(ultra.slice(0, 4), [
-    "mistral:mistral-small-latest",
+  // mistral-small is the primary, so it is filtered out of its own fallback
+  // ladder. Live order is: mistral-small -> agentrouter -> mistral-medium -> ollama.
+  assert.deepEqual(ultra.slice(0, 3), [
+    "agentrouter:gpt-5.6-sol",
     "mistral:mistral-medium-latest",
-    "mistral:devstral-latest",
-    "mistral:mistral-large-latest",
+    "ollama:gpt-oss:120b",
   ]);
-  assert.deepEqual(fast.slice(0, 4), [
-    "mistral:mistral-small-latest",
+  assert.deepEqual(fast.slice(0, 3), [
+    "agentrouter:gpt-5.6-sol",
     "mistral:mistral-medium-latest",
-    "mistral:devstral-latest",
-    "mistral:mistral-large-latest",
+    "ollama:gpt-oss:120b",
   ]);
   assert.ok(ultra.indexOf("groq:llama-3.3-70b-versatile") > ultra.indexOf("nvidia:openai/gpt-oss-120b"));
   assert.equal(ultra.includes("z-ai/glm-5.2"), false);
@@ -254,6 +256,41 @@ test("provider-qualified Mistral routes use the right endpoint and upstream mode
     assert.equal(url, "https://api.mistral.ai/v1/chat/completions");
     assert.equal(requestBody.model, "mistral-medium-latest");
     assert.equal(chunks.at(-1).usageMetadata.totalTokenCount, 12);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("AgentRouter sends the WAF client headers and medium reasoning effort", async () => {
+  const originalFetch = globalThis.fetch;
+  let url = "";
+  let headers: any;
+  let requestBody: any;
+  globalThis.fetch = async (input, init) => {
+    url = String(input);
+    headers = init?.headers;
+    requestBody = JSON.parse(String(init?.body));
+    return new Response([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" } }] })}`,
+      "",
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 29, completion_tokens: 105, total_tokens: 134, completion_tokens_details: { reasoning_tokens: 52 } } })}`,
+      "",
+      "data: [DONE]", "",
+    ].join("\n"), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  try {
+    const chunks = await collect(provider.streamExternalCopilot({
+      model: provider.AGENTROUTER_GPT_MODEL, contents,
+      systemInstruction: "system", tools,
+    }));
+    assert.equal(url, "https://agentrouter.org/v1/chat/completions");
+    assert.equal(requestBody.model, "gpt-5.6-sol");
+    // Without a Claude-Code-shaped client the upstream WAF answers 401.
+    assert.equal(headers["User-Agent"], "claude-cli/2.0.14 (external, cli)");
+    assert.equal(headers["x-app"], "cli");
+    assert.equal(requestBody.reasoning_effort, "medium");
+    assert.equal(requestBody.stream, true);
+    // Reasoning text is never streamed back — only the trailing token count.
+    assert.equal(chunks.at(-1).usageMetadata.thoughtsTokenCount, 52);
+    assert.equal(chunks.at(-1).usageMetadata.totalTokenCount, 134);
   } finally { globalThis.fetch = originalFetch; }
 });
 

@@ -23,7 +23,10 @@ import {
 import { getSubtitlesOpsSnapshot } from "./subtitles";
 import { getYoutubeOpsSnapshot } from "./youtube";
 import { isGeminiConfigured } from "../lib/gemini-client";
-import { getExternalCopilotKeyCount } from "../lib/copilot-external-provider";
+import {
+  AGENTROUTER_GPT_MODEL,
+  getExternalCopilotKeyCount,
+} from "../lib/copilot-external-provider";
 import { getCopilotUsageOverview } from "../lib/copilot-usage";
 import {
   getRuntimeFeatureState,
@@ -73,6 +76,36 @@ function enabled(value: string | undefined, fallback = false): boolean {
 function numberFromEnv(name: string, fallback: number): number {
   const value = Number(process.env[name]);
   return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Prepaid AgentRouter credit pool backing the `agentrouter:gpt-5.6-sol` Copilot
+ * fallback. AgentRouter exposes no usage endpoint, so spend is recorded manually
+ * via AGENTROUTER_USED_USD; everything downstream of that is derived here.
+ */
+function agentRouterCredit(): {
+  model: string;
+  creditUsd: number;
+  usedUsd: number | null;
+  remainingUsd: number | null;
+  usedPct: number | null;
+} {
+  const creditUsd = numberFromEnv("AGENTROUTER_CREDIT_USD", 175);
+  const rawUsed = Number(process.env.AGENTROUTER_USED_USD);
+  const usedUsd = Number.isFinite(rawUsed) ? Math.max(0, rawUsed) : null;
+  return {
+    model: AGENTROUTER_GPT_MODEL,
+    creditUsd,
+    usedUsd,
+    remainingUsd:
+      usedUsd === null
+        ? null
+        : Math.round(Math.max(0, creditUsd - usedUsd) * 100) / 100,
+    usedPct:
+      usedUsd === null || creditUsd <= 0
+        ? null
+        : Math.round((usedUsd / creditUsd) * 100),
+  };
 }
 
 function translatorRuntimeMinutes(): number {
@@ -307,6 +340,7 @@ router.get("/overview", async (_req, res) => {
       openRouterCopilotConfigured: getExternalCopilotKeyCount("openrouter") > 0,
       aionCopilotConfigured: getExternalCopilotKeyCount("aion") > 0,
       kiloCopilotConfigured: getExternalCopilotKeyCount("kilo") > 0,
+      agentRouterCopilotConfigured: getExternalCopilotKeyCount("agentrouter") > 0,
       allowlistPersistence: configured(process.env.ACCESS_TABLE),
     },
     limits: {
@@ -329,10 +363,12 @@ router.get("/overview", async (_req, res) => {
         : null,
       gpuMaxRuntimeMinutes: translatorRuntimeMinutes(),
       gpuConcurrency: numberFromEnv("TRANSLATOR_MAX_CONCURRENT_JOBS", 1),
+      agentRouter: agentRouterCredit(),
       notes: [
         "This panel shows configured guardrails. AWS Billing remains the source of truth.",
         "GPU cost is controlled by translation job start/stop and max runtime.",
         "ECR storage is controlled by lifecycle policy keep count.",
+        "AgentRouter credit is a prepaid pool, not an AWS cost. Spend is recorded from AGENTROUTER_USED_USD — the router has no usage API to poll.",
       ],
     },
     storage: {
