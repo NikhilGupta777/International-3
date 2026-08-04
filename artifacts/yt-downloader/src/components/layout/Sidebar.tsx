@@ -3,7 +3,7 @@ import {
   Download, Sparkles, Captions, Scissors, Shield,
   AlarmClock, UploadCloud, Search, Menu, X,
   Home as HomeIcon, Activity, Settings, Clapperboard,
-  Terminal, Newspaper,
+  Terminal, Newspaper, Wand2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +48,7 @@ const SUPER_AGENT_ITEM: NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { mode: "home",        icon: <HomeIcon className="gs-icon" />,        label: "Home" },
   SUPER_AGENT_ITEM,
+  { mode: "newtabstudio", icon: <Wand2 className="gs-icon" />,          label: "New Tab Studio", badge: "New" },
   { mode: "content-manager", icon: <Newspaper className="gs-icon" />,    label: "Content", badge: "New" },
   { mode: "findvideo",   icon: <Search className="gs-icon" />,          label: "Find Video", badge: "New" },
   { mode: "clipcutter",  icon: <Scissors className="gs-icon" />,        label: "Clip Cut" },
