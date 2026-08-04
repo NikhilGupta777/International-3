@@ -130,3 +130,8 @@ artifacts/api-server/.verify-scopes-*.mjs
 
 # Production env snapshots (contain live secrets — never commit)
 deploy/backups/
+
+# New Tab Studio local file-store fallback (dev project data). Baking this into
+# the image would ship stale projects that listProjects merges into real results.
+newtab-projects.json
+artifacts/api-server/newtab-projects.json

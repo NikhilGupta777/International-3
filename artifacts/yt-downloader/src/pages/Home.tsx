@@ -1243,19 +1243,8 @@ export default function Home({
                 </motion.div>
               )}
 
-              {/* New Tab Video Studio */}
-              {showNewTabStudio && (
-                <motion.div
-                  key="newtabstudio-panel"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
-                  transition={{ duration: 0.3 }}
-                  className="w-full h-full flex-1 flex flex-col"
-                >
-                  <NewTabStudio />
-                </motion.div>
-              )}
+              {/* New Tab Studio is kept mounted below (outside AnimatePresence) so its
+                  SSE chat stream survives tab navigation. */}
 
               {/* AI Copilot slot inside AnimatePresence removed — component is always
                   mounted below (outside AnimatePresence) so the SSE stream survives
@@ -1319,6 +1308,15 @@ export default function Home({
               ) : (
                 <FeatureUnavailable title="Super Agent is restricted" detail="Your account is not allowed to use Super Agent right now." />
               )}
+            </motion.div>
+
+            <motion.div
+              aria-hidden={!showNewTabStudio}
+              animate={showNewTabStudio ? { opacity: 1, y: 0 } : { opacity: 0, y: 12 }}
+              transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+              className={cn("w-full h-full flex-1 flex flex-col copilot-mounted-panel", !showNewTabStudio && "copilot-mounted-panel-hidden")}
+            >
+              <NewTabStudio />
             </motion.div>
 
             <motion.div
