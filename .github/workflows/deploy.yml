@@ -739,8 +739,8 @@ jobs:
           upsert_env "OPENROUTER_API_KEY" "$OPENROUTER_API_KEY_SECRET"
           upsert_env "AION_API_KEY" "$AION_API_KEY_SECRET"
           upsert_env "KILO_API_KEY" "$KILO_API_KEY_SECRET"
-          upsert_env "COPILOT_ULTRA_MODEL" "ollama:gpt-oss:120b"
-          upsert_env "COPILOT_FAST_MODEL" "ollama:gpt-oss:120b"
+          upsert_env "COPILOT_ULTRA_MODEL" "mistral:mistral-small-latest"
+          upsert_env "COPILOT_FAST_MODEL" "mistral:mistral-small-latest"
           upsert_env "COPILOT_ULTRA_MAX_OUTPUT_TOKENS" "60000"
           upsert_env "COPILOT_FAST_MAX_OUTPUT_TOKENS" "60000"
           upsert_env "COPILOT_GEMINI_HELPER_MODEL" "gemini-3.5-flash"
@@ -943,8 +943,8 @@ jobs:
             }
           }
           $vars["AI_USAGE_TABLE"] = $tableName
-          $vars["COPILOT_ULTRA_MODEL"] = "ollama:gpt-oss:120b"
-          $vars["COPILOT_FAST_MODEL"] = "ollama:gpt-oss:120b"
+          $vars["COPILOT_ULTRA_MODEL"] = "mistral:mistral-small-latest"
+          $vars["COPILOT_FAST_MODEL"] = "mistral:mistral-small-latest"
 
           $estimatedBytes = 0
           foreach ($entry in $vars.GetEnumerator()) {
