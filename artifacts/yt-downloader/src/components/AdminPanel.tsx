@@ -173,6 +173,32 @@ type AdminOverview = {
   };
 };
 
+type LadderRoute = {
+  route: string;
+  provider: string;
+  configured: boolean;
+  reasoningOptions: string[];
+};
+
+type CopilotLadder = {
+  /** False when ACCESS_TABLE is missing — edits cannot be saved across containers. */
+  persistent: boolean;
+  updatedAt: number | null;
+  override: {
+    primary: { ultra: string | null; fast: string | null };
+    order: string[];
+    reasoning: Record<string, string>;
+  };
+  modes: Array<{
+    mode: "ultra" | "fast";
+    primary: string;
+    overridden: boolean;
+    effective: string[];
+  }>;
+  editableOrder: LadderRoute[];
+  catalog: LadderRoute[];
+};
+
 type TokenRollup = {
   calls: number;
   failedCalls: number;
@@ -443,6 +469,11 @@ export function AdminPanel() {
   const [toolsMsg, setToolsMsg] = useState({ text: "", error: false });
   const [savingRuntime, setSavingRuntime] = useState(false);
 
+  // ── Super Agent model ladder ───────────────────────────────────────────────
+  const [ladder, setLadder] = useState<CopilotLadder | null>(null);
+  const [ladderBusy, setLadderBusy] = useState(false);
+  const [ladderMsg, setLadderMsg] = useState({ text: "", error: false });
+
   // ── Jobs tab form state ────────────────────────────────────────────────────
   const [cancelJobId, setCancelJobId] = useState("");
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -521,8 +552,64 @@ export function AdminPanel() {
     }
   };
 
+  const loadLadder = async () => {
+    try {
+      const res = await fetch(`${base}/api/admin/copilot-ladder`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || `Model ladder API returned ${res.status}`);
+      }
+      setLadder((await res.json()) as CopilotLadder);
+    } catch (err) {
+      setLadderMsg({
+        text: err instanceof Error ? err.message : "Could not load the model ladder",
+        error: true,
+      });
+    }
+  };
+
+  /** Every ladder edit is a full patch write, then a re-read of the saved state. */
+  const saveLadder = async (patch: Record<string, unknown>, note: string) => {
+    setLadderBusy(true);
+    setLadderMsg({ text: "", error: false });
+    try {
+      const res = await fetch(`${base}/api/admin/copilot-ladder`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || "Could not update the model ladder");
+      if (data?.ladder) setLadder(data.ladder as CopilotLadder);
+      setLadderMsg({ text: note, error: false });
+    } catch (err) {
+      setLadderMsg({
+        text: err instanceof Error ? err.message : "Could not update the model ladder",
+        error: true,
+      });
+      // The write may have partially landed; re-read rather than trust local state.
+      await loadLadder();
+    } finally {
+      setLadderBusy(false);
+    }
+  };
+
+  const moveLadderRoute = (route: string, direction: -1 | 1) => {
+    const order = (ladder?.editableOrder ?? []).map((item) => item.route);
+    const index = order.indexOf(route);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= order.length) return;
+    [order[index], order[target]] = [order[target], order[index]];
+    void saveLadder({ order }, `Moved ${route} to position ${target + 1}`);
+  };
+
   useEffect(() => {
     void loadOverview();
+    void loadLadder();
     const timer = window.setInterval(() => void loadOverview(), 30000);
     return () => window.clearInterval(timer);
   }, []);
@@ -1223,6 +1310,132 @@ export function AdminPanel() {
           />
           <FlagList flags={overview?.features ?? {}} />
           {toolsMsg.text ? <ResultMsg msg={toolsMsg.text} isError={toolsMsg.error} /> : null}
+        </Section>
+
+        <Section icon={<Bot className="w-4 h-4" />} title="Super Agent model ladder" wide tab="tools">
+          {ladder && !ladder.persistent ? (
+            <ResultMsg
+              msg="ACCESS_TABLE is not configured, so ladder changes cannot be saved — they would apply to one server instance and be lost on the next restart."
+              isError
+            />
+          ) : null}
+
+          {(ladder?.modes ?? []).map((mode) => (
+            <div key={mode.mode} className="admin-perm-group">
+              <div className="admin-perm-group-label">
+                {mode.mode === "ultra" ? "Ultra" : "Fast"} — primary model
+                {mode.overridden ? " (overridden)" : " (deploy default)"}
+              </div>
+              <select
+                className="admin-ladder-select"
+                value={mode.primary}
+                disabled={ladderBusy}
+                aria-label={`${mode.mode} primary model`}
+                onChange={(event) =>
+                  void saveLadder(
+                    { primary: { [mode.mode]: event.target.value } },
+                    `${mode.mode} primary set to ${event.target.value}`,
+                  )
+                }
+              >
+                {(ladder?.catalog ?? [])
+                  .filter((item) => item.configured)
+                  .map((item) => (
+                    <option key={item.route} value={item.route}>
+                      {item.route}
+                    </option>
+                  ))}
+              </select>
+              {mode.overridden ? (
+                <button
+                  type="button"
+                  className="admin-pill-remove"
+                  disabled={ladderBusy}
+                  onClick={() =>
+                    void saveLadder(
+                      { primary: { [mode.mode]: null } },
+                      `${mode.mode} primary reset to the deploy default`,
+                    )
+                  }
+                >
+                  Reset to default
+                </button>
+              ) : null}
+              <div className="admin-ladder-effective">
+                Tries: {mode.effective.join(" → ") || "no configured routes"}
+              </div>
+            </div>
+          ))}
+
+          <div className="admin-perm-group">
+            <div className="admin-perm-group-label">
+              Fallback order — tried top to bottom after the primary
+            </div>
+            {(ladder?.editableOrder ?? []).map((item, index) => (
+              <div key={item.route} className="admin-ladder-row">
+                <span className="admin-ladder-index">{index + 1}</span>
+                <div className="admin-ladder-route">
+                  <strong>{item.route}</strong>
+                  <span>
+                    {item.provider}
+                    {item.configured ? "" : " — no API key, skipped at runtime"}
+                  </span>
+                </div>
+                {item.reasoningOptions.length > 0 ? (
+                  <select
+                    className="admin-ladder-select"
+                    value={ladder?.override.reasoning[item.route] ?? ""}
+                    disabled={ladderBusy}
+                    aria-label={`${item.route} reasoning effort`}
+                    onChange={(event) =>
+                      void saveLadder(
+                        { reasoning: { [item.route]: event.target.value || null } },
+                        `${item.route} thinking set to ${event.target.value || "default"}`,
+                      )
+                    }
+                  >
+                    <option value="">default</option>
+                    {item.reasoningOptions.map((effort) => (
+                      <option key={effort} value={effort}>
+                        thinking: {effort}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="admin-ladder-nothink">no thinking</span>
+                )}
+                <div className="admin-ladder-moves">
+                  <button
+                    type="button"
+                    disabled={ladderBusy || index === 0}
+                    onClick={() => moveLadderRoute(item.route, -1)}
+                    aria-label={`Move ${item.route} up`}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    disabled={ladderBusy || index === (ladder?.editableOrder.length ?? 0) - 1}
+                    onClick={() => moveLadderRoute(item.route, 1)}
+                    aria-label={`Move ${item.route} down`}
+                  >
+                    ↓
+                  </button>
+                </div>
+              </div>
+            ))}
+            {ladder && ladder.override.order.length > 0 ? (
+              <button
+                type="button"
+                className="admin-pill-remove"
+                disabled={ladderBusy}
+                onClick={() => void saveLadder({ order: [] }, "Fallback order reset to the built-in ladder")}
+              >
+                Reset order to default
+              </button>
+            ) : null}
+          </div>
+          {ladderMsg.text ? <ResultMsg msg={ladderMsg.text} isError={ladderMsg.error} /> : null}
         </Section>
 
         <Section icon={<ShieldCheck className="w-4 h-4" />} title="Feature permissions" wide tab="tools">

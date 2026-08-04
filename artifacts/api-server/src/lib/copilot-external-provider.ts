@@ -1,4 +1,10 @@
 import { randomUUID } from "crypto";
+import {
+  getLadderOrder,
+  getLadderPrimary,
+  getLadderReasoning,
+  type CopilotMode,
+} from "./copilot-ladder-store";
 
 // Both public modes lead with Mistral Small; Ollama GPT-OSS now sits further down
 // the shared ladder. Keep these two equal — agent.ts treats `FAST_MODEL !== ULTRA_MODEL`
@@ -49,6 +55,66 @@ export const COPILOT_FALLBACK_MODELS = [
   ...LONG_CONTEXT_MODELS,
   ...SHORT_CONTEXT_MODELS,
 ] as const;
+
+// Preferred head of the ladder, measured. Kept separate from the catalog so the
+// admin panel can reorder without losing the documented default.
+const PREFERRED_LADDER_HEAD = [
+  "mistral:mistral-small-latest",
+  AGENTROUTER_GPT_MODEL,
+  "mistral:mistral-medium-latest",
+  "ollama:gpt-oss:120b",
+] as const;
+
+/** Every route the ladder may contain — the admin panel validates against this. */
+export const COPILOT_ROUTE_CATALOG: string[] = [
+  ...new Set<string>([
+    COPILOT_ULTRA_MODEL,
+    COPILOT_FAST_MODEL,
+    ...PREFERRED_LADDER_HEAD,
+    ...COPILOT_FALLBACK_MODELS,
+  ]),
+];
+
+/**
+ * The reasoning_effort body field for a route, or {} when it takes none.
+ * An admin override wins, but only if the route actually accepts that value —
+ * sending an unsupported one is a hard 4xx on Mistral and would knock the route
+ * out of the ladder on every request.
+ */
+function resolveReasoningEffort(
+  route: string,
+  provider: ExternalProvider,
+  model: string,
+): Record<string, string> {
+  const supported = getRouteReasoningSupport(route);
+  if (supported.length === 0) return {};
+  const override = getLadderReasoning(route);
+  if (override && supported.includes(override)) return { reasoning_effort: override };
+  // Code default: the two routes that have always sent an effort value.
+  if (provider === "agentrouter" || model === "openai/gpt-oss-120b") {
+    return { reasoning_effort: supported.includes("medium") ? "medium" : supported[0] };
+  }
+  return { reasoning_effort: supported[0] };
+}
+
+/**
+ * reasoning_effort values a route accepts. Verified against the live APIs:
+ * Magistral rejects anything but "high", and Mistral's non-reasoning models
+ * accept the field but ignore it entirely, so they are reported as unsupported.
+ */
+export function getRouteReasoningSupport(route: string): string[] {
+  const provider = getCopilotProvider(route);
+  const model = provider ? providerModel(provider, route) : route;
+  if (provider === "agentrouter") return ["low", "medium", "high"];
+  // Scoped to NVIDIA on purpose: groq also serves openai/gpt-oss-120b, and it
+  // has never been sent a reasoning_effort field. Widening this by model name
+  // alone would change that route's request body on every call.
+  if (provider === "nvidia" && model === "openai/gpt-oss-120b") {
+    return ["low", "medium", "high"];
+  }
+  if (provider === "mistral" && model.startsWith("magistral")) return ["high"];
+  return [];
+}
 
 const PROVIDER_KEY_SLOTS = 4;
 const keyCooldowns = new Map<string, number>();
@@ -130,18 +196,38 @@ export function getCopilotProvider(model: string): ExternalProvider | null {
   return null;
 }
 
+/**
+ * The route a mode starts on: the admin override when set, otherwise the
+ * env/code default. Callers must refresh the ladder store first (the agent
+ * route does) so a change made on one container is seen by the others.
+ */
+export function getCopilotPrimaryModel(mode: CopilotMode): string {
+  return (
+    getLadderPrimary(mode) ??
+    (mode === "fast" ? COPILOT_FAST_MODEL : COPILOT_ULTRA_MODEL)
+  );
+}
+
+function isPrimaryRoute(model: string): boolean {
+  return (
+    model === COPILOT_ULTRA_MODEL ||
+    model === COPILOT_FAST_MODEL ||
+    model === getLadderPrimary("ultra") ||
+    model === getLadderPrimary("fast")
+  );
+}
+
 export function getCopilotFallbackModels(model: string): string[] {
-  if (model === COPILOT_ULTRA_MODEL || model === COPILOT_FAST_MODEL) {
-    const preferred = [
-      "mistral:mistral-small-latest",
-      AGENTROUTER_GPT_MODEL,
-      "mistral:mistral-medium-latest",
-      "ollama:gpt-oss:120b",
-    ];
-    return [...new Set([...preferred, ...COPILOT_FALLBACK_MODELS])]
-      .filter((candidate) => candidate !== model);
-  }
-  return [];
+  // Only a primary route gets a ladder; a specifically requested model does not.
+  // An admin-selected primary counts, otherwise one failure would end the run.
+  if (!isPrimaryRoute(model)) return [];
+  // An explicit admin order is authoritative — routes an admin removed are not
+  // silently appended back as a tail.
+  const base = getLadderOrder() ?? [
+    ...PREFERRED_LADDER_HEAD,
+    ...COPILOT_FALLBACK_MODELS,
+  ];
+  return [...new Set(base)].filter((candidate) => candidate !== model);
 }
 
 export function isExternalCopilotModel(model: string): boolean {
@@ -682,9 +768,7 @@ async function* streamOpenAiCompatibleWithKey(
           stream: true,
           stream_options: { include_usage: true },
           max_tokens: maxTokens,
-          ...((isNvidia && model === "openai/gpt-oss-120b") || isAgentRouter
-            ? { reasoning_effort: "medium" }
-            : {}),
+          ...(resolveReasoningEffort(params.model, provider, model)),
           temperature: 0.7,
           top_p: 1,
         }),

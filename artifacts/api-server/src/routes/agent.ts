@@ -38,12 +38,14 @@ import {
   COPILOT_ULTRA_FALLBACK_MODEL,
   COPILOT_ULTRA_MODEL,
   getCopilotFallbackModels,
+  getCopilotPrimaryModel,
   getCopilotProvider,
   isExternalCopilotConfigured,
   isExternalCopilotModel,
   isExternalProviderRetryableError,
   streamExternalCopilot,
 } from "../lib/copilot-external-provider";
+import { refreshCopilotLadder } from "../lib/copilot-ladder-store";
 import { getSkillsManifest, buildSkillPrompt } from "../skills/index";
 import { INTERNAL_AGENT_SECRET } from "../lib/internal-agent";
 import { logger } from "../lib/logger";
@@ -5794,6 +5796,11 @@ router.post("/agent/chat", async (req, res) => {
     activeModel = ULTRA_MODEL;
     isUltra = true;
   }
+  // Mode selection above stays keyed to the env/code routes so historical
+  // client values keep resolving. Only the outgoing route is swapped, after an
+  // admin panel change has had a chance to land on this container.
+  await refreshCopilotLadder();
+  activeModel = getCopilotPrimaryModel(isUltra ? "ultra" : "fast");
   const activeModelSupportsNativeMedia = supportsNativeMediaInput(activeModel);
   const activeProvider = getCopilotProvider(activeModel);
 

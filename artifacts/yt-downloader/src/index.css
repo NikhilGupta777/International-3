@@ -868,6 +868,103 @@ html, body, #root { height: 100%; width: 100%; overflow: hidden; position: fixed
   margin-bottom: 8px;
 }
 
+/* ── Super Agent model ladder ───────────────────────────────────────────── */
+.admin-ladder-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.85rem;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.admin-ladder-index {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.admin-ladder-route {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.admin-ladder-route strong {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.admin-ladder-route span {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.74rem;
+}
+
+.admin-ladder-select {
+  flex: none;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.76rem;
+}
+
+.admin-ladder-nothink {
+  flex: none;
+  color: rgba(255, 255, 255, 0.3);
+  font-size: 0.72rem;
+}
+
+.admin-ladder-moves {
+  flex: none;
+  display: flex;
+  gap: 0.3rem;
+}
+
+.admin-ladder-moves button {
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 0.55rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.8);
+  line-height: 1;
+}
+
+.admin-ladder-moves button:disabled {
+  opacity: 0.3;
+}
+
+.admin-ladder-effective {
+  margin-top: 0.5rem;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .admin-ladder-row {
+    flex-wrap: wrap;
+  }
+
+  .admin-ladder-route {
+    flex-basis: 100%;
+    order: -1;
+  }
+}
+
 /* ── Loading skeleton ───────────────────────────────────────────────────── */
 .admin-skeleton-header {
   height: 80px;

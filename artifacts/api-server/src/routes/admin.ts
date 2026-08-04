@@ -25,8 +25,22 @@ import { getYoutubeOpsSnapshot } from "./youtube";
 import { isGeminiConfigured } from "../lib/gemini-client";
 import {
   AGENTROUTER_GPT_MODEL,
+  COPILOT_ROUTE_CATALOG,
+  getCopilotFallbackModels,
+  getCopilotPrimaryModel,
+  getCopilotProvider,
   getExternalCopilotKeyCount,
+  getRouteReasoningSupport,
+  isExternalCopilotConfigured,
 } from "../lib/copilot-external-provider";
+import {
+  getCopilotLadderConfig,
+  isCopilotLadderPersistent,
+  refreshCopilotLadder,
+  updateCopilotLadder,
+  type CopilotLadderPatch,
+  type CopilotMode,
+} from "../lib/copilot-ladder-store";
 import { getCopilotUsageOverview } from "../lib/copilot-usage";
 import {
   getRuntimeFeatureState,
@@ -713,6 +727,155 @@ router.delete("/permissions/:feature/:email", (req, res) => {
     res
       .status(400)
       .json({ error: err instanceof Error ? err.message : "Failed to remove permission" });
+  }
+});
+
+// ── Super Agent model ladder ──────────────────────────────────────────────────
+// Reordering the ladder or changing the primary model without a redeploy.
+// Persistence lives in DynamoDB (lib/copilot-ladder-store) so a change applies
+// to every Lambda container rather than only the one that served the request.
+
+function describeLadderRoute(route: string) {
+  return {
+    route,
+    provider: getCopilotProvider(route) ?? "unknown",
+    configured: isExternalCopilotConfigured(route),
+    reasoningOptions: getRouteReasoningSupport(route),
+  };
+}
+
+function buildLadderState() {
+  const config = getCopilotLadderConfig();
+  const modes = (["ultra", "fast"] as CopilotMode[]).map((mode) => {
+    const primary = getCopilotPrimaryModel(mode);
+    return {
+      mode,
+      primary,
+      overridden: config.primary[mode] !== null,
+      // Exactly what a request would try, in order.
+      effective: [primary, ...getCopilotFallbackModels(primary)].filter((route) =>
+        isExternalCopilotConfigured(route),
+      ),
+    };
+  });
+  // The list the panel edits: the saved override when present, otherwise the
+  // code ladder for the Ultra primary, so the editor opens on today's order
+  // rather than an empty list.
+  const editableOrder =
+    config.order.length > 0
+      ? config.order
+      : getCopilotFallbackModels(getCopilotPrimaryModel("ultra"));
+
+  return {
+    persistent: isCopilotLadderPersistent(),
+    updatedAt: config.updatedAt,
+    override: config,
+    modes,
+    editableOrder: editableOrder.map(describeLadderRoute),
+    catalog: COPILOT_ROUTE_CATALOG.map(describeLadderRoute),
+  };
+}
+
+router.get("/copilot-ladder", async (_req, res) => {
+  try {
+    await refreshCopilotLadder(true);
+    res.json(buildLadderState());
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to read the model ladder",
+    });
+  }
+});
+
+router.post("/copilot-ladder", async (req, res) => {
+  try {
+    const body = req.body as {
+      primary?: Record<string, unknown>;
+      order?: unknown;
+      reasoning?: Record<string, unknown>;
+    };
+    const known = new Set(COPILOT_ROUTE_CATALOG);
+    const patch: CopilotLadderPatch = {};
+
+    if (body.primary && typeof body.primary === "object") {
+      patch.primary = {};
+      for (const mode of ["ultra", "fast"] as CopilotMode[]) {
+        if (!(mode in body.primary)) continue;
+        const raw = body.primary[mode];
+        if (raw === null || raw === "") {
+          patch.primary[mode] = null;
+          continue;
+        }
+        const route = String(raw ?? "").trim();
+        if (!known.has(route)) {
+          res.status(400).json({ error: `Unknown route: ${route}` });
+          return;
+        }
+        // A primary with no API key would fail on every request before the
+        // ladder could help, so refuse rather than take Copilot down.
+        if (!isExternalCopilotConfigured(route)) {
+          res.status(400).json({
+            error: `${route} has no configured API key, so it cannot be the primary model.`,
+          });
+          return;
+        }
+        patch.primary[mode] = route;
+      }
+    }
+
+    if (body.order !== undefined) {
+      if (!Array.isArray(body.order)) {
+        res.status(400).json({ error: "order must be an array of routes" });
+        return;
+      }
+      const order: string[] = [];
+      for (const entry of body.order) {
+        const route = String(entry ?? "").trim();
+        if (!route) continue;
+        if (!known.has(route)) {
+          res.status(400).json({ error: `Unknown route: ${route}` });
+          return;
+        }
+        order.push(route);
+      }
+      patch.order = order;
+    }
+
+    if (body.reasoning && typeof body.reasoning === "object") {
+      const reasoning: Record<string, string | null> = {};
+      for (const [rawRoute, rawEffort] of Object.entries(body.reasoning)) {
+        const route = rawRoute.trim();
+        if (!known.has(route)) {
+          res.status(400).json({ error: `Unknown route: ${route}` });
+          return;
+        }
+        if (rawEffort === null || String(rawEffort ?? "").trim() === "") {
+          reasoning[route] = null;
+          continue;
+        }
+        const effort = String(rawEffort).trim();
+        const supported = getRouteReasoningSupport(route);
+        // Mistral hard-rejects an unsupported value, which would drop the route
+        // out of the ladder on every request.
+        if (!supported.includes(effort)) {
+          res.status(400).json({
+            error: supported.length
+              ? `${route} accepts reasoning_effort ${supported.join(", ")} — not "${effort}".`
+              : `${route} does not support reasoning_effort.`,
+          });
+          return;
+        }
+        reasoning[route] = effort;
+      }
+      patch.reasoning = reasoning;
+    }
+
+    await updateCopilotLadder(patch);
+    res.json({ ok: true, ladder: buildLadderState() });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : "Failed to update the model ladder",
+    });
   }
 });
 
