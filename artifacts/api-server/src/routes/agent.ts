@@ -6012,7 +6012,13 @@ router.post("/agent/chat", async (req, res) => {
           // happen inside this retry/fallback loop rather than during parsing.
           const iterator = candidateStream[Symbol.asyncIterator]();
           const first = await iterator.next();
-          if (first.done) throw new Error("Provider returned an empty stream");
+          // Naming the route matters: a provider that answers 200 with no SSE
+          // frames (AgentRouter does this on some blocked/oversized payloads)
+          // is otherwise indistinguishable in the logs from any other route
+          // failing, and the run silently continues on a fallback model.
+          if (first.done) {
+            throw new Error(`${attemptModel} returned an empty stream`);
+          }
           if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
           stream = (async function* () {
             yield first.value;
