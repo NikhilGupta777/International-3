@@ -3847,7 +3847,7 @@ export function StudioCopilot({
       .flatMap(m => m.parts.filter(p => p.kind === "text").map(p => (p as any).content as string))
       .join(" ");
     // Detect Devanagari script or common Hindi/Hinglish patterns
-    if (/[ऀ-ॿ]/.test(recentText) || /\b(kya|hai|ka|ke|ki|mein|ko|bhi|nahi|yeh|woh|karo|haan|nahi|video|bhai)\b/i.test(recentText)) {
+    if (/[ऀ-ॿ]/.test(recentText) || /\b(kya|hai|ka|ke|ki|mein|ko|bhi|nahi|yeh|woh|karo|haan|nahi|bhai)\b/i.test(recentText)) {
       return "hi-IN";
     }
     return "en-US";

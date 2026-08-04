@@ -3154,6 +3154,7 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
   "help",
   "activity",
@@ -3488,6 +3489,16 @@ async function executeTool(
         toolId,
         runId,
       );
+      if (final.status !== "done") {
+        forgetAgentJob(req, jobId);
+        return {
+          result: {
+            jobId,
+            status: "processing",
+            message: "Download is still processing in the background. Check the Activity panel for completion.",
+          },
+        };
+      }
       forgetAgentJob(req, jobId);
       const downloadUrl = `/api/youtube/file/${jobId}`;
       return {
@@ -3734,6 +3745,15 @@ async function executeTool(
         runId,
       );
       forgetAgentJob(req, jobId);
+      if (final.status === "error" || final.error) {
+        return {
+          result: {
+            jobId,
+            status: "error",
+            message: final.error ?? "Timestamp generation failed.",
+          },
+        };
+      }
       // Format timestamps as readable text
       let tsContent = "";
       if (final.timestamps) {
@@ -5589,7 +5609,7 @@ function isLocalUrl(urlStr: string): boolean {
       host === "0.0.0.0" ||
       host.startsWith("192.168.") ||
       host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
       host.endsWith(".local")
     );
   } catch {
