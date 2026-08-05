@@ -65,15 +65,23 @@ export const COPILOT_FALLBACK_MODELS = [
 // Preferred head of the ladder. Kept separate from the catalog so the admin
 // panel can reorder without losing the documented default.
 //
+// Declared above PREFERRED_LADDER_HEAD on purpose: that array references it at
+// module-init time, so a later `const` would be a temporal-dead-zone crash on
+// every cold start.
+export const GEMINI_COPILOT_MODEL = "gemini:gemini-3.6-flash";
+
 // Measured 2026-08-05 in production against a real request ("give me all clips"
-// on a 49-minute discourse, full tool set):
-//   mistral-medium  17 clips, every timestamp inside the runtime, no error
-//   magistral       thinks, no error, but invented timestamps past the video end
-//   mistral-small   429 rate-limited, handed off
-//   sol             empty stream on every attempt
-// So correctness leads, the reasoning route follows, and sol is last — see
-// getDefaultLadderOrder.
+// on a 49-minute discourse, full tool set, real captions):
+//   gemini-3.6-flash  17 clips covering 00:00:00-00:49:18 contiguously, richest
+//                     detail, no error — thinking high
+//   mistral-medium    17 clips, all timestamps valid, but skipped the first 72s
+//   magistral         thinks and never errors, yet invented timestamps running
+//                     to 02:58:50 on a 49-minute video
+//   mistral-small     429 rate-limited, handed off
+//   sol               empty stream on every attempt
+// So correctness leads and sol is last — see getDefaultLadderOrder.
 const PREFERRED_LADDER_HEAD = [
+  GEMINI_COPILOT_MODEL,
   "mistral:mistral-medium-latest",
   "mistral:magistral-small-latest",
   "mistral:mistral-small-latest",
@@ -82,8 +90,6 @@ const PREFERRED_LADDER_HEAD = [
 ] as const;
 
 /** Every route the ladder may contain — the admin panel validates against this. */
-export const GEMINI_COPILOT_MODEL = "gemini:gemini-3.6-flash";
-
 export const COPILOT_ROUTE_CATALOG: string[] = [
   ...new Set<string>([
     COPILOT_ULTRA_MODEL,
