@@ -1,4 +1,6 @@
 import { randomUUID } from "crypto";
+import { GoogleGenAI } from "@google/genai";
+import { buildThinkingConfig } from "./gemini-client";
 import {
   getLadderOrder,
   getLadderPrimary,
@@ -19,7 +21,7 @@ export const NVIDIA_NEMOTRON_SUPER_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 
 export type ExternalProvider =
   | "nvidia" | "ollama" | "groq" | "mistral" | "sambanova"
-  | "openrouter" | "aion" | "kilo" | "agentrouter";
+  | "openrouter" | "aion" | "kilo" | "agentrouter" | "gemini";
 
 // AgentRouter relays this behind an OpenAI-compatible surface. Measured 2026-08-03:
 // tool calls 3/3 exact, streaming never downgrades under reasoning_effort, and cost
@@ -80,12 +82,17 @@ const PREFERRED_LADDER_HEAD = [
 ] as const;
 
 /** Every route the ladder may contain — the admin panel validates against this. */
+export const GEMINI_COPILOT_MODEL = "gemini:gemini-3.6-flash";
+
 export const COPILOT_ROUTE_CATALOG: string[] = [
   ...new Set<string>([
     COPILOT_ULTRA_MODEL,
     COPILOT_FAST_MODEL,
     ...PREFERRED_LADDER_HEAD,
     ...COPILOT_FALLBACK_MODELS,
+    // Selectable in the panel, but deliberately not in the default ladder
+    // until it has been measured on a real request like the others.
+    GEMINI_COPILOT_MODEL,
   ]),
 ];
 
@@ -149,6 +156,10 @@ export function getRouteReasoningSupport(route: string): string[] {
     return ["low", "medium", "high"];
   }
   if (provider === "mistral" && model.startsWith("magistral")) return ["high"];
+  // Gemini takes a thinkingConfig rather than reasoning_effort, but the panel
+  // offers the same three labels and streamGeminiWithKey maps them through
+  // buildThinkingConfig.
+  if (provider === "gemini") return ["low", "medium", "high"];
   return [];
 }
 
@@ -159,12 +170,15 @@ const providerLabel = (provider: ExternalProvider): string => ({
   nvidia: "NVIDIA NIM", ollama: "Ollama Cloud", groq: "Groq",
   mistral: "Mistral", sambanova: "SambaNova", openrouter: "OpenRouter",
   aion: "AionLabs", kilo: "Kilo Gateway", agentrouter: "AgentRouter",
+  gemini: "Gemini",
 })[provider];
 
 const providerModel = (provider: ExternalProvider, route: string): string =>
   route.startsWith(`${provider}:`) ? route.slice(provider.length + 1) : route;
 
-const providerUrl = (provider: Exclude<ExternalProvider, "ollama">): string => ({
+// Ollama and Gemini are excluded: neither goes through the OpenAI-compatible
+// chat-completions surface, so neither has an entry here.
+const providerUrl = (provider: Exclude<ExternalProvider, "ollama" | "gemini">): string => ({
   nvidia: process.env.NVIDIA_API_URL?.trim() || "https://integrate.api.nvidia.com/v1/chat/completions",
   groq: process.env.GROQ_API_URL?.trim() || "https://api.groq.com/openai/v1/chat/completions",
   mistral: process.env.MISTRAL_API_URL?.trim() || "https://api.mistral.ai/v1/chat/completions",
@@ -212,7 +226,7 @@ export class ExternalCopilotError extends Error {
 }
 
 export function getCopilotProvider(model: string): ExternalProvider | null {
-  for (const provider of ["mistral", "sambanova", "openrouter", "aion", "kilo", "groq", "nvidia", "ollama", "agentrouter"] as const) {
+  for (const provider of ["mistral", "sambanova", "openrouter", "aion", "kilo", "groq", "nvidia", "ollama", "agentrouter", "gemini"] as const) {
     if (model.startsWith(`${provider}:`)) return provider;
   }
   if (
@@ -847,7 +861,7 @@ async function* readSseData(response: Response): AsyncGenerator<string> {
 async function* streamOpenAiCompatibleWithKey(
   params: StreamExternalCopilotParams,
   apiKey: string,
-  provider: Exclude<ExternalProvider, "ollama">,
+  provider: Exclude<ExternalProvider, "ollama" | "gemini">,
 ): AsyncGenerator<any> {
   const isNvidia = provider === "nvidia";
   const isAgentRouter = provider === "agentrouter";
@@ -979,10 +993,82 @@ async function* streamOpenAiCompatibleWithKey(
   }
 }
 
+/**
+ * Gemini as a first-class ladder route.
+ *
+ * This adapter is almost pure pass-through: the agent's internal chunk format
+ * *is* Gemini's native shape (candidates[].content.parts[].text, with
+ * `thought: true` for reasoning parts and functionCall parts for tools), and
+ * buildAgentTools already emits Gemini functionDeclarations. So unlike every
+ * other provider here, nothing needs converting in either direction — no
+ * normalizeTools, no message reshaping, no chunk translation.
+ *
+ * Thinking is set through thinkingConfig (thinkingLevel / thinkingBudget)
+ * rather than reasoning_effort, which is what buildThinkingConfig encodes.
+ */
+async function* streamGeminiWithKey(
+  params: StreamExternalCopilotParams,
+  apiKey: string,
+): AsyncGenerator<any> {
+  const model = providerModel("gemini", params.model);
+  const effort = (getLadderReasoning(params.model) ?? "high").toUpperCase();
+  const client = new GoogleGenAI({
+    apiKey,
+    httpOptions: { apiVersion: "v1beta" },
+  });
+
+  let stream: AsyncGenerator<any>;
+  try {
+    stream = await client.models.generateContentStream({
+      model,
+      contents: params.contents,
+      config: {
+        systemInstruction: params.systemInstruction,
+        ...(params.tools?.length ? { tools: params.tools } : {}),
+        thinkingConfig: {
+          ...buildThinkingConfig(model, effort),
+          includeThoughts: true,
+        },
+        maxOutputTokens:
+          Number(process.env.COPILOT_MAX_OUTPUT_TOKENS) || 16_384,
+        abortSignal: params.signal,
+      },
+    });
+  } catch (error) {
+    throw geminiStreamError(error);
+  }
+
+  try {
+    for await (const chunk of stream) {
+      yield chunk;
+    }
+  } catch (error) {
+    throw geminiStreamError(error);
+  }
+}
+
+function geminiStreamError(error: unknown): ExternalCopilotError {
+  const status = Number((error as any)?.status ?? (error as any)?.code ?? 0);
+  const message = String((error as any)?.message ?? error ?? "Gemini request failed");
+  return new ExternalCopilotError(`Gemini request failed: ${message.slice(0, 300)}`, {
+    provider: "gemini",
+    status,
+    // Quota and transient upstream errors rotate to the next key before the
+    // ladder gives up on the route entirely.
+    retryable: status === 429 || status >= 500 || /quota|overload|unavailable/i.test(message),
+    cause: error,
+  });
+}
+
 export function streamExternalCopilot(
   params: StreamExternalCopilotParams,
 ): AsyncIterable<any> {
   const provider = getCopilotProvider(params.model);
+  if (provider === "gemini") {
+    return streamWithKeyRotation("gemini", params, (apiKey) =>
+      streamGeminiWithKey(params, apiKey),
+    );
+  }
   if (provider === "ollama") {
     return streamWithKeyRotation("ollama", params, (apiKey) =>
       streamOllamaWithKey(params, apiKey),
