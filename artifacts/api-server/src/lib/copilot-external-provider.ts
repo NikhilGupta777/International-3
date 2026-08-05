@@ -76,6 +76,16 @@ export const COPILOT_ROUTE_CATALOG: string[] = [
 ];
 
 /**
+ * The built-in ladder, primary included. The admin editor seeds from this
+ * rather than from getCopilotFallbackModels(), which drops the current primary
+ * — saving that filtered list as an explicit order would silently remove the
+ * primary route from the ladder for good.
+ */
+export function getDefaultLadderOrder(): string[] {
+  return [...new Set<string>([...PREFERRED_LADDER_HEAD, ...COPILOT_FALLBACK_MODELS])];
+}
+
+/**
  * The reasoning_effort body field for a route, or {} when it takes none.
  * An admin override wins, but only if the route actually accepts that value —
  * sending an unsupported one is a hard 4xx on Mistral and would knock the route
@@ -221,12 +231,15 @@ export function getCopilotFallbackModels(model: string): string[] {
   // Only a primary route gets a ladder; a specifically requested model does not.
   // An admin-selected primary counts, otherwise one failure would end the run.
   if (!isPrimaryRoute(model)) return [];
-  // An explicit admin order is authoritative — routes an admin removed are not
-  // silently appended back as a tail.
-  const base = getLadderOrder() ?? [
-    ...PREFERRED_LADDER_HEAD,
-    ...COPILOT_FALLBACK_MODELS,
-  ];
+  // An admin order sets the *priority*, not the membership: the panel can only
+  // reorder, never remove, so any catalog route missing from a saved order was
+  // dropped by accident (older builds seeded the editor from a list that
+  // excluded the primary). Append the strays at the tail rather than lose them.
+  // Revisit if the panel ever grows an explicit remove control.
+  const override = getLadderOrder();
+  const base = override
+    ? [...override, ...getDefaultLadderOrder().filter((route) => !override.includes(route))]
+    : getDefaultLadderOrder();
   return [...new Set(base)].filter((candidate) => candidate !== model);
 }
 

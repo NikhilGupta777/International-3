@@ -28,6 +28,7 @@ import {
   COPILOT_ROUTE_CATALOG,
   getCopilotFallbackModels,
   getCopilotPrimaryModel,
+  getDefaultLadderOrder,
   getCopilotProvider,
   getExternalCopilotKeyCount,
   getRouteReasoningSupport,
@@ -759,12 +760,16 @@ function buildLadderState() {
     };
   });
   // The list the panel edits: the saved override when present, otherwise the
-  // code ladder for the Ultra primary, so the editor opens on today's order
-  // rather than an empty list.
+  // built-in ladder. Seeded from getDefaultLadderOrder (primary included) —
+  // seeding from getCopilotFallbackModels would omit the current primary, and
+  // the next save would persist that omission as a permanent removal.
+  // Catalog routes missing from an older saved order are appended so they can
+  // be reordered back into place instead of being stranded.
+  const saved = config.order;
   const editableOrder =
-    config.order.length > 0
-      ? config.order
-      : getCopilotFallbackModels(getCopilotPrimaryModel("ultra"));
+    saved.length > 0
+      ? [...saved, ...getDefaultLadderOrder().filter((route) => !saved.includes(route))]
+      : getDefaultLadderOrder();
 
   return {
     persistent: isCopilotLadderPersistent(),
