@@ -60,13 +60,20 @@ export const COPILOT_FALLBACK_MODELS = [
   ...SHORT_CONTEXT_MODELS,
 ] as const;
 
-// Preferred head of the ladder, measured. Kept separate from the catalog so the
-// admin panel can reorder without losing the documented default.
+// Preferred head of the ladder. Kept separate from the catalog so the admin
+// panel can reorder without losing the documented default.
+//
+// Order: the two routes that actually reason, then the measured-best
+// non-thinking routes, and AgentRouter below both. Sol sits low deliberately —
+// it 400s "content-blocked" on any message containing a YouTube URL, which is
+// most of this app's traffic, so it can only usefully serve link-free turns.
 const PREFERRED_LADDER_HEAD = [
+  "mistral:magistral-small-latest",
+  "nvidia:openai/gpt-oss-120b",
   "mistral:mistral-small-latest",
-  AGENTROUTER_GPT_MODEL,
   "mistral:mistral-medium-latest",
   "ollama:gpt-oss:120b",
+  AGENTROUTER_GPT_MODEL,
 ] as const;
 
 /** Every route the ladder may contain — the admin panel validates against this. */
