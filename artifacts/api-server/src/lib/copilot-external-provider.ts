@@ -29,13 +29,28 @@ export type ExternalProvider =
 // not streamed back — only the trailing reasoning_tokens count.
 export const AGENTROUTER_GPT_MODEL = "agentrouter:gpt-5.6-sol";
 
+// Mistral's reasoning model. Unlike the rest of the Mistral line it actually
+// thinks, and it only accepts reasoning_effort "high" — see
+// getRouteReasoningSupport. Streams typed content blocks (emitDeltaContent).
+//
+// Pinned dead last in getDefaultLadderOrder: measured 2026-08-05 on a 49-minute
+// discourse it never errors and always answers, but it invented clip timestamps
+// running to 02:58:50 on a video that ends at 00:49:18. A route that fails
+// loudly is safer than one that fabricates, so every other route gets a turn
+// before this one — it stays in the ladder only as a last resort over failing.
+export const MAGISTRAL_MODEL = "mistral:magistral-small-latest";
+
+// Gemma 4 31B is served by two providers we already have keys for. Declared
+// above COPILOT_ROUTE_CATALOG for the same temporal-dead-zone reason as
+// GEMINI_COPILOT_MODEL: the catalog spreads this array at module-init time.
+export const GEMMA_4_31B_ROUTES = [
+  "sambanova:gemma-4-31B-it",
+  "ollama:gemma4:31b",
+] as const;
+
 const LONG_CONTEXT_MODELS = [
   "ollama:gpt-oss:120b",
   "mistral:mistral-small-latest",
-  // Mistral's reasoning model. Unlike the rest of the Mistral line it actually
-  // thinks, and it only accepts reasoning_effort "high" — see
-  // getRouteReasoningSupport. Streams typed content blocks (emitDeltaContent).
-  "mistral:magistral-small-latest",
   "mistral:mistral-medium-latest",
   "mistral:devstral-latest",
   "mistral:mistral-large-latest",
@@ -80,11 +95,16 @@ export const GEMINI_COPILOT_MODEL = "gemini:gemini-3.6-flash";
 //   mistral-small     429 rate-limited, handed off
 //   sol               empty stream on every attempt
 // So correctness leads and sol is last — see getDefaultLadderOrder.
+//
+// Gemini sits at 3 rather than 1 by explicit choice: it is the strongest route
+// measured, but it draws on the same GEMINI_API_KEYS pool that subtitles,
+// Bhagwat image generation and the video-editor agent already meter against.
+// Leading with the Mistral routes spends a single-purpose quota first and keeps
+// the shared pool in reserve for the features that have no alternative provider.
 const PREFERRED_LADDER_HEAD = [
-  GEMINI_COPILOT_MODEL,
   "mistral:mistral-medium-latest",
-  "mistral:magistral-small-latest",
   "mistral:mistral-small-latest",
+  GEMINI_COPILOT_MODEL,
   "nvidia:openai/gpt-oss-120b",
   "ollama:gpt-oss:120b",
 ] as const;
@@ -99,6 +119,13 @@ export const COPILOT_ROUTE_CATALOG: string[] = [
     // Selectable in the panel, but deliberately not in the default ladder
     // until it has been measured on a real request like the others.
     GEMINI_COPILOT_MODEL,
+    // Gemma 4 31B, offered by two providers we already hold keys for. Listed
+    // here so the panel can select either one for a measured run; neither
+    // enters the ladder until it has been through the clips test. SambaNova
+    // advertises 262K context, Ollama 256K — both well past the 30-50K-token
+    // transcripts that decide this ladder.
+    ...GEMMA_4_31B_ROUTES,
+    MAGISTRAL_MODEL,
   ]),
 ];
 
@@ -120,6 +147,9 @@ export function getDefaultLadderOrder(): string[] {
       ...PREFERRED_LADDER_HEAD,
       ...COPILOT_FALLBACK_MODELS,
       AGENTROUTER_GPT_MODEL,
+      // Below AgentRouter on purpose — see MAGISTRAL_MODEL. An empty stream
+      // costs a retry; a confidently fabricated timeline can reach the user.
+      MAGISTRAL_MODEL,
     ]),
   ];
 }

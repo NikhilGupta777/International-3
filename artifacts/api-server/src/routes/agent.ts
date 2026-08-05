@@ -5849,7 +5849,11 @@ router.post("/agent/chat", async (req, res) => {
   }, 8000);
 
   try {
-    const EXTERNAL_TIMEOUT_MS = 30_000;
+    // Guards both the first chunk and any subsequent idle gap on a ladder
+    // attempt. Kept short on purpose: with ~20 routes, a slow route costs this
+    // much before the next one is tried, and the whole ladder still has to fit
+    // inside Lambda's 15-minute budget.
+    const EXTERNAL_TIMEOUT_MS = 15_000;
 
     let loopContents: any[] = [];
 
