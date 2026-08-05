@@ -30,6 +30,10 @@ export const AGENTROUTER_GPT_MODEL = "agentrouter:gpt-5.6-sol";
 const LONG_CONTEXT_MODELS = [
   "ollama:gpt-oss:120b",
   "mistral:mistral-small-latest",
+  // Mistral's reasoning model. Unlike the rest of the Mistral line it actually
+  // thinks, and it only accepts reasoning_effort "high" — see
+  // getRouteReasoningSupport. Streams typed content blocks (emitDeltaContent).
+  "mistral:magistral-small-latest",
   "mistral:mistral-medium-latest",
   "mistral:devstral-latest",
   "mistral:mistral-large-latest",
@@ -589,6 +593,37 @@ function geminiTextChunk(text: string, thought = false): any {
   };
 }
 
+/**
+ * Mistral's reasoning models (Magistral) stream `delta.content` as an array of
+ * typed blocks instead of a string: reasoning arrives as
+ * `{type:"thinking", thinking:[{type:"text", text}]}` and the answer as
+ * `{type:"text", text}`. `String(content)` on that yields "[object Object]" for
+ * every chunk, so both shapes are normalised here. Empty-string content chunks
+ * (Magistral opens with a few) are skipped rather than emitted as blank text.
+ */
+function* emitDeltaContent(content: unknown): Generator<any> {
+  if (!content) return;
+  if (typeof content === "string") {
+    yield geminiTextChunk(content);
+    return;
+  }
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const typed = block as Record<string, any>;
+    if (typed.type === "thinking") {
+      const parts = Array.isArray(typed.thinking) ? typed.thinking : [typed.thinking];
+      const text = parts
+        .map((part: any) => (typeof part === "string" ? part : String(part?.text ?? "")))
+        .join("");
+      if (text) yield geminiTextChunk(text, true);
+      continue;
+    }
+    const text = typeof typed.text === "string" ? typed.text : "";
+    if (text) yield geminiTextChunk(text);
+  }
+}
+
 function geminiToolChunk(toolCall: any): any {
   const fn = toolCall?.function ?? toolCall;
   return {
@@ -830,7 +865,7 @@ async function* streamOpenAiCompatibleWithKey(
     const delta = event?.choices?.[0]?.delta ?? {};
     const thought = delta.reasoning ?? delta.reasoning_content;
     if (thought) yield geminiTextChunk(String(thought), true);
-    if (delta.content) yield geminiTextChunk(String(delta.content));
+    yield* emitDeltaContent(delta.content);
     for (const call of delta.tool_calls ?? []) {
       const index = Number(call.index ?? 0);
       const existing = pendingCalls.get(index) ?? { arguments: "" };
