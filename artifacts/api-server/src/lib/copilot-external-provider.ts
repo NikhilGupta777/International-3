@@ -21,7 +21,22 @@ export const NVIDIA_NEMOTRON_SUPER_MODEL = "nvidia/nemotron-3-super-120b-a12b";
 
 export type ExternalProvider =
   | "nvidia" | "ollama" | "groq" | "mistral" | "sambanova"
-  | "openrouter" | "aion" | "kilo" | "agentrouter" | "gemini";
+  | "openrouter" | "aion" | "kilo" | "agentrouter" | "gemini" | "vercel";
+
+// Vercel AI Gateway fronts 317 models behind one OpenAI-compatible endpoint, so
+// it needs no adapter of its own — only a base URL and a key.
+//
+// Verified 2026-08-06 with a live key: gemma-4-31b-it answered a tool call
+// correctly in 2.0s, and every DeepSeek variant returned 403. V4-Flash reports
+// "Free tier users do not have access"; the rest report "Free tier requests on
+// this model are rate-limited", and after ~15 test calls every model on the
+// account — including the gemma that had just worked — returned the same
+// rate-limit error and had not recovered 75s later.
+//
+// So this is wired up and selectable, but stays out of the ladder: on the
+// current free plan it would fail nearly every request from the head. Move it
+// into PREFERRED_LADDER_HEAD once the Vercel plan is paid.
+export const VERCEL_DEEPSEEK_MODEL = "vercel:deepseek/deepseek-v4-flash-0731";
 
 // AgentRouter relays this behind an OpenAI-compatible surface. Measured 2026-08-03:
 // tool calls 3/3 exact, streaming never downgrades under reasoning_effort, and cost
@@ -40,13 +55,32 @@ export const AGENTROUTER_GPT_MODEL = "agentrouter:gpt-5.6-sol";
 // before this one — it stays in the ladder only as a last resort over failing.
 export const MAGISTRAL_MODEL = "mistral:magistral-small-latest";
 
-// Gemma 4 31B is served by two providers we already have keys for. Declared
-// above COPILOT_ROUTE_CATALOG for the same temporal-dead-zone reason as
+// Gemma 4 31B is served by four providers we already hold keys for, which makes
+// it the only model in the ladder with redundancy across separate key pools.
+// Declared above COPILOT_ROUTE_CATALOG for the same temporal-dead-zone reason as
 // GEMINI_COPILOT_MODEL: the catalog spreads this array at module-init time.
+//
+// Measured 2026-08-06 on a real 93-minute Hindi discourse, 49,745 prompt tokens
+// (captions for sXxNxDkXwrE), asking for every clip in the video:
+//   ollama      11.7s, 50 timestamps, first chunk 4.1s
+//   sambanova   27.9s, 48 timestamps, first chunk 17.2s
+//   openrouter  75.7s, 44 timestamps, first chunk 4.3s
+//   nvidia      302s and an EMPTY response — fine on short prompts, collapses here
+// None of them overflowed past the 01:33:54 end of the video, which is the
+// failure that pushed magistral to the bottom of the ladder.
 export const GEMMA_4_31B_ROUTES = [
-  "sambanova:gemma-4-31B-it",
   "ollama:gemma4:31b",
+  "openrouter:google/gemma-4-31b-it",
+  // Below the other two on purpose: 17.2s to first chunk is past the 15s
+  // EXTERNAL_TIMEOUT_MS guard in agent.ts, so on a 50K-token turn this route is
+  // aborted before it answers. It is kept for short-input turns, where it is
+  // the fastest of the three.
+  "sambanova:gemma-4-31B-it",
 ] as const;
+
+// Works on short prompts, but a 49,745-token request hung for 302s and returned
+// an empty body. Selectable in the panel, deliberately never in the ladder.
+export const NVIDIA_GEMMA_MODEL = "nvidia:google/gemma-4-31b-it";
 
 const LONG_CONTEXT_MODELS = [
   "ollama:gpt-oss:120b",
@@ -105,6 +139,11 @@ const PREFERRED_LADDER_HEAD = [
   "mistral:mistral-medium-latest",
   "mistral:mistral-small-latest",
   GEMINI_COPILOT_MODEL,
+  // Gemma 4 31B, fastest pool first. Measured on a 49,745-token transcript —
+  // see GEMMA_4_31B_ROUTES. Two providers here means a single provider outage
+  // no longer drops the model from the ladder.
+  "ollama:gemma4:31b",
+  "openrouter:google/gemma-4-31b-it",
   "nvidia:openai/gpt-oss-120b",
   "ollama:gpt-oss:120b",
 ] as const;
@@ -119,12 +158,9 @@ export const COPILOT_ROUTE_CATALOG: string[] = [
     // Selectable in the panel, but deliberately not in the default ladder
     // until it has been measured on a real request like the others.
     GEMINI_COPILOT_MODEL,
-    // Gemma 4 31B, offered by two providers we already hold keys for. Listed
-    // here so the panel can select either one for a measured run; neither
-    // enters the ladder until it has been through the clips test. SambaNova
-    // advertises 262K context, Ollama 256K — both well past the 30-50K-token
-    // transcripts that decide this ladder.
     ...GEMMA_4_31B_ROUTES,
+    NVIDIA_GEMMA_MODEL,
+    VERCEL_DEEPSEEK_MODEL,
     MAGISTRAL_MODEL,
   ]),
 ];
@@ -206,7 +242,7 @@ const providerLabel = (provider: ExternalProvider): string => ({
   nvidia: "NVIDIA NIM", ollama: "Ollama Cloud", groq: "Groq",
   mistral: "Mistral", sambanova: "SambaNova", openrouter: "OpenRouter",
   aion: "AionLabs", kilo: "Kilo Gateway", agentrouter: "AgentRouter",
-  gemini: "Gemini",
+  gemini: "Gemini", vercel: "Vercel AI Gateway",
 })[provider];
 
 const providerModel = (provider: ExternalProvider, route: string): string =>
@@ -223,6 +259,7 @@ const providerUrl = (provider: Exclude<ExternalProvider, "ollama" | "gemini">): 
   aion: process.env.AION_API_URL?.trim() || "https://api.aionlabs.ai/v1/chat/completions",
   kilo: process.env.KILO_API_URL?.trim() || "https://api.kilo.ai/api/gateway/v1/chat/completions",
   agentrouter: process.env.AGENTROUTER_API_URL?.trim() || "https://agentrouter.org/v1/chat/completions",
+  vercel: process.env.VERCEL_API_URL?.trim() || "https://ai-gateway.vercel.sh/v1/chat/completions",
 })[provider];
 
 type StreamExternalCopilotParams = {
@@ -262,7 +299,7 @@ export class ExternalCopilotError extends Error {
 }
 
 export function getCopilotProvider(model: string): ExternalProvider | null {
-  for (const provider of ["mistral", "sambanova", "openrouter", "aion", "kilo", "groq", "nvidia", "ollama", "agentrouter", "gemini"] as const) {
+  for (const provider of ["mistral", "sambanova", "openrouter", "aion", "kilo", "groq", "nvidia", "ollama", "agentrouter", "gemini", "vercel"] as const) {
     if (model.startsWith(`${provider}:`)) return provider;
   }
   if (
@@ -325,7 +362,7 @@ export function isExternalCopilotModel(model: string): boolean {
 
 export function isExternalCopilotConfigured(model?: string): boolean {
   if (!model) {
-    return (["mistral", "sambanova", "ollama", "nvidia", "groq", "openrouter", "kilo", "aion", "agentrouter"] as ExternalProvider[])
+    return (["mistral", "sambanova", "ollama", "nvidia", "groq", "openrouter", "kilo", "aion", "agentrouter", "vercel"] as ExternalProvider[])
       .some((provider) => getProviderKeys(provider).length > 0);
   }
   const provider = getCopilotProvider(model);
