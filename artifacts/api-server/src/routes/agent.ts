@@ -189,12 +189,15 @@ function getToolParallelGroup(name: string): ToolParallelGroup {
     case "delete_workspace_file":
     case "list_drive_files":
     case "import_from_drive":
+    case "describe_image":
+    case "read_uploaded_file":
       return "light";
 
     case "cut_video_clip":
     case "download_video":
     case "find_best_clips":
     case "generate_timestamps":
+    case "generate_subtitles":
       return "youtube_processing";
 
     default:
@@ -788,7 +791,7 @@ const STUDIO_TOOLS: any[] = [
         tab: {
           type: Type.STRING,
           description:
-            "Tab name: 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'translator'",
+            "Tab name: 'home', 'download', 'clips', 'subtitles', 'clipcutter', 'bhagwat', 'scenefinder', 'timestamps', 'upload', 'copilot', 'translator', 'heygen', 'findvideo', 'thumbnail', 'content-manager', 'videostudio', 'newtabstudio', 'help', 'activity', 'admin', 'developer', 'api-docs', 'settings'",
         },
       },
       required: ["tab"],
@@ -1017,7 +1020,7 @@ const STUDIO_TOOLS: any[] = [
   {
     name: "send_result_to_tab",
     description:
-      "Open the relevant tab for a result or workflow: download, clips, subtitles, clipcutter, translator, timestamps, upload.",
+      "Open the relevant tab for a result or workflow: home, download, clips, subtitles, clipcutter, bhagwat, scenefinder, timestamps, upload, copilot, translator, heygen, findvideo, thumbnail, content-manager, videostudio, newtabstudio, help, activity, admin, developer, api-docs, settings.",
     parameters: {
       type: Type.OBJECT,
       properties: {
@@ -3156,7 +3159,9 @@ const ALLOWED_NAV_TABS = new Set([
   "heygen",
   "findvideo",
   "thumbnail",
+  "content-manager",
   "videostudio",
+  "newtabstudio",
   "help",
   "activity",
   "admin",
@@ -5585,15 +5590,29 @@ function isLocalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
-    return (
+    if (
       host === "localhost" ||
-      host === "127.0.0.1" ||
       host === "0.0.0.0" ||
-      host.startsWith("192.168.") ||
-      host.startsWith("10.") ||
-      host.startsWith("172.16.") ||
-      host.endsWith(".local")
-    );
+      host === "::1" ||
+      host === "::" ||
+      host === "[::1]" ||
+      host === "[::]" ||
+      host.endsWith(".local") ||
+      host === "metadata.google.internal"
+    ) {
+      return true;
+    }
+    const v4parts = host.split(".").map(Number);
+    if (
+      v4parts.length === 4 &&
+      v4parts.every(n => Number.isFinite(n) && n >= 0 && n <= 255)
+    ) {
+      if (v4parts[0] === 127 || v4parts[0] === 10 || v4parts[0] === 0) return true;
+      if (v4parts[0] === 172 && v4parts[1] >= 16 && v4parts[1] <= 31) return true;
+      if (v4parts[0] === 192 && v4parts[1] === 168) return true;
+      if (v4parts[0] === 169 && v4parts[1] === 254) return true;
+    }
+    return false;
   } catch {
     return true;
   }
