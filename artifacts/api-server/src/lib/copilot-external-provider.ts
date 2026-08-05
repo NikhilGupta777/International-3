@@ -518,6 +518,61 @@ function partText(part: any): string {
   return "";
 }
 
+// ── AgentRouter YouTube-link shim ────────────────────────────────────────────
+// AgentRouter answers 400 "content-blocked" for any request whose payload
+// contains a YouTube URL, in any form (watch links, youtu.be, shorts, embeds,
+// scheme-less). Verified against the live API. Since a URL persists in the
+// conversation history, one pasted link would block every later turn too,
+// making the route unusable for this app.
+//
+// So for AgentRouter only, YouTube URLs are swapped for an opaque `ytid:<id>`
+// token on the way out and expanded back to real URLs in the tool-call
+// arguments on the way in. The model never sees a YouTube URL; our tools never
+// see a token. Applies to the whole outbound payload — user text, tool results
+// and prior tool-call arguments alike.
+const YOUTUBE_URL_RE =
+  /(?:https?:\/\/)?(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:[^\s"']*&)?v=|shorts\/|live\/|embed\/|v\/)|youtu\.be\/)([A-Za-z0-9_-]{11})(?:[^\s"'\\]*)/gi;
+const YOUTUBE_TOKEN_RE = /ytid:([A-Za-z0-9_-]{11})/g;
+
+export const AGENTROUTER_LINK_NOTE =
+  "\n\nYouTube videos are referenced in this conversation as `ytid:<id>` tokens " +
+  "(for example `ytid:dQw4w9WgXcQ`). Treat a token as a valid YouTube video " +
+  "reference and pass it through unchanged in tool arguments wherever a video " +
+  "URL is expected. Do not reconstruct or output a youtube.com or youtu.be URL.";
+
+export function maskYoutubeLinks<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(YOUTUBE_URL_RE, (_match, id: string) => `ytid:${id}`) as unknown as T;
+  }
+  if (Array.isArray(value)) return value.map((item) => maskYoutubeLinks(item)) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, any> = {};
+    for (const [key, item] of Object.entries(value as Record<string, any>)) {
+      out[key] = maskYoutubeLinks(item);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+export function unmaskYoutubeLinks<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(
+      YOUTUBE_TOKEN_RE,
+      (_match, id: string) => `https://www.youtube.com/watch?v=${id}`,
+    ) as unknown as T;
+  }
+  if (Array.isArray(value)) return value.map((item) => unmaskYoutubeLinks(item)) as unknown as T;
+  if (value && typeof value === "object") {
+    const out: Record<string, any> = {};
+    for (const [key, item] of Object.entries(value as Record<string, any>)) {
+      out[key] = unmaskYoutubeLinks(item);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
 function normalizeMessages(contents: any[]): any[] {
   const messages: any[] = [];
   for (const content of contents) {
@@ -814,8 +869,15 @@ async function* streamOpenAiCompatibleWithKey(
         body: JSON.stringify({
           model,
           messages: [
-            { role: "system", content: params.systemInstruction },
-            ...normalizeMessages(params.contents),
+            {
+              role: "system",
+              content: isAgentRouter
+                ? maskYoutubeLinks(params.systemInstruction) + AGENTROUTER_LINK_NOTE
+                : params.systemInstruction,
+            },
+            ...(isAgentRouter
+              ? maskYoutubeLinks(normalizeMessages(params.contents))
+              : normalizeMessages(params.contents)),
           ],
           ...(normalizedTools.length
             ? { tools: normalizedTools, tool_choice: "auto" }
@@ -889,7 +951,14 @@ async function* streamOpenAiCompatibleWithKey(
     if (value.name) {
       yield geminiToolChunk({
         id: value.id,
-        function: { name: value.name, arguments: value.arguments },
+        function: {
+          name: value.name,
+          // Expand ytid tokens back to real URLs so the tools receive what they
+          // expect — the masking is only ever visible to AgentRouter itself.
+          arguments: provider === "agentrouter"
+            ? unmaskYoutubeLinks(value.arguments)
+            : value.arguments,
+        },
       });
     }
   }
