@@ -8,13 +8,18 @@ import {
   type CopilotMode,
 } from "./copilot-ladder-store";
 
-// Both public modes lead with Mistral Small; Ollama GPT-OSS now sits further down
-// the shared ladder. Keep these two equal — agent.ts treats `FAST_MODEL !== ULTRA_MODEL`
-// as the switch that turns on separate Fast prompting and a reduced tool set.
+// Both public modes lead with the best-measured route, Gemma 4 31B on Ollama.
+// Keep these two equal — agent.ts treats `FAST_MODEL !== ULTRA_MODEL` as the
+// switch that turns on separate Fast prompting and a reduced tool set.
+//
+// These were mistral-small until 2026-08-06, when it turned out to answer a
+// 93-minute transcript using only the first 11 minutes of it. The admin panel
+// normally overrides these, but the default is what a cleared override falls
+// back to, so it should not be a route we know truncates.
 export const COPILOT_ULTRA_MODEL =
-  process.env.COPILOT_ULTRA_MODEL?.trim() || "mistral:mistral-small-latest";
+  process.env.COPILOT_ULTRA_MODEL?.trim() || "ollama:gemma4:31b";
 export const COPILOT_FAST_MODEL =
-  process.env.COPILOT_FAST_MODEL?.trim() || "mistral:mistral-small-latest";
+  process.env.COPILOT_FAST_MODEL?.trim() || "ollama:gemma4:31b";
 export const COPILOT_ULTRA_FALLBACK_MODEL = "gpt-oss:120b";
 export const NVIDIA_NEMOTRON_ULTRA_MODEL = "nvidia/nemotron-3-ultra-550b-a55b";
 export const NVIDIA_NEMOTRON_SUPER_MODEL = "nvidia/nemotron-3-super-120b-a12b";
@@ -61,6 +66,14 @@ export const AGENTROUTER_GPT_MODEL = "agentrouter:gpt-5.6-sol";
 // before this one — it stays in the ladder only as a last resort over failing.
 export const MAGISTRAL_MODEL = "mistral:magistral-small-latest";
 
+// Dropped from the ladder 2026-08-06. On the same 29,055-token transcript that
+// every other Mistral model handled end to end, this one emitted 126 timestamps
+// that all fell inside the first 11 minutes of a 93-minute video — no overflow,
+// no error, just silent truncation of the input. That is the same class of
+// failure as magistral, only harder to notice, since the output looks complete.
+// Kept selectable for short-input turns, where it was never the problem.
+export const MISTRAL_SMALL_MODEL = "mistral:mistral-small-latest";
+
 // Gemma 4 31B is served by four providers we already hold keys for, which makes
 // it the only model in the ladder with redundancy across separate key pools.
 // Declared above COPILOT_ROUTE_CATALOG for the same temporal-dead-zone reason as
@@ -90,8 +103,10 @@ export const NVIDIA_GEMMA_MODEL = "nvidia:google/gemma-4-31b-it";
 
 const LONG_CONTEXT_MODELS = [
   "ollama:gpt-oss:120b",
-  "mistral:mistral-small-latest",
   "mistral:mistral-medium-latest",
+  // Measured 2026-08-06 alongside the rest of the Mistral line on a 29,055-token
+  // transcript: 127 timestamps across the full 93 minutes, 3.7s to first chunk.
+  "mistral:devstral-medium-latest",
   "mistral:devstral-latest",
   "mistral:mistral-large-latest",
   "sambanova:gpt-oss-120b",
@@ -151,10 +166,12 @@ const PREFERRED_LADDER_HEAD = [
   // run), but it spends the shared GEMINI_API_KEYS pool, so it sits behind a
   // route that is both faster and single-purpose.
   GEMINI_COPILOT_MODEL,
+  // 126 timestamps across the full 93 minutes, 4.2s to first chunk.
   "mistral:mistral-medium-latest",
   // 4.3s to first chunk. Slow to finish (75.7s) but never wrong.
   "openrouter:google/gemma-4-31b-it",
-  "mistral:mistral-small-latest",
+  // Fastest Mistral off the line at 2.8s, and it still covered the whole video.
+  "mistral:ministral-14b-latest",
   // 17.2s to first chunk, so it loses long-context turns to the 15s guard and
   // only wins short ones. Kept because the output itself was correct.
   "sambanova:gemma-4-31B-it",
@@ -179,6 +196,7 @@ export const COPILOT_ROUTE_CATALOG: string[] = [
     GEMINI_COPILOT_MODEL,
     ...GEMMA_4_31B_ROUTES,
     ...VERCEL_WORKING_MODELS,
+    MISTRAL_SMALL_MODEL,
     NVIDIA_GEMMA_MODEL,
     VERCEL_DEEPSEEK_MODEL,
     MAGISTRAL_MODEL,
