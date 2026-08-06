@@ -33,10 +33,16 @@ export type ExternalProvider =
 // account — including the gemma that had just worked — returned the same
 // rate-limit error and had not recovered 75s later.
 //
-// So this is wired up and selectable, but stays out of the ladder: on the
-// current free plan it would fail nearly every request from the head. Move it
-// into PREFERRED_LADDER_HEAD once the Vercel plan is paid.
+// Retested once the free-tier window reset: gemma-4-31b-it and minimax-m3 both
+// answer normally, while every DeepSeek variant still reports "Free tier users
+// do not have access". So the two that work go into the ladder — last, because
+// the account rate-limits again after a modest burst — and DeepSeek stays
+// catalog-only until the plan is paid.
 export const VERCEL_DEEPSEEK_MODEL = "vercel:deepseek/deepseek-v4-flash-0731";
+export const VERCEL_WORKING_MODELS = [
+  "vercel:google/gemma-4-31b-it",
+  "vercel:minimax/minimax-m3",
+] as const;
 
 // AgentRouter relays this behind an OpenAI-compatible surface. Measured 2026-08-03:
 // tool calls 3/3 exact, streaming never downgrades under reasoning_effort, and cost
@@ -135,15 +141,28 @@ export const GEMINI_COPILOT_MODEL = "gemini:gemini-3.6-flash";
 // Bhagwat image generation and the video-editor agent already meter against.
 // Leading with the Mistral routes spends a single-purpose quota first and keeps
 // the shared pool in reserve for the features that have no alternative provider.
+// Every route in this head has been run against a real long transcript and
+// passed. Ordered by measured first-chunk latency, because EXTERNAL_TIMEOUT_MS
+// aborts an attempt at 15s regardless of how good the eventual answer is.
 const PREFERRED_LADDER_HEAD = [
-  "mistral:mistral-medium-latest",
-  "mistral:mistral-small-latest",
-  GEMINI_COPILOT_MODEL,
-  // Gemma 4 31B, fastest pool first. Measured on a 49,745-token transcript —
-  // see GEMMA_4_31B_ROUTES. Two providers here means a single provider outage
-  // no longer drops the model from the ladder.
+  // 4.1s to first chunk, 50 timestamps, no overflow — best measured.
   "ollama:gemma4:31b",
+  // Richest detail of anything tested (17 contiguous clips on the 49-minute
+  // run), but it spends the shared GEMINI_API_KEYS pool, so it sits behind a
+  // route that is both faster and single-purpose.
+  GEMINI_COPILOT_MODEL,
+  "mistral:mistral-medium-latest",
+  // 4.3s to first chunk. Slow to finish (75.7s) but never wrong.
   "openrouter:google/gemma-4-31b-it",
+  "mistral:mistral-small-latest",
+  // 17.2s to first chunk, so it loses long-context turns to the 15s guard and
+  // only wins short ones. Kept because the output itself was correct.
+  "sambanova:gemma-4-31B-it",
+  // The only NVIDIA route that survives a 50K-token prompt: deepseek-v4-flash,
+  // glm-5.2 and kimi-k2.6 all returned nothing within 45s. 13.0s to first chunk
+  // is uncomfortably close to the guard, and it produced 20 clips where gemma
+  // produced 50, so it ranks below every gemma route.
+  "nvidia:minimaxai/minimax-m3",
   "nvidia:openai/gpt-oss-120b",
   "ollama:gpt-oss:120b",
 ] as const;
@@ -159,6 +178,7 @@ export const COPILOT_ROUTE_CATALOG: string[] = [
     // until it has been measured on a real request like the others.
     GEMINI_COPILOT_MODEL,
     ...GEMMA_4_31B_ROUTES,
+    ...VERCEL_WORKING_MODELS,
     NVIDIA_GEMMA_MODEL,
     VERCEL_DEEPSEEK_MODEL,
     MAGISTRAL_MODEL,
@@ -182,6 +202,9 @@ export function getDefaultLadderOrder(): string[] {
     ...new Set<string>([
       ...PREFERRED_LADDER_HEAD,
       ...COPILOT_FALLBACK_MODELS,
+      // Verified working, but on a free plan that rate-limits the whole account
+      // after a burst — useful as a late fallback, wrong as a head.
+      ...VERCEL_WORKING_MODELS,
       AGENTROUTER_GPT_MODEL,
       // Below AgentRouter on purpose — see MAGISTRAL_MODEL. An empty stream
       // costs a retry; a confidently fabricated timeline can reach the user.
